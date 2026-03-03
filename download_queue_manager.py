@@ -11,6 +11,8 @@ import json
 import logging
 import time
 import yaml
+import requests
+from difflib import SequenceMatcher
 from datetime import datetime, timedelta
 from pathlib import Path
 from helpers.metadata_reader import read_mp3_metadata
@@ -1197,6 +1199,170 @@ def check_album_exists_in_library(album, artist):
         return False
 
 
+def _normalize_match_text(value):
+    """Normalize text for fuzzy matching across providers."""
+    if not value:
+        return ""
+    normalized = value.lower().strip()
+    replacements = {
+        "&": "and",
+        "’": "'",
+        "`": "'",
+        "-": " ",
+        "_": " ",
+        "/": " ",
+        "(": " ",
+        ")": " ",
+        "[": " ",
+        "]": " ",
+    }
+    for src, dst in replacements.items():
+        normalized = normalized.replace(src, dst)
+    normalized = " ".join(normalized.split())
+    return normalized
+
+
+def _string_similarity(a, b):
+    """Return normalized string similarity score (0-1)."""
+    return SequenceMatcher(None, _normalize_match_text(a), _normalize_match_text(b)).ratio()
+
+
+def _fetch_musicbrainz_album_candidates(artist, album, limit=5):
+    """Fetch album candidates from MusicBrainz release groups."""
+    headers = {
+        "User-Agent": "sptnr/2.0.0-alpha ( https://github.com/M0VENTURA/sptnr )"
+    }
+    query = f'releasegroup:"{album}" AND artist:"{artist}"'
+
+    search_resp = requests.get(
+        "https://musicbrainz.org/ws/2/release-group/",
+        params={"query": query, "fmt": "json", "limit": limit},
+        headers=headers,
+        timeout=10
+    )
+    search_resp.raise_for_status()
+
+    candidates = []
+    for rg in search_resp.json().get("release-groups", [])[:limit]:
+        rg_id = rg.get("id")
+        if not rg_id:
+            continue
+
+        title = rg.get("title") or ""
+        primary_type = rg.get("primary-type") or ""
+        first_release_date = rg.get("first-release-date") or ""
+        year = first_release_date[:4] if first_release_date else None
+        artist_credit = " ".join([(ac.get("name") or "") for ac in (rg.get("artist-credit") or [])]).strip() or artist
+
+        release_tracks = []
+        release_resp = requests.get(
+            f"https://musicbrainz.org/ws/2/release-group/{rg_id}/releases",
+            params={"fmt": "json", "limit": 1},
+            headers=headers,
+            timeout=10
+        )
+        if release_resp.ok:
+            releases = release_resp.json().get("releases", [])
+            if releases:
+                rel_id = releases[0].get("id")
+                if rel_id:
+                    track_resp = requests.get(
+                        f"https://musicbrainz.org/ws/2/release/{rel_id}",
+                        params={"fmt": "json", "inc": "recordings+artist-credits+labels"},
+                        headers=headers,
+                        timeout=10
+                    )
+                    if track_resp.ok:
+                        rel_json = track_resp.json()
+                        media = rel_json.get("media", [])
+                        for medium in media:
+                            for tr in medium.get("tracks", []):
+                                track_title = ((tr.get("recording") or {}).get("title") or tr.get("title") or "").strip()
+                                if track_title:
+                                    release_tracks.append(track_title)
+
+        candidates.append({
+            "release_group_id": rg_id,
+            "title": title,
+            "artist": artist_credit,
+            "primary_type": primary_type,
+            "year": year,
+            "track_titles": release_tracks,
+            "total_tracks": len(release_tracks),
+        })
+
+    return candidates
+
+
+def _score_album_candidates(artist, album, discovered_tracks, candidates):
+    """Score MusicBrainz candidates and determine exact/possible matches."""
+    discovered_titles = [t.get("title") or "" for t in discovered_tracks]
+    normalized_discovered = {_normalize_match_text(t) for t in discovered_titles if t}
+
+    scored = []
+    for cand in candidates:
+        cand_tracks = cand.get("track_titles") or []
+        normalized_cand_tracks = {_normalize_match_text(t) for t in cand_tracks if t}
+
+        title_similarity = _string_similarity(album, cand.get("title") or "")
+        artist_similarity = _string_similarity(artist, cand.get("artist") or "")
+
+        matched_tracks = len(normalized_discovered.intersection(normalized_cand_tracks)) if normalized_cand_tracks else 0
+        overlap = (matched_tracks / max(len(normalized_discovered), 1)) if normalized_discovered else 0.0
+        count_similarity = 1.0 if cand.get("total_tracks") == len(discovered_tracks) else max(
+            0.0,
+            1.0 - (abs((cand.get("total_tracks") or 0) - len(discovered_tracks)) / max(len(discovered_tracks), 1))
+        )
+
+        confidence = (title_similarity * 0.4) + (artist_similarity * 0.2) + (overlap * 0.3) + (count_similarity * 0.1)
+
+        is_exact = (
+            title_similarity >= 0.99 and
+            artist_similarity >= 0.95 and
+            overlap >= 0.99 and
+            (cand.get("total_tracks") or 0) == len(discovered_tracks)
+        )
+
+        scored.append({
+            **cand,
+            "matched_tracks": matched_tracks,
+            "discovered_tracks": len(discovered_tracks),
+            "title_similarity": round(title_similarity, 3),
+            "artist_similarity": round(artist_similarity, 3),
+            "track_overlap": round(overlap, 3),
+            "confidence": round(confidence, 3),
+            "is_exact": is_exact,
+        })
+
+    scored.sort(key=lambda x: x.get("confidence", 0), reverse=True)
+    exact_match = next((c for c in scored if c.get("is_exact")), None)
+    return exact_match, scored
+
+
+def _ensure_matching_columns(cursor):
+    """Ensure download_queue has columns required for manual matching workflow."""
+    cursor.execute("PRAGMA table_info(download_queue);")
+    columns = [row[1] for row in cursor.fetchall()]
+
+    required = {
+        "mb_match_status": "TEXT",
+        "mb_match_score": "REAL",
+        "mb_match_candidates": "TEXT",
+        "mb_release_group_id": "TEXT",
+        "mb_matched_title": "TEXT",
+        "mb_matched_artist": "TEXT",
+        "mb_matched_year": "TEXT",
+        "mb_last_match_at": "TEXT"
+    }
+
+    for col, col_type in required.items():
+        if col not in columns:
+            try:
+                cursor.execute(f"ALTER TABLE download_queue ADD COLUMN {col} {col_type};")
+            except Exception as e:
+                logger.warning(f"Could not add {col} column: {e}")
+
+
 def check_album_complete(album, artist):
     """
     Check if all tracks for an album are discovered and have metadata.
@@ -1226,7 +1392,7 @@ def check_album_complete(album, artist):
             SELECT * FROM download_queue 
             WHERE LOWER(album) = LOWER(?) 
             AND LOWER(artist) = LOWER(?)
-            AND status IN ('discovered', 'completed')
+            AND status IN ('discovered', 'completed', 'pending_match')
             AND file_path IS NOT NULL
             ORDER BY track_number ASC, title ASC
         """, (album, artist))
@@ -1272,180 +1438,252 @@ def check_album_complete(album, artist):
         }
 
 
+def _process_album_tracks_with_metadata(album, artist, tracks, matched_metadata=None):
+    """Process album tracks into /music with either matched or existing metadata."""
+    from post_download_processor import update_file_metadata, rename_and_move_file
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    album_artists = [t.get('album_artist') or t.get('artist') for t in tracks]
+    album_artist_counts = {}
+    for aa in album_artists:
+        if aa:
+            album_artist_counts[aa] = album_artist_counts.get(aa, 0) + 1
+
+    default_album_artist = max(album_artist_counts.items(), key=lambda x: x[1])[0] if album_artist_counts else artist
+    consistent_album_artist = (matched_metadata or {}).get("artist") or default_album_artist
+    consistent_album_title = (matched_metadata or {}).get("title") or album
+    consistent_year = (matched_metadata or {}).get("year")
+    release_group_id = (matched_metadata or {}).get("release_group_id")
+
+    success_count = 0
+    for track in tracks:
+        try:
+            file_path = track.get('file_path')
+            if not file_path or not os.path.exists(file_path):
+                logger.warning(f"File not found: {file_path}")
+                continue
+
+            metadata = {
+                'track_number': track.get('track_number'),
+                'disc_number': track.get('disc_number'),
+                'artist': track.get('artist'),
+                'album_artist': consistent_album_artist,
+                'album': consistent_album_title,
+                'year': consistent_year or track.get('year'),
+                'title': track.get('title')
+            }
+
+            update_file_metadata(file_path, metadata)
+            result = rename_and_move_file(file_path, metadata)
+
+            if result.get('success'):
+                cursor.execute(
+                    """
+                    UPDATE download_queue
+                    SET status = 'imported',
+                        album_artist = ?,
+                        album = ?,
+                        year = ?,
+                        release_id = COALESCE(?, release_id),
+                        release_source = COALESCE(?, release_source),
+                        imported_at = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (
+                        consistent_album_artist,
+                        consistent_album_title,
+                        metadata['year'],
+                        release_group_id,
+                        'musicbrainz' if release_group_id else None,
+                        track['id']
+                    )
+                )
+                success_count += 1
+            else:
+                logger.error(f"Failed to process {track.get('title')}: {result.get('error')}")
+        except Exception as track_error:
+            logger.error(f"Error processing track {track.get('title')}: {track_error}")
+
+    conn.commit()
+    conn.close()
+    return success_count
+
+
+def process_album_with_existing_metadata(album, artist):
+    """Manually process a pending-match album with existing file metadata."""
+    completion = check_album_complete(album, artist)
+    if not completion.get('is_complete'):
+        return {"success": False, "error": "Album is not complete yet"}
+
+    success_count = _process_album_tracks_with_metadata(album, artist, completion['tracks'])
+    return {
+        "success": success_count == len(completion['tracks']),
+        "processed": success_count,
+        "total": len(completion['tracks'])
+    }
+
+
+def apply_musicbrainz_match_and_process(album, artist, release_group_id):
+    """Apply selected MusicBrainz match and process the album."""
+    completion = check_album_complete(album, artist)
+    if not completion.get('is_complete'):
+        return {"success": False, "error": "Album is not complete yet"}
+
+    candidates = _fetch_musicbrainz_album_candidates(artist, album, limit=10)
+    selected = next((c for c in candidates if c.get("release_group_id") == release_group_id), None)
+    if not selected:
+        return {"success": False, "error": "Selected MusicBrainz candidate not found"}
+
+    success_count = _process_album_tracks_with_metadata(album, artist, completion['tracks'], matched_metadata=selected)
+    return {
+        "success": success_count == len(completion['tracks']),
+        "processed": success_count,
+        "total": len(completion['tracks']),
+        "selected_match": selected
+    }
+
+
 def process_complete_albums():
-    """
-    Check for complete discovered albums and either:
-    1. Auto-process them to /music if they don't exist in library
-    2. Mark as 'possible_duplicate' if they already exist
-    
-    This function should be called after auto_discover_and_queue_files()
-    or periodically to check for complete albums.
-    
-    Returns:
-        dict: Statistics about processed albums
-    """
+    """Process complete discovered albums, using MusicBrainz smart matching when possible."""
     stats = {
         'checked': 0,
         'processed': 0,
         'duplicates_found': 0,
+        'pending_review': 0,
+        'exact_matches': 0,
         'errors': []
     }
-    
+
     try:
         conn = get_db()
         cursor = conn.cursor()
-        
-        # Get all unique album/artist combinations from discovered tracks
-        cursor.execute("""
-            SELECT DISTINCT album, artist 
-            FROM download_queue 
-            WHERE status = 'discovered' 
-            AND album IS NOT NULL 
+        _ensure_matching_columns(cursor)
+        conn.commit()
+
+        cursor.execute(
+            """
+            SELECT DISTINCT album, artist
+            FROM download_queue
+            WHERE status IN ('discovered', 'pending_match')
+            AND album IS NOT NULL
             AND artist IS NOT NULL
             AND file_path IS NOT NULL
-        """)
-        
+            """
+        )
         albums = [dict(row) for row in cursor.fetchall()]
         conn.close()
-        
+
         logger.info(f"Checking {len(albums)} discovered albums for completeness")
-        
+
         for album_info in albums:
+            album = album_info['album']
+            artist = album_info['artist']
+            stats['checked'] += 1
+
             try:
-                album = album_info['album']
-                artist = album_info['artist']
-                
-                stats['checked'] += 1
-                
-                # Check if album is complete
                 completion = check_album_complete(album, artist)
-                
                 if not completion['is_complete']:
                     logger.debug(f"Album not complete: {artist} - {album} ({completion['discovered_tracks']} tracks)")
                     continue
-                
+
                 logger.info(f"Complete album found: {artist} - {album} ({completion['total_tracks']} tracks)")
-                
-                # Check if album already exists in library
-                exists_in_library = check_album_exists_in_library(album, artist)
-                
-                if exists_in_library:
-                    # Mark all tracks as possible_duplicate
+
+                if check_album_exists_in_library(album, artist):
                     conn = get_db()
                     cursor = conn.cursor()
-                    
                     for track in completion['tracks']:
-                        cursor.execute("""
-                            UPDATE download_queue 
+                        cursor.execute(
+                            """
+                            UPDATE download_queue
                             SET status = 'possible_duplicate',
                                 updated_at = CURRENT_TIMESTAMP
                             WHERE id = ?
-                        """, (track['id'],))
-                    
+                            """,
+                            (track['id'],)
+                        )
                     conn.commit()
                     conn.close()
-                    
                     stats['duplicates_found'] += 1
                     logger.warning(f"Album already exists in library (marked as possible_duplicate): {artist} - {album}")
-                    
+                    continue
+
+                # Smart-match album against MusicBrainz candidates.
+                exact_match = None
+                scored_candidates = []
+                try:
+                    candidates = _fetch_musicbrainz_album_candidates(artist, album, limit=8)
+                    exact_match, scored_candidates = _score_album_candidates(artist, album, completion['tracks'], candidates)
+                except Exception as match_error:
+                    logger.warning(f"MusicBrainz matching failed for {artist} - {album}: {match_error}")
+
+                if exact_match:
+                    success_count = _process_album_tracks_with_metadata(
+                        album,
+                        artist,
+                        completion['tracks'],
+                        matched_metadata=exact_match
+                    )
+                    if success_count == len(completion['tracks']):
+                        stats['processed'] += 1
+                        stats['exact_matches'] += 1
+                        logger.info(f"✓ Auto-processed exact MusicBrainz match: {artist} - {album}")
+                    else:
+                        logger.warning(f"Partially processed album: {artist} - {album} ({success_count}/{len(completion['tracks'])} tracks)")
                 else:
-                    # Auto-process tracks to /music
-                    logger.info(f"Auto-processing album to /music: {artist} - {album}")
-                    
-                    try:
-                        from post_download_processor import update_file_metadata, rename_and_move_file
-                        
-                        conn = get_db()
-                        cursor = conn.cursor()
-                        
-                        # Determine consistent album_artist for all tracks
-                        # Use the most common album_artist value, or fallback to artist
-                        album_artists = [t.get('album_artist') or t.get('artist') for t in completion['tracks']]
-                        album_artist_counts = {}
-                        for aa in album_artists:
-                            if aa:
-                                album_artist_counts[aa] = album_artist_counts.get(aa, 0) + 1
-                        
-                        # Get the most common album_artist
-                        consistent_album_artist = max(album_artist_counts.items(), key=lambda x: x[1])[0] if album_artist_counts else artist
-                        logger.info(f"Using consistent album_artist for all tracks: {consistent_album_artist}")
-                        
-                        success_count = 0
-                        for track in completion['tracks']:
-                            try:
-                                file_path = track['file_path']
-                                
-                                if not os.path.exists(file_path):
-                                    logger.warning(f"File not found: {file_path}")
-                                    continue
-                                
-                                # Prepare metadata with consistent album_artist
-                                metadata = {
-                                    'track_number': track.get('track_number'),
-                                    'disc_number': track.get('disc_number'),
-                                    'artist': track.get('artist'),
-                                    'album_artist': consistent_album_artist,
-                                    'album': track.get('album'),
-                                    'year': track.get('year'),
-                                    'title': track.get('title')
-                                }
-                                
-                                # Update file metadata tags
-                                update_file_metadata(file_path, metadata)
-                                
-                                # Rename and move file
-                                result = rename_and_move_file(file_path, metadata)
-                                
-                                if result.get('success'):
-                                    # Mark as completed
-                                    cursor.execute("""
-                                        UPDATE download_queue 
-                                        SET status = 'imported',
-                                            imported_at = CURRENT_TIMESTAMP,
-                                            updated_at = CURRENT_TIMESTAMP
-                                        WHERE id = ?
-                                    """, (track['id'],))
-                                    
-                                    success_count += 1
-                                    logger.info(f"✓ Processed: {track['artist']} - {track['title']}")
-                                else:
-                                    logger.error(f"Failed to process {track['title']}: {result.get('error')}")
-                                
-                            except Exception as track_error:
-                                logger.error(f"Error processing track {track['title']}: {track_error}")
-                        
-                        conn.commit()
-                        conn.close()
-                        
-                        if success_count == len(completion['tracks']):
-                            stats['processed'] += 1
-                            logger.info(f"✓ Successfully processed complete album: {artist} - {album} ({success_count} tracks)")
-                        else:
-                            logger.warning(f"Partially processed album: {artist} - {album} ({success_count}/{len(completion['tracks'])} tracks)")
-                        
-                    except Exception as process_error:
-                        error_msg = f"Error auto-processing album {artist} - {album}: {str(process_error)}"
-                        logger.error(error_msg)
-                        stats['errors'].append(error_msg)
-                
+                    conn = get_db()
+                    cursor = conn.cursor()
+                    _ensure_matching_columns(cursor)
+                    candidates_json = json.dumps(scored_candidates[:5]) if scored_candidates else "[]"
+                    best_score = scored_candidates[0].get('confidence') if scored_candidates else 0
+
+                    for track in completion['tracks']:
+                        cursor.execute(
+                            """
+                            UPDATE download_queue
+                            SET status = 'pending_match',
+                                mb_match_status = 'needs_review',
+                                mb_match_score = ?,
+                                mb_match_candidates = ?,
+                                mb_release_group_id = NULL,
+                                mb_matched_title = NULL,
+                                mb_matched_artist = NULL,
+                                mb_matched_year = NULL,
+                                mb_last_match_at = CURRENT_TIMESTAMP,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ?
+                            """,
+                            (best_score, candidates_json, track['id'])
+                        )
+
+                    conn.commit()
+                    conn.close()
+                    stats['pending_review'] += 1
+                    logger.info(f"Album queued for manual review: {artist} - {album} (no 100% MusicBrainz match)")
+
             except Exception as album_error:
-                error_msg = f"Error checking album {album_info.get('artist')} - {album_info.get('album')}: {str(album_error)}"
+                error_msg = f"Error checking album {artist} - {album}: {str(album_error)}"
                 logger.error(error_msg)
                 stats['errors'].append(error_msg)
-        
-        logger.info(f"Album processing complete: {stats['processed']} albums auto-processed, "
-                   f"{stats['duplicates_found']} marked as duplicates")
-        
-        # Trigger Navidrome library scan if albums were processed
+
+        logger.info(
+            f"Album processing complete: {stats['processed']} processed, "
+            f"{stats['exact_matches']} exact MB matches, "
+            f"{stats['pending_review']} pending manual review, "
+            f"{stats['duplicates_found']} duplicates"
+        )
+
         if stats['processed'] > 0:
             logger.info("Triggering Navidrome library scan for newly added albums...")
             try:
                 trigger_navidrome_scan()
             except Exception as scan_error:
                 logger.warning(f"Could not trigger Navidrome scan: {scan_error}")
-        
+
         return stats
-        
+
     except Exception as e:
         error_msg = f"Error in process_complete_albums: {str(e)}"
         logger.error(error_msg)

@@ -10557,8 +10557,9 @@ def api_downloads_process_albums():
             "success": True,
             "stats": stats,
             "message": f"Checked {stats['checked']} albums. "
-                      f"{stats['processed']} auto-processed, "
-                      f"{stats['duplicates_found']} duplicates found"
+                      f"{stats.get('processed', 0)} auto-processed, "
+                      f"{stats.get('pending_review', 0)} pending manual match review, "
+                      f"{stats.get('duplicates_found', 0)} duplicates found"
         })
     except Exception as e:
         print(f"[ERROR] Error processing albums: {e}")
@@ -10568,6 +10569,49 @@ def api_downloads_process_albums():
             "success": False,
             "error": str(e)
         }), 500
+
+
+@app.route("/api/downloads/albums/use-existing", methods=["POST"])
+def api_downloads_use_existing_metadata():
+    """Manually process a pending-match album using existing file metadata."""
+    try:
+        from download_queue_manager import process_album_with_existing_metadata
+
+        data = request.get_json() or {}
+        artist = (data.get("artist") or "").strip()
+        album = (data.get("album") or "").strip()
+
+        if not artist or not album:
+            return jsonify({"success": False, "error": "artist and album are required"}), 400
+
+        result = process_album_with_existing_metadata(album, artist)
+        status_code = 200 if result.get("success") else 400
+        return jsonify(result), status_code
+    except Exception as e:
+        logging.error(f"Error processing album with existing metadata: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/downloads/albums/apply-match", methods=["POST"])
+def api_downloads_apply_musicbrainz_match():
+    """Apply selected MusicBrainz candidate and process the album."""
+    try:
+        from download_queue_manager import apply_musicbrainz_match_and_process
+
+        data = request.get_json() or {}
+        artist = (data.get("artist") or "").strip()
+        album = (data.get("album") or "").strip()
+        release_group_id = (data.get("release_group_id") or "").strip()
+
+        if not artist or not album or not release_group_id:
+            return jsonify({"success": False, "error": "artist, album, and release_group_id are required"}), 400
+
+        result = apply_musicbrainz_match_and_process(album, artist, release_group_id)
+        status_code = 200 if result.get("success") else 400
+        return jsonify(result), status_code
+    except Exception as e:
+        logging.error(f"Error applying MusicBrainz match: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/api/downloads/process", methods=["POST"])

@@ -360,6 +360,7 @@ async function processAlbums() {
       const stats = data.stats;
       const message = `Checked ${stats.checked} albums. ` +
                      `${stats.processed} auto-processed to /music. ` +
+                     `${stats.pending_review || 0} pending MB match review. ` +
                      `${stats.duplicates_found} marked as duplicates (manual review required).`;
       
       document.getElementById('discoveryMessage').textContent = message;
@@ -373,8 +374,8 @@ async function processAlbums() {
         document.getElementById('discoveryResults').style.display = 'none';
       }, 10000);
       
-      if (stats.processed > 0 || stats.duplicates_found > 0) {
-        alert(`✅ Album processing complete!\n\n${stats.processed} albums auto-processed.\n${stats.duplicates_found} duplicates found (check queue for manual review).`);
+      if (stats.processed > 0 || stats.duplicates_found > 0 || (stats.pending_review || 0) > 0) {
+        alert(`✅ Album processing complete!\n\n${stats.processed} albums auto-processed.\n${stats.pending_review || 0} pending MusicBrainz review.\n${stats.duplicates_found} duplicates found (check queue for manual review).`);
       } else {
         alert('ℹ️ No complete albums found to process.');
       }
@@ -390,6 +391,60 @@ async function processAlbums() {
     button.disabled = false;
     button.innerHTML = '<i class="bi bi-collection"></i> Process Albums';
   }
+}
+
+async function useExistingMetadata(artist, album) {
+  if (!confirm(`Process ${artist} - ${album} using existing file metadata?`)) return;
+
+  try {
+    const response = await fetch('/api/downloads/albums/use-existing', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ artist, album })
+    });
+    const data = await response.json();
+
+    if (data.success) {
+      alert(`✅ Processed ${data.processed}/${data.total} tracks using existing metadata`);
+      await loadQueueStatus();
+    } else {
+      alert('❌ ' + (data.error || 'Could not process album'));
+    }
+  } catch (error) {
+    console.error('Error using existing metadata:', error);
+    alert('❌ Network error: ' + error.message);
+  }
+}
+
+async function applyMusicBrainzMatch(artist, album, releaseGroupId) {
+  if (!releaseGroupId) {
+    alert('Missing release group id for selected match');
+    return;
+  }
+
+  try {
+    const response = await fetch('/api/downloads/albums/apply-match', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ artist, album, release_group_id: releaseGroupId })
+    });
+    const data = await response.json();
+
+    if (data.success) {
+      alert(`✅ Applied MusicBrainz match and processed ${data.processed}/${data.total} tracks`);
+      await loadQueueStatus();
+    } else {
+      alert('❌ ' + (data.error || 'Could not apply selected match'));
+    }
+  } catch (error) {
+    console.error('Error applying MusicBrainz match:', error);
+    alert('❌ Network error: ' + error.message);
+  }
+}
+
+function searchOtherSources(artist, album) {
+  const query = encodeURIComponent(`${artist} ${album}`);
+  window.open(`/downloads/search/musicbrainz?q=${query}`, '_blank');
 }
 
 async function loadQueueStatus() {
@@ -408,7 +463,7 @@ async function loadQueueStatus() {
     const queue = data.queue;
     
     // Categorize items
-    const active = queue.filter(item => ['queued', 'searching', 'downloading', 'discovered', 'possible_duplicate'].includes(item.status));
+    const active = queue.filter(item => ['queued', 'searching', 'downloading', 'discovered', 'possible_duplicate', 'pending_match'].includes(item.status));
     const completed = queue.filter(item => item.status === 'completed');
     const failed = queue.filter(item => item.status === 'failed');
     
@@ -431,19 +486,21 @@ function renderActiveQueue(active) {
   const container = document.getElementById('activeQueueList');
   const empty = document.getElementById('activeQueueEmpty');
   const badge = document.getElementById('activeBadge');
-  
+
   if (active.length === 0) {
     container.style.display = 'none';
     empty.style.display = 'block';
     badge.style.display = 'none';
     return;
   }
-  
+
   container.style.display = 'block';
   empty.style.display = 'none';
   badge.textContent = active.length;
   badge.style.display = 'inline-block';
-  
+
+  const pendingRenderedAlbums = new Set();
+
   let html = '<div class="list-group list-group-flush">';
   for (const item of active) {
     const statusLabel = {
@@ -451,12 +508,55 @@ function renderActiveQueue(active) {
       'searching': '🔍 Searching',
       'downloading': '📥 Downloading',
       'discovered': '📁 Discovered',
-      'possible_duplicate': '⚠️ Possible Duplicate'
+      'possible_duplicate': '⚠️ Possible Duplicate',
+      'pending_match': '🧠 Match Review'
     }[item.status] || item.status;
-    
+
     const existsInLibrary = item.exists_in_library === 1;
     const isPossibleDuplicate = item.status === 'possible_duplicate';
-    
+    const isPendingMatch = item.status === 'pending_match';
+    const albumKey = `${item.artist || ''}|||${item.album || ''}`;
+
+    let candidateHtml = '';
+    if (isPendingMatch && !pendingRenderedAlbums.has(albumKey)) {
+      pendingRenderedAlbums.add(albumKey);
+
+      let candidates = [];
+      try {
+        const rawCandidates = item.mb_match_candidates || '[]';
+        candidates = typeof rawCandidates === 'string' ? JSON.parse(rawCandidates) : (rawCandidates || []);
+      } catch (e) {
+        candidates = [];
+      }
+
+      const candidateRows = candidates.slice(0, 3).map(c => `
+        <div class="d-flex justify-content-between align-items-center border rounded p-2 mb-2">
+          <div>
+            <div><strong>${escapeHtml(c.title || 'Unknown')}</strong> ${c.year ? `<span class="text-muted">(${escapeHtml(c.year)})</span>` : ''}</div>
+            <div class="small text-muted">${escapeHtml(c.artist || item.artist || '')} · overlap ${Math.round((c.track_overlap || 0) * 100)}% · confidence ${Math.round((c.confidence || 0) * 100)}%</div>
+          </div>
+          <button class="btn btn-sm btn-primary" onclick="applyMusicBrainzMatch('${escapeHtml(item.artist)}','${escapeHtml(item.album)}','${escapeHtml(c.release_group_id || '')}')">
+            Use Match
+          </button>
+        </div>
+      `).join('');
+
+      candidateHtml = `
+        <div class="mt-2 p-2 border rounded bg-light-subtle">
+          <div class="small fw-semibold mb-2">MusicBrainz could not find a 100% match automatically. Choose one:</div>
+          ${candidateRows || '<div class="small text-muted mb-2">No close MusicBrainz candidates found.</div>'}
+          <div class="d-flex gap-2 flex-wrap">
+            <button class="btn btn-sm btn-success" onclick="useExistingMetadata('${escapeHtml(item.artist)}','${escapeHtml(item.album)}')">
+              <i class="bi bi-file-earmark-music"></i> Use Existing File Metadata
+            </button>
+            <button class="btn btn-sm btn-outline-info" onclick="searchOtherSources('${escapeHtml(item.artist)}','${escapeHtml(item.album)}')">
+              <i class="bi bi-search"></i> Search Other Sources
+            </button>
+          </div>
+        </div>
+      `;
+    }
+
     html += `
       <div class="list-group-item ${existsInLibrary || isPossibleDuplicate ? 'bg-light' : ''}">
         <div class="d-flex justify-content-between align-items-start">
@@ -468,9 +568,10 @@ function renderActiveQueue(active) {
             </h6>
             <p class="text-muted small mb-2">${escapeHtml(item.artist)}${item.album ? ' · ' + escapeHtml(item.album) : ''}</p>
             ${isPossibleDuplicate ? '<p class="text-warning small mb-0"><i class="bi bi-info-circle"></i> This album already exists in your library. Manual review required.</p>' : ''}
+            ${candidateHtml}
           </div>
           <div class="d-flex gap-2 align-items-center">
-            <span class="badge ${item.status === 'downloading' ? 'bg-warning' : item.status === 'discovered' ? 'bg-info' : isPossibleDuplicate ? 'bg-warning' : 'bg-primary'}">${statusLabel}</span>
+            <span class="badge ${item.status === 'downloading' ? 'bg-warning' : item.status === 'discovered' ? 'bg-info' : isPossibleDuplicate ? 'bg-warning' : isPendingMatch ? 'bg-secondary' : 'bg-primary'}">${statusLabel}</span>
             <span class="badge bg-secondary">${item.source || 'unknown'}</span>
             <button class="btn btn-sm btn-outline-danger" onclick="deleteQueueItem(${item.id})" title="Remove from queue">
               <i class="bi bi-x"></i>
