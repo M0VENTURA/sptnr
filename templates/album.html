@@ -319,9 +319,9 @@
                             <div class="col-6">
                                 <label class="form-label fw-bold small">MusicBrainz</label>
                                 <div class="input-group input-group-sm">
-                                    <input type="text" class="form-control" id="musicbrainzReleaseId" value="{{ album_data.beets_album_mbid or '' }}" readonly style="font-size: 0.8rem;">
-                                    {% if album_data.beets_album_mbid %}
-                                    <a href="https://musicbrainz.org/release/{{ album_data.beets_album_mbid }}" target="_blank" class="btn btn-outline-secondary btn-sm" title="Open on MusicBrainz">
+                                    <input type="text" class="form-control" id="musicbrainzReleaseId" value="{{ album_data.musicbrainz_album_mbid or '' }}" readonly style="font-size: 0.8rem;">
+                                    {% if album_data.musicbrainz_album_mbid %}
+                                    <a href="https://musicbrainz.org/release/{{ album_data.musicbrainz_album_mbid }}" target="_blank" class="btn btn-outline-secondary btn-sm" title="Open on MusicBrainz">
                                         <i class="bi bi-box-arrow-up-right"></i>
                                     </a>
                                     {% endif %}
@@ -1902,9 +1902,9 @@
     function openEditAlbumIdsModal() {
         const artistName = "{{ artist_name|escapejs }}";
         const albumName = "{{ album_name|escapejs }}";
-        const spotifyId = document.getElementById('spotifyAlbumId').value;
-        const musicbrainzId = document.getElementById('musicbrainzReleaseId').value;
-        const discogsId = document.getElementById('discogsReleaseId').value;
+        const spotifyId = (document.getElementById('spotifyAlbumId') || {}).value || '';
+        const musicbrainzId = (document.getElementById('musicbrainzReleaseId') || {}).value || '';
+        const discogsId = (document.getElementById('discogsReleaseId') || {}).value || '';
         
         const modalHtml = `
             <div class="modal fade" id="editAlbumIdsModal" tabindex="-1">
@@ -1978,10 +1978,13 @@
         .then(r => r.json())
         .then(data => {
             if (data.success) {
-                // Update the readonly fields
-                document.getElementById('spotifyAlbumId').value = spotifyId;
-                document.getElementById('musicbrainzReleaseId').value = musicbrainzId;
-                document.getElementById('discogsReleaseId').value = discogsId;
+                // Update the readonly fields when present
+                const spotifyAlbumIdEl = document.getElementById('spotifyAlbumId');
+                const musicbrainzReleaseIdEl = document.getElementById('musicbrainzReleaseId');
+                const discogsReleaseIdEl = document.getElementById('discogsReleaseId');
+                if (spotifyAlbumIdEl) spotifyAlbumIdEl.value = spotifyId;
+                if (musicbrainzReleaseIdEl) musicbrainzReleaseIdEl.value = musicbrainzId;
+                if (discogsReleaseIdEl) discogsReleaseIdEl.value = discogsId;
                 
                 bootstrap.Modal.getInstance(document.getElementById('editAlbumIdsModal'))?.hide();
                 alert('✅ Album IDs updated successfully!');

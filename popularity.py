@@ -3689,7 +3689,7 @@ def popularity_scan(
                         cursor.execute("""
                             UPDATE tracks 
                             SET is_compilation = 1
-                            WHERE artist = ? AND album = ?
+                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ?
                         """, (artist, album))
                         conn.commit()
                         log_info(f'Marked album as compilation: "{artist} - {album}"')
@@ -3713,12 +3713,12 @@ def popularity_scan(
                 # Fetch and cache album art using fallback strategy for this album
                 album_art_url = None
                 if not singles_only:
-                    # Get Discogs token for fallback source
-                    discogs_token = config.get('discogs', {}).get('token') if config else None
+                    # Reuse the already-loaded/validated token and avoid shadowing it.
+                    album_art_discogs_token = discogs_token
                     
                     # Try to fetch and save album art using fallback chain
                     # (MusicBrainz -> AudioDB -> Discogs)
-                    if fetch_and_save_album_art_with_fallback(artist, album, conn, cursor, discogs_token):
+                    if fetch_and_save_album_art_with_fallback(artist, album, conn, cursor, album_art_discogs_token):
                         log_info(f'[ALBUM_ART] Album art successfully downloaded and saved for {artist} - {album}')
                     else:
                         log_debug(f'[ALBUM_ART] Failed to obtain album art from any source for {artist} - {album}')
@@ -5064,9 +5064,9 @@ def popularity_scan(
                     
                     log_debug(f"Single detection params - track: {title}, isrc: {track_isrc}, duration: {track_duration}, popularity: {track_popularity}, album_type: {track_album_type}")
                     
-                    # Use the centralized single detection function with advanced parameters
-                    # Use track's individual artist, falling back to album artist if missing
-                    track_artist = track.get("artist") or artist
+                    # Use canonical album grouping artist for single-detection context.
+                    # This prevents featured tracks from being treated as isolated 1-track artist catalogs.
+                    track_artist = artist
                     detection_result = detect_single_for_track(
                         title=title,
                         artist=track_artist,
@@ -5231,7 +5231,7 @@ def popularity_scan(
                             SELECT id, title, artist, writer, mbid 
                             FROM tracks 
                             WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ?
-                            ORDER BY position
+                            ORDER BY COALESCE(track_number, 0), title
                         """, (artist, album))
                         album_tracks_for_cover = [dict(row) for row in cursor.fetchall()]
                         
@@ -5268,8 +5268,8 @@ def popularity_scan(
                 
                 # Log summary of singles detection
                 high_conf_count = sum(1 for update in singles_updates if update[0] == 1)
-                log_info(f'Singles detection complete: {singles_detected} high-confidence single(s) detected for "{artist} - {album}" ({len(singles_updates)} tracks checked)')
-                log_debug(f'Singles detection summary - high_conf: {high_conf_count}, total_checked: {len(singles_updates)}')
+                log_info(f'Singles detection complete: {singles_detected} high-confidence single(s) detected for "{artist} - {album}" ({singles_processed} tracks processed)')
+                log_debug(f'Singles detection summary - high_conf: {high_conf_count}, total_processed: {singles_processed}, total_updated: {len(singles_updates)}')
 
                 # Auto-detect Greatest Hits: if every track on the album is now marked as a single,
                 # treat the album as a greatest hits collection for scan behavior.
@@ -5302,7 +5302,7 @@ def popularity_scan(
                     cursor.execute("""
                         SELECT id, title, popularity_score, single_confidence, single_sources, is_single
                         FROM tracks 
-                        WHERE artist = ? AND album = ?
+                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ?
                         ORDER BY popularity_score DESC
                     """, (artist, album))
                     
@@ -5407,19 +5407,10 @@ def popularity_scan(
                 # Get all tracks for this album with their popularity scores and single detection
                 # Try matching on artist field first, then fall back to album_artist field
                 cursor.execute(
-                    "SELECT id, title, popularity_score, is_single, single_confidence, single_sources, lastfm_track_playcount, is_standout_track FROM tracks WHERE artist = ? AND album = ? ORDER BY popularity_score DESC",
+                    "SELECT id, title, popularity_score, is_single, single_confidence, single_sources, lastfm_track_playcount, is_standout_track FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ? ORDER BY popularity_score DESC",
                     (artist, album)
                 )
                 album_tracks_with_scores = [dict(row) for row in cursor.fetchall()]
-                
-                # If no results from first query, fall back to matching on album_artist
-                if not album_tracks_with_scores:
-                    log_debug(f"No tracks found with artist field match for artist '{artist}', falling back to album_artist field match")
-                    cursor.execute(
-                        "SELECT id, title, popularity_score, is_single, single_confidence, single_sources, lastfm_track_playcount, is_standout_track FROM tracks WHERE album_artist = ? AND album = ? ORDER BY popularity_score DESC",
-                        (artist, album)
-                    )
-                    album_tracks_with_scores = [dict(row) for row in cursor.fetchall()]
                 
                 log_debug(f"Retrieved {len(album_tracks_with_scores)} tracks for star rating calculation")
                 
@@ -5829,24 +5820,11 @@ def popularity_scan(
                             """SELECT id, title, artist, stars, is_single, single_confidence, single_sources, 
                                       is_standout_track, artist_z_score
                             FROM tracks 
-                            WHERE artist = ? AND album = ? 
+                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ? 
                             ORDER BY stars DESC, popularity_score DESC""",
                             (artist, album)
                         )
                         final_tracks = cursor.fetchall()
-                        
-                        # If no results from first query, fall back to matching on album_artist
-                        if not final_tracks:
-                            log_debug(f"No tracks found matching by artist field for artist '{artist}', falling back to matching by album_artist field")
-                            cursor.execute(
-                                """SELECT id, title, artist, stars, is_single, single_confidence, single_sources, 
-                                          is_standout_track, artist_z_score
-                                FROM tracks 
-                                WHERE album_artist = ? AND album = ? 
-                                ORDER BY stars DESC, popularity_score DESC""",
-                                (artist, album)
-                            )
-                            final_tracks = cursor.fetchall()
                         
                         # Categorize tracks
                         detected_singles = []        # Detected as singles (has sources) with 5 stars
@@ -5954,7 +5932,9 @@ def popularity_scan(
                 # Update last_scanned timestamp for all tracks in this album
                 current_timestamp = datetime.now().isoformat()
                 cursor.execute(
-                    """UPDATE tracks SET last_scanned = ? WHERE artist = ? AND album = ?""",
+                    """UPDATE tracks 
+                    SET last_scanned = ? 
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ?""",
                     (current_timestamp, artist, album)
                 )
                 

@@ -3432,7 +3432,7 @@ def api_album_update_ids():
         
         if updates:
             params.extend([artist_name, album_name])
-            query = f"UPDATE tracks SET {', '.join(updates)} WHERE artist = ? AND album = ?"
+            query = f"UPDATE tracks SET {', '.join(updates)} WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ?"
             cursor.execute(query, params)
             conn.commit()
         
@@ -4890,7 +4890,7 @@ def album_detail(artist, album):
                     MAX(spotify_album_art_url) as spotify_album_art_url,
                     MAX(last_scanned) as last_scanned,
                     MAX(COALESCE(disc_number, 1)) as total_discs,
-                    MAX(beets_album_mbid) as beets_album_mbid,
+                    COALESCE(MAX(beets_album_mbid), MAX(musicbrainz_album_mbid)) as musicbrainz_album_mbid,
                     COALESCE(MAX(discogs_album_id), MAX(discogs_release_id)) as discogs_album_id,
                     MAX(spotify_album_id) as spotify_album_id,
                     MAX(spotify_artist_id) as spotify_artist_id,
@@ -4910,7 +4910,7 @@ def album_detail(artist, album):
                     MAX(spotify_album_art_url) as spotify_album_art_url,
                     MAX(last_scanned) as last_scanned,
                     MAX(COALESCE(disc_number, 1)) as total_discs,
-                    NULL as beets_album_mbid,
+                    NULL as musicbrainz_album_mbid,
                     NULL as discogs_album_id,
                     NULL as spotify_album_id,
                     NULL as spotify_artist_id,

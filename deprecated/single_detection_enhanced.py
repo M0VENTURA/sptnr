@@ -797,7 +797,7 @@ def calculate_album_stats(conn, artist: str, album: str) -> Tuple[float, float, 
     cursor.execute("""
         SELECT popularity_score
         FROM tracks
-        WHERE artist = ? AND album = ? AND popularity_score > 0
+        WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ? AND popularity_score > 0
     """, (artist, album))
     
     popularities = [row[0] for row in cursor.fetchall()]
@@ -919,7 +919,7 @@ def calculate_mean_version_count(conn, artist: str, album: str) -> float:
     cursor.execute("""
         SELECT spotify_version_count
         FROM tracks
-        WHERE artist = ? AND album = ? AND spotify_version_count IS NOT NULL
+        WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ? AND spotify_version_count IS NOT NULL
     """, (artist, album))
     
     version_counts = [row[0] for row in cursor.fetchall()]
@@ -1431,7 +1431,7 @@ def detect_single_enhanced(
     cursor.execute("""
         SELECT popularity_score
         FROM tracks
-        WHERE artist = ? AND album = ? AND popularity_score > 0
+        WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ? AND popularity_score > 0
         ORDER BY popularity_score DESC
     """, (artist, album))
     album_pops_rows = cursor.fetchall()
