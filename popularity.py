@@ -5618,14 +5618,14 @@ def popularity_scan(
                                     # Get all tracks with Last.fm playcount for this artist
                                     try:
                                         cursor = conn.cursor()
-                                                                                cursor.execute(
-                                                                                        """SELECT COALESCE(lastfm_track_playcount, 0) as playcount
-                                                                                             FROM tracks
-                                                                                             WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
-                                                                                                 AND lastfm_track_playcount > 0
-                                                                                             ORDER BY lastfm_track_playcount DESC""",
-                                                                                        (artist,)
-                                                                                )
+                                        cursor.execute(
+                                            """SELECT COALESCE(lastfm_track_playcount, 0) as playcount
+                                                 FROM tracks
+                                                 WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
+                                                     AND lastfm_track_playcount > 0
+                                                 ORDER BY lastfm_track_playcount DESC""",
+                                            (artist,)
+                                        )
                                         all_playcounts = [row[0] for row in cursor.fetchall() if row[0] > 0]
                                         
                                         if all_playcounts and track_lastfm_playcount > 0:
