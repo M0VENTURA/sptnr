@@ -3,6 +3,25 @@
 
 // ===== UTILITY FUNCTIONS =====
 
+/**
+ * Safely fetch and parse JSON, throwing an error if the HTTP status is not OK.
+ * This prevents "Unexpected token '<'" errors when the server returns HTML error pages.
+ */
+async function fetchJsonOrThrow(url, options = {}) {
+  const response = await fetch(url, options);
+  if (!response.ok) {
+    // Try to get error message from JSON response if available
+    try {
+      const errorData = await response.json();
+      throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`);
+    } catch (e) {
+      // If JSON parsing fails, throw a generic HTTP error
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+  }
+  return response.json();
+}
+
 function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
@@ -48,12 +67,11 @@ function performQbitSearch() {
   document.getElementById('qbitLoading').style.display = 'block';
   document.getElementById('qbitResults').innerHTML = '';
   
-  fetch('/api/qbittorrent/search', {
+  fetchJsonOrThrow('/api/qbittorrent/search', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ query: query })
   })
-  .then(response => response.json())
   .then(data => {
     document.getElementById('qbitLoading').style.display = 'none';
     
@@ -120,12 +138,11 @@ function performQbitSearch() {
 function addTorrent(url) {
   if (!url || !confirm('Add this torrent to qBittorrent?')) return;
   
-  fetch('/api/qbittorrent/add', {
+  fetchJsonOrThrow('/api/qbittorrent/add', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ url: url })
   })
-  .then(response => response.json())
   .then(data => {
     if (data.success) {
       alert('✓ Torrent added successfully!');
@@ -302,16 +319,10 @@ async function clearUpcomingReleases() {
   statusText.textContent = 'Clearing database...';
   
   try {
-    const response = await fetch('/api/upcoming-releases/clear', {
+    const data = await fetchJsonOrThrow('/api/upcoming-releases/clear', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' }
     });
-    
-    const data = await response.json();
-    
-    if (!response.ok) {
-      throw new Error(data.error || 'Failed to clear database');
-    }
     
     statusText.textContent = `✓ ${data.message}`;
     setTimeout(() => {
@@ -344,16 +355,10 @@ async function scrapeUpcomingReleases() {
   statusText.textContent = 'Scraping Wikipedia for upcoming releases...';
   
   try {
-    const response = await fetch('/api/upcoming-releases/scrape', {
+    const data = await fetchJsonOrThrow('/api/upcoming-releases/scrape', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' }
     });
-    
-    const data = await response.json();
-    
-    if (!response.ok) {
-      throw new Error(data.error || 'Failed to scrape releases');
-    }
     
     statusText.textContent = `✓ ${data.message}`;
     setTimeout(() => {
@@ -386,12 +391,7 @@ async function refreshUpcomingReleases() {
   `;
   
   try {
-    const response = await fetch(`/api/upcoming-releases?collection=${filterCollection}`);
-    const data = await response.json();
-    
-    if (!response.ok) {
-      throw new Error(data.error || 'Failed to load releases');
-    }
+    const data = await fetchJsonOrThrow(`/api/upcoming-releases?collection=${filterCollection}`);
     
     if (!data.releases || data.releases.length === 0) {
       container.innerHTML = `
