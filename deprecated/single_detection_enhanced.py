@@ -1489,57 +1489,11 @@ def detect_single_enhanced(
     spotify_version_count = count_spotify_versions(spotify_results or [], title, duration, isrc)
     result['spotify_version_count'] = spotify_version_count
     
-    # STAGE 1: Discogs Check (Primary Metadata Source) - ALWAYS CHECKED FIRST
-    # Discogs provides authoritative metadata about single releases, independent of popularity
-    # Check this BEFORE z-score filtering to ensure we don't miss confirmed singles
+    # STAGE 1: Initialize Discogs check (will be gated by z-score in STAGE 2+)
+    # Discogs check is now moved after z-score calculation to only check tracks with positive z-score
+    # This saves API quota and improves performance without missing confirmed singles
+    # (compilations/greatest hits with low z-scores are still checked)
     discogs_confirmed = False
-    if discogs_client and hasattr(discogs_client, 'enabled') and discogs_client.enabled:
-        try:
-            log_debug(f"[DISCOGS] Querying Discogs API for single: {title} by {artist}")
-            log_info(f"   Checking Discogs for single: {title}")
-            log_debug(f"   Discogs API: Searching for single '{title}' by '{artist}'")
-            
-            # Use existing is_single method
-            discogs_confirmed = discogs_client.is_single(title, artist, album_context={
-                'duration': duration,
-                'is_special_edition': is_special_edition,
-                'album_name': album
-            })
-            if discogs_confirmed:
-                result['single_sources'].append('discogs')
-                result['single_sources_used'].append('discogs')
-                log_debug(f"[DISCOGS] ✓ CONFIRMED as single")
-                log_info(f"   ✓ Discogs confirms single: {title}")
-                log_debug(f"   Discogs result: Single confirmed for '{title}'")
-                
-                # Check if HIGH confidence reached after this confirmation
-                if check_high_confidence_dynamic(
-                    discogs_confirmed, False, False, False, False, False,
-                    source_confidence_settings
-                ):
-                    # HIGH confidence achieved - can skip remaining sources
-                    log_debug(f"[DETECT] Stopping early with HIGH confidence from Discogs")
-                    result['single_status'] = 'high'
-                    result['single_confidence'] = 'high'
-                    result['is_single'] = True
-                    result['single_confidence_score'] = 1.0
-                    return result
-            else:
-                log_debug(f"[DISCOGS] ✗ NOT confirmed as single by Discogs")
-                log_info(f"   ⓘ Discogs does not confirm single: {title}")
-                log_debug(f"   Discogs result: No single found for '{title}'")
-        except Exception as e:
-            log_debug(f"[DISCOGS] ERROR during lookup: {type(e).__name__}: {str(e)}")
-            log_info(f"   ⚠ Discogs single check failed for {title}: {e}")
-            log_debug(f"   Discogs API error: {type(e).__name__}: {str(e)}")
-    else:
-        if verbose:
-            if not discogs_client:
-                log_debug(f"[DISCOGS] Client not available (module import failed)")
-                log_info(f"   ⓘ Discogs client not available")
-            elif not getattr(discogs_client, 'enabled', True):
-                log_debug(f"[DISCOGS] Client disabled in configuration")
-                log_info(f"   ⓘ Discogs client is disabled")
     
     # STAGE 2: Z-Score Filter (Efficiency Gate for remaining metadata checks)
     # Calculate z-scores using median+MAD to determine if track shows standout characteristics
@@ -1600,11 +1554,67 @@ def detect_single_enhanced(
             log_debug(f"Z-score filter: Skipping {title} (artist_z < 0 and album is not a compilation)")
         return result
     
-    log_debug(f"[ZSCORE] ✓ Track qualifies for metadata checks (album_z={album_z:.2f}, artist_z={artist_z:.2f}, discogs_confirmed={discogs_confirmed})")
+    log_debug(f"[ZSCORE] ✓ Track qualifies for metadata checks (album_z={album_z:.2f}, artist_z={artist_z:.2f})")
     if verbose:
         log_debug(f"Z-score filter: {title} qualifies for detailed single detection (z-threshold varies by score)")
     
     # STAGE 3: MusicBrainz (Secondary Source - checked before Spotify per new ordering)
+    # STAGE 2a: Discogs Check (NOW GATED BY Z-SCORE)
+    # Only check Discogs if track shows standout characteristics OR is a compilation
+    # This conserves API quota while still catching confirmed singles
+    discogs_confirmed = False
+    if artist_z > 0.0 or is_compilation:  # Apply z-score gate
+        if discogs_client and hasattr(discogs_client, 'enabled') and discogs_client.enabled:
+            try:
+                log_debug(f"[DISCOGS] Querying Discogs API for single: {title} by {artist} (z-score gate passed: artist_z={artist_z:.2f})")
+                log_info(f"   Checking Discogs for single: {title}")
+                log_debug(f"   Discogs API: Searching for single '{title}' by '{artist}'")
+                
+                # Use existing is_single method
+                discogs_confirmed = discogs_client.is_single(title, artist, album_context={
+                    'duration': duration,
+                    'is_special_edition': is_special_edition,
+                    'album_name': album
+                })
+                if discogs_confirmed:
+                    result['single_sources'].append('discogs')
+                    result['single_sources_used'].append('discogs')
+                    log_debug(f"[DISCOGS] ✓ CONFIRMED as single")
+                    log_info(f"   ✓ Discogs confirms single: {title}")
+                    log_debug(f"   Discogs result: Single confirmed for '{title}'")
+                    
+                    # Check if HIGH confidence reached after this confirmation
+                    if check_high_confidence_dynamic(
+                        discogs_confirmed, False, False, False, False, False,
+                        source_confidence_settings
+                    ):
+                        # HIGH confidence achieved - can skip remaining sources
+                        log_debug(f"[DETECT] Stopping early with HIGH confidence from Discogs")
+                        result['single_status'] = 'high'
+                        result['single_confidence'] = 'high'
+                        result['is_single'] = True
+                        result['single_confidence_score'] = 1.0
+                        return result
+                else:
+                    log_debug(f"[DISCOGS] ✗ NOT confirmed as single by Discogs")
+                    log_info(f"   ⓘ Discogs does not confirm single: {title}")
+                    log_debug(f"   Discogs result: No single found for '{title}'")
+            except Exception as e:
+                log_debug(f"[DISCOGS] ERROR during lookup: {type(e).__name__}: {str(e)}")
+                log_info(f"   ⚠ Discogs single check failed for {title}: {e}")
+                log_debug(f"   Discogs API error: {type(e).__name__}: {str(e)}")
+        else:
+            if verbose:
+                if not discogs_client:
+                    log_debug(f"[DISCOGS] Client not available (module import failed)")
+                    log_info(f"   ⓘ Discogs client not available")
+                elif not getattr(discogs_client, 'enabled', True):
+                    log_debug(f"[DISCOGS] Client disabled in configuration")
+                    log_info(f"   ⓘ Discogs client is disabled")
+    else:
+        log_debug(f"[DISCOGS] SKIPPED - Z-score too low (artist_z={artist_z:.2f}) and album is not a compilation")
+        log_info(f"   ⓘ Skipping Discogs check for {title}: z-score too low")
+    
     # Declare all source variables first
     musicbrainz_confirmed = False
     spotify_confirmed = False
