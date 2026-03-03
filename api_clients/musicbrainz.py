@@ -1121,19 +1121,19 @@ def get_album_type_with_fallback(artist: str, album: str, spotify_album_type: st
             primary_type = (rg.get("primary-type") or "").lower()
             secondary_types = [s.lower() for s in (rg.get("secondary-types") or [])]
             
-            # Check if it's a compilation (either primary or secondary type)
-            if primary_type == "compilation" or "compilation" in secondary_types:
-                logger.debug(f"MusicBrainz: Album '{album}' by '{artist}' detected as compilation")
+            # Check if primary type is compilation
+            if primary_type == "compilation":
+                logger.debug(f"MusicBrainz: Album '{album}' by '{artist}' detected as compilation (primary type)")
                 return ("compilation", "musicbrainz")
             
             # Combine primary type with secondary types for enhanced classification
             # Format: "primary (secondary)" for better readability
-            # Examples: "album (live)", "album (soundtrack)", "ep (compilation)"
+            # Examples: "album (live)", "album (soundtrack)", "album (compilation)", "ep (compilation)"
             album_type = primary_type
             if primary_type in ("album", "single", "ep"):
                 # Check for secondary type modifiers in priority order
                 displayable_secondary = None
-                for sec_type in ["live", "remix", "soundtrack", "spokenword", "demo", "dj-mix", "mixtape/street"]:
+                for sec_type in ["compilation", "live", "remix", "soundtrack", "spokenword", "demo", "dj-mix", "mixtape/street"]:
                     if sec_type in secondary_types:
                         displayable_secondary = sec_type
                         break

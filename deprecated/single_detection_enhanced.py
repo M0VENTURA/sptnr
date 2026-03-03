@@ -691,25 +691,24 @@ def is_compilation_album(album_type: Optional[str], album_title: str, track_coun
     """
     Detect if an album is a compilation or greatest hits album.
     
-    Per problem statement:
-    - If album_type == "compilation"
-    - OR album has more than 12 tracks
+    Compilation detection criteria:
+    - If album_type == "compilation" (from MusicBrainz/Spotify)
     - OR album title contains compilation keywords
     
+    Note: Track count is not used for compilation detection, as regular studio
+    albums can have >12 tracks. True compilations should be tagged as such in
+    metadata or have "greatest hits"/"best of" in the title.
+    
     Args:
-        album_type: Spotify album type (if available)
+        album_type: Spotify/MusicBrainz album type (if available)
         album_title: Album title
-        track_count: Number of tracks in the album
+        track_count: Number of tracks in the album (unused but kept for compatibility)
         
     Returns:
         True if album is a compilation
     """
     # Check album type
     if album_type and 'compilation' in album_type.lower():
-        return True
-    
-    # Check track count
-    if track_count > 12:
         return True
     
     # Check album title for keywords
@@ -1541,17 +1540,17 @@ def detect_single_enhanced(
     result['album_z_score'] = album_z
     result['artist_z_score'] = artist_z
     
-    # Z-Score Gate: Skip single detection if artist_z < 0, UNLESS it's a compilation/greatest hits
+    # Z-Score Gate: Skip single detection if artist_z < 0
     # NEW LOGIC:
-    # - z < 0: Skip detection (unless compilation)
+    # - z < 0: Skip detection
     # - z 0-1: Require 2 medium OR 1 high confidence sources
     # - z >= 1: Require 1 medium OR 1 high confidence source
     # - z > 2 with NO sources: Mark as "Popular" with 5★ rating (not as single)
-    if artist_z < 0.0 and not is_compilation:
-        log_debug(f"[ZSCORE] ✗ Artist z-score below 0 (artist_z={artist_z:.2f}, album_z={album_z:.2f}) and album is not a compilation")
-        log_info(f"   ⓘ Skipping single detection for {title}: z-score too low (not a compilation album)")
+    if artist_z < 0.0:
+        log_debug(f"[ZSCORE] ✗ Artist z-score below 0 (artist_z={artist_z:.2f}, album_z={album_z:.2f})")
+        log_info(f"   ⓘ Skipping single detection for {title}: z-score too low")
         if verbose:
-            log_debug(f"Z-score filter: Skipping {title} (artist_z < 0 and album is not a compilation)")
+            log_debug(f"Z-score filter: Skipping {title} (artist_z < 0)")
         return result
     
     log_debug(f"[ZSCORE] ✓ Track qualifies for metadata checks (album_z={album_z:.2f}, artist_z={artist_z:.2f})")
@@ -1560,10 +1559,10 @@ def detect_single_enhanced(
     
     # STAGE 3: MusicBrainz (Secondary Source - checked before Spotify per new ordering)
     # STAGE 2a: Discogs Check (NOW GATED BY Z-SCORE)
-    # Only check Discogs if track shows standout characteristics OR is a compilation
+    # Only check Discogs if track shows standout characteristics
     # This conserves API quota while still catching confirmed singles
     discogs_confirmed = False
-    if artist_z > 0.0 or is_compilation:  # Apply z-score gate
+    if artist_z > 0.0:  # Apply z-score gate
         if discogs_client and hasattr(discogs_client, 'enabled') and discogs_client.enabled:
             try:
                 log_debug(f"[DISCOGS] Querying Discogs API for single: {title} by {artist} (z-score gate passed: artist_z={artist_z:.2f})")
