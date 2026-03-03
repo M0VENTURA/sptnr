@@ -160,64 +160,6 @@
     </div>
   </div>
 
-  <!-- Genre Display and Management -->
-  <div class="mb-4" id="artist-genres-section">
-    <div class="card">
-      <div class="card-header d-flex justify-content-between align-items-center">
-        <h5 class="card-title mb-0">
-          <i class="bi bi-collection"></i> Genres
-        </h5>
-        <button class="btn btn-sm btn-outline-primary" onclick="fetchArtistGenreRecommendations()" id="fetchArtistGenresBtn">
-          <i class="bi bi-cloud-download"></i> Get Online Suggestions
-        </button>
-      </div>
-      <div class="card-body">
-        <!-- Genre Sources from External Databases (Dynamic) -->
-        <div class="mb-4">
-          <h6 class="mb-3"><i class="bi bi-database-fill"></i> Genre & Tag Sources</h6>
-          <div id="artistGenreSourcesContainer" class="text-muted small">
-            <p><i class="bi bi-info-circle"></i> Loading genres from sources...</p>
-          </div>
-        </div>
-        
-        <hr style="margin: 1.5rem 0; border-color: var(--border-color);">
-        
-        <!-- Current Genres from All Tracks -->
-        <div class="mb-3">
-          <h6 class="mb-2"><i class="bi bi-music-note-beamed"></i> Genres Across All Tracks</h6>
-          <p class="text-muted small mb-2">These are aggregated from all track metadata in your library for this artist. Click the × to remove incorrect genres.</p>
-          <div id="artistGenresContainer">
-            {% if genres %}
-            <div class="d-flex flex-wrap gap-2 mb-3" id="currentArtistGenres">
-              {% for genre in genres %}
-              <label class="badge bg-primary" style="font-size: 0.9rem; cursor: pointer; user-select: none; display: inline-flex; align-items: center; padding: 0.35rem 0.55rem;">
-                <input type="checkbox" value="{{ genre }}" style="margin-right: 0.5rem; cursor: pointer;" onchange="toggleGenreCheckbox('currentArtistGenres', 'removeSelectedArtistGenresBtn')">
-                {{ genre }}
-              </label>
-              {% endfor %}
-            </div>
-            <button class="btn btn-sm btn-warning" id="removeSelectedArtistGenresBtn" style="display: none; margin-bottom: 1rem;" onclick="removeSelectedArtistGenres()">
-              <i class="bi bi-trash"></i> Remove Selected Genres
-            </button>
-            {% else %}
-              <span class="text-muted small">No genres found in library</span>
-            {% endif %}
-          </div>
-        </div>
-        
-        <!-- Recommended Genres Section -->
-        <div id="recommendedArtistGenresSection" style="display: none;">
-          <h6 class="mb-2"><i class="bi bi-stars"></i> Suggested Genres from MusicBrainz</h6>
-          <p class="text-muted small mb-2">Click genres to select, then apply to all tracks by this artist</p>
-          <div class="d-flex flex-wrap gap-2 mb-3" id="recommendedArtistGenres">
-            <span class="text-muted small">Loading...</span>
-          </div>
-          <button class="btn btn-sm btn-success" onclick="applySelectedArtistGenres()" id="applyArtistGenresBtn" style="display: none;">
-            <i class="bi bi-check-circle"></i> Apply Selected to All Artist Tracks (MP3/FLAC Files)
-          </button>
-    </div>
-  </div>
-
   <!-- Statistics Cards -->
   <div class="row g-2 g-md-3 mb-4" id="artist-stats-section">
     <div class="col-6 col-md-3">
@@ -275,6 +217,64 @@
           <span class="visually-hidden">Loading similar artists...</span>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- Genre Display and Management -->
+  <div class="mb-4" id="artist-genres-section">
+    <div class="card">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="card-title mb-0">
+          <i class="bi bi-collection"></i> Genres
+        </h5>
+        <button class="btn btn-sm btn-outline-primary" onclick="fetchArtistGenreRecommendations()" id="fetchArtistGenresBtn">
+          <i class="bi bi-cloud-download"></i> Get Online Suggestions
+        </button>
+      </div>
+      <div class="card-body">
+        <!-- Genre Sources from External Databases (Dynamic) -->
+        <div class="mb-4">
+          <h6 class="mb-3"><i class="bi bi-database-fill"></i> Genre & Tag Sources</h6>
+          <div id="artistGenreSourcesContainer" class="text-muted small">
+            <p><i class="bi bi-info-circle"></i> Loading genres from sources...</p>
+          </div>
+        </div>
+        
+        <hr style="margin: 1.5rem 0; border-color: var(--border-color);">
+        
+        <!-- Current Genres from All Tracks -->
+        <div class="mb-3">
+          <h6 class="mb-2"><i class="bi bi-music-note-beamed"></i> Genres Across All Tracks</h6>
+          <p class="text-muted small mb-2">These are aggregated from all track metadata in your library for this artist. Click the × to remove incorrect genres.</p>
+          <div id="artistGenresContainer">
+            {% if genres %}
+            <div class="d-flex flex-wrap gap-2 mb-3" id="currentArtistGenres">
+              {% for genre in genres %}
+              <label class="badge bg-primary" style="font-size: 0.9rem; cursor: pointer; user-select: none; display: inline-flex; align-items: center; padding: 0.35rem 0.55rem;">
+                <input type="checkbox" value="{{ genre }}" style="margin-right: 0.5rem; cursor: pointer;" onchange="toggleGenreCheckbox('currentArtistGenres', 'removeSelectedArtistGenresBtn')">
+                {{ genre }}
+              </label>
+              {% endfor %}
+            </div>
+            <button class="btn btn-sm btn-warning" id="removeSelectedArtistGenresBtn" style="display: none; margin-bottom: 1rem;" onclick="removeSelectedArtistGenres()">
+              <i class="bi bi-trash"></i> Remove Selected Genres
+            </button>
+            {% else %}
+              <span class="text-muted small">No genres found in library</span>
+            {% endif %}
+          </div>
+        </div>
+        
+        <!-- Recommended Genres Section -->
+        <div id="recommendedArtistGenresSection" style="display: none;">
+          <h6 class="mb-2"><i class="bi bi-stars"></i> Suggested Genres from MusicBrainz</h6>
+          <p class="text-muted small mb-2">Click genres to select, then apply to all tracks by this artist</p>
+          <div class="d-flex flex-wrap gap-2 mb-3" id="recommendedArtistGenres">
+            <span class="text-muted small">Loading...</span>
+          </div>
+          <button class="btn btn-sm btn-success" onclick="applySelectedArtistGenres()" id="applyArtistGenresBtn" style="display: none;">
+            <i class="bi bi-check-circle"></i> Apply Selected to All Artist Tracks (MP3/FLAC Files)
+          </button>
     </div>
   </div>
 
@@ -3099,9 +3099,38 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
       return;
     }
     
-    // Create grid layout
-    let html = `
-      <div class="row g-3">
+    // Initialize with collapsed view
+    let isExpanded = false;
+    
+    // Minimized list view
+    const minimizedHtml = `
+      <div id="artistSimilarArtistsMinimized">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+          <strong>${uniqueArtists.length} similar artists</strong>
+          <button class="btn btn-sm btn-outline-primary" onclick="toggleSimilarArtistsExpand()">
+            <i class="bi bi-chevron-down"></i> Expand
+          </button>
+        </div>
+        <div class="d-flex flex-wrap gap-2">
+          ${uniqueArtists.map(a => `
+            <a href="javascript:void(0)" onclick="navigateToArtist('${escapeHtml(a.name)}', event)" class="badge bg-secondary text-decoration-none">
+              ${escapeHtml(a.name)}
+            </a>
+          `).join('')}
+        </div>
+      </div>
+    `;
+    
+    // Expanded grid view
+    let expandedHtml = `
+      <div id="artistSimilarArtistsExpanded" style="display: none;">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+          <strong>${uniqueArtists.length} similar artists</strong>
+          <button class="btn btn-sm btn-outline-primary" onclick="toggleSimilarArtistsExpand()">
+            <i class="bi bi-chevron-up"></i> Collapse
+          </button>
+        </div>
+        <div class="row g-3">
     `;
     
     uniqueArtists.forEach(artist => {
@@ -3111,9 +3140,9 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
         ? '<span class="badge bg-primary" title="From Last.fm">Last.fm</span>'
         : '<span class="badge bg-info" title="From ListenBrainz">ListenBrainz</span>';
       
-      html += `
+      expandedHtml += `
         <div class="col-6 col-md-4 col-lg-3">
-          <div class="card h-100 overflow-hidden transition-all" style="cursor: pointer; position: relative;">
+          <div class="card h-100 overflow-hidden" style="cursor: pointer; position: relative;">
             ${matchBadge}
             <!-- Artist Card Image/Avatar -->
             <div style="aspect-ratio: 1; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); display: flex; align-items: center; justify-content: center; position: relative;">
@@ -3149,11 +3178,32 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
       `;
     });
     
-    html += `
+    expandedHtml += `
+        </div>
       </div>
     `;
     
+    // Combine both views
+    const html = minimizedHtml + expandedHtml;
     container.innerHTML = html;
+    
+    // Store artist data for toggle function
+    window.artistSimilarArtistsData = uniqueArtists;
+  }
+  
+  function toggleSimilarArtistsExpand() {
+    const minimized = document.getElementById('artistSimilarArtistsMinimized');
+    const expanded = document.getElementById('artistSimilarArtistsExpanded');
+    
+    if (minimized && expanded) {
+      if (expanded.style.display === 'none') {
+        minimized.style.display = 'none';
+        expanded.style.display = 'block';
+      } else {
+        minimized.style.display = 'block';
+        expanded.style.display = 'none';
+      }
+    }
   }
 
   function showArtistSimilarArtistsError(message) {

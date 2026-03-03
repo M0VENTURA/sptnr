@@ -559,17 +559,27 @@ def sync_track_tags_to_file(track_id: str) -> bool:
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Get file path and all tags
-        cursor.execute("SELECT file_path FROM tracks WHERE id = ?", (track_id,))
+        # Get file path and all tags in one query
+        cursor.execute("""
+            SELECT id, title, album, artist, album_artist, albumartist, composer, 
+                   year, originalyear, track_number, disc_number, genres, 
+                   comment, mbid, file_path
+            FROM tracks 
+            WHERE id = ?
+        """, (track_id,))
         result = cursor.fetchone()
+        conn.close()
         
-        if not result or not result[0]:
-            logger.warning(f"No file path found for track {track_id}")
-            conn.close()
+        if not result:
+            logger.warning(f"Track not found: {track_id}")
             return False
         
-        file_path = result[0]
-        conn.close()
+        # Extract file path
+        file_path = result['file_path'] if isinstance(result, dict) else result[-1]
+        
+        if not file_path:
+            logger.warning(f"No file path found for track {track_id}")
+            return False
         
         # Handle relative paths from Navidrome - convert to absolute
         if file_path and not os.path.isabs(file_path):
@@ -579,14 +589,51 @@ def sync_track_tags_to_file(track_id: str) -> bool:
                 file_path = absolute_path
                 logger.debug(f"Converted relative path to absolute: {file_path}")
         
-        # Get tags
-        tags = get_track_tags(track_id)
+        # Check if file exists
+        if not os.path.exists(file_path):
+            logger.error(f"Audio file not found: {file_path}")
+            return False
+        
+        # Prepare tags from database
+        tags = {}
+        field_mapping = {
+            'title': 'title',
+            'artist': 'artist',
+            'album': 'album',
+            'album_artist': 'album_artist',
+            'albumartist': 'albumartist',
+            'composer': 'composer',
+            'year': 'year',
+            'originalyear': 'originalyear',
+            'track_number': 'track_number',
+            'disc_number': 'disc_number',
+            'genres': 'genres',
+            'comment': 'comment',
+            'mbid': 'mbid'
+        }
+        
+        # Extract values from result
+        for idx, field in enumerate(['id', 'title', 'album', 'artist', 'album_artist', 'albumartist', 
+                                      'composer', 'year', 'originalyear', 'track_number', 'disc_number', 
+                                      'genres', 'comment', 'mbid', 'file_path']):
+            if field in field_mapping and idx < len(result):
+                value = result[idx] if not isinstance(result, dict) else result[field]
+                if value is not None and str(value).strip():
+                    tags[field_mapping[field]] = value
+        
+        # If no tags were extracted, return False
         if not tags:
-            logger.warning(f"No tags found for track {track_id}")
+            logger.warning(f"No editable tags found for track {track_id}")
             return False
         
         # Write to file
-        return write_tags_to_file(file_path, tags)
+        success = write_tags_to_file(file_path, tags)
+        if success:
+            logger.info(f"Successfully synced tags to file: {file_path}")
+        else:
+            logger.error(f"Failed to write tags to file: {file_path}")
+        return success
+        
     except Exception as e:
         logger.error(f"Failed to sync tags for track {track_id}: {e}")
         return False

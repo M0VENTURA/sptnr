@@ -2060,6 +2060,19 @@ def artist_detail(name):
                 LIMIT 10
             """, (name,))
             top_tracks = cursor.fetchall()
+        
+        # Deduplicate top tracks by title (keep first occurrence)
+        if top_tracks:
+            seen_titles = set()
+            deduped_tracks = []
+            for track in top_tracks:
+                # Handle both dict and Row objects
+                title = track['title'] if isinstance(track, dict) else track.get('title', track[1])
+                title_lower = title.lower().strip()
+                if title_lower not in seen_titles:
+                    seen_titles.add(title_lower)
+                    deduped_tracks.append(track)
+            top_tracks = deduped_tracks
 
         # Albums where this artist appears as a featured/track artist but is not the album artist
         cursor.execute("""
