@@ -1957,43 +1957,51 @@ def detect_single_for_track(
                     }
             
             # STAGE 2: Artist-level filter (must be artist standout)
-            cursor.execute("""
-                SELECT popularity_score 
-                FROM tracks 
-                WHERE artist = ? AND popularity_score > 0
-            """, (artist,))
-            artist_popularities = [row[0] for row in cursor.fetchall()]
-            artist_passed = True
-            artist_zscore = 0.0
-            artist_mean = 0.0
+            # Skip this filter for compilations and greatest hits albums
+            is_compilation_or_greatest_hits = album_type in ["various_artists", "greatest_hits", "compilation"]
             
-            if len(artist_popularities) >= 5:
-                # Established artist: use artist-level z-score
-                from statistics import stdev as stat_stdev, mean as stat_mean
-                artist_mean = stat_mean(artist_popularities)
-                artist_stddev = stat_stdev(artist_popularities) if len(artist_popularities) > 1 else 1
-                artist_zscore = (popularity - artist_mean) / artist_stddev if artist_stddev > 0 else 0
+            if is_compilation_or_greatest_hits:
+                if verbose:
+                    log_verbose(f"   ⓘ Skipping artist z-score filter for compilation/greatest hits album")
+            else:
+                cursor.execute("""
+                    SELECT popularity_score 
+                    FROM tracks 
+                    WHERE artist = ? AND popularity_score > 0
+                """, (artist,))
+                artist_popularities = [row[0] for row in cursor.fetchall()]
+                artist_passed = True
+                artist_zscore = 0.0
+                artist_mean = 0.0
                 
-                artist_threshold = 0.5  # Configurable threshold
-                if artist_zscore < artist_threshold:
-                    if verbose:
-                        log_verbose(f"   ⊗ Artist filter blocked: {title} (z-score {artist_zscore:.2f} < {artist_threshold})")
-                    artist_passed = False
-            elif verbose:
-                log_verbose(f"   ⚠ Bootstrap: Artist has {len(artist_popularities)} tracks (< 5), skipping artist filter")
-            
-            if artist_popularities and not artist_passed:
-                conn.close()
-                return {
-                    "sources": [],
-                    "confidence": "low",
-                    "is_single": False,
-                    "stage_blocked": "artist_filter",
-                    "artist_zscore": artist_zscore
-                }
-            
-            if verbose and artist_zscore > 0:
-                log_verbose(f"   ✓ Passed both filters: {title} (album top 3/threshold, z-score {artist_zscore:.2f})")
+                if len(artist_popularities) >= 5:
+                    # Established artist: use artist-level z-score
+                    from statistics import stdev as stat_stdev, mean as stat_mean
+                    artist_mean = stat_mean(artist_popularities)
+                    artist_stddev = stat_stdev(artist_popularities) if len(artist_popularities) > 1 else 1
+                    artist_zscore = (popularity - artist_mean) / artist_stddev if artist_stddev > 0 else 0
+                    
+                    artist_threshold = 0.5  # Configurable threshold
+                    if artist_zscore < artist_threshold:
+                        if verbose:
+                            log_verbose(f"   ⊗ Artist filter blocked: {title} (z-score {artist_zscore:.2f} < {artist_threshold})")
+                        artist_passed = False
+                elif verbose:
+                    log_verbose(f"   ⚠ Bootstrap: Artist has {len(artist_popularities)} tracks (< 5), skipping artist filter")
+                
+                if artist_popularities and not artist_passed:
+                    conn.close()
+                    return {
+                        "sources": [],
+                        "confidence": "low",
+                        "is_single": False,
+                        "stage_blocked": "artist_filter",
+                        "artist_zscore": artist_zscore
+                    }
+                if verbose:
+                    artist_zscore_value = artist_zscore if 'artist_zscore' in locals() else 0.0
+                    if artist_zscore_value > 0:
+                        log_verbose(f"   ✓ Passed both filters: {title} (album top 3/threshold, z-score {artist_zscore_value:.2f})")
             
             conn.close()
         except Exception as e:
