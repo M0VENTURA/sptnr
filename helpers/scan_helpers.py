@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 from .db_utils import get_db_connection
 from colorama import Fore, Style
 from .logging_config import log_debug, log_info, log_unified
+from api_clients.navidrome import NavidromeClient
 
 try:
     from scan_history import log_album_scan
@@ -183,31 +184,9 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 if not track_id:
                     continue
 
-                # Normalize numeric fields from Navidrome payload
-                def _safe_int(val):
-                    try:
-                        return int(val)
-                    except (TypeError, ValueError):
-                        return None
-
-                raw_track = t.get("trackNumber") if "trackNumber" in t else t.get("track")
-                raw_disc = t.get("discNumber") if "discNumber" in t else t.get("disc")
-                
-                # Extract genre from Navidrome and use it as the initial genres value
-                navidrome_genre = t.get("genre", "")
-                navidrome_genre_list = [navidrome_genre] if navidrome_genre else []
-                
-                # Extract lyricists from Navidrome - store as JSON array for writer field
-                writers_list = []
-                lyricists = t.get("lyricists", [])
-                if lyricists and isinstance(lyricists, list):
-                    # If lyricists is a list of objects with 'name' field
-                    writers_list = [l.get("name", "").strip() if isinstance(l, dict) else str(l).strip() for l in lyricists if (l.get("name", "").strip() if isinstance(l, dict) else str(l).strip())]
-                elif isinstance(lyricists, str) and lyricists.strip():
-                    # If lyricists is a string, treat as single value
-                    writers_list = [lyricists.strip()]
-                
-                writer_json = json.dumps(writers_list) if writers_list else json.dumps([])
+                # Use NavidromeClient's extract_track_metadata to avoid duplication
+                navi_client = NavidromeClient(base_url="", username="", password="")  # URLs/auth not needed for extraction
+                extracted = navi_client.extract_track_metadata(t)
                 
                 # Extract track-level artist for featured artist detection
                 # Fallback to album artist if track artist not available
@@ -223,9 +202,9 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "lastfm_score": 0,
                     "listenbrainz_score": 0,
                     "age_score": 0,
-                    "genres": navidrome_genre if navidrome_genre else "",  # Initialize with Navidrome genre
-                    "navidrome_genres": navidrome_genre if navidrome_genre else "",  # Store as comma-separated string
-                    "navidrome_genre": navidrome_genre,  # Also store in single genre field
+                    "genres": extracted.get("navidrome_genres", "") or "",  # Initialize with Navidrome genre
+                    "navidrome_genres": extracted.get("navidrome_genres", "") or "",  # Store as comma-separated string
+                    "navidrome_genre": extracted.get("navidrome_genres", "").split("\\")[0] if extracted.get("navidrome_genres") else "",  # First genre only
                     "spotify_genres": json.dumps([]),  # Serialize as JSON string
                     "lastfm_tags": json.dumps([]),  # Serialize as JSON string
                     "discogs_genres": json.dumps([]),  # Serialize as JSON string
@@ -234,11 +213,11 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "spotify_album": "",
                     "spotify_artist": "",
                     "spotify_popularity": 0,
-                    "spotify_release_date": t.get("year", "") or "",
+                    "spotify_release_date": extracted.get("year", "") or "",
                     "spotify_album_art_url": "",
                     "lastfm_track_playcount": 0,
-                    # Extract file_path from Navidrome (available via track.get("path"))
-                    "file_path": t.get("path", ""),
+                    # Extract file_path from extracted metadata (populated by extract_track_metadata)
+                    "file_path": extracted.get("file_path", ""),
                     "last_scanned": _now_local_iso(),
                     "spotify_album_type": "",
                     "spotify_total_tracks": 0,
@@ -247,18 +226,18 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "is_single": False,
                     "single_confidence": "low",
                     "single_sources": json.dumps([]),  # Serialize as JSON string
-                    "mbid": t.get("mbid", "") or "",
+                    "mbid": extracted.get("mbid", "") or "",
                     "suggested_mbid": "",
                     "suggested_mbid_confidence": 0.0,
-                    "stars": int(t.get("userRating", 0) or 0),
-                    "duration": t.get("duration"),
-                    "track_number": _safe_int(raw_track),
-                    "disc_number": _safe_int(raw_disc),
-                    "year": t.get("year"),
-                    "writer": writer_json,  # JSON array of lyricists from Navidrome
+                    "stars": extracted.get("stars", 0),
+                    "duration": extracted.get("duration"),
+                    "track_number": extracted.get("track_number"),
+                    "disc_number": extracted.get("disc_number"),
+                    "year": extracted.get("year"),
+                    "writer": extracted.get("writer", "[]"),  # JSON array of lyricists from Navidrome
                     "album_artist": album_artist_value,
-                    "bitrate": t.get("bitRate"),
-                    "sample_rate": t.get("samplingRate"),
+                    "bitrate": extracted.get("bitrate"),
+                    "sample_rate": extracted.get("sample_rate"),
                     # Store album context for single detection
                     "album_context_live": 1 if album_context.get("is_live") else 0,
                     "album_context_unplugged": 1 if album_context.get("is_unplugged") else 0,
