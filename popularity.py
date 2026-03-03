@@ -3454,6 +3454,10 @@ def popularity_scan(
             for album, album_tracks in albums.items():
                 album_num += 1
                 album_scanned = 0  # Initialize before popularity section (may be skipped in singles_only)
+                # Defensive defaults so downstream singles-detection context always has album type values.
+                # This prevents NameError regressions if stale variable names are referenced.
+                album_type_from_field = 'album'
+                pre_detected_album_type = 'album'
                 
                 # Fetch and store album tags from Last.fm
                 try:
@@ -3552,6 +3556,7 @@ def popularity_scan(
                 
                 # Use the detected type for rest of scan
                 album_type_from_field = detected_album_type or current_album_type or 'album'
+                pre_detected_album_type = album_type_from_field
 
                 # Override misclassified EPs: if labeled as 'ep' but has >6 tracks, it's likely a full album
                 # MusicBrainz sometimes incorrectly classifies live albums or special releases as EPs
