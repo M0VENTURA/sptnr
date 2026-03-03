@@ -5522,6 +5522,9 @@ def popularity_scan(
                     log_debug(f"Band-based thresholds - median: {median_score}, jump_threshold: {jump_threshold}")
                     
                     star_distribution = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+                    # Keep the exact z-score used during this star pass for unified logging.
+                    # This avoids mixing artist-level z-scores with album-level z-scores in output.
+                    star_calc_zscores = {}
                     
                     # Batch updates for better performance
                     updates = []
@@ -5558,6 +5561,7 @@ def popularity_scan(
                             track_zscore = (popularity_score - popularity_median) / popularity_spread
                         else:
                             track_zscore = 0
+                        star_calc_zscores[track_id] = track_zscore
                         
                         log_debug(f"Track star rating calc - {title}: popularity={popularity_score}, zscore={track_zscore}, excluded={is_excluded_track}")
                         
@@ -5870,7 +5874,12 @@ def popularity_scan(
                             track_is_standout = track_row["is_standout_track"] if track_row["is_standout_track"] else 0
                             track_single_confidence = track_row["single_confidence"] if track_row["single_confidence"] else ""
                             track_sources_json = track_row["single_sources"] if track_row["single_sources"] else "[]"
-                            track_zscore = track_row["artist_z_score"] if track_row["artist_z_score"] else 0
+                            # Use the same album-level z-score computed in the star rating pass.
+                            # Fallback to artist_z_score only if the map is missing an entry.
+                            track_zscore = star_calc_zscores.get(
+                                track_id,
+                                track_row["artist_z_score"] if track_row["artist_z_score"] else 0
+                            )
                             
                             # Parse single sources
                             try:
@@ -5900,7 +5909,7 @@ def popularity_scan(
                             if sources_str:
                                 reason_parts.append(sources_str)
                             if track_zscore:
-                                reason_parts.append(f"z-score: {track_zscore:.2f}")
+                                reason_parts.append(f"album-z-score: {track_zscore:.2f}")
                             
                             reason_str = " (" + "; ".join(reason_parts) + ")" if reason_parts else ""
                             
