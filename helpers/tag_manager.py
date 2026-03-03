@@ -19,7 +19,7 @@ from pathlib import Path
 # Metadata reading library (supports multiple formats)
 try:
     from mutagen.mp3 import MP3
-    from mutagen.id3 import ID3, TIT2, TPE1, TALB, TCON, TRCK, TDRC, COMM, APIC
+    from mutagen.id3 import ID3, TIT2, TPE1, TALB, TPE2, TCON, TRCK, TPOS, TDRC, TCOM, COMM, TXXX, APIC
     _MUTAGEN_AVAILABLE = True
 except ImportError:
     _MUTAGEN_AVAILABLE = False
@@ -424,31 +424,59 @@ def _write_id3_tags(file_path: str, tags: Dict[str, Any]) -> bool:
     
     try:
         audio = MP3(file_path, ID3=ID3)  # type: ignore[name-defined]
-        
-        # Map our field names to ID3 frame names
-        id3_mapping = {
-            "title": "TIT2",
-            "artist": "TPE1",
-            "album": "TALB",
-            "track_number": "TRCK",
-            "year": "TDRC",
-            "genre": "TCON",
-        }
-        
+        if audio.tags is None:
+            audio.add_tags()
+
+        def _set_text_frame(frame_id: str, frame_cls, value: Any):
+            if value is None or value == "":
+                audio.tags.delall(frame_id)
+                return
+            text = str(value)
+            audio.tags.delall(frame_id)
+            audio.tags.add(frame_cls(encoding=3, text=[text]))
+
         for field, value in tags.items():
-            if field not in id3_mapping:
+            if field == "title":
+                _set_text_frame("TIT2", TIT2, value)
+            elif field == "artist":
+                _set_text_frame("TPE1", TPE1, value)
+            elif field == "album":
+                _set_text_frame("TALB", TALB, value)
+            elif field == "album_artist":
+                _set_text_frame("TPE2", TPE2, value)
+            elif field == "composer":
+                _set_text_frame("TCOM", TCOM, value)
+            elif field == "track_number":
+                _set_text_frame("TRCK", TRCK, value)
+            elif field == "disc_number":
+                _set_text_frame("TPOS", TPOS, value)
+            elif field in ("year", "date"):
+                _set_text_frame("TDRC", TDRC, value)
+            elif field in ("genre", "genres"):
+                if value is None or value == "":
+                    audio.tags.delall("TCON")
+                else:
+                    if isinstance(value, list):
+                        genre_values = [str(v).strip() for v in value if str(v).strip()]
+                    else:
+                        import re
+                        genre_values = [g.strip() for g in re.split(r'[\\,;/]+', str(value)) if g.strip()]
+                    audio.tags.delall("TCON")
+                    if genre_values:
+                        audio.tags.add(TCON(encoding=3, text=genre_values))
+            elif field == "comment":
+                audio.tags.delall("COMM")
+                if value is not None and str(value).strip():
+                    audio.tags.add(COMM(encoding=3, lang="eng", desc="", text=[str(value)]))
+            elif field == "mbid":
+                frame_key = "TXXX:MUSICBRAINZ TRACK ID"
+                audio.tags.delall(frame_key)
+                if value is not None and str(value).strip():
+                    audio.tags.add(TXXX(encoding=3, desc="MUSICBRAINZ TRACK ID", text=[str(value)]))
+            else:
                 logger.debug(f"Skipping unmapped field for ID3: {field}")
-                continue
-            
-            if value is None:
-                continue
-            
-            frame_name = id3_mapping[field]
-            # ID3 tag writing would go here
-            logger.debug(f"Would write ID3 frame {frame_name} = {value}")
-        
-        # Save changes
-        audio.save()
+
+        audio.save(v2_version=3)
         logger.info(f"Wrote ID3 tags to {file_path}")
         return True
     except Exception as e:
@@ -465,18 +493,47 @@ def _write_flac_tags(file_path: str, tags: Dict[str, Any]) -> bool:
     try:
         audio = FLAC(file_path)  # type: ignore[name-defined]
         
-        # FLAC uses Vorbis comments - direct mapping
+        # FLAC uses Vorbis comments; map common DB field names to canonical Vorbis keys.
+        flac_field_map = {
+            "title": "title",
+            "artist": "artist",
+            "album": "album",
+            "album_artist": "albumartist",
+            "composer": "composer",
+            "track_number": "tracknumber",
+            "disc_number": "discnumber",
+            "year": "date",
+            "date": "date",
+            "genre": "genre",
+            "genres": "genre",
+            "comment": "comment",
+            "mbid": "musicbrainz_trackid",
+        }
+
         for field, value in tags.items():
-            if value is None:
-                if field in audio:
-                    del audio[field]
+            target_field = flac_field_map.get(field)
+            if not target_field:
+                logger.debug(f"Skipping unmapped field for FLAC: {field}")
                 continue
-            
-            # Convert arrays to strings
-            if isinstance(value, list):
-                audio[field] = [str(v) for v in value]
+
+            if value is None:
+                if target_field in audio:
+                    del audio[target_field]
+                continue
+
+            # Genres can be multi-valued in FLAC.
+            if target_field == "genre":
+                if isinstance(value, list):
+                    genre_values = [str(v).strip() for v in value if str(v).strip()]
+                else:
+                    import re
+                    genre_values = [g.strip() for g in re.split(r'[\\,;/]+', str(value)) if g.strip()]
+                if genre_values:
+                    audio[target_field] = genre_values
+                elif target_field in audio:
+                    del audio[target_field]
             else:
-                audio[field] = str(value)
+                audio[target_field] = [str(value)]
         
         audio.save()
         logger.info(f"Wrote FLAC tags to {file_path}")

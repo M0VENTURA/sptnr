@@ -2741,7 +2741,8 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
     
     const payload = {
       track_id: trackId,
-      [field]: value
+      [field]: value,
+      sync_to_file: true
     };
     
     fetch('/api/track/update-metadata', {
@@ -3234,7 +3235,8 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
       track_number: document.getElementById('editArtistTrackTrackNumberField').value.trim() || null,
       disc_number: document.getElementById('editArtistTrackDiscNumberField').value.trim() || null,
       mbid: document.getElementById('editArtistTrackMBIDField').value.trim() || null,
-      comment: document.getElementById('editArtistTrackCommentField').value.trim() || null
+      comment: document.getElementById('editArtistTrackCommentField').value.trim() || null,
+      sync_to_file: true
     };
     
     // Validate required fields

@@ -14667,9 +14667,11 @@ def api_track_update_metadata():
         "mbid": "(optional)"
     }
     """
+    conn = None
     try:
         data = request.get_json() or {}
         track_id = data.get("track_id", "").strip()
+        sync_to_file = data.get("sync_to_file", True)
         
         if not track_id:
             return jsonify({"error": "track_id required"}), 400
@@ -14718,39 +14720,22 @@ def api_track_update_metadata():
         cursor.execute(f"UPDATE tracks SET {set_clause} WHERE id = ?", values)
         conn.commit()
         
-        # Build changes dict for file tags (only basic fields supported by tags)
-        changes = {}
-        if 'title' in db_updates:
-            changes['title'] = db_updates['title']
-        if 'artist' in db_updates:
-            changes['artist'] = db_updates['artist']
-        if 'album' in db_updates:
-            changes['album'] = db_updates['album']
-        if 'genres' in db_updates:
-            changes['genres'] = db_updates['genres']
-        if 'year' in db_updates:
-            changes['year'] = db_updates['year']
-        if 'album_artist' in db_updates:
-            changes['album_artist'] = db_updates['album_artist']
-        if 'composer' in db_updates:
-            changes['composer'] = db_updates['composer']
-        if 'track_number' in db_updates:
-            changes['track_number'] = db_updates['track_number']
-        if 'disc_number' in db_updates:
-            changes['disc_number'] = db_updates['disc_number']
-        if 'comment' in db_updates:
-            changes['comment'] = db_updates['comment']
-        if 'mbid' in db_updates:
-            changes['mbid'] = db_updates['mbid']
-        
-        # Database update complete
-        file_update_result = None
-        
         conn.close()
+        conn = None
+
+        # Sync tags back to file by default for album/artist/track editing flows.
+        file_synced = False
+        if sync_to_file:
+            try:
+                from helpers.tag_manager import sync_track_tags_to_file
+                file_synced = sync_track_tags_to_file(track_id)
+            except Exception as sync_error:
+                logging.warning(f"Track metadata DB update succeeded but file sync failed for {track_id}: {sync_error}")
         
         return jsonify({
             "success": True,
             "track_id": track_id,
+            "file_synced": file_synced,
             "changes": db_updates,
             "message": "Track metadata updated successfully"
         }), 200
@@ -14758,6 +14743,12 @@ def api_track_update_metadata():
     except Exception as e:
         logging.error(f"Error updating track metadata: {e}")
         return jsonify({"error": str(e)}), 500
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 @app.route("/api/navidrome/scan/start", methods=["POST"])
 def api_start_navidrome_scan():
