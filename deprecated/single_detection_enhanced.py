@@ -705,7 +705,7 @@ def is_compilation_album(album_type: Optional[str], album_title: str, track_coun
         True if album is a compilation
     """
     # Check album type
-    if album_type and album_type.lower() == "compilation":
+    if album_type and 'compilation' in album_type.lower():
         return True
     
     # Check track count

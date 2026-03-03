@@ -282,6 +282,7 @@ class NavidromeClient:
             "track_number": _safe_int(raw_track),
             "disc_number": _safe_int(raw_disc),
             "year": track.get("year"),
+            "artist": track.get("artist", ""),  # Track-level artist (for featured artists)
             "album_artist": track.get("albumArtist", ""),
             "bitrate": track.get("bitRate"),  # kbps
             "sample_rate": track.get("samplingRate"),  # Hz

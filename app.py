@@ -2100,7 +2100,7 @@ def artist_detail(name):
                 albums_by_category["compilation"].append(album_dict)
                 categorized_albums.add(album_name)
             # Categorize based on spotify_album_type and track count
-            elif album_type == "compilation":
+            elif album_type and 'compilation' in album_type.lower():
                 albums_by_category["compilation"].append(album_dict)
                 categorized_albums.add(album_name)
             elif album_type == "album" or (not album_type and track_count > 6):

@@ -1084,23 +1084,28 @@ def get_album_type_with_fallback(artist: str, album: str, spotify_album_type: st
             # Check if it's a compilation (either primary or secondary type)
             if primary_type == "compilation" or "compilation" in secondary_types:
                 logger.debug(f"MusicBrainz: Album '{album}' by '{artist}' detected as compilation")
-                return ("compilation", "musicbrainz")
+               return ("compilation", "musicbrainz")
             
             # Combine primary type with secondary types for enhanced classification
-            # Priority order: Live > Remix > Soundtrack > Spokenword
+            # Format: "primary (secondary)" for better readability
+            # Examples: "album (live)", "album (soundtrack)", "ep (compilation)"
             album_type = primary_type
             if primary_type in ("album", "single", "ep"):
-                # Check for secondary type modifiers
-                if "live" in secondary_types:
-                    album_type = f"{primary_type}+live"
-                elif "remix" in secondary_types:
-                    album_type = f"{primary_type}+remix"
-                elif "soundtrack" in secondary_types:
-                    album_type = f"{primary_type}+soundtrack"
-                elif "spokenword" in secondary_types:
-                    album_type = f"{primary_type}+spokenword"
-                elif "compilation" in secondary_types:
-                    album_type = f"{primary_type}+compilation"
+                # Check for secondary type modifiers in priority order
+                displayable_secondary = None
+                for sec_type in ["live", "remix", "soundtrack", "spokenword", "demo", "dj-mix", "mixtape/street"]:
+                    if sec_type in secondary_types:
+                        displayable_secondary = sec_type
+                        break
+                
+                if displayable_secondary:
+                    # Normalize for display
+                    if displayable_secondary == "spokenword":
+                        displayable_secondary = "spoken word"
+                    elif displayable_secondary == "dj-mix":
+                        displayable_secondary = "dj mix"
+                    
+                    album_type = f"{primary_type} ({displayable_secondary})"
                 
                 logger.debug(f"MusicBrainz: Album '{album}' by '{artist}' type={album_type} (primary={primary_type}, secondary={secondary_types})")
                 return (album_type, "musicbrainz")

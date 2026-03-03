@@ -197,11 +197,15 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 navidrome_genre = t.get("genre", "")
                 navidrome_genre_list = [navidrome_genre] if navidrome_genre else []
                 
+                # Extract track-level artist for featured artist detection
+                # Fallback to album artist if track artist not available
+                track_artist = t.get("artist", "") or artist_name
+                
                 td = {
                     "id": track_id,
                     "title": t.get("title", ""),
                     "album": album_name,
-                    "artist": artist_name,
+                    "artist": track_artist,
                     "score": 0.0,
                     "spotify_score": 0,
                     "lastfm_score": 0,

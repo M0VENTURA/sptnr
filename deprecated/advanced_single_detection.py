@@ -397,7 +397,7 @@ def is_compilation_album(album_type: Optional[str], album: str) -> bool:
     Returns:
         True if album is a compilation or greatest hits
     """
-    if album_type and album_type.lower() == 'compilation':
+    if album_type and 'compilation' in album_type.lower():
         return True
     
     album_lower = album.lower()
