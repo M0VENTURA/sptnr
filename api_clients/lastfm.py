@@ -341,21 +341,38 @@ class LastFmClient:
         
         # Note: requests library automatically handles URL encoding of params dict
         # Special characters like '+' in artist names (e.g., "+44") are properly encoded
+        # autocorrect=1 enables Last.fm's spelling correction for artist/track names
         params = {
             "method": "track.getInfo",
             "artist": artist,
             "track": title,
             "api_key": self.api_key,
-            "format": "json"
+            "format": "json",
+            "autocorrect": 1  # Enable Last.fm's autocorrect for better matching
         }
         
         try:
             res = self.session.get(self.base_url, params=params, timeout=(5, 10))  # (connect_timeout, read_timeout)
             res.raise_for_status()
-            data = res.json().get("track", {})
+            response_data = res.json()
+            
+            # Check for Last.fm API error responses
+            if "error" in response_data:
+                error_code = response_data.get("error")
+                error_msg = response_data.get("message", "Unknown error")
+                logger.warning(f"Last.fm API error {error_code} for '{title}' by '{artist}': {error_msg}")
+                logger.debug(f"Full API response: {response_data}")
+                return {"track_play": 0, "listeners": 0, "toptags": {}}
+            
+            data = response_data.get("track", {})
             track_play = int(data.get("playcount", 0))
             listeners = int(data.get("listeners", 0))
             toptags = data.get("toptags", {})
+            
+            # Debug log when we get 0 values despite a successful API call
+            if track_play == 0 and listeners == 0:
+                logger.debug(f"Last.fm returned 0 values for '{title}' by '{artist}'. Response: {data}")
+            
             return {
                 "track_play": track_play,
                 "listeners": listeners,
