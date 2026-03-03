@@ -449,7 +449,6 @@
                         <th class="text-center" style="width: 5rem;" title="Track Duration">Duration</th>
                         <th class="text-center" style="width: 4rem;" title="Star Rating">Rating</th>
                         <th class="text-center d-none d-lg-table-cell" title="Is this a single?">Single</th>
-                        <th class="text-center d-none d-lg-table-cell" title="Single Detection Confidence">Confidence</th>
                         <th class="d-none d-lg-table-cell" title="Album genres matching this track">Genres</th>
                         <th class="text-center" style="width: 3rem;">Actions</th>
                     </tr>
@@ -459,8 +458,8 @@
                         <!-- Multi-disc album view -->
                         {% for disc_num in tracks_by_disc|dictsort %}
                             <tr class="table-secondary">
-                                <!-- Colspan = 10 columns: Checkbox, #, Title, Artist, Duration, Rating, Single, Confidence, Genres, Actions -->
-                                <td colspan="10" style="padding: 0.75rem 0.5rem;">
+                                <!-- Colspan = 9 columns: Checkbox, #, Title, Artist, Duration, Rating, Single, Genres, Actions -->
+                                <td colspan="9" style="padding: 0.75rem 0.5rem;">
                                     <strong style="font-size: 1.1rem;">
                                         <i class="bi bi-disc"></i> Disc {{ disc_num[0] or 1 }}
                                     </strong>
@@ -522,17 +521,10 @@
                                 <td class="d-none d-lg-table-cell text-center">
                                     {% if track.is_single == 1 and track.single_confidence == 'high' %}
                                         <span class="badge bg-info">Single</span>
+                                    {% elif track.stars == 5 and (track.is_single == 0 or track.single_confidence != 'high') %}
+                                        <span class="badge bg-success">Popular</span>
                                     {% else %}
                                         <span class="text-muted">—</span>
-                                    {% endif %}
-                                </td>
-                                <td class="d-none d-lg-table-cell text-center">
-                                    {% if track.single_confidence %}
-                                    <span class="badge bg-secondary" style="font-size: 0.75rem;">
-                                        {{ track.single_confidence }}
-                                    </span>
-                                    {% else %}
-                                    <span class="text-muted">—</span>
                                     {% endif %}
                                 </td>
                                 <td class="d-none d-lg-table-cell">
@@ -634,15 +626,8 @@
                             <td class="d-none d-lg-table-cell text-center">
                                 {% if track.is_single == 1 and track.single_confidence == 'high' %}
                                     <span class="badge bg-info">Single</span>
-                                {% else %}
-                                    <span class="text-muted">—</span>
-                                {% endif %}
-                            </td>
-                            <td class="d-none d-lg-table-cell text-center">
-                                {% if track.single_confidence %}
-                                    <span class="badge bg-secondary" style="font-size: 0.75rem;">
-                                        {{ track.single_confidence }}
-                                    </span>
+                                {% elif track.stars == 5 and (track.is_single == 0 or track.single_confidence != 'high') %}
+                                    <span class="badge bg-success">Popular</span>
                                 {% else %}
                                     <span class="text-muted">—</span>
                                 {% endif %}

@@ -4108,6 +4108,12 @@ def popularity_scan(
                         title = track["title"]
                         track_artist = track["artist"]
                         
+                        # Skip popularity scoring for tracks already detected as singles
+                        # Singles have their own prominence rating, no need for popularity scoring
+                        if row_get(track, 'is_single', 0):
+                            log_debug(f'Skipping popularity scoring for single: "{title}" (already marked as is_single=1)')
+                            continue
+                        
                         # Detect cover songs and normalize title for API lookups
                         is_cover_song, normalized_title = detect_cover_and_normalize_title(title)
                         if is_cover_song:

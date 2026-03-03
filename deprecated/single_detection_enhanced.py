@@ -1541,7 +1541,7 @@ def detect_single_enhanced(
     result['artist_z_score'] = artist_z
     
     # Z-Score Gate: Skip single detection if artist_z < 0
-    # NEW LOGIC:
+    # LOGIC:
     # - z < 0: Skip detection (UNLESS compilation/greatest hits)
     # - z 0-1: Require 2 medium OR 1 high confidence sources
     # - z >= 1: Require 1 medium OR 1 high confidence source
