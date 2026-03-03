@@ -3522,7 +3522,7 @@ def popularity_scan(
                     try:
                         from api_clients.musicbrainz import get_album_type_with_fallback
                         detected_album_type, type_detection_source = get_album_type_with_fallback(
-                            artist, album, current_album_type, enabled=HAVE_MUSICBRAINZ
+                            artist, album, current_album_type, enabled=HAVE_MUSICBRAINZ, track_count=len(album_tracks)
                         )
                         log_debug(f'MusicBrainz album type: "{detected_album_type}" (source: {type_detection_source})')
                     except Exception as e:
@@ -3552,7 +3552,27 @@ def popularity_scan(
                 
                 # Use the detected type for rest of scan
                 album_type_from_field = detected_album_type or current_album_type or 'album'
-                
+
+                # Override misclassified EPs: if labeled as 'ep' but has >6 tracks, it's likely a full album
+                # MusicBrainz sometimes incorrectly classifies live albums or special releases as EPs
+                # Example: Metallica - S&M (21 tracks) was wrongly classified as EP
+                if album_type_from_field and 'ep' in album_type_from_field.lower() and 'single' not in album_type_from_field.lower():
+                    track_count = len(album_tracks)
+                    if track_count > 6:  # Standard EP threshold is 3-6 tracks
+                        # Convert EP to Album, but keep any secondary types (e.g., "ep (live)" -> "album+live")
+                        old_type = album_type_from_field
+                        if '(' in album_type_from_field and ')' in album_type_from_field:
+                            # Extract secondary type like "(live)" and convert to album+live format
+                            match = re.search(r'\(([^)]+)\)', album_type_from_field)
+                            if match:
+                                secondary_type = match.group(1)
+                                album_type_from_field = f"album+{secondary_type}"
+                            else:
+                                album_type_from_field = "album"
+                        else:
+                            album_type_from_field = "album"
+                        log_info(f'EP override: "{artist} - {album}" has {track_count} tracks (>6), reclassified from "{old_type}" to "{album_type_from_field}"')
+
                 # ALBUM-LEVEL DISCOGS GENRE FETCH
                 # For homogeneous album types (Single, EP, Album), fetch Discogs genres once at album level
                 # For compilations/soundtracks/live albums, genres will be fetched per-track (different per track)

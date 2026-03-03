@@ -1028,22 +1028,24 @@ def get_artist_country(artist: str, enabled: bool = True) -> str:
     return client.get_artist_country(artist)
 
 
-def get_album_type_with_fallback(artist: str, album: str, spotify_album_type: str = None, enabled: bool = True) -> tuple[str, str]:
+def get_album_type_with_fallback(artist: str, album: str, spotify_album_type: str = None, enabled: bool = True, track_count: int = None) -> tuple[str, str]:
     """
-    Get album type from MusicBrainz with Spotify fallback.
-    
+    Get album type from MusicBrainz with Spotify fallback using intelligent candidate scoring.
+
     Strategy:
     1. Query MusicBrainz for release group by artist + album title
-    2. Return primary_type and secondary_types (check for "compilation")
-    3. Fall back to Spotify album_type if MusicBrainz doesn't find it
-    4. Still use "song" or track count heuristics as last resort
-    
+    2. Score all candidates by relevance (title match, track count validation)
+    3. Return primary_type and secondary_types (check for "compilation")
+    4. Fall back to Spotify album_type if MusicBrainz doesn't find it
+    5. Use track count to validate/correct misclassifications (e.g., EP with >6 tracks)
+
     Args:
         artist: Artist name
         album: Album title
         spotify_album_type: Spotify album type (as fallback)
         enabled: Whether MusicBrainz is enabled
-        
+        track_count: Number of tracks in the album (for validation/scoring)
+
     Returns:
         Tuple of (album_type, source) where:
         - album_type: "album", "single", "ep", "compilation" or "unknown"
@@ -1086,8 +1088,36 @@ def get_album_type_with_fallback(artist: str, album: str, spotify_album_type: st
         release_groups = res.json().get("release-groups", []) or []
         
         if release_groups:
-            # Get the best match (first result is usually most relevant)
-            rg = release_groups[0]
+            # Score all candidates and pick the best match
+            # This helps when there are multiple releases with similar names
+            best_match = None
+            best_score = -1
+            
+            for rg in release_groups:
+                score = 0
+                rg_title = (rg.get("title") or "").lower()
+                album_lower = album.lower()
+                
+                # Exact title match gets highest score
+                if rg_title == album_lower:
+                    score += 100
+                # Partial match
+                elif album_lower in rg_title or rg_title in album_lower:
+                    score += 50
+                
+                # Penalize EP classification if track count suggests otherwise  
+                if track_count and track_count > 0:
+                    primary = (rg.get("primary-type") or "").lower()
+                    if primary == "ep" and track_count > 6:
+                        score -= 20  # Penalize EP for >6 tracks
+                    elif primary == "single" and track_count > 3:
+                        score -= 30  # Penalize single for >3 tracks
+                
+                if score > best_score:
+                    best_score = score
+                    best_match = rg
+            
+            rg = best_match or release_groups[0]
             primary_type = (rg.get("primary-type") or "").lower()
             secondary_types = [s.lower() for s in (rg.get("secondary-types") or [])]
             
@@ -1117,7 +1147,7 @@ def get_album_type_with_fallback(artist: str, album: str, spotify_album_type: st
                     
                     album_type = f"{primary_type} ({displayable_secondary})"
                 
-                logger.debug(f"MusicBrainz: Album '{album}' by '{artist}' type={album_type} (primary={primary_type}, secondary={secondary_types})")
+                logger.debug(f"MusicBrainz: Album '{album}' by '{artist}' type={album_type} (primary={primary_type}, secondary={secondary_types}, candidate_score={best_score})")
                 return (album_type, "musicbrainz")
         
         # MusicBrainz didn't find this album, fall back to Spotify
