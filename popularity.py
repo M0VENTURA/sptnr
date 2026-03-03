@@ -5083,6 +5083,14 @@ def popularity_scan(
                     
                     log_debug(f"Single detection params - track: {title}, isrc: {track_isrc}, duration: {track_duration}, popularity: {track_popularity}, album_type: {track_album_type}")
                     
+                    # Skip single detection for zero-popularity tracks (unless in compilation/greatest hits)
+                    # Rationale: Tracks with 0 popularity are unlikely to be real singles, wastes API calls
+                    # Exception: Always check compilations since featured tracks have different patterns
+                    if track_popularity == 0 and not is_greatest_hits_or_compilation:
+                        log_debug(f"Skipping single detection for '{title}' (popularity: 0 - not a compilation/greatest hits)")
+                        singles_processed += 1
+                        continue
+                    
                     # Use canonical album grouping artist for single-detection context.
                     # This prevents featured tracks from being treated as isolated 1-track artist catalogs.
                     track_artist = artist
