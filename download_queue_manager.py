@@ -10,6 +10,7 @@ import sqlite3
 import json
 import logging
 import time
+import yaml
 from datetime import datetime, timedelta
 from pathlib import Path
 from helpers.metadata_reader import read_mp3_metadata
@@ -25,7 +26,29 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
-DOWNLOADS_DIR = os.environ.get("DOWNLOADS_DIR", "/downloads")
+
+
+def resolve_downloads_dir():
+    """Resolve downloads directory from env/config with safe fallback."""
+    env_dir = os.environ.get("DOWNLOADS_DIR")
+    if env_dir:
+        return env_dir
+
+    config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+    try:
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            configured = (cfg.get("downloads") or {}).get("folder")
+            if configured:
+                return configured
+    except Exception as e:
+        logger.warning(f"Could not read downloads folder from config: {e}")
+
+    return "/downloads/Music"
+
+
+DOWNLOADS_DIR = resolve_downloads_dir()
 MUSIC_DIR = os.environ.get("MUSIC_ROOT", "/music")
 
 

@@ -10,6 +10,7 @@ import shutil
 import sqlite3
 import json
 import time
+import yaml
 from datetime import datetime
 from pathlib import Path
 from helpers.metadata_reader import read_mp3_metadata
@@ -25,7 +26,27 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DOWNLOADS_DIR = os.environ.get("DOWNLOADS_DIR", "/downloads")
+def resolve_downloads_dir():
+    """Resolve downloads directory from env/config with safe fallback."""
+    env_dir = os.environ.get("DOWNLOADS_DIR")
+    if env_dir:
+        return env_dir
+
+    config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+    try:
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            configured = (cfg.get("downloads") or {}).get("folder")
+            if configured:
+                return configured
+    except Exception as e:
+        logger.warning(f"Could not read downloads folder from config: {e}")
+
+    return "/downloads/Music"
+
+
+DOWNLOADS_DIR = resolve_downloads_dir()
 MUSIC_DIR = os.environ.get("MUSIC_ROOT", "/music")
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 
@@ -432,64 +453,65 @@ def add_to_database(file_info, metadata):
         return False
 
 def scan_downloads_folder():
-    """Scan /downloads folder for MP3 files"""
+    """Scan downloads folder recursively for MP3/FLAC files."""
     if not os.path.exists(DOWNLOADS_DIR):
         logger.warning(f"Downloads folder not found: {DOWNLOADS_DIR}")
         return []
     
     results = []
-    
-    for filename in os.listdir(DOWNLOADS_DIR):
-        if not filename.lower().endswith('.mp3'):
-            continue
+
+    for root, _, files in os.walk(DOWNLOADS_DIR):
+        for filename in files:
+            if not filename.lower().endswith((".mp3", ".flac")):
+                continue
+
+            file_path = os.path.join(root, filename)
         
-        file_path = os.path.join(DOWNLOADS_DIR, filename)
-        
-        # Skip if not a file
-        if not os.path.isfile(file_path):
-            continue
-        
-        try:
-            logger.info(f"Processing: {filename}")
-            
-            # Extract metadata
-            metadata = extract_mp3_metadata(file_path)
-            logger.info(f"Extracted metadata: {metadata}")
-            
-            # Organize file
-            file_info = organize_file(file_path, metadata)
-            
-            if file_info.get('success'):
-                # Add to database
-                add_to_database(file_info, metadata)
-                
-                results.append({
-                    'status': 'success',
-                    'filename': filename,
-                    'artist': file_info.get('artist'),
-                    'album': file_info.get('album'),
-                    'title': file_info.get('title'),
-                    'target_path': file_info.get('target_path')
-                })
-            else:
+            # Skip if not a regular file
+            if not os.path.isfile(file_path):
+                continue
+
+            try:
+                logger.info(f"Processing: {os.path.relpath(file_path, DOWNLOADS_DIR)}")
+
+                # Extract metadata
+                metadata = extract_mp3_metadata(file_path)
+                logger.info(f"Extracted metadata: {metadata}")
+
+                # Organize file
+                file_info = organize_file(file_path, metadata)
+
+                if file_info.get('success'):
+                    # Add to database
+                    add_to_database(file_info, metadata)
+
+                    results.append({
+                        'status': 'success',
+                        'filename': filename,
+                        'artist': file_info.get('artist'),
+                        'album': file_info.get('album'),
+                        'title': file_info.get('title'),
+                        'target_path': file_info.get('target_path')
+                    })
+                else:
+                    results.append({
+                        'status': 'error',
+                        'filename': filename,
+                        'error': file_info.get('error', 'Unknown error')
+                    })
+            except Exception as e:
+                logger.error(f"Error processing {filename}: {e}")
                 results.append({
                     'status': 'error',
                     'filename': filename,
-                    'error': file_info.get('error', 'Unknown error')
+                    'error': str(e)
                 })
-        except Exception as e:
-            logger.error(f"Error processing {filename}: {e}")
-            results.append({
-                'status': 'error',
-                'filename': filename,
-                'error': str(e)
-            })
     
     return results
 
 def watch_downloads_folder(interval=10):
     """Watch downloads folder for new files (runs continuously)"""
-    logger.info(f"Starting downloads watcher (interval: {interval}s)")
+    logger.info(f"Starting downloads watcher for '{DOWNLOADS_DIR}' (interval: {interval}s)")
     
     while True:
         try:

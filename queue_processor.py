@@ -14,6 +14,7 @@ import time
 import sqlite3
 import logging
 import traceback
+import yaml
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -29,7 +30,29 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
-DOWNLOADS_DIR = os.environ.get("DOWNLOADS_DIR", "/downloads")
+
+
+def resolve_downloads_dir():
+    """Resolve downloads directory from env/config with safe fallback."""
+    env_dir = os.environ.get("DOWNLOADS_DIR")
+    if env_dir:
+        return env_dir
+
+    config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+    try:
+        if os.path.exists(config_path):
+            with open(config_path, 'r', encoding='utf-8') as f:
+                cfg = yaml.safe_load(f) or {}
+            configured = (cfg.get('downloads') or {}).get('folder')
+            if configured:
+                return configured
+    except Exception as e:
+        logger.warning(f"Could not read downloads folder from config: {e}")
+
+    return "/downloads/Music"
+
+
+DOWNLOADS_DIR = resolve_downloads_dir()
 
 def get_db():
     """Get database connection"""
@@ -314,10 +337,13 @@ def check_completed_downloads():
         if downloading:
             logger.debug(f"Checking {len(downloading)} items in 'downloading' status")
         
-        # Get files in downloads folder
+        # Get audio files in downloads folder recursively
         try:
-            files = [f for f in os.listdir(DOWNLOADS_DIR) 
-                    if f.lower().endswith(('.mp3', '.flac', '.m4a'))]
+            files = []
+            for root, _, root_files in os.walk(DOWNLOADS_DIR):
+                for f in root_files:
+                    if f.lower().endswith(('.mp3', '.flac', '.m4a')):
+                        files.append(os.path.relpath(os.path.join(root, f), DOWNLOADS_DIR))
             if files:
                 logger.debug(f"Found {len(files)} audio files in {DOWNLOADS_DIR}")
         except Exception as e:
@@ -330,8 +356,15 @@ def check_completed_downloads():
             match_found = None
             
             # Try exact filename match first
-            if item['found_filename'] and item['found_filename'] in files:
-                match_found = item['found_filename']
+            if item['found_filename']:
+                for rel_file in files:
+                    rel_file_norm = rel_file.replace('\\', '/')
+                    found_norm = str(item['found_filename']).replace('\\', '/')
+                    if rel_file_norm == found_norm or os.path.basename(rel_file_norm) == os.path.basename(found_norm):
+                        match_found = rel_file
+                        break
+
+            if match_found:
                 logger.debug(f"Queue {item['id']}: Exact filename match found")
             else:
                 # Try fuzzy matching
