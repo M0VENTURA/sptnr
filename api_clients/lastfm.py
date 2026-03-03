@@ -3,6 +3,7 @@ import logging
 import json
 import time
 import os
+import re
 from pathlib import Path
 from requests.exceptions import ConnectionError, Timeout, RequestException, HTTPError
 from . import session
@@ -322,6 +323,67 @@ class LastFmClient:
         except Exception as e:
             logger.debug(f"MusicBrainz filtering failed for {album}/{artist}: {e}")
             return True  # If error, include it (permissive)
+
+    @staticmethod
+    def _strip_featured_artist(artist: str) -> str:
+        """Return canonical primary artist by removing feat./ft./featuring suffixes."""
+        if not artist:
+            return artist
+        primary = re.split(r"\s+(?:feat\.?|featuring|ft\.?)\s+", artist, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+        return primary or artist.strip()
+
+    def _get_track_info_once(self, artist: str, title: str) -> dict:
+        """Perform a single Last.fm track.getInfo call for a specific artist/title pair."""
+        params = {
+            "method": "track.getInfo",
+            "artist": artist,
+            "track": title,
+            "api_key": self.api_key,
+            "format": "json",
+            "autocorrect": 1  # Enable Last.fm's autocorrect for better matching
+        }
+
+        try:
+            res = self.session.get(self.base_url, params=params, timeout=(5, 10))  # (connect_timeout, read_timeout)
+            res.raise_for_status()
+            response_data = res.json()
+
+            # Check for Last.fm API error responses
+            if "error" in response_data:
+                error_code = response_data.get("error")
+                error_msg = response_data.get("message", "Unknown error")
+                logger.warning(f"Last.fm API error {error_code} for '{title}' by '{artist}': {error_msg}")
+                logger.debug(f"Full API response: {response_data}")
+                return {"track_play": 0, "listeners": 0, "toptags": {}}
+
+            data = response_data.get("track", {})
+            track_play = int(data.get("playcount", 0))
+            listeners = int(data.get("listeners", 0))
+            toptags = data.get("toptags", {})
+
+            # Debug log when we get 0 values despite a successful API call
+            if track_play == 0 and listeners == 0:
+                logger.debug(f"Last.fm returned 0 values for '{title}' by '{artist}'. Response: {data}")
+
+            return {
+                "track_play": track_play,
+                "listeners": listeners,
+                "toptags": toptags,
+                "lookup_artist": artist
+            }
+        except (ConnectionError, ConnectionResetError) as e:
+            logger.error(f"Connection error fetching track '{title}' by '{artist}': {e} - retrying may help")
+            return {"track_play": 0, "listeners": 0, "toptags": {}, "lookup_artist": artist}
+        except Timeout as e:
+            logger.error(f"Timeout fetching track '{title}' by '{artist}': {e}")
+            return {"track_play": 0, "listeners": 0, "toptags": {}, "lookup_artist": artist}
+        except HTTPError as e:
+            status_code = e.response.status_code if hasattr(e.response, 'status_code') else 'unknown'
+            logger.error(f"HTTP error {status_code} fetching track '{title}' by '{artist}': {e}")
+            return {"track_play": 0, "listeners": 0, "toptags": {}, "lookup_artist": artist}
+        except Exception as e:
+            logger.error(f"Failed to fetch Last.fm info for '{title}' by '{artist}': {e}")
+            return {"track_play": 0, "listeners": 0, "toptags": {}, "lookup_artist": artist}
     
     
     def get_track_info(self, artist: str, title: str) -> dict:
@@ -339,58 +401,28 @@ class LastFmClient:
             logger.warning("Last.fm API key missing. Skipping lookup.")
             return {"track_play": 0, "listeners": 0}
         
-        # Note: requests library automatically handles URL encoding of params dict
-        # Special characters like '+' in artist names (e.g., "+44") are properly encoded
-        # autocorrect=1 enables Last.fm's spelling correction for artist/track names
-        params = {
-            "method": "track.getInfo",
-            "artist": artist,
-            "track": title,
-            "api_key": self.api_key,
-            "format": "json",
-            "autocorrect": 1  # Enable Last.fm's autocorrect for better matching
+        # For collaboration strings like "Artist feat. Guest", prefer canonical
+        # artist lookup first to avoid low-count alternate Last.fm entries.
+        primary_artist = self._strip_featured_artist(artist)
+        lookup_order = [primary_artist] if primary_artist else [artist]
+        if artist and artist.lower() != primary_artist.lower():
+            lookup_order.append(artist)
+
+        best_result = {"track_play": 0, "listeners": 0, "toptags": {}, "lookup_artist": artist}
+        for lookup_artist in lookup_order:
+            candidate = self._get_track_info_once(lookup_artist, title)
+            if candidate.get("listeners", 0) > best_result.get("listeners", 0):
+                best_result = candidate
+            if candidate.get("listeners", 0) > 0 and candidate.get("track_play", 0) > 0:
+                break
+
+        # Keep backwards compatibility for callers expecting this exact shape.
+        return {
+            "track_play": int(best_result.get("track_play", 0)),
+            "listeners": int(best_result.get("listeners", 0)),
+            "toptags": best_result.get("toptags", {}),
+            "lookup_artist": best_result.get("lookup_artist", artist)
         }
-        
-        try:
-            res = self.session.get(self.base_url, params=params, timeout=(5, 10))  # (connect_timeout, read_timeout)
-            res.raise_for_status()
-            response_data = res.json()
-            
-            # Check for Last.fm API error responses
-            if "error" in response_data:
-                error_code = response_data.get("error")
-                error_msg = response_data.get("message", "Unknown error")
-                logger.warning(f"Last.fm API error {error_code} for '{title}' by '{artist}': {error_msg}")
-                logger.debug(f"Full API response: {response_data}")
-                return {"track_play": 0, "listeners": 0, "toptags": {}}
-            
-            data = response_data.get("track", {})
-            track_play = int(data.get("playcount", 0))
-            listeners = int(data.get("listeners", 0))
-            toptags = data.get("toptags", {})
-            
-            # Debug log when we get 0 values despite a successful API call
-            if track_play == 0 and listeners == 0:
-                logger.debug(f"Last.fm returned 0 values for '{title}' by '{artist}'. Response: {data}")
-            
-            return {
-                "track_play": track_play,
-                "listeners": listeners,
-                "toptags": toptags
-            }
-        except (ConnectionError, ConnectionResetError) as e:
-            logger.error(f"Connection error fetching track '{title}' by '{artist}': {e} - retrying may help")
-            return {"track_play": 0, "listeners": 0, "toptags": {}}
-        except Timeout as e:
-            logger.error(f"Timeout fetching track '{title}' by '{artist}': {e}")
-            return {"track_play": 0, "listeners": 0, "toptags": {}}
-        except HTTPError as e:
-            status_code = e.response.status_code if hasattr(e.response, 'status_code') else 'unknown'
-            logger.error(f"HTTP error {status_code} fetching track '{title}' by '{artist}': {e}")
-            return {"track_play": 0, "listeners": 0, "toptags": {}}
-        except Exception as e:
-            logger.error(f"Failed to fetch Last.fm info for '{title}' by '{artist}': {e}")
-            return {"track_play": 0, "listeners": 0, "toptags": {}}
     
     def search_track(self, artist: str, title: str, limit: int = 10) -> list[dict]:
         """
@@ -435,13 +467,16 @@ class LastFmClient:
             
             # Filter results to same artist (case-insensitive)
             artist_lower = artist.lower()
+            artist_primary_lower = self._strip_featured_artist(artist).lower()
             filtered_tracks = []
             for track in tracks:
                 track_artist = track.get("artist", "")
                 if isinstance(track_artist, dict):
                     track_artist = track_artist.get("name", "")
-                
-                if track_artist.lower() == artist_lower:
+
+                track_artist_lower = track_artist.lower()
+                track_artist_primary_lower = self._strip_featured_artist(track_artist).lower()
+                if track_artist_lower == artist_lower or track_artist_primary_lower == artist_primary_lower:
                     filtered_tracks.append({
                         "name": track.get("name", ""),
                         "artist": track_artist

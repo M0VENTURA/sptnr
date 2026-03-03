@@ -333,13 +333,16 @@ def get_lastfm_track_info(artist: str, title: str) -> dict:
     
     # Try exact match first
     result = _lastfm_client.get_track_info(artist, normalized_title)
+    lookup_artist = result.get("lookup_artist", artist)
+    if lookup_artist != artist:
+        logging.debug(f"Last.fm artist fallback: '{artist}' -> '{lookup_artist}' for '{normalized_title}'")
     
     # If exact match failed (no listeners/playcount), try fuzzy matching
     if result.get("listeners", 0) == 0 and result.get("track_play", 0) == 0:
-        logging.debug(f"Exact match failed for '{normalized_title}' by '{artist}', trying fuzzy search...")
+        logging.debug(f"Exact match failed for '{normalized_title}' by '{lookup_artist}', trying fuzzy search...")
         
         # Search for tracks by same artist
-        search_results = _lastfm_client.search_track(artist, normalized_title, limit=10)
+        search_results = _lastfm_client.search_track(lookup_artist, normalized_title, limit=10)
         
         if search_results:
             # Find best match using fuzzy string matching
@@ -359,12 +362,12 @@ def get_lastfm_track_info(artist: str, title: str) -> dict:
             
             # Accept fuzzy match if similarity > 0.85 (same threshold as Discogs verification)
             if best_ratio > 0.85 and best_match:
-                logging.info(f"🔍 Fuzzy matched '{title}' → '{best_match}' by '{artist}' (similarity: {best_ratio:.2f})")
+                logging.info(f"🔍 Fuzzy matched '{title}' → '{best_match}' by '{lookup_artist}' (similarity: {best_ratio:.2f})")
                 
                 # Fetch track info using the matched title
-                result = _lastfm_client.get_track_info(artist, best_match)
+                result = _lastfm_client.get_track_info(lookup_artist, best_match)
             else:
-                logging.debug(f"No fuzzy match above threshold (best: {best_ratio:.2f}) for '{title}' by '{artist}'")
+                logging.debug(f"No fuzzy match above threshold (best: {best_ratio:.2f}) for '{title}' by '{lookup_artist}'")
     
     return result
 
