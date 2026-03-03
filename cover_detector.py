@@ -119,12 +119,13 @@ class CoverDetector:
         """
         Extract writer/composer information from track data.
         
-        Checks:
+        Checks (in order):
         1. Database 'writer' field (JSON array)
-        2. MusicBrainz API (if MBID available)
+        2. Database 'composer' field (fallback if writer is empty)
+        3. MusicBrainz API (if MBID available and no local data)
         
         Args:
-            track: Track dict with potential 'writer', 'mbid' fields
+            track: Track dict with potential 'writer', 'composer', 'mbid' fields
             
         Returns:
             List of writer names
@@ -140,6 +141,22 @@ class CoverDetector:
                     writers = track['writer']
             except json.JSONDecodeError:
                 logger.debug(f"Could not parse writer field for track {track.get('title')}")
+        
+        # Fallback to composer field if writer is empty
+        if not writers and 'composer' in track and track['composer']:
+            try:
+                if isinstance(track['composer'], str):
+                    # Handle both JSON array format and plain string format
+                    if track['composer'].startswith('['):
+                        writers = json.loads(track['composer'])
+                    else:
+                        # Plain string - split by comma or use as single entry
+                        writers = [s.strip() for s in track['composer'].split(',')]
+                elif isinstance(track['composer'], list):
+                    writers = track['composer']
+                logger.debug(f"Using composer field for '{track.get('title')}': {writers}")
+            except (json.JSONDecodeError, ValueError):
+                logger.debug(f"Could not parse composer field for track {track.get('title')}")
         
         # If no writers from DB, try MusicBrainz API
         if not writers and track.get('mbid'):

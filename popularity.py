@@ -5208,7 +5208,7 @@ def popularity_scan(
                         # Get all tracks for this album with metadata
                         # Note: Use COALESCE to handle album_artist grouping like singles detection does
                         cursor.execute("""
-                            SELECT id, title, artist, writer, mbid 
+                            SELECT id, title, artist, writer, composer, mbid 
                             FROM tracks 
                             WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ?
                             ORDER BY position
