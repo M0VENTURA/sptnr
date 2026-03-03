@@ -5915,8 +5915,8 @@ def popularity_scan(
                             if has_single_sources and track_stars == 5:
                                 # Detected single
                                 detected_singles.append((track_artist, track_title, stars_str, reason_str))
-                            elif track_stars == 5 and not has_single_sources:
-                                # Popular song (5★ from top cluster, no single detection)
+                            elif track_stars == 5 and not has_single_sources and track_zscore > 2.0:
+                                # Popular song (5★ with z-score > 2.0, no single detection)
                                 popular_songs.append((track_artist, track_title, stars_str, reason_str))
                             else:
                                 # Rest of album
