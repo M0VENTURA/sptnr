@@ -4022,6 +4022,13 @@ async function addToQueue(event) {
 async function loadQueueStatus() {
   try {
     const response = await fetch('/api/queue/status?limit=100');
+    
+    // Check HTTP status before parsing JSON
+    if (!response.ok) {
+      console.error(`HTTP Error ${response.status}: ${response.statusText}`);
+      return;
+    }
+    
     const data = await response.json();
     
     if (!data.success) {
@@ -4031,6 +4038,13 @@ async function loadQueueStatus() {
     
     // Also fetch recently imported tracks
     const importedResponse = await fetch('/api/queue/imported?limit=50');
+    
+    // Check HTTP status before parsing JSON
+    if (!importedResponse.ok) {
+      console.error(`HTTP Error ${importedResponse.status}: ${importedResponse.statusText}`);
+      return;
+    }
+    
     const importedData = await importedResponse.json();
     const imported = importedData.success ? importedData.imported : [];
     
@@ -4378,6 +4392,12 @@ async function organizeFile(queueId) {
       method: 'POST'
     });
     
+    if (!response.ok) {
+      console.error(`HTTP Error ${response.status}: ${response.statusText}`);
+      alert('❌ Server error: ' + response.statusText);
+      return;
+    }
+    
     const data = await response.json();
     
     if (data.success) {
@@ -4400,6 +4420,13 @@ async function organizeGroup(groupId) {
   try {
     // Get all completed items with this group ID
     const response = await fetch('/api/queue/status?limit=100');
+    
+    if (!response.ok) {
+      console.error(`HTTP Error ${response.status}: ${response.statusText}`);
+      alert('❌ Server error: ' + response.statusText);
+      return;
+    }
+    
     const data = await response.json();
     
     if (!data.completed) {
@@ -4528,6 +4555,12 @@ async function retryQueueItem(queueId) {
       body: JSON.stringify({ action: 'queued' })
     });
     
+    if (!response.ok) {
+      console.error(`HTTP Error ${response.status}: ${response.statusText}`);
+      alert('❌ Server error: ' + response.statusText);
+      return;
+    }
+    
     const data = await response.json();
     
     if (data.success) {
@@ -4551,6 +4584,12 @@ async function deleteQueueItem(queueId) {
     const response = await fetch(`/api/queue/${queueId}/delete`, {
       method: 'DELETE'
     });
+    
+    if (!response.ok) {
+      console.error(`HTTP Error ${response.status}: ${response.statusText}`);
+      alert('❌ Server error: ' + response.statusText);
+      return;
+    }
     
     const data = await response.json();
     
