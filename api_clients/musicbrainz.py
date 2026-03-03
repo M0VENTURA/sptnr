@@ -1121,10 +1121,9 @@ def get_album_type_with_fallback(artist: str, album: str, spotify_album_type: st
             primary_type = (rg.get("primary-type") or "").lower()
             secondary_types = [s.lower() for s in (rg.get("secondary-types") or [])]
             
-            # Check if primary type is compilation
-            if primary_type == "compilation":
-                logger.debug(f"MusicBrainz: Album '{album}' by '{artist}' detected as compilation (primary type)")
-                return ("compilation", "musicbrainz")
+            # Note: Per MusicBrainz spec, "Compilation" is a SECONDARY type, not a primary type.
+            # Valid primary types are: Album, Single, EP, Broadcast, Other.
+            # Compilation detection is handled below in secondary types.
             
             # Combine primary type with secondary types for enhanced classification
             # Format: "primary (secondary)" for better readability

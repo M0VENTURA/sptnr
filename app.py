@@ -5653,6 +5653,18 @@ def track_detail(track_id):
                 except Exception:
                     pass  # Keep original value if parsing fails
         
+        # Parse writer field (JSON array from Navidrome lyricist field)
+        if 'writer' in track and track['writer']:
+            writer_val = track['writer']
+            try:
+                if isinstance(writer_val, str) and writer_val.startswith('['):
+                    import json as json_module
+                    parsed = json_module.loads(writer_val)
+                    if isinstance(parsed, list):
+                        track['writer'] = ", ".join([w.strip() for w in parsed if w.strip()])
+            except Exception:
+                pass  # Keep original value if parsing fails
+        
         # Get recommended genres from other tracks with similar titles or artists
         recommended_genres = []
         artist_name = track.get('artist', '')
