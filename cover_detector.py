@@ -62,15 +62,19 @@ class CoverDetector:
         track_writers = {}
         for track in tracks:
             writers = self._get_track_writers(track)
+            track_title = track.get('title', 'Unknown')
             if writers:
                 track_writers[track['id']] = {
-                    'title': track.get('title'),
+                    'title': track_title,
                     'writers': writers,
                     'mbid': track.get('mbid')
                 }
+                logger.debug(f"  Track '{track_title}': Found writers {writers}")
+            else:
+                logger.debug(f"  Track '{track_title}': No writer information in database")
         
         if not track_writers:
-            logger.debug(f"No writer information found for album '{album}'")
+            logger.info(f"No writer information found for any tracks in album '{album}' - cover detection skipped")
             return []
         
         # Step 2: Count how many tracks each writer appears on
