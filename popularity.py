@@ -59,6 +59,14 @@ except ImportError as e:
     log_debug(f"AudioDB client unavailable: {e}")
     HAVE_AUDIODB = False
 
+try:
+    from cover_detector import CoverDetector
+    HAVE_COVER_DETECTOR = True
+except ImportError as e:
+    log_debug(f"Cover detector unavailable: {e}")
+    HAVE_COVER_DETECTOR = False
+    CoverDetector = None  # type: ignore
+
 # Timeout-safe clients for use within _run_with_timeout() context
 # These use timeout_safe_session with reduced retry count to prevent exceeding timeout
 _timeout_safe_mb_client = None
@@ -5178,6 +5186,51 @@ def popularity_scan(
                             )
                     conn.commit()
                     log_debug(f"Batch committed {len(singles_updates)} singles detection results for album '{album}'")
+                
+                # COVER DETECTION: Detect and mark cover songs based on writer/lyricist uniqueness
+                if HAVE_COVER_DETECTOR and not singles_only:
+                    try:
+                        log_info(f'Starting cover detection for album "{artist} - {album}"')
+                        
+                        # Get all tracks for this album with metadata
+                        cursor.execute("""
+                            SELECT id, title, artist, writer, mbid 
+                            FROM tracks 
+                            WHERE artist = ? AND album = ?
+                            ORDER BY position
+                        """, (artist, album))
+                        album_tracks_for_cover = [dict(row) for row in cursor.fetchall()]
+                        
+                        if album_tracks_for_cover:
+                            # Instantiate cover detector with database connection and clients
+                            cover_detector = CoverDetector(db_connection=conn, musicbrainz_client=_get_timeout_safe_musicbrainz_client())
+                            
+                            # Run cover detection for this album
+                            covers_detected = cover_detector.detect_covers_for_album(artist, album, album_tracks_for_cover)
+                            
+                            if covers_detected:
+                                log_info(f'Cover detection complete: {len(covers_detected)} cover(s) detected for "{artist} - {album}"')
+                                log_debug(f'Cover detection results: {covers_detected}')
+                                # Already committed by CoverDetector, no need to commit again
+                                covers_found_count = len(covers_detected)
+                            else:
+                                log_debug(f'No covers detected for album "{artist} - {album}"')
+                                covers_found_count = 0
+                        else:
+                            log_debug(f'No tracks found for cover detection in album "{artist} - {album}"')
+                            covers_found_count = 0
+                            
+                    except Exception as e:
+                        log_debug(f'Cover detection failed for album "{artist} - {album}": {e}')
+                        import traceback
+                        log_debug(f'Cover detection error traceback: {traceback.format_exc()}')
+                        covers_found_count = 0
+                else:
+                    covers_found_count = 0
+                    if singles_only:
+                        log_debug(f'Skipping cover detection (singles_only mode active)')
+                    elif not HAVE_COVER_DETECTOR:
+                        log_debug(f'Skipping cover detection (CoverDetector module unavailable)')
                 
                 # Log summary of singles detection
                 high_conf_count = sum(1 for update in singles_updates if update[0] == 1)
