@@ -3413,6 +3413,22 @@ def api_album_update_ids():
         
         conn = get_db()
         cursor = conn.cursor()
+
+        # Support both legacy and newer schema names across deployments.
+        cursor.execute("PRAGMA table_info(tracks)")
+        track_columns = {row[1] for row in cursor.fetchall()}
+
+        mb_album_column = None
+        if "musicbrainz_album_mbid" in track_columns:
+            mb_album_column = "musicbrainz_album_mbid"
+        elif "beets_album_mbid" in track_columns:
+            mb_album_column = "beets_album_mbid"
+
+        discogs_album_column = None
+        if "discogs_album_id" in track_columns:
+            discogs_album_column = "discogs_album_id"
+        elif "discogs_release_id" in track_columns:
+            discogs_album_column = "discogs_release_id"
         
         # Update all tracks for this album with the new IDs
         updates = []
@@ -3423,12 +3439,18 @@ def api_album_update_ids():
             params.append(spotify_album_id)
         
         if musicbrainz_release_id:
-            updates.append("musicbrainz_album_mbid = ?")
-            params.append(musicbrainz_release_id)
+            if mb_album_column:
+                updates.append(f"{mb_album_column} = ?")
+                params.append(musicbrainz_release_id)
+            else:
+                logging.warning("Skipping MusicBrainz release ID update: no MB album ID column found in tracks table")
         
         if discogs_release_id:
-            updates.append("discogs_album_id = ?")
-            params.append(discogs_release_id)
+            if discogs_album_column:
+                updates.append(f"{discogs_album_column} = ?")
+                params.append(discogs_release_id)
+            else:
+                logging.warning("Skipping Discogs release ID update: no Discogs album ID column found in tracks table")
         
         if updates:
             params.extend([artist_name, album_name])
