@@ -92,6 +92,27 @@ def get_db():
     return conn
 
 
+def execute_write_with_retry(cursor, conn, query, params=(), context="database write", max_retries=5, initial_delay=0.1):
+    """Execute a write query with commit retry on SQLite lock contention."""
+    delay = initial_delay
+    for attempt in range(max_retries):
+        try:
+            cursor.execute(query, params)
+            conn.commit()
+            return True
+        except sqlite3.OperationalError as e:
+            if 'database is locked' in str(e).lower() and attempt < max_retries - 1:
+                logger.warning(
+                    f"Database locked during {context}, retrying in {delay:.2f}s "
+                    f"(attempt {attempt + 1}/{max_retries})"
+                )
+                time.sleep(delay)
+                delay = min(delay * 2, 5.0)
+                continue
+            raise
+    return False
+
+
 def trigger_navidrome_scan():
     """
     Trigger Navidrome library scan via Subsonic API.
@@ -222,15 +243,20 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
             search_query = f"{artist} {album} {title}"
         
         try:
-            cursor.execute("""
+            execute_write_with_retry(
+                cursor,
+                conn,
+                """
                 INSERT INTO download_queue 
                 (artist, title, album, search_query, source, status, priority, file_path, import_group, import_type, 
                  track_number, album_artist, year, release_id, release_source, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, 'queued', ?, NULL, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            """, (artist, title, album, search_query, source, priority, import_group, import_type,
-                  track_number, album_artist, year, release_id, release_source))
-            
-            conn.commit()
+            """,
+                (artist, title, album, search_query, source, priority, import_group, import_type,
+                 track_number, album_artist, year, release_id, release_source),
+                context="add_to_queue insert"
+            )
+
             queue_id = cursor.lastrowid
             
             logger.info(f"Added to queue: {search_query} (ID: {queue_id}, source: {source})")
@@ -808,25 +834,36 @@ def auto_discover_and_queue_files():
                     logger.debug(f"Track already in library: {artist} - {title}")
                     
                     # Still add to queue with status 'discovered' so user can see it
-                    cursor.execute("""
+                    execute_write_with_retry(
+                        cursor,
+                        conn,
+                        """
                         INSERT INTO download_queue 
                         (artist, title, album, album_artist, track_number, disc_number, year, found_filename, file_path, 
                          status, source, created_at, updated_at)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'discovered', 'discovered', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                    """, (artist, title, album, album_artist, track_number, disc_number, year, filename, full_path))
-                    conn.commit()
+                    """,
+                        (artist, title, album, album_artist, track_number, disc_number, year, filename, full_path),
+                        context="auto_discover in-library insert"
+                    )
+
                     stats['queued'] += 1
                     continue
                 
                 # Add to queue with 'discovered' status
-                cursor.execute("""
+                execute_write_with_retry(
+                    cursor,
+                    conn,
+                    """
                     INSERT INTO download_queue 
                     (artist, title, album, album_artist, track_number, disc_number, year, found_filename, file_path, 
                      status, source, created_at, updated_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'discovered', 'discovered', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                """, (artist, title, album, album_artist, track_number, disc_number, year, filename, full_path))
-                
-                conn.commit()
+                """,
+                    (artist, title, album, album_artist, track_number, disc_number, year, filename, full_path),
+                    context="auto_discover insert"
+                )
+
                 stats['queued'] += 1
                 
                 # Log discovery with format info
@@ -948,54 +985,81 @@ def cleanup_missing_files():
         'errors': []
     }
     
-    try:
-        conn = get_db()
-        cursor = conn.cursor()
-        
-        # Get all queue items with file paths
-        cursor.execute("""
-            SELECT id, file_path, artist, title, status 
-            FROM download_queue 
-            WHERE file_path IS NOT NULL AND file_path != ''
-        """)
-        
-        items = cursor.fetchall()
-        stats['checked'] = len(items)
-        
-        if not items:
-            conn.close()
+    max_retries = 5
+    initial_delay = 0.2
+
+    for attempt in range(max_retries):
+        conn = None
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+
+            # Get all queue items with file paths
+            cursor.execute("""
+                SELECT id, file_path, artist, title, status
+                FROM download_queue
+                WHERE file_path IS NOT NULL AND file_path != ''
+            """)
+
+            items = cursor.fetchall()
+            stats['checked'] = len(items)
+
+            if not items:
+                return stats
+
+            removed_ids = []
+
+            for item in items:
+                queue_id = item['id']
+                file_path = item['file_path']
+                status = item['status']
+
+                # Check if file exists
+                if not os.path.exists(file_path):
+                    logger.info(f"Removing queue item {queue_id} (status: {status}): File no longer exists: {file_path}")
+                    removed_ids.append(queue_id)
+
+            # Remove items in batch
+            if removed_ids:
+                placeholders = ','.join('?' * len(removed_ids))
+                cursor.execute(f"DELETE FROM download_queue WHERE id IN ({placeholders})", removed_ids)
+                conn.commit()
+                stats['removed'] = len(removed_ids)
+                logger.info(f"Cleaned up {len(removed_ids)} queue items with missing files")
+
             return stats
-        
-        removed_ids = []
-        
-        for item in items:
-            queue_id = item['id']
-            file_path = item['file_path']
-            artist = item['artist']
-            title = item['title']
-            status = item['status']
-            
-            # Check if file exists
-            if not os.path.exists(file_path):
-                logger.info(f"Removing queue item {queue_id} (status: {status}): File no longer exists: {file_path}")
-                removed_ids.append(queue_id)
-        
-        # Remove items in batch
-        if removed_ids:
-            placeholders = ','.join('?' * len(removed_ids))
-            cursor.execute(f"DELETE FROM download_queue WHERE id IN ({placeholders})", removed_ids)
-            conn.commit()
-            stats['removed'] = len(removed_ids)
-            logger.info(f"Cleaned up {len(removed_ids)} queue items with missing files")
-        
-        conn.close()
-        return stats
-        
-    except Exception as e:
-        error_msg = f"Error during cleanup: {str(e)}"
-        logger.error(error_msg)
-        stats['errors'].append(error_msg)
-        return stats
+
+        except sqlite3.OperationalError as e:
+            if 'database is locked' in str(e).lower():
+                if attempt < max_retries - 1:
+                    delay = initial_delay * (2 ** attempt)
+                    logger.warning(
+                        f"Database locked during cleanup_missing_files(), retrying in {delay:.2f}s "
+                        f"(attempt {attempt + 1}/{max_retries})"
+                    )
+                    time.sleep(delay)
+                    continue
+                error_msg = f"Error during cleanup: database is locked after {max_retries} retries"
+                logger.error(error_msg)
+                stats['errors'].append(error_msg)
+                return stats
+            error_msg = f"Error during cleanup: {str(e)}"
+            logger.error(error_msg)
+            stats['errors'].append(error_msg)
+            return stats
+
+        except Exception as e:
+            error_msg = f"Error during cleanup: {str(e)}"
+            logger.error(error_msg)
+            stats['errors'].append(error_msg)
+            return stats
+
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
 
 def check_and_remove_failed_downloads():
@@ -1147,14 +1211,19 @@ def cleanup_imported(days=7):
         
         cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()
         
-        cursor.execute("""
+        execute_write_with_retry(
+            cursor,
+            conn,
+            """
             DELETE FROM download_queue 
             WHERE status = 'imported' 
             AND imported_at < ?
-        """, (cutoff_date,))
-        
+        """,
+            (cutoff_date,),
+            context="cleanup_imported delete"
+        )
+
         removed = cursor.rowcount
-        conn.commit()
         conn.close()
         
         if removed > 0:
