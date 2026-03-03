@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-from helpers.db_utils import ensure_album_artist_column, verify_album_artist_column
+from helpers.db_utils import (
+    ensure_album_artist_column,
+    ensure_musicbrainz_album_mbid_column,
+    verify_album_artist_column,
+)
 import os
 # --- ENVIRONMENT VARIABLE EDITING SUPPORT ---
 # List of all environment variables used in the project (compiled from codebase)
@@ -340,6 +344,9 @@ def set_cache_headers(response):
 # Ensure album_artist column exists and is populated on startup
 import logging
 ensure_result = ensure_album_artist_column()
+
+# Ensure legacy beets_album_mbid has been migrated to musicbrainz_album_mbid.
+ensure_musicbrainz_album_mbid_column()
 
 # Verify the migration worked
 verification = verify_album_artist_column()
@@ -1903,7 +1910,7 @@ def artist_detail(name):
                 MIN(year) as album_year,
                 MAX(spotify_album_type) as album_type,
                 MAX(album_artist) as album_artist,
-                MAX(beets_album_mbid) as beets_album_mbid,
+                MAX(musicbrainz_album_mbid) as musicbrainz_album_mbid,
                 MAX(discogs_release_id) as discogs_release_id
             FROM tracks
             WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
@@ -1940,16 +1947,16 @@ def artist_detail(name):
             try:
                 # Look for any album with a MusicBrainz release ID
                 cursor.execute("""
-                    SELECT DISTINCT beets_album_mbid 
+                    SELECT DISTINCT musicbrainz_album_mbid 
                     FROM tracks 
                     WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? 
-                    AND beets_album_mbid IS NOT NULL AND beets_album_mbid != ''
+                    AND musicbrainz_album_mbid IS NOT NULL AND musicbrainz_album_mbid != ''
                     LIMIT 1
                 """, (name,))
                 album_mbid_row = cursor.fetchone()
                 
                 if album_mbid_row:
-                    album_mbid = album_mbid_row['beets_album_mbid']
+                    album_mbid = album_mbid_row['musicbrainz_album_mbid']
                     
                     # Fetch the artist ID from this album's MusicBrainz release
                     try:
@@ -3414,15 +3421,11 @@ def api_album_update_ids():
         conn = get_db()
         cursor = conn.cursor()
 
-        # Support both legacy and newer schema names across deployments.
+        # Use canonical MusicBrainz album MBID column.
         cursor.execute("PRAGMA table_info(tracks)")
         track_columns = {row[1] for row in cursor.fetchall()}
 
-        mb_album_column = None
-        if "musicbrainz_album_mbid" in track_columns:
-            mb_album_column = "musicbrainz_album_mbid"
-        elif "beets_album_mbid" in track_columns:
-            mb_album_column = "beets_album_mbid"
+        mb_album_column = "musicbrainz_album_mbid" if "musicbrainz_album_mbid" in track_columns else None
 
         discogs_album_column = None
         if "discogs_album_id" in track_columns:
@@ -4912,7 +4915,7 @@ def album_detail(artist, album):
                     MAX(spotify_album_art_url) as spotify_album_art_url,
                     MAX(last_scanned) as last_scanned,
                     MAX(COALESCE(disc_number, 1)) as total_discs,
-                    COALESCE(MAX(beets_album_mbid), MAX(musicbrainz_album_mbid)) as musicbrainz_album_mbid,
+                    MAX(musicbrainz_album_mbid) as musicbrainz_album_mbid,
                     COALESCE(MAX(discogs_album_id), MAX(discogs_release_id)) as discogs_album_id,
                     MAX(spotify_album_id) as spotify_album_id,
                     MAX(spotify_artist_id) as spotify_artist_id,
@@ -5465,7 +5468,7 @@ def album_edit(artist, album):
         
         # Update album MBID if provided
         if album_mbid:
-            update_fields.append("beets_album_mbid = ?")
+            update_fields.append("musicbrainz_album_mbid = ?")
             update_values.append(album_mbid)
         
         # Update genres
@@ -5480,7 +5483,7 @@ def album_edit(artist, album):
         if update_fields:
             # Validate that update_fields only contains safe column assignments
             # All field assignments should be in the format "column_name = ?"
-            allowed_columns = {'album', 'artist', 'year', 'spotify_album_type', 'beets_album_mbid', 'genres'}
+            allowed_columns = {'album', 'artist', 'year', 'spotify_album_type', 'musicbrainz_album_mbid', 'genres'}
             for field in update_fields:
                 column_name = field.split('=')[0].strip()
                 if column_name not in allowed_columns:
@@ -9507,14 +9510,14 @@ def _fetch_album_art_from_musicbrainz(artist_name: str, album_name: str) -> byte
         conn = get_db()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT beets_album_mbid FROM tracks 
-            WHERE artist = ? AND album = ? AND beets_album_mbid IS NOT NULL
+            SELECT musicbrainz_album_mbid FROM tracks 
+            WHERE artist = ? AND album = ? AND musicbrainz_album_mbid IS NOT NULL
             LIMIT 1
         """, (artist_name, album_name))
         result = cursor.fetchone()
         conn.close()
         
-        album_mbid = result['beets_album_mbid'] if result else None
+        album_mbid = result['musicbrainz_album_mbid'] if result else None
         log_debug(f"MusicBrainz: Database MBID check - {artist_name} - {album_name}: {album_mbid}")
         
         # If we don't have MBID, try to search for it
@@ -12892,7 +12895,7 @@ def metadata_compare():
                 musicbrainz_genres,
                 COUNT(*) as track_count
             FROM tracks
-            WHERE beets_album_mbid IS NOT NULL
+            WHERE musicbrainz_album_mbid IS NOT NULL
             GROUP BY album, artist
             ORDER BY artist, album
         """)
@@ -13887,7 +13890,7 @@ def api_album_apply_mbid():
         updates = []
         if mbid:
             updates.append("mbid = ?")
-            updates.append("beets_album_mbid = ?")  # Also store as beets album MBID for display
+            updates.append("musicbrainz_album_mbid = ?")
         if cover_art_url:
             updates.append("cover_art_url = ?")
         

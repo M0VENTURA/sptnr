@@ -1576,18 +1576,14 @@ def fetch_album_art_url_from_musicbrainz(artist: str, album: str) -> str | None:
     try:
         import requests
         
-        # Try to get MBID from database (support legacy/newer schema names)
+        # Try to get MBID from database using canonical column name.
         conn = get_db_connection()
         cursor = conn.cursor()
 
         cursor.execute("PRAGMA table_info(tracks)")
         track_columns = {row[1] for row in cursor.fetchall()}
 
-        mb_album_column = None
-        if "musicbrainz_album_mbid" in track_columns:
-            mb_album_column = "musicbrainz_album_mbid"
-        elif "beets_album_mbid" in track_columns:
-            mb_album_column = "beets_album_mbid"
+        mb_album_column = "musicbrainz_album_mbid" if "musicbrainz_album_mbid" in track_columns else None
 
         result = None
         if mb_album_column:

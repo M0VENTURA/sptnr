@@ -530,11 +530,11 @@
                                 </a>
                             </div>
                             {% endif %}
-                            {% if track.beets_album_mbid %}
+                            {% if track.musicbrainz_album_mbid %}
                             <div class="small mb-2">
                                 <strong>Release:</strong>
-                                <a href="https://musicbrainz.org/release/{{ track.beets_album_mbid }}" target="_blank" class="text-primary">
-                                    {{ track.beets_album_mbid[:12] }}... <i class="bi bi-box-arrow-up-right" style="font-size: 0.7rem;"></i>
+                                <a href="https://musicbrainz.org/release/{{ track.musicbrainz_album_mbid }}" target="_blank" class="text-primary">
+                                    {{ track.musicbrainz_album_mbid[:12] }}... <i class="bi bi-box-arrow-up-right" style="font-size: 0.7rem;"></i>
                                 </a>
                             </div>
                             {% endif %}

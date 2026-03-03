@@ -84,6 +84,63 @@ def ensure_album_artist_column():
         return False
 
 
+def ensure_musicbrainz_album_mbid_column():
+    """Ensure tracks table uses `musicbrainz_album_mbid` instead of legacy `beets_album_mbid`.
+
+    Migration behavior:
+    - If only `beets_album_mbid` exists: rename it to `musicbrainz_album_mbid`.
+    - If both exist: backfill missing values in the new column from the legacy column.
+    - If neither exists: add `musicbrainz_album_mbid`.
+    """
+    import logging
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tracks'")
+        if not cursor.fetchone():
+            logging.warning("Tracks table does not exist yet, skipping MBID column migration")
+            conn.close()
+            return False
+
+        cursor.execute("PRAGMA table_info(tracks)")
+        columns = {row[1] for row in cursor.fetchall()}
+
+        has_legacy = "beets_album_mbid" in columns
+        has_new = "musicbrainz_album_mbid" in columns
+
+        if has_legacy and not has_new:
+            logging.info("Renaming tracks.beets_album_mbid -> tracks.musicbrainz_album_mbid")
+            cursor.execute(
+                "ALTER TABLE tracks RENAME COLUMN beets_album_mbid TO musicbrainz_album_mbid"
+            )
+            conn.commit()
+            logging.info("✓ Renamed beets_album_mbid to musicbrainz_album_mbid")
+        elif has_legacy and has_new:
+            cursor.execute(
+                """
+                UPDATE tracks
+                SET musicbrainz_album_mbid = beets_album_mbid
+                WHERE (musicbrainz_album_mbid IS NULL OR musicbrainz_album_mbid = '')
+                  AND beets_album_mbid IS NOT NULL
+                  AND beets_album_mbid != ''
+                """
+            )
+            conn.commit()
+            logging.info("✓ Backfilled musicbrainz_album_mbid from legacy beets_album_mbid")
+        elif not has_new:
+            cursor.execute("ALTER TABLE tracks ADD COLUMN musicbrainz_album_mbid TEXT")
+            conn.commit()
+            logging.info("✓ Added missing musicbrainz_album_mbid column")
+
+        conn.close()
+        return True
+    except Exception as e:
+        logging.error(f"Error ensuring musicbrainz_album_mbid column exists: {e}", exc_info=True)
+        return False
+
+
 def verify_album_artist_column():
     """Verify that the album_artist column exists and is functional.
     
