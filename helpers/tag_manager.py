@@ -50,7 +50,7 @@ EDITABLE_FIELDS = {
     # Numbering
     "track_number", "tracktotal", "disc_number", "totaldiscs",
     # Content
-    "genre", "work",
+    "genres", "work",
     # Technical
     "bpm", "isrc", "script",
     # MusicBrainz IDs
@@ -570,6 +570,14 @@ def sync_track_tags_to_file(track_id: str) -> bool:
         
         file_path = result[0]
         conn.close()
+        
+        # Handle relative paths from Navidrome - convert to absolute
+        if file_path and not os.path.isabs(file_path):
+            music_folder = os.environ.get("MUSIC_FOLDER", "/music")
+            absolute_path = os.path.join(music_folder, file_path)
+            if os.path.exists(absolute_path):
+                file_path = absolute_path
+                logger.debug(f"Converted relative path to absolute: {file_path}")
         
         # Get tags
         tags = get_track_tags(track_id)
