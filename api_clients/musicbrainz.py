@@ -254,7 +254,7 @@ class MusicBrainzClient:
             self.session.mount("http://", HTTPAdapter(max_retries=retry_strategy))
             self.session.mount("https://", ssl_adapter)
     
-    def is_single(self, title: str, artist: str, artist_mbid: str = None) -> bool:
+    def is_single(self, title: str, artist: str, artist_mbid: str = None, album_track_count: int = None) -> bool:
         """
         Query MusicBrainz to check if a track is a single.
         
@@ -265,14 +265,24 @@ class MusicBrainzClient:
         Also verifies that the version matches (e.g., doesn't match a studio single
         when checking a live version).
         
+        IMPORTANT: Validates track count if provided. Releases with 4+ tracks cannot
+        be classified as singles, even if MusicBrainz labels them as such. This prevents
+        albums like "+44 - When Your Heart Stops Beating" (12 tracks) from being
+        incorrectly classified as singles based solely on MusicBrainz data.
+        
         Args:
             title: Track title
             artist: Artist name (used as fallback if MBID not available)
             artist_mbid: Optional MusicBrainz artist ID (preferred for accuracy)
+            album_track_count: Optional album track count - if provided and >= 4, return False
             
         Returns:
-            True if release-group type is Single AND version matches
+            True if release-group type is Single AND version matches AND (no track_count OR track_count < 4)
         """
+        # Sanity check: albums with 4+ tracks cannot be singles
+        if album_track_count is not None and album_track_count >= 4:
+            logger.debug(f"MusicBrainz single check rejected: album has {album_track_count} tracks (>= 4)")
+            return False
         if not self.enabled:
             return False
         
