@@ -794,12 +794,15 @@ def auto_discover_and_queue_files():
                 file_ext = os.path.splitext(filename)[1].lower()
                 
                 # Extract metadata from file
+                metadata = {}
+                had_metadata_error = False
                 try:
                     metadata = read_mp3_metadata(full_path)
                 except Exception as e:
                     logger.warning(f"Could not read metadata from {filename}: {e}")
-                    metadata = {}
+                    had_metadata_error = True
                 
+                # Extract fields with fallbacks to filename
                 artist = metadata.get('artist', 'Unknown Artist')
                 album = metadata.get('album', 'Unknown Album')
                 title = metadata.get('title', os.path.splitext(filename)[0])
@@ -807,6 +810,12 @@ def auto_discover_and_queue_files():
                 track_number = metadata.get('track_number')
                 disc_number = metadata.get('disc_number')
                 year = metadata.get('date') or metadata.get('year')
+                
+                # Log metadata extraction status
+                if metadata and not had_metadata_error:
+                    logger.debug(f"✅ Metadata read: {artist} - {album} - {title}")
+                else:
+                    logger.info(f"⚠️  No metadata found (using filename): {filename} → {artist} - {title}")
                 
                 # Check if already in download_queue
                 cursor.execute("""
@@ -833,7 +842,7 @@ def auto_discover_and_queue_files():
                     stats['already_in_library'] += 1
                     logger.debug(f"Track already in library: {artist} - {title}")
                     
-                    # Still add to queue with status 'discovered' so user can see it
+                    # Still add to queue with status 'completed' so it appears in Completed & Ready to Organize
                     execute_write_with_retry(
                         cursor,
                         conn,
@@ -841,7 +850,7 @@ def auto_discover_and_queue_files():
                         INSERT INTO download_queue 
                         (artist, title, album, album_artist, track_number, disc_number, year, found_filename, file_path, 
                          status, source, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'discovered', 'discovered', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', 'discovered', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """,
                         (artist, title, album, album_artist, track_number, disc_number, year, filename, full_path),
                         context="auto_discover in-library insert"
@@ -850,7 +859,7 @@ def auto_discover_and_queue_files():
                     stats['queued'] += 1
                     continue
                 
-                # Add to queue with 'discovered' status
+                # Add to queue with 'completed' status (found in downloads folder, ready to organize)
                 execute_write_with_retry(
                     cursor,
                     conn,
@@ -858,7 +867,7 @@ def auto_discover_and_queue_files():
                     INSERT INTO download_queue 
                     (artist, title, album, album_artist, track_number, disc_number, year, found_filename, file_path, 
                      status, source, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'discovered', 'discovered', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', 'discovered', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """,
                     (artist, title, album, album_artist, track_number, disc_number, year, filename, full_path),
                     context="auto_discover insert"
@@ -866,11 +875,12 @@ def auto_discover_and_queue_files():
 
                 stats['queued'] += 1
                 
-                # Log discovery with format info
+                # Log discovery with metadata and format info
+                metadata_status = "✓ metadata" if metadata else "✗ fallback"
                 if file_ext == '.flac':
-                    logger.info(f"Discovered and queued (FLAC→MP3): {artist} - {title} ({filename})")
+                    logger.info(f"✅ Discovered [FLAC→MP3] [{metadata_status}]: {artist} - {title}")
                 else:
-                    logger.info(f"Discovered and queued: {artist} - {title} ({filename})")
+                    logger.info(f"✅ Discovered [{metadata_status}]: {artist} - {title} from {os.path.basename(os.path.dirname(full_path))}/{filename}")
                 
             except Exception as e:
                 error_msg = f"Error processing {file_info['filename']}: {str(e)}"
