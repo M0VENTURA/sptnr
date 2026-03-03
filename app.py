@@ -6682,6 +6682,9 @@ def config_editor():
     
     # GET request - show config editor
     config, raw = _read_yaml(CONFIG_PATH)
+    # Ensure config is a dict (in case YAML parsed to something else)
+    if not isinstance(config, dict):
+        config = {}
     # Check for required keys in navidrome_users (for warning only)
     navidrome_users = config.get('navidrome_users', [])
     required_keys = ["base_url", "user", "pass"]
