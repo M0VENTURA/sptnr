@@ -1520,6 +1520,11 @@ def fetch_album_art_from_discogs(artist: str, album: str, discogs_token: str = N
             log_debug(f"[ALBUM_ART_FALLBACK] No Discogs token available, skipping Discogs lookup")
             return None
         
+        # Validate token - reject placeholders
+        if discogs_token.lower() in ("your_discogs_token", "your_token", "placeholder", "") or len(discogs_token) < 10:
+            log_debug(f"[ALBUM_ART_FALLBACK] Discogs token is invalid or placeholder - skipping Discogs lookup")
+            return None
+        
         client = DiscogsClient(token=discogs_token)
         
         # Search for the album on Discogs
@@ -1804,6 +1809,12 @@ def detect_single_for_track(
             discogs_client = None
             if discogs_token:
                 discogs_client = _get_timeout_safe_discogs_client(discogs_token)
+                if discogs_client:
+                    log_debug(f"[SINGLE DETECTION] Discogs client initialized for single detection")
+                else:
+                    log_debug(f"[SINGLE DETECTION] Discogs client initialization failed - Discogs single detection unavailable")
+            else:
+                log_debug(f"[SINGLE DETECTION] Discogs token not available - Discogs single detection disabled")
             
             musicbrainz_client = None
             if HAVE_MUSICBRAINZ:
@@ -3141,13 +3152,15 @@ def popularity_scan(
             
             # Validate Discogs token - reject placeholder or empty tokens
             if discogs_token and discogs_token.lower() in ("your_discogs_token", "your_token", "placeholder", ""):
-                log_info(f"⚠ Discogs token appears to be a placeholder - Discogs single detection will be disabled")
-                log_debug(f"Discogs token validation failed: token='{discogs_token}' is a placeholder value")
+                log_info(f"⚠ Discogs token is a placeholder ('{discogs_token}') - Discogs features disabled")
+                log_debug(f"Discogs token validation failed: token='{discogs_token}' is a placeholder value. Update config.yaml with actual Discogs API token")
                 discogs_token = None  # Disable Discogs if placeholder detected
             elif discogs_token and len(discogs_token) < 10:
-                log_info(f"⚠ Discogs token appears invalid (too short) - Discogs single detection will be disabled")
+                log_info(f"⚠ Discogs token appears invalid (too short: {len(discogs_token)} chars) - Discogs features disabled")
                 log_debug(f"Discogs token validation failed: token length={len(discogs_token)}, expected 20+ characters")
                 discogs_token = None  # Disable Discogs if token looks invalid
+            elif discogs_token:
+                log_debug(f"✓ Discogs token validated ({len(discogs_token)} chars) - Discogs features enabled")
             
             # Fetch similar artists from Last.fm and ListenBrainz for artist-contextual popularity weighting
             # This enables boosting tracks that are popular among listeners of similar artists
