@@ -129,7 +129,7 @@
     </div>
     
     <!-- Scan Operations -->
-    <div class="card mb-4">
+    <div class="card mb-4 scan-operations-card">
         <div class="card-header">
             <h5 class="card-title mb-0">
                 <i class="bi bi-sliders"></i> Scan Operations
@@ -164,7 +164,7 @@
                             </h6>
                             <p class="small text-muted mb-3">Synchronize music library from Navidrome server</p>
                             <div class="btn-group w-100" role="group">
-                                <button type="button" class="btn btn-primary btn-sm dropdown-toggle scan-dropdown-btn" data-bs-toggle="dropdown" aria-expanded="false" data-scan-type="navidrome">
+                                <button type="button" class="btn btn-primary btn-sm dropdown-toggle scan-dropdown-btn scan-start-btn" data-bs-toggle="dropdown" aria-expanded="false" data-scan-type="navidrome">
                                     <i class="bi bi-play-fill"></i> Start
                                 </button>
                                 <ul class="dropdown-menu">
@@ -189,7 +189,7 @@
                             </h6>
                             <p class="small text-muted mb-3">Calculate popularity ratings and identify singles</p>
                             <div class="btn-group w-100" role="group">
-                                <button type="button" class="btn btn-success btn-sm dropdown-toggle scan-dropdown-btn" data-bs-toggle="dropdown" aria-expanded="false" data-scan-type="popularity">
+                                <button id="popularity-start-btn" type="button" class="btn btn-success btn-sm dropdown-toggle scan-dropdown-btn scan-start-btn" data-bs-toggle="dropdown" aria-expanded="false" data-scan-type="popularity">
                                     <i class="bi bi-play-fill"></i> Start
                                 </button>
                                 <ul class="dropdown-menu">
@@ -216,7 +216,7 @@
                             </h6>
                             <p class="small text-muted mb-3">Process each artist: Navidrome import → Popularity → Singles scan</p>
                             <div class="btn-group w-100" role="group">
-                                <button type="button" class="btn btn-info btn-sm dropdown-toggle scan-dropdown-btn" data-bs-toggle="dropdown" aria-expanded="false" data-scan-type="combined" style="color: #000; font-weight: 600;">
+                                <button type="button" class="btn btn-info btn-sm dropdown-toggle scan-dropdown-btn scan-start-btn" data-bs-toggle="dropdown" aria-expanded="false" data-scan-type="combined" style="color: #000; font-weight: 600;">
                                     <i class="bi bi-play-fill"></i> Start
                                 </button>
                                 <ul class="dropdown-menu">
@@ -285,75 +285,29 @@
         <div class="card mb-4">
             <div class="card-header">
                 <h5 class="card-title mb-0">
-                    <i class="bi bi-clock-history"></i> Recent Scans
+                    <i class="bi bi-clock-history"></i> Recent Scans (Scrollable 100-item View)
                 </h5>
             </div>
-            <div class="table-responsive">
-                <table class="table table-hover mb-0">
-                    <thead class="d-none d-md-table-header-group">
+            <!-- Scrollable Container: 10-row viewport with 100 items available -->
+            <div style="height: 400px; overflow-y: auto; position: relative;">
+                <table class="table table-hover mb-0" style="margin-bottom: 0;">
+                    <thead style="position: sticky; top: 0; background: white; z-index: 10;">
                         <tr>
-                            <th>
+                            <th style="width: 25%;">
                                 <i class="bi bi-person"></i> Artist
                             </th>
-                            <th>
+                            <th style="width: 25%;">
                                 <i class="bi bi-disc"></i> Album
                             </th>
-                            <th>Scan Type</th>
-                            <th>Source</th>
-                            <th>Last Scanned</th>
-                            <th class="text-center">Actions</th>
+                            <th style="width: 25%;">Scan Types</th>
+                            <th style="width: 15%; text-align: right;">Last Scanned</th>
+                            <th style="width: 10%; text-align: center;">Actions</th>
                         </tr>
                     </thead>
                     <tbody id="recent-scans-body">
-                        {% for scan in recent_scans %}
-                        <tr class="d-flex flex-column d-md-table-row">
-                            <td data-label="Artist" class="d-flex justify-content-between d-md-table-cell">
-                                <span class="d-md-none text-muted fw-bold">Artist</span>
-                                <a href="{{ url_for('artist_detail', name=scan.artist) }}">
-                                    {{ scan.artist }}
-                                </a>
-                            </td>
-                            <td data-label="Album" class="d-flex justify-content-between d-md-table-cell">
-                                <span class="d-md-none text-muted fw-bold">Album</span>
-                                <a href="{{ url_for('album_detail', artist=scan.artist, album=scan.album) }}">
-                                    {{ scan.album }}
-                                </a>
-                            </td>
-                            <td data-label="Type" class="d-flex justify-content-between d-md-table-cell">
-                                <span class="d-md-none text-muted fw-bold">Type</span>
-                                {% if scan.scan_type == 'navidrome' %}
-                                    <span class="badge bg-primary"><i class="bi bi-cloud"></i> Navidrome</span>
-                                {% elif scan.scan_type == 'popularity' %}
-                                    <span class="badge bg-success"><i class="bi bi-graph-up"></i> Popularity</span>
-                                {% elif scan.scan_type == 'singles' %}
-                                    <span class="badge bg-warning text-dark"><i class="bi bi-star"></i> Singles</span>
-                                {% elif scan.scan_type == 'combined' %}
-                                    <span class="badge bg-info text-dark"><i class="bi bi-lightning-fill"></i> Combined</span>
-                                {% elif scan.scan_type == 'unified' %}
-                                    <span class="badge bg-secondary"><i class="bi bi-layers"></i> Unified</span>
-                                {% else %}
-                                    <span class="badge bg-secondary">{{ scan.scan_type }}</span>
-                                {% endif %}
-                            </td>
-                            <td data-label="Source" class="d-flex justify-content-between d-md-table-cell">
-                                <span class="d-md-none text-muted fw-bold">Source</span>
-                                <small class="text-muted">{{ scan.source if scan.source else '-' }}</small>
-                            </td>
-                            <td data-label="Scanned" class="d-flex justify-content-between d-md-table-cell text-muted">
-                                <span class="d-md-none text-muted fw-bold">Scanned</span>
-                                {{ scan.scan_timestamp }}
-                            </td>
-                            <td class="d-flex justify-content-end d-md-table-cell">
-                                <a href="{{ url_for('album_detail', artist=scan.artist, album=scan.album) }}" class="btn btn-sm btn-outline-primary">
-                                    <i class="bi bi-arrow-right"></i>
-                                </a>
-                            </td>
-                        </tr>
-                        {% else %}
                         <tr>
-                            <td colspan="6" class="text-center text-muted">No recent scans yet</td>
+                            <td colspan="5" class="text-center text-muted">No recent scans yet</td>
                         </tr>
-                        {% endfor %}
                     </tbody>
                 </table>
             </div>
@@ -501,10 +455,31 @@
         line-height: 1.3;
     }
 
-    /* Dropdown z-index fix: ensure dropdowns appear above all other elements */
-    /* Bootstrap modals are at z-index 1050, so we need to be higher */
-    .scan-dropdown-btn + .dropdown-menu {
-        z-index: 1060;
+    /* Dropdown z-index fix: ensure scan dropdowns appear above unified log panel */
+    .scan-operations-card {
+        position: relative;
+        z-index: 30;
+        overflow: visible;
+    }
+
+    .scan-operations-card .dropdown {
+        position: relative;
+    }
+
+    .scan-operations-card .dropdown-menu,
+    .scan-operations-card .scan-dropdown-btn + .dropdown-menu {
+        z-index: 2000;
+    }
+
+    .scan-operations-card .dropdown.show,
+    .scan-operations-card .btn-group.show {
+        z-index: 2001;
+    }
+
+    /* Keep unified log below scan dropdowns */
+    #unifiedLog {
+        position: relative;
+        z-index: 1;
     }
     
     /* Prevent scan operation card overflow from clipping dropdowns */
@@ -565,50 +540,84 @@ document.addEventListener('DOMContentLoaded', function() {
     function renderRecentScans(scans) {
         if (!recentScansBody) return;
         if (!scans || scans.length === 0) {
-            recentScansBody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No recent scans yet</td></tr>';
+            recentScansBody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No recent scans yet</td></tr>';
             return;
         }
 
-        const rows = scans.map(scan => {
-            const artistUrl = `/artist/${encodeURIComponent(scan.artist)}`;
-            const albumUrl = `/album/${encodeURIComponent(scan.artist)}/${encodeURIComponent(scan.album)}`;
-            let badge = `<span class="badge bg-secondary">${scan.scan_type}</span>`;
-            if (scan.scan_type === 'navidrome') {
-                badge = '<span class="badge bg-primary"><i class="bi bi-cloud"></i> Navidrome</span>';
-            } else if (scan.scan_type === 'popularity') {
-                badge = '<span class="badge bg-success"><i class="bi bi-graph-up"></i> Popularity</span>';
-            } else if (scan.scan_type === 'singles') {
-                badge = '<span class="badge bg-warning text-dark"><i class="bi bi-star"></i> Singles</span>';
-            } else if (scan.scan_type === 'combined') {
-                badge = '<span class="badge bg-info text-dark"><i class="bi bi-lightning-fill"></i> Combined</span>';
-            } else if (scan.scan_type === 'unified') {
-                badge = '<span class="badge bg-secondary"><i class="bi bi-layers"></i> Unified</span>';
+        // Deduplicate: group scans by (artist, album)
+        const groupedScans = {};
+        
+        scans.forEach(scan => {
+            const key = `${scan.artist}|${scan.album}`;
+            if (!groupedScans[key]) {
+                groupedScans[key] = {
+                    artist: scan.artist,
+                    album: scan.album,
+                    scan_types: [],
+                    latest_timestamp: scan.scan_timestamp,
+                    latest_timestamp_obj: new Date(scan.scan_timestamp)
+                };
             }
+            
+            // Add scan type if not already present
+            if (!groupedScans[key].scan_types.find(s => s.type === scan.scan_type)) {
+                groupedScans[key].scan_types.push({
+                    type: scan.scan_type,
+                    timestamp: scan.scan_timestamp
+                });
+            }
+            
+            // Keep track of the latest timestamp
+            const scanTime = new Date(scan.scan_timestamp);
+            if (scanTime > groupedScans[key].latest_timestamp_obj) {
+                groupedScans[key].latest_timestamp = scan.scan_timestamp;
+                groupedScans[key].latest_timestamp_obj = scanTime;
+            }
+        });
+
+        // Convert to array and sort by latest timestamp
+        const dedupedScans = Object.values(groupedScans)
+            .sort((a, b) => b.latest_timestamp_obj - a.latest_timestamp_obj);
+
+        const rows = dedupedScans.map(group => {
+            const artistUrl = `/artist/${encodeURIComponent(group.artist)}`;
+            const albumUrl = `/album/${encodeURIComponent(group.artist)}/${encodeURIComponent(group.album)}`;
+            
+            // Generate scan type badges
+            const badges = group.scan_types.map(st => {
+                let badgeHtml = `<span class="badge bg-secondary" title="${st.timestamp}">${st.type}</span>`;
+                if (st.type === 'navidrome') {
+                    badgeHtml = '<span class="badge bg-primary" title="' + st.timestamp + '"><i class="bi bi-cloud"></i> Navidrome</span>';
+                } else if (st.type === 'popularity') {
+                    badgeHtml = '<span class="badge bg-success" title="' + st.timestamp + '"><i class="bi bi-graph-up"></i> Popularity</span>';
+                } else if (st.type === 'singles') {
+                    badgeHtml = '<span class="badge bg-warning text-dark" title="' + st.timestamp + '"><i class="bi bi-star"></i> Singles</span>';
+                } else if (st.type === 'combined') {
+                    badgeHtml = '<span class="badge bg-info text-dark" title="' + st.timestamp + '"><i class="bi bi-lightning-fill"></i> Combined</span>';
+                } else if (st.type === 'unified') {
+                    badgeHtml = '<span class="badge bg-secondary" title="' + st.timestamp + '"><i class="bi bi-layers"></i> Unified</span>';
+                }
+                return badgeHtml;
+            }).join(' ');
 
             return `
-                <tr class="d-flex flex-column d-md-table-row">
-                    <td data-label="Artist" class="d-flex justify-content-between d-md-table-cell">
-                        <span class="d-md-none text-muted fw-bold">Artist</span>
-                        <a href="${artistUrl}">${scan.artist}</a>
+                <tr>
+                    <td>
+                        <a href="${artistUrl}">${escapeHtml(group.artist)}</a>
                     </td>
-                    <td data-label="Album" class="d-flex justify-content-between d-md-table-cell">
-                        <span class="d-md-none text-muted fw-bold">Album</span>
-                        <a href="${albumUrl}">${scan.album}</a>
+                    <td>
+                        <a href="${albumUrl}">${escapeHtml(group.album)}</a>
                     </td>
-                    <td data-label="Type" class="d-flex justify-content-between d-md-table-cell">
-                        <span class="d-md-none text-muted fw-bold">Type</span>
-                        ${badge}
+                    <td>
+                        <div class="d-flex flex-wrap gap-2">
+                            ${badges}
+                        </div>
                     </td>
-                    <td data-label="Source" class="d-flex justify-content-between d-md-table-cell">
-                        <span class="d-md-none text-muted fw-bold">Source</span>
-                        <small class="text-muted">${scan.source || '-'}</small>
+                    <td class="text-muted text-end">
+                        <small>${group.latest_timestamp}</small>
                     </td>
-                    <td data-label="Scanned" class="d-flex justify-content-between d-md-table-cell text-muted">
-                        <span class="d-md-none text-muted fw-bold">Scanned</span>
-                        ${scan.scan_timestamp}
-                    </td>
-                    <td class="d-flex justify-content-end d-md-table-cell">
-                        <a href="${albumUrl}" class="btn btn-sm btn-outline-primary">
+                    <td class="text-center">
+                        <a href="${albumUrl}" class="btn btn-sm btn-outline-primary" title="View album">
                             <i class="bi bi-arrow-right"></i>
                         </a>
                     </td>

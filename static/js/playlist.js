@@ -1044,6 +1044,8 @@ async function createPlaylist() {
 async function loadLastfmRecommendations() {
   const recType = document.getElementById('lfmRecType')?.value || 'tracks';
   
+  console.log(`[Last.fm Playlist] Loading ${recType} recommendations...`);
+  
   try {
     const lfmRecommendationsEmpty = document.getElementById('lfmRecommendationsEmpty');
     const lfmRecommendationsResults = document.getElementById('lfmRecommendationsResults');
@@ -1061,12 +1063,25 @@ async function loadLastfmRecommendations() {
       body: JSON.stringify({ type: recType })
     });
     
+    console.log(`[Last.fm Playlist] API Response status: ${response.status} ${response.statusText}`);
+    
     if (!response.ok) {
       const error = await response.json();
-      throw new Error(error.error || 'Failed to load recommendations');
+      console.error('[Last.fm Playlist] API Error:', error);
+      throw new Error(error.error || `API error: ${response.status} ${response.statusText}`);
     }
     
     const data = await response.json();
+    console.log('[Last.fm Playlist] API Data:', data);
+    
+    // Check if recommendations are actually empty
+    if (!data.matched_tracks && !data.missing_tracks) {
+      console.warn('[Last.fm Playlist] API returned no recommendations at all. This indicates:');
+      console.warn('  1. Last.fm account has no scrobbling history, or');
+      console.warn('  2. API key is invalid, or');
+      console.warn('  3. Last.fm username is not configured in your profile');
+    }
+    
     lfmRecommendationsData = data;
     
     document.getElementById('lfmTotalCount').textContent = data.total_recommendations || 0;

@@ -3294,6 +3294,17 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+function escapeJavaScriptString(str) {
+  if (!str) return '';
+  return str
+    .replace(/\\/g, '\\\\')      // Backslash
+    .replace(/'/g, "\\'")        // Single quote
+    .replace(/"/g, '\\"')        // Double quote
+    .replace(/\n/g, '\\n')       // Newline
+    .replace(/\r/g, '\\r')       // Carriage return
+    .replace(/\t/g, '\\t');      // Tab
+}
+
 // Auto-refresh playlist sessions every 10 seconds when tab is visible
 document.getElementById('playlistTab').addEventListener('click', function() {
   clearInterval(playlistSessionRefreshInterval);
@@ -3511,7 +3522,7 @@ async function refreshUpcomingReleases() {
             <td><small>${release.release_date || 'TBA'}</small></td>
             <td>
               <button type="button" class="btn btn-sm btn-outline-primary" title="Search on MusicBrainz"
-                onclick="searchMusicBrainzRelease(event, '${escapeHtml(release.artist_name)}', '${escapeHtml(release.album_name)}')">
+                onclick="searchMusicBrainzRelease(event, '${escapeJavaScriptString(release.artist_name)}', '${escapeJavaScriptString(release.album_name)}')">
                 <i class="bi bi-search"></i> Search
               </button>
             </td>

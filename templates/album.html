@@ -169,7 +169,7 @@
                                 <select class="form-select" id="album_type" name="album_type">
                                     <option value="">Unknown</option>
                                     <option value="album" {% if album_data and album_data.spotify_album_type == 'album' %}selected{% endif %}>Album</option>
-                                    <option value="album+compilation" {% if album_data and album_data.spotify_album_type == 'album+compilation' or album_data.spotify_album_type == 'compilation' %}selected{% endif %}>Album (Compilation)</option>
+                                    <option value="album+compilation" {% if album_data and (album_data.spotify_album_type == 'album+compilation' or album_data.spotify_album_type == 'compilation') %}selected{% endif %}>Album (Compilation)</option>
                                     <option value="album+live" {% if album_data and album_data.spotify_album_type == 'album+live' %}selected{% endif %}>Album (Live)</option>
                                     <option value="album+remix" {% if album_data and album_data.spotify_album_type == 'album+remix' %}selected{% endif %}>Album (Remix)</option>
                                     <option value="album+soundtrack" {% if album_data and album_data.spotify_album_type == 'album+soundtrack' %}selected{% endif %}>Album (Soundtrack)</option>
@@ -2909,115 +2909,88 @@
         // Remove spinner class from container
         container.classList.remove('spinner-border');
         
-        const totalArtists = data.similar_artists.lastfm.length + data.similar_artists.listenbrainz.length;
+        const allArtists = [
+            ...data.similar_artists.lastfm.map(a => ({...a, source: 'lastfm'})),
+            ...data.similar_artists.listenbrainz.map(a => ({...a, source: 'listenbrainz'}))
+        ];
         
-        if (totalArtists === 0) {
+        // Deduplicate by name (keep first occurrence)
+        const seen = new Set();
+        const uniqueArtists = allArtists.filter(a => {
+            if (seen.has(a.name.toLowerCase())) return false;
+            seen.add(a.name.toLowerCase());
+            return true;
+        });
+        
+        if (uniqueArtists.length === 0) {
             container.innerHTML = '<div class="alert alert-info mb-0"><i class="bi bi-info-circle"></i> No similar artists available</div>';
             return;
         }
         
-        let html = '<ul class="nav nav-tabs" role="tablist">';
-        let tabContent = '<div class="tab-content mt-3">';
-        let firstTab = true;
+        // Create grid layout
+        let html = `
+            <div class="row g-3">
+        `;
         
-        // Last.fm similar artists
-        if (data.similar_artists.lastfm.length > 0) {
-            const tabId = 'albumSimilarArtistsLastfm';
-            const activeClass = firstTab ? 'active' : '';
+        uniqueArtists.forEach(artist => {
+            const artistUrl = `/artist/${encodeURIComponent(artist.name)}`;
+            const downloadUrl = `/downloads/search?q=${encodeURIComponent(artist.name)}`;
+            const matchPercent = artist.match ? Math.round(artist.match * 100) : 0;
+            const matchBadge = matchPercent > 0 ? `<span class="badge bg-success position-absolute" style="top: 8px; right: 8px;">${matchPercent}%</span>` : '';
+            const sourceBadge = artist.source === 'lastfm' 
+                ? '<span class="badge bg-primary" title="From Last.fm">Last.fm</span>'
+                : '<span class="badge bg-info" title="From ListenBrainz">ListenBrainz</span>';
             
             html += `
-                <li class="nav-item" role="presentation">
-                    <button class="nav-link ${activeClass}" id="${tabId}-tab" data-bs-toggle="tab" 
-                            data-bs-target="#${tabId}-content" type="button" role="tab">
-                        <i class="bi bi-music"></i> Last.fm (${data.similar_artists.lastfm.length})
-                    </button>
-                </li>
-            `;
-            
-            let artistsHtml = '<div class="d-flex flex-wrap gap-2">';
-            data.similar_artists.lastfm.forEach(artist => {
-                const match = artist.match ? ` <small class="text-muted">(${(artist.match * 100).toFixed(0)}%)</small>` : '';
-                const artistUrl = `/artist/${encodeURIComponent(artist.name)}`;
-                artistsHtml += `
-                    <div class="btn-group" role="group">
-                        <a href="${artistUrl}" class="badge bg-primary text-white text-decoration-none" style="padding: 0.5rem 0.75rem;">
-                            <i class="bi bi-person-heart"></i> ${escapeHtml(artist.name)}${match}
-                        </a>
-                        <button class="btn btn-outline-primary btn-sm" type="button" data-bs-toggle="dropdown" aria-expanded="false" title="More options for ${escapeHtml(artist.name)}">
-                            <i class="bi bi-three-dots-vertical"></i>
-                        </button>
-                        <ul class="dropdown-menu dropdown-menu-end" style="min-width: auto;">
-                            <li><a class="dropdown-item" href="${artistUrl}"><i class="bi bi-eye"></i> View Library Profile</a></li>
-                            <li><a class="dropdown-item" href="/downloads/search?q=${encodeURIComponent(artist.name)}" target="_blank"><i class="bi bi-download"></i> Download</a></li>
-                            <li><a class="dropdown-item" href="https://www.last.fm/music/${encodeURIComponent(artist.name)}" target="_blank"><i class="bi bi-box-arrow-up-right"></i> Last.fm</a></li>
-                        </ul>
+                <div class="col-6 col-md-4 col-lg-3">
+                    <div class="card h-100 overflow-hidden transition-all" style="cursor: pointer; position: relative;">
+                        ${matchBadge}
+                        <!-- Artist Card Image/Avatar -->
+                        <div style="aspect-ratio: 1; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); display: flex; align-items: center; justify-content: center; position: relative;">
+                            <i class="bi bi-person-circle" style="font-size: 3rem; color: white; opacity: 0.8;"></i>
+                        </div>
+                        
+                        <div class="card-body d-flex flex-column">
+                            <!-- Artist Name -->
+                            <h6 class="card-title mb-2 fw-bold text-truncate" title="${escapeHtml(artist.name)}">
+                                ${escapeHtml(artist.name)}
+                            </h6>
+                            
+                            <!-- Source Badge -->
+                            <div class="mb-2">
+                                ${sourceBadge}
+                            </div>
+                            
+                            <!-- Action Buttons -->
+                            <div class="btn-group-vertical btn-group-sm mt-auto" role="group">
+                                <a href="${artistUrl}" class="btn btn-outline-primary btn-sm" title="View in library">
+                                    <i class="bi bi-eye"></i> View
+                                </a>
+                                <a href="${downloadUrl}" class="btn btn-outline-secondary btn-sm" title="Download">
+                                    <i class="bi bi-download"></i> Download
+                                </a>
+                                <a href="https://www.last.fm/music/${encodeURIComponent(artist.name)}" target="_blank" class="btn btn-outline-info btn-sm" title="View on Last.fm">
+                                    <i class="bi bi-box-arrow-up-right"></i> Last.fm
+                                </a>
+                            </div>
+                        </div>
                     </div>
-                `;
-            });
-            artistsHtml += '</div>';
-            
-            tabContent += `
-                <div class="tab-pane fade ${activeClass} show" id="${tabId}-content" role="tabpanel">
-                    ${artistsHtml}
                 </div>
             `;
-            
-            firstTab = false;
-        }
+        });
         
-        // ListenBrainz similar artists
-        if (data.similar_artists.listenbrainz.length > 0) {
-            const tabId = 'albumSimilarArtistsListenbrainz';
-            const activeClass = firstTab ? 'active' : '';
-            
-            html += `
-                <li class="nav-item" role="presentation">
-                    <button class="nav-link ${activeClass}" id="${tabId}-tab" data-bs-toggle="tab" 
-                            data-bs-target="#${tabId}-content" type="button" role="tab">
-                        <i class="bi bi-music"></i> ListenBrainz (${data.similar_artists.listenbrainz.length})
-                    </button>
-                </li>
-            `;
-            
-            let artistsHtml = '<div class="d-flex flex-wrap gap-2">';
-            data.similar_artists.listenbrainz.forEach(artist => {
-                const artistUrl = `/artist/${encodeURIComponent(artist.name)}`;
-                artistsHtml += `
-                    <div class="btn-group" role="group">
-                        <a href="${artistUrl}" class="badge bg-info text-white text-decoration-none" style="padding: 0.5rem 0.75rem;">
-                            <i class="bi bi-person-heart"></i> ${escapeHtml(artist.name)}
-                        </a>
-                        <button class="btn btn-outline-info btn-sm" type="button" data-bs-toggle="dropdown" aria-expanded="false" title="More options for ${escapeHtml(artist.name)}">
-                            <i class="bi bi-three-dots-vertical"></i>
-                        </button>
-                        <ul class="dropdown-menu dropdown-menu-end" style="min-width: auto;">
-                            <li><a class="dropdown-item" href="${artistUrl}"><i class="bi bi-eye"></i> View Library Profile</a></li>
-                            <li><a class="dropdown-item" href="/downloads/search?q=${encodeURIComponent(artist.name)}" target="_blank"><i class="bi bi-download"></i> Download</a></li>
-                            <li><a class="dropdown-item" href="https://musicbrainz.org/artist/${encodeURIComponent(artist.name)}" target="_blank"><i class="bi bi-box-arrow-up-right"></i> MusicBrainz</a></li>
-                        </ul>
-                    </div>
-                `;
-            });
-            artistsHtml += '</div>';
-            
-            tabContent += `
-                <div class="tab-pane fade ${activeClass} show" id="${tabId}-content" role="tabpanel">
-                    ${artistsHtml}
-                </div>
-            `;
-        }
+        html += `
+            </div>
+        `;
         
-        html += '</ul>';
-        tabContent += '</div>';
-        
-        container.innerHTML = html + tabContent;
+        container.innerHTML = html;
     }
 
     function showAlbumSimilarArtistsError(message) {
         const container = document.getElementById('albumSimilarArtistsContainer');
         // Remove spinner class from container
         container.classList.remove('spinner-border');
-        container.innerHTML = `<div class="alert alert-warning mb-0"><i class="bi bi-exclamation-circle"></i> ${escapeHtml(message)}</div>`;
+        container.innerHTML = `<div class="alert alert-danger mb-0"><i class="bi bi-exclamation-circle"></i> ${escapeHtml(message)}</div>`;
     }
 
     // Bulk update track artists for album

@@ -3157,6 +3157,73 @@ def popularity_scan(
                 log_debug(f"Artist country lookup timed out for {artist}: {e}")
             except Exception as e:
                 log_debug(f"Artist country lookup failed for {artist}: {e}")
+
+            # Fallback: Save artist bio/image even when MusicBrainz is unavailable.
+            # Country lookup depends on MusicBrainz, but biography and image should not.
+            if not HAVE_MUSICBRAINZ:
+                try:
+                    log_debug(f"MusicBrainz unavailable; fetching artist bio/image without country lookup for: {artist}")
+
+                    artist_bio = ""
+                    artist_image = ""
+
+                    if HAVE_AUDIODB:
+                        try:
+                            artist_bio = _run_with_timeout(
+                                get_artist_biography,
+                                8,
+                                f"Artist bio lookup timed out after 8s",
+                                artist,
+                                enabled=True
+                            ) or ""
+
+                            artist_image = _run_with_timeout(
+                                get_artist_fanart,
+                                8,
+                                f"Artist image lookup timed out after 8s",
+                                artist,
+                                enabled=True
+                            ) or ""
+                        except Exception as e:
+                            log_debug(f"AudioDB bio/image lookup failed for {artist} (MusicBrainz unavailable): {e}")
+
+                    # If AudioDB has no metadata (or is unavailable), try Last.fm bio/image.
+                    if not artist_bio and not artist_image:
+                        try:
+                            lastfm_config = get_lastfm_config(config)
+                            if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
+                                from api_clients.lastfm import LastFmClient
+                                lastfm_client = LastFmClient(lastfm_config.get("api_key"))
+                                artist_info = _run_with_timeout(
+                                    lastfm_client.get_artist_info,
+                                    8,
+                                    "Last.fm artist info lookup timed out after 8s",
+                                    artist
+                                )
+
+                                artist_bio = artist_info.get("bio", "") or artist_info.get("bio_text", "") or ""
+                                artist_image = artist_info.get("image", "") or ""
+                        except Exception as e:
+                            log_debug(f"Last.fm bio/image fallback failed for {artist} (MusicBrainz unavailable): {e}")
+
+                    if artist_bio or artist_image:
+                        cursor.execute("""
+                            INSERT INTO artists (id, name, bio, image_url)
+                            VALUES (?, ?, ?, ?)
+                            ON CONFLICT(id) DO UPDATE SET
+                                bio = excluded.bio,
+                                image_url = excluded.image_url
+                        """, (artist, artist, artist_bio or "", artist_image or ""))
+                        conn.commit()
+
+                        if artist_bio:
+                            log_info(f"Saved artist bio for {artist} (MusicBrainz unavailable) ({len(artist_bio)} chars)")
+                        if artist_image:
+                            log_info(f"Saved artist image URL for {artist} (MusicBrainz unavailable): {artist_image[:60]}...")
+                    else:
+                        log_debug(f"No artist bio/image found for {artist} without MusicBrainz")
+                except Exception as e:
+                    log_debug(f"MusicBrainz-unavailable artist metadata save failed for {artist}: {e}")
             
             # Load Discogs token ONCE before album loop (needed for both popularity scan and singles detection)
             discogs_token = os.environ.get("DISCOGS_TOKEN", "")

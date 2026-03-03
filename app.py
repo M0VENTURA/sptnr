@@ -2020,10 +2020,69 @@ def artist_detail(name):
             ORDER BY first_release_date DESC
         """, (name,))
         missing_releases_data = cursor.fetchall()
+
+        # Top tracks by z-score (fallback to popularity ordering if z-score column is unavailable)
+        try:
+            cursor.execute("""
+                SELECT
+                    id,
+                    title,
+                    album,
+                    COALESCE(popularity_score, 0) as popularity_score,
+                    COALESCE(stars, 0) as stars,
+                    COALESCE(artist_z_score, 0) as artist_z_score,
+                    COALESCE(is_single, 0) as is_single,
+                    COALESCE(track_number, 0) as track_number,
+                    COALESCE(disc_number, 1) as disc_number,
+                    COALESCE(duration, 0) as duration
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
+                ORDER BY COALESCE(artist_z_score, 0) DESC, COALESCE(popularity_score, 0) DESC
+                LIMIT 10
+            """, (name,))
+            top_tracks = cursor.fetchall()
+        except Exception:
+            cursor.execute("""
+                SELECT
+                    id,
+                    title,
+                    album,
+                    COALESCE(popularity_score, 0) as popularity_score,
+                    COALESCE(stars, 0) as stars,
+                    0 as artist_z_score,
+                    COALESCE(is_single, 0) as is_single,
+                    COALESCE(track_number, 0) as track_number,
+                    COALESCE(disc_number, 1) as disc_number,
+                    COALESCE(duration, 0) as duration
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
+                ORDER BY COALESCE(popularity_score, 0) DESC, COALESCE(stars, 0) DESC
+                LIMIT 10
+            """, (name,))
+            top_tracks = cursor.fetchall()
+
+        # Albums where this artist appears as a featured/track artist but is not the album artist
+        cursor.execute("""
+            SELECT
+                album,
+                COALESCE(NULLIF(album_artist, ''), artist) as album_artist,
+                COUNT(*) as track_count,
+                AVG(COALESCE(stars, 0)) as avg_stars,
+                MIN(year) as album_year,
+                MAX(spotify_album_type) as album_type,
+                MAX(last_scanned) as last_updated
+            FROM tracks
+            WHERE artist = ?
+              AND COALESCE(NULLIF(album_artist, ''), artist) != ?
+            GROUP BY album, COALESCE(NULLIF(album_artist, ''), artist)
+            ORDER BY (album_year IS NULL), album_year DESC, album COLLATE NOCASE
+        """, (name, name))
+        appears_on_albums = cursor.fetchall()
         
         # Get potential compilation albums using cached compilation detection from background scan
         # Combined with fallback local heuristics in case scan hasn't run yet
-        # Query albums where this artist appears as a track artist
+        # IMPORTANT: Filter by album artist identity (not track artist) so featured appearances
+        # are handled separately under "Appears On".
         cursor.execute("""
             SELECT 
                 album,
@@ -2036,7 +2095,7 @@ def artist_detail(name):
                 MAX(album_artist) as album_artist,
                 MAX(is_compilation) as is_compilation
             FROM tracks
-            WHERE artist = ?
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
             GROUP BY album
             ORDER BY (album_year IS NULL), album_year DESC, album COLLATE NOCASE
         """, (name,))
@@ -2212,6 +2271,8 @@ def artist_detail(name):
         albums_data_dicts = convert_row_to_json_serializable(albums_data)
         merged_albums_by_category = convert_row_to_json_serializable(merged_albums_by_category)
         missing_by_category = convert_row_to_json_serializable(missing_by_category)
+        top_tracks = convert_row_to_json_serializable(top_tracks)
+        appears_on_albums = convert_row_to_json_serializable(appears_on_albums)
         artist_stats = convert_row_to_json_serializable(artist_stats)
         genres = convert_row_to_json_serializable(genres)
         
@@ -2220,6 +2281,8 @@ def artist_detail(name):
                              albums=albums_data_dicts,  # Keep for compatibility
                              albums_by_category=merged_albums_by_category,
                              missing_by_category=missing_by_category,  # Keep for backward compatibility
+                             top_tracks=top_tracks,
+                             appears_on_albums=appears_on_albums,
                              stats=artist_stats,
                              genres=genres,
                              artist_country=artist_country,
@@ -7035,9 +7098,11 @@ def api_scan_status():
 
 @app.route("/api/recent-scans")
 def api_recent_scans():
-    """Return latest album scan events for dashboard refresh."""
+    """Return latest album scan events for dashboard refresh (up to 100 items)."""
     try:
-        limit = request.args.get("limit", 10, type=int)
+        limit = request.args.get("limit", 100, type=int)
+        # Cap at 100 items max
+        limit = min(limit, 100)
         from scan_history import get_recent_album_scans
         scans = get_recent_album_scans(limit=limit)
         return jsonify({"scans": scans})
@@ -7411,8 +7476,8 @@ def scan_navidrome():
                     if last_scanned_artist:
                         for idx, (artist_name, _) in enumerate(artists):
                             if artist_name == last_scanned_artist:
-                                start_idx = idx + 1  # Start from the next artist
-                                logging.info(f"Resuming Navidrome scan from artist index {start_idx} (after '{last_scanned_artist}')")
+                                start_idx = idx  # Start from this artist (rescan it completely)
+                                logging.info(f"Resuming Navidrome scan from artist index {start_idx} ('{last_scanned_artist}')")
                                 break
                     
                     # Determine force and filter logic based on mode
@@ -7420,7 +7485,7 @@ def scan_navidrome():
                     filter_missing = (mode == 'missing')
                     
                     # Scan artists starting from checkpoint or beginning
-                    for idx, (artist_name, info) in enumerate(artists[start_idx:], start=start_idx+1):
+                    for idx, (artist_name, info) in enumerate(artists[start_idx:], start=start_idx):
                         # Check if scan should stop
                         with scan_lock:
                             if scan_process_navidrome is None:
@@ -7523,8 +7588,8 @@ def scan_combined():
                             logging.info(f"Resume mode: Found last scanned artist '{last_scanned_artist}'")
                             for idx, (artist_name, _) in enumerate(artists):
                                 if artist_name == last_scanned_artist:
-                                    start_idx = idx + 1  # Start from the next artist
-                                    logging.info(f"Resuming combined scan from artist index {start_idx} (after '{last_scanned_artist}')")
+                                    start_idx = idx  # Start from this artist (rescan it completely)
+                                    logging.info(f"Resuming combined scan from artist index {start_idx} ('{last_scanned_artist}')")
                                     break
                         else:
                             logging.warning("Resume mode: No last scanned artist found, starting from beginning")
@@ -12175,6 +12240,8 @@ def api_lastfm_create_playlist():
             if user_cfg:
                 username = user_cfg.get("lastfm_username", "")
         
+        logging.info(f"[LASTFM_PLAYLIST] Loading {rec_type} recommendations for user={current_user}, lastfm_user={username or 'undefined'}")
+        
         # Get recommendations with username to personalize results
         from api_clients.lastfm import get_lastfm_recommendations
         
@@ -12185,8 +12252,15 @@ def api_lastfm_create_playlist():
         
         recommendations = get_lastfm_recommendations(api_key, username=username, db_connection=get_db_for_lastfm)
         
-        if not recommendations:
-            return jsonify({"error": "No recommendations found"}), 404
+        # Check if we got any recommendations at all
+        if not recommendations or not any([recommendations.get("artists"), recommendations.get("albums"), recommendations.get("tracks")]):
+            # Log warning with more context
+            has_username = bool(username)
+            has_api_key = bool(api_key)
+            logging.warning(f"[LASTFM_PLAYLIST] No recommendations returned - has_username={has_username}, has_api_key={has_api_key}. This may indicate: auth failure, user hasn't scrobbled enough, or API is unavailable")
+            return jsonify({
+                "error": f"No {rec_type} recommendations found. Ensure Last.fm account has scrobbling history and API key is valid."
+            }), 404
         
         # Get the appropriate list based on type
         rec_list = []
@@ -12198,7 +12272,10 @@ def api_lastfm_create_playlist():
             rec_list = recommendations.get("albums", [])
         
         if not rec_list:
+            logging.info(f"[LASTFM_PLAYLIST] Type '{rec_type}' had no recommendations (other types may have returned results)")
             return jsonify({"error": f"No {rec_type} recommendations found"}), 404
+        
+        logging.info(f"[LASTFM_PLAYLIST] Got {len(rec_list)} {rec_type} recommendations to search")
         
         # Search for matching tracks in database
         matched_tracks = []
@@ -12297,6 +12374,8 @@ def api_lastfm_create_playlist():
                     })
         
         conn.close()
+        
+        logging.info(f"[LASTFM_PLAYLIST] Matched {len(matched_tracks)} / {len(rec_list)} {rec_type} recommendations")
         
         return jsonify({
             "total_recommendations": len(rec_list),
