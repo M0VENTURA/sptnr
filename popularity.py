@@ -4120,18 +4120,18 @@ def popularity_scan(
                                         skip_spotify_lookup = True
                             
                                 if not skip_spotify_lookup:
-                                    log_info(f'Searching Spotify for track: {title} by {artist}')
+                                    log_info(f'Searching Spotify for track: {title} by {track_artist}')
                                     # Normalize album name to remove version suffixes for better matching
                                     # This helps match albums like "Helix (2021 version)" with "Helix"
                                     normalized_album = normalize_album(album) if album else None
-                                    log_debug(f'Spotify search params - title: {api_lookup_title}, artist: {artist}, album: {album} (normalized: {normalized_album})')
+                                    log_debug(f'Spotify search params - title: {api_lookup_title}, artist: {track_artist}, album: {album} (normalized: {normalized_album})')
                                     # For popularity scoring, we pass album for better matching accuracy
                                     # For live/unplugged albums, this is especially important to avoid matching studio versions
                                     spotify_search_results = _run_with_timeout(
                                         search_spotify_track,
                                         API_CALL_TIMEOUT,
                                         f"Spotify track search timed out after {API_CALL_TIMEOUT}s",
-                                        api_lookup_title, artist, normalized_album
+                                        api_lookup_title, track_artist, normalized_album
                                     )
                                     # Record API request for rate limiting
                                     rate_limiter.record_spotify_request()
@@ -4269,13 +4269,13 @@ def popularity_scan(
                             
                                 # Perform lookup if we can proceed (either initially or after waiting)
                                 if can_proceed:
-                                    log_info(f'Getting Last.fm info for: {title} by {artist}')
-                                    log_debug(f'Last.fm lookup params - artist: {artist}, title: {strip_cover_attribution(title)}')
+                                    log_info(f'Getting Last.fm info for: {title} by {track_artist}')
+                                    log_debug(f'Last.fm lookup params - artist: {track_artist}, title: {strip_cover_attribution(title)}')
                                     lastfm_info = _run_with_timeout(
                                         get_lastfm_track_info,
                                         API_CALL_TIMEOUT,
                                         f"Last.fm lookup timed out after {API_CALL_TIMEOUT}s",
-                                        artist, strip_cover_attribution(title)
+                                        track_artist, strip_cover_attribution(title)
                                     )
                                     # Record API request for rate limiting
                                     rate_limiter.record_lastfm_request()
