@@ -2332,6 +2332,38 @@ def _fetch_musicbrainz_releases(artist_name: str, limit: int = 100, artist_mbid:
     return releases
 
 
+@app.route("/api/artist/exists", methods=["GET"])
+def api_artist_exists():
+    """Check if an artist exists in the database."""
+    artist = request.args.get("artist", "").strip()
+    if not artist:
+        return jsonify({"error": "Artist is required"}), 400
+    
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Check if artist exists using the same logic as the artist listing page
+        # Look for artist as main artist or album artist
+        cursor.execute("""
+            SELECT COUNT(*) FROM tracks 
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? 
+            LIMIT 1
+        """, (artist,))
+        result = cursor.fetchone()
+        conn.close()
+        
+        exists = result[0] > 0 if result else False
+        
+        return jsonify({
+            "exists": exists,
+            "artist": artist
+        })
+    except Exception as e:
+        logging.error(f"Error checking artist existence: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/artist/missing-releases", methods=["GET"])
 def api_artist_missing_releases():
     """Detect missing releases for an artist by comparing to MusicBrainz."""

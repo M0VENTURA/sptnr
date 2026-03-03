@@ -2998,8 +2998,7 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
       let artistsHtml = '<div class="d-flex flex-wrap gap-2">';
       lastfmArtists.forEach(artist => {
         const match = artist.match ? ` <small class="text-muted">(${(artist.match * 100).toFixed(0)}%)</small>` : '';
-        const artistUrl = `/artist/${encodeURIComponent(artist.name)}`;
-        artistsHtml += `<span class="badge bg-danger"><a href="${artistUrl}" class="text-white text-decoration-none">${escapeHtml(artist.name)}</a>${match}</span>`;
+        artistsHtml += `<span class="badge bg-danger"><a href="javascript:void(0)" onclick="navigateToArtist('${escapeHtml(artist.name)}', event)" class="text-white text-decoration-none" style="cursor: pointer;">${escapeHtml(artist.name)}</a>${match}</span>`;
       });
       artistsHtml += '</div>';
       
@@ -3028,8 +3027,7 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
       
       let artistsHtml = '<div class="d-flex flex-wrap gap-2">';
       listenbrainzArtists.forEach(artist => {
-        const artistUrl = `/artist/${encodeURIComponent(artist.name)}`;
-        artistsHtml += `<span class="badge bg-info"><a href="${artistUrl}" class="text-white text-decoration-none">${escapeHtml(artist.name)}</a></span>`;
+        artistsHtml += `<span class="badge bg-info"><a href="javascript:void(0)" onclick="navigateToArtist('${escapeHtml(artist.name)}', event)" class="text-white text-decoration-none" style="cursor: pointer;">${escapeHtml(artist.name)}</a></span>`;
       });
       artistsHtml += '</div>';
       
@@ -3270,6 +3268,182 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
     .catch(err => {
       alert('❌ Network error: ' + err.message);
     });
+  }
+
+  // ===== Smart Artist Routing (shared with track.html) =====
+  /**
+   * Navigate to an artist page or open MusicBrainz lookup if artist doesn't exist.
+   * If artist exists in database, navigates to their page.
+   * If not, opens a MusicBrainz/Discogs lookup modal with options to add releases.
+   */
+  async function navigateToArtist(artistName, event) {
+    event?.preventDefault();
+    
+    if (!artistName) return;
+    
+    try {
+      const response = await fetch(`/api/artist/exists?artist=${encodeURIComponent(artistName)}`);
+      const data = await response.json();
+      
+      if (data.exists) {
+        // Artist exists - navigate to their page
+        window.location.href = `/artist/${encodeURIComponent(artistName)}`;
+      } else {
+        // Artist doesn't exist - open MusicBrainz lookup
+        openArtistMusicBrainzLookup(artistName);
+      }
+    } catch (error) {
+      console.error('Error checking artist existence:', error);
+      // On error, try to navigate anyway
+      window.location.href = `/artist/${encodeURIComponent(artistName)}`;
+    }
+  }
+
+  /**
+   * Open MusicBrainz / Discogs lookup modal for an artist.
+   * Searches both sources, displays albums, and allows adding to download queue.
+   */
+  function openArtistMusicBrainzLookup(artistName) {
+    // Create lookup modal if it doesn't exist
+    let modal = document.getElementById('artistMBLookupModal');
+    if (!modal) {
+      const modalHTML = `
+        <div class="modal fade" id="artistMBLookupModal" tabindex="-1" aria-labelledby="artistMBLookupLabel" aria-hidden="true">
+          <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h5 class="modal-title" id="artistMBLookupLabel">
+                  <i class="bi bi-person-heart"></i> Add Artist to Library
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+              </div>
+              <div class="modal-body">
+                <div id="artistMBLookupInfo" class="alert alert-info mb-3" style="display:none;">
+                  Searching for <strong id="artistMBLookupName"></strong>...
+                </div>
+                
+                <div id="artistMBLookupLoading" class="text-center py-5">
+                  <div class="spinner-border text-primary" role="status">
+                    <span class="visually-hidden">Loading...</span>
+                  </div>
+                  <p class="mt-3">Searching MusicBrainz and Discogs...</p>
+                </div>
+                
+                <div id="artistMBLookupError" class="alert alert-danger" style="display:none;"></div>
+                
+                <div id="artistMBLookupResults"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+      document.body.insertAdjacentHTML('beforeend', modalHTML);
+      modal = document.getElementById('artistMBLookupModal');
+    }
+    
+    const bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+    
+    // Perform search
+    performArtistMusicBrainzSearch(artistName);
+  }
+
+  /**
+   * Search MusicBrainz and Discogs for artist and display results.
+   */
+  async function performArtistMusicBrainzSearch(artistName) {
+    const loadingDiv = document.getElementById('artistMBLookupLoading');
+    const errorDiv = document.getElementById('artistMBLookupError');
+    const resultsDiv = document.getElementById('artistMBLookupResults');
+    const infoDiv = document.getElementById('artistMBLookupInfo');
+    const nameSpan = document.getElementById('artistMBLookupName');
+    
+    loadingDiv.style.display = 'block';
+    errorDiv.style.display = 'none';
+    resultsDiv.innerHTML = '';
+    infoDiv.style.display = 'block';
+    nameSpan.textContent = artistName;
+    
+    try {
+      // Search MusicBrainz for artist releases
+      const mbResponse = await fetch('/api/musicbrainz/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: artistName })
+      });
+      
+      const mbData = await mbResponse.json();
+      loadingDiv.style.display = 'none';
+      
+      if (mbData.error) {
+        errorDiv.textContent = 'Search error: ' + mbData.error;
+        errorDiv.style.display = 'block';
+        return;
+      }
+      
+      const releases = mbData.releases || [];
+      
+      if (releases.length === 0) {
+        resultsDiv.innerHTML = `
+          <div class="alert alert-info">
+            <i class="bi bi-info-circle"></i> No releases found for "${escapeHtml(artistName)}".
+          </div>
+        `;
+        return;
+      }
+      
+      // Display releases
+      let html = '<div class="row g-3">';
+      releases.forEach(release => {
+        const coverArt = release.cover_art_url || 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22150%22 height=%22150%22%3E%3Crect fill=%22%23333%22 width=%22150%22 height=%22150%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 text-anchor=%22middle%22%3ENo Art%3C/text%3E%3C/svg%3E';
+        const releaseDate = release.first_release_date || 'Unknown';
+        const releaseType = release.category || release.primary_type || 'Release';
+        const artist = release.artist || 'Unknown Artist';
+        
+        html += `
+          <div class="col-12 col-sm-6 col-md-4">
+            <div class="card h-100">
+              <img src="${coverArt}" class="card-img-top" alt="${escapeHtml(release.title)}" style="height: 150px; object-fit: cover;" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22150%22 height=%22150%22%3E%3Crect fill=%22%23333%22 width=%22150%22 height=%22150%22/%3E%3C/svg%3E'">
+              <div class="card-body d-flex flex-column">
+                <h6 class="card-title text-truncate">${escapeHtml(release.title)}</h6>
+                <p class="card-text small text-muted mb-2">
+                  <span class="badge bg-secondary">${releaseType}</span>
+                  <span class="badge bg-info ms-1">${releaseDate}</span>
+                </p>
+                <div class="mt-auto">
+                  <button class="btn btn-sm btn-primary w-100" onclick="downloadMbRelease('${release.id}', '${escapeHtml(release.title)}', '${escapeHtml(artist)}', 'slskd')">
+                    <i class="bi bi-download"></i> Add to Queue
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        `;
+      });
+      html += '</div>';
+      
+      resultsDiv.innerHTML = html;
+      
+    } catch (error) {
+      console.error('Search error:', error);
+      loadingDiv.style.display = 'none';
+      errorDiv.textContent = 'Network error: ' + error.message;
+      errorDiv.style.display = 'block';
+    }
+  }
+
+  /**
+   * Escape HTML special characters to prevent XSS.
+   */
+  function escapeHtml(text) {
+    const map = {
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#039;'
+    };
+    return text.replace(/[&<>"']/g, m => map[m]);
   }
 </script>
 
