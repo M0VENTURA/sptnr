@@ -700,7 +700,7 @@ def calculate_artist_popularity_stats(artist_name: str, conn: sqlite3.Connection
             cursor.execute("""
                 SELECT popularity_score, title, album
                 FROM tracks 
-                WHERE artist = ? AND popularity_score > 0
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND popularity_score > 0
             """, (artist_name,))
             rows = cursor.fetchall()
             has_album_column = True
@@ -711,7 +711,7 @@ def calculate_artist_popularity_stats(artist_name: str, conn: sqlite3.Connection
                 cursor.execute("""
                     SELECT popularity_score, title
                     FROM tracks 
-                    WHERE artist = ? AND popularity_score > 0
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND popularity_score > 0
                 """, (artist_name,))
                 rows = cursor.fetchall()
                 has_album_column = False
@@ -4566,10 +4566,10 @@ def popularity_scan(
                         log_info(f'Analyzing standout/star ratings for artist: {artist}')
                         cursor.execute("""
                             SELECT id, title, album, popularity_score, lastfm_track_playcount FROM tracks
-                            WHERE artist = ? AND is_single = 0 AND album NOT IN (
-                                SELECT DISTINCT album FROM tracks WHERE artist = ? AND album_context_live = 1
+                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND is_single = 0 AND album NOT IN (
+                                SELECT DISTINCT album FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album_context_live = 1
                             ) AND album NOT IN (
-                                SELECT DISTINCT album FROM tracks WHERE artist = ? AND discogs_format_descriptions LIKE '%live%'
+                                SELECT DISTINCT album FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND discogs_format_descriptions LIKE '%live%'
                             )
                         """, (artist, artist, artist))
                         artist_tracks = cursor.fetchall()
@@ -4615,7 +4615,7 @@ def popularity_scan(
                                         continue
                                     # Album-level stats using median + MAD
                                     cursor.execute("""
-                                        SELECT popularity_score FROM tracks WHERE artist = ? AND album = ? AND popularity_score > 0
+                                        SELECT popularity_score FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ? AND popularity_score > 0
                                     """, (artist, track_album))
                                     track_album_scores = [row[0] for row in cursor.fetchall()]
                                     track_album_median = stat_median_standout(track_album_scores) if track_album_scores else 0

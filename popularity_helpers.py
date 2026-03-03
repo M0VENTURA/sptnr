@@ -1235,7 +1235,7 @@ def get_top_standout_tracks_with_gap(
             cursor.execute("""
                 SELECT id, title, popularity_score
                 FROM tracks
-                WHERE artist = ? AND album = ? AND popularity_score > 0
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ? AND popularity_score > 0
                 ORDER BY popularity_score DESC
             """, (artist, album))
             
