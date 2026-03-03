@@ -237,8 +237,8 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "spotify_release_date": t.get("year", "") or "",
                     "spotify_album_art_url": "",
                     "lastfm_track_playcount": 0,
-                    # Leave file_path unset for Navidrome; beets import owns the canonical path
-                    "file_path": None,
+                    # Extract file_path from Navidrome (available via track.get("path"))
+                    "file_path": t.get("path", ""),
                     "last_scanned": _now_local_iso(),
                     "spotify_album_type": "",
                     "spotify_total_tracks": 0,
