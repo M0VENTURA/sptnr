@@ -2483,7 +2483,11 @@
                     });
                 }
                 bootstrap.Modal.getInstance(document.getElementById('simpleEditTrackModal')).hide();
-                alert('✅ Track metadata updated');
+                if (data.file_synced === false) {
+                    alert('⚠️ Track metadata saved to database, but file tags were not updated. Check file permissions/path and logs.');
+                } else {
+                    alert('✅ Track metadata updated (database + file tags)');
+                }
             } else {
                 alert('❌ Error: ' + (data.error || 'Failed to update'));
             }
@@ -2690,7 +2694,11 @@
                 if (editTrackModalInstance) {
                     editTrackModalInstance.hide();
                 }
-                alert('✅ Track metadata updated successfully');
+                if (data.file_synced === false) {
+                    alert('⚠️ Track metadata saved to database, but file tags were not updated. Check file permissions/path and logs.');
+                } else {
+                    alert('✅ Track metadata updated successfully (database + file tags)');
+                }
                 
                 // Reload to show updated data
                 setTimeout(() => {
