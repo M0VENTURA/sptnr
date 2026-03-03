@@ -4574,85 +4574,86 @@ def popularity_scan(
                         """, (artist, artist, artist))
                         artist_tracks = cursor.fetchall()
                         if not artist_tracks:
-                            return
-                        # Gather all popularity scores for artist
-                        artist_scores = [row_get(t, 'popularity_score', 0) for t in artist_tracks if row_get(t, 'popularity_score', 0) > 0]
-                        if len(artist_scores) < 2:
-                            return
-                        
-                        # Use median + MAD for artist-level statistics
-                        artist_median = stat_median_standout(artist_scores)
-                        artist_absolute_devs = [abs(s - artist_median) for s in artist_scores]
-                        artist_mad = stat_median_standout(artist_absolute_devs)
-                        artist_mad_scaled = artist_mad * 1.4826  # Scale to be comparable to stddev
-                        artist_spread = max(artist_mad_scaled, MIN_SPREAD)  # Apply floor
-                        
-                        sorted_artist_scores = sorted(artist_scores, reverse=True)
-                        def artist_percentile(score):
-                            return (sorted_artist_scores.index(score) + 1) / len(sorted_artist_scores)
-                        
-                        # Pre-compute standout clusters for each album to handle multiple singles with similar popularity
-                        album_standout_clusters = {}
-                        unique_albums = set(row_get(t, 'album', '') for t in artist_tracks)
-                        for album_name in unique_albums:
-                            if album_name:
-                                cluster = get_top_standout_tracks_with_gap(artist, album_name, conn, gap_threshold=0.5, verbose=False)
-                                if cluster:
-                                    album_standout_clusters[album_name] = cluster
-                                    log_debug(f"Album '{album_name}' has {len(cluster)} tracks in standout cluster")
-                        
-                        for track in artist_tracks:
-                            track_id = row_get(track, 'id')
-                            track_title = row_get(track, 'title')
-                            track_album = row_get(track, 'album', '')
-                            score = row_get(track, 'popularity_score', 0)
-                            if score <= 0 or artist_spread == 0:
-                                cursor.execute("""
-                                    UPDATE tracks SET is_standout_track = 0, artist_z_score = 0, stars = 1
-                                    WHERE id = ?
-                                """, (track_id,))
-                                continue
-                            # Album-level stats using median + MAD
-                            cursor.execute("""
-                                SELECT popularity_score FROM tracks WHERE artist = ? AND album = ? AND popularity_score > 0
-                            """, (artist, track_album))
-                            track_album_scores = [row[0] for row in cursor.fetchall()]
-                            track_album_median = stat_median_standout(track_album_scores) if track_album_scores else 0
-                            track_album_abs_devs = [abs(s - track_album_median) for s in track_album_scores]
-                            track_album_mad = stat_median_standout(track_album_abs_devs) if len(track_album_scores) > 1 else 0
-                            track_album_mad_scaled = track_album_mad * 1.4826
-                            track_album_spread = max(track_album_mad_scaled, MIN_SPREAD)
-                            album_z = (score - track_album_median) / track_album_spread if track_album_spread > 0 else 0
-                            
-                            # Check if track is in the standout cluster for this album
-                            # Uses gap-based clustering to handle multiple singles with similar high popularity
-                            is_in_standout_cluster = track_id in album_standout_clusters.get(track_album, set())
-                            
-                            # Require BOTH medium z-score (>= 0.8) AND being in standout cluster
-                            # This ensures tracks are statistically significant AND part of top-performing group
-                            # Handles both single standouts and clusters of multiple singles
-                            is_album_standout = (album_z >= STANDOUT_CONFIG['album_zscore_threshold'] and is_in_standout_cluster)
-                            # Artist-level stats using median + MAD
-                            artist_z = (score - artist_median) / artist_spread if artist_spread > 0 else 0
-                            is_artist_standout = (artist_z >= STANDOUT_CONFIG['artist_zscore_threshold'] and artist_percentile(score) <= STANDOUT_CONFIG['artist_top_percentile'])
-                            # Star rating assignment
-                            # 5★ requires album z >= 1.0 (high confidence) + artist standout
-                            if is_album_standout and is_artist_standout and album_z >= STANDOUT_CONFIG['star_5']['album_z']:
-                                star = 5
-                            elif is_album_standout and (artist_z >= STANDOUT_CONFIG['star_4']['artist_z'] or artist_percentile(score) <= STANDOUT_CONFIG['star_4']['artist_pct']):
-                                star = 4
-                            elif is_album_standout:
-                                star = 3
-                            elif track_album_median and score > track_album_median:
-                                star = 2
+                            log_debug(f'No non-single tracks found for {artist}, skipping standout analysis')
+                        else:
+                            # Gather all popularity scores for artist
+                            artist_scores = [row_get(t, 'popularity_score', 0) for t in artist_tracks if row_get(t, 'popularity_score', 0) > 0]
+                            if len(artist_scores) < 2:
+                                log_debug(f'Insufficient tracks with scores for {artist} ({len(artist_scores)} found), skipping standout analysis')
                             else:
-                                star = 1
-                            cursor.execute("""
-                                UPDATE tracks SET is_standout_track = ?, artist_z_score = ?, stars = ?
-                                WHERE id = ?
-                            """, (1 if is_album_standout or is_artist_standout else 0, artist_z, star, track_id))
-                            log_debug(f"Track: {track_title} | Score: {score:.1f} | Album_z: {album_z:.2f} | Artist_z: {artist_z:.2f} | Album_standout: {is_album_standout} | Artist_standout: {is_artist_standout} | Star: {star}")
-                        conn.commit()
+                                # Use median + MAD for artist-level statistics
+                                artist_median = stat_median_standout(artist_scores)
+                                artist_absolute_devs = [abs(s - artist_median) for s in artist_scores]
+                                artist_mad = stat_median_standout(artist_absolute_devs)
+                                artist_mad_scaled = artist_mad * 1.4826  # Scale to be comparable to stddev
+                                artist_spread = max(artist_mad_scaled, MIN_SPREAD)  # Apply floor
+                                
+                                sorted_artist_scores = sorted(artist_scores, reverse=True)
+                                def artist_percentile(score):
+                                    return (sorted_artist_scores.index(score) + 1) / len(sorted_artist_scores)
+                                
+                                # Pre-compute standout clusters for each album to handle multiple singles with similar popularity
+                                album_standout_clusters = {}
+                                unique_albums = set(row_get(t, 'album', '') for t in artist_tracks)
+                                for album_name in unique_albums:
+                                    if album_name:
+                                        cluster = get_top_standout_tracks_with_gap(artist, album_name, conn, gap_threshold=0.5, verbose=False)
+                                        if cluster:
+                                            album_standout_clusters[album_name] = cluster
+                                            log_debug(f"Album '{album_name}' has {len(cluster)} tracks in standout cluster")
+                                
+                                for track in artist_tracks:
+                                    track_id = row_get(track, 'id')
+                                    track_title = row_get(track, 'title')
+                                    track_album = row_get(track, 'album', '')
+                                    score = row_get(track, 'popularity_score', 0)
+                                    if score <= 0 or artist_spread == 0:
+                                        cursor.execute("""
+                                            UPDATE tracks SET is_standout_track = 0, artist_z_score = 0, stars = 1
+                                            WHERE id = ?
+                                        """, (track_id,))
+                                        continue
+                                    # Album-level stats using median + MAD
+                                    cursor.execute("""
+                                        SELECT popularity_score FROM tracks WHERE artist = ? AND album = ? AND popularity_score > 0
+                                    """, (artist, track_album))
+                                    track_album_scores = [row[0] for row in cursor.fetchall()]
+                                    track_album_median = stat_median_standout(track_album_scores) if track_album_scores else 0
+                                    track_album_abs_devs = [abs(s - track_album_median) for s in track_album_scores]
+                                    track_album_mad = stat_median_standout(track_album_abs_devs) if len(track_album_scores) > 1 else 0
+                                    track_album_mad_scaled = track_album_mad * 1.4826
+                                    track_album_spread = max(track_album_mad_scaled, MIN_SPREAD)
+                                    album_z = (score - track_album_median) / track_album_spread if track_album_spread > 0 else 0
+                                    
+                                    # Check if track is in the standout cluster for this album
+                                    # Uses gap-based clustering to handle multiple singles with similar high popularity
+                                    is_in_standout_cluster = track_id in album_standout_clusters.get(track_album, set())
+                                    
+                                    # Require BOTH medium z-score (>= 0.8) AND being in standout cluster
+                                    # This ensures tracks are statistically significant AND part of top-performing group
+                                    # Handles both single standouts and clusters of multiple singles
+                                    is_album_standout = (album_z >= STANDOUT_CONFIG['album_zscore_threshold'] and is_in_standout_cluster)
+                                    # Artist-level stats using median + MAD
+                                    artist_z = (score - artist_median) / artist_spread if artist_spread > 0 else 0
+                                    is_artist_standout = (artist_z >= STANDOUT_CONFIG['artist_zscore_threshold'] and artist_percentile(score) <= STANDOUT_CONFIG['artist_top_percentile'])
+                                    # Star rating assignment
+                                    # 5★ requires album z >= 1.0 (high confidence) + artist standout
+                                    if is_album_standout and is_artist_standout and album_z >= STANDOUT_CONFIG['star_5']['album_z']:
+                                        star = 5
+                                    elif is_album_standout and (artist_z >= STANDOUT_CONFIG['star_4']['artist_z'] or artist_percentile(score) <= STANDOUT_CONFIG['star_4']['artist_pct']):
+                                        star = 4
+                                    elif is_album_standout:
+                                        star = 3
+                                    elif track_album_median and score > track_album_median:
+                                        star = 2
+                                    else:
+                                        star = 1
+                                    cursor.execute("""
+                                        UPDATE tracks SET is_standout_track = ?, artist_z_score = ?, stars = ?
+                                        WHERE id = ?
+                                    """, (1 if is_album_standout or is_artist_standout else 0, artist_z, star, track_id))
+                                    log_debug(f"Track: {track_title} | Score: {score:.1f} | Album_z: {album_z:.2f} | Artist_z: {artist_z:.2f} | Album_standout: {is_album_standout} | Artist_standout: {is_artist_standout} | Star: {star}")
+                                conn.commit()
                     except Exception as e:
                         log_debug(f'Standout/star rating analysis failed for {artist}: {e}')
                     # --- End standout/star rating section ---
