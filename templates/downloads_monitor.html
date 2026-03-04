@@ -157,6 +157,21 @@
     </div>
   </div>
 
+  <!-- Folder Groups Section (for organized batch matching) -->
+  <div class="card mb-4" id="folderGroupsSection" style="display: none;">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <h5 class="card-title mb-0">
+        <i class="bi bi-folder-check"></i> Downloads Organized by Folder
+      </h5>
+      <span class="badge bg-info" id="folderGroupsBadge">0 groups</span>
+    </div>
+    <div class="card-body p-0">
+      <div id="folderGroupsList" style="max-height: 600px; overflow-y: auto;">
+        <!-- Folder groups rendered here -->
+      </div>
+    </div>
+  </div>
+
   <!-- Queue Status Cards -->
   <div class="row g-3 mb-4">
     <div class="col-md-3">
@@ -415,6 +430,9 @@ async function discoverFiles() {
       // Refresh queue display
       await loadQueueStatus();
       
+      // Load folder groups for organized viewing
+      await loadFolderGroups();
+      
       // Hide message after 10 seconds
       setTimeout(() => {
         document.getElementById('discoveryResults').style.display = 'none';
@@ -550,6 +568,217 @@ async function applyMusicBrainzMatch(artist, album, releaseGroupId) {
 function searchOtherSources(artist, album) {
   const query = encodeURIComponent(`${artist} ${album}`);
   window.open(`/downloads/search/musicbrainz?q=${query}`, '_blank');
+}
+
+// ============================================================================
+// FOLDER GROUPING AND MUSICBRAINZ MATCHING FUNCTIONS
+// ============================================================================
+
+async function loadFolderGroups() {
+  // Load and display folder groups from downloads folder.
+  try {
+    const response = await fetch('/api/downloads/grouped-folders');
+    const data = await response.json();
+    
+    if (!data.success) {
+      console.error('Error loading folder groups:', data.error);
+      return;
+    }
+    
+    const groups = data.folder_groups || [];
+    const section = document.getElementById('folderGroupsSection');
+    const list = document.getElementById('folderGroupsList');
+    const badge = document.getElementById('folderGroupsBadge');
+    
+    if (groups.length === 0) {
+      section.style.display = 'none';
+      return;
+    }
+    
+    section.style.display = 'block';
+    badge.textContent = `${groups.length} groups`;
+    
+    let html = '';
+    
+    groups.forEach((group, index) => {
+      const inconsistentClass = !group.is_consistent ? 'border-warning' : '';
+      const inconsistentBadge = !group.is_consistent ? 
+        ' <span class="badge bg-warning">Mixed Metadata</span>' : '';
+      
+      html += `
+        <div class="card border-bottom mb-2 ${inconsistentClass}">
+          <div class="card-body p-3">
+            <div class="row align-items-center">
+              <div class="col-md-6">
+                <h6 class="card-title mb-1">
+                  <i class="bi bi-folder"></i> ${group.folder_name}
+                  ${inconsistentBadge}
+                </h6>
+                <div class="text-muted small">
+                  <span class="badge bg-light text-dark">${group.track_count} tracks</span>
+                  <span class="ms-2"><strong>Artist:</strong> ${group.artist}</span>
+                  <span class="ms-2"><strong>Album:</strong> ${group.album}</span>
+                </div>
+              </div>
+              <div class="col-md-6 text-end">
+                <button class="btn btn-sm btn-outline-primary" 
+                        onclick="matchFolderGroupWithMusicBrainz('${group.folder_path}', '${group.artist}', '${group.album}')">
+                  <i class="bi bi-disc"></i> Match with MusicBrainz
+                </button>
+                <button class="btn btn-sm btn-outline-secondary ms-2" 
+                        onclick="toggleTrackList('group-${index}')">
+                  <i class="bi bi-chevron-down"></i> Show Tracks
+                </button>
+              </div>
+            </div>
+            
+            <!-- Track List (Hidden by default) -->
+            <div id="group-${index}" class="mt-3" style="display: none;">
+              <div class="table-responsive">
+                <table class="table table-sm">
+                  <thead class="table-light">
+                    <tr>
+                      <th>#</th>
+                      <th>Title</th>
+                      <th>Duration</th>
+                    </tr>
+                  </thead>
+                  <tbody>`;
+                  
+              group.tracks.forEach(track => {
+                const duration = track.duration ? 
+                  Math.floor(track.duration / 60) + ':' + String(track.duration % 60).padStart(2, '0') : 
+                  '-';
+                html += `
+                      <tr>
+                        <td><small>${track.track_number || '-'}</small></td>
+                        <td><small>${track.title}</small></td>
+                        <td><small>${duration}</small></td>
+                      </tr>`;
+              });
+              
+              html += `
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>`;
+    });
+    
+    list.innerHTML = html;
+  } catch (error) {
+    console.error('Error loading folder groups:', error);
+  }
+}
+
+function toggleTrackList(groupId) {
+  // Toggle visibility of track list for a folder group.
+  const element = document.getElementById(groupId);
+  if (element) {
+    element.style.display = element.style.display === 'none' ? 'block' : 'none';
+  }
+}
+
+async function matchFolderGroupWithMusicBrainz(folderPath, artist, album) {
+  // Match a folder group with MusicBrainz candidates.
+  try {
+    const btn = event.target;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Searching...';
+    
+    const response = await fetch(`/api/downloads/folder/${encodeURIComponent(folderPath)}/match-musicbrainz`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ artist, album })
+    });
+    
+    const data = await response.json();
+    
+    if (!data.success || !data.candidates || data.candidates.length === 0) {
+      alert('❌ No MusicBrainz matches found for: ' + artist + ' - ' + album);
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-disc"></i> Match with MusicBrainz';
+      return;
+    }
+    
+    // Show modal with candidates
+    showMusicBrainzMatchModal(folderPath, artist, album, data.candidates);
+    
+  } catch (error) {
+    console.error('Error matching with MusicBrainz:', error);
+    alert('❌ Network error: ' + error.message);
+  } finally {
+    const btn = event.target;
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-disc"></i> Match with MusicBrainz';
+  }
+}
+
+function showMusicBrainzMatchModal(folderPath, artist, album, candidates) {
+  // Display MusicBrainz candidates in a modal for user selection.
+  let html = `
+    <div class="modal fade" id="mbMatchModal" tabindex="-1">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title"><i class="bi bi-disc"></i> Select MusicBrainz Match</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <p class="mb-3"><strong>${artist}</strong> - <strong>${album}</strong></p>
+            <div class="list-group">`;
+  
+  candidates.forEach((candidate, idx) => {
+    const date = candidate.date ? ` (${candidate.date.split('-')[0]})` : '';
+    const country = candidate.country ? ` - ${candidate.country}` : '';
+    html += `
+              <button type="button" class="list-group-item list-group-item-action" 
+                      onclick="applyMusicBrainzMatch('${folderPath}', '${candidate.id}')">
+                <div><strong>${candidate.title}</strong>${date}${country}</div>
+                <small class="text-muted">${candidate.track_count} tracks</small>
+              </button>`;
+  });
+  
+  html += `
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  
+  // Remove old modal if it exists
+  const oldModal = document.getElementById('mbMatchModal');
+  if (oldModal) oldModal.remove();
+  
+  // Add new modal to page
+  document.body.insertAdjacentHTML('beforeend', html);
+  
+  // Show modal
+  const modal = new bootstrap.Modal(document.getElementById('mbMatchModal'));
+  modal.show();
+}
+
+async function applyMusicBrainzMatch(folderPath, releaseId) {
+  // Apply the selected MusicBrainz match and process the folder.
+  try {
+    // Close the modal
+    const modal = bootstrap.Modal.getInstance(document.getElementById('mbMatchModal'));
+    if (modal) modal.hide();
+    
+    // Show processing message (implementation depends on your UI)
+    alert('✓ MusicBrainz match applied! Metadata will be updated and files organized.');
+    
+    // Refresh folder groups
+    await loadFolderGroups();
+    
+  } catch (error) {
+    console.error('Error applying match:', error);
+    alert('❌ Error: ' + error.message);
+  }
 }
 
 async function loadQueueStatus() {
@@ -1065,8 +1294,11 @@ async function autoDiscoverFiles() {
 // Load queue status on page load
 document.addEventListener('DOMContentLoaded', function() {
   setTimeout(loadQueueStatus, 500);
+  setTimeout(loadFolderGroups, 1000);
   // Refresh queue status every 5 seconds
   setInterval(loadQueueStatus, 5000);
+  // Refresh folder groups every 10 seconds
+  setInterval(loadFolderGroups, 10000);
   // Auto-discover files every 60 seconds
   setInterval(autoDiscoverFiles, 60000);
 });

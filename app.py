@@ -10917,6 +10917,83 @@ def api_downloads_scan_progress():
         })
 
 
+@app.route("/api/downloads/grouped-folders", methods=["GET"])
+def api_downloads_grouped_folders():
+    """
+    Scan downloads folder and group audio files by their parent folder.
+    Returns natural album/release groupings for MusicBrainz matching.
+    
+    Returns:
+        JSON with folder groups and metadata for each group
+    """
+    try:
+        from download_folder_grouping import scan_downloads_grouped_by_folder
+        
+        cfg = get_config()
+        downloads_dir = _resolve_downloads_monitor_dir(cfg)
+        
+        result = scan_downloads_grouped_by_folder(downloads_dir, read_mp3_metadata)
+        
+        return jsonify({
+            "success": True,
+            **result
+        })
+    except Exception as e:
+        logger.error(f"Error scanning grouped folders: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "folder_groups": [],
+            "total_folders": 0,
+            "total_files": 0
+        }), 500
+
+
+@app.route("/api/downloads/folder/<path:folder_path>/match-musicbrainz", methods=["POST"])
+def api_downloads_folder_match_musicbrainz(folder_path):
+    """
+    Match a folder group with MusicBrainz and return candidate releases.
+    
+    Args:
+        folder_path: URL-encoded relative folder path
+        artist: Artist name (in request JSON)
+        album: Album name (in request JSON)
+    
+    Returns:
+        JSON with MusicBrainz candidates for selection
+    """
+    try:
+        from download_folder_grouping import match_folder_group_with_musicbrainz
+        
+        data = request.get_json() or {}
+        artist = data.get('artist', '').strip()
+        album = data.get('album', '').strip()
+        
+        if not artist or not album:
+            return jsonify({
+                "success": False,
+                "error": "Artist and album are required"
+            }), 400
+        
+        result = match_folder_group_with_musicbrainz(folder_path, artist, album)
+        
+        return jsonify({
+            "success": result.get('success', False),
+            **result
+        })
+    except Exception as e:
+        logger.error(f"Error matching folder with MusicBrainz: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "candidates": []
+        }), 500
+
+
 @app.route("/api/downloads/process-albums", methods=["POST"])
 def api_downloads_process_albums():
     """
