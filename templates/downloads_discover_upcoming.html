@@ -101,6 +101,35 @@
   </div>
 </div>
 
+<!-- MusicBrainz Search Modal (required by static/js/downloads.js) -->
+<div class="modal fade" id="musicBrainzModal" tabindex="-1" aria-labelledby="musicBrainzModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="musicBrainzModalLabel">
+          <i class="bi bi-disc"></i> MusicBrainz Release Search
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div id="mbSearchInfo" class="alert alert-secondary" style="display:none;">
+          Searching <strong id="mbSearchArtist"></strong> - <strong id="mbSearchAlbum"></strong>
+        </div>
+
+        <div id="mbSearchStatus" class="text-center py-4" style="display:none;">
+          <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Searching...</span>
+          </div>
+          <div class="mt-2">Searching MusicBrainz...</div>
+        </div>
+
+        <div id="mbSearchError" class="alert alert-danger" style="display:none;"></div>
+        <div id="mbSearchResults"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Include existing JavaScript -->
 <script src="{{url_for('static', filename='js/downloads.js')}}"></script>
 {% endblock %}

@@ -799,6 +799,23 @@ def save_to_db(track_data):
             sanitized_data[key] = ', '.join(str(v) for v in value) if value else ''
         else:
             sanitized_data[key] = value
+
+    # Preserve existing writer credits when the incoming payload has no writer data.
+    # Some Navidrome responses omit credit fields; without this guard we'd erase valid writer values.
+    incoming_writer = sanitized_data.get('writer')
+    if incoming_writer in (None, '', '[]'):
+        existing_writer = None
+        track_id_for_writer = sanitized_data.get('id')
+        if track_id_for_writer:
+            try:
+                cursor.execute("SELECT writer FROM tracks WHERE id = ?", (track_id_for_writer,))
+                existing_row = cursor.fetchone()
+                if existing_row:
+                    existing_writer = existing_row['writer'] if hasattr(existing_row, 'keys') else existing_row[0]
+            except Exception:
+                existing_writer = None
+        if existing_writer and existing_writer not in ('', '[]'):
+            sanitized_data['writer'] = existing_writer
     
     # Check for existing track by content (artist, album, title, duration)
     # This prevents duplicate albums when Navidrome IDs change

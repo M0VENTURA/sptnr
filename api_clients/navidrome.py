@@ -277,15 +277,43 @@ class NavidromeClient:
         
         navidrome_genres = "\\".join(genres_list) if genres_list else ""
 
-        # Extract lyricists field from Navidrome - store as JSON array for writer field
+        # Extract writer/lyricist credits from multiple possible Navidrome fields.
+        # Different Navidrome/library tag mappings can expose these as writer, lyricists, writers, composer.
+        def _normalize_people(value):
+            names = []
+            if not value:
+                return names
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        candidate = item.get("name", "").strip()
+                    else:
+                        candidate = str(item).strip()
+                    if candidate:
+                        names.append(candidate)
+                return names
+            if isinstance(value, str):
+                raw = value.strip()
+                if not raw:
+                    return names
+                # Handle common multi-value separators in tag payloads.
+                if "\\" in raw or ";" in raw or "," in raw:
+                    normalized = raw.replace("\\", ",").replace(";", ",")
+                    return [p.strip() for p in normalized.split(",") if p.strip()]
+                return [raw]
+            return names
+
         writers_list = []
-        lyricists = track.get("lyricists", [])
-        if lyricists and isinstance(lyricists, list):
-            # If lyricists is a list of objects with 'name' field
-            writers_list = [l.get("name", "").strip() if isinstance(l, dict) else str(l).strip() for l in lyricists if (l.get("name", "").strip() if isinstance(l, dict) else str(l).strip())]
-        elif isinstance(lyricists, str) and lyricists.strip():
-            # If lyricists is a string, treat as single value
-            writers_list = [lyricists.strip()]
+        credit_candidates = [
+            track.get("writer"),
+            track.get("writers"),
+            track.get("lyricists"),
+            track.get("composer"),
+        ]
+        for candidate in credit_candidates:
+            for name in _normalize_people(candidate):
+                if name not in writers_list:
+                    writers_list.append(name)
         
         import json
         writer_json = json.dumps(writers_list) if writers_list else json.dumps([])
