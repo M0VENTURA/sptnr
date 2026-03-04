@@ -2641,7 +2641,8 @@ def popularity_scan(
     force: bool = False,
     filter_missing: bool = False,
     singles_only: bool = False,
-    clear_single_detection_sources: list = None
+    clear_single_detection_sources: list = None,
+    stop_progress_file: str = None
 ):
     """
     Detect track popularity from external sources.
@@ -2657,7 +2658,23 @@ def popularity_scan(
         singles_only: Only rescan singles detection, skip popularity scoring
         clear_single_detection_sources: List of sources to clear from cache (e.g., ['discogs', 'spotify'])
                                        If force=True, all sources are cleared automatically
+        stop_progress_file: Optional progress file path used to cooperatively stop an in-flight scan
     """
+
+    def _stop_requested() -> bool:
+        """Return True if caller requested scan cancellation via progress file."""
+        if not stop_progress_file:
+            return False
+        try:
+            if not os.path.exists(stop_progress_file):
+                return False
+            with open(stop_progress_file, "r", encoding="utf-8") as f:
+                state = json.load(f)
+            if state.get("stop_requested") is True:
+                return True
+            return (state.get("status") == "stopped") and (not bool(state.get("is_running", False)))
+        except Exception:
+            return False
     if not skip_header:
         log_unified("Popularity Scan - Starting Popularity Scan")
         log_info("=" * 60)
@@ -2883,6 +2900,10 @@ def popularity_scan(
             log_debug(f"Enabled APIs: {enabled_apis}")
         
         for artist, albums in artist_album_tracks.items():
+            if _stop_requested():
+                log_info("Stop requested via progress file; exiting popularity scan before next artist")
+                return False
+
             # Skip until resume match, then rescan the matched artist (in case albums were still processing)
             if not resume_hit:
                 if artist.lower() == resume_from.lower():
@@ -3540,6 +3561,10 @@ def popularity_scan(
             
             album_num = 0
             for album, album_tracks in albums.items():
+                if _stop_requested():
+                    log_info(f"Stop requested via progress file; exiting during artist '{artist}'")
+                    return False
+
                 album_num += 1
                 album_scanned = 0  # Initialize before popularity section (may be skipped in singles_only)
                 # Defensive defaults so downstream singles-detection context always has album type values.

@@ -116,7 +116,7 @@
         <div class="col-md-8">
           <p class="mb-2">
             <i class="bi bi-info-circle text-info"></i> 
-            Automatically scan the <code>/downloads</code> folder for audio files (.mp3, .flac, .m4a, .ogg, .wav)
+            Automatically scan the <code>{{ downloads_dir or '/downloads/Music' }}</code> folder for audio files (.mp3, .flac, .m4a, .ogg, .wav)
             and add them to the Download Monitor for review.
           </p>
           <p class="text-muted small mb-0">

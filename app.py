@@ -1081,6 +1081,55 @@ def _write_progress_with_current_artist(path: str, scan_type: str, is_running: b
     _write_progress_file(path, scan_type, is_running, extra)
 
 
+def _is_stop_requested_from_progress(path: str) -> bool:
+    """Return True when a progress file indicates a user-requested stop."""
+    try:
+        if not os.path.exists(path):
+            return False
+        with open(path, "r", encoding="utf-8") as f:
+            state = json.load(f)
+        if state.get("stop_requested") is True:
+            return True
+        return (state.get("status") == "stopped") and (not bool(state.get("is_running", False)))
+    except Exception:
+        return False
+
+
+def _request_scan_stop(path: str, scan_type: str):
+    """Persist a cooperative stop request for thread-based scans."""
+    payload = {}
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+    except Exception:
+        payload = {}
+
+    payload.update({
+        "is_running": False,
+        "scan_type": scan_type,
+        "status": "stopped",
+        "stop_requested": True,
+        "stopped_at": datetime.now().isoformat()
+    })
+    _write_progress_file(path, scan_type, False, payload)
+
+
+def _resolve_downloads_monitor_dir(cfg: dict | None = None) -> str:
+    """Resolve downloads scan folder, preferring a Music subfolder when configured root is /downloads."""
+    cfg = cfg or {}
+    downloads_cfg = cfg.get("downloads", {}) if isinstance(cfg, dict) else {}
+    configured = downloads_cfg.get("folder") or os.environ.get("DOWNLOADS_DIR") or "/downloads/Music"
+    normalized = os.path.normpath(configured)
+
+    if os.path.basename(normalized).lower() == "downloads":
+        music_subdir = os.path.join(normalized, "Music")
+        if os.path.isdir(music_subdir):
+            return music_subdir
+
+    return configured
+
+
 def _is_process_alive(proc):
     """Helper to check if a process/thread is alive"""
     if proc is None:
@@ -2071,8 +2120,15 @@ def artist_detail(name):
             seen_titles = set()
             deduped_tracks = []
             for track in top_tracks:
-                # Handle both dict and Row objects
-                title = track['title'] if isinstance(track, dict) else track.get('title', track[1])
+                # Normalize sqlite3.Row/dict/tuple access for title
+                if hasattr(track, 'keys') and not isinstance(track, dict):
+                    track_title = dict(track).get('title', '')
+                elif isinstance(track, dict):
+                    track_title = track.get('title', '')
+                else:
+                    track_title = track[1] if len(track) > 1 else ''
+
+                title = str(track_title or '')
                 title_lower = title.lower().strip()
                 if title_lower not in seen_titles:
                     seen_titles.add(title_lower)
@@ -2678,7 +2734,8 @@ def api_scan_all_missing_releases():
                 try:
                     # Check if scan should stop
                     with scan_lock:
-                        if scan_process_missing_releases is None:
+                        stop_requested = scan_process_missing_releases is None or _is_stop_requested_from_progress(progress_file)
+                        if stop_requested:
                             logging.info("[MISSING_RELEASES] Stop signal received, exiting gracefully")
                             progress_data = {
                                 "is_running": False,
@@ -6086,14 +6143,34 @@ def scan_popularity_route():
                 try:
                     if singles_only:
                         logging.info(f"Starting singles-only scan in background")
-                        scan_popularity_func(verbose=False, force=False, singles_only=True, resume_from=resume_from_artist)
-                        _write_progress_with_current_artist(popularity_progress_file, "singles_scan", False, {"status": "complete", "exit_code": 0})
-                        logging.info("Singles scan completed successfully")
+                        completed = scan_popularity_func(
+                            verbose=False,
+                            force=False,
+                            singles_only=True,
+                            resume_from=resume_from_artist,
+                            stop_progress_file=popularity_progress_file
+                        )
+                        if completed is False:
+                            _write_progress_with_current_artist(popularity_progress_file, "singles_scan", False, {"status": "stopped", "exit_code": 0})
+                            logging.info("Singles scan stopped by user request")
+                        else:
+                            _write_progress_with_current_artist(popularity_progress_file, "singles_scan", False, {"status": "complete", "exit_code": 0})
+                            logging.info("Singles scan completed successfully")
                     else:
                         logging.info(f"Starting popularity score scan in background (force={force_rescan}, filter_missing={filter_missing}, resume_from={resume_from_artist})")
-                        scan_popularity_func(verbose=False, force=force_rescan, filter_missing=filter_missing, resume_from=resume_from_artist)
-                        _write_progress_with_current_artist(popularity_progress_file, "popularity_scan", False, {"status": "complete", "exit_code": 0})
-                        logging.info("Popularity scan completed successfully")
+                        completed = scan_popularity_func(
+                            verbose=False,
+                            force=force_rescan,
+                            filter_missing=filter_missing,
+                            resume_from=resume_from_artist,
+                            stop_progress_file=popularity_progress_file
+                        )
+                        if completed is False:
+                            _write_progress_with_current_artist(popularity_progress_file, "popularity_scan", False, {"status": "stopped", "exit_code": 0})
+                            logging.info("Popularity scan stopped by user request")
+                        else:
+                            _write_progress_with_current_artist(popularity_progress_file, "popularity_scan", False, {"status": "complete", "exit_code": 0})
+                            logging.info("Popularity scan completed successfully")
                 except Exception as e:
                     logging.error(f"Error in popularity scan: {e}", exc_info=True)
                     _write_progress_with_current_artist(popularity_progress_file, "popularity_scan" if not singles_only else "singles_scan", False, {"status": "error", "error": str(e), "exit_code": 1})
@@ -6190,8 +6267,8 @@ def scan_stop_navidrome():
             if isinstance(scan_process_navidrome, dict):
                 thread = scan_process_navidrome.get('thread')
                 if thread and thread.is_alive():
-                    # Threads can't be forcefully stopped in Python, so we just mark it as stopped
-                    # The scan will check for stop signals and exit gracefully
+                    nav_progress_file = os.path.join(os.path.dirname(DB_PATH), "navidrome_scan_progress.json")
+                    _request_scan_stop(nav_progress_file, "navidrome_scan")
                     scan_process_navidrome = None
                     flash("Navidrome sync scan stop requested (will finish current artist)", "info")
                 else:
@@ -6214,8 +6291,9 @@ def scan_stop_popularity():
             if isinstance(scan_process_popularity, dict):
                 thread = scan_process_popularity.get('thread')
                 if thread and thread.is_alive():
-                    # Threads can't be forcefully stopped in Python, so we just mark it as stopped
-                    # The scan will check for stop signals and exit gracefully
+                    db_dir = os.path.dirname(DB_PATH)
+                    _request_scan_stop(os.path.join(db_dir, "popularity_scan_progress.json"), "popularity_scan")
+                    _request_scan_stop(os.path.join(db_dir, "singles_scan_progress.json"), "singles_scan")
                     scan_process_popularity = None
                     flash("Popularity scan stop requested (will finish current track)", "info")
                 else:
@@ -6238,8 +6316,8 @@ def scan_stop_singles():
             if isinstance(scan_process_singles, dict):
                 thread = scan_process_singles.get('thread')
                 if thread and thread.is_alive():
-                    # Threads can't be forcefully stopped in Python, so we just mark it as stopped
-                    # The scan will check for stop signals and exit gracefully
+                    singles_progress_file = os.path.join(os.path.dirname(DB_PATH), "singles_scan_progress.json")
+                    _request_scan_stop(singles_progress_file, "singles_scan")
                     scan_process_singles = None
                     flash("Single detection scan stop requested (will finish current operation)", "info")
                 else:
@@ -6262,8 +6340,8 @@ def scan_stop_combined():
             if isinstance(scan_process_combined, dict):
                 thread = scan_process_combined.get('thread')
                 if thread and thread.is_alive():
-                    # Threads can't be forcefully stopped in Python, so we just mark it as stopped
-                    # The scan will check for stop signals and exit gracefully
+                    combined_progress_file = os.path.join(os.path.dirname(DB_PATH), "combined_scan_progress.json")
+                    _request_scan_stop(combined_progress_file, "combined_scan")
                     scan_process_combined = None
                     flash("Combined scan stop requested (will finish current artist)", "info")
                 else:
@@ -6294,6 +6372,7 @@ def scan_stop_all():
             if isinstance(scan_process_navidrome, dict):
                 thread = scan_process_navidrome.get('thread')
                 if thread and thread.is_alive():
+                    _request_scan_stop(os.path.join(os.path.dirname(DB_PATH), "navidrome_scan_progress.json"), "navidrome_scan")
                     scan_process_navidrome = None
                     stopped_scans.append("Navidrome")
         
@@ -6302,6 +6381,9 @@ def scan_stop_all():
             if isinstance(scan_process_popularity, dict):
                 thread = scan_process_popularity.get('thread')
                 if thread and thread.is_alive():
+                    db_dir = os.path.dirname(DB_PATH)
+                    _request_scan_stop(os.path.join(db_dir, "popularity_scan_progress.json"), "popularity_scan")
+                    _request_scan_stop(os.path.join(db_dir, "singles_scan_progress.json"), "singles_scan")
                     scan_process_popularity = None
                     stopped_scans.append("Popularity")
         
@@ -6310,6 +6392,7 @@ def scan_stop_all():
             if isinstance(scan_process_singles, dict):
                 thread = scan_process_singles.get('thread')
                 if thread and thread.is_alive():
+                    _request_scan_stop(os.path.join(os.path.dirname(DB_PATH), "singles_scan_progress.json"), "singles_scan")
                     scan_process_singles = None
                     stopped_scans.append("Singles")
         
@@ -6318,6 +6401,7 @@ def scan_stop_all():
             if isinstance(scan_process_combined, dict):
                 thread = scan_process_combined.get('thread')
                 if thread and thread.is_alive():
+                    _request_scan_stop(os.path.join(os.path.dirname(DB_PATH), "combined_scan_progress.json"), "combined_scan")
                     scan_process_combined = None
                     stopped_scans.append("Combined")
         
@@ -6326,6 +6410,7 @@ def scan_stop_all():
             if isinstance(scan_process_missing_releases, dict):
                 thread = scan_process_missing_releases.get('thread')
                 if thread and thread.is_alive():
+                    _request_scan_stop(os.path.join(os.path.dirname(DB_PATH), "missing_releases_scan_progress.json"), "missing_releases_scan")
                     scan_process_missing_releases = None
                     stopped_scans.append("Missing releases")
     
@@ -7033,9 +7118,18 @@ def api_scan_from_artist():
             def run_popularity_scan_bg():
                 try:
                     logging.info(f"Starting popularity scan from artist '{artist}' (force={force_rescan})")
-                    scan_popularity_func(verbose=False, force=force_rescan, resume_from=artist)
-                    _write_progress_with_current_artist(popularity_progress_file, "popularity_scan", False, {"status": "complete", "exit_code": 0})
-                    logging.info(f"Popularity scan from '{artist}' completed successfully")
+                    completed = scan_popularity_func(
+                        verbose=False,
+                        force=force_rescan,
+                        resume_from=artist,
+                        stop_progress_file=popularity_progress_file
+                    )
+                    if completed is False:
+                        _write_progress_with_current_artist(popularity_progress_file, "popularity_scan", False, {"status": "stopped", "exit_code": 0})
+                        logging.info(f"Popularity scan from '{artist}' stopped by user request")
+                    else:
+                        _write_progress_with_current_artist(popularity_progress_file, "popularity_scan", False, {"status": "complete", "exit_code": 0})
+                        logging.info(f"Popularity scan from '{artist}' completed successfully")
                 except Exception as e:
                     logging.error(f"Error in popularity scan from '{artist}': {e}", exc_info=True)
                     _write_progress_with_current_artist(popularity_progress_file, "popularity_scan", False, {"status": "error", "error": str(e), "exit_code": 1})
@@ -7307,10 +7401,12 @@ def downloads_monitor():
     cfg = get_config()
     qbit_config = cfg.get("qbittorrent", {"enabled": False})
     slskd_config = cfg.get("slskd", {"enabled": False})
+    downloads_dir = _resolve_downloads_monitor_dir(cfg)
     
     return render_template("downloads_monitor.html", 
                          qbit_config=qbit_config,
-                         slskd_config=slskd_config)
+                         slskd_config=slskd_config,
+                         downloads_dir=downloads_dir)
 
 
 @app.route("/downloads/search/<source>")
@@ -7509,7 +7605,8 @@ def scan_navidrome():
                     for idx, (artist_name, info) in enumerate(artists[start_idx:], start=start_idx):
                         # Check if scan should stop
                         with scan_lock:
-                            if scan_process_navidrome is None:
+                            stop_requested = scan_process_navidrome is None or _is_stop_requested_from_progress(nav_progress_file)
+                            if stop_requested:
                                 logging.info("Navidrome scan stop signal received, exiting gracefully")
                                 _write_progress_with_current_artist(nav_progress_file, "navidrome_scan", False, {"status": "stopped", "exit_code": 0})
                                 return
@@ -7627,7 +7724,8 @@ def scan_combined():
                     for idx, (artist_name, info) in enumerate(artists[start_idx:], start=start_idx+1):
                         # Check if scan should stop
                         with scan_lock:
-                            if scan_process_combined is None:
+                            stop_requested = scan_process_combined is None or _is_stop_requested_from_progress(combined_progress_file)
+                            if stop_requested:
                                 logging.info("Combined scan stop signal received, exiting gracefully")
                                 # Preserve checkpoint for potential resume
                                 _write_progress_with_current_artist(combined_progress_file, "combined_scan", False, {"status": "stopped", "exit_code": 0})
@@ -7660,11 +7758,16 @@ def scan_combined():
                         # This is by design - popularity_scan uses name for SQL WHERE clause
                         logging.info(f"  → Popularity & singles scan for {artist_name}")
                         try:
-                            scan_popularity_func(
+                            completed = scan_popularity_func(
                                 verbose=False, 
                                 force=force_rescan,
-                                artist_filter=artist_name
+                                artist_filter=artist_name,
+                                stop_progress_file=combined_progress_file
                             )
+                            if completed is False:
+                                logging.info(f"Combined scan stop detected during popularity step for {artist_name}")
+                                _write_progress_with_current_artist(combined_progress_file, "combined_scan", False, {"status": "stopped", "exit_code": 0})
+                                return
                         except Exception as e:
                             logging.error(f"Error in popularity scan for {artist_name}: {e}")
                             # Continue with next artist even if popularity scan fails
@@ -10587,7 +10690,7 @@ def api_downloads_scan():
         
         cfg = get_config()
         downloads_config = cfg.get("downloads", {})
-        downloads_dir = downloads_config.get("folder", os.environ.get("DOWNLOADS_DIR", "/downloads"))
+        downloads_dir = _resolve_downloads_monitor_dir(cfg)
         incomplete_dir = downloads_config.get("incomplete_folder", "/downloads/Soulseek/Incomplete")
         monitor_incomplete = downloads_config.get("monitor_incomplete", True)
         
@@ -12906,7 +13009,7 @@ def downloads_manager():
     cfg = get_config()
     
     # Get downloads folder from config, fall back to env var, then default
-    downloads_dir = cfg.get("downloads", {}).get("folder", os.environ.get("DOWNLOADS_DIR", "/downloads"))
+    downloads_dir = _resolve_downloads_monitor_dir(cfg)
     
     return render_template("downloads_manager.html", 
                          downloads_dir=downloads_dir,
