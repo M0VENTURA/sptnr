@@ -94,7 +94,7 @@
   <td colspan="7" style="padding: 1rem;">
     <div class="tracklist-container">
       {% if is_missing %}
-        <button class="btn btn-sm btn-outline-info me-2" onclick='loadTracklist({{ artist_name|tojson }}, {{ album.title|tojson }}, this, {{ album.release_id|tojson }})'>
+        <button class="btn btn-sm btn-outline-info me-2 btn-tracklist-load" onclick='loadTracklist({{ artist_name|tojson }}, {{ album.title|tojson }}, this, {{ album.release_id|tojson }})'>
           <span class="spinner-border spinner-border-sm me-2" style="display:none;"></span>
           <i class="bi bi-music-note-list"></i> Load Tracklist from MusicBrainz
         </button>

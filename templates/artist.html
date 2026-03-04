@@ -421,9 +421,9 @@
             <i class="bi bi-eye-slash"></i> <span class="d-none d-sm-inline">Show Missing</span>
           </button>
         {% endif %}
-        <a href="/downloads#upcoming" class="btn btn-sm btn-outline-warning" title="Search for missing releases">
+        <button class="btn btn-sm btn-outline-warning" onclick='checkMissingReleases({{ artist_name|tojson }})' title="Check MusicBrainz and add missing releases inline">
           <i class="bi bi-flag"></i> Check for Missing
-        </a>
+        </button>
       </div>
     </div>
     <div class="table-responsive">
@@ -472,9 +472,9 @@
             <i class="bi bi-eye-slash"></i> <span class="d-none d-sm-inline">Show Missing</span>
           </button>
         {% endif %}
-        <a href="/downloads#upcoming" class="btn btn-sm btn-outline-warning" title="Search for missing releases">
+        <button class="btn btn-sm btn-outline-warning" onclick='checkMissingReleases({{ artist_name|tojson }})' title="Check MusicBrainz and add missing releases inline">
           <i class="bi bi-flag"></i> Check for Missing
-        </a>
+        </button>
       </div>
     </div>
     <div class="table-responsive">
@@ -523,9 +523,9 @@
             <i class="bi bi-eye-slash"></i> <span class="d-none d-sm-inline">Show Missing</span>
           </button>
         {% endif %}
-        <a href="/downloads#upcoming" class="btn btn-sm btn-outline-warning" title="Search for missing releases">
+        <button class="btn btn-sm btn-outline-warning" onclick='checkMissingReleases({{ artist_name|tojson }})' title="Check MusicBrainz and add missing releases inline">
           <i class="bi bi-flag"></i> Check for Missing
-        </a>
+        </button>
       </div>
     </div>
     <div class="table-responsive">
@@ -909,6 +909,37 @@
         </div>
     </div>
 </div>
+
+<!-- MusicBrainz Release Search Modal -->
+<div class="modal fade" id="musicBrainzModal" tabindex="-1" aria-labelledby="musicBrainzModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-xl">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="musicBrainzModalLabel">
+          <i class="bi bi-music-note-list"></i> MusicBrainz Release Search
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div id="mbSearchInfo" class="alert alert-info mb-3" style="display:none;">
+          Searching <strong id="mbSearchArtist"></strong> - <strong id="mbSearchAlbum"></strong>
+        </div>
+        
+        <div id="mbSearchStatus" class="text-center py-4" style="display:none;">
+          <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Loading...</span>
+          </div>
+          <p class="mt-2 text-muted">Searching MusicBrainz...</p>
+        </div>
+        
+        <div id="mbSearchError" class="alert alert-danger" style="display:none;"></div>
+        
+        <div id="mbSearchResults"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- End MusicBrainz Search Modal -->
 
 <script>
 // Constants for slskd search polling
@@ -1573,6 +1604,14 @@ function escapeJsString(str) {
             .replace(/\r/g, '\\r');
 }
 
+function formatDuration(ms) {
+  if (!ms) return 'N/A';
+  const seconds = Math.floor(ms / 1000);
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
+}
+
 // Allow Enter key to trigger search
 document.addEventListener('DOMContentLoaded', function() {
   const qbitSearchInput = document.getElementById('qbitSearchInput');
@@ -1635,105 +1674,162 @@ function importMissingRelease(artistName, releaseId, releaseTitle) {
 }
 
 function checkMissingReleases(artistName) {
-  const statusEl = document.getElementById('albumsStatus');
-  const tableBody = document.getElementById('albumsTableBody');
-  
-  if (statusEl) {
-    statusEl.textContent = 'Loading missing releases...';
+  const triggerBtn = window.event?.target?.closest('button');
+  const originalBtnHtml = triggerBtn ? triggerBtn.innerHTML : null;
+  if (triggerBtn) {
+    triggerBtn.disabled = true;
+    triggerBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Checking...';
   }
 
-  // First try to load from cache
-  fetch('/api/artist/cached-missing-releases?artist=' + encodeURIComponent(artistName))
+  const safeForDomId = (value) => String(value || '').replace(/\s+/g, '_').replace(/[^\w\-]/g, '_');
+  const categoryToSection = {
+    album: 'albums',
+    ep: 'eps',
+    single: 'singles',
+    compilation: 'compilations'
+  };
+
+  const getMissingCategory = (item) => {
+    const categoryRaw = String(item.category || item.primary_type || 'album').toLowerCase();
+    if (categoryRaw.includes('compilation')) return 'compilation';
+    if (categoryRaw.includes('ep')) return 'ep';
+    if (categoryRaw.includes('single')) return 'single';
+    return 'album';
+  };
+
+  const rowExists = (tbody, albumTitle) => {
+    const wanted = String(albumTitle || '').trim().toLowerCase();
+    return Array.from(tbody.querySelectorAll('tr.album-row')).some(row =>
+      String(row.getAttribute('data-album') || '').trim().toLowerCase() === wanted
+    );
+  };
+
+  const sortTbodyByYear = (tbody) => {
+    const albumRows = Array.from(tbody.querySelectorAll('tr.album-row'));
+    const rowPairs = albumRows.map((row) => {
+      const next = row.nextElementSibling;
+      const tracklistRow = (next && next.classList.contains('tracklist-row')) ? next : null;
+      return { row, tracklistRow };
+    });
+
+    rowPairs.sort((a, b) => {
+      const yearA = parseInt(a.row.getAttribute('data-year') || '9999', 10);
+      const yearB = parseInt(b.row.getAttribute('data-year') || '9999', 10);
+      return yearB - yearA;
+    });
+
+    tbody.innerHTML = '';
+    rowPairs.forEach(({ row, tracklistRow }) => {
+      tbody.appendChild(row);
+      if (tracklistRow) tbody.appendChild(tracklistRow);
+    });
+  };
+
+  fetch('/api/artist/missing-releases?artist=' + encodeURIComponent(artistName))
     .then(r => r.json())
     .then(data => {
-      if (data.error || !data.missing || data.missing.length === 0) {
-        // If no cached data, fall back to live MusicBrainz check
-        if (statusEl) statusEl.textContent = 'No cached data found. Checking MusicBrainz...';
-        
-        return fetch('/api/artist/missing-releases?artist=' + encodeURIComponent(artistName))
-          .then(r => r.json());
-      }
-      return data;
-    })
-    .then(data => {
       if (data.error) {
-        if (statusEl) statusEl.textContent = 'Error: ' + data.error;
-        return;
+        throw new Error(data.error);
       }
-
       const missing = data.missing || [];
-      if (statusEl) {
-        const cacheMsg = data.from_cache ? ' (from cache)' : '';
-        const currentRows = tableBody.querySelectorAll('tr[data-status="discovered"]').length;
-        statusEl.textContent = missing.length ? 
-          `Showing ${currentRows} discovered + ${missing.length} missing release(s)${cacheMsg}` : 
-          `Showing ${currentRows} discovered releases. All MusicBrainz releases are present.`;
-      }
+      // Remove previously injected live rows before re-inserting.
+      document.querySelectorAll('tr[data-source="live-missing"]').forEach(row => row.remove());
 
-      // Add missing releases to the table
+      let addedCount = 0;
       missing.forEach(item => {
+        const category = getMissingCategory(item);
+        const sectionKey = categoryToSection[category];
+        const tbody = document.querySelector(`#${sectionKey}-section .${sectionKey}-tbody`);
+        if (!tbody) return;
+        if (rowExists(tbody, item.title)) return;
+
         const year = (item.first_release_date || '').slice(0, 4) || '????';
-        const fallbackArt = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22%3E%3Crect fill=%22%232a2a2a%22 width=%22100%22 height=%22100%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2212%22%3ENo Art%3C/text%3E%3C/svg%3E';
+        const fallbackArt = '/api/album-art-placeholder';
         const artUrl = item.cover_art_url || fallbackArt;
+        const safeArtist = safeForDomId(artistName);
+        const safeAlbum = safeForDomId(item.title);
+        const rowId = `tracklist-${safeArtist}-${safeAlbum}`;
+        const contentId = `tracklist-content-${safeArtist}-${safeAlbum}`;
         
         const row = document.createElement('tr');
-        row.className = 'd-flex flex-column d-md-table-row album-row';
+        row.className = 'album-row';
         row.setAttribute('data-year', year === '????' ? '9999' : year);
         row.setAttribute('data-status', 'missing');
+        row.setAttribute('data-source', 'live-missing');
+        row.setAttribute('data-album', item.title || '');
         
         row.innerHTML = `
-          <td class="text-center d-none d-md-table-cell" style="width: 120px; padding: 0.5rem;">
+          <td class="text-center" style="width: 100px; padding: 0.5rem;">
             <img src="${artUrl}" 
                  alt="${escapeHtml(item.title)}" 
                  class="img-thumbnail"
-                 style="width: 100px; height: 100px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;"
-                 onerror="this.src='${fallbackArt}';">
+                 style="width: 80px; height: 80px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;"
+                 onerror="this.src='${fallbackArt}'">
           </td>
-          <td class="d-flex justify-content-between d-md-table-cell">
-            <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Album</span>
-            <span>${escapeHtml(item.title)}</span>
-          </td>
-          <td class="d-flex justify-content-between d-md-table-cell text-center">
-            <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Year</span>
+          <td>${escapeHtml(item.title)}</td>
+          <td class="text-center">
             ${year}
           </td>
-          <td class="d-flex justify-content-between d-md-table-cell text-center">
-            <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Status</span>
+          <td class="text-center">
             <span class="badge bg-warning text-dark">Missing</span>
           </td>
-          <td class="d-flex justify-content-between d-md-table-cell text-center">
-            <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Tracks</span>
-            <span class="text-muted">—</span>
-          </td>
-          <td class="d-flex justify-content-between d-md-table-cell text-center">
-            <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Avg ★</span>
-            <span class="text-muted">—</span>
-          </td>
-          <td class="d-flex justify-content-between d-md-table-cell text-center">
-            <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Singles</span>
-            <span class="text-muted">—</span>
-          </td>
-          <td class="d-none d-md-table-cell text-center text-muted" style="font-size: 0.85rem;">
-            <span class="text-muted">Not in library</span>
-          </td>
-          <td class="d-flex justify-content-end gap-1 d-md-table-cell">
-            <button class="btn btn-sm btn-primary" onclick="importMissingRelease('${escapeJsString(artistName)}', '${escapeJsString(item.id)}', '${escapeJsString(item.title)}')" title="Import full tracklisting">
-              <i class="bi bi-download"></i>
-            </button>
-            <button class="btn btn-sm btn-outline-secondary" onclick="openDownloadSearch('${escapeJsString(artistName)}', '${escapeJsString(item.title)}')" title="Search for download">
-              <i class="bi bi-search"></i>
-            </button>
+          <td class="text-center">—</td>
+          <td class="text-center"><span class="text-muted">—</span></td>
+          <td class="text-center">
+            <div class="btn-group btn-group-sm" role="group">
+              <button class="btn btn-outline-info" onclick='toggleTracklist(${JSON.stringify(artistName)}, ${JSON.stringify(item.title)})' title="Show tracklist" id="toggle-btn-${safeArtist}-${safeAlbum}">
+                <i class="bi bi-list-ul"></i>
+              </button>
+              <button class="btn btn-outline-success" onclick="importRelease(${JSON.stringify(artistName)}, ${JSON.stringify(item.id)}, ${JSON.stringify(item.title)})" title="Import this release">
+                <i class="bi bi-download"></i>
+              </button>
+              <button class="btn btn-outline-secondary" onclick="searchMusicBrainzRelease(event, ${JSON.stringify(artistName)}, ${JSON.stringify(item.title)})" title="Search MusicBrainz">
+                <i class="bi bi-search"></i>
+              </button>
+            </div>
           </td>
         `;
-        
-        tableBody.appendChild(row);
+
+        const tracklistRow = document.createElement('tr');
+        tracklistRow.className = 'tracklist-row';
+        tracklistRow.id = rowId;
+        tracklistRow.setAttribute('data-source', 'live-missing');
+        tracklistRow.style.display = 'none';
+        tracklistRow.innerHTML = `
+          <td colspan="7" style="padding: 1rem;">
+            <div class="tracklist-container">
+              <button class="btn btn-sm btn-outline-info me-2 btn-tracklist-load" onclick='loadTracklist(${JSON.stringify(artistName)}, ${JSON.stringify(item.title)}, this, ${JSON.stringify(item.id)})'>
+                <span class="spinner-border spinner-border-sm me-2" style="display:none;"></span>
+                <i class="bi bi-music-note-list"></i> Load Tracklist from MusicBrainz
+              </button>
+              <div id="${contentId}" class="mt-3"></div>
+            </div>
+          </td>
+        `;
+
+        tbody.appendChild(row);
+        tbody.appendChild(tracklistRow);
+        addedCount += 1;
       });
 
-      // Sort all rows by year (newest first)
-      sortAlbumsByYear();
+      ['albums', 'eps', 'singles', 'compilations'].forEach(sectionKey => {
+        const tbody = document.querySelector(`#${sectionKey}-section .${sectionKey}-tbody`);
+        if (tbody) sortTbodyByYear(tbody);
+      });
+
+      initializeMissingToggle();
+      alert(addedCount > 0
+        ? `✅ Added ${addedCount} missing release(s) inline from MusicBrainz`
+        : '✅ No new missing releases found.');
     })
     .catch(err => {
-      if (statusEl) statusEl.textContent = 'Error: ' + err.message;
+      alert('❌ Error checking missing releases: ' + err.message);
+    })
+    .finally(() => {
+      if (triggerBtn) {
+        triggerBtn.disabled = false;
+        triggerBtn.innerHTML = originalBtnHtml;
+      }
     });
 }
 
@@ -1778,21 +1874,304 @@ function importRelease(artist, releaseId, title) {
   });
 }
 
-
-function sortAlbumsByYear() {
-  const tableBody = document.getElementById('albumsTableBody');
-  const rows = Array.from(tableBody.querySelectorAll('tr.album-row'));
+async function searchMusicBrainzRelease(event, artist, album) {
+  event.preventDefault();
+  event.stopPropagation();
   
-  rows.sort((a, b) => {
-    const yearA = parseInt(a.getAttribute('data-year')) || 9999;
-    const yearB = parseInt(b.getAttribute('data-year')) || 9999;
-    // Sort descending (newest first)
-    return yearB - yearA;
+  // Show modal
+  const modal = new bootstrap.Modal(document.getElementById('musicBrainzModal'));
+  modal.show();
+  
+  // Update search info
+  document.getElementById('mbSearchArtist').textContent = artist;
+  document.getElementById('mbSearchAlbum').textContent = album;
+  document.getElementById('mbSearchInfo').style.display = 'block';
+  
+  // Show loading
+  document.getElementById('mbSearchStatus').style.display = 'block';
+  document.getElementById('mbSearchError').style.display = 'none';
+  document.getElementById('mbSearchResults').innerHTML = '';
+  
+  try {
+    // First try MusicBrainz
+    const response = await fetch('/api/upcoming-releases/search-musicbrainz', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ artist: artist, album: album })
+    });
+    
+    const data = await response.json();
+    
+    // Check if MusicBrainz had good results
+    if (data.success && data.results && data.results.length >= 3) {
+      // Hide loading
+      document.getElementById('mbSearchStatus').style.display = 'none';
+      
+      // Display results
+      displayMusicBrainzResults(data.results);
+      return;
+    }
+    
+    // If MusicBrainz has no or few results, try Discogs as fallback
+    console.log('MusicBrainz returned few/no results, trying Discogs fallback...');
+    document.getElementById('mbSearchStatus').innerHTML = 
+      '<div class="spinner-border spinner-border-sm me-2"></div>Searching Discogs as fallback...';
+    
+    const discogsResponse = await fetch('/api/upcoming-releases/search-discogs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ artist: artist, album: album })
+    });
+    
+    const discogsData = await discogsResponse.json();
+    
+    // Hide loading
+    document.getElementById('mbSearchStatus').style.display = 'none';
+    
+    // Combine results from both sources
+    let allResults = [];
+    if (data.results && data.results.length > 0) {
+      allResults = allResults.concat(data.results);
+    }
+    if (discogsData.success && discogsData.results && discogsData.results.length > 0) {
+      allResults = allResults.concat(discogsData.results);
+    }
+    
+    if (allResults.length === 0) {
+      document.getElementById('mbSearchError').textContent = 
+        'No releases found on MusicBrainz or Discogs';
+      document.getElementById('mbSearchError').style.display = 'block';
+      return;
+    }
+    
+    // Display combined results
+    displayMusicBrainzResults(allResults);
+    
+  } catch (error) {
+    console.error('Release search error:', error);
+    document.getElementById('mbSearchStatus').style.display = 'none';
+    document.getElementById('mbSearchError').textContent = 
+      'Error searching: ' + error.message;
+    document.getElementById('mbSearchError').style.display = 'block';
+  }
+}
+
+function displayMusicBrainzResults(results) {
+  const container = document.getElementById('mbSearchResults');
+  
+  // Global storage for release data to avoid JSON escaping in HTML attributes
+  if (!window.mbReleaseData) {
+    window.mbReleaseData = {};
+  }
+  
+  let html = '<div class="accordion" id="mbResultsAccordion">';
+  
+  results.forEach((release, index) => {
+    const releaseId = `mbRelease${index}`;
+    const dataKey = `release_${Date.now()}_${index}`;
+    
+    // Store release data in global object for safe access
+    window.mbReleaseData[dataKey] = {
+      artist: release.artist,
+      album: release.title,
+      tracks: release.tracks,
+      year: release.date || release.year || null,
+      release_id: release.release_id || release.release_group_id || null,
+      source: release.source || 'musicbrainz'
+    };
+    
+    // Handle both MusicBrainz and Discogs formats
+    const source = release.source || 'musicbrainz';
+    const sourceBadge = source === 'discogs' ? 
+      '<span class="badge bg-info ms-2">Discogs</span>' : 
+      '<span class="badge bg-primary ms-2">MusicBrainz</span>';
+    
+    // Format tracks based on source
+    const tracksHtml = release.tracks.map(track => {
+      // MusicBrainz uses 'length' in milliseconds, Discogs uses 'duration' as string
+      let duration = 'N/A';
+      if (track.length != null && track.length !== '') {
+        duration = formatDuration(track.length);
+      } else if (track.duration != null && track.duration !== '') {
+        duration = track.duration;
+      }
+      
+      return `
+        <tr>
+          <td>${escapeHtml(track.position)}</td>
+          <td>${escapeHtml(track.title)}</td>
+          <td>${duration}</td>
+        </tr>
+      `;
+    }).join('');
+    
+    // Build release info
+    let releaseInfo = [];
+    if (release.type) {
+      releaseInfo.push(release.type);
+    } else if (release.formats && Array.isArray(release.formats) && release.formats.length > 0) {
+      const formatStr = release.formats.join(', ');
+      releaseInfo.push(formatStr);
+    } else {
+      releaseInfo.push('Album');
+    }
+    
+    if (release.date) releaseInfo.push(release.date);
+    else if (release.year) releaseInfo.push(release.year);
+    else releaseInfo.push('Unknown date');
+    
+    releaseInfo.push(`${release.track_count} tracks`);
+    
+    html += `
+      <div class="accordion-item">
+        <h2 class="accordion-header" id="heading${releaseId}">
+          <button class="accordion-button ${index === 0 ? '' : 'collapsed'}" type="button" 
+            data-bs-toggle="collapse" data-bs-target="#${releaseId}" 
+            aria-expanded="${index === 0 ? 'true' : 'false'}" aria-controls="${releaseId}">
+            <div class="w-100">
+              <strong>${escapeHtml(release.title)}</strong>${sourceBadge}
+              <small class="text-muted ms-2">
+                ${releaseInfo.join(' · ')}
+              </small>
+            </div>
+          </button>
+        </h2>
+        <div id="${releaseId}" class="accordion-collapse collapse ${index === 0 ? 'show' : ''}" 
+          aria-labelledby="heading${releaseId}" data-bs-parent="#mbResultsAccordion">
+          <div class="accordion-body">
+            <div class="mb-3">
+              <button class="btn btn-success mb-download-release" 
+                data-release-key="${dataKey}">
+                <i class="bi bi-download"></i> Download All Tracks (${release.track_count})
+              </button>
+            </div>
+            <table class="table table-sm table-hover table-striped table-dark mb-0">
+              <thead>
+                <tr>
+                  <th style="width: 60px;">#</th>
+                  <th>Title</th>
+                  <th style="width: 100px;">Duration</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${tracksHtml}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    `;
   });
   
-  // Clear and re-append in sorted order
-  tableBody.innerHTML = '';
-  rows.forEach(row => tableBody.appendChild(row));
+  html += '</div>';
+  container.innerHTML = html;
+  
+  // Attach event listeners to download buttons
+  container.querySelectorAll('.mb-download-release').forEach(button => {
+    button.addEventListener('click', function() {
+      const dataKey = this.dataset.releaseKey;
+      const releaseData = window.mbReleaseData[dataKey];
+      
+      if (!releaseData) {
+        alert('Error: Release data not found');
+        return;
+      }
+      
+      downloadMusicBrainzRelease(releaseData.artist, releaseData.album, releaseData.tracks, releaseData.year, releaseData.release_id, releaseData.source);
+    });
+  });
+}
+
+async function downloadMusicBrainzRelease(artist, album, tracks, year, release_id, source) {
+  if (!tracks || tracks.length === 0) {
+    alert('No tracks to download');
+    return;
+  }
+  
+  try {
+    // Extract year from date string if needed (e.g., "2023-04-15" -> "2023")
+    let releaseYear = null;
+    if (year) {
+      // Handle both string and number types
+      const yearStr = String(year);
+      releaseYear = yearStr.substring(0, 4);
+    }
+    
+    // Batch add all tracks in a single API call with MusicBrainz/Discogs metadata
+    const trackItems = tracks.map(track => ({
+      artist: artist,
+      title: track.title,
+      album: album,
+      source: 'soulseek',
+      priority: 5,
+      track_number: track.position || null,
+      album_artist: artist,
+      year: releaseYear,
+      release_id: release_id,
+      release_source: source || 'musicbrainz'
+    }));
+    
+    // Send batch request with import_group based on artist+album
+    // This tags all tracks from this specific album together
+    // Once all downloads complete, they can be organized together using "Organize All" button
+    const import_group = `${artist}_${album}`.replace(/\s+/g, '_').substring(0, 100);
+    
+    const response = await fetch('/api/queue/add-batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        items: trackItems,
+        import_group: import_group,  // Group by artist + album
+        import_type: 'album'  // Mark as album import
+      })
+    });
+    
+    const data = await response.json();
+    
+    // Close modal
+    const modalEl = document.getElementById('musicBrainzModal');
+    const modal = bootstrap.Modal.getInstance(modalEl);
+    if (modal) {
+      modal.hide();
+    }
+    
+    // Show result message
+    if (data.success) {
+      const added = data.added || 0;
+      const failed = data.failed || 0;
+      const failedTracks = data.failed_tracks || [];
+      const importGroup = data.import_group;
+      const importType = data.import_type || 'album';
+      
+      let message = `✅ Added ${added} tracks from "${album}" to download queue`;
+      if (failed > 0) {
+        message += `\n⚠️ Failed to add ${failed} tracks`;
+        if (failedTracks.length > 0) {
+          const failedList = failedTracks.slice(0, 5).join(', ');
+          message += `:\n${failedList}${failedTracks.length > 5 ? '...' : ''}`;
+        }
+      }
+      
+      // Inform user about grouping and organization
+      if (added > 0 && importGroup) {
+        message += `\n\n📦 All ${importType} tracks are grouped as: "${album}"`;
+        message += `\nOnce downloads complete, use "Organize All" in the Completed section to move them to /music`;
+      }
+      
+      alert(message);
+      
+      // Refresh queue status if the function exists (from downloads_monitor context)
+      if (typeof loadQueueStatus === 'function') {
+        await loadQueueStatus();
+      }
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to add tracks to queue'));
+    }
+    
+  } catch (error) {
+    console.error('Error downloading release:', error);
+    alert('❌ Error: ' + error.message);
+  }
 }
 
 
@@ -2295,6 +2674,7 @@ function removeSelectedArtistGenres() {
 function toggleTracklist(artist, album) {
   const rowId = `tracklist-${artist.replace(/\s+/g, '_')}-${album.replace(/\s+/g, '_')}`;
   const btnId = `toggle-btn-${artist.replace(/\s+/g, '_')}-${album.replace(/\s+/g, '_')}`;
+  const contentId = `tracklist-content-${artist.replace(/\s+/g, '_')}-${album.replace(/\s+/g, '_')}`;
   const row = document.getElementById(rowId);
   const btn = document.getElementById(btnId);
   
@@ -2307,15 +2687,17 @@ function toggleTracklist(artist, album) {
       if (isHidden) {
         btn.classList.add('active');
         btn.innerHTML = '<i class="bi bi-chevron-up"></i>';
-        // Auto-load tracklist when expanded if not already loaded
+        // Auto-load tracklist when expanded if not already loaded.
         setTimeout(() => {
-          const contentId = `tracklist-content-${artist.replace(/\s+/g, '_')}-${album.replace(/\s+/g, '_')}`;
           const contentDiv = document.getElementById(contentId);
-          if (contentDiv && !contentDiv.innerHTML.includes('list-group-item')) {
+          if (contentDiv && contentDiv.innerHTML.trim() === '') {
             const trackedRow = document.getElementById(rowId);
-            const loadBtn = trackedRow?.querySelector('button:not(.btn-tracklist)');
-            if (loadBtn && loadBtn.textContent.includes('Load')) {
+            const loadBtn = trackedRow?.querySelector('button.btn-tracklist-load');
+            if (loadBtn) {
               loadBtn.click();
+            } else {
+              // Discovered releases do not have a "Load" button; fetch directly.
+              loadTracklist(artist, album, null, null);
             }
           }
         }, 100);
@@ -2433,16 +2815,16 @@ function downloadSlskdFile(username, filename, size, btn, originalHTML) {
   });
 }
 
-function loadTracklist(artist, album, button, mbid) {
+function loadTracklist(artist, album, button = null, mbid = null) {
   const contentId = `tracklist-content-${artist.replace(/\s+/g, '_')}-${album.replace(/\s+/g, '_')}`;
   const contentDiv = document.getElementById(contentId);
-  const spinner = button.querySelector('.spinner-border');
+  const spinner = button ? button.querySelector('.spinner-border') : null;
   
   if (!contentDiv) return;
   
   // Show spinner
   if (spinner) spinner.style.display = 'inline-block';
-  button.disabled = true;
+  if (button) button.disabled = true;
   
   // Build the tracklist fetch URL
   let tracklistUrl = `/api/album/tracklist?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`;
@@ -2457,7 +2839,7 @@ function loadTracklist(artist, album, button, mbid) {
   ])
   .then(([tracklistResponse, matchResponse]) => {
     if (spinner) spinner.style.display = 'none';
-    button.disabled = false;
+    if (button) button.disabled = false;
     
     if (tracklistResponse.error) {
       contentDiv.innerHTML = `<div class="alert alert-warning"><i class="bi bi-exclamation-triangle"></i> ${escapeHtml(tracklistResponse.error)}</div>`;
@@ -2539,44 +2921,6 @@ function loadTracklist(artist, album, button, mbid) {
     contentDiv.innerHTML = `<div class="alert alert-danger"><i class="bi bi-x-circle"></i> Error: ${escapeHtml(error.message)}</div>`;
   });
 }
-
-// Add button to toggle tracklist for each Single/EP
-function initializeTracklistButtons() {
-  // Find all single/ep rows and add toggle button
-  const singleRows = document.querySelectorAll('#singles-section .album-row');
-  const epRows = document.querySelectorAll('#eps-section .album-row');
-  
-  [].concat(Array.from(singleRows), Array.from(epRows)).forEach(row => {
-    // Add a toggle button to the actions cell
-    const actionCell = row.querySelector('td:last-child');
-    if (actionCell && !actionCell.querySelector('.btn-tracklist')) {
-      const artist = document.querySelector('[data-artist-name]')?.dataset.artistName || '';
-      const album = row.dataset.album || '';
-      
-      const toggleBtn = document.createElement('button');
-      toggleBtn.className = 'btn btn-sm btn-outline-info btn-tracklist ms-1';
-      toggleBtn.innerHTML = '<i class="bi bi-list-ul"></i>';
-      toggleBtn.title = 'Show tracklist';
-      toggleBtn.onclick = () => {
-        const rowId = `tracklist-${artist.replace(/\s+/g, '_')}-${album.replace(/\s+/g, '_')}`;
-        const tracklistRow = document.getElementById(rowId);
-        if (tracklistRow) {
-          toggleBtn.querySelector('i').className = tracklistRow.style.display === 'none' 
-            ? 'bi bi-list-ul' 
-            : 'bi bi-chevron-up';
-          tracklistRow.style.display = tracklistRow.style.display === 'none' ? '' : 'none';
-        }
-      };
-      
-      actionCell.appendChild(toggleBtn);
-    }
-  });
-}
-
-// Initialize tracklist buttons when page loads
-document.addEventListener('DOMContentLoaded', function() {
-  setTimeout(initializeTracklistButtons, 500);
-});
 
 // Toggle missing items visibility
 function toggleMissing(category) {
@@ -2921,7 +3265,7 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
     })
     .catch(err => {
       alert('❌ Network error: ' + err.message);
-    });
+      if (button) button.disabled = false;
   }
 
   // Load artist genres from API on page load

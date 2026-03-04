@@ -2484,6 +2484,41 @@ def _fetch_musicbrainz_releases(artist_name: str, limit: int = 100, artist_mbid:
     return releases
 
 
+def _search_musicbrainz_releasegroup_matches(artist_name: str, album_name: str, limit: int = 10) -> list[dict]:
+    """Search MusicBrainz release-groups using the same artist+releasegroup query style as Upcoming Releases."""
+    if not artist_name or not album_name:
+        return []
+
+    headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
+    search_url = "https://musicbrainz.org/ws/2/release-group"
+    query = f"artist:{artist_name} AND releasegroup:{album_name}"
+    params = {
+        "fmt": "json",
+        "query": query,
+        "limit": max(1, min(limit, 25)),
+    }
+
+    try:
+        response = requests.get(search_url, headers=headers, params=params, timeout=15)
+        response.raise_for_status()
+        data = response.json() or {}
+    except Exception as e:
+        logging.debug(f"MusicBrainz release-group match search failed for {artist_name} - {album_name}: {e}")
+        return []
+
+    matches = []
+    for rg in data.get("release-groups", []) or []:
+        matches.append({
+            "id": rg.get("id", ""),
+            "title": rg.get("title", ""),
+            "primary_type": rg.get("primary-type", ""),
+            "first_release_date": rg.get("first-release-date", ""),
+            "secondary_types": rg.get("secondary-types", []),
+        })
+
+    return matches
+
+
 @app.route("/api/artist/exists", methods=["GET"])
 def api_artist_exists():
     """Check if an artist exists in the database."""
@@ -7760,6 +7795,8 @@ def scan_combined():
             
             def run_combined_scan_bg():
                 global scan_process_combined
+                # Define checkpoint_path early so it's available in exception handlers
+                checkpoint_path = os.path.join(os.path.dirname(DB_PATH), "combined_scan_checkpoint.json")
                 try:
                     logging.info(f"Starting combined scan (mode={mode})")
                     from popularity import popularity_scan as scan_popularity_func
@@ -7774,7 +7811,6 @@ def scan_combined():
                     
                     # Determine start index for resume mode using checkpoint file
                     start_idx = 0
-                    checkpoint_path = os.path.join(os.path.dirname(DB_PATH), "combined_scan_checkpoint.json")
                     if mode == 'resume' or mode == 'resume_force':
                         if os.path.exists(checkpoint_path):
                             try:
@@ -10459,14 +10495,19 @@ def api_album_tracklist():
         conn = get_db()
         cursor = conn.cursor()
         
-        # Get tracks from the album in the database
-        cursor.execute("""
-            SELECT title, track_number, duration, artist FROM tracks 
-            WHERE artist = ? AND album = ? 
-            ORDER BY track_number ASC, title ASC
-        """, (artist, album))
-        
-        db_tracks = cursor.fetchall()
+        # Get tracks from the album in the database.
+        # Prefer album artist identity; fall back to track artist for legacy rows.
+        db_tracks = []
+        for artist_clause in ["COALESCE(NULLIF(album_artist, ''), artist)", "artist"]:
+            cursor.execute(f"""
+                SELECT id, title, track_number, duration, artist
+                FROM tracks
+                WHERE {artist_clause} = ? AND album = ?
+                ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 999), title COLLATE NOCASE
+            """, (artist, album))
+            db_tracks = cursor.fetchall()
+            if db_tracks:
+                break
         conn.close()
         
         if db_tracks:
@@ -10475,6 +10516,7 @@ def api_album_tracklist():
             tracklist = []
             for track in db_tracks:
                 tracklist.append({
+                    "track_id": track['id'],
                     "position": str(track['track_number'] or '').strip() or '—',
                     "title": track['title'],
                     "artist": track['artist'] or ''
@@ -10939,9 +10981,9 @@ def api_downloads_grouped_folders():
             **result
         })
     except Exception as e:
-        logger.error(f"Error scanning grouped folders: {e}")
+        logging.error(f"Error scanning grouped folders: {e}")
         import traceback
-        logger.error(traceback.format_exc())
+        logging.error(traceback.format_exc())
         return jsonify({
             "success": False,
             "error": str(e),
@@ -10993,9 +11035,9 @@ def api_downloads_folder_match_musicbrainz(folder_path):
             **result
         })
     except Exception as e:
-        logger.error(f"Error matching folder with MusicBrainz: {e}")
+        logging.error(f"Error matching folder with MusicBrainz: {e}")
         import traceback
-        logger.error(traceback.format_exc())
+        logging.error(traceback.format_exc())
         return jsonify({
             "success": False,
             "error": str(e),
@@ -11020,7 +11062,6 @@ def api_downloads_folder_organize(folder_path):
     """
     try:
         from download_folder_grouping import organize_folder_to_music
-        import read_config
         
         data = request.get_json() or {}
         release_id = data.get('release_id')
@@ -11052,9 +11093,9 @@ def api_downloads_folder_organize(folder_path):
         })
         
     except Exception as e:
-        logger.error(f"Error organizing folder: {e}")
+        logging.error(f"Error organizing folder: {e}")
         import traceback
-        logger.error(traceback.format_exc())
+        logging.error(traceback.format_exc())
         return jsonify({
             "success": False,
             "error": str(e)
@@ -11925,6 +11966,57 @@ def api_queue_delete(queue_id):
             
     except Exception as e:
         logging.error(f"Error deleting queue item: {e}")
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/queue/clear", methods=["POST"])
+def api_queue_clear():
+    """Clear all items from download queue"""
+    try:
+        data = request.get_json() or {}
+        filters = data.get('filters', {})  # Optional filters: status, artist, album
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Build query with optional filters
+        query = "DELETE FROM download_queue WHERE 1=1"
+        params = []
+        
+        if filters.get('status'):
+            query += " AND status = ?"
+            params.append(filters['status'])
+        
+        if filters.get('artist'):
+            query += " AND artist = ?"
+            params.append(filters['artist'])
+        
+        if filters.get('album'):
+            query += " AND album = ?"
+            params.append(filters['album'])
+        
+        # Execute deletion
+        cursor.execute(query, params)
+        deleted_count = cursor.rowcount
+        conn.commit()
+        conn.close()
+        
+        if filters:
+            filter_desc = ", ".join([f"{k}='{v}'" for k, v in filters.items()])
+            message = f"Cleared {deleted_count} queue item(s) with filters: {filter_desc}"
+        else:
+            message = f"Cleared {deleted_count} item(s) from download queue"
+        
+        logging.info(f"[QUEUE] {message}")
+        
+        return jsonify({
+            "success": True,
+            "message": message,
+            "deleted_count": deleted_count
+        })
+        
+    except Exception as e:
+        logging.error(f"Error clearing download queue: {e}")
         return jsonify({"error": str(e)}), 400
 
 

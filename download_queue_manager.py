@@ -576,6 +576,46 @@ def mark_as_failed(queue_id, reason, retry_delay_minutes=30):
     return None
 
 
+def clear_queue(keep_completed=False):
+    """
+    Clear all items from the download queue.
+    
+    Args:
+        keep_completed: If True, keep 'completed' and 'imported' items (only clear active/failed items)
+        
+    Returns:
+        Dict with cleared_count and status
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        if keep_completed:
+            # Only clear non-completed items
+            cursor.execute("DELETE FROM download_queue WHERE status NOT IN ('completed', 'imported')")
+            logger.info("Cleared all active and failed queue items (kept completed/imported)")
+        else:
+            # Clear everything
+            cursor.execute("DELETE FROM download_queue")
+            logger.info("Cleared entire download queue")
+        
+        cleared_count = cursor.rowcount
+        conn.commit()
+        conn.close()
+        
+        return {
+            "success": True,
+            "cleared_count": cleared_count,
+            "message": f"Cleared {cleared_count} queue item(s)"
+        }
+    except Exception as e:
+        logger.error(f"Error clearing queue: {e}")
+        return {
+            "success": False,
+            "message": f"Error clearing queue: {e}"
+        }
+
+
 def check_downloads_folder():
     """
     Monitor /downloads folder for completed files.

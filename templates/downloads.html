@@ -3497,10 +3497,10 @@ async function refreshUpcomingReleases() {
           </h2>
           <div id="collapse${idx}" class="accordion-collapse collapse ${idx === 0 ? 'show' : ''}" 
             data-bs-parent="#releaseAccordion">
-            <div class="accordion-body bg-light p-0">
+            <div class="accordion-body p-0">
               <div class="table-responsive">
-                <table class="table table-hover table-striped table-sm mb-0">
-                  <thead class="table-light">
+                <table class="table table-hover table-striped table-dark table-sm mb-0">
+                  <thead>
                     <tr>
                       <th>Artist</th>
                       <th>Album</th>
@@ -3814,7 +3814,7 @@ function displayMusicBrainzResults(results) {
                 <i class="bi bi-download"></i> Download All Tracks (${release.track_count})
               </button>
             </div>
-            <table class="table table-sm table-hover">
+            <table class="table table-sm table-hover table-striped table-dark mb-0">
               <thead>
                 <tr>
                   <th style="width: 60px;">#</th>

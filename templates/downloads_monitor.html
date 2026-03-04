@@ -574,6 +574,9 @@ function searchOtherSources(artist, album) {
 // FOLDER GROUPING AND MUSICBRAINZ MATCHING FUNCTIONS
 // ============================================================================
 
+// Keep selected folder matches in-memory so users can review before moving files.
+const folderMatchSelections = {};
+
 async function loadFolderGroups() {
   // Load and display folder groups from downloads folder.
   try {
@@ -613,6 +616,11 @@ async function loadFolderGroups() {
       const inconsistentClass = !group.is_consistent ? 'border-warning' : '';
       const inconsistentBadge = !group.is_consistent ? 
         ' <span class="badge bg-warning">Mixed Metadata</span>' : '';
+      const matchedSelection = folderMatchSelections[group.folder_path];
+      const matchedBadge = matchedSelection ? ' <span class="badge bg-success"><i class="bi bi-check-circle"></i> Matched</span>' : '';
+      const matchedDetails = matchedSelection
+        ? `<div class="small text-success mt-1"><strong>Selected:</strong> ${escapeHtml(matchedSelection.candidate.title || 'Unknown release')} (${escapeHtml(matchedSelection.candidate.source || 'musicbrainz')})</div>`
+        : '';
       
       // Check if this group was previously expanded
       const isExpanded = expandedGroups.has(index);
@@ -626,22 +634,29 @@ async function loadFolderGroups() {
                 <h6 class="card-title mb-1">
                   <i class="bi bi-folder"></i> ${group.folder_name}
                   ${inconsistentBadge}
+                  ${matchedBadge}
                 </h6>
                 <div class="text-muted small">
                   <span class="badge bg-light text-dark">${group.track_count} tracks</span>
                   <span class="ms-2"><strong>Artist:</strong> ${group.artist}</span>
                   <span class="ms-2"><strong>Album:</strong> ${group.album}</span>
                 </div>
+                ${matchedDetails}
               </div>
               <div class="col-md-6 text-end">
                 <button class="btn btn-sm btn-outline-primary" 
                         onclick="matchFolderGroupWithMusicBrainz('${group.folder_path}', '${group.artist}', '${group.album}', ${JSON.stringify(group.tracks)})">
-                  <i class="bi bi-disc"></i> Auto Match
+                  <i class="bi bi-disc"></i> ${matchedSelection ? 'Change Match' : 'Auto Match'}
                 </button>
                 <button class="btn btn-sm btn-outline-secondary ms-2" 
                         onclick="showManualSearchModal('${group.folder_path}', '${group.artist}', '${group.album}', ${JSON.stringify(group.tracks)})">
                   <i class="bi bi-search"></i> Manual Search
                 </button>
+                ${matchedSelection ? `
+                <button class="btn btn-sm btn-success ms-2" 
+                        onclick="moveMatchedFolder('${group.folder_path}')">
+                  <i class="bi bi-folder-check"></i> Move Files
+                </button>` : ''}
                 <button class="btn btn-sm btn-outline-secondary ms-2" 
                         onclick="toggleTrackList('group-${index}')">
                   <i class="bi bi-chevron-down"></i> Show Tracks
@@ -652,12 +667,12 @@ async function loadFolderGroups() {
             <!-- Track List (Hidden by default) -->
             <div id="group-${index}" class="mt-3" style="display: ${displayStyle};">
               <div class="table-responsive">
-                <table class="table table-sm table-striped" style="background-color: white;">
-                  <thead class="table-light">
+                <table class="table table-sm table-striped table-dark align-middle mb-0">
+                  <thead>
                     <tr>
-                      <th style="color: #212529;">#</th>
-                      <th style="color: #212529;">Title</th>
-                      <th style="color: #212529;">Duration</th>
+                      <th>#</th>
+                      <th>Title</th>
+                      <th>Duration</th>
                     </tr>
                   </thead>
                   <tbody>`;
@@ -667,7 +682,7 @@ async function loadFolderGroups() {
                   Math.floor(track.duration / 60) + ':' + String(track.duration % 60).padStart(2, '0') : 
                   '-';
                 html += `
-                      <tr style="color: #212529;">
+                      <tr>
                         <td><small>${track.track_number || '-'}</small></td>
                         <td><small>${track.title}</small></td>
                         <td><small>${duration}</small></td>
@@ -817,7 +832,7 @@ function showMusicBrainzMatchModal(folderPath, artist, album, tracks, candidates
     
     html += `
               <button type="button" class="list-group-item list-group-item-action" 
-                      onclick='applyMusicBrainzMatch("${folderPath}", "${candidateJson}", "${tracksJson}")'>
+                      onclick='stageFolderMatch("${folderPath}", "${candidateJson}", "${tracksJson}")'>
                 <div><strong>${candidate.title}</strong>${date}${country}${sourceBadge}</div>
                 <small class="text-muted">${candidate.artist} • ${trackInfo}</small>
               </button>`;
@@ -845,8 +860,8 @@ function showMusicBrainzMatchModal(folderPath, artist, album, tracks, candidates
   modal.show();
 }
 
-async function applyMusicBrainzMatch(folderPath, candidateJson, tracksJson) {
-  // Apply the selected match and organize files to /music.
+async function stageFolderMatch(folderPath, candidateJson, tracksJson) {
+  // Save selected match; user can move files in a separate explicit step.
   try {
     // Parse escaped JSON
     const candidate = JSON.parse(candidateJson.replace(/&quot;/g, '"'));
@@ -855,11 +870,36 @@ async function applyMusicBrainzMatch(folderPath, candidateJson, tracksJson) {
     // Close the modal
     const modal = bootstrap.Modal.getInstance(document.getElementById('mbMatchModal'));
     if (modal) modal.hide();
-    
-    // Show organizing message
-    alert('⏳ Organizing files to /music folder...');
-    
-    // Prepare release metadata
+
+    folderMatchSelections[folderPath] = {
+      candidate,
+      tracks,
+      selectedAt: Date.now()
+    };
+
+    alert('✅ Match selected. Click "Move Files" on the folder row when you are ready.');
+    await loadFolderGroups();
+
+  } catch (error) {
+    console.error('Error organizing files:', error);
+    alert('❌ Error: ' + error.message);
+  }
+}
+
+async function moveMatchedFolder(folderPath) {
+  // Move files for a previously matched folder.
+  try {
+    const selection = folderMatchSelections[folderPath];
+    if (!selection) {
+      alert('No saved match for this folder. Please match it first.');
+      return;
+    }
+
+    const { candidate, tracks } = selection;
+    if (!confirm(`Move files for match:\n${candidate.artist} - ${candidate.title}`)) {
+      return;
+    }
+
     const releaseMetadata = {
       id: candidate.id,
       title: candidate.title,
@@ -867,37 +907,35 @@ async function applyMusicBrainzMatch(folderPath, candidateJson, tracksJson) {
       date: candidate.date,
       source: candidate.source || 'musicbrainz'
     };
-    
-    // Call organize endpoint
+
     const response = await fetch(`/api/downloads/folder/${encodeURIComponent(folderPath)}/organize`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         release_id: candidate.id,
         source: candidate.source || 'musicbrainz',
-        tracks: tracks,
+        tracks,
         release_metadata: releaseMetadata
       })
     });
-    
+
     const data = await response.json();
-    
+
     if (data.success) {
+      delete folderMatchSelections[folderPath];
       const msg = `✅ Success! Organized ${data.organized_count} of ${data.total_tracks} tracks to:\n${data.album_path}`;
       if (data.errors && data.errors.length > 0) {
         alert(msg + '\n\n⚠️ Some errors occurred:\n' + data.errors.slice(0, 3).join('\n'));
       } else {
         alert(msg);
       }
+      await loadFolderGroups();
+      await loadQueueStatus();
     } else {
       alert('❌ Failed to organize files: ' + (data.error || 'Unknown error'));
     }
-    
-    // Refresh folder groups
-    await loadFolderGroups();
-    
   } catch (error) {
-    console.error('Error organizing files:', error);
+    console.error('Error moving matched folder:', error);
     alert('❌ Error: ' + error.message);
   }
 }
