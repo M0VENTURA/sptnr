@@ -3401,15 +3401,15 @@ def api_artist_image():
         cursor = conn.cursor()
         
         # Return cached image URL from database only - no online calls
-                cursor.execute("""
-                        SELECT image_url 
-                        FROM artists 
-                        WHERE LOWER(name) = LOWER(?)
-                            AND image_url IS NOT NULL
-                            AND image_url != ''
-                        ORDER BY CASE WHEN name = ? THEN 0 ELSE 1 END
-                        LIMIT 1
-                """, (artist_name, artist_name))
+        cursor.execute("""
+            SELECT image_url 
+            FROM artists 
+            WHERE LOWER(name) = LOWER(?)
+                AND image_url IS NOT NULL
+                AND image_url != ''
+            ORDER BY CASE WHEN name = ? THEN 0 ELSE 1 END
+            LIMIT 1
+        """, (artist_name, artist_name))
         row = cursor.fetchone()
         conn.close()
         
