@@ -595,6 +595,15 @@ async function loadFolderGroups() {
       return;
     }
     
+    // Preserve expanded state before re-rendering
+    const expandedGroups = new Set();
+    groups.forEach((group, index) => {
+      const trackList = document.getElementById(`group-${index}`);
+      if (trackList && trackList.style.display !== 'none') {
+        expandedGroups.add(index);
+      }
+    });
+    
     section.style.display = 'block';
     badge.textContent = `${groups.length} groups`;
     
@@ -604,6 +613,10 @@ async function loadFolderGroups() {
       const inconsistentClass = !group.is_consistent ? 'border-warning' : '';
       const inconsistentBadge = !group.is_consistent ? 
         ' <span class="badge bg-warning">Mixed Metadata</span>' : '';
+      
+      // Check if this group was previously expanded
+      const isExpanded = expandedGroups.has(index);
+      const displayStyle = isExpanded ? 'block' : 'none';
       
       html += `
         <div class="card border-bottom mb-2 ${inconsistentClass}">
@@ -633,7 +646,7 @@ async function loadFolderGroups() {
             </div>
             
             <!-- Track List (Hidden by default) -->
-            <div id="group-${index}" class="mt-3" style="display: none;">
+            <div id="group-${index}" class="mt-3" style="display: ${displayStyle};">
               <div class="table-responsive">
                 <table class="table table-sm">
                   <thead class="table-light">
@@ -650,7 +663,7 @@ async function loadFolderGroups() {
                   Math.floor(track.duration / 60) + ':' + String(track.duration % 60).padStart(2, '0') : 
                   '-';
                 html += `
-                      <tr>
+                      <tr class="text-dark">
                         <td><small>${track.track_number || '-'}</small></td>
                         <td><small>${track.title}</small></td>
                         <td><small>${duration}</small></td>
