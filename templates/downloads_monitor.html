@@ -673,7 +673,7 @@ async function loadFolderGroups() {
                   <i class="bi bi-disc"></i> ${matchedSelection ? 'Change Match' : 'Auto Match'}
                 </button>
                 <button class="btn btn-sm btn-outline-secondary ms-2" 
-                        onclick="showManualSearchModal('${group.folder_path}', '${group.artist}', '${group.album}', ${JSON.stringify(group.tracks)})">
+                        onclick="showManualSearchModal(event, '${group.folder_path}', '${group.artist}', '${group.album}', ${JSON.stringify(group.tracks)})">
                   <i class="bi bi-search"></i> Manual Search
                 </button>
                 ${matchedSelection ? `
@@ -927,7 +927,7 @@ async function matchFolderGroupWithMusicBrainz(clickEvent, folderPath, artist, a
   }
 }
 
-function showManualSearchModal(folderPath, artist, album, tracks) {
+function showManualSearchModal(event, folderPath, artist, album, tracks) {
   // Show modal for manual search query input.
   const html = `
     <div class="modal fade" id="manualSearchModal" tabindex="-1">
@@ -949,7 +949,8 @@ function showManualSearchModal(folderPath, artist, album, tracks) {
           </div>
           <div class="modal-footer">
             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-            <button type="button" class="btn btn-primary" onclick="executeManualSearch('${folderPath}', '${artist}', '${album}', ${JSON.stringify(tracks)})">
+            <button type="button" id="manualSearchBtn" class="btn btn-primary" 
+                    data-folder="${folderPath}" data-artist="${artist}" data-album="${album}">
               <i class="bi bi-search"></i> Search
             </button>
           </div>
@@ -963,9 +964,17 @@ function showManualSearchModal(folderPath, artist, album, tracks) {
   document.body.insertAdjacentHTML('beforeend', html);
   const modal = new bootstrap.Modal(document.getElementById('manualSearchModal'));
   modal.show();
+  
+  // Attach event listener to search button
+  document.getElementById('manualSearchBtn').addEventListener('click', async function(e) {
+    const folderPath = e.target.dataset.folder;
+    const artist = e.target.dataset.artist;
+    const album = e.target.dataset.album;
+    await executeManualSearch(e, folderPath, artist, album, tracks);
+  });
 }
 
-async function executeManualSearch(folderPath, artist, album, tracks) {
+async function executeManualSearch(event, folderPath, artist, album, tracks) {
   const query = document.getElementById('manualSearchInput').value.trim();
   if (!query) {
     alert('Please enter a search query');
@@ -977,7 +986,7 @@ async function executeManualSearch(folderPath, artist, album, tracks) {
   if (modal) modal.hide();
   
   // Trigger search with manual query
-  await matchFolderGroupWithMusicBrainz(null, folderPath, artist, album, tracks, query);
+  await matchFolderGroupWithMusicBrainz(event, folderPath, artist, album, tracks, query);
 }
 
 function showMusicBrainzMatchModal(folderPath, artist, album, tracks, candidates) {
