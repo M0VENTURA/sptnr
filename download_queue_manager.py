@@ -91,7 +91,10 @@ def resolve_downloads_dir():
     return "/downloads/Music"
 
 
-DOWNLOADS_DIR = resolve_downloads_dir()
+def get_downloads_dir():
+    """Dynamically get downloads directory (re-evaluates on each call for config changes)."""
+    return resolve_downloads_dir()
+
 MUSIC_DIR = os.environ.get("MUSIC_ROOT", "/music")
 
 
@@ -581,8 +584,9 @@ def check_downloads_folder():
         List of newly completed items
     """
     try:
-        if not os.path.isdir(DOWNLOADS_DIR):
-            logger.warning(f"Downloads folder not found: {DOWNLOADS_DIR}")
+        downloads_dir = get_downloads_dir()
+        if not os.path.isdir(downloads_dir):
+            logger.warning(f"Downloads folder not found: {downloads_dir}")
             return []
         
         completed_items = []
@@ -599,21 +603,21 @@ def check_downloads_folder():
         
         # Recursively get all audio files in downloads folder and subdirectories
         downloads_files = []
-        if os.path.isdir(DOWNLOADS_DIR):
+        if os.path.isdir(downloads_dir):
             try:
-                for root, dirs, files in os.walk(DOWNLOADS_DIR):
+                for root, dirs, files in os.walk(downloads_dir):
                     for f in files:
                         if f.endswith(('.mp3', '.flac', '.m4a', '.ogg', '.wav')):
                             # Store both filename and full path
                             downloads_files.append({
                                 'filename': f,
                                 'full_path': os.path.join(root, f),
-                                'rel_path': os.path.relpath(os.path.join(root, f), DOWNLOADS_DIR)
+                                'rel_path': os.path.relpath(os.path.join(root, f), downloads_dir)
                             })
             except Exception as e:
                 logger.error(f"Error scanning downloads folder: {e}")
         
-        logger.info(f"Found {len(downloads_files)} audio files in {DOWNLOADS_DIR}, checking {len(queue_items)} queue items")
+        logger.info(f"Found {len(downloads_files)} audio files in {downloads_dir}, checking {len(queue_items)} queue items")
         
         # Try to match files to queue items
         for queue_item in queue_items:
@@ -775,15 +779,16 @@ def auto_discover_and_queue_files():
     }
     
     try:
-        logger.info(f"[AUTO-DISCOVER] Starting scan of: {DOWNLOADS_DIR}")
-        logger.info(f"[AUTO-DISCOVER] Directory exists: {os.path.isdir(DOWNLOADS_DIR)}")
-        logger.info(f"[AUTO-DISCOVER] Is absolute path: {os.path.isabs(DOWNLOADS_DIR)}")
+        downloads_dir = get_downloads_dir()
+        logger.info(f"[AUTO-DISCOVER] Starting scan of: {downloads_dir}")
+        logger.info(f"[AUTO-DISCOVER] Directory exists: {os.path.isdir(downloads_dir)}")
+        logger.info(f"[AUTO-DISCOVER] Is absolute path: {os.path.isabs(downloads_dir)}")
         
         # Initialize scan progress tracking
         update_scan_progress(scanning=True, files_found=0)
         
-        if not os.path.isdir(DOWNLOADS_DIR):
-            error_msg = f"Downloads folder not found or not accessible: {DOWNLOADS_DIR} (exists={os.path.exists(DOWNLOADS_DIR)})"
+        if not os.path.isdir(downloads_dir):
+            error_msg = f"Downloads folder not found or not accessible: {downloads_dir} (exists={os.path.exists(downloads_dir)})"
             logger.error(f"[AUTO-DISCOVER] {error_msg}")
             stats['errors'].append(error_msg)
             update_scan_progress(scanning=False)
@@ -824,13 +829,13 @@ def auto_discover_and_queue_files():
         discovered_files = []
         
         try:
-            for root, dirs, files in os.walk(DOWNLOADS_DIR):
+            for root, dirs, files in os.walk(downloads_dir):
                 logger.debug(f"[AUTO-DISCOVER] Scanning: {root} ({len(files)} files)")
                 for filename in files:
                     file_ext = os.path.splitext(filename)[1].lower()
                     if file_ext in audio_extensions:
                         full_path = os.path.join(root, filename)
-                        rel_path = os.path.relpath(full_path, DOWNLOADS_DIR)
+                        rel_path = os.path.relpath(full_path, downloads_dir)
                         discovered_files.append({
                             'filename': filename,
                             'full_path': full_path,
@@ -844,10 +849,10 @@ def auto_discover_and_queue_files():
             return stats
         
         stats['scanned'] = len(discovered_files)
-        logger.info(f"[AUTO-DISCOVER] Scanning {len(discovered_files)} audio files in {DOWNLOADS_DIR}")
+        logger.info(f"[AUTO-DISCOVER] Scanning {len(discovered_files)} audio files in {downloads_dir}")
         
         if len(discovered_files) == 0:
-            logger.warning(f"[AUTO-DISCOVER] No audio files found in {DOWNLOADS_DIR}")
+            logger.warning(f"[AUTO-DISCOVER] No audio files found in {downloads_dir}")
             return stats
         
         for file_info in discovered_files:
