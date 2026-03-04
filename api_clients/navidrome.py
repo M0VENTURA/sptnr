@@ -315,6 +315,10 @@ class NavidromeClient:
                 if name not in writers_list:
                     writers_list.append(name)
         
+        # Debug: Log available fields if no writer data found
+        if not writers_list:
+            logger.debug(f"[WRITER] No writer extracted for '{track.get('title', 'Unknown')}'. Track fields: {list(track.keys())}")
+        
         import json
         writer_json = json.dumps(writers_list) if writers_list else json.dumps([])
 

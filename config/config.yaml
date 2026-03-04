@@ -96,6 +96,26 @@ database:
   path: "/database/sptnr.db"
   vacuum_on_start: false
 
+# Tag Mapping Configuration for metadata extraction from audio files
+tags:
+  writer:
+    # Aliases for writer/lyricist fields across different tag formats
+    # ID3 tags: TWRT (standard writer), TOLY (original lyricist), TXXX frames
+    # Vorbis comments (FLAC): WRITER, LYRICIST, AUTHOR
+    # iTunes: Name tags in custom frames
+    aliases:
+      - "TWRT"          # ID3v2.4: Writer tag
+      - "TOLY"          # ID3v2.4: Original Lyricist
+      - "TXXX:WRITER"   # Custom ID3 frame with description "WRITER"
+      - "TXXX:LYRICIST" # Custom ID3 frame with description "LYRICIST"
+      - "TXXX:AUTHOR"   # Custom ID3 frame with description "AUTHOR"
+      - "WRITER"        # Vorbis comment field (FLAC)
+      - "LYRICIST"      # Vorbis comment field (FLAC)
+      - "AUTHOR"        # Vorbis comment field (FLAC)
+      - "©wrt"          # iTunes atom tag for writer
+    # These are kept separate from composer to avoid double-crediting
+    # Composer field will be looked up separately if needed
+
 logging:
   level: "INFO"
   file: "/config/app.log"

@@ -509,6 +509,74 @@ def set_track_rating_for_all(track_id, stars):
                 navi_client = NavidromeClient(base_url="", username="", password="")  # URLs/auth not needed for extraction
                 extracted = navi_client.extract_track_metadata(t)
                 
+                # Fallback: Try to read writer info from ID3 tags if Navidrome didn't provide it
+                writer_json = extracted.get("writer", "[]")
+                if not writer_json or writer_json == "[]":
+                    file_path = t.get("path", "")
+                    if file_path and os.path.exists(file_path):
+                        try:
+                            from mutagen.mp3 import MP3
+                            from mutagen.flac import FLAC
+                            from mutagen.id3 import ID3
+                            import json as json_module
+                            
+                            writers = []
+                            # Load configured tag aliases from config
+                            _writer_config = _cfg.get("tags", {}).get("writer", {})
+                            writer_aliases = _writer_config.get("aliases", [
+                                "TWRT", "TOLY", "TXXX:WRITER", "TXXX:LYRICIST", "TXXX:AUTHOR",
+                                "WRITER", "LYRICIST", "AUTHOR", "©wrt"
+                            ])
+                            
+                            if file_path.lower().endswith('.mp3'):
+                                audio = MP3(file_path, ID3=ID3)
+                                if audio.tags:
+                                    # Check ID3 tags using configured aliases
+                                    for alias in writer_aliases:
+                                        if alias.startswith("TXXX:"):
+                                            # Custom TXXX frame - check by description
+                                            desc = alias.split(":", 1)[1].upper()
+                                            for frame in audio.tags.values():
+                                                if frame.FrameID == 'TXXX' and hasattr(frame, 'desc'):
+                                                    if frame.desc and frame.desc.upper() == desc:
+                                                        if hasattr(frame, 'text') and frame.text:
+                                                            value = str(frame.text[0])
+                                                            writers.extend([w.strip() for w in value.replace(';', ',').split(',') if w.strip()])
+                                        elif alias in audio.tags:
+                                            # Standard ID3 tag
+                                            value = str(audio.tags[alias].text[0]) if audio.tags[alias].text else None
+                                            if value:
+                                                writers.extend([w.strip() for w in value.replace(';', ',').split(',') if w.strip()])
+                                        elif alias.startswith("©"):
+                                            # iTunes atom tag - check if present
+                                            if alias in audio.tags:
+                                                value = str(audio.tags[alias].text[0]) if audio.tags[alias].text else None
+                                                if value:
+                                                    writers.extend([w.strip() for w in value.replace(';', ',').split(',') if w.strip()])
+                            elif file_path.lower().endswith('.flac'):
+                                audio = FLAC(file_path)
+                                # FLAC uses Vorbis comments
+                                for alias in writer_aliases:
+                                    if not alias.startswith(("TXXX", "©")):  # Skip ID3/iTunes-only tags
+                                        key = alias.upper()
+                                        if key in audio and audio[key]:
+                                            for value in audio[key]:
+                                                writers.extend([w.strip() for w in value.replace(';', ',').split(',') if w.strip()])
+                            
+                            # Remove duplicates while preserving order
+                            seen = set()
+                            unique_writers = []
+                            for w in writers:
+                                if w.lower() not in seen:
+                                    unique_writers.append(w)
+                                    seen.add(w.lower())
+                            
+                            if unique_writers:
+                                writer_json = json_module.dumps(unique_writers)
+                                logging.debug(f"[WRITER] Extracted from ID3 tags for {t.get('title')}: {unique_writers}")
+                        except Exception as e:
+                            logging.debug(f"[WRITER] Could not read ID3 tags from {file_path}: {e}")
+                
                 td = {
                     "id": track_id,
                     "title": t.get("title", ""),
@@ -552,7 +620,7 @@ def set_track_rating_for_all(track_id, stars):
                     "track_number": _safe_int(t.get("trackNumber") or t.get("track")),
                     "disc_number": _safe_int(t.get("discNumber") or t.get("disc") or 1) or 1,
                     "year": t.get("year"),  # Release year
-                    "writer": extracted.get("writer", "[]"),  # JSON array of lyricists/writers from Navidrome
+                    "writer": writer_json,  # JSON array of lyricists/writers from Navidrome or ID3 tags
                     "album_artist": album_artist_value,  # Album artist from album object
                     "bitrate": t.get("bitRate"),  # Bitrate in kbps
                     "sample_rate": t.get("samplingRate"),  # Sample rate in Hz
