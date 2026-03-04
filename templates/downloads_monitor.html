@@ -635,8 +635,12 @@ async function loadFolderGroups() {
               </div>
               <div class="col-md-6 text-end">
                 <button class="btn btn-sm btn-outline-primary" 
-                        onclick="matchFolderGroupWithMusicBrainz('${group.folder_path}', '${group.artist}', '${group.album}')">
-                  <i class="bi bi-disc"></i> Match with MusicBrainz
+                        onclick="matchFolderGroupWithMusicBrainz('${group.folder_path}', '${group.artist}', '${group.album}', ${JSON.stringify(group.tracks)})">
+                  <i class="bi bi-disc"></i> Auto Match
+                </button>
+                <button class="btn btn-sm btn-outline-secondary ms-2" 
+                        onclick="showManualSearchModal('${group.folder_path}', '${group.artist}', '${group.album}', ${JSON.stringify(group.tracks)})">
+                  <i class="bi bi-search"></i> Manual Search
                 </button>
                 <button class="btn btn-sm btn-outline-secondary ms-2" 
                         onclick="toggleTrackList('group-${index}')">
@@ -693,49 +697,107 @@ function toggleTrackList(groupId) {
   }
 }
 
-async function matchFolderGroupWithMusicBrainz(folderPath, artist, album) {
-  // Match a folder group with MusicBrainz candidates.
+async function matchFolderGroupWithMusicBrainz(folderPath, artist, album, tracks, manualQuery = null) {
+  // Match a folder group with MusicBrainz/Discogs candidates.
   try {
     const btn = event.target;
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Searching...';
     
+    const requestBody = manualQuery ? 
+      { manual_query: manualQuery, artist, album } : 
+      { artist, album };
+    
     const response = await fetch(`/api/downloads/folder/${encodeURIComponent(folderPath)}/match-musicbrainz`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ artist, album })
+      body: JSON.stringify(requestBody)
     });
     
     const data = await response.json();
     
     if (!data.success || !data.candidates || data.candidates.length === 0) {
-      alert('❌ No MusicBrainz matches found for: ' + artist + ' - ' + album);
+      const searchTerm = manualQuery || `${artist} - ${album}`;
+      alert('❌ No matches found for: ' + searchTerm + '\n\nTried MusicBrainz and Discogs');
       btn.disabled = false;
-      btn.innerHTML = '<i class="bi bi-disc"></i> Match with MusicBrainz';
+      btn.innerHTML = manualQuery ? '<i class="bi bi-search"></i> Search' : '<i class="bi bi-disc"></i> Auto Match';
       return;
     }
     
     // Show modal with candidates
-    showMusicBrainzMatchModal(folderPath, artist, album, data.candidates);
+    showMusicBrainzMatchModal(folderPath, artist, album, tracks, data.candidates);
     
   } catch (error) {
-    console.error('Error matching with MusicBrainz:', error);
+    console.error('Error matching:', error);
     alert('❌ Network error: ' + error.message);
   } finally {
     const btn = event.target;
     btn.disabled = false;
-    btn.innerHTML = '<i class="bi bi-disc"></i> Match with MusicBrainz';
+    btn.innerHTML = manualQuery ? '<i class="bi bi-search"></i> Search' : '<i class="bi bi-disc"></i> Auto Match';
   }
 }
 
-function showMusicBrainzMatchModal(folderPath, artist, album, candidates) {
-  // Display MusicBrainz candidates in a modal for user selection.
+function showManualSearchModal(folderPath, artist, album, tracks) {
+  // Show modal for manual search query input.
+  const html = `
+    <div class="modal fade" id="manualSearchModal" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title"><i class="bi bi-search"></i> Manual Search</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <p class="mb-3">Search for a release manually. Try different search terms:</p>
+            <div class="mb-3">
+              <label class="form-label">Search Query</label>
+              <input type="text" class="form-control" id="manualSearchInput" 
+                     placeholder="e.g., A Wilhelm Scream Cheap Heat" 
+                     value="${artist} ${album}">
+              <div class="form-text">Enter artist and/or album name</div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="button" class="btn btn-primary" onclick="executeManualSearch('${folderPath}', '${artist}', '${album}', ${JSON.stringify(tracks)})">
+              <i class="bi bi-search"></i> Search
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  
+  const oldModal = document.getElementById('manualSearchModal');
+  if (oldModal) oldModal.remove();
+  
+  document.body.insertAdjacentHTML('beforeend', html);
+  const modal = new bootstrap.Modal(document.getElementById('manualSearchModal'));
+  modal.show();
+}
+
+async function executeManualSearch(folderPath, artist, album, tracks) {
+  const query = document.getElementById('manualSearchInput').value.trim();
+  if (!query) {
+    alert('Please enter a search query');
+    return;
+  }
+  
+  // Close manual search modal
+  const modal = bootstrap.Modal.getInstance(document.getElementById('manualSearchModal'));
+  if (modal) modal.hide();
+  
+  // Trigger search with manual query
+  await matchFolderGroupWithMusicBrainz(folderPath, artist, album, tracks, query);
+}
+
+function showMusicBrainzMatchModal(folderPath, artist, album, tracks, candidates) {
+  // Display MusicBrainz/Discogs candidates in a modal for user selection.
   let html = `
     <div class="modal fade" id="mbMatchModal" tabindex="-1">
       <div class="modal-dialog modal-lg">
         <div class="modal-content">
           <div class="modal-header">
-            <h5 class="modal-title"><i class="bi bi-disc"></i> Select MusicBrainz Match</h5>
+            <h5 class="modal-title"><i class="bi bi-disc"></i> Select Release Match</h5>
             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
           </div>
           <div class="modal-body">
@@ -745,11 +807,19 @@ function showMusicBrainzMatchModal(folderPath, artist, album, candidates) {
   candidates.forEach((candidate, idx) => {
     const date = candidate.date ? ` (${candidate.date.split('-')[0]})` : '';
     const country = candidate.country ? ` - ${candidate.country}` : '';
+    const source = candidate.source || 'musicbrainz';
+    const sourceBadge = source === 'discogs' ? '<span class="badge bg-info ms-2">Discogs</span>' : '';
+    const trackInfo = candidate.track_count ? `${candidate.track_count} tracks` : 'Release';
+    
+    // Escape quotes in candidate data for JSON
+    const candidateJson = JSON.stringify(candidate).replace(/"/g, '&quot;');
+    const tracksJson = JSON.stringify(tracks).replace(/"/g, '&quot;');
+    
     html += `
               <button type="button" class="list-group-item list-group-item-action" 
-                      onclick="applyMusicBrainzMatch('${folderPath}', '${candidate.id}')">
-                <div><strong>${candidate.title}</strong>${date}${country}</div>
-                <small class="text-muted">${candidate.track_count} tracks</small>
+                      onclick='applyMusicBrainzMatch("${folderPath}", "${candidateJson}", "${tracksJson}")'>
+                <div><strong>${candidate.title}</strong>${date}${country}${sourceBadge}</div>
+                <small class="text-muted">${candidate.artist} • ${trackInfo}</small>
               </button>`;
   });
   
@@ -775,21 +845,59 @@ function showMusicBrainzMatchModal(folderPath, artist, album, candidates) {
   modal.show();
 }
 
-async function applyMusicBrainzMatch(folderPath, releaseId) {
-  // Apply the selected MusicBrainz match and process the folder.
+async function applyMusicBrainzMatch(folderPath, candidateJson, tracksJson) {
+  // Apply the selected match and organize files to /music.
   try {
+    // Parse escaped JSON
+    const candidate = JSON.parse(candidateJson.replace(/&quot;/g, '"'));
+    const tracks = JSON.parse(tracksJson.replace(/&quot;/g, '"'));
+    
     // Close the modal
     const modal = bootstrap.Modal.getInstance(document.getElementById('mbMatchModal'));
     if (modal) modal.hide();
     
-    // Show processing message (implementation depends on your UI)
-    alert('✓ MusicBrainz match applied! Metadata will be updated and files organized.');
+    // Show organizing message
+    alert('⏳ Organizing files to /music folder...');
+    
+    // Prepare release metadata
+    const releaseMetadata = {
+      id: candidate.id,
+      title: candidate.title,
+      artist: candidate.artist,
+      date: candidate.date,
+      source: candidate.source || 'musicbrainz'
+    };
+    
+    // Call organize endpoint
+    const response = await fetch(`/api/downloads/folder/${encodeURIComponent(folderPath)}/organize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        release_id: candidate.id,
+        source: candidate.source || 'musicbrainz',
+        tracks: tracks,
+        release_metadata: releaseMetadata
+      })
+    });
+    
+    const data = await response.json();
+    
+    if (data.success) {
+      const msg = `✅ Success! Organized ${data.organized_count} of ${data.total_tracks} tracks to:\n${data.album_path}`;
+      if (data.errors && data.errors.length > 0) {
+        alert(msg + '\n\n⚠️ Some errors occurred:\n' + data.errors.slice(0, 3).join('\n'));
+      } else {
+        alert(msg);
+      }
+    } else {
+      alert('❌ Failed to organize files: ' + (data.error || 'Unknown error'));
+    }
     
     // Refresh folder groups
     await loadFolderGroups();
     
   } catch (error) {
-    console.error('Error applying match:', error);
+    console.error('Error organizing files:', error);
     alert('❌ Error: ' + error.message);
   }
 }

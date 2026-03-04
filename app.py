@@ -10955,14 +10955,16 @@ def api_downloads_grouped_folders():
 def api_downloads_folder_match_musicbrainz(folder_path):
     """
     Match a folder group with MusicBrainz and return candidate releases.
+    Supports manual search queries and Discogs fallback.
     
     Args:
         folder_path: URL-encoded relative folder path
-        artist: Artist name (in request JSON)
-        album: Album name (in request JSON)
+        artist: Artist name (in request JSON, optional if manual_query provided)
+        album: Album name (in request JSON, optional if manual_query provided)
+        manual_query: Manual search string (in request JSON, optional)
     
     Returns:
-        JSON with MusicBrainz candidates for selection
+        JSON with MusicBrainz/Discogs candidates for selection
     """
     try:
         from download_folder_grouping import match_folder_group_with_musicbrainz
@@ -10970,14 +10972,21 @@ def api_downloads_folder_match_musicbrainz(folder_path):
         data = request.get_json() or {}
         artist = data.get('artist', '').strip()
         album = data.get('album', '').strip()
+        manual_query = data.get('manual_query', '').strip()
         
-        if not artist or not album:
+        # Require either manual query or artist+album
+        if not manual_query and (not artist or not album):
             return jsonify({
                 "success": False,
-                "error": "Artist and album are required"
+                "error": "Either manual_query or both artist and album are required"
             }), 400
         
-        result = match_folder_group_with_musicbrainz(folder_path, artist, album)
+        result = match_folder_group_with_musicbrainz(
+            folder_path, 
+            artist, 
+            album,
+            manual_query=manual_query if manual_query else None
+        )
         
         return jsonify({
             "success": result.get('success', False),
@@ -10991,6 +11000,64 @@ def api_downloads_folder_match_musicbrainz(folder_path):
             "success": False,
             "error": str(e),
             "candidates": []
+        }), 500
+
+
+@app.route("/api/downloads/folder/<path:folder_path>/organize", methods=["POST"])
+def api_downloads_folder_organize(folder_path):
+    """
+    Organize a matched folder group into the /music directory.
+    
+    Args:
+        folder_path: URL-encoded relative folder path
+        release_id: MusicBrainz or Discogs release ID (in request JSON)
+        source: 'musicbrainz' or 'discogs' (in request JSON)
+        tracks: List of track dicts (in request JSON)
+        release_metadata: Matched release data (artist, title, date, etc.)
+    
+    Returns:
+        JSON with organization results
+    """
+    try:
+        from download_folder_grouping import organize_folder_to_music
+        import read_config
+        
+        data = request.get_json() or {}
+        release_id = data.get('release_id')
+        source = data.get('source', 'musicbrainz')
+        tracks = data.get('tracks', [])
+        release_metadata = data.get('release_metadata', {})
+        
+        if not release_id or not tracks or not release_metadata:
+            return jsonify({
+                "success": False,
+                "error": "release_id, tracks, and release_metadata are required"
+            }), 400
+        
+        # Get music directory from config
+        cfg = get_config()
+        music_dir = cfg.get('navidrome', {}).get('music_folder', '/music')
+        
+        # Organize files
+        result = organize_folder_to_music(
+            folder_path,
+            tracks,
+            release_metadata,
+            music_dir=music_dir
+        )
+        
+        return jsonify({
+            "success": result.get('success', False),
+            **result
+        })
+        
+    except Exception as e:
+        logger.error(f"Error organizing folder: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            "success": False,
+            "error": str(e)
         }), 500
 
 

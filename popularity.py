@@ -5930,13 +5930,6 @@ def popularity_scan(
                                             stars = 3
                                             log_info(f"3-star assignment: {title} (has {medium_conf_count} medium-confidence source(s), zscore={track_zscore:.2f})")
                                             log_debug(f"Medium confidence with {medium_conf_count} sources - track_id: {track_id}, limiting to 3 stars")
-                                    # Standout tracks with STRONG popularity (z-score >= 1.5) AND high absolute score get 5 stars
-                                    elif is_standout_track and track_zscore >= 1.5 and popularity_score >= 65:
-                                        # Strong album standout with high absolute popularity
-                                        stars = 5
-                                        is_popularity_based_5star = True
-                                        log_info(f"5-star assignment: {title} (strong standout - zscore={track_zscore:.2f}, pop={popularity_score:.1f})")
-                                        log_debug(f"Standout track with strong metrics - track_id: {track_id}, zscore: {track_zscore:.2f}, popularity: {popularity_score}")
                             # Only downgrade popular-based 5★ tracks on underperforming albums.
                             # Single-detection-based 5★ tracks (high/medium confidence, user-set) should NOT be downgraded
                             # because their 5★ status is confirmed by detection sources, not just popularity.
