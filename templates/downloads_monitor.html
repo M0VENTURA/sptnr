@@ -554,7 +554,7 @@ function searchOtherSources(artist, album) {
 
 async function loadQueueStatus() {
   try {
-    const data = await fetchJsonOrThrow('/api/downloads/queue?limit=100');
+    const data = await fetchJsonOrThrow('/api/downloads/queue?limit=500');
     
     if (!data || !data.queue) {
       console.error('Queue status error:', data?.error || 'Invalid response');
