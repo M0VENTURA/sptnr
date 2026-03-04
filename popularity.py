@@ -5761,189 +5761,71 @@ def popularity_scan(
                         # Used to determine if downgrade logic should apply
                         is_popularity_based_5star = False
                         
-                        # NEW: 5-STAR LOGIC WITH ARTIST + ALBUM CONTEXT
-                        # A track becomes 5★ if ANY of these conditions are met:
-                        # 1. **NEW**: Artist-level standout: Track popularity in top 15% of artist's full collection
-                        #    - Identifies genuinely popular non-singles (e.g., Deep album cuts that are fan favorites)
-                        # 2. Artist-level standout (zscore >= 2.0) + top 10% of artist tracks globally
-                        # 3. High popularity + strong z-score (zscore >= 2.0 AND popularity significantly above album mean)
-                        # 4. User-set single
-                        # 5. High-confidence single detection
-                        # 6. Medium-confidence with 2+ sources
-                        #
-                        # Artist context (new): Top 15% of artist's catalog = genuine standout content
-                        # - Uses artist's full collection popularity stats
-                        # - Works like an internal "chart" for the artist's work
-                        # - Identifies hidden gems and fan favorites not marketed as singles
-                        # - Applies to ALL genres (pop, rock, classical, etc.)
-                        #
-                        # Album context: Dual criteria for maximum relevance
-                        # - Top 10% globally: Track is in artist's most-streamed catalogue (global significance)
-                        # - Album outlier: Track stands out from its album peers (local significance)
-                        # Both needed = meaningful standout content
-                        #
-                        # Popularity context: Strong outlier within album (z-score >= 2.0) with high absolute popularity
-                        # - Z-score >= 2.0: Top ~2% of tracks in album by popularity
-                        # - Popularity significantly above album mean: Standard deviation of popularity indicates separation
+                        # SIMPLIFIED 5-STAR LOGIC BASED ON Z-SCORE AND CONFIDENCE
+                        # Rules:
+                        # 1. z-score 0-1: requires 2 medium confidence sources OR 1 high confidence source
+                        # 2. z-score > 1: requires 1 medium confidence source OR 1 high confidence source  
+                        # 3. z-score > 2: if no medium/high confidence, marked as "popular" 5★
                         
                         # Skip confidence-based upgrades for excluded tracks (e.g., bonus tracks with parentheses)
                         # These tracks were excluded from statistics calculation, so their z-scores are not meaningful
                         if not is_excluded_track:
-                            # **PRIORITY**: Standout tracks are elevated to 5★ only when they are strong outliers.
-                            # This prevents medium outliers (e.g. z ~1.0-1.9) from being over-promoted.
-                            if is_standout_track and track_zscore >= popularity_5star_z_threshold:
+                            # Count confidence sources
+                            medium_conf_count = len(single_sources) if single_sources and single_confidence == "medium" else 0
+                            has_high_confidence = (single_confidence == "high" or single_confidence == "user")
+                            
+                            # Apply simplified z-score + confidence rules
+                            if single_confidence == "user":
+                                # User-set singles always get 5 stars
+                                stars = 5
+                                log_info(f"5-star assignment: {title} (user-set single)")
+                                log_debug(f"User-set single - track_id: {track_id}")
+                            elif single_confidence == "high":
+                                # High confidence always gets 5 stars (z-score agnostic)
+                                stars = 5
+                                log_info(f"5-star assignment: {title} (high-confidence single, zscore={track_zscore:.2f})")
+                                log_debug(f"High confidence single detected - track_id: {track_id}")
+                            elif single_confidence == "popular":
+                                # Popular status: z-score > 2.0 without detection sources
                                 stars = 5
                                 is_popularity_based_5star = True
-                                log_info(f"5-star assignment: {title} (standout track, zscore={track_zscore:.2f})")
-                                log_debug(f"Standout elevation applied - track_id: {track_id}, is_standout_track: {is_standout_track}, zscore: {track_zscore:.2f}")
-                            # **PRIORITY**: Top z-score cluster tracks with z >= 2.0 get 5★ (Popularity)
-                            # These are the peak standouts from the album based on z-score detection
-                            # BUT: Only if they are NOT detected singles (preserve pure popularity rating)
-                            elif track_id in top_cluster_tracks:
-                                    # Top cluster + strong outlier z-score + not a detected single = 5★
-                                if track_zscore >= popularity_5star_z_threshold and not is_single:
-                                    stars = 5
-                                    is_popularity_based_5star = True
-                                    
-                                    # Verify track is in top 40% by Last.fm playcount
-                                    track_lastfm_playcount = row_get(track_row, "lastfm_track_playcount", 0) or 0
-                                    
-                                    # Get all tracks with Last.fm playcount for this artist
-                                    try:
-                                        cursor = conn.cursor()
-                                        cursor.execute(
-                                            """SELECT COALESCE(lastfm_track_playcount, 0) as playcount
-                                                 FROM tracks
-                                                 WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
-                                                     AND lastfm_track_playcount > 0
-                                                 ORDER BY lastfm_track_playcount DESC""",
-                                            (artist,)
-                                        )
-                                        all_playcounts = [row[0] for row in cursor.fetchall() if row[0] > 0]
-                                        
-                                        if all_playcounts and track_lastfm_playcount > 0:
-                                            # Calculate 60th percentile (top 40%)
-                                            import numpy as np
-                                            top_40_threshold = float(np.percentile(all_playcounts, 60))
-                                            
-                                            # Get the rank of this track
-                                            rank = sum(1 for p in all_playcounts if p >= track_lastfm_playcount)
-                                            total_ranked = len(all_playcounts)
-                                            percentile_position = (rank / total_ranked * 100) if total_ranked > 0 else 0
-                                            
-                                            if track_lastfm_playcount < top_40_threshold:
-                                                stars = 4
-                                                is_popularity_based_5star = False
-                                                log_info(f"4-star assignment: {title} (album standout z={track_zscore:.2f}, Last.fm rank {rank}/{total_ranked} ({percentile_position:.0f}th percentile), below top 40%)")
-                                                log_debug(f"Last.fm validation failed - track_id: {track_id}, playcount: {track_lastfm_playcount}, top_40_threshold: {top_40_threshold}, rank: {rank}/{total_ranked}")
-                                            else:
-                                                log_info(f"5-star assignment: {title} (album standout z={track_zscore:.2f}, Last.fm rank {rank}/{total_ranked} ({percentile_position:.0f}th percentile), top 40%)")
-                                                log_debug(f"Last.fm validation passed - track_id: {track_id}, playcount: {track_lastfm_playcount}, top_40_threshold: {top_40_threshold}, rank: {rank}/{total_ranked}")
-                                        elif track_lastfm_playcount == 0:
-                                            # No Last.fm data, fall back to database popularity calculation
-                                            log_debug(f"No Last.fm playcount available for {title}, using database popularity instead")
-                                            log_info(f"5-star assignment: {title} (album standout z={track_zscore:.2f}, no Last.fm fallback)")
-                                        else:
-                                            log_info(f"5-star assignment: {title} (album standout z={track_zscore:.2f})")
-                                            log_debug(f"Top cluster pure popularity track - track_id: {track_id}, zscore: {track_zscore:.2f}")
-                                    except Exception as e:
-                                        log_debug(f"Could not calculate Last.fm ranking: {e}")
-                                        log_info(f"5-star assignment: {title} (album standout z={track_zscore:.2f})")
-                                        log_debug(f"Top cluster pure popularity track - track_id: {track_id}, zscore: {track_zscore:.2f}")
-                                else:
-                                    stars = max(stars, 4)
-                                    log_info(f"4-star assignment: {title} (top cluster but z={track_zscore:.2f} or detected as single)")
-                                    log_debug(f"Top cluster adjusted track - track_id: {track_id}, zscore: {track_zscore:.2f}, is_single: {is_single}")
-                            else:
-                                # Apply new 5-star rule
-                                # **NEW**: Check artist-relative popularity first (top 15% of artist's catalog)
-                                # Intent: Find outliers on underperforming albums (e.g., The Jester Race by In Flames)
-                                # This is an UPGRADE condition - only promotes base rating to 5 stars
-                                artist_top_15_threshold = artist_stats.get('top_15_percentile', 0) or 0
-                                is_top_15_artist = popularity_score >= artist_top_15_threshold if artist_top_15_threshold > 0 else False
-                                
-                                if is_top_15_artist:
-                                    # TOP 15% ARTIST alone is too permissive for 5★.
-                                    # Require strong album outlier signal as well.
-                                    if track_zscore >= popularity_5star_z_threshold:
+                                log_info(f"5-star assignment: {title} (popular status - z-score={track_zscore:.2f} without metadata sources)")
+                                log_debug(f"Popular status track - track_id: {track_id}, zscore: {track_zscore:.2f}, is_single: {is_single}")
+                            elif single_confidence == "medium":
+                                # Medium confidence: z-score determines requirements
+                                if track_zscore > 1.0:
+                                    # z-score > 1: only 1 medium source needed
+                                    if medium_conf_count >= 1:
                                         stars = 5
-                                        is_popularity_based_5star = True
-                                        log_info(f"5-star assignment: {title} (top 15% artist + strong album z-score, pop={popularity_score:.1f}, z={track_zscore:.2f})")
+                                        if not is_single:
+                                            single_upgrades.append(track_id)
+                                            log_info(f"5-star assignment: {title} ({medium_conf_count} medium-confidence source + z-score={track_zscore:.2f} > 1.0) - upgraded to single")
+                                        else:
+                                            log_info(f"5-star assignment: {title} ({medium_conf_count} medium-confidence source + z-score={track_zscore:.2f} > 1.0)")
+                                        log_debug(f"Medium confidence with z > 1.0 - track_id: {track_id}, zscore: {track_zscore:.2f}")
                                     else:
-                                        stars = max(stars, 4)
-                                        log_info(f"4-star assignment: {title} (top 15% artist but weak album z-score={track_zscore:.2f})")
-                                    log_debug(f"Artist-relative standout - track_id: {track_id}, popularity: {popularity_score}, artist_top_15: {artist_top_15_threshold}, zscore: {track_zscore:.2f}")
-                                else:
-                                    # SECOND: Dual artist context check (global + album outlier)
-                                    # Track must be BOTH: top 10% globally AND album outlier (zscore >= 2.0)
-                                    track_lastfm_listeners = row_get(track_row, "lastfm_track_playcount", 0) or 0
-                                    artist_context_threshold = artist_stats.get('top_10_percentile_threshold', 0) or 0
-                                    is_top_10_global = track_lastfm_listeners >= artist_context_threshold if artist_context_threshold > 0 else False
-                                    is_album_outlier = track_zscore >= 2.0
-                                    
-                                    if is_top_10_global and is_album_outlier:
+                                        # Medium confidence but no sources
+                                        stars = 3
+                                        log_info(f"3-star assignment: {title} (medium confidence, zscore={track_zscore:.2f})")
+                                elif track_zscore >= 0.0:
+                                    # z-score 0-1: requires 2 medium sources
+                                    if medium_conf_count >= 2:
                                         stars = 5
-                                        is_popularity_based_5star = True
-                                        log_info(f"5-star assignment: {title} (top 10% global + album outlier, listeners={track_lastfm_listeners}, zscore={track_zscore:.2f})")
-                                        log_debug(f"Dual criteria met - track_id: {track_id}, listeners: {track_lastfm_listeners}, top_10_threshold: {artist_context_threshold}, zscore: {track_zscore:.2f}")
-                                    # **PRIORITY: Check single confidence BEFORE popularity fallback**
-                                    # Structure: medium 2+ sources → 5★, user → 5★, high → 5★, medium 1 source → 3★
-                                    elif single_confidence == "user":
-                                        # User-set singles always get 5 stars
-                                        stars = 5
-                                        log_info(f"5-star assignment: {title} (user-set single)")
-                                        log_debug(f"User-set single - track_id: {track_id}")
-                                    elif single_confidence == "high":
-                                        # High confidence always gets 5 stars
-                                        stars = 5
-                                        log_info(f"5-star assignment: {title} (high-confidence single)")
-                                        log_debug(f"High confidence single detected - track_id: {track_id}")
-                                    elif single_confidence == "popular":
-                                        # Popular status: z-score > 2.0 without detection sources - gets 5 stars but NOT marked as single
-                                        stars = 5
-                                        is_popularity_based_5star = True
-                                        log_info(f"5-star assignment: {title} (popular status - exceptional z-score={track_zscore:.2f} without detection sources)")
-                                        log_debug(f"Popular status track - track_id: {track_id}, zscore: {track_zscore:.2f}, is_single: {is_single}")
-                                    elif single_confidence == "medium":
-                                        # Medium confidence: depends on number of sources AND z-score strength
-                                        medium_conf_count = len(single_sources) if single_sources else 0
-                                        if medium_conf_count >= 2 and track_zscore > 0.0:
-                                            stars = 5  # 2+ medium sources + positive z-score = 5 stars
-                                            if not is_single:
-                                                single_upgrades.append(track_id)
-                                                log_info(f"5-star assignment: {title} (has {medium_conf_count} medium-confidence sources + positive z-score={track_zscore:.2f}) - upgraded to single")
-                                            else:
-                                                log_info(f"5-star assignment: {title} (has {medium_conf_count} medium-confidence sources + positive z-score={track_zscore:.2f})")
-                                            log_debug(f"Medium confidence with {medium_conf_count} sources + positive z-score - track_id: {track_id}, zscore: {track_zscore:.2f}")
-                                        elif medium_conf_count >= 1 and track_zscore >= 2.0:
-                                            # Single detection source + very strong album standout (z >= 2.0) = 5 stars
-                                            # Example: MusicBrainz detects as compilation single, AND it's album's strongest track
-                                            stars = 5
-                                            if not is_single:
-                                                single_upgrades.append(track_id)
-                                                log_info(f"5-star assignment: {title} (has {medium_conf_count} medium-confidence source + very strong standout z-score={track_zscore:.2f}) - upgraded to single")
-                                            else:
-                                                log_info(f"5-star assignment: {title} (has {medium_conf_count} medium-confidence source + very strong standout z-score={track_zscore:.2f})")
-                                            log_debug(f"Medium confidence with {medium_conf_count} source + very strong z-score - track_id: {track_id}, zscore: {track_zscore:.2f}")
+                                        if not is_single:
+                                            single_upgrades.append(track_id)
+                                            log_info(f"5-star assignment: {title} ({medium_conf_count} medium-confidence sources + z-score={track_zscore:.2f}) - upgraded to single")
                                         else:
-                                            # Medium confidence with only 1 source and weak z-score: assign as 3-star
-                                            stars = 3
-                                            log_info(f"3-star assignment: {title} (has {medium_conf_count} medium-confidence source(s), zscore={track_zscore:.2f})")
-                                            log_debug(f"Medium confidence with {medium_conf_count} sources - track_id: {track_id}, limiting to 3 stars")
-                            # Only downgrade popular-based 5★ tracks on underperforming albums.
-                            # Single-detection-based 5★ tracks (high/medium confidence, user-set) should NOT be downgraded
-                            # because their 5★ status is confirmed by detection sources, not just popularity.
-                            if album_is_underperforming and is_popularity_based_5star and not is_standout_track:
-                                median_popularity = artist_stats.get('median_popularity', 0) if artist_stats else 0
-                                if median_popularity > 0:
-                                    # Only downgrade if track popularity is also below artist median
-                                    if popularity_score < median_popularity:
-                                        # Downgrade by 1 star (but keep at least 3 stars)
-                                        original_stars = stars
-                                        stars = max(stars - 1, 3)
-                                        if stars < original_stars:
-                                            log_info(f"Downgraded '{title}': {original_stars}★ -> {stars}★ (underperforming album, pop={popularity_score:.1f} < artist_median={median_popularity:.1f})")
-                                            log_debug(f"Downgrade applied - album_is_underperforming: True, track_pop: {popularity_score}, artist_median: {median_popularity}, is_popularity_based_5star: True")
+                                            log_info(f"5-star assignment: {title} ({medium_conf_count} medium-confidence sources + z-score={track_zscore:.2f})")
+                                        log_debug(f"Medium confidence with 2+ sources - track_id: {track_id}, zscore: {track_zscore:.2f}")
+                                    else:
+                                        # Only 1 medium source with z-score < 1.0
+                                        stars = 3
+                                        log_info(f"3-star assignment: {title} ({medium_conf_count} medium-confidence source(s), zscore={track_zscore:.2f} < 1.0)")
+                                        log_debug(f"Medium confidence insufficient - track_id: {track_id}, sources: {medium_conf_count}, zscore: {track_zscore:.2f}")
+                                else:
+                                    # Negative z-score
+                                    stars = 3
+                                    log_info(f"3-star assignment: {title} (medium confidence, negative zscore={track_zscore:.2f})")
                         else:
                             # Track is excluded from statistics
                             log_debug(f"Skipped confidence checks for excluded track: {title} (baseline stars={stars})")
