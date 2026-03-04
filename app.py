@@ -11074,7 +11074,7 @@ def api_downloads_get_queue():
         from downloads_watcher import get_download_queue
         
         status = request.args.get('status')
-        limit = int(request.args.get('limit', 50))
+        limit = int(request.args.get('limit', 500))  # Increased from 50 to 500 to show all discovered files
         
         queue = get_download_queue(status=status, limit=limit)
         
