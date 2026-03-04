@@ -29,6 +29,37 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 
+# Global state for tracking scan progress (used by /api/downloads/scan-progress)
+_scan_progress = {
+    'scanning': False,
+    'files_found': 0,
+    'recent_files': [],  # List of last 50 files found
+    'start_time': None,
+    'current_path': '',
+}
+
+def get_scan_progress():
+    """Get current scan progress state."""
+    return _scan_progress.copy()
+
+def update_scan_progress(files_found=None, recent_file=None, scanning=None, current_path=None):
+    """Update scan progress state."""
+    global _scan_progress
+    if files_found is not None:
+        _scan_progress['files_found'] = files_found
+    if recent_file is not None:
+        _scan_progress['recent_files'].append(recent_file)
+        # Keep only last 50 files
+        if len(_scan_progress['recent_files']) > 50:
+            _scan_progress['recent_files'] = _scan_progress['recent_files'][-50:]
+    if scanning is not None:
+        _scan_progress['scanning'] = scanning
+        if scanning:
+            _scan_progress['start_time'] = datetime.now().isoformat()
+    if current_path is not None:
+        _scan_progress['current_path'] = current_path
+
+
 
 def resolve_downloads_dir():
     """Resolve downloads directory from env/config with safe fallback."""
@@ -748,10 +779,14 @@ def auto_discover_and_queue_files():
         logger.info(f"[AUTO-DISCOVER] Directory exists: {os.path.isdir(DOWNLOADS_DIR)}")
         logger.info(f"[AUTO-DISCOVER] Is absolute path: {os.path.isabs(DOWNLOADS_DIR)}")
         
+        # Initialize scan progress tracking
+        update_scan_progress(scanning=True, files_found=0)
+        
         if not os.path.isdir(DOWNLOADS_DIR):
             error_msg = f"Downloads folder not found or not accessible: {DOWNLOADS_DIR} (exists={os.path.exists(DOWNLOADS_DIR)})"
             logger.error(f"[AUTO-DISCOVER] {error_msg}")
             stats['errors'].append(error_msg)
+            update_scan_progress(scanning=False)
             return stats
         
         # Clean up queue items for files that no longer exist
@@ -845,6 +880,19 @@ def auto_discover_and_queue_files():
                 else:
                     logger.info(f"⚠️  No metadata found (using filename): {filename} → {artist} - {title}")
                 
+                # Update progress tracking
+                file_info_for_progress = {
+                    'rel_path': file_info['rel_path'],
+                    'artist': artist,
+                    'title': title,
+                    'album': album,
+                    'found_at': datetime.now().isoformat()
+                }
+                update_scan_progress(
+                    files_found=stats['scanned'],
+                    recent_file=file_info_for_progress
+                )
+                
                 # Check if already in download_queue
                 cursor.execute("""
                     SELECT id, status FROM download_queue 
@@ -921,6 +969,9 @@ def auto_discover_and_queue_files():
                    f"{stats['already_in_queue']} already queued, "
                    f"{stats['already_in_library']} in library")
         
+        # Mark scan as complete
+        update_scan_progress(scanning=False, files_found=stats['scanned'])
+        
         # Check for complete albums and auto-process them
         if stats['queued'] > 0:
             logger.info("Checking for complete albums to auto-process...")
@@ -940,6 +991,7 @@ def auto_discover_and_queue_files():
         import traceback
         logger.error(traceback.format_exc())
         stats['errors'].append(error_msg)
+        update_scan_progress(scanning=False)
         return stats
 
 

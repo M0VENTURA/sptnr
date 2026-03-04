@@ -10886,6 +10886,37 @@ def api_downloads_discover():
         }), 500
 
 
+@app.route("/api/downloads/scan-progress", methods=["GET"])
+def api_downloads_scan_progress():
+    """
+    Get current scan progress from auto-discovery.
+    Used by frontend to display live scan log.
+    
+    Returns:
+        JSON with scan state: scanning, files_found, recent_files, current_path
+    """
+    try:
+        from download_queue_manager import get_scan_progress
+        
+        progress = get_scan_progress()
+        
+        return jsonify({
+            "success": True,
+            "scanning": progress['scanning'],
+            "files_found": progress['files_found'],
+            "recent_files": progress['recent_files'],
+            "current_path": progress['current_path']
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "scanning": False,
+            "files_found": 0,
+            "recent_files": []
+        })
+
+
 @app.route("/api/downloads/process-albums", methods=["POST"])
 def api_downloads_process_albums():
     """

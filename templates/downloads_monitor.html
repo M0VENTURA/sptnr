@@ -139,6 +139,21 @@
           <span id="discoveryMessage"></span>
         </div>
       </div>
+
+      <!-- Scan Log -->
+      <div id="scanLogSection" class="mt-3" style="display: none;">
+        <div class="card">
+          <div class="card-header d-flex justify-content-between align-items-center" style="cursor: pointer;" onclick="toggleScanLog()">
+            <h6 class="mb-0">
+              <i class="bi bi-list" id="scanLogIcon"></i> Live Scan Log
+            </h6>
+            <small class="text-muted" id="scanLogStats"></small>
+          </div>
+          <div id="scanLogContent" class="card-body p-0" style="display: none; max-height: 400px; overflow-y: auto;">
+            <pre id="scanLogText" style="margin: 0; padding: 15px; font-size: 0.85rem; background-color: #f8f9fa; color: #333;">Initializing scan...</pre>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -311,16 +326,77 @@ async function discoverFiles() {
     button.disabled = true;
     button.innerHTML = '<i class="bi bi-hourglass-split"></i> Scanning...';
     
+    // Show and clear scan log
+    document.getElementById('scanLogSection').style.display = 'block';
+    document.getElementById('scanLogContent').style.display = 'block';
+    const logElement = document.getElementById('scanLogText');
+    logElement.textContent = '[SCAN STARTED] Initializing file discovery...\n';
+    
+    // Keep track of scan progress
+    let lastLogLength = 0;
+    let progressInterval = null;
+    let filesFound = 0;
+    let filesList = [];
+    
+    // Poll for scan progress
+    progressInterval = setInterval(async () => {
+      try {
+        const progressData = await fetch('/api/downloads/scan-progress').then(r => r.json());
+        if (progressData.scanning) {
+          filesFound = progressData.files_found || 0;
+          filesList = progressData.recent_files || [];
+          
+          // Update log with recent files
+          if (filesList.length > 0) {
+            const newEntries = filesList.slice(Math.max(0, lastLogLength - 10));
+            newEntries.forEach(file => {
+              logElement.textContent += `✓ Found: ${file.rel_path} (${file.artist} - ${file.title})\n`;
+            });
+            lastLogLength = filesList.length;
+            logElement.parentElement.scrollTop = logElement.parentElement.scrollHeight;
+          }
+          
+          // Update stats
+          document.getElementById('scanLogStats').textContent = `${filesFound} files found`;
+        }
+      } catch (e) {
+        // Endpoint may not exist yet, that's okay
+      }
+    }, 500);
+    
     const data = await fetchJsonOrThrow('/api/downloads/discover', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' }
     });
+    
+    // Stop polling
+    clearInterval(progressInterval);
     
     button.disabled = false;
     button.innerHTML = '<i class="bi bi-search"></i> Discover Files';
     
     if (data.success) {
       const stats = data.stats;
+      
+      // Update log with final results
+      logElement.textContent += `\n[SCAN COMPLETE]\n`;
+      logElement.textContent += `Total files scanned: ${stats.scanned}\n`;
+      logElement.textContent += `Files added to queue: ${stats.queued}\n`;
+      logElement.textContent += `Already in queue: ${stats.already_in_queue}\n`;
+      logElement.textContent += `Already in library: ${stats.already_in_library}\n`;
+      
+      if (stats.errors && stats.errors.length > 0) {
+        logElement.textContent += `\n[ERRORS] (${stats.errors.length})\n`;
+        stats.errors.slice(0, 10).forEach(err => {
+          logElement.textContent += `✗ ${err}\n`;
+        });
+        if (stats.errors.length > 10) {
+          logElement.textContent += `  ... and ${stats.errors.length - 10} more errors\n`;
+        }
+      }
+      
+      logElement.parentElement.scrollTop = logElement.parentElement.scrollHeight;
+      
       let message = `Scanned ${stats.scanned} files. ` +
                      `Added ${stats.queued} to queue. ` +
                      `(${stats.already_in_queue} already queued, ` +
@@ -334,6 +410,7 @@ async function discoverFiles() {
       
       document.getElementById('discoveryMessage').textContent = message;
       document.getElementById('discoveryResults').style.display = 'block';
+      document.getElementById('scanLogStats').textContent = `${stats.scanned} files scanned`;
       
       // Refresh queue display
       await loadQueueStatus();
@@ -343,16 +420,32 @@ async function discoverFiles() {
         document.getElementById('discoveryResults').style.display = 'none';
       }, 10000);
     } else {
+      logElement.textContent += `\n[ERROR]\n${data.error || 'Failed to discover files'}\n`;
       alert('❌ Error: ' + (data.error || 'Failed to discover files'));
     }
   } catch (error) {
     console.error('Error discovering files:', error);
+    document.getElementById('scanLogText').textContent += `\n[ERROR] ${error.message}\n`;
     alert('❌ Network error: ' + error.message);
     
     // Re-enable button on error
     const button = event.target;
     button.disabled = false;
     button.innerHTML = '<i class="bi bi-search"></i> Discover Files';
+  }
+}
+
+function toggleScanLog() {
+  const content = document.getElementById('scanLogContent');
+  const icon = document.getElementById('scanLogIcon');
+  if (content.style.display === 'none') {
+    content.style.display = 'block';
+    icon.classList.remove('bi-plus');
+    icon.classList.add('bi-dash');
+  } else {
+    content.style.display = 'none';
+    icon.classList.remove('bi-dash');
+    icon.classList.add('bi-plus');
   }
 }
 
