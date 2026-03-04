@@ -11086,6 +11086,47 @@ def api_downloads_get_queue():
         return jsonify({"error": str(e)}), 400
 
 
+@app.route("/api/debug/downloads/queue-stats", methods=["GET"])
+def api_debug_queue_stats():
+    """Debug endpoint to check queue table statistics"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get total count
+        cursor.execute("SELECT COUNT(*) as total FROM download_queue")
+        total = cursor.fetchone()['total']
+        
+        # Get count by status
+        cursor.execute("""
+            SELECT status, COUNT(*) as count
+            FROM download_queue
+            GROUP BY status
+            ORDER BY count DESC
+        """)
+        by_status = {row['status']: row['count'] for row in cursor.fetchall()}
+        
+        # Get sample files
+        cursor.execute("""
+            SELECT id, artist, title, album, status, created_at 
+            FROM download_queue 
+            ORDER BY created_at DESC LIMIT 10
+        """)
+        samples = [dict(row) for row in cursor.fetchall()]
+        
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "total_files": total,
+            "by_status": by_status,
+            "recent_samples": samples
+        })
+    except Exception as e:
+        logging.error(f"Debug queue stats error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/downloads/retry-queue", methods=["GET"])
 def api_downloads_get_retry_queue():
     """Get files queued for retry (ready to retry now)"""
