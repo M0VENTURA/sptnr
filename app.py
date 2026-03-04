@@ -11679,9 +11679,21 @@ def api_queue_add_batch():
             source = item_data.get('source', 'soulseek')
             
             # Extract MusicBrainz/Discogs metadata if provided
-            track_number = item_data.get('track_number', '').strip() if item_data.get('track_number') else None
+            # Handle both string and int types for numeric fields
+            track_number = item_data.get('track_number')
+            if track_number:
+                track_number = str(track_number).strip() if isinstance(track_number, str) else str(track_number)
+            else:
+                track_number = None
+            
             album_artist = item_data.get('album_artist', '').strip() if item_data.get('album_artist') else None
-            year = item_data.get('year', '').strip() if item_data.get('year') else None
+            
+            year = item_data.get('year')
+            if year:
+                year = str(year).strip() if isinstance(year, str) else str(year)
+            else:
+                year = None
+            
             release_id = item_data.get('release_id', '').strip() if item_data.get('release_id') else None
             release_source = item_data.get('release_source', '').strip() if item_data.get('release_source') else None
             
