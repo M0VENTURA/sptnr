@@ -6374,6 +6374,7 @@ def scan_stop_all():
     global scan_process, scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_combined, scan_process_missing_releases
     
     stopped_scans = []
+    db_dir = os.path.dirname(DB_PATH)
     
     with scan_lock:
         # Stop main scan process
@@ -6386,47 +6387,107 @@ def scan_stop_all():
             if isinstance(scan_process_navidrome, dict):
                 thread = scan_process_navidrome.get('thread')
                 if thread and thread.is_alive():
-                    _request_scan_stop(os.path.join(os.path.dirname(DB_PATH), "navidrome_scan_progress.json"), "navidrome_scan")
+                    _request_scan_stop(os.path.join(db_dir, "navidrome_scan_progress.json"), "navidrome_scan")
                     scan_process_navidrome = None
                     stopped_scans.append("Navidrome")
+        else:
+            # Check progress file even if global is None (Flask restart scenario)
+            nav_progress_file = os.path.join(db_dir, "navidrome_scan_progress.json")
+            if os.path.exists(nav_progress_file):
+                try:
+                    with open(nav_progress_file, 'r') as f:
+                        progress = json.load(f)
+                        if progress.get('is_running'):
+                            _request_scan_stop(nav_progress_file, "navidrome_scan")
+                            stopped_scans.append("Navidrome")
+                except Exception:
+                    pass
         
         # Stop Popularity scan
         if scan_process_popularity is not None:
             if isinstance(scan_process_popularity, dict):
                 thread = scan_process_popularity.get('thread')
                 if thread and thread.is_alive():
-                    db_dir = os.path.dirname(DB_PATH)
                     _request_scan_stop(os.path.join(db_dir, "popularity_scan_progress.json"), "popularity_scan")
                     _request_scan_stop(os.path.join(db_dir, "singles_scan_progress.json"), "singles_scan")
                     scan_process_popularity = None
                     stopped_scans.append("Popularity")
+        else:
+            # Check progress files even if global is None
+            pop_progress_file = os.path.join(db_dir, "popularity_scan_progress.json")
+            if os.path.exists(pop_progress_file):
+                try:
+                    with open(pop_progress_file, 'r') as f:
+                        progress = json.load(f)
+                        if progress.get('is_running'):
+                            _request_scan_stop(pop_progress_file, "popularity_scan")
+                            _request_scan_stop(os.path.join(db_dir, "singles_scan_progress.json"), "singles_scan")
+                            stopped_scans.append("Popularity")
+                except Exception:
+                    pass
         
         # Stop Singles scan
         if scan_process_singles is not None:
             if isinstance(scan_process_singles, dict):
                 thread = scan_process_singles.get('thread')
                 if thread and thread.is_alive():
-                    _request_scan_stop(os.path.join(os.path.dirname(DB_PATH), "singles_scan_progress.json"), "singles_scan")
+                    _request_scan_stop(os.path.join(db_dir, "singles_scan_progress.json"), "singles_scan")
                     scan_process_singles = None
                     stopped_scans.append("Singles")
+        else:
+            # Check progress file
+            single_progress_file = os.path.join(db_dir, "singles_scan_progress.json")
+            if os.path.exists(single_progress_file):
+                try:
+                    with open(single_progress_file, 'r') as f:
+                        progress = json.load(f)
+                        if progress.get('is_running') and "Popularity" not in stopped_scans:
+                            _request_scan_stop(single_progress_file, "singles_scan")
+                            stopped_scans.append("Singles")
+                except Exception:
+                    pass
         
         # Stop Combined scan
         if scan_process_combined is not None:
             if isinstance(scan_process_combined, dict):
                 thread = scan_process_combined.get('thread')
                 if thread and thread.is_alive():
-                    _request_scan_stop(os.path.join(os.path.dirname(DB_PATH), "combined_scan_progress.json"), "combined_scan")
+                    _request_scan_stop(os.path.join(db_dir, "combined_scan_progress.json"), "combined_scan")
                     scan_process_combined = None
                     stopped_scans.append("Combined")
+        else:
+            # Check progress file
+            comb_progress_file = os.path.join(db_dir, "combined_scan_progress.json")
+            if os.path.exists(comb_progress_file):
+                try:
+                    with open(comb_progress_file, 'r') as f:
+                        progress = json.load(f)
+                        if progress.get('is_running'):
+                            _request_scan_stop(comb_progress_file, "combined_scan")
+                            stopped_scans.append("Combined")
+                except Exception:
+                    pass
         
         # Stop Missing Releases scan
         if scan_process_missing_releases is not None:
             if isinstance(scan_process_missing_releases, dict):
                 thread = scan_process_missing_releases.get('thread')
                 if thread and thread.is_alive():
-                    _request_scan_stop(os.path.join(os.path.dirname(DB_PATH), "missing_releases_scan_progress.json"), "missing_releases_scan")
+                    _request_scan_stop(os.path.join(db_dir, "missing_releases_scan_progress.json"), "missing_releases_scan")
                     scan_process_missing_releases = None
                     stopped_scans.append("Missing releases")
+        else:
+            # Check progress file
+            missing_progress_file = os.path.join(db_dir, "missing_releases_scan_progress.json")
+            if os.path.exists(missing_progress_file):
+                try:
+                    with open(missing_progress_file, 'r') as f:
+                        progress = json.load(f)
+                        if progress.get('is_running'):
+                            _request_scan_stop(missing_progress_file, "missing_releases_scan")
+                            stopped_scans.append("Missing releases")
+                except Exception:
+                    pass
     
     if stopped_scans:
         flash(f"✅ Stopped {len(stopped_scans)} scan(s): {', '.join(stopped_scans)}", "success")
