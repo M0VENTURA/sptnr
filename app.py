@@ -5378,6 +5378,15 @@ def _run_artist_scan_pipeline(artist_name: str):
             popularity_scan(verbose=True, force=force, artist_filter=artist_name)
         
         log_unified(f"✅ Scan complete for artist '{artist_name}'")
+        
+        # Save checkpoint for resume functionality
+        try:
+            checkpoint_path = os.path.join(os.path.dirname(DB_PATH), "navidrome_scan_checkpoint.json")
+            with open(checkpoint_path, 'w') as f:
+                json.dump({"last_scanned_artist": artist_name}, f)
+            log_unified(f"Checkpoint saved: Ready to resume from '{artist_name}'")
+        except Exception as e:
+            log_unified(f"Warning: Failed to save checkpoint: {e}")
     except Exception as e:
         log_unified(f"❌ Scan failed for {artist_name}: {e}")
         import traceback

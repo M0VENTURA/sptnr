@@ -166,16 +166,25 @@
                             </div>
                             <div class="col-6">
                                 <label for="album_type" class="form-label">Album Type</label>
+                                {% set album_type_raw = ((album_data.spotify_album_type if album_data and album_data.spotify_album_type else '')|lower|trim) %}
+                                {% set is_compilation = 'compilation' in album_type_raw %}
+                                {% set is_live = (not is_compilation) and ('live' in album_type_raw) %}
+                                {% set is_remix = (not is_compilation) and ('remix' in album_type_raw) %}
+                                {% set is_soundtrack = (not is_compilation) and ('soundtrack' in album_type_raw) %}
+                                {% set is_spokenword = (not is_compilation) and ('spoken' in album_type_raw or 'spokenword' in album_type_raw) %}
+                                {% set is_ep = (not is_compilation) and (album_type_raw == 'ep' or ' ep' in album_type_raw or album_type_raw.startswith('ep ')) %}
+                                {% set is_single = (not is_compilation) and ('single' in album_type_raw) %}
+                                {% set is_plain_album = album_type_raw == 'album' %}
                                 <select class="form-select" id="album_type" name="album_type">
-                                    <option value="">Unknown</option>
-                                    <option value="album" {% if album_data and album_data.spotify_album_type == 'album' %}selected{% endif %}>Album</option>
-                                    <option value="album+compilation" {% if album_data and (album_data.spotify_album_type == 'album+compilation' or album_data.spotify_album_type == 'compilation') %}selected{% endif %}>Album (Compilation)</option>
-                                    <option value="album+live" {% if album_data and album_data.spotify_album_type == 'album+live' %}selected{% endif %}>Album (Live)</option>
-                                    <option value="album+remix" {% if album_data and album_data.spotify_album_type == 'album+remix' %}selected{% endif %}>Album (Remix)</option>
-                                    <option value="album+soundtrack" {% if album_data and album_data.spotify_album_type == 'album+soundtrack' %}selected{% endif %}>Album (Soundtrack)</option>
-                                    <option value="album+spokenword" {% if album_data and album_data.spotify_album_type == 'album+spokenword' %}selected{% endif %}>Album (Spoken Word)</option>
-                                    <option value="ep" {% if album_data and album_data.spotify_album_type == 'ep' %}selected{% endif %}>EP</option>
-                                    <option value="single" {% if album_data and album_data.spotify_album_type == 'single' %}selected{% endif %}>Single</option>
+                                    <option value="" {% if not album_type_raw %}selected{% endif %}>Unknown</option>
+                                    <option value="album" {% if is_plain_album %}selected{% endif %}>Album</option>
+                                    <option value="album+compilation" {% if is_compilation %}selected{% endif %}>Album (Compilation)</option>
+                                    <option value="album+live" {% if is_live %}selected{% endif %}>Album (Live)</option>
+                                    <option value="album+remix" {% if is_remix %}selected{% endif %}>Album (Remix)</option>
+                                    <option value="album+soundtrack" {% if is_soundtrack %}selected{% endif %}>Album (Soundtrack)</option>
+                                    <option value="album+spokenword" {% if is_spokenword %}selected{% endif %}>Album (Spoken Word)</option>
+                                    <option value="ep" {% if is_ep %}selected{% endif %}>EP</option>
+                                    <option value="single" {% if is_single %}selected{% endif %}>Single</option>
                                 </select>
                             </div>
                         </div>
