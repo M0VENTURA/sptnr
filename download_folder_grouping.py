@@ -163,34 +163,51 @@ def match_folder_group_with_musicbrainz(folder_path, artist, album, mb_client=No
         folder_path: Relative folder path from downloads root
         artist: Artist name to search for
         album: Album name to search for
-        mb_client: MusicBrainzClient instance (optional, will be imported if not provided)
+        mb_client: Not used (kept for compatibility)
     
     Returns:
         Dict with MusicBrainz candidates and metadata
     """
+    import requests
+    import time
+    
     try:
-        # Import MusicBrainz client if not provided
-        if mb_client is None:
-            try:
-                from api_clients.musicbrainz import MusicBrainzClient
-                mb_client = MusicBrainzClient()
-            except Exception as import_err:
-                logger.error(f"Could not import MusicBrainzClient: {import_err}")
-                return {
-                    'folder_path': folder_path,
-                    'artist': artist,
-                    'album': album,
-                    'candidates': [],
-                    'success': False,
-                    'error': f"Could not import MusicBrainz client: {import_err}"
-                }
-        
         logger.info(f"Searching MusicBrainz for: {artist} - {album}")
         
-        # Search for releases
-        search_results = mb_client.search_releases(artist=artist, release=album)
+        # MusicBrainz API base URL
+        base_url = "https://musicbrainz.org/ws/2/"
+        headers = {
+            "User-Agent": "sptnr/2.0.0 ( https://github.com/M0VENTURA/sptnr )",
+            "Accept": "application/json"
+        }
         
-        if not search_results:
+        # Respect MusicBrainz rate limit (1 request per second)
+        time.sleep(1.0)
+        
+        # Search for releases using the query API
+        # Use Lucene query syntax: artist:"{artist}" AND release:"{album}"
+        query = f'artist:"{artist}" AND release:"{album}"'
+        params = {
+            "query": query,
+            "fmt": "json",
+            "limit": 5  # Get top 5 matches
+        }
+        
+        logger.debug(f"MusicBrainz request: {base_url}release/ params={params}")
+        
+        response = requests.get(
+            f"{base_url}release/",
+            params=params,
+            headers=headers,
+            timeout=(5, 10)
+        )
+        
+        response.raise_for_status()
+        data = response.json()
+        
+        releases = data.get('releases', [])
+        
+        if not releases:
             logger.warning(f"No MusicBrainz matches found for: {artist} - {album}")
             return {
                 'folder_path': folder_path,
@@ -202,15 +219,22 @@ def match_folder_group_with_musicbrainz(folder_path, artist, album, mb_client=No
         
         # Format results
         candidates = []
-        for result in search_results[:5]:  # Top 5 results
+        for release in releases:
+            # Get artist name from artist-credit
+            artist_name = ''
+            if release.get('artist-credit'):
+                artist_name = release['artist-credit'][0].get('name', '')
+            
             candidates.append({
-                'id': result.get('id'),
-                'title': result.get('title'),
-                'artist': result.get('artist-credit', [{}])[0].get('name', ''),
-                'date': result.get('date', ''),
-                'country': result.get('country', ''),
-                'track_count': result.get('track-count', 0)
+                'id': release.get('id'),
+                'title': release.get('title', ''),
+                'artist': artist_name,
+                'date': release.get('date', ''),
+                'country': release.get('country', ''),
+                'track_count': release.get('track-count', 0)
             })
+        
+        logger.info(f"Found {len(candidates)} MusicBrainz candidates for: {artist} - {album}")
         
         return {
             'folder_path': folder_path,
@@ -220,6 +244,16 @@ def match_folder_group_with_musicbrainz(folder_path, artist, album, mb_client=No
             'success': len(candidates) > 0
         }
         
+    except requests.exceptions.RequestException as e:
+        logger.error(f"MusicBrainz API request failed: {e}")
+        return {
+            'folder_path': folder_path,
+            'artist': artist,
+            'album': album,
+            'candidates': [],
+            'success': False,
+            'error': f"API request failed: {e}"
+        }
     except Exception as e:
         logger.error(f"Error matching with MusicBrainz: {e}")
         import traceback
