@@ -744,14 +744,20 @@ def auto_discover_and_queue_files():
     }
     
     try:
+        logger.info(f"[AUTO-DISCOVER] Starting scan of: {DOWNLOADS_DIR}")
+        logger.info(f"[AUTO-DISCOVER] Directory exists: {os.path.isdir(DOWNLOADS_DIR)}")
+        logger.info(f"[AUTO-DISCOVER] Is absolute path: {os.path.isabs(DOWNLOADS_DIR)}")
+        
         if not os.path.isdir(DOWNLOADS_DIR):
-            logger.warning(f"Downloads folder not found: {DOWNLOADS_DIR}")
+            error_msg = f"Downloads folder not found or not accessible: {DOWNLOADS_DIR} (exists={os.path.exists(DOWNLOADS_DIR)})"
+            logger.error(f"[AUTO-DISCOVER] {error_msg}")
+            stats['errors'].append(error_msg)
             return stats
         
         # Clean up queue items for files that no longer exist
         cleanup_stats = cleanup_missing_files()
         if cleanup_stats['removed'] > 0:
-            logger.info(f"Cleanup: Removed {cleanup_stats['removed']} queue items with missing files")
+            logger.info(f"[AUTO-DISCOVER] Cleanup: Removed {cleanup_stats['removed']} queue items with missing files")
         stats['cleanup_removed'] = cleanup_stats['removed']
         
         conn = get_db()
@@ -771,31 +777,43 @@ def auto_discover_and_queue_files():
         
         for col, col_type in required_cols.items():
             if col not in columns:
-                logger.info(f"Adding missing column '{col}' to download_queue")
+                logger.info(f"[AUTO-DISCOVER] Adding missing column '{col}' to download_queue")
                 try:
                     cursor.execute(f"ALTER TABLE download_queue ADD COLUMN {col} {col_type};")
                     conn.commit()
                 except Exception as e:
-                    logger.warning(f"Could not add {col} column: {e}")
+                    logger.warning(f"[AUTO-DISCOVER] Could not add {col} column: {e}")
         
         # Get all audio files from downloads folder and subdirectories
         audio_extensions = {'.mp3', '.flac', '.m4a', '.ogg', '.wav'}
         discovered_files = []
         
-        for root, dirs, files in os.walk(DOWNLOADS_DIR):
-            for filename in files:
-                file_ext = os.path.splitext(filename)[1].lower()
-                if file_ext in audio_extensions:
-                    full_path = os.path.join(root, filename)
-                    rel_path = os.path.relpath(full_path, DOWNLOADS_DIR)
-                    discovered_files.append({
-                        'filename': filename,
-                        'full_path': full_path,
-                        'rel_path': rel_path
-                    })
+        try:
+            for root, dirs, files in os.walk(DOWNLOADS_DIR):
+                logger.debug(f"[AUTO-DISCOVER] Scanning: {root} ({len(files)} files)")
+                for filename in files:
+                    file_ext = os.path.splitext(filename)[1].lower()
+                    if file_ext in audio_extensions:
+                        full_path = os.path.join(root, filename)
+                        rel_path = os.path.relpath(full_path, DOWNLOADS_DIR)
+                        discovered_files.append({
+                            'filename': filename,
+                            'full_path': full_path,
+                            'rel_path': rel_path
+                        })
+                        logger.debug(f"[AUTO-DISCOVER] Found audio file: {rel_path}")
+        except Exception as e:
+            error_msg = f"Error scanning folder: {e}"
+            logger.error(f"[AUTO-DISCOVER] {error_msg}")
+            stats['errors'].append(error_msg)
+            return stats
         
         stats['scanned'] = len(discovered_files)
-        logger.info(f"Scanning {len(discovered_files)} audio files in {DOWNLOADS_DIR}")
+        logger.info(f"[AUTO-DISCOVER] Scanning {len(discovered_files)} audio files in {DOWNLOADS_DIR}")
+        
+        if len(discovered_files) == 0:
+            logger.warning(f"[AUTO-DISCOVER] No audio files found in {DOWNLOADS_DIR}")
+            return stats
         
         for file_info in discovered_files:
             try:
