@@ -309,6 +309,18 @@ def get_download_queue_grouped(status=None, limit=50):
         items = [dict(row) for row in rows]
         conn.close()
         
+        # Filter out items where the file no longer exists
+        valid_items = []
+        for item in items:
+            filepath = item.get('filepath') or item.get('file_path')
+            if filepath and os.path.exists(filepath):
+                valid_items.append(item)
+            else:
+                # Log stale entry for debugging
+                logger.debug(f"Skipping non-existent file in queue: {filepath}")
+        
+        items = valid_items
+        
         # Group by import_group first (if set), then by artist/album
         from collections import defaultdict
         groups = defaultdict(list)
