@@ -16,6 +16,7 @@ from difflib import SequenceMatcher
 from datetime import datetime, timedelta
 from pathlib import Path
 from helpers.metadata_reader import read_mp3_metadata
+from api_clients import session  # Use shared session with retry logic & connection pooling
 
 logging.basicConfig(
     level=logging.INFO,
@@ -1398,7 +1399,7 @@ def _fetch_musicbrainz_album_candidates(artist, album, limit=5):
     }
     query = f'releasegroup:"{album}" AND artist:"{artist}"'
 
-    search_resp = requests.get(
+    search_resp = session.get(
         "https://musicbrainz.org/ws/2/release-group/",
         params={"query": query, "fmt": "json", "limit": limit},
         headers=headers,
@@ -1419,7 +1420,7 @@ def _fetch_musicbrainz_album_candidates(artist, album, limit=5):
         artist_credit = " ".join([(ac.get("name") or "") for ac in (rg.get("artist-credit") or [])]).strip() or artist
 
         release_tracks = []
-        release_resp = requests.get(
+        release_resp = session.get(
             f"https://musicbrainz.org/ws/2/release-group/{rg_id}/releases",
             params={"fmt": "json", "limit": 1},
             headers=headers,
@@ -1430,7 +1431,7 @@ def _fetch_musicbrainz_album_candidates(artist, album, limit=5):
             if releases:
                 rel_id = releases[0].get("id")
                 if rel_id:
-                    track_resp = requests.get(
+                    track_resp = session.get(
                         f"https://musicbrainz.org/ws/2/release/{rel_id}",
                         params={"fmt": "json", "inc": "recordings+artist-credits+labels"},
                         headers=headers,
