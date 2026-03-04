@@ -101,15 +101,90 @@
   </div>
 </div>
 
+<style>
+  #musicBrainzModal .modal-content,
+  #musicBrainzModal .accordion-item,
+  #musicBrainzModal .accordion-button {
+    background-color: #1a1a1a;
+    color: #e0e0e0;
+    border-color: #333;
+  }
+
+  #musicBrainzModal .accordion-button:not(.collapsed) {
+    background-color: #2a2a2a;
+    color: #e0e0e0;
+  }
+
+  #musicBrainzModal .accordion-button:focus {
+    border-color: #555;
+    box-shadow: 0 0 0 0.25rem rgba(70, 130, 180, 0.25);
+  }
+
+  #musicBrainzModal .table {
+    color: #e0e0e0;
+    border-color: #333;
+  }
+
+  #musicBrainzModal .table thead {
+    border-color: #333;
+  }
+
+  #musicBrainzModal .table th {
+    color: #e0e0e0;
+    border-color: #333;
+  }
+
+  #musicBrainzModal .table tbody tr {
+    border-color: #333;
+  }
+
+  #musicBrainzModal .table tbody tr:hover {
+    background-color: #2a2a2a;
+  }
+
+  #musicBrainzModal .btn-success {
+    background-color: #28a745;
+    border-color: #28a745;
+  }
+
+  #musicBrainzModal .btn-success:hover {
+    background-color: #218838;
+    border-color: #1e7e34;
+  }
+
+  #musicBrainzModal .badge {
+    background-color: #555;
+  }
+
+  #musicBrainzModal .alert {
+    background-color: #2a2a2a;
+    border-color: #333;
+    color: #e0e0e0;
+  }
+
+  #musicBrainzModal .alert-secondary {
+    background-color: #2a2a2a;
+    border-color: #444;
+  }
+
+  #musicBrainzModal .text-muted {
+    color: #999 !important;
+  }
+
+  #musicBrainzModal .modal-body {
+    background-color: #1a1a1a;
+  }
+</style>
+
 <!-- MusicBrainz Search Modal (required by static/js/downloads.js) -->
 <div class="modal fade" id="musicBrainzModal" tabindex="-1" aria-labelledby="musicBrainzModalLabel" aria-hidden="true">
   <div class="modal-dialog modal-xl modal-dialog-scrollable">
-    <div class="modal-content">
-      <div class="modal-header">
+    <div class="modal-content" style="background-color: #1a1a1a; color: #e0e0e0;">
+      <div class="modal-header" style="border-bottom-color: #333;">
         <h5 class="modal-title" id="musicBrainzModalLabel">
           <i class="bi bi-disc"></i> MusicBrainz Release Search
         </h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <div class="modal-body">
         <div id="mbSearchInfo" class="alert alert-secondary" style="display:none;">
