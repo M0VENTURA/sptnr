@@ -448,7 +448,7 @@ def apply_matched_metadata_to_folder(folder_path, tracks, matched_metadata):
         return tracks
 
 
-def organize_folder_to_music(folder_path, tracks, release_metadata, music_dir="/music"):
+def organize_folder_to_music(folder_path, tracks, release_metadata, music_dir="/music", db_conn=None):
     """
     Organize tracks from a folder into the /music directory structure.
     Format: /music/Album Artist/Year - Album/Track Number. Artist - Track Title.ext
@@ -458,14 +458,71 @@ def organize_folder_to_music(folder_path, tracks, release_metadata, music_dir="/
         tracks: List of track dicts
         release_metadata: Matched release metadata (album, artist, date, etc.)
         music_dir: Base music directory path
+        db_conn: Optional database connection for tracking folder matches
     
     Returns:
         Dict with success status and organized file paths
     """
     import shutil
     import re
+    import sqlite3
     
     try:
+        organized_files = []
+        errors = []
+        
+        # Track folder match in database if connection provided
+        folder_match_id = None
+        if db_conn:
+            try:
+                cursor = db_conn.cursor()
+                
+                # Get absolute folder path for tracking
+                from pathlib import Path
+                abs_folder_path = str(Path(folder_path).resolve())
+                
+                # Extract release info
+                mb_release_id = release_metadata.get('id', '')
+                mb_source = release_metadata.get('source', 'musicbrainz')
+                artist = release_metadata.get('artist', 'Unknown Artist')
+                album = release_metadata.get('title', 'Unknown Album')
+                release_date = release_metadata.get('date', '')
+                total_tracks = len(tracks)
+                
+                # Check for existing folder match
+                cursor.execute(
+                    "SELECT id FROM folder_album_matches WHERE folder_path = ?",
+                    (abs_folder_path,)
+                )
+                existing = cursor.fetchone()
+                
+                if existing:
+                    # Update existing match
+                    folder_match_id = existing[0]
+                    cursor.execute("""
+                        UPDATE folder_album_matches
+                        SET mb_release_id = ?, mb_source = ?, artist = ?, album = ?,
+                            release_date = ?, total_expected_tracks = ?, status = 'organizing',
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    """, (mb_release_id, mb_source, artist, album, release_date, total_tracks, folder_match_id))
+                else:
+                    # Create new folder match record
+                    cursor.execute("""
+                        INSERT INTO folder_album_matches 
+                        (folder_path, mb_release_id, mb_source, artist, album, release_date, 
+                         total_expected_tracks, matched_tracks_count, status)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'organizing')
+                    """, (abs_folder_path, mb_release_id, mb_source, artist, album, release_date, total_tracks))
+                    folder_match_id = cursor.lastrowid
+                
+                db_conn.commit()
+                logger.info(f"Tracked folder match in database: ID {folder_match_id}")
+                
+            except Exception as db_error:
+                logger.error(f"Error tracking folder match in database: {db_error}")
+                # Continue with organization even if tracking fails
+        
         organized_files = []
         errors = []
         
@@ -543,10 +600,39 @@ def organize_folder_to_music(folder_path, tracks, release_metadata, music_dir="/
                     'title': track_title
                 })
                 
+                # Track individual file match in database
+                if db_conn and folder_match_id:
+                    try:
+                        cursor = db_conn.cursor()
+                        cursor.execute("""
+                            INSERT INTO folder_track_matches
+                            (folder_match_id, file_path, organized_path, track_number, 
+                             track_title, track_artist, organized_at)
+                            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        """, (folder_match_id, source_file, dest_file, track_number, 
+                              track_title, track_artist))
+                        db_conn.commit()
+                    except Exception as track_db_error:
+                        logger.debug(f"Error tracking file in database: {track_db_error}")
+                
             except Exception as track_error:
                 error_msg = f"Failed to organize {track.get('filename', 'unknown')}: {track_error}"
                 logger.error(error_msg)
                 errors.append(error_msg)
+        
+        # Update folder match status and counts in database
+        if db_conn and folder_match_id:
+            try:
+                cursor = db_conn.cursor()
+                cursor.execute("""
+                    UPDATE folder_album_matches
+                    SET matched_tracks_count = ?, status = 'completed', updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                """, (len(organized_files), folder_match_id))
+                db_conn.commit()
+                logger.info(f"Updated folder match status: {len(organized_files)} tracks organized")
+            except Exception as db_error:
+                logger.error(f"Error updating folder match status: {db_error}")
         
         # Try to remove empty source folder
         try:

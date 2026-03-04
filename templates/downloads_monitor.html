@@ -566,6 +566,113 @@ let folderGroupsFilter = 'all';
 const expandedFolderGroupIds = new Set();
 const expandedQueueGroupIds = new Set();
 const expandedQueueTrackPathIds = new Set();
+let folderStatusData = {}; // Tracks completion status from database
+
+async function loadFolderStatus() {
+  // Load folder match status from database to show completion tracking
+  try {
+    const response = await fetch('/api/downloads/folder-status');
+    const data = await response.json();
+    
+    if (data.success && data.folder_matches) {
+      // Index by folder_path for quick lookup
+      folderStatusData = {};
+      data.folder_matches.forEach(match => {
+        folderStatusData[match.folder_path] = match;
+      });
+      return folderStatusData;
+    }
+  } catch (error) {
+    console.error('Error loading folder status:', error);
+  }
+  return {};
+}
+
+async function loadFolderDuplicates() {
+  // Load duplicate folder detection results
+  try {
+    const response = await fetch('/api/downloads/folder-duplicates');
+    const data = await response.json();
+    
+    if (data.success && data.duplicates && data.duplicates.length > 0) {
+      showDuplicateWarnings(data.duplicates);
+    } else {
+      hideDuplicateWarnings();
+    }
+  } catch (error) {
+    console.error('Error loading folder duplicates:', error);
+  }
+}
+
+function showDuplicateWarnings(duplicates) {
+  const section = document.getElementById('folderGroupsSection');
+  if (!section) return;
+  
+  let existingWarning = document.getElementById('duplicateWarnings');
+  if (!existingWarning) {
+    existingWarning = document.createElement('div');
+    existingWarning.id = 'duplicateWarnings';
+    section.insertBefore(existingWarning, section.firstChild);
+  }
+  
+  let html = '<div class="alert alert-warning m-3">';
+  html += '<h6><i class="bi bi-exclamation-triangle"></i> Duplicate Folders Detected</h6>';
+  html += '<p class="small mb-2">These folders match the same album and can be merged:</p>';
+  html += '<ul class="small mb-3">';
+  
+  duplicates.forEach(dup => {
+    html += `<li><strong>${escapeHtml(dup.artist)} - ${escapeHtml(dup.album)}</strong>: `;
+    html += `${dup.folder_count} folders (${dup.folders.map(f => f.matched_tracks_count + ' tracks').join(', ')})`;
+    if (dup.suggestion === 'merge_to_first') {
+      const folderIds = dup.folders.map(f => f.id);
+      html += ` <button class="btn btn-sm btn-outline-primary ms-2" 
+                       onclick="mergeDuplicateFolders(${folderIds[0]}, ${JSON.stringify(folderIds.slice(1))})">
+                <i class="bi bi-arrows-collapse"></i> Merge All
+              </button>`;
+    }
+    html += '</li>';
+  });
+  
+  html += '</ul></div>';
+  existingWarning.innerHTML = html;
+}
+
+function hideDuplicateWarnings() {
+  const existingWarning = document.getElementById('duplicateWarnings');
+  if (existingWarning) {
+    existingWarning.remove();
+  }
+}
+
+async function mergeDuplicateFolders(primaryId, secondaryIds) {
+  if (!confirm(`Merge ${secondaryIds.length} duplicate folder(s) into the primary folder?`)) {
+    return;
+  }
+  
+  try {
+    const response = await fetch('/api/downloads/folder-merge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        primary_folder_id: primaryId,
+        secondary_folder_ids: secondaryIds
+      })
+    });
+    
+    const data = await response.json();
+    
+    if (data.success) {
+      alert(`✅ Successfully merged ${data.merged_folders} folder(s) with ${data.merged_tracks} tracks`);
+      await loadFolderGroups();
+      await loadFolderDuplicates();
+    } else {
+      alert('❌ Failed to merge folders: ' + (data.error || 'Unknown error'));
+    }
+  } catch (error) {
+    console.error('Error merging folders:', error);
+    alert('❌ Network error: ' + error.message);
+  }
+}
 
 function makeSafeDomId(value) {
   return String(value || '')
@@ -592,6 +699,10 @@ function setFolderGroupFilter(filter) {
 async function loadFolderGroups() {
   // Load and display folder groups from downloads folder plus queue items ready to organize.
   try {
+    // Load folder status from database first
+    await loadFolderStatus();
+    await loadFolderDuplicates();
+    
     const response = await fetch('/api/downloads/grouped-folders');
     const data = await response.json();
     
@@ -643,6 +754,28 @@ async function loadFolderGroups() {
         ? `<div class="small text-success mt-1"><strong>Selected:</strong> ${escapeHtml(matchedSelection.candidate.title || 'Unknown release')} (${escapeHtml(matchedSelection.candidate.source || 'musicbrainz')})</div>`
         : '';
       
+      // Get folder status from database (if it exists)
+      const folderStatus = folderStatusData[group.folder_path];
+      let completionBadge = '';
+      let progressBar = '';
+      
+      if (folderStatus) {
+        const percent = folderStatus.completion_percentage || 0;
+        const badgeColor = percent >= 100 ? 'bg-success' : (percent >= 50 ? 'bg-warning' : 'bg-danger');
+        completionBadge = ` <span class="badge ${badgeColor}">
+          <i class="bi bi-download"></i> ${folderStatus.matched_tracks_count}/${folderStatus.total_expected_tracks} tracks
+        </span>`;
+        
+        if (percent > 0 && percent < 100) {
+          progressBar = `
+            <div class="progress mt-2" style="height: 4px;">
+              <div class="progress-bar ${badgeColor.replace('bg-', 'bg-opacity-75 bg-')}" 
+                   role="progressbar" style="width: ${percent}%" 
+                   aria-valuenow="${percent}" aria-valuemin="0" aria-valuemax="100"></div>
+            </div>`;
+        }
+      }
+      
       // Check if this group was previously expanded
       const isExpanded = expandedFolderGroupIds.has(folderStateKey) || expandedGroups.has(index);
       const displayStyle = isExpanded ? 'block' : 'none';
@@ -659,6 +792,7 @@ async function loadFolderGroups() {
                   <i class="bi bi-folder"></i> ${group.folder_name}
                   ${inconsistentBadge}
                   ${matchedBadge}
+                  ${completionBadge}
                 </h6>
                 <div class="text-muted small">
                   <span class="badge bg-light text-dark">${group.track_count} tracks</span>
@@ -666,6 +800,7 @@ async function loadFolderGroups() {
                   <span class="ms-2"><strong>Album:</strong> ${group.album}</span>
                 </div>
                 ${matchedDetails}
+                ${progressBar}
               </div>
               <div class="col-md-6 text-end">
                 <button class="btn btn-sm btn-outline-primary" 
@@ -705,9 +840,31 @@ async function loadFolderGroups() {
                 const duration = track.duration ? 
                   Math.floor(track.duration / 60) + ':' + String(track.duration % 60).padStart(2, '0') : 
                   '-';
+                
+                // Check if this track has been organized (from folder status)
+                let trackMatched = false;
+                let trackClass = '';
+                let trackIcon = '';
+                
+                if (folderStatus && folderStatus.matched_tracks) {
+                  trackMatched = folderStatus.matched_tracks.some(mt => 
+                    mt.track_title === track.title || 
+                    mt.file_path.includes(track.filename)
+                  );
+                  
+                  if (trackMatched) {
+                    trackClass = 'table-success';
+                    trackIcon = '<i class="bi bi-check-circle-fill text-success me-1"></i>';
+                  } else if (matchedSelection) {
+                    // Selection exists but track not yet matched - show as pending
+                    trackClass = 'text-muted';
+                    trackIcon = '<i class="bi bi-hourglass me-1"></i>';
+                  }
+                }
+                
                 html += `
-                      <tr>
-                        <td><small>${track.track_number || '-'}</small></td>
+                      <tr class="${trackClass}">
+                        <td><small>${trackIcon}${track.track_number || '-'}</small></td>
                         <td><small>${track.title}</small></td>
                         <td><small>${duration}</small></td>
                       </tr>`;

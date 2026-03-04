@@ -11079,13 +11079,19 @@ def api_downloads_folder_organize(folder_path):
         cfg = get_config()
         music_dir = cfg.get('navidrome', {}).get('music_folder', '/music')
         
-        # Organize files
+        # Get database connection for tracking
+        conn = get_db()
+        
+        # Organize files with database tracking
         result = organize_folder_to_music(
             folder_path,
             tracks,
             release_metadata,
-            music_dir=music_dir
+            music_dir=music_dir,
+            db_conn=conn
         )
+        
+        conn.close()
         
         return jsonify({
             "success": result.get('success', False),
@@ -11671,6 +11677,296 @@ def api_downloads_scheduler_status():
             })
     except Exception as e:
         logging.error(f"Error getting retry scheduler status: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route("/api/downloads/folder-status", methods=["GET"])
+def api_downloads_folder_status():
+    """
+    Get status of all folder album matches with completion tracking.
+    Returns list of matched folders with track progress and missing tracks.
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get all folder matches with completion details
+        cursor.execute("""
+            SELECT 
+                f.id,
+                f.folder_path,
+                f.mb_release_id,
+                f.mb_source,
+                f.artist,
+                f.album,
+                f.release_date,
+                f.total_expected_tracks,
+                f.matched_tracks_count,
+                f.status,
+                f.created_at,
+                f.updated_at
+            FROM folder_album_matches f
+            ORDER BY f.updated_at DESC
+        """)
+        
+        folder_matches = []
+        for row in cursor.fetchall():
+            folder_id = row[0]
+            
+            # Get matched tracks for this folder
+            cursor.execute("""
+                SELECT file_path, organized_path, track_number, track_title, track_artist
+                FROM folder_track_matches
+                WHERE folder_match_id = ?
+                ORDER BY track_number
+            """, (folder_id,))
+            
+            matched_tracks = [
+                {
+                    'file_path': t[0],
+                    'organized_path': t[1],
+                    'track_number': t[2],
+                    'track_title': t[3],
+                    'track_artist': t[4]
+                }
+                for t in cursor.fetchall()
+            ]
+            
+            folder_matches.append({
+                'id': folder_id,
+                'folder_path': row[1],
+                'mb_release_id': row[2],
+                'mb_source': row[3],
+                'artist': row[4],
+                'album': row[5],
+                'release_date': row[6],
+                'total_expected_tracks': row[7],
+                'matched_tracks_count': row[8],
+                'status': row[9],
+                'completion_percentage': round((row[8] / row[7] * 100) if row[7] > 0 else 0, 1),
+                'created_at': row[10],
+                'updated_at': row[11],
+                'matched_tracks': matched_tracks
+            })
+        
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "folder_matches": folder_matches,
+            "total": len(folder_matches)
+        })
+        
+    except Exception as e:
+        logging.error(f"Error getting folder status: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route("/api/downloads/folder-duplicates", methods=["GET"])
+def api_downloads_folder_duplicates():
+    """
+    Detect duplicate folders that match the same MusicBrainz release.
+    Returns groups of folders that should be merged.
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Find releases with multiple folder matches
+        cursor.execute("""
+            SELECT mb_release_id, mb_source, artist, album, COUNT(*) as folder_count
+            FROM folder_album_matches
+            GROUP BY mb_release_id, mb_source
+            HAVING COUNT(*) > 1
+            ORDER BY folder_count DESC
+        """)
+        
+        duplicates = []
+        for row in cursor.fetchall():
+            mb_release_id = row[0]
+            mb_source = row[1]
+            
+            # Get all folders for this release
+            cursor.execute("""
+                SELECT 
+                    id, folder_path, total_expected_tracks, 
+                    matched_tracks_count, status, created_at
+                FROM folder_album_matches
+                WHERE mb_release_id = ? AND mb_source = ?
+                ORDER BY created_at ASC
+            """, (mb_release_id, mb_source))
+            
+            folders = [
+                {
+                    'id': f[0],
+                    'folder_path': f[1],
+                    'total_expected_tracks': f[2],
+                    'matched_tracks_count': f[3],
+                    'status': f[4],
+                    'created_at': f[5]
+                }
+                for f in cursor.fetchall()
+            ]
+            
+            duplicates.append({
+                'mb_release_id': mb_release_id,
+                'mb_source': mb_source,
+                'artist': row[2],
+                'album': row[3],
+                'folder_count': row[4],
+                'folders': folders,
+                'suggestion': 'merge_to_first' if len(folders) > 1 else None
+            })
+        
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "duplicates": duplicates,
+            "total_duplicate_groups": len(duplicates)
+        })
+        
+    except Exception as e:
+        logging.error(f"Error detecting folder duplicates: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route("/api/downloads/folder-merge", methods=["POST"])
+def api_downloads_folder_merge():
+    """
+    Merge duplicate folders into the primary folder.
+    Moves track files and updates database records.
+    
+    Request JSON:
+        primary_folder_id: ID of folder to keep
+        secondary_folder_ids: List of folder IDs to merge into primary
+    """
+    try:
+        import shutil
+        from pathlib import Path
+        
+        data = request.get_json() or {}
+        primary_id = data.get('primary_folder_id')
+        secondary_ids = data.get('secondary_folder_ids', [])
+        
+        if not primary_id or not secondary_ids:
+            return jsonify({
+                "success": False,
+                "error": "primary_folder_id and secondary_folder_ids are required"
+            }), 400
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get primary folder info
+        cursor.execute("""
+            SELECT folder_path, artist, album, total_expected_tracks
+            FROM folder_album_matches
+            WHERE id = ?
+        """, (primary_id,))
+        
+        primary_row = cursor.fetchone()
+        if not primary_row:
+            conn.close()
+            return jsonify({
+                "success": False,
+                "error": f"Primary folder {primary_id} not found"
+            }), 404
+        
+        primary_path = primary_row[0]
+        merged_count = 0
+        errors = []
+        
+        # Merge each secondary folder
+        for secondary_id in secondary_ids:
+            try:
+                # Get secondary folder tracks
+                cursor.execute("""
+                    SELECT file_path, track_number, track_title, track_artist
+                    FROM folder_track_matches
+                    WHERE folder_match_id = ?
+                """, (secondary_id,))
+                
+                secondary_tracks = cursor.fetchall()
+                
+                # Move track files to primary folder
+                for track in secondary_tracks:
+                    source_file = track[0]
+                    if not os.path.exists(source_file):
+                        continue
+                    
+                    # Keep same filename
+                    filename = os.path.basename(source_file)
+                    dest_file = os.path.join(primary_path, filename)
+                    
+                    # Handle filename conflicts
+                    if os.path.exists(dest_file):
+                        base, ext = os.path.splitext(filename)
+                        counter = 1
+                        while os.path.exists(dest_file):
+                            dest_file = os.path.join(primary_path, f"{base}_{counter}{ext}")
+                            counter += 1
+                    
+                    # Move file
+                    shutil.move(source_file, dest_file)
+                    logging.info(f"Merged file: {source_file} -> {dest_file}")
+                    
+                    # Update track match to point to primary folder
+                    cursor.execute("""
+                        UPDATE folder_track_matches
+                        SET folder_match_id = ?, file_path = ?
+                        WHERE folder_match_id = ? AND file_path = ?
+                    """, (primary_id, dest_file, secondary_id, source_file))
+                    
+                    merged_count += 1
+                
+                # Delete secondary folder record
+                cursor.execute("DELETE FROM folder_album_matches WHERE id = ?", (secondary_id,))
+                
+                logging.info(f"Merged folder {secondary_id} into {primary_id}")
+                
+            except Exception as merge_error:
+                error_msg = f"Error merging folder {secondary_id}: {merge_error}"
+                logging.error(error_msg)
+                errors.append(error_msg)
+        
+        # Update primary folder track count
+        cursor.execute("""
+            UPDATE folder_album_matches
+            SET matched_tracks_count = (
+                SELECT COUNT(*) FROM folder_track_matches WHERE folder_match_id = ?
+            ),
+            updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (primary_id, primary_id))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "merged_tracks": merged_count,
+            "merged_folders": len(secondary_ids) - len(errors),
+            "errors": errors
+        })
+        
+    except Exception as e:
+        logging.error(f"Error merging folders: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
         return jsonify({
             "success": False,
             "error": str(e)
