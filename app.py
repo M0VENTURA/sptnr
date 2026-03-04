@@ -2652,6 +2652,7 @@ def api_import_release():
                     "duration": duration,
                     "year": year,
                     "mbid": mbid,
+                    "writer": json.dumps([]),  # Empty writer list - MusicBrainz doesn't provide lyricist info easily
                     "score": 0.0,
                     "spotify_score": 0,
                     "lastfm_score": 0,
@@ -13768,7 +13769,7 @@ def api_get_track(track_id):
         cursor.execute("""
             SELECT id, title, artist, album, genres, stars, is_single, 
                    single_confidence, duration, track_number, disc_number,
-                   year, album_artist, composer, comment, mbid, file_path
+                   year, album_artist, composer, comment, mbid, file_path, writer
             FROM tracks 
             WHERE id = ?
         """, (track_id,))
@@ -13803,7 +13804,8 @@ def api_get_track(track_id):
                     'composer': row[13],
                     'comment': row[14],
                     'mbid': row[15],
-                    'file_path': row[16]
+                    'file_path': row[16],
+                    'writer': row[17]
                 }
         except (IndexError, TypeError) as e:
             logging.error(f"[API] Error converting track row to dict: {e}")

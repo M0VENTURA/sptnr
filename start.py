@@ -504,6 +504,11 @@ def set_track_rating_for_all(track_id, stars):
                         tracks_skipped += 1
                         continue
                 
+                # Extract track metadata including writer/lyricist information
+                from api_clients.navidrome import NavidromeClient
+                navi_client = NavidromeClient(base_url="", username="", password="")  # URLs/auth not needed for extraction
+                extracted = navi_client.extract_track_metadata(t)
+                
                 td = {
                     "id": track_id,
                     "title": t.get("title", ""),
@@ -547,6 +552,7 @@ def set_track_rating_for_all(track_id, stars):
                     "track_number": _safe_int(t.get("trackNumber") or t.get("track")),
                     "disc_number": _safe_int(t.get("discNumber") or t.get("disc") or 1) or 1,
                     "year": t.get("year"),  # Release year
+                    "writer": extracted.get("writer", "[]"),  # JSON array of lyricists/writers from Navidrome
                     "album_artist": album_artist_value,  # Album artist from album object
                     "bitrate": t.get("bitRate"),  # Bitrate in kbps
                     "sample_rate": t.get("samplingRate"),  # Sample rate in Hz
