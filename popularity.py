@@ -6160,9 +6160,13 @@ def popularity_scan(
                 conn.commit()
                 log_debug(f"Committed all changes for album: {album}")
                 
-                # Log album scan
-                log_album_scan(artist, album, 'popularity', album_scanned, 'completed')
-                log_debug(f"Logged album scan to scan_history - album: {album}, tracks_scanned: {album_scanned}")
+                # Log album scan with scan type that matches the active mode.
+                scan_history_type = 'singles' if singles_only else 'popularity'
+                log_album_scan(artist, album, scan_history_type, album_scanned, 'completed')
+                log_debug(
+                    f"Logged album scan to scan_history - album: {album}, "
+                    f"scan_type: {scan_history_type}, tracks_scanned: {album_scanned}"
+                )
 
             # After all albums processed for this artist, show artist scan completion summary
             # (Individual album details were logged immediately after each album scan)

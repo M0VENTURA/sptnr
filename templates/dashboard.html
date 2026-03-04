@@ -590,7 +590,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     badgeHtml = '<span class="badge bg-primary" title="' + st.timestamp + '"><i class="bi bi-cloud"></i> Navidrome</span>';
                 } else if (st.type === 'popularity') {
                     badgeHtml = '<span class="badge bg-success" title="' + st.timestamp + '"><i class="bi bi-graph-up"></i> Popularity</span>';
-                } else if (st.type === 'singles') {
+                } else if (st.type === 'singles' || st.type === 'singles_scan' || st.type === 'single_detection') {
                     badgeHtml = '<span class="badge bg-warning text-dark" title="' + st.timestamp + '"><i class="bi bi-star"></i> Singles</span>';
                 } else if (st.type === 'combined') {
                     badgeHtml = '<span class="badge bg-info text-dark" title="' + st.timestamp + '"><i class="bi bi-lightning-fill"></i> Combined</span>';
