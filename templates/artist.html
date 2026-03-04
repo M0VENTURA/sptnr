@@ -51,8 +51,8 @@
         <li class="nav-item"><a class="nav-link" href="#artist-similar-section">Similar</a></li>
         <li class="nav-item"><a class="nav-link" href="#artist-top-tracks-section">Top Tracks</a></li>
         <li class="nav-item"><a class="nav-link" href="#artist-genres-section">Genres</a></li>
-        <li class="nav-item"><a class="nav-link" href="#artist-appears-on-section">Appears On</a></li>
         <li class="nav-item"><a class="nav-link" href="#albums-section">Albums</a></li>
+        <li class="nav-item"><a class="nav-link" href="#artist-appears-on-section">Appears On</a></li>
       </ul>
     </div>
   </div>
@@ -250,7 +250,7 @@
             {% if genres %}
             <div class="d-flex flex-wrap gap-2 mb-3" id="currentArtistGenres">
               {% for genre in genres %}
-              <label class="badge bg-primary" style="font-size: 0.9rem; cursor: pointer; user-select: none; display: inline-flex; align-items: center; padding: 0.35rem 0.55rem;">
+              <label class="badge bg-primary" style="font-size: 1rem; cursor: pointer; user-select: none; display: inline-flex; align-items: center; padding: 0.45rem 0.65rem;">
                 <input type="checkbox" value="{{ genre }}" style="margin-right: 0.5rem; cursor: pointer;" onchange="toggleGenreCheckbox('currentArtistGenres', 'removeSelectedArtistGenresBtn')">
                 {{ genre }}
               </label>
@@ -389,58 +389,6 @@
             {% endif %}
           </div>
         </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Appears On Section -->
-  <div class="card mb-4" id="artist-appears-on-section">
-    <div class="card-header d-flex justify-content-between align-items-center">
-      <h5 class="card-title mb-0">
-        <i class="bi bi-people"></i> Appears On
-      </h5>
-      <small class="text-muted">Featured on other artists' releases</small>
-    </div>
-    <div class="card-body p-0">
-      <div class="table-responsive">
-        <table class="table table-hover mb-0">
-          <thead>
-            <tr>
-              <th>Album</th>
-              <th>Album Artist</th>
-              <th style="width: 80px;" class="text-center">Year</th>
-              <th style="width: 90px;" class="text-center">Tracks</th>
-              <th style="width: 90px;" class="text-center">Avg ★</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% if appears_on_albums and appears_on_albums|length > 0 %}
-              {% for entry in appears_on_albums %}
-                <tr>
-                  <td>
-                    <a href="{{ url_for('album_detail', artist=entry.album_artist, album=entry.album) }}" class="text-decoration-none">
-                      {{ entry.album }}
-                    </a>
-                  </td>
-                  <td>
-                    <a href="{{ url_for('artist_detail', name=entry.album_artist) }}" class="text-decoration-none">
-                      {{ entry.album_artist }}
-                    </a>
-                  </td>
-                  <td class="text-center">{{ entry.album_year or '—' }}</td>
-                  <td class="text-center">{{ entry.track_count or 0 }}</td>
-                  <td class="text-center">{{ (entry.avg_stars or 0)|round(2) }}</td>
-                </tr>
-              {% endfor %}
-            {% else %}
-              <tr>
-                <td colspan="5" class="text-center text-muted py-4">
-                  <i class="bi bi-info-circle"></i> No featured-release appearances found
-                </td>
-              </tr>
-            {% endif %}
-          </tbody>
-        </table>
       </div>
     </div>
   </div>
@@ -651,6 +599,77 @@
             <tr>
               <td colspan="7" class="text-center text-muted py-4">
                 <i class="bi bi-info-circle"></i> No compilations found
+              </td>
+            </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Appears On Section -->
+  <div class="card mb-4" id="artist-appears-on-section">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <h5 class="card-title mb-0">
+        <i class="bi bi-people"></i> Appears On
+      </h5>
+      <small class="text-muted">Featured on other artists' releases</small>
+    </div>
+    <div class="table-responsive">
+      <table class="table table-hover mb-0">
+        <thead class="d-none d-md-table-header-group">
+          <tr>
+            <th style="width: 100px;">Art</th>
+            <th>Release</th>
+            <th class="text-center" style="width: 80px;">Year</th>
+            <th class="text-center" style="width: 80px;">Tracks</th>
+            <th class="text-center" style="width: 100px;">Avg ★</th>
+            <th class="text-center" style="width: 70px;">Open</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% if appears_on_albums and appears_on_albums|length > 0 %}
+            {% for entry in appears_on_albums %}
+              <tr>
+                <td class="text-center" style="width: 100px; padding: 0.5rem;">
+                  <a href="{{ url_for('album_detail', artist=entry.album_artist, album=entry.album) }}">
+                    <img src="{{ url_for('api_album_art', artist=entry.album_artist, album=entry.album) }}"
+                         alt="{{ entry.album }}"
+                         class="img-thumbnail"
+                         style="width: 80px; height: 80px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;"
+                         onerror="this.src='/api/album-art-placeholder'">
+                  </a>
+                </td>
+                <td>
+                  <div class="d-flex flex-column justify-content-center" style="min-height: 80px;">
+                    <a href="{{ url_for('album_detail', artist=entry.album_artist, album=entry.album) }}" class="text-decoration-none fw-semibold">
+                      {{ entry.album }}
+                    </a>
+                    <a href="{{ url_for('artist_detail', name=entry.album_artist) }}" class="text-decoration-none small text-muted mt-1">
+                      {{ entry.album_artist }}
+                    </a>
+                  </div>
+                </td>
+                <td class="text-center">{{ entry.album_year or '—' }}</td>
+                <td class="text-center">{{ entry.track_count or 0 }}</td>
+                <td class="text-center">
+                  {% if entry.avg_stars %}
+                    <span class="badge bg-info">{{ entry.avg_stars|round(2) }}★</span>
+                  {% else %}
+                    <span class="text-muted">—</span>
+                  {% endif %}
+                </td>
+                <td class="text-center">
+                  <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('album_detail', artist=entry.album_artist, album=entry.album) }}" title="View album">
+                    <i class="bi bi-arrow-right"></i>
+                  </a>
+                </td>
+              </tr>
+            {% endfor %}
+          {% else %}
+            <tr>
+              <td colspan="6" class="text-center text-muted py-4">
+                <i class="bi bi-info-circle"></i> No featured-release appearances found
               </td>
             </tr>
           {% endif %}
@@ -2798,6 +2817,37 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
 .modal-body .table-hover tbody tr:hover td {
     background-color: var(--primary-bg) !important;
 }
+
+/* Similar artists and genres typography improvements */
+#artist-similar-section .card-title,
+#artist-genres-section .card-title {
+  font-size: 1.2rem;
+}
+
+#artistSimilarArtistsContainer strong {
+  font-size: 1.05rem;
+}
+
+#artistSimilarArtistsContainer .card-title {
+  font-size: 1.02rem;
+}
+
+.similar-artist-pill {
+  font-size: 0.95rem;
+  padding: 0.45rem 0.6rem;
+}
+
+#artistGenreSourcesContainer,
+#artistGenresContainer {
+  font-size: 1rem;
+}
+
+.artist-genre-source-badge,
+.artist-genre-badge,
+#artistGenresContainer .badge {
+  font-size: 0.95rem !important;
+  padding: 0.45rem 0.65rem;
+}
 </style>
 
 <!-- Track Editing Modal -->
@@ -3000,7 +3050,7 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
         let genresHtml = '';
         genres.forEach(genre => {
           const count = genre.count ? ` <small class="text-muted">(${genre.count})</small>` : '';
-          genresHtml += `<span class="badge bg-${source.color} me-2 mb-2">${escapeHtml(genre.name)}${count}</span>`;
+          genresHtml += `<span class="badge bg-${source.color} me-2 mb-2 artist-genre-source-badge">${escapeHtml(genre.name)}${count}</span>`;
         });
         
         tabContent += `
@@ -3113,7 +3163,7 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
         </div>
         <div class="d-flex flex-wrap gap-2">
           ${uniqueArtists.map(a => `
-            <a href="javascript:void(0)" onclick="navigateToArtist('${escapeHtml(a.name)}', event)" class="badge bg-secondary text-decoration-none">
+            <a href="javascript:void(0)" onclick="navigateToArtist('${escapeHtml(a.name)}', event)" class="badge bg-secondary text-decoration-none similar-artist-pill">
               ${escapeHtml(a.name)}
             </a>
           `).join('')}
@@ -3139,6 +3189,7 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
       const sourceBadge = artist.source === 'lastfm' 
         ? '<span class="badge bg-primary" title="From Last.fm">Last.fm</span>'
         : '<span class="badge bg-info" title="From ListenBrainz">ListenBrainz</span>';
+      const artistImageUrl = `/api/artist/image?name=${encodeURIComponent(artist.name)}`;
       
       expandedHtml += `
         <div class="col-6 col-md-4 col-lg-3">
@@ -3146,7 +3197,8 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
             ${matchBadge}
             <!-- Artist Card Image/Avatar -->
             <div style="aspect-ratio: 1; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); display: flex; align-items: center; justify-content: center; position: relative;">
-              <i class="bi bi-person-circle" style="font-size: 3rem; color: white; opacity: 0.8;"></i>
+              <img src="${artistImageUrl}" alt="${escapeHtml(artist.name)}" style="width: 100%; height: 100%; object-fit: cover;" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+              <i class="bi bi-person-circle" style="font-size: 3rem; color: white; opacity: 0.8; display: none;"></i>
             </div>
             
             <div class="card-body d-flex flex-column">
@@ -3613,13 +3665,11 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
     return text.replace(/[&<>"']/g, m => map[m]);
   }
 
-  // Ensure artist page section order matches desired flow:
-  // Similar -> Top Tracks -> Genres -> Appears On -> Albums
+  // Ensure artist page section order matches desired flow.
   document.addEventListener('DOMContentLoaded', function() {
     const similarSection = document.getElementById('artist-similar-section');
     const topTracksSection = document.getElementById('artist-top-tracks-section');
     const genresSection = document.getElementById('artist-genres-section');
-    const appearsOnSection = document.getElementById('artist-appears-on-section');
     const albumsSection = document.getElementById('albums-section');
 
     if (!similarSection || !topTracksSection || !genresSection || !albumsSection) {
@@ -3636,11 +3686,6 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
 
     // Place Genres after Top Tracks
     parent.insertBefore(genresSection, topTracksSection.nextSibling);
-
-    // Place Appears On before Albums when available
-    if (appearsOnSection) {
-      parent.insertBefore(appearsOnSection, albumsSection);
-    }
   });
 </script>
 
