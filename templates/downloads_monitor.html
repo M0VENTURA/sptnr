@@ -944,11 +944,38 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+// Auto-discover files periodically (every 60 seconds)
+async function autoDiscoverFiles() {
+  try {
+    const response = await fetch('/api/downloads/discover', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    
+    if (!response.ok) {
+      console.warn(`Auto-discover returned status ${response.status}`);
+      return;
+    }
+    
+    const data = await response.json();
+    
+    if (data.success && data.stats && data.stats.queued > 0) {
+      console.log(`[Auto-Discover] Found ${data.stats.queued} new files`);
+      // Refresh queue display to show newly discovered files
+      loadQueueStatus();
+    }
+  } catch (error) {
+    console.debug(`Auto-discover error (expected if monitoring disabled): ${error.message}`);
+  }
+}
+
 // Load queue status on page load
 document.addEventListener('DOMContentLoaded', function() {
   setTimeout(loadQueueStatus, 500);
-  // Refresh every 5 seconds
+  // Refresh queue status every 5 seconds
   setInterval(loadQueueStatus, 5000);
+  // Auto-discover files every 60 seconds
+  setInterval(autoDiscoverFiles, 60000);
 });
 </script>
 {% endblock %}
