@@ -125,10 +125,10 @@
           </p>
         </div>
         <div class="col-md-4 d-flex align-items-center justify-content-end">
-          <button type="button" class="btn btn-success me-2" onclick="discoverFiles()">
+          <button type="button" class="btn btn-success me-2" onclick="discoverFiles(event)">
             <i class="bi bi-search"></i> Discover Files
           </button>
-          <button type="button" class="btn btn-primary" onclick="processAlbums()">
+          <button type="button" class="btn btn-primary" onclick="processAlbums(event)">
             <i class="bi bi-collection"></i> Process Albums
           </button>
         </div>
@@ -163,7 +163,14 @@
       <h5 class="card-title mb-0">
         <i class="bi bi-folder-check"></i> Downloads Organized by Folder
       </h5>
-      <span class="badge bg-info" id="folderGroupsBadge">0 groups</span>
+      <div class="d-flex align-items-center gap-2">
+        <div class="btn-group btn-group-sm" role="group" aria-label="Folder group filter">
+          <button type="button" class="btn btn-outline-light active" id="folderFilterAll" onclick="setFolderGroupFilter('all')">All</button>
+          <button type="button" class="btn btn-outline-light" id="folderFilterOnly" onclick="setFolderGroupFilter('folder')">Folder Scan</button>
+          <button type="button" class="btn btn-outline-light" id="queueFilterOnly" onclick="setFolderGroupFilter('queue')">Queue Ready</button>
+        </div>
+        <span class="badge bg-info" id="folderGroupsBadge">0 groups</span>
+      </div>
     </div>
     <div class="card-body p-0">
       <div id="folderGroupsList" style="max-height: 600px; overflow-y: auto;">
@@ -185,7 +192,7 @@
     <div class="col-md-3">
       <div class="card text-center h-100">
         <div class="card-body">
-          <div class="text-muted small mb-2">Completed</div>
+          <div class="text-muted small mb-2">Ready to Organize</div>
           <h4 class="mb-0" id="queueCompletedCount">0</h4>
         </div>
       </div>
@@ -219,40 +226,6 @@
       </div>
       <div id="activeQueueList" style="display:none">
         <!-- Active items rendered here -->
-      </div>
-    </div>
-  </div>
-
-  <!-- Completed Queue (Ready for Organization) -->
-  <div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center">
-      <h5 class="card-title mb-0">
-        <i class="bi bi-check-circle"></i> Completed & Ready to Organize
-      </h5>
-      <div class="d-flex gap-2 align-items-center">
-        <span class="badge bg-success" id="completedBadge" style="display:none">0</span>
-        <button class="btn btn-sm btn-outline-info" onclick="toggleSelectAll()" id="selectAllBtn" style="display:none;">
-          <i class="bi bi-check-square"></i> Select All
-        </button>
-      </div>
-    </div>
-    <div class="card-body p-0">
-      <div id="completedQueueEmpty" class="alert alert-info alert-sm mb-0">
-        <i class="bi bi-info-circle"></i> No completed downloads yet.
-      </div>
-      <div id="completedQueueList" style="display:none">
-        <!-- Completed items rendered here -->
-      </div>
-    </div>
-    <div id="completedQueueActions" class="card-footer d-flex gap-2" style="display:none;">
-      <button class="btn btn-sm btn-primary" onclick="groupSelectedItems()" id="groupBtn" disabled>
-        <i class="bi bi-collection"></i> Group Selected
-      </button>
-      <button class="btn btn-sm btn-outline-secondary" onclick="openBatchGroupModal()" id="batchGroupBtn" disabled>
-        <i class="bi bi-folder-plus"></i> New Album
-      </button>
-      <div class="ms-auto">
-        <span class="text-muted small" id="selectedCount">0 selected</span>
       </div>
     </div>
   </div>
@@ -335,9 +308,13 @@ async function addToQueue(event) {
   }
 }
 
-async function discoverFiles() {
+async function discoverFiles(clickEvent) {
   try {
-    const button = event.target;
+    const button = clickEvent?.currentTarget;
+    if (!button) {
+      alert('Could not determine scan button context. Please try again.');
+      return;
+    }
     button.disabled = true;
     button.innerHTML = '<i class="bi bi-hourglass-split"></i> Scanning...';
     
@@ -447,9 +424,11 @@ async function discoverFiles() {
     alert('❌ Network error: ' + error.message);
     
     // Re-enable button on error
-    const button = event.target;
-    button.disabled = false;
-    button.innerHTML = '<i class="bi bi-search"></i> Discover Files';
+    const button = clickEvent?.currentTarget;
+    if (button) {
+      button.disabled = false;
+      button.innerHTML = '<i class="bi bi-search"></i> Discover Files';
+    }
   }
 }
 
@@ -467,9 +446,13 @@ function toggleScanLog() {
   }
 }
 
-async function processAlbums() {
+async function processAlbums(clickEvent) {
   try {
-    const button = event.target;
+    const button = clickEvent?.currentTarget;
+    if (!button) {
+      alert('Could not determine process button context. Please try again.');
+      return;
+    }
     button.disabled = true;
     button.innerHTML = '<i class="bi bi-hourglass-split"></i> Processing...';
     
@@ -512,9 +495,11 @@ async function processAlbums() {
     alert('❌ Network error: ' + error.message);
     
     // Re-enable button on error
-    const button = event.target;
-    button.disabled = false;
-    button.innerHTML = '<i class="bi bi-collection"></i> Process Albums';
+    const button = clickEvent?.currentTarget;
+    if (button) {
+      button.disabled = false;
+      button.innerHTML = '<i class="bi bi-collection"></i> Process Albums';
+    }
   }
 }
 
@@ -576,9 +561,36 @@ function searchOtherSources(artist, album) {
 
 // Keep selected folder matches in-memory so users can review before moving files.
 const folderMatchSelections = {};
+let completedQueueItems = [];
+let folderGroupsFilter = 'all';
+const expandedFolderGroupIds = new Set();
+const expandedQueueGroupIds = new Set();
+const expandedQueueTrackPathIds = new Set();
+
+function makeSafeDomId(value) {
+  return String(value || '')
+    .replace(/[^a-zA-Z0-9_-]/g, '_')
+    .replace(/_+/g, '_')
+    .slice(0, 120);
+}
+
+function setFolderGroupFilter(filter) {
+  folderGroupsFilter = filter;
+  const allBtn = document.getElementById('folderFilterAll');
+  const folderBtn = document.getElementById('folderFilterOnly');
+  const queueBtn = document.getElementById('queueFilterOnly');
+
+  if (allBtn && folderBtn && queueBtn) {
+    allBtn.classList.toggle('active', filter === 'all');
+    folderBtn.classList.toggle('active', filter === 'folder');
+    queueBtn.classList.toggle('active', filter === 'queue');
+  }
+
+  loadFolderGroups();
+}
 
 async function loadFolderGroups() {
-  // Load and display folder groups from downloads folder.
+  // Load and display folder groups from downloads folder plus queue items ready to organize.
   try {
     const response = await fetch('/api/downloads/grouped-folders');
     const data = await response.json();
@@ -592,8 +604,15 @@ async function loadFolderGroups() {
     const section = document.getElementById('folderGroupsSection');
     const list = document.getElementById('folderGroupsList');
     const badge = document.getElementById('folderGroupsBadge');
+
+    const showFolderGroups = folderGroupsFilter !== 'queue';
+    const showQueueGroups = folderGroupsFilter !== 'folder';
+    const completedGroups = groupByAlbum(completedQueueItems);
+    const visibleFolderCount = showFolderGroups ? groups.length : 0;
+    const visibleQueueCount = showQueueGroups ? completedGroups.length : 0;
+    const totalGroups = visibleFolderCount + visibleQueueCount;
     
-    if (groups.length === 0) {
+    if (totalGroups === 0) {
       section.style.display = 'none';
       return;
     }
@@ -608,11 +627,13 @@ async function loadFolderGroups() {
     });
     
     section.style.display = 'block';
-    badge.textContent = `${groups.length} groups`;
+    badge.textContent = `${totalGroups} groups`;
     
     let html = '';
-    
-    groups.forEach((group, index) => {
+
+    if (showFolderGroups) {
+      groups.forEach((group, index) => {
+      const folderStateKey = `folder-${makeSafeDomId(group.folder_path || group.folder_name || index)}`;
       const inconsistentClass = !group.is_consistent ? 'border-warning' : '';
       const inconsistentBadge = !group.is_consistent ? 
         ' <span class="badge bg-warning">Mixed Metadata</span>' : '';
@@ -623,8 +644,11 @@ async function loadFolderGroups() {
         : '';
       
       // Check if this group was previously expanded
-      const isExpanded = expandedGroups.has(index);
+      const isExpanded = expandedFolderGroupIds.has(folderStateKey) || expandedGroups.has(index);
       const displayStyle = isExpanded ? 'block' : 'none';
+      const toggleLabel = isExpanded ? 'Hide Tracks' : 'Show Tracks';
+      const toggleIcon = isExpanded ? 'bi-chevron-up' : 'bi-chevron-down';
+      const tracklistId = `group-${folderStateKey}`;
       
       html += `
         <div class="card border-bottom mb-2 ${inconsistentClass}">
@@ -645,7 +669,7 @@ async function loadFolderGroups() {
               </div>
               <div class="col-md-6 text-end">
                 <button class="btn btn-sm btn-outline-primary" 
-                        onclick="matchFolderGroupWithMusicBrainz('${group.folder_path}', '${group.artist}', '${group.album}', ${JSON.stringify(group.tracks)})">
+                  onclick="matchFolderGroupWithMusicBrainz(event, '${group.folder_path}', '${group.artist}', '${group.album}', ${JSON.stringify(group.tracks)})">
                   <i class="bi bi-disc"></i> ${matchedSelection ? 'Change Match' : 'Auto Match'}
                 </button>
                 <button class="btn btn-sm btn-outline-secondary ms-2" 
@@ -658,14 +682,14 @@ async function loadFolderGroups() {
                   <i class="bi bi-folder-check"></i> Move Files
                 </button>` : ''}
                 <button class="btn btn-sm btn-outline-secondary ms-2" 
-                        onclick="toggleTrackList('group-${index}')">
-                  <i class="bi bi-chevron-down"></i> Show Tracks
+                        onclick="toggleTrackList('${tracklistId}', '${folderStateKey}', this)">
+                  <i class="bi ${toggleIcon}"></i> ${toggleLabel}
                 </button>
               </div>
             </div>
             
             <!-- Track List (Hidden by default) -->
-            <div id="group-${index}" class="mt-3" style="display: ${displayStyle};">
+            <div id="${tracklistId}" class="mt-3" style="display: ${displayStyle};">
               <div class="table-responsive">
                 <table class="table table-sm table-striped table-dark align-middle mb-0">
                   <thead>
@@ -696,7 +720,94 @@ async function loadFolderGroups() {
             </div>
           </div>
         </div>`;
-    });
+      });
+    }
+
+    if (showQueueGroups && completedGroups.length > 0) {
+      html += `
+        <div class="border-top mt-3 pt-3 px-3">
+          <h6 class="mb-3">
+            <i class="bi bi-check2-square text-success"></i> Ready to Organize from Queue
+          </h6>
+        </div>`;
+
+      completedGroups.forEach(group => {
+        const queueGroupKey = `queue-${makeSafeDomId(group.key)}`;
+        const isQueueGroupExpanded = expandedQueueGroupIds.has(queueGroupKey);
+        const queueGroupDisplay = isQueueGroupExpanded ? 'block' : 'none';
+        const queueToggleLabel = isQueueGroupExpanded ? 'Hide Tracks' : 'Show Tracks';
+        const queueToggleIcon = isQueueGroupExpanded ? 'bi-chevron-up' : 'bi-chevron-down';
+        const queueGroupBodyId = `queue-body-${queueGroupKey}`;
+        const queueIds = group.items.map(i => i.id);
+        const groupedCountBadge = group.items.length > 1
+          ? `<span class="badge bg-success rounded-pill ms-2">${group.items.length} tracks</span>`
+          : '';
+
+        const trackRows = group.items.map(item => {
+          const pathStateKey = `${queueGroupKey}-${item.id}`;
+          const isPathExpanded = expandedQueueTrackPathIds.has(pathStateKey);
+          const pathDisplay = isPathExpanded ? 'block' : 'none';
+          const pathToggleLabel = isPathExpanded ? 'Hide Path' : 'Show Path';
+          const pathToggleIcon = isPathExpanded ? 'bi-chevron-up' : 'bi-chevron-down';
+          const pathRowId = `queue-path-${pathStateKey}`;
+          const trackTitle = escapeHtml(item.title || 'Unknown track');
+          const filePath = escapeHtml(item.found_filename || item.file_path || 'unknown');
+
+          return `
+            <div class="d-flex justify-content-between align-items-start gap-2 py-2 border-top">
+              <div class="small">
+                <div class="fw-semibold">${trackTitle}</div>
+              </div>
+              <div class="text-end">
+                <button class="btn btn-sm btn-outline-secondary" onclick="toggleQueueTrackPath('${pathRowId}', '${pathStateKey}', this)">
+                  <i class="bi ${pathToggleIcon}"></i> ${pathToggleLabel}
+                </button>
+              </div>
+            </div>
+            <div id="${pathRowId}" class="small text-muted pb-2" style="display: ${pathDisplay};">
+              <code>${filePath}</code>
+            </div>`;
+        }).join('');
+
+        html += `
+          <div class="card border-bottom mb-2 mx-3">
+            <div class="card-body p-3">
+              <div class="d-flex justify-content-between align-items-start gap-3">
+                <div class="flex-grow-1">
+                  <div class="fw-semibold mb-1">
+                    ${escapeHtml(group.artist)}${group.album ? ` - <em>${escapeHtml(group.album)}</em>` : ''}
+                    ${groupedCountBadge}
+                  </div>
+                  <div class="small text-muted">
+                    ${group.items.map(item => escapeHtml(item.title || item.found_filename || 'Unknown track')).join(' · ')}
+                  </div>
+                </div>
+                <div class="d-flex gap-2 flex-wrap justify-content-end">
+                  <button class="btn btn-sm btn-outline-secondary" onclick="toggleQueueGroupDetails('${queueGroupBodyId}', '${queueGroupKey}', this)">
+                    <i class="bi ${queueToggleIcon}"></i> ${queueToggleLabel}
+                  </button>
+                  <button class="btn btn-sm btn-success" onclick="organizeGroup([${queueIds.join(',')}])" title="Organize this group">
+                    <i class="bi bi-folder-check"></i> Organize All
+                  </button>
+                  <button class="btn btn-sm btn-outline-danger" onclick="deleteGroup([${queueIds.join(',')}])" title="Remove this group from queue">
+                    <i class="bi bi-trash"></i>
+                  </button>
+                </div>
+              </div>
+              <div id="${queueGroupBodyId}" style="display: ${queueGroupDisplay};" class="mt-2">
+                ${trackRows}
+              </div>
+            </div>
+          </div>`;
+      });
+    }
+
+    if (totalGroups === 0) {
+      html = `
+        <div class="alert alert-info m-3 mb-0">
+          <i class="bi bi-info-circle"></i> No groups match the selected filter.
+        </div>`;
+    }
     
     list.innerHTML = html;
   } catch (error) {
@@ -704,20 +815,81 @@ async function loadFolderGroups() {
   }
 }
 
-function toggleTrackList(groupId) {
+function toggleTrackList(groupId, stateKey, button) {
   // Toggle visibility of track list for a folder group.
   const element = document.getElementById(groupId);
-  if (element) {
-    element.style.display = element.style.display === 'none' ? 'block' : 'none';
+  if (!element) return;
+
+  const isCurrentlyHidden = element.style.display === 'none';
+  element.style.display = isCurrentlyHidden ? 'block' : 'none';
+
+  if (stateKey) {
+    if (isCurrentlyHidden) {
+      expandedFolderGroupIds.add(stateKey);
+    } else {
+      expandedFolderGroupIds.delete(stateKey);
+    }
+  }
+
+  if (button) {
+    button.innerHTML = isCurrentlyHidden
+      ? '<i class="bi bi-chevron-up"></i> Hide Tracks'
+      : '<i class="bi bi-chevron-down"></i> Show Tracks';
   }
 }
 
-async function matchFolderGroupWithMusicBrainz(folderPath, artist, album, tracks, manualQuery = null) {
+function toggleQueueGroupDetails(groupBodyId, stateKey, button) {
+  const element = document.getElementById(groupBodyId);
+  if (!element) return;
+
+  const isCurrentlyHidden = element.style.display === 'none';
+  element.style.display = isCurrentlyHidden ? 'block' : 'none';
+
+  if (stateKey) {
+    if (isCurrentlyHidden) {
+      expandedQueueGroupIds.add(stateKey);
+    } else {
+      expandedQueueGroupIds.delete(stateKey);
+    }
+  }
+
+  if (button) {
+    button.innerHTML = isCurrentlyHidden
+      ? '<i class="bi bi-chevron-up"></i> Hide Tracks'
+      : '<i class="bi bi-chevron-down"></i> Show Tracks';
+  }
+}
+
+function toggleQueueTrackPath(pathRowId, stateKey, button) {
+  const element = document.getElementById(pathRowId);
+  if (!element) return;
+
+  const isCurrentlyHidden = element.style.display === 'none';
+  element.style.display = isCurrentlyHidden ? 'block' : 'none';
+
+  if (stateKey) {
+    if (isCurrentlyHidden) {
+      expandedQueueTrackPathIds.add(stateKey);
+    } else {
+      expandedQueueTrackPathIds.delete(stateKey);
+    }
+  }
+
+  if (button) {
+    button.innerHTML = isCurrentlyHidden
+      ? '<i class="bi bi-chevron-up"></i> Hide Path'
+      : '<i class="bi bi-chevron-down"></i> Show Path';
+  }
+}
+
+async function matchFolderGroupWithMusicBrainz(clickEvent, folderPath, artist, album, tracks, manualQuery = null) {
   // Match a folder group with MusicBrainz/Discogs candidates.
+  const btn = clickEvent?.currentTarget || null;
   try {
-    const btn = event.target;
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Searching...';
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Searching...';
+    }
     
     const requestBody = manualQuery ? 
       { manual_query: manualQuery, artist, album } : 
@@ -734,8 +906,10 @@ async function matchFolderGroupWithMusicBrainz(folderPath, artist, album, tracks
     if (!data.success || !data.candidates || data.candidates.length === 0) {
       const searchTerm = manualQuery || `${artist} - ${album}`;
       alert('❌ No matches found for: ' + searchTerm + '\n\nTried MusicBrainz and Discogs');
-      btn.disabled = false;
-      btn.innerHTML = manualQuery ? '<i class="bi bi-search"></i> Search' : '<i class="bi bi-disc"></i> Auto Match';
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = manualQuery ? '<i class="bi bi-search"></i> Search' : '<i class="bi bi-disc"></i> Auto Match';
+      }
       return;
     }
     
@@ -746,9 +920,10 @@ async function matchFolderGroupWithMusicBrainz(folderPath, artist, album, tracks
     console.error('Error matching:', error);
     alert('❌ Network error: ' + error.message);
   } finally {
-    const btn = event.target;
-    btn.disabled = false;
-    btn.innerHTML = manualQuery ? '<i class="bi bi-search"></i> Search' : '<i class="bi bi-disc"></i> Auto Match';
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = manualQuery ? '<i class="bi bi-search"></i> Search' : '<i class="bi bi-disc"></i> Auto Match';
+    }
   }
 }
 
@@ -802,7 +977,7 @@ async function executeManualSearch(folderPath, artist, album, tracks) {
   if (modal) modal.hide();
   
   // Trigger search with manual query
-  await matchFolderGroupWithMusicBrainz(folderPath, artist, album, tracks, query);
+  await matchFolderGroupWithMusicBrainz(null, folderPath, artist, album, tracks, query);
 }
 
 function showMusicBrainzMatchModal(folderPath, artist, album, tracks, candidates) {
@@ -961,6 +1136,7 @@ async function loadQueueStatus() {
     const active = queue.filter(item => ['queued', 'searching', 'downloading'].includes(item.status));
     const completed = queue.filter(item => ['completed', 'discovered', 'pending_match', 'possible_duplicate'].includes(item.status));
     const failed = queue.filter(item => item.status === 'failed');
+    completedQueueItems = completed;
     
     // Update counts
     document.getElementById('queueActiveCount').textContent = active.length;
@@ -969,8 +1145,8 @@ async function loadQueueStatus() {
     
     // Render queues
     renderActiveQueue(active);
-    renderCompletedQueue(completed);
     renderFailedQueue(failed);
+    await loadFolderGroups();
     
   } catch (error) {
     console.error('Error loading queue status:', error);
@@ -1076,104 +1252,6 @@ function renderActiveQueue(active) {
       </div>
     `;
   }
-  html += '</div>';
-  container.innerHTML = html;
-}
-
-function renderCompletedQueue(completed) {
-  const container = document.getElementById('completedQueueList');
-  const empty = document.getElementById('completedQueueEmpty');
-  const badge = document.getElementById('completedBadge');
-  const selectBtn = document.getElementById('selectAllBtn');
-  const actions = document.getElementById('completedQueueActions');
-  
-  if (completed.length === 0) {
-    container.style.display = 'none';
-    empty.style.display = 'block';
-    badge.style.display = 'none';
-    selectBtn.style.display = 'none';
-    actions.style.display = 'none';
-    return;
-  }
-  
-  container.style.display = 'block';
-  empty.style.display = 'none';
-  badge.textContent = completed.length;
-  badge.style.display = 'inline-block';
-  selectBtn.style.display = 'inline-block';
-  actions.style.display = 'flex';
-  
-  // Group items by artist + album
-  const grouped = groupByAlbum(completed);
-  
-  let html = '<div class="list-group list-group-flush">';
-  
-  for (const group of grouped) {
-    const isGrouped = group.items.length > 1;
-    
-    if (isGrouped) {
-      // Render album group header with collapse functionality
-      const groupId = `group-${group.key.replace(/[^a-zA-Z0-9]/g, '-')}`;
-      html += `
-        <div class="list-group-item bg-light border-start border-primary border-4">
-          <div class="d-flex justify-content-between align-items-center">
-            <div class="d-flex align-items-center gap-2">
-              <button class="btn btn-sm btn-link text-dark p-0" data-bs-toggle="collapse" data-bs-target="#${groupId}" aria-expanded="true">
-                <i class="bi bi-chevron-down"></i>
-              </button>
-              <i class="bi bi-disc-fill text-primary"></i>
-              <div>
-                <strong>${escapeHtml(group.artist)}</strong>
-                ${group.album ? ` - <em>${escapeHtml(group.album)}</em>` : ''}
-                <span class="badge bg-primary rounded-pill ms-2">${group.items.length} tracks</span>
-              </div>
-            </div>
-            <div class="d-flex gap-2">
-              <button class="btn btn-sm btn-success" onclick="organizeGroup([${group.items.map(i => i.id).join(',')}])" title="Organize entire album">
-                <i class="bi bi-folder-check"></i> Organize All
-              </button>
-              <button class="btn btn-sm btn-outline-danger" onclick="deleteGroup([${group.items.map(i => i.id).join(',')}])" title="Remove all from queue">
-                <i class="bi bi-trash"></i>
-              </button>
-            </div>
-          </div>
-        </div>
-        <div class="collapse show" id="${groupId}">
-      `;
-    }
-    
-    // Render items in the group
-    for (const item of group.items) {
-      const itemClass = isGrouped ? 'ps-5' : '';
-      html += `
-        <div class="list-group-item ${itemClass}">
-          <div class="d-flex justify-content-between align-items-start">
-            <div class="d-flex gap-2 flex-grow-1">
-              <input type="checkbox" class="form-check-input queue-item-checkbox" value="${item.id}" onchange="updateSelectedCount()">
-              <div class="flex-grow-1">
-                <h6 class="mb-1">${escapeHtml(item.title)}</h6>
-                ${!isGrouped ? `<p class="text-muted small mb-2">${escapeHtml(item.artist)}${item.album ? ' · ' + escapeHtml(item.album) : ''}</p>` : ''}
-                <small class="text-muted">${escapeHtml(item.found_filename || item.file_path || 'unknown')}</small>
-              </div>
-            </div>
-            <div class="d-flex gap-2">
-              <button class="btn btn-sm btn-success" onclick="organizeFile(${item.id})" title="Move to /music">
-                <i class="bi bi-folder-check"></i> Organize
-              </button>
-              <button class="btn btn-sm btn-outline-danger" onclick="deleteQueueItem(${item.id})">
-                <i class="bi bi-trash"></i>
-              </button>
-            </div>
-          </div>
-        </div>
-      `;
-    }
-    
-    if (isGrouped) {
-      html += '</div>'; // Close collapse div
-    }
-  }
-  
   html += '</div>';
   container.innerHTML = html;
 }
@@ -1285,33 +1363,6 @@ async function deleteQueueItem(queueId) {
     console.error('Error deleting item:', error);
     alert('❌ Network error: ' + error.message);
   }
-}
-
-function toggleSelectAll() {
-  const checkboxes = document.querySelectorAll('.queue-item-checkbox');
-  const selectBtn = document.getElementById('selectAllBtn');
-  const allChecked = Array.from(checkboxes).every(cb => cb.checked);
-  checkboxes.forEach(cb => cb.checked = !allChecked);
-  updateSelectedCount();
-}
-
-function updateSelectedCount() {
-  const checked = document.querySelectorAll('.queue-item-checkbox:checked').length;
-  const total = document.querySelectorAll('.queue-item-checkbox').length;
-  document.getElementById('selectedCount').textContent = `${checked} selected`;
-  
-  const groupBtn = document.getElementById('groupBtn');
-  const batchGroupBtn = document.getElementById('batchGroupBtn');
-  if (groupBtn) groupBtn.disabled = checked === 0;
-  if (batchGroupBtn) batchGroupBtn.disabled = checked === 0;
-}
-
-function groupSelectedItems() {
-  alert('Group functionality coming soon');
-}
-
-function openBatchGroupModal() {
-  alert('Batch group modal coming soon');
 }
 
 function groupByAlbum(items) {
@@ -1453,11 +1504,8 @@ async function autoDiscoverFiles() {
 // Load queue status on page load
 document.addEventListener('DOMContentLoaded', function() {
   setTimeout(loadQueueStatus, 500);
-  setTimeout(loadFolderGroups, 1000);
   // Refresh queue status every 5 seconds
   setInterval(loadQueueStatus, 5000);
-  // Refresh folder groups every 10 seconds
-  setInterval(loadFolderGroups, 10000);
   // Auto-discover files every 60 seconds
   setInterval(autoDiscoverFiles, 60000);
 });
