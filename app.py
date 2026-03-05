@@ -9661,6 +9661,125 @@ def api_check_musicbrainz_files():
         }), 500
 
 
+@app.route("/api/musicbrainz/check-finalization", methods=["POST"])
+def api_check_finalization():
+    """
+    Background task to finalize MusicBrainz releases
+    
+    Checks all active releases and:
+    1. Detects when all tracks are discovered
+    2. Moves files to /music/ARTIST/YEAR - ALBUM/
+    3. Renames files with track numbers
+    4. Updates release status to 'finalized'
+    
+    Called periodically (every 60 seconds from queue processor)
+    """
+    try:
+        from musicbrainz_finalizer import get_finalizer
+        
+        finalizer = get_finalizer()
+        result = finalizer.check_and_finalize_releases()
+        
+        return jsonify({
+            "success": True,
+            "finalized": result.get("finalized", 0),
+            "checked": result.get("checked", 0),
+            "timestamp": datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logging.error(f"[CHECK_FINALIZATION] Error: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route("/api/musicbrainz/release/<release_id>/finalize", methods=["POST"])
+def api_finalize_release(release_id):
+    """
+    Manually finalize a single release
+    
+    Useful for testing or forcing finalization if not automatic
+    """
+    try:
+        from musicbrainz_finalizer import get_finalizer
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get database ID from release_id
+        cursor.execute("""
+            SELECT id FROM musicbrainz_releases WHERE release_id = ?
+        """, (release_id,))
+        
+        result = cursor.fetchone()
+        if not result:
+            return jsonify({
+                "success": False,
+                "error": "Release not found"
+            }), 404
+        
+        release_db_id = result[0]
+        
+        finalizer = get_finalizer()
+        if finalizer.finalize_release(release_db_id, release_id):
+            return jsonify({
+                "success": True,
+                "message": f"Successfully finalized release {release_id}",
+                "timestamp": datetime.now().isoformat()
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "error": f"Failed to finalize release {release_id}"
+            }), 500
+        
+    except Exception as e:
+        logging.error(f"[FINALIZE_RELEASE] Error: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route("/api/musicbrainz/release/<release_id>/finalization-progress", methods=["GET"])
+def api_get_finalization_progress(release_id):
+    """
+    Get finalization progress for a specific release
+    
+    Returns:
+    - Release metadata
+    - tracked/total tracks discovered
+    - Status (active/finalized)
+    - Whether ready to finalize
+    - Finalized timestamp if complete
+    """
+    try:
+        from musicbrainz_finalizer import get_finalizer
+        
+        finalizer = get_finalizer()
+        progress = finalizer.get_finalization_progress(release_id)
+        
+        if not progress:
+            return jsonify({
+                "success": False,
+                "error": "Release not found"
+            }), 404
+        
+        return jsonify({
+            "success": True,
+            "progress": progress
+        })
+        
+    except Exception as e:
+        logging.error(f"[FINALIZATION_PROGRESS] Error: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
 @app.route("/api/slskd/search-results/<int:download_id>", methods=["GET"])
 def api_slskd_search_results(download_id):
     """Get Soulseek search results for a download awaiting user selection"""

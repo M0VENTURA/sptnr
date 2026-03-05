@@ -614,6 +614,32 @@ def maybe_check_musicbrainz_files(now_ts, last_run_ts, interval_seconds=30):
 
     return now_ts
 
+
+def maybe_finalize_musicbrainz_releases(now_ts, last_run_ts, interval_seconds=60):
+    """
+    Run MusicBrainz release finalization on interval and return updated last-run timestamp.
+    Finalizes releases when all tracks are discovered (every 60 seconds).
+    """
+    if last_run_ts is not None and (now_ts - last_run_ts) < interval_seconds:
+        return last_run_ts
+
+    try:
+        from musicbrainz_finalizer import get_finalizer
+        
+        finalizer = get_finalizer()
+        result = finalizer.check_and_finalize_releases()
+        finalized = result.get("finalized", 0)
+        
+        if finalized > 0:
+            logger.info(f"[MB_FINALIZER] Finalized {finalized} releases")
+        else:
+            logger.debug("[MB_FINALIZER] No releases ready for finalization")
+            
+    except Exception as e:
+        logger.error(f"[MB_FINALIZER] Error during release finalization: {e}")
+
+    return now_ts
+
 def run_processor(interval=30):
     """Run queue processor loop"""
     logger.info("=== Queue Processor Started ===")
@@ -627,6 +653,7 @@ def run_processor(interval=30):
     loop_count = 0
     last_auto_discover_ts = None
     last_mb_check_ts = None
+    last_mb_finalize_ts = None
     
     try:
         while True:
@@ -637,6 +664,7 @@ def run_processor(interval=30):
                 now_ts = time.time()
                 last_auto_discover_ts = maybe_auto_discover_files(now_ts, last_auto_discover_ts)
                 last_mb_check_ts = maybe_check_musicbrainz_files(now_ts, last_mb_check_ts)
+                last_mb_finalize_ts = maybe_finalize_musicbrainz_releases(now_ts, last_mb_finalize_ts)
                 
                 processed = process_queue(client)
                 
