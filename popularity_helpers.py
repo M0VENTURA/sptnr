@@ -96,6 +96,31 @@ _lastfm_client: LastFmClient | None = None
 _spotify_enabled = True
 _clients_configured = False
 
+DB_LOCK_MAX_RETRIES = 5
+DB_LOCK_BASE_DELAY_SECONDS = 0.25
+
+
+def _is_db_locked_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return "database is locked" in msg or "database table is locked" in msg
+
+
+def _run_with_db_lock_retry(operation, operation_name: str):
+    """Run a DB operation with bounded retry on transient SQLite lock errors."""
+    for attempt in range(DB_LOCK_MAX_RETRIES):
+        try:
+            return operation()
+        except Exception as e:
+            if _is_db_locked_error(e) and attempt < DB_LOCK_MAX_RETRIES - 1:
+                wait_time = DB_LOCK_BASE_DELAY_SECONDS * (attempt + 1)
+                logging.debug(
+                    f"{operation_name} hit DB lock, retrying in {wait_time:.2f}s "
+                    f"({attempt + 1}/{DB_LOCK_MAX_RETRIES})"
+                )
+                time.sleep(wait_time)
+                continue
+            raise
+
 
 def _load_config() -> dict:
     config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
@@ -808,7 +833,10 @@ def save_to_db(track_data):
         track_id_for_writer = sanitized_data.get('id')
         if track_id_for_writer:
             try:
-                cursor.execute("SELECT writer FROM tracks WHERE id = ?", (track_id_for_writer,))
+                _run_with_db_lock_retry(
+                    lambda: cursor.execute("SELECT writer FROM tracks WHERE id = ?", (track_id_for_writer,)),
+                    "save_to_db writer lookup"
+                )
                 existing_row = cursor.fetchone()
                 if existing_row:
                     existing_writer = existing_row['writer'] if hasattr(existing_row, 'keys') else existing_row[0]
@@ -829,12 +857,18 @@ def save_to_db(track_data):
     if artist and album and title:
         # First try to match by file_path if available (most reliable)
         if file_path:
-            cursor.execute("""
-                SELECT id, beets_mbid, mbid, file_path, last_scanned 
-                FROM tracks 
-                WHERE file_path = ? AND id != ?
-                LIMIT 1
-            """, (file_path, track_id))
+            _run_with_db_lock_retry(
+                lambda: cursor.execute(
+                    """
+                    SELECT id, beets_mbid, mbid, file_path, last_scanned 
+                    FROM tracks 
+                    WHERE file_path = ? AND id != ?
+                    LIMIT 1
+                    """,
+                    (file_path, track_id)
+                ),
+                "save_to_db duplicate file_path lookup"
+            )
             existing = cursor.fetchone()
         else:
             existing = None
@@ -844,23 +878,35 @@ def save_to_db(track_data):
             # Look for existing track with same content
             if duration:
                 # Match by artist, album, title, and duration (within 2 seconds tolerance)
-                cursor.execute("""
-                    SELECT id, beets_mbid, mbid, file_path, last_scanned 
-                    FROM tracks 
-                    WHERE artist = ? AND album = ? AND title = ? 
-                      AND ABS(COALESCE(duration, 0) - ?) <= 2
-                      AND id != ?
-                    LIMIT 1
-                """, (artist, album, title, duration, track_id))
+                                _run_with_db_lock_retry(
+                                        lambda: cursor.execute(
+                                                """
+                                                SELECT id, beets_mbid, mbid, file_path, last_scanned 
+                                                FROM tracks 
+                                                WHERE artist = ? AND album = ? AND title = ? 
+                                                    AND ABS(COALESCE(duration, 0) - ?) <= 2
+                                                    AND id != ?
+                                                LIMIT 1
+                                                """,
+                                                (artist, album, title, duration, track_id)
+                                        ),
+                                        "save_to_db duplicate duration lookup"
+                                )
             else:
                 # Match by artist, album, title only
-                cursor.execute("""
-                    SELECT id, beets_mbid, mbid, file_path, last_scanned 
-                    FROM tracks 
-                    WHERE artist = ? AND album = ? AND title = ? 
-                      AND id != ?
-                    LIMIT 1
-                """, (artist, album, title, track_id))
+                                _run_with_db_lock_retry(
+                                        lambda: cursor.execute(
+                                                """
+                                                SELECT id, beets_mbid, mbid, file_path, last_scanned 
+                                                FROM tracks 
+                                                WHERE artist = ? AND album = ? AND title = ? 
+                                                    AND id != ?
+                                                LIMIT 1
+                                                """,
+                                                (artist, album, title, track_id)
+                                        ),
+                                        "save_to_db duplicate content lookup"
+                                )
             
             existing = cursor.fetchone()
         
@@ -897,7 +943,10 @@ def save_to_db(track_data):
             if new_score > existing_score:
                 # Keep new ID, delete old duplicate
                 logging.debug(f"Duplicate found: Keeping new track ID {track_id}, deleting {existing_id} (artist={artist}, title={title})")
-                cursor.execute("DELETE FROM tracks WHERE id = ?", (existing_id,))
+                _run_with_db_lock_retry(
+                    lambda: cursor.execute("DELETE FROM tracks WHERE id = ?", (existing_id,)),
+                    "save_to_db delete older duplicate"
+                )
             else:
                 # Keep existing ID, update it with new data
                 logging.debug(f"Duplicate found: Keeping existing track ID {existing_id}, updating instead of inserting {track_id} (artist={artist}, title={title})")
@@ -915,8 +964,14 @@ def save_to_db(track_data):
         has_backslash = '\\' in sanitized_data.get('genres', '')
         logging.debug(f"[GENRE] Genre string length: {len(sanitized_data.get('genres', ''))}, Contains backslash: {has_backslash}")
     
-    cursor.execute(sql, list(sanitized_data.values()))
-    conn.commit()
+    _run_with_db_lock_retry(
+        lambda: cursor.execute(sql, list(sanitized_data.values())),
+        "save_to_db upsert track"
+    )
+    _run_with_db_lock_retry(
+        lambda: conn.commit(),
+        "save_to_db commit"
+    )
     conn.close()
     
     # Log confirmation after successful save
