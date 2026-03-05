@@ -754,23 +754,35 @@ async function openTrackMatchOverride(folderPath, trackIndex) {
         throw new Error('Missing release id');
       }
 
+      console.log(`Lazy-loading release tracks for ${source}/${releaseId}`);
       const response = await fetch(`/api/downloads/release/${encodeURIComponent(source)}/${encodeURIComponent(releaseId)}/tracks`);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
       const data = await response.json();
+      console.log(`API response for ${releaseId}:`, data);
+      
       if (data.success && Array.isArray(data.tracks) && data.tracks.length > 0) {
         selection.releaseTracks = data.tracks;
+        console.log(`Lazy-loaded ${data.tracks.length} tracks for ${releaseId}`);
+        
         const tracks = Array.isArray(selection.tracks) ? selection.tracks : [];
         if (!selection.trackMapByIndex || Object.keys(selection.trackMapByIndex).length === 0) {
           selection.trackMapByIndex = buildFolderToReleaseTrackMap(tracks, selection.releaseTracks);
         }
         folderMatchSelections[folderPath] = selection;
+      } else {
+        console.warn('API returned success but no tracks:', data);
       }
     } catch (err) {
-      console.warn('Failed to lazy-load release tracks for override modal:', err);
+      console.error('Failed to lazy-load release tracks for override modal:', err);
     }
   }
 
   if (!Array.isArray(selection.releaseTracks) || selection.releaseTracks.length === 0) {
-    alert('Release tracklist is unavailable for this match. Try "Change Match" to pick another release.');
+    alert('Release tracklist is unavailable for this match.\n\nTry clicking "Change Match" on the folder above to select a different release.');
     return;
   }
 
@@ -1233,6 +1245,20 @@ async function loadFolderGroups(options = {}) {
     }
     
     const groups = data.folder_groups || [];
+    console.log('[loadFolderGroups] API Response:', {
+      success: data.success,
+      total_folders: data.total_folders,
+      total_files: data.total_files,
+      groups_count: groups.length,
+      first_group: groups[0] ? {
+        folder_path: groups[0].folder_path,
+        track_count: groups[0].track_count,
+        tracks_array_exists: !!groups[0].tracks,
+        tracks_array_length: groups[0].tracks ? groups[0].tracks.length : 0,
+        first_track: groups[0].tracks ? groups[0].tracks[0] : null
+      } : null
+    });
+    
     const section = document.getElementById('folderGroupsSection');
     const list = document.getElementById('folderGroupsList');
     const badge = document.getElementById('folderGroupsBadge');
@@ -1407,7 +1433,9 @@ async function loadFolderGroups(options = {}) {
                   </thead>
                   <tbody>`;
                   
+              console.log(`[loadFolderGroups] Rendering folder: ${group.folder_path}, tracks count:`, group.tracks.length);
               group.tracks.forEach((track, trackIdx) => {
+                console.log(`[loadFolderGroups] Track ${trackIdx}:`, track);
                 const duration = track.duration ? 
                   Math.floor(track.duration / 60) + ':' + String(track.duration % 60).padStart(2, '0') : 
                   '-';
@@ -1439,10 +1467,12 @@ async function loadFolderGroups(options = {}) {
                   const mapped = matchedSelection.trackMapByIndex[trackIdx];
                   if (mapped && mapped.releaseTrack) {
                     preMatched = true;
-                    trackClass = trackClass || 'table-info';
+                    trackClass = trackClass || '';
+                    // Add a custom border style for better visibility on dark background
+                    trackClass += ' border-start border-info border-3 ps-2';
                     trackIcon = '<i class="bi bi-link-45deg text-info me-1"></i>';
                     const confPercent = Math.round((mapped.confidence || 0) * 100);
-                    mappingHint = `<div class="small text-info">MB: ${escapeHtml(mapped.releaseTrack.title || '')} (${confPercent}%)</div>`;
+                    mappingHint = `<div class="small text-info" style="font-weight: 500;">🔗 Matched: ${escapeHtml(mapped.releaseTrack.title || '')} (${confPercent}%)</div>`;
                   }
                 }
                 
@@ -1489,11 +1519,14 @@ async function loadFolderGroups(options = {}) {
                 
                 html += `
                       <tr class="${trackClass}">
-                        <td><small>${trackIcon}${track.track_number || '-'}</small></td>
-                        <td><small>${track.title}</small>${mappingHint}</td>
-                        <td><small>${duration}</small></td>
-                        <td style="text-align: center;">${moveButtonHtml}</td>
+                        <td><span style="font-size: 14px; font-weight: 500;">${trackIcon}${track.track_number || '-'}</span></td>
+                        <td><span style="font-size: 14px;">${escapeHtml(track.title || 'Unknown')}</span>${mappingHint}</td>
+                        <td><span style="font-size: 14px;">${duration}</span></td>
+                        <td style="text-align: center; min-width: 120px;">${moveButtonHtml}</td>
                       </tr>`;
+              });
+              
+              console.log(`[loadFolderGroups] Finished rendering ${group.tracks.length} tracks for folder: ${group.folder_path}`);
               });
               
               html += `
@@ -2064,15 +2097,26 @@ async function stageFolderMatch(folderPathEnc, candidateEnc, tracksEnc) {
     if (modal) modal.hide();
 
     let releaseTracks = [];
+    let tracksLoadedSuccessfully = false;
     try {
       const source = candidate.source || 'musicbrainz';
+      console.log(`[stageFolderMatch] Fetching ${source} release tracks for: ${candidate.id}`);
       const response = await fetch(`/api/downloads/release/${encodeURIComponent(source)}/${encodeURIComponent(candidate.id)}/tracks`);
-      const data = await response.json();
-      if (data.success && Array.isArray(data.tracks)) {
-        releaseTracks = data.tracks;
+      
+      if (!response.ok) {
+        console.warn(`[stageFolderMatch] API returned ${response.status}: ${response.statusText}`);
+      } else {
+        const data = await response.json();
+        if (data.success && Array.isArray(data.tracks)) {
+          releaseTracks = data.tracks;
+          tracksLoadedSuccessfully = true;
+          console.log(`[stageFolderMatch] Successfully loaded ${releaseTracks.length} release tracks`);
+        } else {
+          console.warn(`[stageFolderMatch] API response missing tracks array or success flag`, data);
+        }
       }
     } catch (fetchError) {
-      console.warn('Could not fetch release tracks for selected match:', fetchError);
+      console.warn(`[stageFolderMatch] Failed to fetch release tracks - will retry on-demand in per-track modal:`, fetchError.message);
     }
 
     const trackMapByIndex = buildFolderToReleaseTrackMap(tracks, releaseTracks);
@@ -2082,11 +2126,16 @@ async function stageFolderMatch(folderPathEnc, candidateEnc, tracksEnc) {
       tracks,
       releaseTracks,
       trackMapByIndex,
-      selectedAt: Date.now()
+      selectedAt: Date.now(),
+      tracksNeedsFetch: !tracksLoadedSuccessfully  // Flag for lazy-load
     };
 
     const mappedCount = Object.keys(trackMapByIndex).length;
-    alert(`✅ Match selected. Mapped ${mappedCount}/${tracks.length} tracks to the release tracklist. Click "Move Files" when ready.`);
+    const trackStatus = tracksLoadedSuccessfully ? 
+      `Mapped ${mappedCount}/${tracks.length} tracks to the release tracklist.` :
+      `⚠️ Could not load release tracklist. Will try to load when you click per-track actions.`;
+    
+    alert(`✅ Match selected.\n\n${trackStatus}\n\nClick "Move Files" when ready.`);
     await loadFolderGroups();
 
   } catch (error) {

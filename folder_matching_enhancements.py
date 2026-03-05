@@ -114,27 +114,40 @@ def _fetch_discogs_tracks(release_id: str) -> List[Dict]:
             logger.warning("Discogs token not configured, skipping Discogs release track fetch")
             return []
         
+        logger.debug(f"[_fetch_discogs_tracks] Fetching release {release_id}")
         discogs = DiscogsClient(discogs_token)
         release = discogs.get_release(release_id)
         
+        logger.debug(f"[_fetch_discogs_tracks] Release response type: {type(release)}")
         if not release:
+            logger.warning(f"[_fetch_discogs_tracks] No release data returned for {release_id}")
             return []
         
+        logger.debug(f"[_fetch_discogs_tracks] Release keys: {list(release.keys()) if isinstance(release, dict) else 'not a dict'}")
+        
         tracks = []
-        for track in release.get('tracklist', []):
-            tracks.append({
+        tracklist = release.get('tracklist', [])
+        logger.debug(f"[_fetch_discogs_tracks] Tracklist count: {len(tracklist)}")
+        
+        for track in tracklist:
+            parsed_duration = _parse_discogs_duration(track.get('duration', ''))
+            track_dict = {
                 'number': track.get('position', ''),
                 'title': track.get('title', ''),
                 'artist': track.get('artist', ''),
-                'duration': _parse_discogs_duration(track.get('duration', '')),
+                'duration': parsed_duration,
                 'isrc': ''
-            })
+            }
+            logger.debug(f"[_fetch_discogs_tracks] Track: {track_dict}")
+            tracks.append(track_dict)
         
         logger.info(f"Fetched {len(tracks)} tracks from Discogs release {release_id}")
         return tracks
         
     except Exception as e:
         logger.error(f"Error fetching Discogs tracks: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return []
 
 
@@ -479,7 +492,20 @@ def organize_individual_track(
         os.makedirs(album_path, exist_ok=True)
         
         # Build filename
-        track_artist = track.get('artist', album_artist)
+        # Use release artist for track if track artist is unknown or generic
+        track_artist_from_metadata = track.get('artist', '').strip()
+        is_unknown_artist = (
+            track_artist_from_metadata == 'Unknown Artist' or
+            track_artist_from_metadata == 'Unknown' or
+            track_artist_from_metadata == ''
+        )
+        
+        # If track artist is unknown/missing, use the matched release artist
+        if is_unknown_artist:
+            track_artist = album_artist  # Use the matched release artist
+        else:
+            track_artist = track_artist_from_metadata
+        
         track_title = track.get('title', 'Unknown')
         track_number = track.get('track_number', '00')
         

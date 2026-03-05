@@ -141,6 +141,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
             if not album_id:
                 continue
             logging.info(f"   💿 [Album {alb_idx}/{total_albums}] {album_name}")
+            log_unified(f"Navidrome Import - {artist_name} - Album {alb_idx}/{total_albums}: {album_name}")
             
             # Detect if this is a live/unplugged album
             from .helpers import detect_live_album
@@ -250,6 +251,10 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 logging.info(f"Logging to scan_history: {artist_name} - {album_name} ({album_tracks_processed} tracks)")
                 log_album_scan(artist_name, album_name, 'navidrome', album_tracks_processed, 'completed')
                 logging.info(f"Completed navidrome scan for {artist_name} - {album_name} ({album_tracks_processed} tracks)")
+                log_unified(f"Navidrome Import - {artist_name} - Completed album: {album_name} ({album_tracks_processed} tracks)")
+            elif album_needs_reimport or (not force and len(cached_ids_for_album) > 0):
+                # Album was skipped
+                log_unified(f"Navidrome Import - {artist_name} - Skipped album: {album_name} (already cached)")
         if verbose:
             print(f"Artist scan complete: {artist_name}")
             logging.info(f"Artist scan complete: {artist_name}")
