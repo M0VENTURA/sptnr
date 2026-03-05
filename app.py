@@ -337,37 +337,6 @@ if os.path.isdir(static_folder):
         print(f"  Error listing files: {e}")
 print(f"{'='*60}\n")
 
-# Debug: Log database configuration on startup
-print(f"{'='*60}")
-print(f"Database Configuration:")
-pg_configured = bool(os.environ.get("PG_HOST") and os.environ.get("PG_USER") and os.environ.get("PG_DATABASE"))
-if pg_configured:
-    print(f"  Backend: PostgreSQL (configured)")
-    print(f"  Host: {os.environ.get('PG_HOST', 'N/A')}")
-    print(f"  Database: {os.environ.get('PG_DATABASE', 'N/A')}")
-    print(f"  User: {os.environ.get('PG_USER', 'N/A')}")
-    print(f"  Port: {os.environ.get('PG_PORT', '5432')}")
-    # Try to verify connection
-    try:
-        test_conn = get_db()
-        is_pg = _is_postgres_connection(test_conn)
-        test_conn.close()
-        status = "✓ Connected" if is_pg else "✓ Using SQLite fallback"
-        print(f"  Connection Status: {status}")
-    except Exception as e:
-        print(f"  Connection Status: ✗ Error - {str(e)[:60]}")
-else:
-    print(f"  Backend: SQLite (no PostgreSQL configured)")
-    print(f"  Database Path: {DB_PATH}")
-    # Try to verify connection
-    try:
-        test_conn = get_db()
-        test_conn.close()
-        print(f"  Connection Status: ✓ Connected")
-    except Exception as e:
-        print(f"  Connection Status: ✗ Error - {str(e)[:60]}")
-print(f"{'='*60}\n")
-
 # Add Jinja2 filter to split genres on both backslash and comma
 @app.template_filter('split_genres')
 def split_genres(s):
@@ -1711,6 +1680,38 @@ def _is_postgres_connection(conn):
     if not _ensure_psycopg2_loaded() or psycopg2 is None:
         return False
     return isinstance(conn, psycopg2.extensions.connection)  # type: ignore[name-defined]
+
+
+# Debug: Log database configuration on startup
+print(f"{'='*60}")
+print(f"Database Configuration:")
+pg_configured = bool(PG_HOST and PG_USER and PG_DATABASE)
+if pg_configured:
+    print(f"  Backend: PostgreSQL (configured)")
+    print(f"  Host: {PG_HOST}")
+    print(f"  Database: {PG_DATABASE}")
+    print(f"  User: {PG_USER}")
+    print(f"  Port: {PG_PORT}")
+    # Try to verify connection
+    try:
+        test_conn = get_db()
+        is_pg = _is_postgres_connection(test_conn)
+        test_conn.close()
+        status = "✓ Connected" if is_pg else "✓ Using SQLite fallback"
+        print(f"  Connection Status: {status}")
+    except Exception as e:
+        print(f"  Connection Status: ✗ Error - {str(e)[:60]}")
+else:
+    print(f"  Backend: SQLite (no PostgreSQL configured)")
+    print(f"  Database Path: {DB_PATH}")
+    # Try to verify connection
+    try:
+        test_conn = get_db()
+        test_conn.close()
+        print(f"  Connection Status: ✓ Connected")
+    except Exception as e:
+        print(f"  Connection Status: ✗ Error - {str(e)[:60]}")
+print(f"{'='*60}\n")
 
 
 def _table_exists(cursor, table_name, is_postgres=False):
