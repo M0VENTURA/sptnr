@@ -18,10 +18,11 @@ import logging
 import shutil
 from pathlib import Path
 from difflib import SequenceMatcher
-from mutagen.id3 import ID3
 from mutagen import File as MutagenFile
 from datetime import datetime
 from contextlib import closing
+from typing import Any
+from database_abstraction import DatabaseQuery
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -121,8 +122,8 @@ class MusicBrainzFileMatcher:
         try:
             # Get all active monitoring folders
             conn = self.get_db()
-            cursor = conn.cursor()
-            cursor.execute("""
+            db_query = DatabaseQuery(conn)
+            cursor = db_query.execute("""
                 SELECT monitoring_folder_path FROM musicbrainz_releases 
                 WHERE status = 'active'
             """)
@@ -161,9 +162,9 @@ class MusicBrainzFileMatcher:
         """Get all active MusicBrainz releases"""
         try:
             conn = self.get_db()
-            cursor = conn.cursor()
+            db_query = DatabaseQuery(conn)
             
-            cursor.execute("""
+            cursor = db_query.execute("""
                 SELECT id, release_id, release_title, artist, release_year,
                        monitoring_folder_path, total_tracks, discovered_count
                 FROM musicbrainz_releases
@@ -189,9 +190,9 @@ class MusicBrainzFileMatcher:
         try:
             # Get all tracks for this release
             conn = self.get_db()
-            cursor = conn.cursor()
+            db_query = DatabaseQuery(conn)
             
-            cursor.execute("""
+            cursor = db_query.execute("""
                 SELECT id, track_number, track_title, track_artist, isrc, duration
                 FROM musicbrainz_release_tracks
                 WHERE release_id = ? AND status = 'queued'
@@ -363,10 +364,10 @@ class MusicBrainzFileMatcher:
         """
         try:
             conn = self.get_db()
-            cursor = conn.cursor()
+            db_query = DatabaseQuery(conn)
             
             # Get monitoring folder path
-            cursor.execute("""
+            cursor = db_query.execute("""
                 SELECT monitoring_folder_path FROM musicbrainz_releases
                 WHERE release_id = ?
             """, (release_id,))
@@ -394,7 +395,7 @@ class MusicBrainzFileMatcher:
             logger.info(f"[FILE_MATCHER] Moved {file_path.name} -> {destination.relative_to(self.downloads_dir)}")
             
             # Update database
-            cursor.execute("""
+            db_query.execute("""
                 UPDATE musicbrainz_release_tracks
                 SET status = 'discovered',
                     found_filename = ?,
@@ -404,7 +405,7 @@ class MusicBrainzFileMatcher:
             """, (destination.name, str(destination), release_id, track_number))
             
             # Update release discovered_count
-            cursor.execute("""
+            db_query.execute("""
                 UPDATE musicbrainz_releases
                 SET discovered_count = (
                     SELECT COUNT(*) FROM musicbrainz_release_tracks

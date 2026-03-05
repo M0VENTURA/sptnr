@@ -18,6 +18,8 @@ import logging
 from pathlib import Path
 from datetime import datetime
 from contextlib import closing
+from typing import Any
+from database_abstraction import DatabaseQuery, is_postgres_connection
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

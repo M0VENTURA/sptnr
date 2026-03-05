@@ -26,6 +26,7 @@ import concurrent.futures
 from api_clients import session, timeout_safe_session
 from helpers.helpers import find_matching_spotify_single, strip_cover_attribution
 from helpers.matching_utils import normalize_album
+from database_abstraction import DatabaseQuery, is_postgres_connection
 
 # Import centralized logging
 from helpers.logging_config import setup_logging, log_unified, log_info, log_debug
@@ -1328,12 +1329,16 @@ if __name__ == "__main__":
         print("log_unified() test failed:", e)
 
 def get_db_connection():
-    """Get database connection with WAL mode and extended timeout for concurrent access"""
+    """Get database connection with WAL mode (SQLite) or standard settings (PostgreSQL)"""
     conn = sqlite3.connect(DB_PATH, timeout=120.0, isolation_level='DEFERRED')
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout = 120000")  # 120 seconds
-    conn.execute("PRAGMA synchronous = NORMAL")  # Reduces fsync calls, improves throughput with WAL
-    conn.execute("PRAGMA wal_autocheckpoint = 1000")  # More aggressive checkpointing
+    
+    # Only apply SQLite-specific pragmas
+    if not is_postgres_connection(conn):
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout = 120000")  # 120 seconds
+        conn.execute("PRAGMA synchronous = NORMAL")  # Reduces fsync calls, improves throughput with WAL
+        conn.execute("PRAGMA wal_autocheckpoint = 1000")  # More aggressive checkpointing
+    
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -1578,16 +1583,26 @@ def fetch_album_art_url_from_musicbrainz(artist: str, album: str) -> str | None:
         
         # Try to get MBID from database using canonical column name.
         conn = get_db_connection()
-        cursor = conn.cursor()
-
-        cursor.execute("PRAGMA table_info(tracks)")
-        track_columns = {row[1] for row in cursor.fetchall()}
+        db_query = DatabaseQuery(conn)
+        
+        # Check for column existence (SQLite-specific, but needed for compatibility)
+        track_columns = set()
+        if not is_postgres_connection(conn):
+            cursor = db_query.execute("PRAGMA table_info(tracks)")
+            track_columns = {row[1] for row in cursor.fetchall()}
+        else:
+            # For PostgreSQL, use information_schema
+            cursor = db_query.execute("""
+                SELECT column_name FROM information_schema.columns 
+                WHERE table_schema = 'public' AND table_name = 'tracks'
+            """)
+            track_columns = {row[0] for row in cursor.fetchall()}
 
         mb_album_column = "musicbrainz_album_mbid" if "musicbrainz_album_mbid" in track_columns else None
 
         result = None
         if mb_album_column:
-            cursor.execute(
+            cursor = db_query.execute(
                 f"""
                 SELECT {mb_album_column} AS album_mbid FROM tracks
                 WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?

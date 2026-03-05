@@ -14,8 +14,9 @@ import logging
 import sqlite3
 import requests
 import time
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 from difflib import SequenceMatcher
+from database_abstraction import DatabaseQuery
 
 logger = logging.getLogger(__name__)
 
@@ -320,12 +321,12 @@ def suggest_auto_match(folder_artist: str, folder_album: str, candidates: List[D
     return None
 
 
-def detect_library_duplicates(conn: sqlite3.Connection, tracks: List[Dict], artist: str, album: str) -> Dict:
+def detect_library_duplicates(conn: Any, tracks: List[Dict], artist: str, album: str) -> Dict:
     """
     Check if tracks/album already exist in the music library.
     
     Args:
-        conn: Database connection
+        conn: Database connection (SQLite or PostgreSQL)
         tracks: List of tracks from folder
         artist: Album artist
         album: Album name
@@ -334,7 +335,7 @@ def detect_library_duplicates(conn: sqlite3.Connection, tracks: List[Dict], arti
         Dict with duplicate detection results and conflict info
     """
     try:
-        cursor = conn.cursor()
+        db_query = DatabaseQuery(conn)
         
         duplicates = {
             'has_duplicates': False,
@@ -345,7 +346,7 @@ def detect_library_duplicates(conn: sqlite3.Connection, tracks: List[Dict], arti
         }
         
         # Check 1: Exact album match
-        cursor.execute("""
+        cursor = db_query.execute("""
             SELECT id, file_path FROM tracks 
             WHERE LOWER(artist) = LOWER(?) AND LOWER(album) = LOWER(?)
             LIMIT 1
@@ -362,7 +363,7 @@ def detect_library_duplicates(conn: sqlite3.Connection, tracks: List[Dict], arti
         # Check 2: Partial track matches
         conflict_tracks = []
         for track in tracks:
-            cursor.execute("""
+            cursor = db_query.execute("""
                 SELECT id, file_path, title FROM tracks
                 WHERE LOWER(artist) = LOWER(?) AND LOWER(title) = LOWER(?)
                 LIMIT 1
@@ -385,7 +386,7 @@ def detect_library_duplicates(conn: sqlite3.Connection, tracks: List[Dict], arti
             return duplicates
         
         # Check 3: Album exists (different artist same album)
-        cursor.execute("""
+        cursor = db_query.execute("""
             SELECT DISTINCT file_path FROM tracks
             WHERE LOWER(album) = LOWER(?)
             LIMIT 1
@@ -411,7 +412,7 @@ def organize_individual_track(
     track: Dict,
     release_metadata: Dict,
     music_dir: str = "/music",
-    db_conn: Optional[sqlite3.Connection] = None,
+    db_conn: Optional[Any] = None,
     check_duplicates: bool = True
 ) -> Dict:
     """
@@ -518,18 +519,18 @@ def organize_individual_track(
         }
 
 
-def get_folder_duplicates_batch(conn: sqlite3.Connection) -> List[Dict]:
+def get_folder_duplicates_batch(conn: Any) -> List[Dict]:
     """
     Find all folders that have potential duplicate conflicts with existing library.
     
     Returns list of folders with conflicts for batch review.
     """
     try:
-        cursor = conn.cursor()
+        db_query = DatabaseQuery(conn)
         
         # This would require a folder tracking table in the database
         # For now, return empty list - user can populate based on their needs
-        cursor.execute("""
+        cursor = db_query.execute("""
             SELECT DISTINCT 
                 folder_path,
                 COUNT(*) as conflict_count

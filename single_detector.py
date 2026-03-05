@@ -11,6 +11,7 @@ import os
 
 # Import centralized logging
 from helpers.logging_config import setup_logging, log_unified, log_info, log_debug
+from database_abstraction import DatabaseQuery, is_postgres_connection
 
 # Set up logging for single detector service
 setup_logging("single_detector")
@@ -18,7 +19,9 @@ setup_logging("single_detector")
 def get_db_connection():
     from helpers.db_utils import DB_PATH
     conn = sqlite3.connect(DB_PATH, timeout=120.0)
-    conn.execute("PRAGMA journal_mode=WAL")
+    # Only set PRAGMA for SQLite
+    if not is_postgres_connection(conn):
+        conn.execute("PRAGMA journal_mode=WAL")
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -29,8 +32,8 @@ def get_current_single_detection(track_id: str) -> dict:
     """
     try:
         conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
+        db_query = DatabaseQuery(conn)
+        cursor = db_query.execute(
             "SELECT is_single, single_confidence, single_sources, stars FROM tracks WHERE id = ?",
             (track_id,)
         )

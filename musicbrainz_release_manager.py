@@ -18,7 +18,9 @@ import logging
 from datetime import datetime
 from contextlib import closing
 from pathlib import Path
+from typing import Any
 from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
+from database_abstraction import DatabaseQuery, is_postgres_connection
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -51,10 +53,10 @@ class MusicBrainzReleaseManager:
     def ensure_schema(self):
         """Create required MusicBrainz release tables if they are missing."""
         conn = self.get_db()
-        cursor = conn.cursor()
+        db_query = DatabaseQuery(conn)
 
         try:
-            cursor.execute("""
+            db_query.execute("""
                 CREATE TABLE IF NOT EXISTS musicbrainz_releases (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     release_id TEXT NOT NULL UNIQUE,
@@ -75,7 +77,7 @@ class MusicBrainzReleaseManager:
                 )
             """)
 
-            cursor.execute("""
+            db_query.execute("""
                 CREATE TABLE IF NOT EXISTS musicbrainz_release_tracks (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     release_id TEXT NOT NULL,
@@ -95,19 +97,19 @@ class MusicBrainzReleaseManager:
                 )
             """)
 
-            cursor.execute("""
+            db_query.execute("""
                 CREATE INDEX IF NOT EXISTS idx_mb_releases_status
                 ON musicbrainz_releases(status)
             """)
-            cursor.execute("""
+            db_query.execute("""
                 CREATE INDEX IF NOT EXISTS idx_mb_releases_created
                 ON musicbrainz_releases(created_at DESC)
             """)
-            cursor.execute("""
+            db_query.execute("""
                 CREATE INDEX IF NOT EXISTS idx_mb_release_tracks_release
                 ON musicbrainz_release_tracks(release_id)
             """)
-            cursor.execute("""
+            db_query.execute("""
                 CREATE INDEX IF NOT EXISTS idx_mb_release_tracks_status
                 ON musicbrainz_release_tracks(release_id, status)
             """)
