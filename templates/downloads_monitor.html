@@ -1336,27 +1336,55 @@ async function loadFolderGroups(options = {}) {
     await loadFolderStatus();
     await loadFolderDuplicates();
     
-    const response = await fetch('/api/downloads/grouped-folders');
-    const data = await response.json();
+    // Fetch both folder groups AND queue items to integrate them
+    const folderResponse = await fetch('/api/downloads/grouped-folders');
+    const folderData = await folderResponse.json();
     
-    if (!data.success) {
-      console.error('Error loading folder groups:', data.error);
+    const queueResponse = await fetch('/api/downloads/queue?limit=500');
+    const queueData = await queueResponse.json();
+    
+    if (!folderData.success) {
+      console.error('Error loading folder groups:', folderData.error);
       return;
     }
     
-    const groups = data.folder_groups || [];
+    let groups = folderData.folder_groups || [];
+    const queue = queueData.queue || [];
+    
+    // Add queue items that are ready to organize to the groups list
+    // These show as pseudo-groups with queue_item=true to distinguish them
+    const readyToOrganizeStatuses = ['completed', 'discovered', 'pending_match', 'possible_duplicate'];
+    const queueItemsToShow = queue.filter(item => readyToOrganizeStatuses.includes(item.status));
+    
+    // Create pseudo-groups from queue items
+    const queueGroups = queueItemsToShow.map((item, idx) => ({
+      folder_path: `__queue_item_${item.id}__`,
+      folder_name: `[Queue] ${item.artist || 'Unknown'} - ${item.album || 'Unknown Album'}`,
+      artist: item.artist || '',
+      album: item.album || '',
+      track_count: 1,
+      is_queue_item: true,
+      queue_item_id: item.id,
+      queue_item_status: item.status,
+      tracks: [{
+        title: item.title || '',
+        artist: item.artist || '',
+        album: item.album || '',
+        filename: item.title || '',
+        file_path: ''
+      }],
+      is_musicbrainz_release: false
+    }));
+    
+    // Merge queue items with folder groups
+    groups = [...groups, ...queueGroups];
+    
     console.log('[loadFolderGroups] API Response:', {
-      success: data.success,
-      total_folders: data.total_folders,
-      total_files: data.total_files,
+      success: folderData.success,
+      total_folders: folderData.total_folders,
+      total_files: folderData.total_files,
       groups_count: groups.length,
-      first_group: groups[0] ? {
-        folder_path: groups[0].folder_path,
-        track_count: groups[0].track_count,
-        tracks_array_exists: !!groups[0].tracks,
-        tracks_array_length: groups[0].tracks ? groups[0].tracks.length : 0,
-        first_track: groups[0].tracks ? groups[0].tracks[0] : null
-      } : null
+      queue_items_integrated: queueGroups.length
     });
     
     const section = document.getElementById('folderGroupsSection');
@@ -3168,12 +3196,15 @@ function showDestinationFolderPicker() {
 
 // Load queue status on page load
 document.addEventListener('DOMContentLoaded', function() {
-  setTimeout(loadQueueStatus, 500);
-  setTimeout(() => loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true }), 700);
-  // Refresh queue status every 5 seconds
-  setInterval(loadQueueStatus, 5000);
-  // Refresh folder groups less frequently to avoid UI churn
-  setInterval(() => loadFolderGroups({ keepVisibleOnEmpty: true }), 15000);
+  // Load queue status and folder groups together to keep them in sync
+  async function loadBothAsync() {
+    await loadQueueStatus();
+    await loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true });
+  }
+  
+  setTimeout(loadBothAsync, 500);
+  // Refresh both together every 5 seconds to keep them synchronized
+  setInterval(loadBothAsync, 5000);
   // Auto-discover files every 60 seconds
   setInterval(autoDiscoverFiles, 60000);
   
