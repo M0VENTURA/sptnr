@@ -5764,8 +5764,8 @@ def popularity_scan(
                         # SIMPLIFIED 5-STAR LOGIC BASED ON Z-SCORE AND CONFIDENCE
                         # Rules:
                         # 1. z-score 0-1: requires 2 medium confidence sources OR 1 high confidence source
-                        # 2. z-score > 1: requires 1 medium confidence source OR 1 high confidence source  
-                        # 3. z-score > 2: if no medium/high confidence, marked as "popular" 5★
+                        # 2. z-score > 1: requires 1 medium confidence source OR 1 high confidence source
+                        # 3. z-score > 2: may qualify as popularity-only 5★ based on CURRENT run z-score (not persisted status)
                         
                         # Skip confidence-based upgrades for excluded tracks (e.g., bonus tracks with parentheses)
                         # These tracks were excluded from statistics calculation, so their z-scores are not meaningful
@@ -5774,6 +5774,15 @@ def popularity_scan(
                             medium_conf_count = len(single_sources) if single_sources and single_confidence == "medium" else 0
                             has_high_confidence = (single_confidence == "high" or single_confidence == "user")
                             
+                            # Never trust persisted "popular" confidence for star assignment.
+                            # It is historical and can become stale when popularity shifts between scans.
+                            if single_confidence == "popular":
+                                log_debug(
+                                    f"Ignoring persisted popular confidence for star assignment: {title} "
+                                    f"(track_id: {track_id})"
+                                )
+                                single_confidence = "low"
+
                             # Apply simplified z-score + confidence rules
                             if single_confidence == "user":
                                 # User-set singles always get 5 stars
@@ -5785,20 +5794,6 @@ def popularity_scan(
                                 stars = 5
                                 log_info(f"5-star assignment: {title} (high-confidence single, zscore={track_zscore:.2f})")
                                 log_debug(f"High confidence single detected - track_id: {track_id}")
-                            elif single_confidence == "popular":
-                                # Backward-compatibility guard:
-                                # older scans may have persisted "popular" on many tracks.
-                                # Only honor it when the *current* album z-score is still a strong outlier.
-                                if track_zscore >= popularity_5star_z_threshold:
-                                    stars = 5
-                                    is_popularity_based_5star = True
-                                    log_info(f"5-star assignment: {title} (popular status - z-score={track_zscore:.2f} without metadata sources)")
-                                    log_debug(f"Popular status track - track_id: {track_id}, zscore: {track_zscore:.2f}, is_single: {is_single}")
-                                else:
-                                    log_info(
-                                        f"Ignoring stale popular status for {title} "
-                                        f"(current zscore={track_zscore:.2f} < {popularity_5star_z_threshold:.2f}); using baseline stars"
-                                    )
                             elif single_confidence == "medium":
                                 # Medium confidence: z-score determines requirements
                                 if track_zscore > 1.0:
@@ -5834,6 +5829,29 @@ def popularity_scan(
                                     # Negative z-score
                                     stars = 3
                                     log_info(f"3-star assignment: {title} (medium confidence, negative zscore={track_zscore:.2f})")
+
+                            # Popularity-only 5★ must be recomputed every scan from current z-score,
+                            # never from persisted confidence flags.
+                            has_metadata_single_source = any(
+                                s in ["musicbrainz", "discogs", "discogs_video", "spotify", "lastfm"]
+                                for s in single_sources
+                            )
+                            if (
+                                stars < 5
+                                and not has_high_confidence
+                                and not has_metadata_single_source
+                                and track_zscore >= popularity_5star_z_threshold
+                            ):
+                                stars = 5
+                                is_popularity_based_5star = True
+                                log_info(
+                                    f"5-star assignment: {title} "
+                                    f"(current popularity outlier, z-score={track_zscore:.2f})"
+                                )
+                                log_debug(
+                                    f"Popularity-only 5★ (recomputed) - track_id: {track_id}, "
+                                    f"zscore: {track_zscore:.2f}, single_confidence: {single_confidence}"
+                                )
                         else:
                             # Track is excluded from statistics
                             log_debug(f"Skipped confidence checks for excluded track: {title} (baseline stars={stars})")
