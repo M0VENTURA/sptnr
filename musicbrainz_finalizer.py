@@ -255,9 +255,32 @@ class MusicBrainzFinalizer:
             track = cursor.fetchone()
             if not track:
                 logger.warning(f"[FINALIZER] No database match for file: {file_path.name}")
-                # Move file without renaming (use original name with number prefix)
-                track_number = "00"
-                new_name = f"{track_number}. {file_path.name}"
+                # Try to extract artist, title, and track number from original filename
+                import re
+                filename_noext = file_path.stem
+                extension = file_path.suffix
+                
+                # Try pattern: "Artist - NN - Title" or "Artist - Title (with track in parens)"
+                # First try: extract track number from filename if it exists
+                track_match = re.search(r'\b(\d{1,2})\s*-', filename_noext)
+                track_number = track_match.group(1) if track_match else "00"
+                
+                # Try to extract artist and title by splitting on " - "
+                parts = filename_noext.split(" - ")
+                if len(parts) >= 2:
+                    artist = parts[0].strip()
+                    # Join the rest in case there are multiple " - " separators
+                    title = " - ".join(parts[1:]).strip()
+                else:
+                    # Fallback if no " - " found
+                    artist = "Unknown Artist"
+                    title = filename_noext.strip()
+                
+                # Clean up title if it has a track number prefix
+                title = re.sub(r'^\d{1,2}\s*-\s*', '', title).strip()
+                
+                # Format: "01. Artist - Title.ext"
+                new_name = f"{int(track_number):02d}. {artist} - {title}{extension}"
             else:
                 track_number = track['track_number']
                 artist = str(track['track_artist']).strip()
