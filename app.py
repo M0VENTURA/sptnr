@@ -1798,25 +1798,28 @@ def dashboard():
         conn = get_db()
         cursor = conn.cursor()
 
-        cursor.execute("SELECT COUNT(DISTINCT artist) FROM tracks")
+        cursor.execute("SELECT COUNT(DISTINCT artist) as count FROM tracks")
         result = cursor.fetchone()
-        artist_count = result[0] if result else 0
+        artist_count = result['count'] if result else 0
 
-        cursor.execute("SELECT COUNT(DISTINCT album) FROM tracks")
+        cursor.execute("SELECT COUNT(DISTINCT album) as count FROM tracks")
         result = cursor.fetchone()
-        album_count = result[0] if result else 0
+        album_count = result['count'] if result else 0
 
-        cursor.execute("SELECT COUNT(*) FROM tracks")
+        cursor.execute("SELECT COUNT(*) as count FROM tracks")
         result = cursor.fetchone()
-        track_count = result[0] if result else 0
+        track_count = result['count'] if result else 0
 
-        cursor.execute("SELECT COUNT(*) FROM tracks WHERE stars = 5")
+        cursor.execute("SELECT COUNT(*) as count FROM tracks WHERE stars = 5")
         result = cursor.fetchone()
-        five_star_count = result[0] if result else 0
+        five_star_count = result['count'] if result else 0
 
-        cursor.execute("SELECT COUNT(*) FROM tracks WHERE is_single = 1")
+        # Handle boolean type in PostgreSQL (is_single is boolean) vs SQLite (is_single is integer)
+        is_pg = _is_postgres_connection(conn)
+        single_query = "SELECT COUNT(*) as count FROM tracks WHERE is_single = TRUE" if is_pg else "SELECT COUNT(*) as count FROM tracks WHERE is_single = 1"
+        cursor.execute(single_query)
         result = cursor.fetchone()
-        singles_count = result[0] if result else 0
+        singles_count = result['count'] if result else 0
 
         conn.close()
 
@@ -1922,34 +1925,62 @@ def artists():
     cursor = conn.cursor()
     
     # Get total counts for all tracks (including those without artist info)
-    cursor.execute("""
-        SELECT 
-            COUNT(DISTINCT album) as album_count,
-            COUNT(*) as track_count,
-            COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as single_count
-        FROM tracks
-    """)
+    # Handle boolean type in PostgreSQL vs integer in SQLite for is_single
+    is_pg = _is_postgres_connection(conn)
+    if is_pg:
+        cursor.execute("""
+            SELECT 
+                COUNT(DISTINCT album) as album_count,
+                COUNT(*) as track_count,
+                COALESCE(SUM(CASE WHEN is_single THEN 1 ELSE 0 END), 0) as single_count
+            FROM tracks
+        """)
+    else:
+        cursor.execute("""
+            SELECT 
+                COUNT(DISTINCT album) as album_count,
+                COUNT(*) as track_count,
+                COALESCE(SUM(CASE WHEN is_single THEN 1 ELSE 0 END), 0) as single_count
+            FROM tracks
+        """)
     total_stats = cursor.fetchone()
     
     # Filter artists to show only those with at least one album or EP
     # Use COALESCE to fall back to artist field when album_artist is empty
     # Use NULLIF to treat empty strings as NULL for proper COALESCE behavior
     try:
-        cursor.execute("""
-            SELECT 
-                COALESCE(NULLIF(album_artist, ''), artist) as display_name,
-                COALESCE(NULLIF(album_artist, ''), artist) as link_artist,
-                COUNT(DISTINCT album) as album_count,
-                COUNT(*) as track_count,
-                COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as single_count,
-                MAX(last_scanned) as last_updated
-            FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL 
-                AND COALESCE(NULLIF(album_artist, ''), artist) != ''
-            GROUP BY COALESCE(NULLIF(album_artist, ''), artist) COLLATE NOCASE
-            HAVING album_count > 0
-            ORDER BY display_name COLLATE NOCASE
-        """)
+        if is_pg:
+            cursor.execute("""
+                SELECT 
+                    COALESCE(NULLIF(album_artist, ''), artist) as display_name,
+                    COALESCE(NULLIF(album_artist, ''), artist) as link_artist,
+                    COUNT(DISTINCT album) as album_count,
+                    COUNT(*) as track_count,
+                    COALESCE(SUM(CASE WHEN is_single THEN 1 ELSE 0 END), 0) as single_count,
+                    MAX(last_scanned) as last_updated
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL 
+                    AND COALESCE(NULLIF(album_artist, ''), artist) != ''
+                GROUP BY COALESCE(NULLIF(album_artist, ''), artist)
+                HAVING COUNT(DISTINCT album) > 0
+                ORDER BY display_name
+            """)
+        else:
+            cursor.execute("""
+                SELECT 
+                    COALESCE(NULLIF(album_artist, ''), artist) as display_name,
+                    COALESCE(NULLIF(album_artist, ''), artist) as link_artist,
+                    COUNT(DISTINCT album) as album_count,
+                    COUNT(*) as track_count,
+                    COALESCE(SUM(CASE WHEN is_single THEN 1 ELSE 0 END), 0) as single_count,
+                    MAX(last_scanned) as last_updated
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL 
+                    AND COALESCE(NULLIF(album_artist, ''), artist) != ''
+                GROUP BY COALESCE(NULLIF(album_artist, ''), artist) COLLATE NOCASE
+                HAVING album_count > 0
+                ORDER BY display_name COLLATE NOCASE
+            """)
         artists_data = [dict(row) for row in cursor.fetchall()]
     except:
         # Fallback for databases without album_artist column
@@ -1959,7 +1990,7 @@ def artists():
                 artist as link_artist,
                 COUNT(DISTINCT album) as album_count,
                 COUNT(*) as track_count,
-                COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as single_count,
+                COALESCE(SUM(CASE WHEN is_single THEN 1 ELSE 0 END), 0) as single_count,
                 MAX(last_scanned) as last_updated
             FROM tracks
             WHERE artist IS NOT NULL AND artist != ''
@@ -2110,7 +2141,7 @@ def artist_detail(name):
                 album,
                 COUNT(*) as track_count,
                 AVG(stars) as avg_stars,
-                COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as singles_count,
+                COALESCE(SUM(CASE WHEN is_single THEN 1 ELSE 0 END), 0) as singles_count,
                 MAX(last_scanned) as last_updated,
                 MIN(year) as album_year,
                 MAX(spotify_album_type) as album_type,
@@ -2298,7 +2329,7 @@ def artist_detail(name):
                 album,
                 COUNT(*) as track_count,
                 AVG(stars) as avg_stars,
-                COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as singles_count,
+                COALESCE(SUM(CASE WHEN is_single THEN 1 ELSE 0 END), 0) as singles_count,
                 MAX(last_scanned) as last_updated,
                 MIN(year) as album_year,
                 MAX(spotify_album_type) as album_type,
@@ -3524,7 +3555,14 @@ def api_artist_singles_count():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) as count FROM tracks WHERE artist = ? AND is_single = 1", (artist_name,))
+        
+        # Handle boolean type in PostgreSQL vs integer in SQLite
+        is_pg = _is_postgres_connection(conn)
+        if is_pg:
+            cursor.execute("SELECT COUNT(*) as count FROM tracks WHERE artist = %s AND is_single = TRUE", (artist_name,))
+        else:
+            cursor.execute("SELECT COUNT(*) as count FROM tracks WHERE artist = ? AND is_single = 1", (artist_name,))
+        
         row = cursor.fetchone()
         conn.close()
         
@@ -3550,11 +3588,30 @@ def api_create_essential_playlist():
         cursor = conn.cursor()
         
         # Get all singles with high confidence
-        cursor.execute("""
-            SELECT id, title, album, stars, score, single_confidence 
-            FROM tracks 
-            WHERE artist = ? AND is_single = 1
-            ORDER BY 
+        # Handle boolean type in PostgreSQL vs integer in SQLite
+        is_pg = _is_postgres_connection(conn)
+        if is_pg:
+            cursor.execute("""
+                SELECT id, title, album, stars, score, single_confidence 
+                FROM tracks 
+                WHERE artist = %s AND is_single = TRUE
+                ORDER BY
+                    CASE single_confidence 
+                        WHEN 'high' THEN 3
+                        WHEN 'medium' THEN 2
+                        WHEN 'low' THEN 1
+                        ELSE 0
+                    END DESC,
+                    score DESC,
+                    stars DESC
+                LIMIT 50
+            """, (artist_name,))
+        else:
+            cursor.execute("""
+                SELECT id, title, album, stars, score, single_confidence 
+                FROM tracks 
+                WHERE artist = ? AND is_single = 1
+                ORDER BY 
                 CASE single_confidence 
                     WHEN 'high' THEN 3
                     WHEN 'medium' THEN 2
@@ -5356,12 +5413,20 @@ def album_detail(artist, album):
                 'total_discs': 1
             }
         
-        # Count singles in this album (based on is_single = 1 from single detection)
-        cursor.execute("""
-            SELECT COUNT(*) as singles_count
-            FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ? AND is_single = 1
-        """, (artist, album))
+        # Count singles in this album (based on is_single from single detection)
+        is_pg = _is_postgres_connection(conn)
+        if is_pg:
+            cursor.execute("""
+                SELECT COUNT(*) as singles_count
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s AND is_single = TRUE
+            """, (artist, album))
+        else:
+            cursor.execute("""
+                SELECT COUNT(*) as singles_count
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ? AND is_single = 1
+            """, (artist, album))
         singles_row = cursor.fetchone()
         album_data['singles_count'] = singles_row['singles_count'] if singles_row else 0
         
@@ -10728,7 +10793,7 @@ def api_metadata():
                     SELECT 
                         AVG(stars) as avg_stars,
                         COUNT(*) as track_count,
-                        COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as singles_count,
+                        COALESCE(SUM(CASE WHEN is_single THEN 1 ELSE 0 END), 0) as singles_count,
                         MAX(last_scanned) as last_scanned
                     FROM tracks
                     WHERE artist = ? AND album = ?
