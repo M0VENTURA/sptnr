@@ -26,6 +26,7 @@ import sqlite3
 try:
     import psycopg2
     import psycopg2.extras
+    from psycopg2 import sql as psql
 except ImportError:
     pass  # PostgreSQL support optional
 # Mutagen imports for audio file tagging
@@ -7122,6 +7123,175 @@ def config_save_json():
         tb = traceback.format_exc()
         print(f"Config save error: {tb}")  # Log to console for debugging
         return jsonify({"success": False, "error": error_msg}), 400
+
+
+@app.route("/config/migrate_postgres", methods=["POST"])
+def config_migrate_postgres():
+    """Migrate all SQLite tables/data to PostgreSQL and persist PG connection settings."""
+    global PG_HOST, PG_PORT, PG_USER, PG_PASSWORD, PG_DATABASE
+
+    def _map_sqlite_type_to_pg(sqlite_type: str) -> str:
+        t = (sqlite_type or "").upper()
+        if "INT" in t:
+            return "BIGINT"
+        if any(x in t for x in ["REAL", "FLOA", "DOUB"]):
+            return "DOUBLE PRECISION"
+        if "BLOB" in t:
+            return "BYTEA"
+        if "BOOL" in t:
+            return "BOOLEAN"
+        if "TIMESTAMP" in t or "DATETIME" in t:
+            return "TIMESTAMP"
+        return "TEXT"
+
+    try:
+        if 'psycopg2' not in globals() or 'psql' not in globals():
+            return jsonify({
+                "success": False,
+                "error": "PostgreSQL driver not available. Install psycopg2-binary first."
+            }), 400
+
+        payload = request.get_json(force=True) or {}
+        pg_host = str(payload.get("pg_host", "")).strip()
+        pg_port = str(payload.get("pg_port", "5432")).strip() or "5432"
+        pg_user = str(payload.get("pg_user", "")).strip()
+        pg_password = str(payload.get("pg_password", ""))
+        pg_database = str(payload.get("pg_database", "")).strip()
+
+        if not pg_host or not pg_user or not pg_database:
+            return jsonify({
+                "success": False,
+                "error": "pg_host, pg_user, and pg_database are required"
+            }), 400
+
+        if not os.path.exists(DB_PATH):
+            return jsonify({"success": False, "error": f"SQLite database not found: {DB_PATH}"}), 400
+
+        sqlite_conn = sqlite3.connect(DB_PATH)
+        sqlite_conn.row_factory = sqlite3.Row
+        sqlite_cur = sqlite_conn.cursor()
+
+        pg_conn = psycopg2.connect(  # type: ignore[name-defined]
+            host=pg_host,
+            port=pg_port,
+            user=pg_user,
+            password=pg_password,
+            dbname=pg_database,
+        )
+        pg_conn.autocommit = False
+        pg_cur = pg_conn.cursor()
+
+        migrated_tables = 0
+        migrated_rows = 0
+
+        try:
+            sqlite_cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+            tables = [row[0] for row in sqlite_cur.fetchall()]
+
+            for table_name in tables:
+                sqlite_cur.execute(f"PRAGMA table_info({table_name})")
+                columns_info = sqlite_cur.fetchall()
+                if not columns_info:
+                    continue
+
+                column_names = []
+                column_defs = []
+                pk_columns = []
+
+                for col in columns_info:
+                    col_name = col[1]
+                    col_type = _map_sqlite_type_to_pg(col[2])
+                    not_null = bool(col[3])
+                    is_pk = bool(col[5])
+
+                    column_names.append(col_name)
+                    if is_pk:
+                        pk_columns.append(col_name)
+
+                    parts = [psql.Identifier(col_name).as_string(pg_conn), col_type]
+                    if not_null:
+                        parts.append("NOT NULL")
+                    column_defs.append(" ".join(parts))
+
+                if pk_columns:
+                    pk_list = ", ".join(psql.Identifier(c).as_string(pg_conn) for c in pk_columns)
+                    column_defs.append(f"PRIMARY KEY ({pk_list})")
+
+                create_stmt = (
+                    f"CREATE TABLE IF NOT EXISTS {psql.Identifier(table_name).as_string(pg_conn)} "
+                    f"({', '.join(column_defs)})"
+                )
+                pg_cur.execute(create_stmt)
+
+                # Make reruns deterministic for this target DB.
+                pg_cur.execute(psql.SQL("TRUNCATE TABLE {} RESTART IDENTITY CASCADE").format(psql.Identifier(table_name)))
+
+                sqlite_cur.execute(f"SELECT * FROM {table_name}")
+                rows = sqlite_cur.fetchall()
+                if rows:
+                    insert_stmt = psql.SQL("INSERT INTO {} ({}) VALUES %s").format(
+                        psql.Identifier(table_name),
+                        psql.SQL(", ").join(psql.Identifier(c) for c in column_names),
+                    )
+                    values = [tuple(row[c] for c in column_names) for row in rows]
+                    psycopg2.extras.execute_values(pg_cur, insert_stmt.as_string(pg_conn), values, page_size=1000)  # type: ignore[name-defined]
+                    migrated_rows += len(values)
+
+                migrated_tables += 1
+
+            pg_conn.commit()
+
+        except Exception:
+            pg_conn.rollback()
+            raise
+        finally:
+            try:
+                sqlite_conn.close()
+            except Exception:
+                pass
+            try:
+                pg_conn.close()
+            except Exception:
+                pass
+
+        # Persist PostgreSQL settings to config file.
+        config, _ = _read_yaml(CONFIG_PATH)
+        if not isinstance(config, dict):
+            config = {}
+        config["PG_HOST"] = pg_host
+        config["PG_PORT"] = pg_port
+        config["PG_USER"] = pg_user
+        config["PG_PASSWORD"] = pg_password
+        config["PG_DATABASE"] = pg_database
+
+        cfg_dir = os.path.dirname(CONFIG_PATH)
+        if cfg_dir:
+            os.makedirs(cfg_dir, exist_ok=True)
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            yaml.safe_dump(config, f, sort_keys=False, allow_unicode=True)
+
+        # Update process env/globals so runtime can switch without waiting for a restart.
+        os.environ["PG_HOST"] = pg_host
+        os.environ["PG_PORT"] = pg_port
+        os.environ["PG_USER"] = pg_user
+        os.environ["PG_PASSWORD"] = pg_password
+        os.environ["PG_DATABASE"] = pg_database
+        PG_HOST = pg_host
+        PG_PORT = pg_port
+        PG_USER = pg_user
+        PG_PASSWORD = pg_password
+        PG_DATABASE = pg_database
+
+        return jsonify({
+            "success": True,
+            "tables_migrated": migrated_tables,
+            "rows_migrated": migrated_rows,
+            "message": "Migration complete"
+        })
+
+    except Exception as e:
+        logging.error(f"PostgreSQL migration failed: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/help")
