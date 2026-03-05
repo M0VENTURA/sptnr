@@ -1618,7 +1618,34 @@ function migrateToPostgres() {
       const backupLine = resp.backup_path
         ? '<br><small class="text-muted">SQLite backup: <code>' + resp.backup_path + '</code></small>'
         : '';
-      msg.innerHTML = '<span class="text-success">Migration successful! Please restart the server to use PostgreSQL.</span>' + backupLine;
+      
+      // Check if restart is happening
+      if (resp.requires_restart) {
+        msg.innerHTML = '<span class="text-info"><i class="bi bi-arrow-repeat"></i> Flask is restarting with PostgreSQL... Page will reload automatically.</span>' + backupLine;
+        
+        // Poll for Flask to come back online
+        const maxAttempts = 30;  // 30 seconds max wait (1 second intervals)
+        let attempts = 0;
+        const checkFlaskHealth = setInterval(() => {
+          attempts++;
+          fetch('/api/unified-log?lines=1')  // Light health check
+            .then(r => r.ok && clearInterval(checkFlaskHealth))
+            .then(() => {
+              // Flask is back - reload page
+              setTimeout(() => {
+                window.location.reload();
+              }, 500);
+            })
+            .catch(() => {
+              if (attempts >= maxAttempts) {
+                clearInterval(checkFlaskHealth);
+                msg.innerHTML = '<span class="text-warning"><i class="bi bi-exclamation-triangle"></i> Flask restart took longer than expected. <a href="#">Click here to refresh the page</a>.</span>';
+              }
+            });
+        }, 1000);  // Check every second
+      } else {
+        msg.innerHTML = '<span class="text-success">Migration successful!</span>' + backupLine;
+      }
     } else {
       msg.innerHTML = '<span class="text-danger">' + (resp.error || 'Migration failed.') + '</span>';
     }

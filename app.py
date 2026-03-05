@@ -7361,12 +7361,37 @@ def config_migrate_postgres():
         PG_PASSWORD = pg_password
         PG_DATABASE = pg_database
 
+        # Schedule Flask restart after returning response
+        def restart_flask_after_response():
+            """Gracefully restart Flask after response is sent"""
+            try:
+                time.sleep(2)  # Give client time to receive response
+                logging.info("[MIGRATION] Restarting Flask to apply PostgreSQL connection...")
+                
+                # Get the current Python executable and any original args
+                import sys
+                python_exe = sys.executable
+                script_args = sys.argv[1:] if len(sys.argv) > 1 else []
+                
+                # Use os.execv to replace current process with new Flask process
+                # This preserves the same PID and ensures clean restart
+                os.execv(python_exe, [python_exe] + script_args)
+            except Exception as e:
+                logging.error(f"[MIGRATION] Failed to restart Flask: {e}")
+                # If restart fails, log error but don't crash - user can manually restart
+        
+        # Start restart in background thread (non-blocking)
+        restart_thread = threading.Thread(target=restart_flask_after_response, daemon=True)
+        restart_thread.start()
+
         return jsonify({
             "success": True,
             "tables_migrated": migrated_tables,
             "rows_migrated": migrated_rows,
             "backup_path": backup_path,
-            "message": "Migration complete"
+            "message": "Migration complete",
+            "requires_restart": True,
+            "restart_delay_seconds": 2
         })
 
     except Exception as e:
