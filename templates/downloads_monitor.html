@@ -652,6 +652,48 @@ function checkFolderDuplicatesFromEncoded(folderPathEnc, artistEnc, albumEnc, tr
   return checkFolderDuplicates(folderPath, artist, album, tracks);
 }
 
+async function moveIndividualTrackFromEncoded(folderPathEnc, trackIndex, trackEnc, candidateEnc) {
+  // Wrapper function to safely decode and move individual track with result feedback
+  try {
+    const folderPath = decodeInlineArg(folderPathEnc, '');
+    const track = decodeInlineArg(trackEnc, null);
+    const candidate = decodeInlineArg(candidateEnc, null);
+    
+    if (!track || !candidate) {
+      alert('❌ Invalid track or candidate data');
+      return;
+    }
+    
+    // Build release metadata from candidate
+    const releaseMetadata = {
+      id: candidate.id,
+      title: candidate.title,
+      artist: candidate.artist,
+      date: candidate.date,
+      source: candidate.source || 'musicbrainz'
+    };
+    
+    // Call move function
+    const result = await moveIndividualTrack(folderPath, trackIndex, track, releaseMetadata);
+    
+    // Show result feedback
+    if (result.success) {
+      alert(result.message);
+      // Refresh folder groups to update status
+      loadFolderGroups();
+    } else if (result.duplicate) {
+      alert(result.message + '\n\nWould you like to:\n- Skip this track\n- Delete it\n- Overwrite the existing file');
+      // Could show a more detailed modal here for duplicate handling
+    } else {
+      alert(result.message);
+    }
+    
+  } catch (error) {
+    console.error('Error in moveIndividualTrackFromEncoded:', error);
+    alert('❌ Error: ' + error.message);
+  }
+}
+
 async function loadFolderStatus() {
   // Load folder match status from database to show completion tracking
   try {
@@ -724,9 +766,11 @@ function showDuplicateWarnings(duplicates) {
   }
   
   let html = '<div class="alert alert-warning m-3">';
-  html += '<h6><i class="bi bi-exclamation-triangle"></i> Duplicate Folders Detected</h6>';
+  html += '<div class="d-flex justify-content-between align-items-center">';
+  html += '<div>';
+  html += '<h6 class="mb-2"><i class="bi bi-exclamation-triangle"></i> Duplicate Folders Detected</h6>';
   html += '<p class="small mb-2">These folders match the same album and can be merged:</p>';
-  html += '<ul class="small mb-3">';
+  html += '<ul class="small mb-0">';
   
   duplicates.forEach(dup => {
     html += `<li><strong>${escapeHtml(dup.artist)} - ${escapeHtml(dup.album)}</strong>: `;
@@ -741,8 +785,100 @@ function showDuplicateWarnings(duplicates) {
     html += '</li>';
   });
   
-  html += '</ul></div>';
+  html += '</ul>';
+  html += '</div>';
+  html += '<button class="btn btn-sm btn-outline-warning" onclick="showDuplicatesBatchModal(' + JSON.stringify(duplicates) + ')" title="View all duplicates in detail">';
+  html += '<i class="bi bi-eye"></i> View All</button>';
+  html += '</div></div>';
   existingWarning.innerHTML = html;
+}
+
+function showDuplicatesBatchModal(duplicates) {
+  // Show detailed batch viewer for all duplicate folders
+  if (!duplicates || duplicates.length === 0) {
+    alert('No duplicates to display');
+    return;
+  }
+  
+  let html = `
+    <div class="modal fade" id="duplicatesBatchModal" tabindex="-1">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header bg-warning text-dark">
+            <h5 class="modal-title"><i class="bi bi-exclamation-triangle"></i> Duplicate Folders Batch Viewer</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body" style="max-height: 500px; overflow-y: auto;">`;
+  
+  duplicates.forEach((dup, dupIdx) => {
+    html += `
+            <div class="card mb-3">
+              <div class="card-header bg-light">
+                <strong>${escapeHtml(dup.artist)} - ${escapeHtml(dup.album)}</strong>
+                <span class="badge bg-warning ms-2">${dup.folder_count} folders</span>
+              </div>
+              <div class="card-body p-2">`;
+    
+    dup.folders.forEach((folder, folderIdx) => {
+      html += `
+                <div class="mb-2 p-2 border rounded" style="background-color: #f8f9fa;">
+                  <div><small><strong>Folder ${folderIdx + 1}:</strong> ${escapeHtml(folder.folder_name || folder.folder_path)}</small></div>
+                  <div><small class="text-muted">${folder.matched_tracks_count} tracks matched</small></div>
+                  ${folder.folder_path ? `<div><small class="text-muted">Path: <code>${escapeHtml(folder.folder_path)}</code></small></div>` : ''}
+                  <button class="btn btn-sm btn-outline-danger mt-2" onclick="deleteDuplicateFolder('${encodeInlineArg(folder.folder_path)}')">
+                    <i class="bi bi-trash"></i> Delete Folder
+                  </button>
+                </div>`;
+    });
+    
+    html += `
+              </div>
+            </div>`;
+  });
+  
+  html += `
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            <button type="button" class="btn btn-warning" onclick="refreshDuplicatesCheck()">
+              <i class="bi bi-arrow-clockwise"></i> Refresh Check
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  
+  const oldModal = document.getElementById('duplicatesBatchModal');
+  if (oldModal) oldModal.remove();
+  
+  document.body.insertAdjacentHTML('beforeend', html);
+  const modal = new bootstrap.Modal(document.getElementById('duplicatesBatchModal'));
+  modal.show();
+}
+
+async function deleteDuplicateFolder(folderPathEnc) {
+  // Delete a duplicate folder
+  const folderPath = decodeInlineArg(folderPathEnc, '');
+  if (!confirm(`Are you sure you want to delete the folder?\n\n${folderPath}`)) {
+    return;
+  }
+  
+  try {
+    // This would call a backend endpoint to delete the folder
+    // For now, we'll just show a message
+    alert('❌ Delete function not yet implemented. Please delete the folder manually or use system tools.');
+  } catch (error) {
+    console.error('Error deleting folder:', error);
+    alert('❌ Error: ' + error.message);
+  }
+}
+
+async function refreshDuplicatesCheck() {
+  // Refresh the duplicates check
+  const modal = bootstrap.Modal.getInstance(document.getElementById('duplicatesBatchModal'));
+  if (modal) modal.hide();
+  
+  await loadFolderDuplicates();
 }
 
 function hideDuplicateWarnings() {
@@ -963,6 +1099,11 @@ async function loadFolderGroups(options = {}) {
                   onclick="matchFolderGroupWithMusicBrainzFromEncoded(event, '${folderPathEnc}', '${artistEnc}', '${albumEnc}', '${tracksEnc}')">
                   <i class="bi bi-disc"></i> ${matchedSelection ? 'Change Match' : 'Auto Match'}
                 </button>
+                <button class="btn btn-sm btn-outline-info ms-2" 
+                  onclick="showAutoMatchSuggestionFromEncoded(event, '${folderPathEnc}', '${artistEnc}', '${albumEnc}', '${tracksEnc}')" 
+                  title="Get auto-suggested match based on track similarity">
+                  <i class="bi bi-sparkles"></i> Suggest
+                </button>
                 <button class="btn btn-sm btn-outline-secondary ms-2" 
                         onclick="showManualSearchModalFromEncoded(event, '${folderPathEnc}', '${artistEnc}', '${albumEnc}', '${tracksEnc}')">
                   <i class="bi bi-search"></i> Manual Search
@@ -988,11 +1129,12 @@ async function loadFolderGroups(options = {}) {
                       <th>#</th>
                       <th>Title</th>
                       <th>Duration</th>
+                      <th style="width: 100px; text-align: center;">Actions</th>
                     </tr>
                   </thead>
                   <tbody>`;
                   
-              group.tracks.forEach(track => {
+              group.tracks.forEach((track, trackIdx) => {
                 const duration = track.duration ? 
                   Math.floor(track.duration / 60) + ':' + String(track.duration % 60).padStart(2, '0') : 
                   '-';
@@ -1018,11 +1160,29 @@ async function loadFolderGroups(options = {}) {
                   }
                 }
                 
+                // Per-track move button (only show if a match is selected and track not yet moved)
+                let moveButtonHtml = '';
+                if (matchedSelection && !trackMatched) {
+                  const trackEnc = encodeInlineArg(track);
+                  const folderPathEnc2 = encodeInlineArg(group.folder_path);
+                  const candidateEnc = encodeInlineArg(matchedSelection.candidate);
+                  moveButtonHtml = `<button class="btn btn-sm btn-outline-success" 
+                    title="Move this track individually" 
+                    onclick="moveIndividualTrackFromEncoded('${folderPathEnc2}', ${trackIdx}, '${trackEnc}', '${candidateEnc}')">
+                    <i class="bi bi-arrow-right-circle"></i> Move
+                  </button>`;
+                } else if (trackMatched) {
+                  moveButtonHtml = `<small class="text-success"><i class="bi bi-check-circle"></i> Done</small>`;
+                } else {
+                  moveButtonHtml = `<small class="text-muted">Waiting for match</small>`;
+                }
+                
                 html += `
                       <tr class="${trackClass}">
                         <td><small>${trackIcon}${track.track_number || '-'}</small></td>
                         <td><small>${track.title}</small></td>
                         <td><small>${duration}</small></td>
+                        <td style="text-align: center;">${moveButtonHtml}</td>
                       </tr>`;
               });
               
@@ -1119,6 +1279,9 @@ async function matchFolderGroupWithMusicBrainz(clickEvent, folderPath, artist, a
     
     // Show modal with candidates
     showMusicBrainzMatchModal(folderPath, artist, album, tracks, data.candidates);
+    
+    // Also show release tracks comparison for better decision making
+    await showReleaseTracksComparison(folderPath, artist, album, tracks, data.candidates);
     
   } catch (error) {
     console.error('Error matching:', error);
