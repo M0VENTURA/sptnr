@@ -18,6 +18,7 @@ import logging
 from datetime import datetime
 from contextlib import closing
 from pathlib import Path
+from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -25,7 +26,6 @@ logger = logging.getLogger(__name__)
 DOWNLOADS_MUSIC_DIR = "/downloads/Music"
 MUSIC_LIBRARY_DIR = "/music"
 MB_API_URL = "https://musicbrainz.org/ws/2"
-MB_USER_AGENT = "sptnr/1.0 (contact info)"
 DB_FILE = "sptnr.db"
 DB_TIMEOUT = 120.0
 
@@ -55,7 +55,7 @@ class MusicBrainzReleaseManager:
             dict with release info including tracks
         """
         try:
-            headers = {"User-Agent": MB_USER_AGENT}
+            headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
             url = f"{MB_API_URL}/release/{release_id}"
             params = {
                 "fmt": "json",
