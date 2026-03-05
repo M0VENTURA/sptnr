@@ -217,6 +217,18 @@ class MusicBrainzReleaseManager:
                         """, (release_id, queue_id, track_number, track_title,
                               track_artist, duration, isrc))
                         
+                        # Also add to tracks table with 'downloading' status
+                        # This allows the track to appear on artist/album pages as "Downloading"
+                        track_id = f"{track_artist}|{album}|{track_title}"
+                        cursor.execute("""
+                            INSERT OR REPLACE INTO tracks
+                            (id, artist, album, title, track_number, duration, isrc, 
+                             download_status, created_at, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, 'downloading', 
+                                   CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        """, (track_id, track_artist, album, track_title, 
+                              track_number, duration, isrc))
+                        
                         logger.info(f"[QUEUE_ADD] Added track {track_number}: {track_title} (Queue ID: {queue_id})")
                 
                 logger.info(f"[QUEUE_ADD] Added {len(queue_ids)} tracks to queue for release {release_id}")

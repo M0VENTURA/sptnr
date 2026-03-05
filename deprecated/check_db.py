@@ -219,7 +219,9 @@ required_columns = {
     "listenbrainz_genres": "TEXT",              # JSON array of ListenBrainz genre tags with count
     "discogs_genres": "TEXT",                   # JSON array of Discogs genres
     "musicbrainz_genres": "TEXT",               # JSON array of MusicBrainz genres
-    "tags_last_updated": "TEXT"                 # Timestamp when tags were last fetched
+    "tags_last_updated": "TEXT",                # Timestamp when tags were last fetched
+    # ✅ Download tracking status
+    "download_status": "TEXT"                   # Track status: 'available', 'missing', or 'downloading'
 }
 
 # ✅ Define columns for the artists table

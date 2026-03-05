@@ -2294,9 +2294,23 @@ def artist_detail(name):
         for album in albums_data:
             album_dict = dict(album)
             album_dict['is_missing'] = False  # Mark as discovered
+            album_name = album_dict.get("album", "")
+            
+            # Check if any tracks for this album are in "downloading" status
+            # (from MusicBrainz release downloads)
+            cursor.execute("""
+                SELECT COUNT(*) FROM tracks
+                WHERE album = ? AND COALESCE(NULLIF(album_artist, ''), artist) = ?
+                AND download_status = 'downloading'
+            """, (album_name, name))
+            downloading_count = cursor.fetchone()[0]
+            
+            if downloading_count > 0:
+                album_dict['is_downloading'] = True
+                album_dict['downloading_count'] = downloading_count
+            
             album_type = (album_dict.get("album_type") or "").lower()
             track_count = album_dict.get("track_count", 0)
-            album_name = album_dict.get("album", "")
             album_artist = (album_dict.get("album_artist") or "").lower()
             
             # First check: if album_artist is a compilation-type value, mark as compilation
