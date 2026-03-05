@@ -771,6 +771,15 @@
           <input type="text" class="form-control" id="pg_database" placeholder="sptnr" value="{{ config.get('PG_DATABASE', '') }}">
         </div>
         <div class="col-12">
+          <div class="form-check mt-1">
+            <input class="form-check-input" type="checkbox" id="pg_backup_sqlite" checked>
+            <label class="form-check-label" for="pg_backup_sqlite">
+              Backup local SQLite database before migration
+            </label>
+          </div>
+          <div class="form-text">Recommended. A timestamped backup file is created before any data is copied.</div>
+        </div>
+        <div class="col-12">
           <button type="button" class="btn btn-warning btn-lg mt-2" id="migratePostgresBtn" onclick="migrateToPostgres()">
             <i class="bi bi-arrow-right-circle"></i> Migrate to PostgreSQL
           </button>
@@ -1595,7 +1604,8 @@ function migrateToPostgres() {
     pg_port: document.getElementById('pg_port').value,
     pg_user: document.getElementById('pg_user').value,
     pg_password: document.getElementById('pg_password').value,
-    pg_database: document.getElementById('pg_database').value
+    pg_database: document.getElementById('pg_database').value,
+    backup_sqlite: document.getElementById('pg_backup_sqlite').checked
   };
   fetch('/config/migrate_postgres', {
     method: 'POST',
@@ -1605,7 +1615,10 @@ function migrateToPostgres() {
   .then(r => r.json())
   .then(resp => {
     if (resp.success) {
-      msg.innerHTML = '<span class="text-success">Migration successful! Please restart the server to use PostgreSQL.</span>';
+      const backupLine = resp.backup_path
+        ? '<br><small class="text-muted">SQLite backup: <code>' + resp.backup_path + '</code></small>'
+        : '';
+      msg.innerHTML = '<span class="text-success">Migration successful! Please restart the server to use PostgreSQL.</span>' + backupLine;
     } else {
       msg.innerHTML = '<span class="text-danger">' + (resp.error || 'Migration failed.') + '</span>';
     }

@@ -7157,6 +7157,12 @@ def config_migrate_postgres():
         pg_user = str(payload.get("pg_user", "")).strip()
         pg_password = str(payload.get("pg_password", ""))
         pg_database = str(payload.get("pg_database", "")).strip()
+        backup_sqlite_raw = payload.get("backup_sqlite", True)
+
+        if isinstance(backup_sqlite_raw, str):
+            backup_sqlite = backup_sqlite_raw.strip().lower() in ("1", "true", "yes", "on")
+        else:
+            backup_sqlite = bool(backup_sqlite_raw)
 
         if not pg_host or not pg_user or not pg_database:
             return jsonify({
@@ -7166,6 +7172,40 @@ def config_migrate_postgres():
 
         if not os.path.exists(DB_PATH):
             return jsonify({"success": False, "error": f"SQLite database not found: {DB_PATH}"}), 400
+
+        backup_path = None
+        if backup_sqlite:
+            backup_dir = os.path.dirname(DB_PATH) or "."
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            backup_filename = f"{os.path.basename(DB_PATH)}.pre_pg_migration_{timestamp}.bak"
+            backup_path = os.path.join(backup_dir, backup_filename)
+
+            try:
+                os.makedirs(backup_dir, exist_ok=True)
+                src_for_backup = sqlite3.connect(DB_PATH)
+                dest_for_backup = sqlite3.connect(backup_path)
+                try:
+                    src_for_backup.backup(dest_for_backup)
+                finally:
+                    try:
+                        dest_for_backup.close()
+                    except Exception:
+                        pass
+                    try:
+                        src_for_backup.close()
+                    except Exception:
+                        pass
+            except Exception as backup_error:
+                # Remove partial backup file if backup was interrupted.
+                try:
+                    if backup_path and os.path.exists(backup_path):
+                        os.remove(backup_path)
+                except Exception:
+                    pass
+                return jsonify({
+                    "success": False,
+                    "error": f"Failed to create SQLite backup before migration: {backup_error}"
+                }), 500
 
         sqlite_conn = sqlite3.connect(DB_PATH)
         sqlite_conn.row_factory = sqlite3.Row
@@ -7286,6 +7326,7 @@ def config_migrate_postgres():
             "success": True,
             "tables_migrated": migrated_tables,
             "rows_migrated": migrated_rows,
+            "backup_path": backup_path,
             "message": "Migration complete"
         })
 
