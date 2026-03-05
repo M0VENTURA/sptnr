@@ -2504,7 +2504,8 @@ def artist_detail(name):
         artist_image_url = None
         artist_bio = None
         try:
-            cursor.execute("SELECT country, image_url, bio FROM artists WHERE name = ?", (name,))
+            placeholder = "%s" if is_pg else "?"
+            cursor.execute(f"SELECT country, image_url, bio FROM artists WHERE name = {placeholder}", (name,))
             artist_row = cursor.fetchone()
             if artist_row:
                 artist_country = artist_row[0] if artist_row[0] else None
