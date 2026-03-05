@@ -7324,6 +7324,14 @@ def config_migrate_postgres():
                 # Make reruns deterministic for this target DB.
                 pg_cur.execute(psql.SQL("TRUNCATE TABLE {} RESTART IDENTITY CASCADE").format(psql.Identifier(table_name)))
 
+                # Identify boolean columns for type conversion
+                boolean_columns = set()
+                for col in columns_info:
+                    col_name = col[1]
+                    col_type = (col[2] or "").upper()
+                    if "BOOL" in col_type:
+                        boolean_columns.add(col_name)
+                
                 sqlite_cur.execute(f"SELECT * FROM {table_name}")
                 rows = sqlite_cur.fetchall()
                 if rows:
@@ -7331,7 +7339,20 @@ def config_migrate_postgres():
                         psql.Identifier(table_name),
                         psql.SQL(", ").join(psql.Identifier(c) for c in column_names),
                     )
-                    values = [tuple(row[c] for c in column_names) for row in rows]
+                    
+                    # Convert SQLite integer booleans (0/1) to PostgreSQL booleans (True/False)
+                    def convert_row(row):
+                        converted = []
+                        for col_name in column_names:
+                            val = row[col_name]
+                            if col_name in boolean_columns and val is not None:
+                                # Convert SQLite integer boolean to Python bool
+                                converted.append(bool(val))
+                            else:
+                                converted.append(val)
+                        return tuple(converted)
+                    
+                    values = [convert_row(row) for row in rows]
                     psycopg2.extras.execute_values(pg_cur, insert_stmt.as_string(pg_conn), values, page_size=1000)  # type: ignore[name-defined]
                     migrated_rows += len(values)
 
