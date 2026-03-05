@@ -557,9 +557,14 @@ async function applyMusicBrainzMatch(artist, album, releaseGroupId) {
   }
 }
 
-function searchOtherSources(artist, album) {
-  const query = encodeURIComponent(`${artist} ${album}`);
-  window.open(`/downloads/search/musicbrainz?q=${query}`, '_blank');
+function searchOtherSources(artist, titleOrAlbum, isQueueItem = false) {
+  // For queue items (searching for a single song), search: artist + title
+  // For other sources (searching for an album), search: artist + album
+  const query = encodeURIComponent(`${artist} ${titleOrAlbum}`);
+  
+  // Default to Soulseek for queue items, otherwise MusicBrainz
+  const target = isQueueItem ? 'soulseek' : 'musicbrainz';
+  window.open(`/downloads/search/${target}?q=${query}`, '_blank');
 }
 
 // ============================================================================
@@ -2351,7 +2356,7 @@ function renderActiveQueue(active) {
                 <button class="btn btn-sm btn-success" onclick="useExistingMetadata('${escapeHtml(item.artist)}','${escapeHtml(item.album)}')">
                   <i class="bi bi-file-earmark-music"></i> Use Existing File Metadata
                 </button>
-                <button class="btn btn-sm btn-outline-info" onclick="searchOtherSources('${escapeHtml(item.artist)}','${escapeHtml(item.album)}')">
+                <button class="btn btn-sm btn-outline-info" onclick="searchOtherSources('${escapeHtml(item.artist)}','${escapeHtml(item.title)}', true)">
                   <i class="bi bi-search"></i> Search Other Sources
                 </button>
               </div>
