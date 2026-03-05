@@ -73,14 +73,9 @@ def resolve_downloads_dir():
             return path
         normalized = os.path.normpath(path)
         if os.path.basename(normalized).lower() == "downloads":
-            music_subdir = os.path.join(normalized, "Music")
-            if os.path.isdir(music_subdir):
-                return music_subdir
+            # Normalize root downloads path to the Music subfolder consistently.
+            return os.path.join(normalized, "Music")
         return path
-
-    env_dir = os.environ.get("DOWNLOADS_DIR")
-    if env_dir:
-        return _prefer_music_subfolder(env_dir)
 
     config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
     try:
@@ -92,6 +87,10 @@ def resolve_downloads_dir():
                 return _prefer_music_subfolder(configured)
     except Exception as e:
         logger.warning(f"Could not read downloads folder from config: {e}")
+
+    env_dir = os.environ.get("DOWNLOADS_DIR")
+    if env_dir:
+        return _prefer_music_subfolder(env_dir)
 
     return "/downloads/Music"
 

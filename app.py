@@ -1178,9 +1178,7 @@ def _resolve_downloads_monitor_dir(cfg: dict | None = None) -> str:
     normalized = os.path.normpath(configured)
 
     if os.path.basename(normalized).lower() == "downloads":
-        music_subdir = os.path.join(normalized, "Music")
-        if os.path.isdir(music_subdir):
-            return music_subdir
+        return os.path.join(normalized, "Music")
 
     return configured
 

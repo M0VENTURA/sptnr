@@ -23,7 +23,7 @@ services:
       - LASTFM_WEIGHT=0.6                  #Adjust Last.FM Weighting 0.0 - 1.0 (Spotify and LastFM = 1.0)
       - MUSIC_FOLDER=/music                #Path to music folder inside container
       - DB_PATH=/database/sptnr.db         #Path to SQLite database
-      - DOWNLOADS_DIR=/downloads           #Path to downloads folder
+      - DOWNLOADS_DIR=/downloads/Music     #Path to downloads folder
       - MUSIC_ROOT=/music                  #Path to music library folder
     
     ports:
