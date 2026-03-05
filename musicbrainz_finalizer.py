@@ -35,6 +35,7 @@ class MusicBrainzFinalizer:
         self.downloads_dir = Path(DOWNLOADS_MUSIC_DIR)
         self.music_dir = Path(MUSIC_LIBRARY_DIR)
         self.ensure_directories()
+        self.ensure_schema()
 
     def ensure_directories(self):
         """Ensure all required directories exist"""
@@ -46,6 +47,14 @@ class MusicBrainzFinalizer:
         conn = sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)
         conn.row_factory = sqlite3.Row
         return conn
+
+    def ensure_schema(self):
+        """Ensure MusicBrainz release tables exist before finalization checks run."""
+        try:
+            from musicbrainz_release_manager import MusicBrainzReleaseManager
+            MusicBrainzReleaseManager().ensure_schema()
+        except Exception as e:
+            logger.warning(f"[FINALIZER] Could not ensure MusicBrainz schema: {e}")
 
     def check_and_finalize_releases(self):
         """

@@ -230,13 +230,18 @@ def get_download_queue(status=None, limit=50):
             cursor.execute("""
                 SELECT * FROM download_queue 
                 WHERE status = ?
-                ORDER BY created_at ASC
+                ORDER BY created_at DESC
                 LIMIT ?
             """, (status, limit))
         else:
             cursor.execute("""
                 SELECT * FROM download_queue 
-                ORDER BY created_at ASC
+                ORDER BY
+                    CASE
+                        WHEN status IN ('queued', 'searching', 'downloading') THEN 0
+                        ELSE 1
+                    END,
+                    created_at DESC
                 LIMIT ?
             """, (limit,))
         

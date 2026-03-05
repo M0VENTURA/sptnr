@@ -218,7 +218,7 @@
       <h5 class="card-title mb-0">
         <i class="bi bi-hourglass-split"></i> Active Queue
       </h5>
-      <span class="badge bg-info" id="activeBadge" style="display:none">0</span>
+      <span class="badge bg-success" id="activeBadge" style="display:none">0</span>
     </div>
     <div class="card-body p-0">
       <div id="activeQueueEmpty" class="alert alert-info alert-sm mb-0">
@@ -248,6 +248,13 @@
     </div>
   </div>
 </div>
+
+<style>
+  .active-album-header {
+    background-color: rgba(25, 135, 84, 0.15) !important;
+    border-left: 3px solid #198754;
+  }
+</style>
 
 <!-- Include existing JavaScript -->
 <script src="{{url_for('static', filename='js/downloads.js')}}"></script>
@@ -565,6 +572,42 @@ const folderMatchSelections = {};
 let folderGroupsFilter = 'all';
 const expandedFolderGroupIds = new Set();
 let folderStatusData = {}; // Tracks completion status from database
+let lastFolderGroupsRenderSignature = null;
+let lastActiveQueueSignature = null;
+
+function encodeInlineArg(value) {
+  return encodeURIComponent(JSON.stringify(value));
+}
+
+function decodeInlineArg(value, fallback = null) {
+  try {
+    return JSON.parse(decodeURIComponent(value));
+  } catch (error) {
+    console.warn('Failed to decode inline argument:', error);
+    return fallback;
+  }
+}
+
+function matchFolderGroupWithMusicBrainzFromEncoded(clickEvent, folderPathEnc, artistEnc, albumEnc, tracksEnc) {
+  const folderPath = decodeInlineArg(folderPathEnc, '');
+  const artist = decodeInlineArg(artistEnc, '');
+  const album = decodeInlineArg(albumEnc, '');
+  const tracks = decodeInlineArg(tracksEnc, []);
+  return matchFolderGroupWithMusicBrainz(clickEvent, folderPath, artist, album, tracks);
+}
+
+function showManualSearchModalFromEncoded(clickEvent, folderPathEnc, artistEnc, albumEnc, tracksEnc) {
+  const folderPath = decodeInlineArg(folderPathEnc, '');
+  const artist = decodeInlineArg(artistEnc, '');
+  const album = decodeInlineArg(albumEnc, '');
+  const tracks = decodeInlineArg(tracksEnc, []);
+  return showManualSearchModal(clickEvent, folderPath, artist, album, tracks);
+}
+
+function moveMatchedFolderFromEncoded(folderPathEnc) {
+  const folderPath = decodeInlineArg(folderPathEnc, '');
+  return moveMatchedFolder(folderPath);
+}
 
 async function loadFolderStatus() {
   // Load folder match status from database to show completion tracking
@@ -749,20 +792,33 @@ async function loadFolderGroups() {
     const showFolderGroups = true;
     const visibleFolderCount = filteredGroups.length;
     const totalGroups = visibleFolderCount;
+
+    const nextSignature = JSON.stringify({
+      filter: folderGroupsFilter,
+      groups: filteredGroups.map(group => ({
+        folder_path: group.folder_path,
+        folder_name: group.folder_name,
+        track_count: group.track_count,
+        artist: group.artist,
+        album: group.album,
+        is_musicbrainz_release: group.is_musicbrainz_release,
+        matched: !!folderMatchSelections[group.folder_path],
+        completion_percentage: folderStatusData[group.folder_path]?.completion_percentage || 0
+      }))
+    });
     
     if (totalGroups === 0) {
       section.style.display = 'none';
+      lastFolderGroupsRenderSignature = nextSignature;
       return;
     }
-    
-    // Preserve expanded state before re-rendering
-    const expandedGroups = new Set();
-    filteredGroups.forEach((group, index) => {
-      const trackList = document.getElementById(`group-${index}`);
-      if (trackList && trackList.style.display !== 'none') {
-        expandedGroups.add(index);
-      }
-    });
+
+    // Avoid tearing down and rebuilding the full list if the data did not change.
+    if (nextSignature === lastFolderGroupsRenderSignature) {
+      section.style.display = 'block';
+      badge.textContent = `${totalGroups} groups`;
+      return;
+    }
     
     section.style.display = 'block';
     badge.textContent = `${totalGroups} groups`;
@@ -771,6 +827,10 @@ async function loadFolderGroups() {
 
     if (showFolderGroups) {
       filteredGroups.forEach((group, index) => {
+      const folderPathEnc = encodeInlineArg(group.folder_path || '');
+      const artistEnc = encodeInlineArg(group.artist || '');
+      const albumEnc = encodeInlineArg(group.album || '');
+      const tracksEnc = encodeInlineArg(group.tracks || []);
       const folderStateKey = `folder-${makeSafeDomId(group.folder_path || group.folder_name || index)}`;
       const inconsistentClass = !group.is_consistent ? 'border-warning' : '';
       const inconsistentBadge = !group.is_consistent ? 
@@ -804,7 +864,7 @@ async function loadFolderGroups() {
       }
       
       // Check if this group was previously expanded
-      const isExpanded = expandedFolderGroupIds.has(folderStateKey) || expandedGroups.has(index);
+      const isExpanded = expandedFolderGroupIds.has(folderStateKey);
       const displayStyle = isExpanded ? 'block' : 'none';
       const toggleLabel = isExpanded ? 'Hide Tracks' : 'Show Tracks';
       const toggleIcon = isExpanded ? 'bi-chevron-up' : 'bi-chevron-down';
@@ -831,16 +891,16 @@ async function loadFolderGroups() {
               </div>
               <div class="col-md-6 text-end">
                 <button class="btn btn-sm btn-outline-primary" 
-                  onclick="matchFolderGroupWithMusicBrainz(event, '${group.folder_path}', '${group.artist}', '${group.album}', ${JSON.stringify(group.tracks)})">
+                  onclick="matchFolderGroupWithMusicBrainzFromEncoded(event, '${folderPathEnc}', '${artistEnc}', '${albumEnc}', '${tracksEnc}')">
                   <i class="bi bi-disc"></i> ${matchedSelection ? 'Change Match' : 'Auto Match'}
                 </button>
                 <button class="btn btn-sm btn-outline-secondary ms-2" 
-                        onclick="showManualSearchModal(event, '${group.folder_path}', '${group.artist}', '${group.album}', ${JSON.stringify(group.tracks)})">
+                        onclick="showManualSearchModalFromEncoded(event, '${folderPathEnc}', '${artistEnc}', '${albumEnc}', '${tracksEnc}')">
                   <i class="bi bi-search"></i> Manual Search
                 </button>
                 ${matchedSelection ? `
                 <button class="btn btn-sm btn-success ms-2" 
-                        onclick="moveMatchedFolder('${group.folder_path}')">
+                  onclick="moveMatchedFolderFromEncoded('${folderPathEnc}')">
                   <i class="bi bi-folder-check"></i> Move Files
                 </button>` : ''}
                 <button class="btn btn-sm btn-outline-secondary ms-2" 
@@ -915,6 +975,7 @@ async function loadFolderGroups() {
     }
     
     list.innerHTML = html;
+    lastFolderGroupsRenderSignature = nextSignature;
   } catch (error) {
     console.error('Error loading folder groups:', error);
   }
@@ -1013,7 +1074,7 @@ function showManualSearchModal(event, folderPath, artist, album, tracks) {
           <div class="modal-footer">
             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
             <button type="button" id="manualSearchBtn" class="btn btn-primary" 
-                    data-folder="${folderPath}" data-artist="${artist}" data-album="${album}">
+                  >
               <i class="bi bi-search"></i> Search
             </button>
           </div>
@@ -1027,14 +1088,23 @@ function showManualSearchModal(event, folderPath, artist, album, tracks) {
   document.body.insertAdjacentHTML('beforeend', html);
   const modal = new bootstrap.Modal(document.getElementById('manualSearchModal'));
   modal.show();
+
+  const searchBtn = document.getElementById('manualSearchBtn');
+  if (searchBtn) {
+    searchBtn.dataset.folder = encodeInlineArg(folderPath);
+    searchBtn.dataset.artist = encodeInlineArg(artist);
+    searchBtn.dataset.album = encodeInlineArg(album);
+  }
   
   // Attach event listener to search button
-  document.getElementById('manualSearchBtn').addEventListener('click', async function(e) {
-    const folderPath = e.target.dataset.folder;
-    const artist = e.target.dataset.artist;
-    const album = e.target.dataset.album;
-    await executeManualSearch(e, folderPath, artist, album, tracks);
-  });
+  if (searchBtn) {
+    searchBtn.addEventListener('click', async function(e) {
+      const folderPath = decodeInlineArg(e.currentTarget.dataset.folder, '');
+      const artist = decodeInlineArg(e.currentTarget.dataset.artist, '');
+      const album = decodeInlineArg(e.currentTarget.dataset.album, '');
+      await executeManualSearch(e, folderPath, artist, album, tracks);
+    });
+  }
 }
 
 async function executeManualSearch(event, folderPath, artist, album, tracks) {
@@ -1073,13 +1143,13 @@ function showMusicBrainzMatchModal(folderPath, artist, album, tracks, candidates
     const sourceBadge = source === 'discogs' ? '<span class="badge bg-info ms-2">Discogs</span>' : '';
     const trackInfo = candidate.track_count ? `${candidate.track_count} tracks` : 'Release';
     
-    // Escape quotes in candidate data for JSON
-    const candidateJson = JSON.stringify(candidate).replace(/"/g, '&quot;');
-    const tracksJson = JSON.stringify(tracks).replace(/"/g, '&quot;');
+    const folderPathEnc = encodeInlineArg(folderPath);
+    const candidateEnc = encodeInlineArg(candidate);
+    const tracksEnc = encodeInlineArg(tracks);
     
     html += `
               <button type="button" class="list-group-item list-group-item-action" 
-                      onclick='stageFolderMatch("${folderPath}", "${candidateJson}", "${tracksJson}")'>
+                      onclick="stageFolderMatch('${folderPathEnc}', '${candidateEnc}', '${tracksEnc}')">
                 <div><strong>${candidate.title}</strong>${date}${country}${sourceBadge}</div>
                 <small class="text-muted">${candidate.artist} • ${trackInfo}</small>
               </button>`;
@@ -1107,12 +1177,15 @@ function showMusicBrainzMatchModal(folderPath, artist, album, tracks, candidates
   modal.show();
 }
 
-async function stageFolderMatch(folderPath, candidateJson, tracksJson) {
+async function stageFolderMatch(folderPathEnc, candidateEnc, tracksEnc) {
   // Save selected match; user can move files in a separate explicit step.
   try {
-    // Parse escaped JSON
-    const candidate = JSON.parse(candidateJson.replace(/&quot;/g, '"'));
-    const tracks = JSON.parse(tracksJson.replace(/&quot;/g, '"'));
+    const folderPath = decodeInlineArg(folderPathEnc, '');
+    const candidate = decodeInlineArg(candidateEnc, null);
+    const tracks = decodeInlineArg(tracksEnc, []);
+    if (!candidate) {
+      throw new Error('Invalid release candidate data');
+    }
     
     // Close the modal
     const modal = bootstrap.Modal.getInstance(document.getElementById('mbMatchModal'));
@@ -1241,6 +1314,22 @@ function renderActiveQueue(active) {
   badge.textContent = active.length;
   badge.style.display = 'inline-block';
 
+  const nextSignature = JSON.stringify(active.map(item => ({
+    id: item.id,
+    status: item.status,
+    title: item.title,
+    artist: item.artist,
+    album: item.album,
+    source: item.source,
+    exists_in_library: item.exists_in_library,
+    retry_count: item.retry_count,
+    mb_match_candidates: item.mb_match_candidates
+  })));
+
+  if (nextSignature === lastActiveQueueSignature) {
+    return;
+  }
+
   // Group items by album
   const grouped = groupByAlbum(active);
   const pendingRenderedAlbums = new Set();
@@ -1256,7 +1345,7 @@ function renderActiveQueue(active) {
     
     // Album group header
     html += `
-      <div class="list-group-item bg-secondary-subtle border-bottom-0 py-2">
+      <div class="list-group-item active-album-header border-bottom-0 py-2">
         <div class="d-flex justify-content-between align-items-center">
           <div class="d-flex align-items-center flex-grow-1 gap-2 cursor-pointer" onclick="toggleAlbumGroup('${toggleId}', '${group.key}')">
             <i class="bi ${isExpanded ? 'bi-chevron-down' : 'bi-chevron-right'} expand-chevron" id="chevron-${toggleId}"></i>
@@ -1345,7 +1434,7 @@ function renderActiveQueue(active) {
                 ${candidateHtml}
               </div>
               <div class="d-flex gap-2 align-items-center flex-shrink-0">
-                <span class="badge ${item.status === 'downloading' ? 'bg-warning' : item.status === 'discovered' ? 'bg-info' : isPossibleDuplicate ? 'bg-warning' : isPendingMatch ? 'bg-secondary' : 'bg-primary'}">${statusLabel}</span>
+                <span class="badge ${item.status === 'downloading' ? 'bg-success text-dark' : item.status === 'discovered' ? 'bg-info' : isPossibleDuplicate ? 'bg-warning' : isPendingMatch ? 'bg-secondary' : 'bg-success'}">${statusLabel}</span>
                 <span class="badge bg-secondary">${item.source || 'unknown'}</span>
                 <button class="btn btn-sm btn-outline-danger" onclick="deleteQueueItem(${item.id})" title="Remove from queue">
                   <i class="bi bi-x"></i>
@@ -1360,6 +1449,7 @@ function renderActiveQueue(active) {
   
   html += '</div>';
   container.innerHTML = html;
+  lastActiveQueueSignature = nextSignature;
 }
 
 function toggleAlbumGroup(toggleId, groupKey) {
@@ -1378,7 +1468,8 @@ function toggleAlbumGroup(toggleId, groupKey) {
   
   // Save expanded state to sessionStorage
   const expandedState = JSON.parse(sessionStorage.getItem('activeQueueExpandedAlbums') || '{}');
-  expandedState[groupKey] = !expandedState[groupKey];
+  const isNowExpanded = chevron ? chevron.classList.contains('bi-chevron-down') : true;
+  expandedState[groupKey] = isNowExpanded;
   sessionStorage.setItem('activeQueueExpandedAlbums', JSON.stringify(expandedState));
 }
 

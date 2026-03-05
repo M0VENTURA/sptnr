@@ -40,6 +40,7 @@ class MusicBrainzFileMatcher:
     def __init__(self):
         self.downloads_dir = Path(DOWNLOADS_MUSIC_DIR)
         self.ensure_directory()
+        self.ensure_schema()
 
     def ensure_directory(self):
         """Ensure downloads directory exists"""
@@ -50,6 +51,14 @@ class MusicBrainzFileMatcher:
         conn = sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)
         conn.row_factory = sqlite3.Row
         return conn
+
+    def ensure_schema(self):
+        """Ensure MusicBrainz release tables exist before background matching runs."""
+        try:
+            from musicbrainz_release_manager import MusicBrainzReleaseManager
+            MusicBrainzReleaseManager().ensure_schema()
+        except Exception as e:
+            logger.warning(f"[FILE_MATCHER] Could not ensure MusicBrainz schema: {e}")
 
     def monitor_and_match(self):
         """

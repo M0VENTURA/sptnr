@@ -624,7 +624,7 @@ function displayMusicBrainzResults(results) {
       }
 
       return `
-        <tr>
+        <tr class="table-dark">
           <td>${escapeHtml(track.position || '')}</td>
           <td>${escapeHtml(track.title || '')}</td>
           <td>${duration}</td>
@@ -665,7 +665,7 @@ function displayMusicBrainzResults(results) {
                 <i class="bi bi-download"></i> Download All Tracks (${release.track_count || (release.tracks || []).length})
               </button>
             </div>
-            <table class="table table-sm table-hover">
+            <table class="table table-sm table-hover table-striped table-dark mb-track-table">
               <thead>
                 <tr>
                   <th style="width: 60px;">#</th>

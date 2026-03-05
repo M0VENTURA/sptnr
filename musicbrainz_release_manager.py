@@ -37,6 +37,7 @@ class MusicBrainzReleaseManager:
         self.downloads_dir = Path(DOWNLOADS_MUSIC_DIR)
         self.music_dir = Path(MUSIC_LIBRARY_DIR)
         self.ensure_directories()
+        self.ensure_schema()
 
     def ensure_directories(self):
         """Create all required directories"""
@@ -46,6 +47,77 @@ class MusicBrainzReleaseManager:
     def get_db(self):
         """Get database connection"""
         return sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)
+
+    def ensure_schema(self):
+        """Create required MusicBrainz release tables if they are missing."""
+        conn = self.get_db()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS musicbrainz_releases (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    release_id TEXT NOT NULL UNIQUE,
+                    release_title TEXT NOT NULL,
+                    artist TEXT NOT NULL,
+                    release_year INTEGER,
+                    total_tracks INTEGER,
+                    monitoring_folder_path TEXT,
+                    final_folder_path TEXT,
+                    status TEXT DEFAULT 'active',
+                    method TEXT,
+                    discovered_count INTEGER DEFAULT 0,
+                    organized_count INTEGER DEFAULT 0,
+                    finalized_count INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    finalized_at TIMESTAMP
+                )
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS musicbrainz_release_tracks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    release_id TEXT NOT NULL,
+                    queue_id INTEGER,
+                    track_number INTEGER,
+                    track_title TEXT,
+                    track_artist TEXT,
+                    duration INTEGER,
+                    isrc TEXT,
+                    found_filename TEXT,
+                    file_path TEXT,
+                    status TEXT DEFAULT 'queued',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (release_id) REFERENCES musicbrainz_releases(release_id),
+                    FOREIGN KEY (queue_id) REFERENCES download_queue(id)
+                )
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_mb_releases_status
+                ON musicbrainz_releases(status)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_mb_releases_created
+                ON musicbrainz_releases(created_at DESC)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_mb_release_tracks_release
+                ON musicbrainz_release_tracks(release_id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_mb_release_tracks_status
+                ON musicbrainz_release_tracks(release_id, status)
+            """)
+
+            conn.commit()
+        except Exception as e:
+            logger.error(f"[SCHEMA] Error ensuring MusicBrainz release schema: {e}")
+            raise
+        finally:
+            conn.close()
 
     def fetch_release_from_musicbrainz(self, release_id):
         """
