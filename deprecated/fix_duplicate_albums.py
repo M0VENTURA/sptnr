@@ -19,7 +19,21 @@ from collections import defaultdict
 from typing import List, Dict, Tuple
 
 # Import centralized logging
-from logging_config import setup_logging, log_unified, log_info, log_debug
+try:
+    from helpers.logging_config import setup_logging, log_unified, log_info, log_debug
+except Exception:
+    # Fallback for environments where helpers.logging_config is unavailable
+    def setup_logging(_name=None):
+        pass
+
+    def log_unified(msg, level=logging.INFO):
+        logging.getLogger(__name__).log(level, msg)
+
+    def log_info(msg, level=logging.INFO):
+        logging.getLogger(__name__).log(level, msg)
+
+    def log_debug(msg, level=logging.DEBUG):
+        logging.getLogger(__name__).log(level, msg)
 
 # Set up logging
 setup_logging("duplicate_fixer")
