@@ -104,9 +104,52 @@ def get_slskd_client():
         logger.error(f"Error getting SlskdClient: {e}")
         return None
 
+def cleanup_stuck_searching_items():
+    """Detect and mark as failed any items stuck in 'searching' for too long"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Items stuck in 'searching' for more than 90 seconds are likely hung
+        stuck_threshold = (datetime.now() - timedelta(seconds=90)).isoformat()
+        
+        cursor.execute("""
+            SELECT id, artist, title, updated_at FROM download_queue
+            WHERE status = 'searching'
+            AND updated_at < ?
+        """, (stuck_threshold,))
+        
+        stuck_items = cursor.fetchall()
+        
+        if stuck_items:
+            logger.warning(f"Found {len(stuck_items)} items stuck in 'searching' status, marking for retry...")
+            
+            for item in stuck_items:
+                item_id = item['id']
+                logger.warning(
+                    f"Queue {item_id}: Detected stuck search ({item['artist']} - {item['title']}, "
+                    f"updated at {item['updated_at']}), marking for retry..."
+                )
+                mark_failed(
+                    item_id,
+                    "Stuck in searching state (likely slskd unresponsive)",
+                    schedule_retry=True,
+                    retry_delay_minutes=15
+                )
+        
+        conn.close()
+        return len(stuck_items)
+        
+    except Exception as e:
+        logger.error(f"Error cleaning up stuck searching items: {e}")
+        return 0
+
 def get_queued_items(limit=10):
     """Get items ready to process (queued or scheduled for retry)"""
     try:
+        # First, clean up any items stuck in 'searching' state
+        cleanup_stuck_searching_items()
+        
         conn = get_db()
         cursor = conn.cursor()
         
@@ -259,6 +302,8 @@ def search_and_download(queue_id, queue_item, client):
         # Increased timeout to 45 seconds to handle slow Soulseek peer responses
         MAX_POLL_ATTEMPTS = 45
         best_result = None
+        poll_start_time = datetime.now()
+        
         for poll_attempt in range(MAX_POLL_ATTEMPTS):
             time.sleep(1)
             
@@ -301,7 +346,8 @@ def search_and_download(queue_id, queue_item, client):
                 logger.debug(traceback.format_exc())
         
         if not best_result:
-            logger.warning(f"Queue {queue_id}: ✗ No results found after {MAX_POLL_ATTEMPTS} seconds of polling")
+            elapsed = (datetime.now() - poll_start_time).total_seconds()
+            logger.warning(f"Queue {queue_id}: ✗ No results found after {elapsed:.0f}s of polling")
             mark_failed(queue_id, f"No results found for '{search_query}'", schedule_retry=True, retry_delay_minutes=60)
             return False
         
@@ -323,6 +369,7 @@ def search_and_download(queue_id, queue_item, client):
             
     except Exception as e:
         logger.error(f"Queue {queue_id}: Error in search_and_download: {e}")
+        logger.debug(traceback.format_exc())
         mark_failed(queue_id, f"Search error: {str(e)}", schedule_retry=True)
         return False
 
