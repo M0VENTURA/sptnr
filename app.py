@@ -28,7 +28,24 @@ try:
     import psycopg2.extras
     from psycopg2 import sql as psql
 except ImportError:
-    pass  # PostgreSQL support optional
+    psycopg2 = None  # type: ignore[assignment]
+    psql = None  # type: ignore[assignment]
+
+
+def _ensure_psycopg2_loaded() -> bool:
+    """Attempt lazy-load of psycopg2 so migration works without app restart after install."""
+    global psycopg2, psql
+    if psycopg2 is not None and psql is not None:
+        return True
+    try:
+        import psycopg2 as _psycopg2  # type: ignore[import-not-found]
+        import psycopg2.extras  # type: ignore[import-not-found]
+        from psycopg2 import sql as _psql  # type: ignore[import-not-found]
+        psycopg2 = _psycopg2  # type: ignore[assignment]
+        psql = _psql  # type: ignore[assignment]
+        return True
+    except ImportError:
+        return False
 # Mutagen imports for audio file tagging
 try:
     from mutagen.mp3 import MP3
@@ -1635,7 +1652,7 @@ def get_db():
     global _schema_updated
     if PG_HOST and PG_USER and PG_DATABASE:
         # Connect to PostgreSQL
-        if 'psycopg2' not in globals():
+        if not _ensure_psycopg2_loaded() or psycopg2 is None:
             raise RuntimeError("psycopg2 not available - install with: pip install psycopg2-binary")
         conn = psycopg2.connect(  # type: ignore[name-defined]
             host=PG_HOST,
@@ -1662,7 +1679,9 @@ def get_db():
 
 def _is_postgres_connection(conn):
     """Return True when the active DB connection is PostgreSQL."""
-    return 'psycopg2' in globals() and isinstance(conn, psycopg2.extensions.connection)  # type: ignore[name-defined]
+    if not _ensure_psycopg2_loaded() or psycopg2 is None:
+        return False
+    return isinstance(conn, psycopg2.extensions.connection)  # type: ignore[name-defined]
 
 
 def _table_exists(cursor, table_name, is_postgres=False):
@@ -7184,10 +7203,10 @@ def config_migrate_postgres():
         return "TEXT"
 
     try:
-        if 'psycopg2' not in globals() or 'psql' not in globals():
+        if not _ensure_psycopg2_loaded() or psycopg2 is None or psql is None:
             return jsonify({
                 "success": False,
-                "error": "PostgreSQL driver not available. Install psycopg2-binary first."
+                "error": "PostgreSQL driver not available. Install psycopg2-binary and restart the service/container if required."
             }), 400
 
         payload = request.get_json(force=True) or {}
@@ -11963,6 +11982,7 @@ def api_downloads_move_individual_track(track_index):
         
         data = request.get_json() or {}
         track = data.get('track')
+        folder_path = data.get('folder_path')
         release_metadata = data.get('release_metadata')
         check_duplicates = data.get('check_duplicates', True)
         
@@ -11976,8 +11996,8 @@ def api_downloads_move_individual_track(track_index):
         cfg = get_config()
         music_dir = cfg.get('navidrome', {}).get('music_folder', '/music')
         
-        # Get database connection if duplicate checking enabled
-        conn = get_db() if check_duplicates else None
+        # Use a DB connection for duplicate checks and folder-match progress tracking.
+        conn = get_db()
         
         result = organize_individual_track(
             track,
@@ -11987,6 +12007,149 @@ def api_downloads_move_individual_track(track_index):
             check_duplicates=check_duplicates
         )
         
+        if result.get('success') and folder_path:
+            try:
+                cursor = conn.cursor()
+                is_pg = _is_postgres_connection(conn)
+                placeholder = "%s" if is_pg else "?"
+
+                # Only attempt tracking when folder tracking tables exist.
+                if _table_exists(cursor, 'folder_album_matches', is_postgres=is_pg) and _table_exists(cursor, 'folder_track_matches', is_postgres=is_pg):
+                    abs_folder_path = os.path.abspath(folder_path)
+                    release_id = release_metadata.get('id')
+                    release_source = release_metadata.get('source', 'musicbrainz')
+                    release_artist = release_metadata.get('artist') or track.get('artist') or 'Unknown Artist'
+                    release_album = release_metadata.get('title') or track.get('album') or 'Unknown Album'
+                    release_date = release_metadata.get('date')
+                    total_expected_tracks = int(release_metadata.get('track_count') or 0)
+
+                    # Ensure folder-level match row exists (same table used by full-folder moves).
+                    cursor.execute(
+                        f"SELECT id, total_expected_tracks FROM folder_album_matches WHERE folder_path = {placeholder}",
+                        (abs_folder_path,)
+                    )
+                    existing_match = cursor.fetchone()
+
+                    if existing_match:
+                        folder_match_id = _row_get(existing_match, 'id', 0)
+                        existing_total = _row_get(existing_match, 'total_expected_tracks', 1, 0) or 0
+                        merged_total = max(existing_total, total_expected_tracks)
+                        cursor.execute(
+                            f"""
+                            UPDATE folder_album_matches
+                            SET mb_release_id = {placeholder},
+                                mb_source = {placeholder},
+                                artist = {placeholder},
+                                album = {placeholder},
+                                release_date = {placeholder},
+                                total_expected_tracks = {placeholder},
+                                status = 'organizing',
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = {placeholder}
+                            """,
+                            (release_id, release_source, release_artist, release_album, release_date, merged_total, folder_match_id)
+                        )
+                    else:
+                        if is_pg:
+                            cursor.execute(
+                                """
+                                INSERT INTO folder_album_matches
+                                (folder_path, mb_release_id, mb_source, artist, album, release_date,
+                                 total_expected_tracks, matched_tracks_count, status)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, 0, 'organizing')
+                                RETURNING id
+                                """,
+                                (abs_folder_path, release_id, release_source, release_artist, release_album, release_date, total_expected_tracks)
+                            )
+                            inserted_row = cursor.fetchone()
+                            folder_match_id = _row_get(inserted_row, 'id', 0)
+                        else:
+                            cursor.execute(
+                                f"""
+                                INSERT INTO folder_album_matches
+                                (folder_path, mb_release_id, mb_source, artist, album, release_date,
+                                 total_expected_tracks, matched_tracks_count, status)
+                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 0, 'organizing')
+                                """,
+                                (abs_folder_path, release_id, release_source, release_artist, release_album, release_date, total_expected_tracks)
+                            )
+                            folder_match_id = cursor.lastrowid
+
+                    source_file = result.get('source_file') or track.get('file_path')
+                    destination_file = result.get('destination_file')
+                    track_number = track.get('track_number')
+                    track_title = track.get('title')
+                    track_artist = track.get('artist') or release_artist
+
+                    # Upsert moved track record so UI can show "Done" for individually moved tracks.
+                    cursor.execute(
+                        f"""
+                        SELECT id FROM folder_track_matches
+                        WHERE folder_match_id = {placeholder}
+                          AND (organized_path = {placeholder} OR file_path = {placeholder})
+                        LIMIT 1
+                        """,
+                        (folder_match_id, destination_file, source_file)
+                    )
+                    existing_track_match = cursor.fetchone()
+
+                    if existing_track_match:
+                        track_match_id = _row_get(existing_track_match, 'id', 0)
+                        cursor.execute(
+                            f"""
+                            UPDATE folder_track_matches
+                            SET file_path = {placeholder},
+                                organized_path = {placeholder},
+                                track_number = {placeholder},
+                                track_title = {placeholder},
+                                track_artist = {placeholder},
+                                organized_at = CURRENT_TIMESTAMP
+                            WHERE id = {placeholder}
+                            """,
+                            (source_file, destination_file, track_number, track_title, track_artist, track_match_id)
+                        )
+                    else:
+                        cursor.execute(
+                            f"""
+                            INSERT INTO folder_track_matches
+                            (folder_match_id, file_path, organized_path, track_number,
+                             track_title, track_artist, organized_at)
+                            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
+                            """,
+                            (folder_match_id, source_file, destination_file, track_number, track_title, track_artist)
+                        )
+
+                    cursor.execute(
+                        f"SELECT COUNT(*) FROM folder_track_matches WHERE folder_match_id = {placeholder}",
+                        (folder_match_id,)
+                    )
+                    matched_count_row = cursor.fetchone()
+                    matched_count = _row_get(matched_count_row, 'count', 0, 0) if matched_count_row else 0
+
+                    status_value = 'organizing'
+                    if total_expected_tracks and matched_count >= total_expected_tracks:
+                        status_value = 'completed'
+
+                    cursor.execute(
+                        f"""
+                        UPDATE folder_album_matches
+                        SET matched_tracks_count = {placeholder},
+                            status = {placeholder},
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = {placeholder}
+                        """,
+                        (matched_count, status_value, folder_match_id)
+                    )
+
+                    conn.commit()
+            except Exception as tracking_error:
+                # Do not fail the file move if progress tracking update fails.
+                logging.error(f"Error updating folder tracking for individual move: {tracking_error}")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
         if conn:
             conn.close()
         

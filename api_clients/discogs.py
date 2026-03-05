@@ -290,6 +290,61 @@ class DiscogsClient:
         except Exception as e:
             logger.error(f"Discogs metadata lookup failed for '{title}' by '{artist}': {e}")
             return None
+
+    def search_releases(self, query: str, limit: int = 5, timeout: tuple[int, int] | int = (5, 10)) -> list[dict]:
+        """Compatibility helper used by folder-grouping fallback code.
+
+        Returns simplified release results with keys: id, title, artist, year, country.
+        """
+        if not self.enabled or not self.token:
+            return []
+
+        query = (query or "").strip()
+        if not query:
+            return []
+
+        try:
+            _throttle_discogs()
+            search_url = f"{self.base_url}/database/search"
+            params = {
+                "q": query,
+                "type": "release",
+                "per_page": max(1, min(int(limit or 5), 25)),
+            }
+
+            def make_search_request():
+                response = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
+                if response.status_code == 429:
+                    retry_after = int(response.headers.get("Retry-After", 60))
+                    time.sleep(retry_after)
+                    _throttle_discogs()
+                    response = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
+                response.raise_for_status()
+                return response
+
+            response = _retry_on_500(make_search_request, max_retries=2, retry_delay=1.0)
+            raw_results = response.json().get("results", []) or []
+
+            normalized = []
+            for item in raw_results[: params["per_page"]]:
+                full_title = item.get("title", "") or ""
+                artist_name = ""
+                release_title = full_title
+                if " - " in full_title:
+                    artist_name, release_title = full_title.split(" - ", 1)
+
+                normalized.append({
+                    "id": item.get("id"),
+                    "title": release_title or full_title,
+                    "artist": artist_name,
+                    "year": item.get("year"),
+                    "country": item.get("country", "") or "",
+                })
+
+            return normalized
+        except Exception as e:
+            logger.debug(f"Discogs release search failed for query '{query}': {e}")
+            return []
     
     def _determine_if_single(
         self,

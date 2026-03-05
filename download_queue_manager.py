@@ -10,6 +10,7 @@ import sqlite3
 import json
 import logging
 import time
+import threading
 import yaml
 import requests
 from difflib import SequenceMatcher
@@ -38,6 +39,9 @@ _scan_progress = {
     'start_time': None,
     'current_path': '',
 }
+
+_queue_schema_checked = False
+_queue_schema_lock = threading.Lock()
 
 def get_scan_progress():
     """Get current scan progress state."""
@@ -134,7 +138,51 @@ def get_db():
         conn.execute("PRAGMA journal_mode=WAL")
     except Exception as e:
         logger.warning(f"Could not enable WAL mode: {e}")
+    # Ask SQLite to wait for lock release before raising OperationalError.
+    try:
+        conn.execute("PRAGMA busy_timeout=5000")
+    except Exception as e:
+        logger.warning(f"Could not set busy_timeout: {e}")
     return conn
+
+
+def _ensure_download_queue_columns(conn, cursor):
+    """Ensure expected queue columns exist (run once per process)."""
+    global _queue_schema_checked
+    if _queue_schema_checked:
+        return
+
+    with _queue_schema_lock:
+        if _queue_schema_checked:
+            return
+
+        cursor.execute("PRAGMA table_info(download_queue);")
+        columns = [row[1] for row in cursor.fetchall()]
+
+        required_cols = {
+            'search_query': "TEXT",
+            'source': "TEXT DEFAULT 'soulseek'",
+            'priority': "INTEGER DEFAULT 5",
+            'import_group': "TEXT",
+            'import_type': "TEXT DEFAULT 'song'",
+            'track_number': "TEXT",
+            'disc_number': "TEXT",
+            'album_artist': "TEXT",
+            'year': "TEXT",
+            'release_id': "TEXT",
+            'release_source': "TEXT"
+        }
+
+        for col, col_type in required_cols.items():
+            if col not in columns:
+                logger.info(f"Adding missing column '{col}' to download_queue")
+                try:
+                    cursor.execute(f"ALTER TABLE download_queue ADD COLUMN {col} {col_type};")
+                    conn.commit()
+                except Exception as e:
+                    logger.warning(f"Could not add {col} column: {e}")
+
+        _queue_schema_checked = True
 
 
 def execute_write_with_retry(cursor, conn, query, params=(), context="database write", max_retries=5, initial_delay=0.1):
@@ -256,32 +304,8 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
             conn.close()
             return None
         
-        # Ensure all required columns exist
-        cursor.execute("PRAGMA table_info(download_queue);")
-        columns = [row[1] for row in cursor.fetchall()]
-        
-        required_cols = {
-            'search_query': "TEXT",
-            'source': "TEXT DEFAULT 'soulseek'",
-            'priority': "INTEGER DEFAULT 5",
-            'import_group': "TEXT",
-            'import_type': "TEXT DEFAULT 'song'",
-            'track_number': "TEXT",
-            'disc_number': "TEXT",
-            'album_artist': "TEXT",
-            'year': "TEXT",
-            'release_id': "TEXT",
-            'release_source': "TEXT"
-        }
-        
-        for col, col_type in required_cols.items():
-            if col not in columns:
-                logger.info(f"Adding missing column '{col}' to download_queue")
-                try:
-                    cursor.execute(f"ALTER TABLE download_queue ADD COLUMN {col} {col_type};")
-                    conn.commit()
-                except Exception as e:
-                    logger.warning(f"Could not add {col} column: {e}")
+        # Ensure schema once to avoid repeated ALTER/PRAGMA on every insert.
+        _ensure_download_queue_columns(conn, cursor)
         
         search_query = f"{artist} - {title}"
         if album:
@@ -299,7 +323,9 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
             """,
                 (artist, title, album, search_query, source, priority, import_group, import_type,
                  track_number, album_artist, year, release_id, release_source),
-                context="add_to_queue insert"
+                context="add_to_queue insert",
+                max_retries=8,
+                initial_delay=0.2,
             )
 
             queue_id = cursor.lastrowid

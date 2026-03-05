@@ -615,6 +615,84 @@ function decodeInlineArg(value, fallback = null) {
   }
 }
 
+function normalizeTrackText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/\[[^\]]*\]/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function getTrackSimilarity(a, b) {
+  const x = normalizeTrackText(a);
+  const y = normalizeTrackText(b);
+  if (!x || !y) return 0;
+  if (x === y) return 1;
+  if (x.includes(y) || y.includes(x)) return 0.9;
+
+  const xWords = x.split(' ');
+  const yWords = y.split(' ');
+  const ySet = new Set(yWords);
+  const common = xWords.filter(w => ySet.has(w)).length;
+  const maxLen = Math.max(xWords.length, yWords.length);
+  return maxLen > 0 ? (common / maxLen) : 0;
+}
+
+function buildFolderToReleaseTrackMap(folderTracks, releaseTracks) {
+  const mapping = {};
+  if (!Array.isArray(folderTracks) || !Array.isArray(releaseTracks) || releaseTracks.length === 0) {
+    return mapping;
+  }
+
+  const usedReleaseIndexes = new Set();
+
+  // First pass: match by track number when available.
+  folderTracks.forEach((track, folderIndex) => {
+    const num = parseInt(track?.track_number, 10);
+    if (!Number.isFinite(num) || num <= 0) return;
+    const releaseIndex = num - 1;
+    if (releaseTracks[releaseIndex] && !usedReleaseIndexes.has(releaseIndex)) {
+      mapping[folderIndex] = {
+        releaseIndex,
+        releaseTrack: releaseTracks[releaseIndex],
+        confidence: 1,
+        method: 'track_number'
+      };
+      usedReleaseIndexes.add(releaseIndex);
+    }
+  });
+
+  // Second pass: match remaining tracks by title similarity.
+  folderTracks.forEach((track, folderIndex) => {
+    if (mapping[folderIndex]) return;
+    let bestIndex = -1;
+    let bestScore = 0;
+
+    releaseTracks.forEach((releaseTrack, releaseIndex) => {
+      if (usedReleaseIndexes.has(releaseIndex)) return;
+      const score = getTrackSimilarity(track?.title, releaseTrack?.title);
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = releaseIndex;
+      }
+    });
+
+    if (bestIndex >= 0 && bestScore >= 0.5) {
+      mapping[folderIndex] = {
+        releaseIndex: bestIndex,
+        releaseTrack: releaseTracks[bestIndex],
+        confidence: bestScore,
+        method: 'title_similarity'
+      };
+      usedReleaseIndexes.add(bestIndex);
+    }
+  });
+
+  return mapping;
+}
+
 function matchFolderGroupWithMusicBrainzFromEncoded(clickEvent, folderPathEnc, artistEnc, albumEnc, tracksEnc) {
   const folderPath = decodeInlineArg(folderPathEnc, '');
   const artist = decodeInlineArg(artistEnc, '');
@@ -670,7 +748,8 @@ async function moveIndividualTrackFromEncoded(folderPathEnc, trackIndex, trackEn
       title: candidate.title,
       artist: candidate.artist,
       date: candidate.date,
-      source: candidate.source || 'musicbrainz'
+      source: candidate.source || 'musicbrainz',
+      track_count: candidate.track_count || null
     };
     
     // Call move function
@@ -1042,8 +1121,12 @@ async function loadFolderGroups(options = {}) {
         ' <span class="badge bg-warning">Mixed Metadata</span>' : '';
       const matchedSelection = folderMatchSelections[group.folder_path];
       const matchedBadge = matchedSelection ? ' <span class="badge bg-success"><i class="bi bi-check-circle"></i> Matched</span>' : '';
+      const mappedCount = matchedSelection && matchedSelection.trackMapByIndex
+        ? Object.keys(matchedSelection.trackMapByIndex).length
+        : 0;
       const matchedDetails = matchedSelection
-        ? `<div class="small text-success mt-1"><strong>Selected:</strong> ${escapeHtml(matchedSelection.candidate.title || 'Unknown release')} (${escapeHtml(matchedSelection.candidate.source || 'musicbrainz')})</div>`
+        ? `<div class="small text-success mt-1"><strong>Selected:</strong> ${escapeHtml(matchedSelection.candidate.title || 'Unknown release')} (${escapeHtml(matchedSelection.candidate.source || 'musicbrainz')})</div>
+           <div class="small text-info"><strong>Mapped:</strong> ${mappedCount}/${group.tracks.length} folder tracks aligned to release tracklist</div>`
         : '';
       
       // Get folder status from database (if it exists)
@@ -1141,8 +1224,10 @@ async function loadFolderGroups(options = {}) {
                 
                 // Check if this track has been organized (from folder status)
                 let trackMatched = false;
+                let preMatched = false;
                 let trackClass = '';
                 let trackIcon = '';
+                let mappingHint = '';
                 
                 if (folderStatus && folderStatus.matched_tracks) {
                   trackMatched = folderStatus.matched_tracks.some(mt => 
@@ -1159,6 +1244,17 @@ async function loadFolderGroups(options = {}) {
                     trackIcon = '<i class="bi bi-hourglass me-1"></i>';
                   }
                 }
+
+                if (!trackMatched && matchedSelection && matchedSelection.trackMapByIndex) {
+                  const mapped = matchedSelection.trackMapByIndex[trackIdx];
+                  if (mapped && mapped.releaseTrack) {
+                    preMatched = true;
+                    trackClass = trackClass || 'table-info';
+                    trackIcon = '<i class="bi bi-link-45deg text-info me-1"></i>';
+                    const confPercent = Math.round((mapped.confidence || 0) * 100);
+                    mappingHint = `<div class="small text-info">MB: ${escapeHtml(mapped.releaseTrack.title || '')} (${confPercent}%)</div>`;
+                  }
+                }
                 
                 // Per-track move button (only show if a match is selected and track not yet moved)
                 let moveButtonHtml = '';
@@ -1173,6 +1269,8 @@ async function loadFolderGroups(options = {}) {
                   </button>`;
                 } else if (trackMatched) {
                   moveButtonHtml = `<small class="text-success"><i class="bi bi-check-circle"></i> Done</small>`;
+                } else if (preMatched) {
+                  moveButtonHtml = `<small class="text-info"><i class="bi bi-link-45deg"></i> Matched</small>`;
                 } else {
                   moveButtonHtml = `<small class="text-muted">Waiting for match</small>`;
                 }
@@ -1180,7 +1278,7 @@ async function loadFolderGroups(options = {}) {
                 html += `
                       <tr class="${trackClass}">
                         <td><small>${trackIcon}${track.track_number || '-'}</small></td>
-                        <td><small>${track.title}</small></td>
+                        <td><small>${track.title}</small>${mappingHint}</td>
                         <td><small>${duration}</small></td>
                         <td style="text-align: center;">${moveButtonHtml}</td>
                       </tr>`;
@@ -1745,13 +1843,30 @@ async function stageFolderMatch(folderPathEnc, candidateEnc, tracksEnc) {
     const modal = bootstrap.Modal.getInstance(document.getElementById('mbMatchModal'));
     if (modal) modal.hide();
 
+    let releaseTracks = [];
+    try {
+      const source = candidate.source || 'musicbrainz';
+      const response = await fetch(`/api/downloads/release/${encodeURIComponent(source)}/${encodeURIComponent(candidate.id)}/tracks`);
+      const data = await response.json();
+      if (data.success && Array.isArray(data.tracks)) {
+        releaseTracks = data.tracks;
+      }
+    } catch (fetchError) {
+      console.warn('Could not fetch release tracks for selected match:', fetchError);
+    }
+
+    const trackMapByIndex = buildFolderToReleaseTrackMap(tracks, releaseTracks);
+
     folderMatchSelections[folderPath] = {
       candidate,
       tracks,
+      releaseTracks,
+      trackMapByIndex,
       selectedAt: Date.now()
     };
 
-    alert('✅ Match selected. Click "Move Files" on the folder row when you are ready.');
+    const mappedCount = Object.keys(trackMapByIndex).length;
+    alert(`✅ Match selected. Mapped ${mappedCount}/${tracks.length} tracks to the release tracklist. Click "Move Files" when ready.`);
     await loadFolderGroups();
 
   } catch (error) {
