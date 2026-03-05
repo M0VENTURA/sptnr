@@ -6923,6 +6923,15 @@ def api_delete_bookmark(bookmark_id):
 @app.route("/config", methods=["GET", "POST"])
 def config_editor():
     """View/edit config.yaml. Always allow access, show warning if setup incomplete."""
+
+    def _as_dict(value):
+        return value if isinstance(value, dict) else {}
+
+    def _as_list_of_dicts(value):
+        if not isinstance(value, list):
+            return []
+        return [item for item in value if isinstance(item, dict)]
+
     if request.method == "POST":
         # Require authentication for config changes
         if 'username' not in session:
@@ -6961,6 +6970,22 @@ def config_editor():
     # Ensure config is a dict (in case YAML parsed to something else)
     if not isinstance(config, dict):
         config = {}
+
+    # Normalize top-level sections to dicts to prevent template crashes like
+    # "'str object' has no attribute 'get'" when YAML contains malformed values.
+    for key in [
+        'navidrome', 'qbittorrent', 'slskd', 'authentik', 'bookmarks',
+        'downloads', 'api_integrations', 'database', 'logging', 'watcher',
+        'features', 'weights', 'single_detection', 'tags'
+    ]:
+        config[key] = _as_dict(config.get(key))
+
+    # Ensure nested structures used by config.html are also dicts.
+    config['features']['retry_scheduler'] = _as_dict(config['features'].get('retry_scheduler'))
+
+    # Keep navidrome_users predictable for setup checks and template iteration.
+    config['navidrome_users'] = _as_list_of_dicts(config.get('navidrome_users'))
+
     # Check for required keys in navidrome_users (for warning only)
     navidrome_users = config.get('navidrome_users', [])
     required_keys = ["base_url", "user", "pass"]
@@ -7006,6 +7031,12 @@ def config_env_vars_post():
 def config_save_json():
     """Save config as JSON - converts to YAML and updates config.yaml"""
     try:
+        def _as_dict(value):
+            return value if isinstance(value, dict) else {}
+
+        def _as_list(value):
+            return value if isinstance(value, list) else []
+
         # Get JSON data
         data = request.get_json()
         
@@ -7013,30 +7044,36 @@ def config_save_json():
             return jsonify({"success": False, "error": "No JSON data provided"}), 400
         
         # Build YAML structure from JSON
-        navidrome_users = data.get('navidrome_users', [])
+        navidrome_users = _as_list(data.get('navidrome_users', []))
         # Map legacy/alternate keys to expected keys on save
         for user in navidrome_users:
+            if not isinstance(user, dict):
+                continue
             if "navidrome_base_url" in user:
                 user["base_url"] = user["navidrome_base_url"]
             if "navidrome_password" in user:
                 user["pass"] = user["navidrome_password"]
             if "username" in user:
                 user["user"] = user["username"]
+
+        features = _as_dict(data.get('features', {}))
+        features['retry_scheduler'] = _as_dict(features.get('retry_scheduler'))
+
         config_dict = {
             'navidrome_users': navidrome_users,
-            'qbittorrent': data.get('qbittorrent', {}),
-            'slskd': data.get('slskd', {}),
-            'authentik': data.get('authentik', {}),
-            'bookmarks': data.get('bookmarks', {}),
-            'downloads': data.get('downloads', {}),
-            'api_integrations': data.get('api_integrations', {}),
-            'database': data.get('database', {}),
-            'logging': data.get('logging', {}),
+            'qbittorrent': _as_dict(data.get('qbittorrent', {})),
+            'slskd': _as_dict(data.get('slskd', {})),
+            'authentik': _as_dict(data.get('authentik', {})),
+            'bookmarks': _as_dict(data.get('bookmarks', {})),
+            'downloads': _as_dict(data.get('downloads', {})),
+            'api_integrations': _as_dict(data.get('api_integrations', {})),
+            'database': _as_dict(data.get('database', {})),
+            'logging': _as_dict(data.get('logging', {})),
             'web_api_key': data.get('web_api_key', ''),
             'enable_web_api_key': data.get('enable_web_api_key', True),
-            'features': data.get('features', {}),  # Accept features from request
-            'weights': data.get('weights', {}),  # Accept weights from request
-            'single_detection': data.get('single_detection', {})  # Accept single detection thresholds
+            'features': features,
+            'weights': _as_dict(data.get('weights', {})),
+            'single_detection': _as_dict(data.get('single_detection', {}))
         }
         # Always set main navidrome section to first user for compatibility
         if navidrome_users and len(navidrome_users) > 0:

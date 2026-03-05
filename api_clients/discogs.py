@@ -1053,14 +1053,28 @@ class DiscogsClient:
         if not self.enabled or not self.token:
             logger.debug("Discogs genre lookup skipped (disabled or token missing).")
             return []
+
+        if not _check_circuit_breaker():
+            logger.debug("Discogs genre lookup skipped: circuit breaker is open")
+            return []
         
         try:
             _throttle_discogs()
             search_url = f"{self.base_url}/database/search"
             params = {"q": f"{artist} {title}", "type": "release", "per_page": 5}
-            
-            res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
-            res.raise_for_status()
+
+            def make_search_request():
+                response = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
+                if response.status_code == 429:
+                    retry_after = int(response.headers.get("Retry-After", 60))
+                    time.sleep(retry_after)
+                    _throttle_discogs()
+                    response = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
+                response.raise_for_status()
+                return response
+
+            res = _retry_on_500(make_search_request, max_retries=2, retry_delay=1.0)
+            _clear_discogs_errors()
             
             results = res.json().get("results", [])
             genres = []
@@ -1070,7 +1084,15 @@ class DiscogsClient:
             
             return genres
         except Exception as e:
-            logger.error(f"Discogs lookup failed for '{title}': {e}")
+            error_text = str(e)
+            if "502" in error_text:
+                _record_discogs_error("502")
+                logger.warning(f"Discogs lookup temporary 502 for '{title}', skipping this track")
+            elif "503" in error_text:
+                _record_discogs_error("503")
+                logger.warning(f"Discogs lookup temporary 503 for '{title}', skipping this track")
+            else:
+                logger.error(f"Discogs lookup failed for '{title}': {e}")
             return []
     
     def get_release_genres_by_id(self, release_id: str, timeout: tuple[int, int] | int = (5, 10)) -> list[dict]:
