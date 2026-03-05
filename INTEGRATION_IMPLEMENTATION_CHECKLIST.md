@@ -173,64 +173,169 @@ GROUP BY mr.release_id
 
 ## Phase 4: Batch Transfer Endpoint (Hours: 3-4)
 
-**Goal:** Button to transfer all "Ready to Transfer" tracks at once
+**Goal:** Button to transfer all queued tracks at once (auto-ready when all matched)
+
+### Key Distinction
+
+**Auto-Ready Trigger (Automatic):**
+- When ALL songs in THIS specific import are matched/organized
+- Happens automatically - no user action needed
+- Updates status to "ready_to_transfer"
+
+**Transfer Action (Manual):**
+- User must click "Transfer to Library" button
+- button only appears when ready_to_transfer is true
+- User has choice to wait or transfer now
 
 ### Tasks
 
-- [ ] **Task 4.1:** Create endpoint in `app.py`
+- [ ] **Task 4.1:** Create auto-ready logic
+  - File: `download_queue_manager.py` or new helper function
+  - When file matched to queue item
+  - Check: Are ALL items in this import_group matched?
+  - Action: Update all to 'ready_to_transfer' status automatically
+  
+- [ ] **Task 4.2:** Create transfer endpoint in `app.py`
   - Path: `POST /api/queue/release/<release_id>/transfer`
   - Action: Transfer all ready tracks to music library
+  - Note: This is MANUAL - user clicks button
   
-- [ ] **Task 4.2:** Pre-check
-  - Verify all tracks are "ready_to_transfer" status
+- [ ] **Task 4.3:** Pre-check before transfer
+  - Verify all queued tracks are "ready_to_transfer" status
   - Get folder path from database
   - Verify source folder exists
-
-- [ ] **Task 4.3:** Call finalizer
+  - Important: Only check tracks in THIS import, not full album
+  
+- [ ] **Task 4.4:** Call finalizer & cleanup
   - Reuse existing `musicbrainz_finalizer.py` logic
-  - OR call `organize_folder_to_music()` directly
   - Pass: source_folder, album_artist, year, album_name
+  - Delete monitoring folder IMMEDIATELY after transfer success
+  - Don't keep for verification
 
-- [ ] **Task 4.4:** Post-transfer
+- [ ] **Task 4.5:** Post-transfer
   - Verify all files moved successfully
   - Update `musicbrainz_releases.status` to "completed"
   - Return success/error response
 
-- [ ] **Task 4.5:** UI button
-  - Show in monitor only when all tracks ready
+- [ ] **Task 4.6:** UI components
+  - Show "Ready to Transfer" badge when auto-ready triggers
+  - Show button only when badge is visible
   - Button text: "Transfer to Library"
   - Call endpoint on click
   - Show loading state
   - Refresh page on success
 
-- [ ] **Task 4.6:** Test
-  - Manually set all tracks to ready status
+- [ ] **Task 4.7:** Test
+  - Manually set all tracks to matched status
+  - Verify auto-ready triggers (no user action)
+  - Verify button appears
   - Click transfer button
   - Verify files in music library
+  - Verify folder deleted
   - Verify naming correct
 
 ### Files to Modify
 - `app.py` (1 new route, ~40 lines)
+- `download_queue_manager.py` (auto-ready logic, ~20 lines)
 - `templates/downloads.html` (add button)
 - `static/js/downloads.js` (button click handler)
 
-### Sample Endpoint Code
+### Sample Auto-Ready Logic
 ```python
-@app.route("/api/queue/release/<release_id>/transfer", methods=["POST"])
-def transfer_release_to_library(release_id):
-    conn = get_db()
+def check_and_mark_import_ready(import_group_id, conn):
+    """If all tracks in import are organized, mark all as ready_to_transfer """
     cursor = conn.cursor()
     
-    # Check all tracks are ready
-    # Get release metadata
-    # Get source folder path
-    # Call finalizer
-    # Update status to 'completed'
-    # Return response
+    # Count queued tracks in this import
+    cursor.execute("""
+        SELECT COUNT(*) FROM download_queue 
+        WHERE import_group = ? AND status != 'organized'
+    """, (import_group_id,))
+    
+    not_ready = cursor.fetchone()[0]
+    
+    if not_ready == 0:
+        # All are organized - mark as ready
+        cursor.execute("""
+            UPDATE download_queue 
+            SET status = 'ready_to_transfer'
+            WHERE import_group = ? AND status = 'organized'
+        """, (import_group_id,))
+        conn.commit()
+        return True
+    return False
 ```
 
 ### Database Changes
 - None required
+
+---
+
+## Phase 4b: File Naming Configuration (Hours: 2-3)
+
+**Goal:** Allow users to configure default file naming format in config.html
+
+### Tasks
+
+- [ ] **Task 4b.1:** Add config option to `config.yaml`
+  ```yaml
+  file_naming:
+    format: "track_number. artist - title"  # or other pattern
+    enabled: true
+  ```
+
+- [ ] **Task 4b.2:** Update `config.html` template
+  - Find/create Settings or Config section
+  - Add field for file naming pattern
+  - Default: `TRACK#. ARTIST - SONG.mp3`
+  - Examples of other formats:
+    - `ARTIST - TRACK# - SONG`
+    - `TRACK# - SONG`
+    - `SONG - ARTIST`
+  
+- [ ] **Task 4b.3:** Create pattern builder/validator
+  - File: `helpers/file_naming.py` (new file)
+  - Function: `generate_filename(track_number, artist, title, pattern)`
+  - Validates pattern before saving
+  - Handles special characters
+  - Returns formatted filename
+
+- [ ] **Task 4b.4:** Integration point
+  - File: `musicbrainz_finalizer.py`
+  - Use pattern from config instead of hardcoded format
+  - Call `generate_filename()` for each track
+  
+- [ ] **Task 4b.5:** Test
+  - Change pattern in config
+  - Transfer album
+  - Verify files use new naming
+
+### Files to Modify
+- `config.yaml` (add section)
+- `templates/config.html` (add UI field)
+- Create `helpers/file_naming.py` (~50 lines)
+- `musicbrainz_finalizer.py` (update ~5 lines)
+- `app.py` (config save endpoint)
+
+### Sample Config UI
+```html
+<div class="config-section">
+  <h3>File Naming</h3>
+  <label>
+    Default file naming format:
+    <input type="text" name="file_naming_format" 
+           value="{{ config.file_naming.format }}"
+           placeholder="TRACK#. ARTIST - SONG">
+  </label>
+  <p class="help-text">
+    Available variables: {track_number}, {artist}, {title}
+    <br/>Example: {artist} - {track_number} - {title}.mp3
+  </p>
+</div>
+```
+
+### Database Changes
+- None - stored in config.yaml
 
 ---
 
@@ -361,37 +466,68 @@ GET /navidrome/api/albums?query=album_name
 - [ ] Folder created in `/downloads/Music/` when release queued
 - [ ] Folder path stored in `musicbrainz_releases` table
 - [ ] Folder visible in file explorer
+- [ ] Multiple releases create separate folders
 
 ### Phase 2 Tests
 - [ ] API endpoint returns all active releases
 - [ ] Track counts accurate per status
 - [ ] Supports multiple releases simultaneously
+- [ ] Query performance acceptable
 
 ### Phase 3 Tests
 - [ ] Monitor page renders with progress bars
 - [ ] Track list displays correctly
 - [ ] Progress updates in real-time (refresh 5s)
 - [ ] Multiple releases display correctly
+- [ ] Status labels match expected values
 
 ### Phase 4 Tests
-- [ ] Transfer button appears only when all ready
+- [ ] Auto-ready triggers when all tracks matched
+  - [ ] With partial import (2/12 songs)
+  - [ ] With full album import
+  - [ ] Status updates without user action
+- [ ] Transfer button appears only when ready
 - [ ] Button disabled during transfer
 - [ ] Files actually move to music library
-- [ ] Files renamed correctly
+- [ ] Files renamed correctly with default format
+- [ ] Monitoring folder deleted immediately after transfer
+- [ ] Transfer report shows success/failures
 - [ ] Release marked as completed after transfer
+
+### Phase 4b Tests
+- [ ] Config option appears in settings
+- [ ] Saving new format updates config.yaml
+- [ ] Format validation prevents bad patterns
+- [ ] Transfer uses new format
+- [ ] Files renamed with custom format
+- [ ] Pre-configured format suggestions available
 
 ### Phase 5 Tests
 - [ ] Artist page shows download badge
 - [ ] Album page shows download badge
-- [ ] Badge disappears after transfer
+- [ ] Badge disappears after transfer completes
 - [ ] Badge counts accurate
 - [ ] Clicking badge links to monitor
+- [ ] Multiple downloads show correct counts
 
-### Phase 6 Tests
-- [ ] After transfer, waits for Navidrome sync
-- [ ] Album appears in Navidrome
-- [ ] Release removed from active downloads
-- [ ] Status updated to "completed"
+### End-to-End Integration Tests
+- [ ] Queue partial album (5/10 songs)
+  - [ ] Folder created immediately
+  - [ ] Auto-ready triggers after 5 matched
+  - [ ] Transfer moves only 5 songs
+  - [ ] Remaining 5 songs can be queued separately
+- [ ] Queue full album
+  - [ ] All 10 songs added to queue
+  - [ ] Auto-ready when all 10 matched
+  - [ ] Transfer moves all to library
+- [ ] File naming scenarios
+  - [ ] Default format works
+  - [ ] Custom format applied
+  - [ ] Special characters handled
+- [ ] Status persistence
+  - [ ] Refresh page maintains progress
+  - [ ] Database reflects correct status
+  - [ ] Page load shows correct state
 
 ---
 
@@ -402,16 +538,16 @@ GET /navidrome/api/albums?query=album_name
 | 1: Folder Creation | 2-3 | HIGH |
 | 2: Status API | 3-4 | HIGH |
 | 3: Monitor UI | 4-5 | HIGH |
-| 4: Transfer Function | 3-4 | HIGH |
+| 4: Auto-Ready + Transfer | 3-4 | HIGH |
+| 4b: File Naming Config | 2-3 | MEDIUM |
 | 5: Artist/Album Badges | 4-5 | MEDIUM |
-| 6: Navidrome Sync | 5-6 | MEDIUM |
 | **Testing** | **5-8** | **HIGH** |
 | **Documentation** | **2-3** | **MEDIUM** |
-| **Total** | **28-38 hours** | — |
+| **Total** | **25-35 hours** | — |
 
 **Recommended Approach:**
 - Phases 1-4: Complete in one sprint (2 weeks)
-- Phases 5-6: Second sprint (1 week)
+- Phase 4b + 5: Second sprint (1 week)
 - Incremental testing throughout
 
 ---
@@ -420,17 +556,21 @@ GET /navidrome/api/albums?query=album_name
 
 ✅ Folder created immediately when release queued
 ✅ Active queue shows albums with progress
-✅ Track statuses visible and updating
-✅ "Ready to Transfer" status appears when all tracks found
-✅ Transfer button visible and functional for complete albums
+✅ Track statuses visible and updating in real-time
+✅ Auto-ready trigger: "Ready to Transfer" appears when all queued songs matched
+✅ Transfer button visible only when ready
+✅ User clicks button to manually transfer
 ✅ Files successfully move to music library
-✅ Correct naming applied: `TRACK#. ARTIST - SONG.mp3`
+✅ Correct naming applied with configurable format
+✅ Monitoring folder deleted immediately after transfer
 ✅ Artist/album pages show "Downloading" badge
+✅ File naming format configurable in config.html
 
 **Nice to Have:**
-- Navidrome auto-sync
-- Automatic folder cleanup
-- Duplicate detection/merge
+- Duplicate folder detection/merge
+- Partial album transfers (user selects subset)
+- Retry failed transfers
+- Download speed monitoring
 
 ---
 
@@ -445,21 +585,51 @@ GET /navidrome/api/albums?query=album_name
 
 ---
 
-## Questions to Clarify
+## Key Implementation Notes
 
-1. **Should "Ready to Transfer" auto-trigger after download completes?**
-   - Or wait for user confirmation?
-   - Recommend: Auto-ready, user must click transfer button
+### Auto-Ready vs Manual Transfer
 
-2. **When transfer completes, close folder immediately?**
-   - Or keep visible for verification (1 hour)?
-   - Recommend: Keep visible for 1 hour, then move to "Completed" tab
+- **Auto-Ready (Automatic, no user action):**
+  - Triggered when ALL items in import_group are 'organized'
+  - Update status to 'ready_to_transfer' automatically
+  - "Ready to Transfer" badge appears automatically
 
-3. **In artist/album views, link to specific release or just filter?**
-   - Recommend: Filter to show only this release when user clicks badge
+- **Transfer (Manual, user clicks button):**
+  - User must explicitly click "Transfer to Library"
+  - NOT automatic - gives user control
+  - Transfers only when user is ready
+  - Import count-aware: if 2/12 queued, waits only for those 2
 
-4. **Naming format for files - confirm:**
-   - `01. Artist Name - Song Title.mp3`
-   - Directory: `/music/Album Artist/Release Year - Album Name/`
-   - Is this correct?
+### File Naming Configuration
+
+- **Default Format:** `TRACK#. ARTIST - SONG.mp3`
+- **Configurable in:** `config.html` Settings section
+- **Stored in:** `config.yaml` under `file_naming.format`
+- **Pattern Variables:** {track_number}, {artist}, {title}
+- **Applied During:** Transfer phase in finalizer
+
+### Folder Management
+
+- **Creation:** Immediate when tracks added to queue
+- **During Download:** Physical folder at `/downloads/Music/YEAR - ARTIST - ALBUM/`
+- **After Transfer:** Deleted immediately (no verification period)
+- **Location Tracking:** Stored in `musicbrainz_releases.monitoring_folder_path`
+
+### Import-Aware Logic
+
+- **Import Group:** Field in download_queue to group related tracks
+- **Behavior:** Only waits for songs in THIS import, not full album
+- **Example:**
+  - Album has 12 tracks total
+  - User queues songs 1-5 + song 8 (6 total)
+  - Auto-ready triggers when those 6 are all matched
+  - Song 9 remaining on album doesn't matter
+
+### Navidrome Integration
+
+- **Automatic:** Happens in background when files in `/music/` folder
+- **No Additional Code Needed:** Navidrome auto-scans
+- **Timing:** Album appears in Navidrome shortly after transfer
+- **Status Update:** Just mark release as 'completed' in database
+
 

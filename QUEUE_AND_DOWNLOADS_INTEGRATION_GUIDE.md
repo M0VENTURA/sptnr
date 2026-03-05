@@ -38,7 +38,7 @@ Your system already has comprehensive infrastructure for this workflow:
 
 1. **Add to Queue from MusicBrainz**
    - `POST /api/musicbrainz/download` - Accepts release_id, creates tracking
-   - Adds all tracks to `download_queue`
+   - Adds all queued tracks (user-selected subset) to `download_queue`
    - Creates `musicbrainz_release_tracks` entries
 
 2. **Show Queue While Downloading**
@@ -67,21 +67,25 @@ Your system already has comprehensive infrastructure for this workflow:
    - Current: `/downloads/Music/YEAR - ARTIST - ALBUM/`
    - Change to: Create immediately when tracks added to queue
 
-2. **Status Transitions**
-   - Currently: `queued` → `searching` → `downloading` → `discovered` → `organized` → `finalized`
-   - Your schema simpler: `queued` → `downloading` → `Ready to Transfer` → `completed`
-   - Recommendation: Map current statuses to your simpler ones in UI
+2. **Auto Ready-to-Transfer Trigger**
+   - When ALL tracks in that specific queue import are matched
+   - Important: Based on import count, not full album count
+   - If 2/12 songs queued, waits for those 2 only
+   - Trigger is automatic when matched, transfer is manual
 
-3. **UI Display Integration**
-   - Number of tracks in each stage
-   - Visual grouping by album
-   - Progress bars per album/release
-   - "Ready to Transfer" count per album
+3. **Manual Transfer with Auto-Ready**
+   - "Ready to Transfer" shows automatically
+   - User clicks button to actually transfer
+   - Transfer not automatic - requires user confirmation
 
-4. **Batch Transfer**
-   - Once all tracks "Ready to Transfer"
-   - Transfer entire album at once
-   - Update artists/albums views immediately
+4. **File Naming Configuration**
+   - Need config.html option to change default format
+   - Default: `TRACK#. ARTIST - SONG.mp3`
+   - Allow user customization per preferences
+
+5. **Immediate Folder Cleanup**
+   - Delete monitoring folder immediately after transfer
+   - Don't keep for verification
 
 ## Recommended Implementation Plan
 
@@ -174,45 +178,21 @@ Active Queue - By Release
 @app.route("/api/queue/release/<release_id>/transfer", methods=["POST"])
 def transfer_release_to_library(release_id):
     """
-    Transfer all 'ready_to_transfer' tracks to music library
+    Transfer all queued tracks from this import to music library
     
     Process:
-    1. Verify all tracks in 'ready_to_transfer' state
+    1. Verify all queued tracks in 'organized' status
     2. Move from /downloads/Music/Album/ to /music/...
-    3. Import into Navidrome (if configured)
-    4. Update artists/albums views
-    5. Mark release as 'completed'
+    3. Rename files with proper format
+    4. Delete monitoring folder immediately
+    5. Update release status to 'completed'
+    
+    NOTE: This is MANUAL trigger - user clicks button
+    Auto-ready trigger happens separately when all tracks matched
     """
 ```
 
 This calls existing `musicbrainz_finalizer.py` logic.
-
-### Phase 5: Artists/Albums View Updates (Week 3)
-
-**Files:** `app.py` - Routes for `/artists`, `/albums`
-
-Add status information:
-
-```python
-# When selecting artist or album
-# Check if any musicbrainz_releases exist for it
-# Show:
-# - "Downloading N tracks"
-# - "N Ready to Transfer"
-# - Progress bar
-# - Link to active downloads
-```
-
-**Database Query:**
-```sql
-SELECT mr.status, mr.total_tracks, COUNT(mrt.id) as ready_count
-FROM musicbrainz_releases mr
-LEFT JOIN musicbrainz_release_tracks mrt 
-    ON mr.release_id = mrt.release_id 
-    AND mrt.status = 'ready_to_transfer'
-WHERE mr.artist = ? AND mr.status != 'completed'
-GROUP BY mr.release_id
-```
 
 ### Phase 6: Status Sync with Navidrome (Week 3)
 
