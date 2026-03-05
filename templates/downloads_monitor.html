@@ -567,6 +567,25 @@ function searchOtherSources(artist, titleOrAlbum, isQueueItem = false) {
   window.open(`/downloads/search/${target}?q=${query}`, '_blank');
 }
 
+function searchOtherSourcesFromEncoded(artistEnc, titleOrAlbumEnc, isQueueItem = false) {
+  const artist = decodeInlineArg(artistEnc, '');
+  const titleOrAlbum = decodeInlineArg(titleOrAlbumEnc, '');
+  return searchOtherSources(artist, titleOrAlbum, isQueueItem === true || isQueueItem === 'true');
+}
+
+function applyMusicBrainzMatchFromEncoded(artistEnc, albumEnc, releaseGroupIdEnc) {
+  const artist = decodeInlineArg(artistEnc, '');
+  const album = decodeInlineArg(albumEnc, '');
+  const releaseGroupId = decodeInlineArg(releaseGroupIdEnc, '');
+  return applyMusicBrainzMatch(artist, album, releaseGroupId);
+}
+
+function useExistingMetadataFromEncoded(artistEnc, albumEnc) {
+  const artist = decodeInlineArg(artistEnc, '');
+  const album = decodeInlineArg(albumEnc, '');
+  return useExistingMetadata(artist, album);
+}
+
 // ============================================================================
 // FOLDER GROUPING AND MUSICBRAINZ MATCHING FUNCTIONS
 // ============================================================================
@@ -2328,6 +2347,10 @@ function renderActiveQueue(active) {
         if (isPendingMatch && !pendingRenderedAlbums.has(albumKey)) {
           pendingRenderedAlbums.add(albumKey);
 
+          const artistEnc = encodeInlineArg(item.artist || '');
+          const albumEnc = encodeInlineArg(item.album || '');
+          const titleEnc = encodeInlineArg(item.title || '');
+
           let candidates = [];
           try {
             const rawCandidates = item.mb_match_candidates || '[]';
@@ -2336,27 +2359,30 @@ function renderActiveQueue(active) {
             candidates = [];
           }
 
-          const candidateRows = candidates.slice(0, 3).map(c => `
+          const candidateRows = candidates.slice(0, 3).map(c => {
+            const releaseGroupIdEnc = encodeInlineArg(c.release_group_id || '');
+            return `
             <div class="d-flex justify-content-between align-items-center border rounded p-2 mb-2">
               <div>
                 <div><strong>${escapeHtml(c.title || 'Unknown')}</strong> ${c.year ? `<span class="text-muted">(${escapeHtml(c.year)})</span>` : ''}</div>
                 <div class="small text-muted">${escapeHtml(c.artist || item.artist || '')} · overlap ${Math.round((c.track_overlap || 0) * 100)}% · confidence ${Math.round((c.confidence || 0) * 100)}%</div>
               </div>
-              <button class="btn btn-sm btn-primary" onclick="applyMusicBrainzMatch('${escapeHtml(item.artist)}','${escapeHtml(item.album)}','${escapeHtml(c.release_group_id || '')}')">
+              <button class="btn btn-sm btn-primary" onclick="applyMusicBrainzMatchFromEncoded('${artistEnc}','${albumEnc}','${releaseGroupIdEnc}')">
                 Use Match
               </button>
             </div>
-          `).join('');
+          `;
+          }).join('');
 
           candidateHtml = `
             <div class="mt-2 p-2 border rounded bg-light-subtle">
               <div class="small fw-semibold mb-2">MusicBrainz could not find a 100% match automatically. Choose one:</div>
               ${candidateRows || '<div class="small text-muted mb-2">No close MusicBrainz candidates found.</div>'}
               <div class="d-flex gap-2 flex-wrap">
-                <button class="btn btn-sm btn-success" onclick="useExistingMetadata('${escapeHtml(item.artist)}','${escapeHtml(item.album)}')">
+                <button class="btn btn-sm btn-success" onclick="useExistingMetadataFromEncoded('${artistEnc}','${albumEnc}')">
                   <i class="bi bi-file-earmark-music"></i> Use Existing File Metadata
                 </button>
-                <button class="btn btn-sm btn-outline-info" onclick="searchOtherSources('${escapeHtml(item.artist)}','${escapeHtml(item.title)}', true)">
+                <button class="btn btn-sm btn-outline-info" onclick="searchOtherSourcesFromEncoded('${artistEnc}','${titleEnc}', true)">
                   <i class="bi bi-search"></i> Search Other Sources
                 </button>
               </div>
