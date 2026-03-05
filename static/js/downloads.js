@@ -466,6 +466,10 @@ async function refreshUpcomingReleases() {
       monthReleases.forEach(release => {
         const albumStatus = release.album_in_collection ? 
           ' <span class="badge bg-success ms-1">In Collection</span>' : '';
+
+        // Build JS-safe string literals for inline onclick arguments.
+        const artistArg = JSON.stringify(String(release.artist_name || ''));
+        const albumArg = JSON.stringify(String(release.album_name || ''));
         
         html += `
           <tr>
@@ -474,7 +478,7 @@ async function refreshUpcomingReleases() {
             <td><small>${release.release_date || 'TBA'}</small></td>
             <td>
               <button type="button" class="btn btn-sm btn-outline-primary" title="Search on MusicBrainz"
-                onclick="searchMusicBrainzRelease(event, '${escapeHtml(release.artist_name)}', '${escapeHtml(release.album_name)}')">
+                onclick='searchMusicBrainzRelease(event, ${artistArg}, ${albumArg})'>
                 <i class="bi bi-search"></i> Search
               </button>
             </td>
