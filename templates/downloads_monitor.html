@@ -258,7 +258,6 @@
 
 <!-- Include existing JavaScript -->
 <script src="{{url_for('static', filename='js/downloads.js')}}"></script>
-<script src="{{url_for('static', filename='js/musicbrainz-folder-groups.js')}}"></script>
 
 <script>
 // Queue management functions for downloads monitor
@@ -571,6 +570,33 @@ function searchOtherSources(artist, album) {
 const folderMatchSelections = {};
 let folderGroupsFilter = 'all';
 const expandedFolderGroupIds = new Set();
+
+function loadExpandedFolderGroupState() {
+  try {
+    const raw = sessionStorage.getItem('folderGroupsExpandedItems');
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (Array.isArray(parsed)) {
+      expandedFolderGroupIds.clear();
+      parsed.forEach(id => {
+        if (typeof id === 'string' && id.length > 0) {
+          expandedFolderGroupIds.add(id);
+        }
+      });
+    }
+  } catch (error) {
+    console.debug('Could not load folder group expanded state:', error);
+  }
+}
+
+function saveExpandedFolderGroupState() {
+  try {
+    sessionStorage.setItem('folderGroupsExpandedItems', JSON.stringify(Array.from(expandedFolderGroupIds)));
+  } catch (error) {
+    console.debug('Could not save folder group expanded state:', error);
+  }
+}
+
+loadExpandedFolderGroupState();
 let folderStatusData = {}; // Tracks completion status from database
 let lastFolderGroupsRenderSignature = null;
 let lastActiveQueueSignature = null;
@@ -851,12 +877,14 @@ async function loadFolderGroups(options = {}) {
     let html = '';
 
     if (showFolderGroups) {
+      const visibleFolderStateKeys = new Set();
       filteredGroups.forEach((group, index) => {
       const folderPathEnc = encodeInlineArg(group.folder_path || '');
       const artistEnc = encodeInlineArg(group.artist || '');
       const albumEnc = encodeInlineArg(group.album || '');
       const tracksEnc = encodeInlineArg(group.tracks || []);
       const folderStateKey = `folder-${makeSafeDomId(group.folder_path || group.folder_name || index)}`;
+      visibleFolderStateKeys.add(folderStateKey);
       const inconsistentClass = !group.is_consistent ? 'border-warning' : '';
       const inconsistentBadge = !group.is_consistent ? 
         ' <span class="badge bg-warning">Mixed Metadata</span>' : '';
@@ -990,6 +1018,14 @@ async function loadFolderGroups(options = {}) {
           </div>
         </div>`;
       });
+
+      // Keep persisted state clean so stale groups don't accumulate forever.
+      Array.from(expandedFolderGroupIds).forEach(stateKey => {
+        if (!visibleFolderStateKeys.has(stateKey)) {
+          expandedFolderGroupIds.delete(stateKey);
+        }
+      });
+      saveExpandedFolderGroupState();
     }
 
     if (totalGroups === 0) {
@@ -1022,6 +1058,7 @@ function toggleTrackList(groupId, stateKey, button) {
     } else {
       expandedFolderGroupIds.delete(stateKey);
     }
+    saveExpandedFolderGroupState();
   }
 
   if (button) {
@@ -1367,13 +1404,16 @@ function renderActiveQueue(active) {
   
   for (const group of grouped) {
     const isExpanded = expandedState[group.key] !== false; // Default to expanded
-    const toggleId = `toggle-${group.key.replace(/[^\w]/g, '_')}`;
+    const groupAttrKey = encodeURIComponent(group.key || '');
+    const toggleId = `toggle-${makeSafeDomId(group.key || '')}`;
+    const groupKeyEnc = encodeInlineArg(group.key || '');
+    const groupAttrKeyEnc = encodeInlineArg(groupAttrKey);
     
     // Album group header
     html += `
       <div class="list-group-item active-album-header border-bottom-0 py-2">
         <div class="d-flex justify-content-between align-items-center">
-          <div class="d-flex align-items-center flex-grow-1 gap-2 cursor-pointer" onclick="toggleAlbumGroup('${toggleId}', '${group.key}')">
+          <div class="d-flex align-items-center flex-grow-1 gap-2 cursor-pointer" onclick="toggleAlbumGroupFromEncoded('${toggleId}', '${groupKeyEnc}', '${groupAttrKeyEnc}')">
             <i class="bi ${isExpanded ? 'bi-chevron-down' : 'bi-chevron-right'} expand-chevron" id="chevron-${toggleId}"></i>
             <div>
               <div class="fw-semibold">${escapeHtml(group.album || '(No Album)')}</div>
@@ -1381,7 +1421,7 @@ function renderActiveQueue(active) {
             </div>
           </div>
           <div class="d-flex gap-2">
-            <button class="btn btn-sm btn-outline-danger" onclick="deleteAlbumGroup('${group.key}')" title="Delete all songs from this album">
+            <button class="btn btn-sm btn-outline-danger" onclick="deleteAlbumGroupFromEncoded('${groupAttrKeyEnc}')" title="Delete all songs from this album">
               <i class="bi bi-trash"></i> Delete Album
             </button>
           </div>
@@ -1389,9 +1429,8 @@ function renderActiveQueue(active) {
       </div>
     `;
     
-    // Items in group
-    if (isExpanded) {
-      for (const item of group.items) {
+    // Items in group: always render, but hide when collapsed so expand works instantly.
+    for (const item of group.items) {
         const statusLabel = {
           'queued': '⏳ Queued',
           'searching': '🔍 Searching',
@@ -1447,7 +1486,7 @@ function renderActiveQueue(active) {
         }
 
         html += `
-          <div class="list-group-item ${existsInLibrary || isPossibleDuplicate ? 'bg-light' : ''} border-top-0" data-album-group="${group.key}" data-item-id="${item.id}">
+          <div class="list-group-item ${existsInLibrary || isPossibleDuplicate ? 'bg-light' : ''} border-top-0" data-album-group="${groupAttrKey}" data-item-id="${item.id}" style="display: ${isExpanded ? '' : 'none'};">
             <div class="d-flex justify-content-between align-items-start">
               <div class="flex-grow-1">
                 <h6 class="mb-1 ms-4">
@@ -1469,7 +1508,6 @@ function renderActiveQueue(active) {
             </div>
           </div>
         `;
-      }
     }
   }
   
@@ -1478,7 +1516,13 @@ function renderActiveQueue(active) {
   lastActiveQueueSignature = nextSignature;
 }
 
-function toggleAlbumGroup(toggleId, groupKey) {
+function toggleAlbumGroupFromEncoded(toggleId, groupKeyEnc, groupAttrKeyEnc) {
+  const groupKey = decodeInlineArg(groupKeyEnc, '');
+  const groupAttrKey = decodeInlineArg(groupAttrKeyEnc, '');
+  return toggleAlbumGroup(toggleId, groupKey, groupAttrKey);
+}
+
+function toggleAlbumGroup(toggleId, groupKey, groupAttrKey = null) {
   // Update chevron icon
   const chevron = document.getElementById(`chevron-${toggleId}`);
   if (chevron) {
@@ -1487,7 +1531,8 @@ function toggleAlbumGroup(toggleId, groupKey) {
   }
   
   // Find and toggle all items in this group
-  const items = document.querySelectorAll(`[data-album-group="${groupKey}"]`);
+  const selectorKey = groupAttrKey || encodeURIComponent(groupKey || '');
+  const items = document.querySelectorAll(`[data-album-group="${selectorKey}"]`);
   items.forEach(item => {
     item.style.display = item.style.display === 'none' ? '' : 'none';
   });
@@ -1499,14 +1544,19 @@ function toggleAlbumGroup(toggleId, groupKey) {
   sessionStorage.setItem('activeQueueExpandedAlbums', JSON.stringify(expandedState));
 }
 
-async function deleteAlbumGroup(groupKey) {
+function deleteAlbumGroupFromEncoded(groupAttrKeyEnc) {
+  const groupAttrKey = decodeInlineArg(groupAttrKeyEnc, '');
+  return deleteAlbumGroup(groupAttrKey);
+}
+
+async function deleteAlbumGroup(groupAttrKey) {
   if (!confirm('Delete all songs in this album from the queue?')) {
     return;
   }
   
   try {
     // Find all items with this album group key and get their IDs
-    const items = Array.from(document.querySelectorAll(`[data-album-group="${groupKey}"]`))
+    const items = Array.from(document.querySelectorAll(`[data-album-group="${groupAttrKey}"]`))
       .map(el => parseInt(el.getAttribute('data-item-id')))
       .filter(id => !isNaN(id));
     
