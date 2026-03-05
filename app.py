@@ -2132,49 +2132,88 @@ def artist_detail(name):
         
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
         
         # Get albums for this artist with type information
         # Query by COALESCE(album_artist, artist) to handle cases where album_artist is empty
         # Use NULLIF to treat empty strings as NULL for proper COALESCE behavior
-        cursor.execute("""
-            SELECT 
-                album,
-                COUNT(*) as track_count,
-                AVG(stars) as avg_stars,
-                COALESCE(SUM(CASE WHEN is_single THEN 1 ELSE 0 END), 0) as singles_count,
-                MAX(last_scanned) as last_updated,
-                MIN(year) as album_year,
-                MAX(spotify_album_type) as album_type,
-                MAX(album_artist) as album_artist,
-                MAX(musicbrainz_album_mbid) as musicbrainz_album_mbid,
-                MAX(discogs_release_id) as discogs_release_id
-            FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
-            GROUP BY album
-            ORDER BY (album_year IS NULL), album_year DESC, album COLLATE NOCASE
-        """, (name,))
+        if is_pg:
+            cursor.execute("""
+                SELECT 
+                    album,
+                    COUNT(*) as track_count,
+                    AVG(stars) as avg_stars,
+                    COALESCE(SUM(CASE WHEN is_single THEN 1 ELSE 0 END), 0) as singles_count,
+                    MAX(last_scanned) as last_updated,
+                    MIN(year) as album_year,
+                    MAX(spotify_album_type) as album_type,
+                    MAX(album_artist) as album_artist,
+                    MAX(musicbrainz_album_mbid) as musicbrainz_album_mbid,
+                    MAX(discogs_release_id) as discogs_release_id
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+                GROUP BY album
+                ORDER BY (album_year IS NULL), album_year DESC, album
+            """, (name,))
+        else:
+            cursor.execute("""
+                SELECT 
+                    album,
+                    COUNT(*) as track_count,
+                    AVG(stars) as avg_stars,
+                    COALESCE(SUM(CASE WHEN is_single THEN 1 ELSE 0 END), 0) as singles_count,
+                    MAX(last_scanned) as last_updated,
+                    MIN(year) as album_year,
+                    MAX(spotify_album_type) as album_type,
+                    MAX(album_artist) as album_artist,
+                    MAX(musicbrainz_album_mbid) as musicbrainz_album_mbid,
+                    MAX(discogs_release_id) as discogs_release_id
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
+                GROUP BY album
+                ORDER BY (album_year IS NULL), album_year DESC, album COLLATE NOCASE
+            """, (name,))
         albums_data = cursor.fetchall()
         
         # Get artist stats with additional metrics
         # Query by COALESCE(album_artist, artist) to handle cases where album_artist is empty
         # Use NULLIF to treat empty strings as NULL for proper COALESCE behavior
-        cursor.execute("""
-            SELECT 
-                COUNT(*) as track_count,
-                COUNT(DISTINCT album) as album_count,
-                AVG(stars) as avg_stars,
-                SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END) as five_star_count,
-                SUM(COALESCE(duration, 0)) as total_duration,
-                MIN(year) as earliest_year,
-                MAX(year) as latest_year,
-                MAX(musicbrainz_artist_id) as musicbrainz_artist_id,
-                MAX(spotify_artist_id) as spotify_artist_id,
-                MAX(lastfm_artist_mbid) as lastfm_artist_mbid,
-                MAX(discogs_artist_id) as discogs_artist_id,
-                MAX(discogs_release_id) as discogs_release_id
-            FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
-        """, (name,))
+        if is_pg:
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) as track_count,
+                    COUNT(DISTINCT album) as album_count,
+                    AVG(stars) as avg_stars,
+                    SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END) as five_star_count,
+                    SUM(COALESCE(duration, 0)) as total_duration,
+                    MIN(year) as earliest_year,
+                    MAX(year) as latest_year,
+                    MAX(musicbrainz_artist_id) as musicbrainz_artist_id,
+                    MAX(spotify_artist_id) as spotify_artist_id,
+                    MAX(lastfm_artist_mbid) as lastfm_artist_mbid,
+                    MAX(discogs_artist_id) as discogs_artist_id,
+                    MAX(discogs_release_id) as discogs_release_id
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+            """, (name,))
+        else:
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) as track_count,
+                    COUNT(DISTINCT album) as album_count,
+                    AVG(stars) as avg_stars,
+                    SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END) as five_star_count,
+                    SUM(COALESCE(duration, 0)) as total_duration,
+                    MIN(year) as earliest_year,
+                    MAX(year) as latest_year,
+                    MAX(musicbrainz_artist_id) as musicbrainz_artist_id,
+                    MAX(spotify_artist_id) as spotify_artist_id,
+                    MAX(lastfm_artist_mbid) as lastfm_artist_mbid,
+                    MAX(discogs_artist_id) as discogs_artist_id,
+                    MAX(discogs_release_id) as discogs_release_id
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
+            """, (name,))
         
         artist_stats = cursor.fetchone()
         
@@ -2182,13 +2221,22 @@ def artist_detail(name):
         if artist_stats and not dict(artist_stats).get('musicbrainz_artist_id'):
             try:
                 # Look for any album with a MusicBrainz release ID
-                cursor.execute("""
-                    SELECT DISTINCT musicbrainz_album_mbid 
-                    FROM tracks 
-                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? 
-                    AND musicbrainz_album_mbid IS NOT NULL AND musicbrainz_album_mbid != ''
-                    LIMIT 1
-                """, (name,))
+                if is_pg:
+                    cursor.execute("""
+                        SELECT DISTINCT musicbrainz_album_mbid 
+                        FROM tracks 
+                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s 
+                        AND musicbrainz_album_mbid IS NOT NULL AND musicbrainz_album_mbid != ''
+                        LIMIT 1
+                    """, (name,))
+                else:
+                    cursor.execute("""
+                        SELECT DISTINCT musicbrainz_album_mbid 
+                        FROM tracks 
+                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? 
+                        AND musicbrainz_album_mbid IS NOT NULL AND musicbrainz_album_mbid != ''
+                        LIMIT 1
+                    """, (name,))
                 album_mbid_row = cursor.fetchone()
                 
                 if album_mbid_row:
@@ -2218,12 +2266,20 @@ def artist_detail(name):
                                         
                                         # Save to database so it persists
                                         try:
-                                            cursor.execute("""
-                                                UPDATE tracks
-                                                SET musicbrainz_artist_id = ?, lastfm_artist_mbid = ?
-                                                WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
-                                                AND (musicbrainz_artist_id IS NULL OR musicbrainz_artist_id = '')
-                                            """, (artist_id, artist_id, name))
+                                            if is_pg:
+                                                cursor.execute("""
+                                                    UPDATE tracks
+                                                    SET musicbrainz_artist_id = %s, lastfm_artist_mbid = %s
+                                                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+                                                    AND (musicbrainz_artist_id IS NULL OR musicbrainz_artist_id = '')
+                                                """, (artist_id, artist_id, name))
+                                            else:
+                                                cursor.execute("""
+                                                    UPDATE tracks
+                                                    SET musicbrainz_artist_id = ?, lastfm_artist_mbid = ?
+                                                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
+                                                    AND (musicbrainz_artist_id IS NULL OR musicbrainz_artist_id = '')
+                                                """, (artist_id, artist_id, name))
                                             conn.commit()
                                             logging.debug(f"Saved artist ID {artist_id} to {name} tracks")
                                         except Exception as e:
@@ -2234,52 +2290,98 @@ def artist_detail(name):
                 logging.debug(f"Fallback artist ID lookup failed: {e}")
         
         # Get missing releases from database cache
-        cursor.execute("""
-            SELECT release_id, title, primary_type, first_release_date, cover_art_url, category
-            FROM missing_releases
-            WHERE artist = ?
-            ORDER BY first_release_date DESC
-        """, (name,))
+        if is_pg:
+            cursor.execute("""
+                SELECT release_id, title, primary_type, first_release_date, cover_art_url, category
+                FROM missing_releases
+                WHERE artist = %s
+                ORDER BY first_release_date DESC
+            """, (name,))
+        else:
+            cursor.execute("""
+                SELECT release_id, title, primary_type, first_release_date, cover_art_url, category
+                FROM missing_releases
+                WHERE artist = ?
+                ORDER BY first_release_date DESC
+            """, (name,))
         missing_releases_data = cursor.fetchall()
 
         # Top tracks by z-score (fallback to popularity ordering if z-score column is unavailable)
         try:
-            cursor.execute("""
-                SELECT
-                    id,
-                    title,
-                    album,
-                    COALESCE(popularity_score, 0) as popularity_score,
-                    COALESCE(stars, 0) as stars,
-                    COALESCE(artist_z_score, 0) as artist_z_score,
-                    COALESCE(is_single, 0) as is_single,
-                    COALESCE(track_number, 0) as track_number,
-                    COALESCE(disc_number, 1) as disc_number,
-                    COALESCE(duration, 0) as duration
-                FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
-                ORDER BY COALESCE(artist_z_score, 0) DESC, COALESCE(popularity_score, 0) DESC
-                LIMIT 10
-            """, (name,))
+            if is_pg:
+                cursor.execute("""
+                    SELECT
+                        id,
+                        title,
+                        album,
+                        COALESCE(popularity_score, 0) as popularity_score,
+                        COALESCE(stars, 0) as stars,
+                        COALESCE(artist_z_score, 0) as artist_z_score,
+                        COALESCE(is_single, 0) as is_single,
+                        COALESCE(track_number, 0) as track_number,
+                        COALESCE(disc_number, 1) as disc_number,
+                        COALESCE(duration, 0) as duration
+                    FROM tracks
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+                    ORDER BY COALESCE(artist_z_score, 0) DESC, COALESCE(popularity_score, 0) DESC
+                    LIMIT 10
+                """, (name,))
+            else:
+                cursor.execute("""
+                    SELECT
+                        id,
+                        title,
+                        album,
+                        COALESCE(popularity_score, 0) as popularity_score,
+                        COALESCE(stars, 0) as stars,
+                        COALESCE(artist_z_score, 0) as artist_z_score,
+                        COALESCE(is_single, 0) as is_single,
+                        COALESCE(track_number, 0) as track_number,
+                        COALESCE(disc_number, 1) as disc_number,
+                        COALESCE(duration, 0) as duration
+                    FROM tracks
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
+                    ORDER BY COALESCE(artist_z_score, 0) DESC, COALESCE(popularity_score, 0) DESC
+                    LIMIT 10
+                """, (name,))
             top_tracks = cursor.fetchall()
         except Exception:
-            cursor.execute("""
-                SELECT
-                    id,
-                    title,
-                    album,
-                    COALESCE(popularity_score, 0) as popularity_score,
-                    COALESCE(stars, 0) as stars,
-                    0 as artist_z_score,
-                    COALESCE(is_single, 0) as is_single,
-                    COALESCE(track_number, 0) as track_number,
-                    COALESCE(disc_number, 1) as disc_number,
-                    COALESCE(duration, 0) as duration
-                FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
-                ORDER BY COALESCE(popularity_score, 0) DESC, COALESCE(stars, 0) DESC
-                LIMIT 10
-            """, (name,))
+            if is_pg:
+                cursor.execute("""
+                    SELECT
+                        id,
+                        title,
+                        album,
+                        COALESCE(popularity_score, 0) as popularity_score,
+                        COALESCE(stars, 0) as stars,
+                        0 as artist_z_score,
+                        COALESCE(is_single, 0) as is_single,
+                        COALESCE(track_number, 0) as track_number,
+                        COALESCE(disc_number, 1) as disc_number,
+                        COALESCE(duration, 0) as duration
+                    FROM tracks
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+                    ORDER BY COALESCE(popularity_score, 0) DESC, COALESCE(stars, 0) DESC
+                    LIMIT 10
+                """, (name,))
+            else:
+                cursor.execute("""
+                    SELECT
+                        id,
+                        title,
+                        album,
+                        COALESCE(popularity_score, 0) as popularity_score,
+                        COALESCE(stars, 0) as stars,
+                        0 as artist_z_score,
+                        COALESCE(is_single, 0) as is_single,
+                        COALESCE(track_number, 0) as track_number,
+                        COALESCE(disc_number, 1) as disc_number,
+                        COALESCE(duration, 0) as duration
+                    FROM tracks
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
+                    ORDER BY COALESCE(popularity_score, 0) DESC, COALESCE(stars, 0) DESC
+                    LIMIT 10
+                """, (name,))
             top_tracks = cursor.fetchall()
         
         # Deduplicate top tracks by title (keep first occurrence)
@@ -2303,43 +2405,78 @@ def artist_detail(name):
             top_tracks = deduped_tracks
 
         # Albums where this artist appears as a featured/track artist but is not the album artist
-        cursor.execute("""
-            SELECT
-                album,
-                COALESCE(NULLIF(album_artist, ''), artist) as album_artist,
-                COUNT(*) as track_count,
-                AVG(COALESCE(stars, 0)) as avg_stars,
-                MIN(year) as album_year,
-                MAX(spotify_album_type) as album_type,
-                MAX(last_scanned) as last_updated
-            FROM tracks
-            WHERE artist = ?
-              AND COALESCE(NULLIF(album_artist, ''), artist) != ?
-            GROUP BY album, COALESCE(NULLIF(album_artist, ''), artist)
-            ORDER BY (album_year IS NULL), album_year DESC, album COLLATE NOCASE
-        """, (name, name))
+        if is_pg:
+            cursor.execute("""
+                SELECT
+                    album,
+                    COALESCE(NULLIF(album_artist, ''), artist) as album_artist,
+                    COUNT(*) as track_count,
+                    AVG(COALESCE(stars, 0)) as avg_stars,
+                    MIN(year) as album_year,
+                    MAX(spotify_album_type) as album_type,
+                    MAX(last_scanned) as last_updated
+                FROM tracks
+                WHERE artist = %s
+                  AND COALESCE(NULLIF(album_artist, ''), artist) != %s
+                GROUP BY album, COALESCE(NULLIF(album_artist, ''), artist)
+                ORDER BY (album_year IS NULL), album_year DESC, album
+            """, (name, name))
+        else:
+            cursor.execute("""
+                SELECT
+                    album,
+                    COALESCE(NULLIF(album_artist, ''), artist) as album_artist,
+                    COUNT(*) as track_count,
+                    AVG(COALESCE(stars, 0)) as avg_stars,
+                    MIN(year) as album_year,
+                    MAX(spotify_album_type) as album_type,
+                    MAX(last_scanned) as last_updated
+                FROM tracks
+                WHERE artist = ?
+                  AND COALESCE(NULLIF(album_artist, ''), artist) != ?
+                GROUP BY album, COALESCE(NULLIF(album_artist, ''), artist)
+                ORDER BY (album_year IS NULL), album_year DESC, album COLLATE NOCASE
+            """, (name, name))
         appears_on_albums = cursor.fetchall()
         
         # Get potential compilation albums using cached compilation detection from background scan
         # Combined with fallback local heuristics in case scan hasn't run yet
         # IMPORTANT: Filter by album artist identity (not track artist) so featured appearances
         # are handled separately under "Appears On".
-        cursor.execute("""
-            SELECT 
-                album,
-                COUNT(*) as track_count,
-                AVG(stars) as avg_stars,
-                COALESCE(SUM(CASE WHEN is_single THEN 1 ELSE 0 END), 0) as singles_count,
-                MAX(last_scanned) as last_updated,
-                MIN(year) as album_year,
-                MAX(spotify_album_type) as album_type,
-                MAX(album_artist) as album_artist,
-                MAX(is_compilation) as is_compilation
-            FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
-            GROUP BY album
-            ORDER BY (album_year IS NULL), album_year DESC, album COLLATE NOCASE
-        """, (name,))
+        if is_pg:
+            cursor.execute("""
+                SELECT 
+                    album,
+                    COUNT(*) as track_count,
+                    AVG(stars) as avg_stars,
+                    COALESCE(SUM(CASE WHEN is_single THEN 1 ELSE 0 END), 0) as singles_count,
+                    MAX(last_scanned) as last_updated,
+                    MIN(year) as album_year,
+                    MAX(spotify_album_type) as album_type,
+                    MAX(album_artist) as album_artist,
+                    MAX(is_compilation) as is_compilation
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+                GROUP BY album
+                ORDER BY (album_year IS NULL), album_year DESC, album
+            """, (name,))
+        else:
+            cursor.execute("""
+                SELECT 
+                    album,
+                    COUNT(*) as track_count,
+                    AVG(stars) as avg_stars,
+                    COALESCE(SUM(CASE WHEN is_single THEN 1 ELSE 0 END), 0) as singles_count,
+                    MAX(last_scanned) as last_updated,
+                    MIN(year) as album_year,
+                    MAX(spotify_album_type) as album_type,
+                    MAX(album_artist) as album_artist,
+                    MAX(is_compilation) as is_compilation
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
+                GROUP BY album
+                ORDER BY (album_year IS NULL), album_year DESC, album COLLATE NOCASE
+            """, (name,))
         potential_albums = cursor.fetchall()
         
         # Filter to only include albums that are actually compilations
