@@ -3424,7 +3424,7 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
   let artistGenresLoaded = false;
   
   document.addEventListener('DOMContentLoaded', function() {
-    const artistName = "{{ artist_name }}".trim();
+    const artistName = {{ artist_name|tojson }};
     if (artistName && artistName.length > 0) {
       if (!artistGenresLoaded) {
         loadArtistGenres(artistName);
