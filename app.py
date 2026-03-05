@@ -12629,7 +12629,7 @@ def api_downloads_apply_musicbrainz_match():
 
 
 @app.route("/api/downloads/release-tracks", methods=["POST"])
-def api_downloads_release_tracks():
+def api_downloads_release_tracks_status():
     """Get all tracks from a MusicBrainz release with their status (in folder, downloading, other folder, missing)."""
     try:
         from download_queue_manager import get_release_tracks_with_status

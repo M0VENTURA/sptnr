@@ -7,6 +7,11 @@ Note: Singles detection is handled separately by sptnr.py rate_artist() function
 
 import os
 import sqlite3
+try:
+    import psycopg2
+    import psycopg2.extras
+except ImportError:
+    psycopg2 = None  # type: ignore[assignment]
 import logging
 import json
 import math
@@ -1242,6 +1247,11 @@ def log_verbose(msg):
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 POPULARITY_PROGRESS_FILE = os.environ.get("POPULARITY_PROGRESS_FILE", "/database/popularity_scan_progress.json")
 NAVIDROME_PROGRESS_FILE = os.environ.get("NAVIDROME_PROGRESS_FILE", "/database/navidrome_scan_progress.json")
+PG_HOST = os.environ.get("PG_HOST", "")
+PG_PORT = int(os.environ.get("PG_PORT", 5432))
+PG_USER = os.environ.get("PG_USER", "")
+PG_PASSWORD = os.environ.get("PG_PASSWORD", "")
+PG_DATABASE = os.environ.get("PG_DATABASE", "")
 from popularity_helpers import (
     get_spotify_artist_id,
     search_spotify_track,
@@ -1329,16 +1339,31 @@ if __name__ == "__main__":
         print("log_unified() test failed:", e)
 
 def get_db_connection():
-    """Get database connection with WAL mode (SQLite) or standard settings (PostgreSQL)"""
+    """Get database connection (PostgreSQL if configured, else SQLite)."""
+    # Check if PostgreSQL is configured
+    if PG_HOST and PG_USER and PG_DATABASE:
+        # Connect to PostgreSQL
+        if psycopg2 is None:
+            raise RuntimeError("psycopg2 not available - install with: pip install psycopg2-binary")
+        try:
+            conn = psycopg2.connect(
+                host=PG_HOST,
+                port=PG_PORT,
+                user=PG_USER,
+                password=PG_PASSWORD,
+                dbname=PG_DATABASE,
+                cursor_factory=psycopg2.extras.RealDictCursor
+            )
+            return conn
+        except Exception as e:
+            log_debug(f"PostgreSQL connection failed, falling back to SQLite: {e}")
+    
+    # Fallback to SQLite
     conn = sqlite3.connect(DB_PATH, timeout=120.0, isolation_level='DEFERRED')
-    
-    # Only apply SQLite-specific pragmas
-    if not is_postgres_connection(conn):
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout = 120000")  # 120 seconds
-        conn.execute("PRAGMA synchronous = NORMAL")  # Reduces fsync calls, improves throughput with WAL
-        conn.execute("PRAGMA wal_autocheckpoint = 1000")  # More aggressive checkpointing
-    
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout = 120000")  # 120 seconds
+    conn.execute("PRAGMA synchronous = NORMAL")  # Reduces fsync calls, improves throughput with WAL
+    conn.execute("PRAGMA wal_autocheckpoint = 1000")  # More aggressive checkpointing
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -5493,16 +5518,26 @@ def popularity_scan(
                 # Auto-detect Greatest Hits: if every track on the album is now marked as a single,
                 # treat the album as a greatest hits collection for scan behavior.
                 try:
-                    cursor.execute(
+                    # Use conditional query for PostgreSQL vs SQLite
+                    is_pg = is_postgres_connection(cursor.connection)
+                    if is_pg:
+                        query = """
+                        SELECT COUNT(*) AS total_tracks,
+                               SUM(CASE WHEN is_single THEN 1 ELSE 0 END) AS single_tracks
+                        FROM tracks
+                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+                          AND album = %s
                         """
+                        cursor.execute(query, (artist, album))
+                    else:
+                        query = """
                         SELECT COUNT(*) AS total_tracks,
                                SUM(CASE WHEN COALESCE(is_single, 0) = 1 THEN 1 ELSE 0 END) AS single_tracks
                         FROM tracks
                         WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
                           AND album = ?
-                        """,
-                        (artist, album)
-                    )
+                        """
+                        cursor.execute(query, (artist, album))
                     gh_row = cursor.fetchone()
                     total_tracks = row_get(gh_row, "total_tracks", 0) if gh_row else 0
                     single_tracks = row_get(gh_row, "single_tracks", 0) if gh_row else 0

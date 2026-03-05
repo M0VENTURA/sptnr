@@ -2694,7 +2694,7 @@ async function showReleaseTracklistModal(candidateJson, folderPathEnc, event) {
     const candidate = JSON.parse(candidateJson);
     const folderPath = decodeInlineArg(folderPathEnc);
 
-    // Fetch release tracks with status
+    // Fetch release tracks with status from backend
     const response = await fetch('/api/downloads/release-tracks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
