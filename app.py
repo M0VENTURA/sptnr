@@ -5734,7 +5734,7 @@ def _run_artist_scan_pipeline(artist_name: str):
             placeholder = "%s" if is_pg else "?"
             cursor.execute(f"SELECT artist_id FROM artist_stats WHERE artist_name = {placeholder}", (artist_name,))
             row = cursor.fetchone()
-            artist_id = row[0] if row else None
+            artist_id = row['artist_id'] if row else None
             log_unified(f"Database lookup result: artist_id={artist_id}")
         finally:
             conn.close()
@@ -5756,9 +5756,9 @@ def _run_artist_scan_pipeline(artist_name: str):
                 cursor = conn.cursor()
                 is_pg = _is_postgres_connection(conn)
                 placeholder = "%s" if is_pg else "?"
-                cursor.execute(f"SELECT COUNT(*) FROM tracks WHERE artist = {placeholder}", (artist_name,))
+                cursor.execute(f"SELECT COUNT(*) as cnt FROM tracks WHERE artist = {placeholder}", (artist_name,))
                 result = cursor.fetchone()
-                track_count = result[0] if result else 0
+                track_count = result['cnt'] if result else 0
                 log_unified(f"Found {track_count} tracks for '{artist_name}'")
             finally:
                 conn.close()
@@ -5967,7 +5967,7 @@ def _run_album_scan_pipeline(artist_name: str, album_name: str):
             placeholder = "%s" if is_pg else "?"
             cursor.execute(f"SELECT artist_id FROM artist_stats WHERE artist_name = {placeholder}", (artist_name,))
             row = cursor.fetchone()
-            artist_id = row[0] if row else None
+            artist_id = row['artist_id'] if row else None
             log_unified(f"Database lookup result: artist_id={artist_id}")
         finally:
             conn.close()
@@ -5988,9 +5988,9 @@ def _run_album_scan_pipeline(artist_name: str, album_name: str):
                 cursor = conn.cursor()
                 is_pg = _is_postgres_connection(conn)
                 placeholder = "%s" if is_pg else "?"
-                cursor.execute(f"SELECT COUNT(*) FROM tracks WHERE artist = {placeholder} AND album = {placeholder}", (artist_name, album_name))
+                cursor.execute(f"SELECT COUNT(*) as cnt FROM tracks WHERE artist = {placeholder} AND album = {placeholder}", (artist_name, album_name))
                 result = cursor.fetchone()
-                track_count = result[0] if result else 0
+                track_count = result['cnt'] if result else 0
                 log_unified(f"Found {track_count} tracks for '{album_display}'")
             finally:
                 conn.close()
@@ -12951,20 +12951,22 @@ def api_downloads_manage_queue_item(queue_id):
         from downloads_watcher import mark_download_as_failed, mark_download_as_successful
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         
         data = request.get_json()
         action = data.get('action', 'delete')  # delete, retry, fail
         
-        cursor.execute("SELECT file_path FROM download_queue WHERE id = ?", (queue_id,))
+        cursor.execute(f"SELECT file_path FROM download_queue WHERE id = {placeholder}", (queue_id,))
         row = cursor.fetchone()
         
         if not row:
             return jsonify({"error": "Queue item not found"}), 404
         
-        file_path = row[0]
+        file_path = row['file_path'] if isinstance(row, dict) else row[0]
         
         if action == 'delete':
-            cursor.execute("DELETE FROM download_queue WHERE id = ?", (queue_id,))
+            cursor.execute(f"DELETE FROM download_queue WHERE id = {placeholder}", (queue_id,))
         elif action == 'successful':
             mark_download_as_successful(file_path)
         elif action == 'fail':
@@ -13808,8 +13810,10 @@ def api_queue_delete(queue_id):
     try:
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         
-        cursor.execute("DELETE FROM download_queue WHERE id = ?", (queue_id,))
+        cursor.execute(f"DELETE FROM download_queue WHERE id = {placeholder}", (queue_id,))
         conn.commit()
         
         deleted = cursor.rowcount > 0
@@ -13834,21 +13838,23 @@ def api_queue_clear():
         
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         
         # Build query with optional filters
         query = "DELETE FROM download_queue WHERE 1=1"
         params = []
         
         if filters.get('status'):
-            query += " AND status = ?"
+            query += f" AND status = {placeholder}"
             params.append(filters['status'])
         
         if filters.get('artist'):
-            query += " AND artist = ?"
+            query += f" AND artist = {placeholder}"
             params.append(filters['artist'])
         
         if filters.get('album'):
-            query += " AND album = ?"
+            query += f" AND album = {placeholder}"
             params.append(filters['album'])
         
         # Execute deletion
