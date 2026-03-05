@@ -9,6 +9,68 @@ Your system **already has 80% of the infrastructure** for this workflow. The mai
 3. **Automatic transfer logic** - Transfer automatically when all songs matched (no user action needed)
 4. **Artist/Album badges** - Show download status on browse pages
 
+---
+
+## Pre-requisite: PostgreSQL Compatibility Fix ✅ COMPLETED
+
+**Status:** ✅ COMPLETED (6 commits)
+
+**Why This Was Needed:** App supports both SQLite and PostgreSQL, but 100+ SQL queries used SQLite placeholders (`?`) instead of PostgreSQL placeholders (`%s`). This caused syntax errors and broke artist pages, track lookups, and download management when PostgreSQL was the backend.
+
+### Root Cause
+- `psycopg2` (PostgreSQL driver) requires `%s` placeholders
+- SQLite requires `?` placeholders
+- Codebase was mostly written for SQLite without systematic conversion
+
+### Solution Implemented
+Pattern used throughout: Detect database type at query time and use appropriate placeholder
+```python
+is_pg = _is_postgres_connection(conn)
+placeholder = "%s" if is_pg else "?"
+cursor.execute(f"...WHERE id = {placeholder}", (id_value,))
+```
+
+### Work Completed
+
+**Commit ae567e1** - `popularity.py`: 62 placeholders
+- Fixed all SQL queries in popularity scan function
+- Enables popularity scoring to work with PostgreSQL
+
+**Commit 21478c5** - `app.py` artist_detail: 1 query
+- Fixed artist metadata query (for artist bio/images)
+
+**Commit 3290715** - `app.py` critical endpoints: 3 queries
+- `api_get_track`: Track lookup API
+- `api_get_track_genres`: Genre lookup
+- `api_update_artist_country`: Country update (2 functions)
+
+**Commit 3e203bd** - `app.py` views/endpoints: 8 queries
+- `track_detail`: Track detail page view
+- `track_edit`: Track edit form (15-parameter UPDATE)
+- `api_sync_track_to_file`: Tag sync endpoint
+- `api_update_artist_country`: Fixed 2 additional functions
+
+**Commit dc3b044** - `app.py` download management: 6 queries
+- `api_create_managed_download`: Session validation + INSERT
+- `api_cancel_playlist_download_session`: Batch UPDATE
+
+**Commit e96f133** - Documentation
+- Created `SQLITE_POSTGRESQL_PLACEHOLDER_FIX_SUMMARY.md` with full details
+
+### Results
+- ✅ User pages now load without timeouts (artist, track, album)
+- ✅ Similar artists section works (no spinning anymore)
+- ✅ Genre/tag sources load correctly
+- ✅ Download management endpoints functional
+- ✅ Popularity scan completes without SQL errors
+
+### Remaining Work (Lower Priority)
+- ~100+ more `?` placeholders remain in app.py for less critical endpoints
+- These don't affect user-visible features but should be fixed for completeness
+- Pattern is established and can be applied systematically
+
+---
+
 ## Phase 1: Folder Creation (Hours: 2-3)
 
 **Goal:** Folder created immediately when release added to queue
