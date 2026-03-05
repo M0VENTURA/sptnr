@@ -2285,7 +2285,7 @@ def artist_detail(name):
         # Use cached is_compilation field from background scan, with fallback to local heuristics
         compilation_albums = []
         
-        for album_row in potential_albums_dicts:
+        for album_row in potential_albums:
             album_dict = album_row.copy() if isinstance(album_row, dict) else dict(album_row)
             album_artist = album_dict.get('album_artist', '')
             spotify_type = album_dict.get('album_type', '')
