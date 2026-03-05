@@ -3297,21 +3297,23 @@ def api_fetch_artist_country():
         # Update artists table
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         
         # Ensure artist exists in artists table
-        cursor.execute("SELECT id FROM artists WHERE name = ?", (artist_name,))
+        cursor.execute(f"SELECT id FROM artists WHERE name = {placeholder}", (artist_name,))
         artist_row = cursor.fetchone()
         
         if artist_row:
             # Update existing artist
-            cursor.execute("UPDATE artists SET country = ? WHERE name = ?", (country, artist_name))
+            cursor.execute(f"UPDATE artists SET country = {placeholder} WHERE name = {placeholder}", (country, artist_name))
         else:
             # Insert new artist entry
-            cursor.execute("INSERT INTO artists (id, name, country) VALUES (?, ?, ?)", 
+            cursor.execute(f"INSERT INTO artists (id, name, country) VALUES ({placeholder}, {placeholder}, {placeholder})", 
                          (artist_name, artist_name, country))
         
         # Also update all tracks by this artist
-        cursor.execute("UPDATE tracks SET artist_country = ? WHERE artist = ?", (country, artist_name))
+        cursor.execute(f"UPDATE tracks SET artist_country = {placeholder} WHERE artist = {placeholder}", (country, artist_name))
         
         conn.commit()
         conn.close()
@@ -3341,21 +3343,23 @@ def api_update_artist_country():
         # Update artists table
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         
         # Ensure artist exists in artists table
-        cursor.execute("SELECT id FROM artists WHERE name = ?", (artist_name,))
+        cursor.execute(f"SELECT id FROM artists WHERE name = {placeholder}", (artist_name,))
         artist_row = cursor.fetchone()
         
         if artist_row:
             # Update existing artist
-            cursor.execute("UPDATE artists SET country = ? WHERE name = ?", (country, artist_name))
+            cursor.execute(f"UPDATE artists SET country = {placeholder} WHERE name = {placeholder}", (country, artist_name))
         else:
             # Insert new artist entry
-            cursor.execute("INSERT INTO artists (id, name, country) VALUES (?, ?, ?)", 
+            cursor.execute(f"INSERT INTO artists (id, name, country) VALUES ({placeholder}, {placeholder}, {placeholder})", 
                          (artist_name, artist_name, country))
         
         # Also update all tracks by this artist
-        cursor.execute("UPDATE tracks SET artist_country = ? WHERE artist = ?", (country, artist_name))
+        cursor.execute(f"UPDATE tracks SET artist_country = {placeholder} WHERE artist = {placeholder}", (country, artist_name))
         
         conn.commit()
         conn.close()
@@ -4457,9 +4461,11 @@ def api_get_track_genres(track_id):
         
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         
-        cursor.execute("""
-            SELECT * FROM tracks WHERE id = ?
+        cursor.execute(f"""
+            SELECT * FROM tracks WHERE id = {placeholder}
         """, (track_id,))
         
         track = cursor.fetchone()
@@ -16091,12 +16097,14 @@ def api_get_track(track_id):
     try:
         conn = get_db()
         cursor = conn.cursor()
-        cursor.execute("""
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+        cursor.execute(f"""
             SELECT id, title, artist, album, genres, stars, is_single, 
                    single_confidence, duration, track_number, disc_number,
                    year, album_artist, composer, comment, mbid, file_path, writer
             FROM tracks 
-            WHERE id = ?
+            WHERE id = {placeholder}
         """, (track_id,))
         
         row = cursor.fetchone()
