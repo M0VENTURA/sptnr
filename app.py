@@ -7202,6 +7202,18 @@ def config_migrate_postgres():
             return "TIMESTAMP"
         return "TEXT"
 
+    def _safe_artist_id_from_name(artist_name):
+        """Build a deterministic fallback artist_id for legacy rows with null artist_id."""
+        name = (artist_name or "").strip().lower()
+        if not name:
+            return None
+        # Keep IDs portable and deterministic without adding extra dependencies.
+        normalized = "".join(ch if ch.isalnum() else "_" for ch in name)
+        normalized = "_".join(part for part in normalized.split("_") if part)
+        if not normalized:
+            return None
+        return f"artist_{normalized[:96]}"
+
     try:
         if not _ensure_psycopg2_loaded() or psycopg2 is None or psql is None:
             return jsonify({
@@ -7281,6 +7293,7 @@ def config_migrate_postgres():
 
         migrated_tables = 0
         migrated_rows = 0
+        skipped_rows = 0
 
         try:
             sqlite_cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
@@ -7331,6 +7344,13 @@ def config_migrate_postgres():
                     col_type = (col[2] or "").upper()
                     if "BOOL" in col_type:
                         boolean_columns.add(col_name)
+
+                required_columns = set(pk_columns)
+                for col in columns_info:
+                    col_name = col[1]
+                    not_null = bool(col[3])
+                    if not_null:
+                        required_columns.add(col_name)
                 
                 sqlite_cur.execute(f"SELECT * FROM {table_name}")
                 rows = sqlite_cur.fetchall()
@@ -7352,7 +7372,37 @@ def config_migrate_postgres():
                                 converted.append(val)
                         return tuple(converted)
                     
-                    values = [convert_row(row) for row in rows]
+                    values = []
+                    for row in rows:
+                        row_dict = {c: row[c] for c in column_names}
+
+                        # Repair known legacy corruption in artist_stats where artist_id can be NULL.
+                        if table_name == "artist_stats" and (row_dict.get("artist_id") is None or str(row_dict.get("artist_id")).strip() == ""):
+                            repaired_artist_id = _safe_artist_id_from_name(row_dict.get("artist_name"))
+                            if repaired_artist_id:
+                                row_dict["artist_id"] = repaired_artist_id
+
+                        # Skip rows that still violate required key constraints.
+                        missing_required = False
+                        for required_col in required_columns:
+                            val = row_dict.get(required_col)
+                            if val is None:
+                                missing_required = True
+                                break
+                            if isinstance(val, str) and not val.strip():
+                                missing_required = True
+                                break
+
+                        if missing_required:
+                            skipped_rows += 1
+                            continue
+
+                        values.append(convert_row(row_dict))
+
+                    if not values:
+                        migrated_tables += 1
+                        continue
+
                     psycopg2.extras.execute_values(pg_cur, insert_stmt.as_string(pg_conn), values, page_size=1000)  # type: ignore[name-defined]
                     migrated_rows += len(values)
 
@@ -7428,6 +7478,7 @@ def config_migrate_postgres():
             "success": True,
             "tables_migrated": migrated_tables,
             "rows_migrated": migrated_rows,
+            "rows_skipped": skipped_rows,
             "backup_path": backup_path,
             "message": "Migration complete",
             "requires_restart": True,
