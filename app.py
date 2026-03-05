@@ -3435,8 +3435,10 @@ def api_apply_country_as_genre():
         # Get artist country
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         
-        cursor.execute("SELECT country FROM artists WHERE name = ?", (artist_name,))
+        cursor.execute(f"SELECT country FROM artists WHERE name = {placeholder}", (artist_name,))
         artist_row = cursor.fetchone()
         
         if not artist_row or not artist_row[0]:
@@ -3445,7 +3447,7 @@ def api_apply_country_as_genre():
         country = artist_row[0]
         
         # Get all tracks by this artist with file paths
-        cursor.execute("SELECT id, file_path, genre FROM tracks WHERE artist = ?", (artist_name,))
+        cursor.execute(f"SELECT id, file_path, genre FROM tracks WHERE artist = {placeholder}", (artist_name,))
         tracks = cursor.fetchall()
         
         if not tracks:
@@ -4166,7 +4168,9 @@ def api_album_bulk_tag():
         for track_id in track_ids:
             try:
                 # Get track info
-                cursor.execute("SELECT title, genres, beets_path, file_path FROM tracks WHERE id = ?", (track_id,))
+                is_pg = _is_postgres_connection(conn)
+                placeholder = "%s" if is_pg else "?"
+                cursor.execute(f"SELECT title, genres, beets_path, file_path FROM tracks WHERE id = {placeholder}", (track_id,))
                 result = cursor.fetchone()
                 
                 if result:
@@ -4389,7 +4393,7 @@ def api_update_album_tags(album, artist):
                 cursor.execute(f"SELECT id FROM tracks WHERE album = ? AND artist = ? AND id IN ({placeholders})",
                               [album, artist] + selected_track_ids)
             else:
-                cursor.execute("SELECT id FROM tracks WHERE album = ? AND artist = ?", (album, artist))
+                cursor.execute(f"SELECT id FROM tracks WHERE album = {placeholder} AND artist = {placeholder}", (album, artist))
             
             track_ids = [row[0] for row in cursor.fetchall()]
             conn.close()
@@ -6204,8 +6208,10 @@ def track_detail(track_id):
     try:
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         
-        cursor.execute("SELECT * FROM tracks WHERE id = ?", (track_id,))
+        cursor.execute(f"SELECT * FROM tracks WHERE id = {placeholder}", (track_id,))
         track = cursor.fetchone()
         
         if not track:
@@ -6294,6 +6300,8 @@ def track_edit(track_id):
     """Update track metadata and write to audio file"""
     conn = get_db()
     cursor = conn.cursor()
+    is_pg = _is_postgres_connection(conn)
+    placeholder = "%s" if is_pg else "?"
     
     # Get form data - ensure all string fields have defaults to avoid None when calling .strip()
     title = request.form.get("title", "").strip() or None
@@ -6316,20 +6324,20 @@ def track_edit(track_id):
     comment = request.form.get("comment", "").strip() or None
     
     # First, get the file path from database
-    cursor.execute("SELECT file_path FROM tracks WHERE id = ?", (track_id,))
+    cursor.execute(f"SELECT file_path FROM tracks WHERE id = {placeholder}", (track_id,))
     file_result = cursor.fetchone()
     file_path = file_result["file_path"] if file_result else None
     
     # Update database
     file_write_success = False
     try:
-        cursor.execute("""
+        cursor.execute(f"""
             UPDATE tracks
-            SET title = ?, artist = ?, album = ?, stars = ?, is_single = ?, single_confidence = ?,
-                mbid = ?, suggested_mbid = ?, suggested_mbid_confidence = ?,
-                genres = ?, year = ?, album_artist = ?, composer = ?, 
-                track_number = ?, disc_number = ?, comment = ?, single_manual_override = 1
-            WHERE id = ?
+            SET title = {placeholder}, artist = {placeholder}, album = {placeholder}, stars = {placeholder}, is_single = {placeholder}, single_confidence = {placeholder},
+                mbid = {placeholder}, suggested_mbid = {placeholder}, suggested_mbid_confidence = {placeholder},
+                genres = {placeholder}, year = {placeholder}, album_artist = {placeholder}, composer = {placeholder}, 
+                track_number = {placeholder}, disc_number = {placeholder}, comment = {placeholder}, single_manual_override = 1
+            WHERE id = {placeholder}
         """, (title, artist, album, stars, is_single, single_confidence, mbid, suggested_mbid, 
               suggested_mbid_confidence, genres, year, album_artist, composer, 
               track_number, disc_number, comment, track_id))
@@ -6397,7 +6405,9 @@ def api_toggle_manual_single(track_id):
         cursor = conn.cursor()
         
         # Get current value
-        cursor.execute("SELECT single_manual_override FROM tracks WHERE id = ?", (track_id,))
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+        cursor.execute(f"SELECT single_manual_override FROM tracks WHERE id = {placeholder}", (track_id,))
         result = cursor.fetchone()
         
         if not result:
