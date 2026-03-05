@@ -5730,7 +5730,9 @@ def _run_artist_scan_pipeline(artist_name: str):
         conn = get_db()
         try:
             cursor = conn.cursor()
-            cursor.execute("SELECT artist_id FROM artist_stats WHERE artist_name = ?", (artist_name,))
+            is_pg = _is_postgres_connection(conn)
+            placeholder = "%s" if is_pg else "?"
+            cursor.execute(f"SELECT artist_id FROM artist_stats WHERE artist_name = {placeholder}", (artist_name,))
             row = cursor.fetchone()
             artist_id = row[0] if row else None
             log_unified(f"Database lookup result: artist_id={artist_id}")
@@ -5752,7 +5754,9 @@ def _run_artist_scan_pipeline(artist_name: str):
             conn = get_db()
             try:
                 cursor = conn.cursor()
-                cursor.execute("SELECT COUNT(*) FROM tracks WHERE artist = ?", (artist_name,))
+                is_pg = _is_postgres_connection(conn)
+                placeholder = "%s" if is_pg else "?"
+                cursor.execute(f"SELECT COUNT(*) FROM tracks WHERE artist = {placeholder}", (artist_name,))
                 result = cursor.fetchone()
                 track_count = result[0] if result else 0
                 log_unified(f"Found {track_count} tracks for '{artist_name}'")
@@ -5832,9 +5836,11 @@ def _auto_detect_album_type(artist_name: str, album_name: str):
     try:
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         
         # Get current album type, track counts, and Discogs format data
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT 
                 COUNT(*) as total_tracks,
                 SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END) as singles_count,
@@ -5842,7 +5848,7 @@ def _auto_detect_album_type(artist_name: str, album_name: str):
                 MAX(discogs_formats) as discogs_formats,
                 MAX(discogs_is_single) as discogs_is_single
             FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ?
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
         """, (artist_name, album_name))
         
         result = cursor.fetchone()
@@ -5915,10 +5921,10 @@ def _auto_detect_album_type(artist_name: str, album_name: str):
         
         # Update album type in database if it's different from current
         if new_type and new_type != current_type:
-            cursor.execute("""
+            cursor.execute(f"""
                 UPDATE tracks 
-                SET spotify_album_type = ?
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ?
+                SET spotify_album_type = {placeholder}
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
             """, (new_type, artist_name, album_name))
             conn.commit()
             
@@ -5957,7 +5963,9 @@ def _run_album_scan_pipeline(artist_name: str, album_name: str):
         conn = get_db()
         try:
             cursor = conn.cursor()
-            cursor.execute("SELECT artist_id FROM artist_stats WHERE artist_name = ?", (artist_name,))
+            is_pg = _is_postgres_connection(conn)
+            placeholder = "%s" if is_pg else "?"
+            cursor.execute(f"SELECT artist_id FROM artist_stats WHERE artist_name = {placeholder}", (artist_name,))
             row = cursor.fetchone()
             artist_id = row[0] if row else None
             log_unified(f"Database lookup result: artist_id={artist_id}")
@@ -5978,7 +5986,9 @@ def _run_album_scan_pipeline(artist_name: str, album_name: str):
             conn = get_db()
             try:
                 cursor = conn.cursor()
-                cursor.execute("SELECT COUNT(*) FROM tracks WHERE artist = ? AND album = ?", (artist_name, album_name))
+                is_pg = _is_postgres_connection(conn)
+                placeholder = "%s" if is_pg else "?"
+                cursor.execute(f"SELECT COUNT(*) FROM tracks WHERE artist = {placeholder} AND album = {placeholder}", (artist_name, album_name))
                 result = cursor.fetchone()
                 track_count = result[0] if result else 0
                 log_unified(f"Found {track_count} tracks for '{album_display}'")
