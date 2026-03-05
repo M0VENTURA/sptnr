@@ -167,7 +167,6 @@
         <div class="btn-group btn-group-sm" role="group" aria-label="Folder group filter">
           <button type="button" class="btn btn-outline-light active" id="folderFilterAll" onclick="setFolderGroupFilter('all')">All</button>
           <button type="button" class="btn btn-outline-light" id="folderFilterOnly" onclick="setFolderGroupFilter('folder')">Folder Scan</button>
-          <button type="button" class="btn btn-outline-light" id="queueFilterOnly" onclick="setFolderGroupFilter('queue')">Queue Ready</button>
         </div>
         <span class="badge bg-info" id="folderGroupsBadge">0 groups</span>
       </div>
@@ -561,11 +560,8 @@ function searchOtherSources(artist, album) {
 
 // Keep selected folder matches in-memory so users can review before moving files.
 const folderMatchSelections = {};
-let completedQueueItems = [];
 let folderGroupsFilter = 'all';
 const expandedFolderGroupIds = new Set();
-const expandedQueueGroupIds = new Set();
-const expandedQueueTrackPathIds = new Set();
 let folderStatusData = {}; // Tracks completion status from database
 
 async function loadFolderStatus() {
@@ -709,12 +705,10 @@ function setFolderGroupFilter(filter) {
   folderGroupsFilter = filter;
   const allBtn = document.getElementById('folderFilterAll');
   const folderBtn = document.getElementById('folderFilterOnly');
-  const queueBtn = document.getElementById('queueFilterOnly');
 
-  if (allBtn && folderBtn && queueBtn) {
+  if (allBtn && folderBtn) {
     allBtn.classList.toggle('active', filter === 'all');
     folderBtn.classList.toggle('active', filter === 'folder');
-    queueBtn.classList.toggle('active', filter === 'queue');
   }
 
   loadFolderGroups();
@@ -740,12 +734,9 @@ async function loadFolderGroups() {
     const list = document.getElementById('folderGroupsList');
     const badge = document.getElementById('folderGroupsBadge');
 
-    const showFolderGroups = folderGroupsFilter !== 'queue';
-    const showQueueGroups = folderGroupsFilter !== 'folder';
-    const completedGroups = groupByAlbum(completedQueueItems);
-    const visibleFolderCount = showFolderGroups ? groups.length : 0;
-    const visibleQueueCount = showQueueGroups ? completedGroups.length : 0;
-    const totalGroups = visibleFolderCount + visibleQueueCount;
+    const showFolderGroups = true;
+    const visibleFolderCount = groups.length;
+    const totalGroups = visibleFolderCount;
     
     if (totalGroups === 0) {
       section.style.display = 'none';
@@ -904,85 +895,6 @@ async function loadFolderGroups() {
       });
     }
 
-    if (showQueueGroups && completedGroups.length > 0) {
-      html += `
-        <div class="border-top mt-3 pt-3 px-3">
-          <h6 class="mb-3">
-            <i class="bi bi-check2-square text-success"></i> Ready to Organize from Queue
-          </h6>
-        </div>`;
-
-      completedGroups.forEach(group => {
-        const queueGroupKey = `queue-${makeSafeDomId(group.key)}`;
-        const isQueueGroupExpanded = expandedQueueGroupIds.has(queueGroupKey);
-        const queueGroupDisplay = isQueueGroupExpanded ? 'block' : 'none';
-        const queueToggleLabel = isQueueGroupExpanded ? 'Hide Tracks' : 'Show Tracks';
-        const queueToggleIcon = isQueueGroupExpanded ? 'bi-chevron-up' : 'bi-chevron-down';
-        const queueGroupBodyId = `queue-body-${queueGroupKey}`;
-        const queueIds = group.items.map(i => i.id);
-        const groupedCountBadge = group.items.length > 1
-          ? `<span class="badge bg-success rounded-pill ms-2">${group.items.length} tracks</span>`
-          : '';
-
-        const trackRows = group.items.map(item => {
-          const pathStateKey = `${queueGroupKey}-${item.id}`;
-          const isPathExpanded = expandedQueueTrackPathIds.has(pathStateKey);
-          const pathDisplay = isPathExpanded ? 'block' : 'none';
-          const pathToggleLabel = isPathExpanded ? 'Hide Path' : 'Show Path';
-          const pathToggleIcon = isPathExpanded ? 'bi-chevron-up' : 'bi-chevron-down';
-          const pathRowId = `queue-path-${pathStateKey}`;
-          const trackTitle = escapeHtml(item.title || 'Unknown track');
-          const filePath = escapeHtml(item.found_filename || item.file_path || 'unknown');
-
-          return `
-            <div class="d-flex justify-content-between align-items-start gap-2 py-2 border-top">
-              <div class="small">
-                <div class="fw-semibold">${trackTitle}</div>
-              </div>
-              <div class="text-end">
-                <button class="btn btn-sm btn-outline-secondary" onclick="toggleQueueTrackPath('${pathRowId}', '${pathStateKey}', this)">
-                  <i class="bi ${pathToggleIcon}"></i> ${pathToggleLabel}
-                </button>
-              </div>
-            </div>
-            <div id="${pathRowId}" class="small text-muted pb-2" style="display: ${pathDisplay};">
-              <code>${filePath}</code>
-            </div>`;
-        }).join('');
-
-        html += `
-          <div class="card border-bottom mb-2 mx-3">
-            <div class="card-body p-3">
-              <div class="d-flex justify-content-between align-items-start gap-3">
-                <div class="flex-grow-1">
-                  <div class="fw-semibold mb-1">
-                    ${escapeHtml(group.artist)}${group.album ? ` - <em>${escapeHtml(group.album)}</em>` : ''}
-                    ${groupedCountBadge}
-                  </div>
-                  <div class="small text-muted">
-                    ${group.items.map(item => escapeHtml(item.title || item.found_filename || 'Unknown track')).join(' · ')}
-                  </div>
-                </div>
-                <div class="d-flex gap-2 flex-wrap justify-content-end">
-                  <button class="btn btn-sm btn-outline-secondary" onclick="toggleQueueGroupDetails('${queueGroupBodyId}', '${queueGroupKey}', this)">
-                    <i class="bi ${queueToggleIcon}"></i> ${queueToggleLabel}
-                  </button>
-                  <button class="btn btn-sm btn-success" onclick="organizeGroup([${queueIds.join(',')}])" title="Organize this group">
-                    <i class="bi bi-folder-check"></i> Organize All
-                  </button>
-                  <button class="btn btn-sm btn-outline-danger" onclick="deleteGroup([${queueIds.join(',')}])" title="Remove this group from queue">
-                    <i class="bi bi-trash"></i>
-                  </button>
-                </div>
-              </div>
-              <div id="${queueGroupBodyId}" style="display: ${queueGroupDisplay};" class="mt-2">
-                ${trackRows}
-              </div>
-            </div>
-          </div>`;
-      });
-    }
-
     if (totalGroups === 0) {
       html = `
         <div class="alert alert-info m-3 mb-0">
@@ -1019,49 +931,7 @@ function toggleTrackList(groupId, stateKey, button) {
   }
 }
 
-function toggleQueueGroupDetails(groupBodyId, stateKey, button) {
-  const element = document.getElementById(groupBodyId);
-  if (!element) return;
 
-  const isCurrentlyHidden = element.style.display === 'none';
-  element.style.display = isCurrentlyHidden ? 'block' : 'none';
-
-  if (stateKey) {
-    if (isCurrentlyHidden) {
-      expandedQueueGroupIds.add(stateKey);
-    } else {
-      expandedQueueGroupIds.delete(stateKey);
-    }
-  }
-
-  if (button) {
-    button.innerHTML = isCurrentlyHidden
-      ? '<i class="bi bi-chevron-up"></i> Hide Tracks'
-      : '<i class="bi bi-chevron-down"></i> Show Tracks';
-  }
-}
-
-function toggleQueueTrackPath(pathRowId, stateKey, button) {
-  const element = document.getElementById(pathRowId);
-  if (!element) return;
-
-  const isCurrentlyHidden = element.style.display === 'none';
-  element.style.display = isCurrentlyHidden ? 'block' : 'none';
-
-  if (stateKey) {
-    if (isCurrentlyHidden) {
-      expandedQueueTrackPathIds.add(stateKey);
-    } else {
-      expandedQueueTrackPathIds.delete(stateKey);
-    }
-  }
-
-  if (button) {
-    button.innerHTML = isCurrentlyHidden
-      ? '<i class="bi bi-chevron-up"></i> Hide Path'
-      : '<i class="bi bi-chevron-down"></i> Show Path';
-  }
-}
 
 async function matchFolderGroupWithMusicBrainz(clickEvent, folderPath, artist, album, tracks, manualQuery = null) {
   // Match a folder group with MusicBrainz/Discogs candidates.
@@ -1326,7 +1196,6 @@ async function loadQueueStatus() {
     const active = queue.filter(item => ['queued', 'searching', 'downloading'].includes(item.status));
     const completed = queue.filter(item => ['completed', 'discovered', 'pending_match', 'possible_duplicate'].includes(item.status));
     const failed = queue.filter(item => item.status === 'failed');
-    completedQueueItems = completed;
     
     // Update counts
     document.getElementById('queueActiveCount').textContent = active.length;
@@ -1590,75 +1459,7 @@ function groupByAlbum(items) {
   return result;
 }
 
-async function organizeGroup(queueIds) {
-  if (!confirm(`Move ${queueIds.length} files to /music?`)) {
-    return;
-  }
-  
-  let successCount = 0;
-  let errorCount = 0;
-  
-  for (const queueId of queueIds) {
-    try {
-      const data = await fetchJsonOrThrow(`/api/queue/${queueId}/organize`, {
-        method: 'POST'
-      });
-      
-      if (data.success) {
-        successCount++;
-      } else {
-        errorCount++;
-        console.error(`Failed to organize ${queueId}:`, data.error);
-      }
-    } catch (error) {
-      errorCount++;
-      console.error(`Error organizing ${queueId}:`, error);
-    }
-  }
-  
-  if (errorCount === 0) {
-    alert(`✅ Successfully organized ${successCount} files!`);
-  } else {
-    alert(`⚠️ Organized ${successCount} files, ${errorCount} failed`);
-  }
-  
-  await loadQueueStatus();
-}
 
-async function deleteGroup(queueIds) {
-  if (!confirm(`Remove ${queueIds.length} items from queue?`)) {
-    return;
-  }
-  
-  let successCount = 0;
-  let errorCount = 0;
-  
-  for (const queueId of queueIds) {
-    try {
-      const data = await fetchJsonOrThrow(`/api/queue/${queueId}/delete`, {
-        method: 'DELETE'
-      });
-      
-      if (data.success) {
-        successCount++;
-      } else {
-        errorCount++;
-        console.error(`Failed to delete ${queueId}:`, data.error);
-      }
-    } catch (error) {
-      errorCount++;
-      console.error(`Error deleting ${queueId}:`, error);
-    }
-  }
-  
-  if (errorCount === 0) {
-    alert(`✅ Removed ${successCount} items from queue`);
-  } else {
-    alert(`⚠️ Removed ${successCount} items, ${errorCount} failed`);
-  }
-  
-  await loadQueueStatus();
-}
 
 function escapeHtml(text) {
   const div = document.createElement('div');
