@@ -294,7 +294,15 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         Queue item dict or None if failed
     """
     try:
-        conn = get_db()
+        # Prefer the app-level DB connector so PostgreSQL settings are honored.
+        # Fallback to local SQLite connector for standalone usage.
+        is_pg = False
+        try:
+            from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
+            conn = app_get_db()
+            is_pg = bool(app_is_postgres_connection(conn))
+        except Exception:
+            conn = get_db()
         cursor = conn.cursor()
         
         # Validate inputs
@@ -303,36 +311,56 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
             conn.close()
             return None
         
-        # Ensure schema once to avoid repeated ALTER/PRAGMA on every insert.
-        _ensure_download_queue_columns(conn, cursor)
+        # Ensure schema only on SQLite path (PRAGMA/ALTER logic is SQLite-specific).
+        if not is_pg:
+            _ensure_download_queue_columns(conn, cursor)
         
         search_query = f"{artist} - {title}"
         if album:
             search_query = f"{artist} {album} {title}"
         
         try:
-            execute_write_with_retry(
-                cursor,
-                conn,
-                """
-                INSERT INTO download_queue 
-                (artist, title, album, search_query, source, status, priority, file_path, import_group, import_type, 
-                 track_number, album_artist, year, release_id, release_source, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, 'queued', ?, NULL, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            """,
-                (artist, title, album, search_query, source, priority, import_group, import_type,
-                 track_number, album_artist, year, release_id, release_source),
-                context="add_to_queue insert",
-                max_retries=8,
-                initial_delay=0.2,
-            )
+            if is_pg:
+                cursor.execute(
+                    """
+                    INSERT INTO download_queue 
+                    (artist, title, album, search_query, source, status, priority, file_path, import_group, import_type, 
+                     track_number, album_artist, year, release_id, release_source, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, 'queued', %s, NULL, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    RETURNING id
+                    """,
+                    (artist, title, album, search_query, source, priority, import_group, import_type,
+                     track_number, album_artist, year, release_id, release_source),
+                )
+                inserted = cursor.fetchone()
+                conn.commit()
+                queue_id = inserted.get('id') if isinstance(inserted, dict) else inserted[0]
+            else:
+                execute_write_with_retry(
+                    cursor,
+                    conn,
+                    """
+                    INSERT INTO download_queue 
+                    (artist, title, album, search_query, source, status, priority, file_path, import_group, import_type, 
+                     track_number, album_artist, year, release_id, release_source, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, 'queued', ?, NULL, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """,
+                    (artist, title, album, search_query, source, priority, import_group, import_type,
+                     track_number, album_artist, year, release_id, release_source),
+                    context="add_to_queue insert",
+                    max_retries=8,
+                    initial_delay=0.2,
+                )
 
-            queue_id = cursor.lastrowid
+                queue_id = cursor.lastrowid
             
             logger.info(f"Added to queue: {search_query} (ID: {queue_id}, source: {source})")
             
             # Return the item
-            cursor.execute("SELECT * FROM download_queue WHERE id = ?", (queue_id,))
+            if is_pg:
+                cursor.execute("SELECT * FROM download_queue WHERE id = %s", (queue_id,))
+            else:
+                cursor.execute("SELECT * FROM download_queue WHERE id = ?", (queue_id,))
             item = cursor.fetchone()
             
             if item:
