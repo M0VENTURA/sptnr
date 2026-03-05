@@ -574,6 +574,7 @@ const expandedFolderGroupIds = new Set();
 let folderStatusData = {}; // Tracks completion status from database
 let lastFolderGroupsRenderSignature = null;
 let lastActiveQueueSignature = null;
+let folderGroupsRequestInFlight = false;
 
 function encodeInlineArg(value) {
   return encodeURIComponent(JSON.stringify(value));
@@ -758,11 +759,19 @@ function setFolderGroupFilter(filter) {
     folderBtn.classList.toggle('active', filter === 'folder');
   }
 
-  loadFolderGroups();
+  loadFolderGroups({ forceRender: true });
 }
 
-async function loadFolderGroups() {
+async function loadFolderGroups(options = {}) {
   // Load and display folder groups from downloads folder plus queue items ready to organize.
+  const forceRender = options.forceRender === true;
+  const keepVisibleOnEmpty = options.keepVisibleOnEmpty !== false;
+
+  if (folderGroupsRequestInFlight) {
+    return;
+  }
+
+  folderGroupsRequestInFlight = true;
   try {
     // Load folder status from database first
     await loadFolderStatus();
@@ -788,6 +797,13 @@ async function loadFolderGroups() {
     } else if (folderGroupsFilter === 'folder') {
       filteredGroups = groups.filter(g => g.is_musicbrainz_release !== true);
     }
+
+    // Keep ordering stable to prevent unnecessary re-renders on refresh.
+    filteredGroups = filteredGroups.sort((a, b) => {
+      const keyA = String(a.folder_path || a.folder_name || '').toLowerCase();
+      const keyB = String(b.folder_path || b.folder_name || '').toLowerCase();
+      return keyA.localeCompare(keyB);
+    });
     
     const showFolderGroups = true;
     const visibleFolderCount = filteredGroups.length;
@@ -808,13 +824,22 @@ async function loadFolderGroups() {
     });
     
     if (totalGroups === 0) {
-      section.style.display = 'none';
+      if (keepVisibleOnEmpty) {
+        section.style.display = 'block';
+        badge.textContent = '0 groups';
+        list.innerHTML = `
+          <div class="alert alert-info m-3 mb-0">
+            <i class="bi bi-info-circle"></i> No folder groups found right now.
+          </div>`;
+      } else {
+        section.style.display = 'none';
+      }
       lastFolderGroupsRenderSignature = nextSignature;
       return;
     }
 
     // Avoid tearing down and rebuilding the full list if the data did not change.
-    if (nextSignature === lastFolderGroupsRenderSignature) {
+    if (!forceRender && nextSignature === lastFolderGroupsRenderSignature) {
       section.style.display = 'block';
       badge.textContent = `${totalGroups} groups`;
       return;
@@ -978,6 +1003,8 @@ async function loadFolderGroups() {
     lastFolderGroupsRenderSignature = nextSignature;
   } catch (error) {
     console.error('Error loading folder groups:', error);
+  } finally {
+    folderGroupsRequestInFlight = false;
   }
 }
 
@@ -1290,7 +1317,6 @@ async function loadQueueStatus() {
     // Render queues
     renderActiveQueue(active);
     renderFailedQueue(failed);
-    await loadFolderGroups();
     
   } catch (error) {
     console.error('Error loading queue status:', error);
@@ -1701,8 +1727,11 @@ async function autoDiscoverFiles() {
 // Load queue status on page load
 document.addEventListener('DOMContentLoaded', function() {
   setTimeout(loadQueueStatus, 500);
+  setTimeout(() => loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true }), 700);
   // Refresh queue status every 5 seconds
   setInterval(loadQueueStatus, 5000);
+  // Refresh folder groups less frequently to avoid UI churn
+  setInterval(() => loadFolderGroups({ keepVisibleOnEmpty: true }), 15000);
   // Auto-discover files every 60 seconds
   setInterval(autoDiscoverFiles, 60000);
   
@@ -1711,6 +1740,7 @@ document.addEventListener('DOMContentLoaded', function() {
     if (e.key === 'sptnr_queue_updated') {
       console.log('Queue updated from another tab, refreshing immediately...');
       loadQueueStatus();
+      loadFolderGroups({ keepVisibleOnEmpty: true });
     }
   });
 });
