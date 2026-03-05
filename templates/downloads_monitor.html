@@ -626,9 +626,17 @@ async function applyMusicBrainzMatch(artist, album, releaseGroupId) {
 }
 
 function searchOtherSources(artist, titleOrAlbum, isQueueItem = false) {
-  // For queue items (searching for a single song), search: artist + title
-  // For other sources (searching for an album), search: artist + album
-  const query = encodeURIComponent(`${artist} ${titleOrAlbum}`);
+  // For queue items (searching for a single song), search: artist - title (track title only, no album)
+  // For other sources (searching for an album), search: artist album
+  // Note: Queue search uses "artist - title" format to match queue_processor.py format
+  let query;
+  if (isQueueItem) {
+    // For tracks: use "Artist - Title" format (matches queue processor)
+    query = encodeURIComponent(`${artist} - ${titleOrAlbum}`);
+  } else {
+    // For albums/other sources: use "Artist Album" format
+    query = encodeURIComponent(`${artist} ${titleOrAlbum}`);
+  }
   
   // Default to Soulseek for queue items, otherwise MusicBrainz
   const target = isQueueItem ? 'soulseek' : 'musicbrainz';

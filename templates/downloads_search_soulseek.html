@@ -102,4 +102,27 @@
 
 <!-- Include existing JavaScript -->
 <script src="{{url_for('static', filename='js/downloads.js')}}"></script>
+
+<!-- Initialize Soulseek search from URL parameters -->
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  // Check if there's a 'q' parameter in the URL (from queue search redirect)
+  const params = new URLSearchParams(window.location.search);
+  const queryParam = params.get('q');
+  
+  if (queryParam) {
+    const searchInput = document.getElementById('slskdSearchQuery');
+    if (searchInput) {
+      searchInput.value = queryParam;
+      // Auto-submit the search form with the parameter
+      setTimeout(() => {
+        const form = document.getElementById('slskdSearchForm');
+        if (form) {
+          form.dispatchEvent(new Event('submit'));
+        }
+      }, 100);
+    }
+  }
+});
+</script>
 {% endblock %}
