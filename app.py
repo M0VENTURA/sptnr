@@ -4555,11 +4555,13 @@ def api_get_artist_genres(artist):
         
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         
         # Get all tracks for this artist
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT * FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
             ORDER BY album, COALESCE(disc_number, 1), COALESCE(track_number, 999)
         """, (artist,))
         
@@ -4602,12 +4604,14 @@ def api_get_similar_artists(artist):
         
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         
         # Get similar artists from database
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT similar_artists_lastfm, similar_artists_listenbrainz
             FROM artists
-            WHERE name = ?
+            WHERE name = {placeholder}
             LIMIT 1
         """, (artist,))
         
