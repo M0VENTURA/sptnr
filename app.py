@@ -9046,10 +9046,12 @@ def api_musicbrainz_download():
     try:
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         
         # If session_id provided, verify it exists
         if session_id:
-            cursor.execute("SELECT id FROM playlist_download_sessions WHERE id = ?", (session_id,))
+            cursor.execute(f"SELECT id FROM playlist_download_sessions WHERE id = {placeholder}", (session_id,))
             if not cursor.fetchone():
                 conn.close()
                 return jsonify({"error": f"Session {session_id} not found"}), 404
@@ -9058,10 +9060,10 @@ def api_musicbrainz_download():
         download_query = f"{artist} {release_title}"
         
         # Insert into managed_downloads table with persistent search settings and session link
-        cursor.execute("""
+        cursor.execute(f"""
             INSERT INTO managed_downloads 
             (release_id, release_title, artist, method, status, download_query, persistent_search, max_retries, session_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued', {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         """, (release_id, release_title, artist, method, download_query, 1 if persistent_search else 0, max_retries, session_id))
         
         tracking_id = cursor.lastrowid
@@ -9926,25 +9928,27 @@ def api_cancel_playlist_download_session(session_id):
     try:
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         
         # Check if session exists
-        cursor.execute("SELECT id FROM playlist_download_sessions WHERE id = ?", (session_id,))
+        cursor.execute(f"SELECT id FROM playlist_download_sessions WHERE id = {placeholder}", (session_id,))
         if not cursor.fetchone():
             conn.close()
             return jsonify({"error": "Session not found"}), 404
         
         # Mark session as cancelled
-        cursor.execute("""
+        cursor.execute(f"""
             UPDATE playlist_download_sessions 
             SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
+            WHERE id = {placeholder}
         """, (session_id,))
         
         # Mark all active downloads in session as skipped
-        cursor.execute("""
+        cursor.execute(f"""
             UPDATE managed_downloads
             SET status = 'skipped', updated_at = CURRENT_TIMESTAMP
-            WHERE session_id = ? AND status NOT IN ('completed', 'failed', 'skipped')
+            WHERE session_id = {placeholder} AND status NOT IN ('completed', 'failed', 'skipped')
         """, (session_id,))
         
         conn.commit()
