@@ -1875,84 +1875,79 @@ function importRelease(artist, releaseId, title) {
 }
 
 async function searchMusicBrainzRelease(event, artist, album) {
-  event.preventDefault();
-  event.stopPropagation();
-  
-  // Show modal
-  const modal = new bootstrap.Modal(document.getElementById('musicBrainzModal'));
+  if (event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
+  const modalEl = document.getElementById('musicBrainzModal');
+  const statusEl = document.getElementById('mbSearchStatus');
+  const errorEl = document.getElementById('mbSearchError');
+  const resultsEl = document.getElementById('mbSearchResults');
+  const infoEl = document.getElementById('mbSearchInfo');
+  const infoArtistEl = document.getElementById('mbSearchArtist');
+  const infoAlbumEl = document.getElementById('mbSearchAlbum');
+
+  if (!modalEl || !statusEl || !errorEl || !resultsEl) {
+    alert('Search UI not available on this page.');
+    return;
+  }
+
+  const modal = new bootstrap.Modal(modalEl);
   modal.show();
-  
-  // Update search info
-  document.getElementById('mbSearchArtist').textContent = artist;
-  document.getElementById('mbSearchAlbum').textContent = album;
-  document.getElementById('mbSearchInfo').style.display = 'block';
-  
-  // Show loading
-  document.getElementById('mbSearchStatus').style.display = 'block';
-  document.getElementById('mbSearchError').style.display = 'none';
-  document.getElementById('mbSearchResults').innerHTML = '';
-  
+
+  if (infoEl && infoArtistEl && infoAlbumEl) {
+    infoArtistEl.textContent = artist;
+    infoAlbumEl.textContent = album;
+    infoEl.style.display = 'block';
+  }
+
+  statusEl.style.display = 'block';
+  statusEl.innerHTML = '<div class="spinner-border spinner-border-sm me-2"></div>Searching MusicBrainz...';
+  errorEl.style.display = 'none';
+  resultsEl.innerHTML = '';
+
   try {
-    // First try MusicBrainz
     const response = await fetch('/api/upcoming-releases/search-musicbrainz', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ artist: artist, album: album })
+      body: JSON.stringify({ artist, album })
     });
-    
     const data = await response.json();
-    
-    // Check if MusicBrainz had good results
-    if (data.success && data.results && data.results.length >= 3) {
-      // Hide loading
-      document.getElementById('mbSearchStatus').style.display = 'none';
-      
-      // Display results
+
+    // Match Upcoming Releases behavior: use MusicBrainz results as soon as any are found.
+    if (data.success && data.results && data.results.length >= 1) {
+      statusEl.style.display = 'none';
       displayMusicBrainzResults(data.results);
       return;
     }
-    
-    // If MusicBrainz has no or few results, try Discogs as fallback
-    console.log('MusicBrainz returned few/no results, trying Discogs fallback...');
-    document.getElementById('mbSearchStatus').innerHTML = 
-      '<div class="spinner-border spinner-border-sm me-2"></div>Searching Discogs as fallback...';
-    
+
+    statusEl.innerHTML = '<div class="spinner-border spinner-border-sm me-2"></div>Searching Discogs fallback...';
+
     const discogsResponse = await fetch('/api/upcoming-releases/search-discogs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ artist: artist, album: album })
+      body: JSON.stringify({ artist, album })
     });
-    
     const discogsData = await discogsResponse.json();
-    
-    // Hide loading
-    document.getElementById('mbSearchStatus').style.display = 'none';
-    
-    // Combine results from both sources
-    let allResults = [];
-    if (data.results && data.results.length > 0) {
-      allResults = allResults.concat(data.results);
-    }
-    if (discogsData.success && discogsData.results && discogsData.results.length > 0) {
-      allResults = allResults.concat(discogsData.results);
-    }
-    
+
+    statusEl.style.display = 'none';
+
+    const allResults = [];
+    if (Array.isArray(data.results)) allResults.push(...data.results);
+    if (discogsData.success && Array.isArray(discogsData.results)) allResults.push(...discogsData.results);
+
     if (allResults.length === 0) {
-      document.getElementById('mbSearchError').textContent = 
-        'No releases found on MusicBrainz or Discogs';
-      document.getElementById('mbSearchError').style.display = 'block';
+      errorEl.textContent = 'No releases found on MusicBrainz or Discogs';
+      errorEl.style.display = 'block';
       return;
     }
-    
-    // Display combined results
+
     displayMusicBrainzResults(allResults);
-    
   } catch (error) {
-    console.error('Release search error:', error);
-    document.getElementById('mbSearchStatus').style.display = 'none';
-    document.getElementById('mbSearchError').textContent = 
-      'Error searching: ' + error.message;
-    document.getElementById('mbSearchError').style.display = 'block';
+    statusEl.style.display = 'none';
+    errorEl.textContent = 'Error searching: ' + error.message;
+    errorEl.style.display = 'block';
   }
 }
 
