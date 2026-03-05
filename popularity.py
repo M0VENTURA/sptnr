@@ -487,11 +487,13 @@ def detect_greatest_hits_album(album: str, artist: str, conn: sqlite3.Connection
             if album_tracks:
                 try:
                     # Get artist's median popularity for comparison
+                    is_pg = is_postgres_connection(conn)
+                    placeholder = "%s" if is_pg else "?"
                     cursor = conn.cursor()
-                    cursor.execute("""
+                    cursor.execute(f"""
                         SELECT AVG(popularity_score) as avg_pop, COUNT(*) as track_count
                         FROM tracks
-                        WHERE artist = %s AND popularity_score > 0
+                        WHERE artist = {placeholder} AND popularity_score > 0
                     """, (artist,))
                     row = cursor.fetchone()
                     
@@ -535,11 +537,13 @@ def should_skip_spotify_lookup(track_id: str, conn: sqlite3.Connection) -> bool:
         True if lookup should be skipped (use cached data), False otherwise
     """
     try:
+        is_pg = is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         cursor = conn.cursor()
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT last_spotify_lookup, popularity_score 
             FROM tracks 
-            WHERE id = %s
+            WHERE id = {placeholder}
         """, (track_id,))
         row = cursor.fetchone()
         
@@ -698,15 +702,17 @@ def calculate_artist_popularity_stats(artist_name: str, conn: sqlite3.Connection
         - top_20_percentile: Popularity threshold for top 20% of artist's tracks
     """
     try:
+        is_pg = is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         cursor = conn.cursor()
         
         # Try to get album column if it exists, otherwise use empty string
         # This ensures backward compatibility with databases that don't have album column
         try:
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT popularity_score, title, album
                 FROM tracks 
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND popularity_score > 0
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND popularity_score > 0
             """, (artist_name,))
             rows = cursor.fetchall()
             has_album_column = True
@@ -714,10 +720,10 @@ def calculate_artist_popularity_stats(artist_name: str, conn: sqlite3.Connection
             # Fallback: album column doesn't exist (OperationalError: no such column: album)
             # Only handle the specific "no such column" error
             if "no such column" in str(e).lower():
-                cursor.execute("""
+                cursor.execute(f"""
                     SELECT popularity_score, title
                     FROM tracks 
-                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND popularity_score > 0
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND popularity_score > 0
                 """, (artist_name,))
                 rows = cursor.fetchall()
                 has_album_column = False
@@ -1288,11 +1294,13 @@ def calculate_album_stats(conn, artist: str, album: str) -> tuple:
     Returns:
         Tuple of (mean, stddev, median, count)
     """
+    is_pg = is_postgres_connection(conn)
+    placeholder = "%s" if is_pg else "?"
     cursor = conn.cursor()
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT popularity_score
         FROM tracks
-        WHERE artist = %s AND album = %s AND popularity_score > 0
+        WHERE artist = {placeholder} AND album = {placeholder} AND popularity_score > 0
     """, (artist, album))
     
     popularities = [row[0] for row in cursor.fetchall()]
@@ -1313,11 +1321,13 @@ def calculate_artist_stats(conn, artist: str) -> tuple:
     Returns:
         Tuple of (mean, stddev, count)
     """
+    is_pg = is_postgres_connection(conn)
+    placeholder = "%s" if is_pg else "?"
     cursor = conn.cursor()
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT popularity_score
         FROM tracks
-        WHERE artist = %s AND popularity_score > 0
+        WHERE artist = {placeholder} AND popularity_score > 0
     """, (artist,))
     
     popularities = [row[0] for row in cursor.fetchall()]
@@ -1610,9 +1620,13 @@ def fetch_album_art_url_from_musicbrainz(artist: str, album: str) -> str | None:
         conn = get_db_connection()
         db_query = DatabaseQuery(conn)
         
+        # Determine database placeholder syntax.
+        is_pg = is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+
         # Check for column existence (SQLite-specific, but needed for compatibility)
         track_columns = set()
-        if not is_postgres_connection(conn):
+        if not is_pg:
             cursor = db_query.execute("PRAGMA table_info(tracks)")
             track_columns = {row[1] for row in cursor.fetchall()}
         else:
@@ -1630,8 +1644,8 @@ def fetch_album_art_url_from_musicbrainz(artist: str, album: str) -> str | None:
             cursor = db_query.execute(
                 f"""
                 SELECT {mb_album_column} AS album_mbid FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-                  AND album = %s
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                  AND album = {placeholder}
                   AND {mb_album_column} IS NOT NULL
                 LIMIT 1
                 """,
@@ -1967,13 +1981,15 @@ def detect_single_for_track(
     if album and popularity and popularity > 0:
         try:
             conn = get_db_connection()
+            is_pg = is_postgres_connection(conn)
+            placeholder = "%s" if is_pg else "?"
             cursor = conn.cursor()
             
             # STAGE 1: Album-level filter (must be album standout)
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT popularity_score 
                 FROM tracks 
-                WHERE artist = %s AND album = %s AND popularity_score > 0
+                WHERE artist = {placeholder} AND album = {placeholder} AND popularity_score > 0
             """, (artist, album))
             album_popularities = [row[0] for row in cursor.fetchall()]
             
@@ -2008,10 +2024,10 @@ def detect_single_for_track(
                 if verbose:
                     log_verbose(f"   ⓘ Skipping artist z-score filter for compilation/greatest hits album")
             else:
-                cursor.execute("""
+                cursor.execute(f"""
                     SELECT popularity_score 
                     FROM tracks 
-                    WHERE artist = %s AND popularity_score > 0
+                    WHERE artist = {placeholder} AND popularity_score > 0
                 """, (artist,))
                 artist_popularities = [row[0] for row in cursor.fetchall()]
                 artist_passed = True
@@ -2996,10 +3012,10 @@ def popularity_scan(
             # Get artist MBID from database cache for Last.fm context enrichment
             artist_mbid = None
             try:
-                cursor.execute("""
+                cursor.execute(f"""
                     SELECT musicbrainz_artist_id 
                     FROM tracks 
-                    WHERE artist = %s AND musicbrainz_artist_id IS NOT NULL 
+                    WHERE artist = {placeholder} AND musicbrainz_artist_id IS NOT NULL 
                     LIMIT 1
                 """, (artist,))
                 row = cursor.fetchone()
@@ -3028,10 +3044,10 @@ def popularity_scan(
                 # Lookup Spotify artist ID for non-compilation artists
                 try:
                     # First, try to get cached artist ID from database
-                    cursor.execute("""
+                    cursor.execute(f"""
                         SELECT spotify_artist_id 
                         FROM tracks 
-                        WHERE artist = %s AND spotify_artist_id IS NOT NULL 
+                        WHERE artist = {placeholder} AND spotify_artist_id IS NOT NULL 
                         LIMIT 1
                     """, (artist,))
                     row = cursor.fetchone()
@@ -3510,7 +3526,7 @@ def popularity_scan(
                             try:
                                 tags_json = json.dumps([t.get('name') for t in artist_tags])
                                 cursor.execute(
-                                    "UPDATE artists SET lastfm_artist_tags = %s WHERE name = %s",
+                                    f"UPDATE artists SET lastfm_artist_tags = {placeholder} WHERE name = {placeholder}",
                                     (tags_json, artist)
                                 )
                                 log_debug(f"Stored {len(artist_tags)} Last.fm tags for '{artist}'")
@@ -3725,10 +3741,10 @@ def popularity_scan(
                     tracks_updated = 0
                     for track in album_tracks:
                         track_id = track["id"]
-                        cursor.execute("""
+                        cursor.execute(f"""
                             UPDATE tracks 
-                            SET spotify_album_type = %s
-                            WHERE id = %s
+                            SET spotify_album_type = {placeholder}
+                            WHERE id = {placeholder}
                         """, (detected_album_type, track_id))
                         tracks_updated += 1
                         # Update the track dict for use in rest of scan
@@ -3829,10 +3845,10 @@ def popularity_scan(
                         # Only add (Live) suffix if it's not already there
                         if not re.search(r'\(live\)', original_title, re.IGNORECASE):
                             new_title = f"{original_title} (Live)"
-                            cursor.execute("""
+                            cursor.execute(f"""
                                 UPDATE tracks 
-                                SET title = %s
-                                WHERE id = %s
+                                SET title = {placeholder}
+                                WHERE id = {placeholder}
                             """, (new_title, track_id))
                             live_tracks_updated += 1
                             log_debug(f'Updated track title: "{original_title}" → "{new_title}"')
@@ -3850,10 +3866,10 @@ def popularity_scan(
                 # Save alternate take mappings to database
                 if alternate_takes_map:
                     for alt_track_id, base_track_id in alternate_takes_map.items():
-                        cursor.execute("""
+                        cursor.execute(f"""
                             UPDATE tracks 
-                            SET alternate_take = 1, base_track_id = %s
-                            WHERE id = %s
+                            SET alternate_take = 1, base_track_id = {placeholder}
+                            WHERE id = {placeholder}
                         """, (base_track_id, alt_track_id))
                     conn.commit()
                     log_info(f'Detected {len(alternate_takes_map)} alternate take(s) in album')
@@ -3877,10 +3893,10 @@ def popularity_scan(
                     is_compilation = detect_compilation_album(artist, album, album_tracks_list, album_artist, spotify_album_type)
                     if is_compilation:
                         # Update all tracks in this album to mark as compilation
-                        cursor.execute("""
+                        cursor.execute(f"""
                             UPDATE tracks 
                             SET is_compilation = 1
-                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s
+                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
                         """, (artist, album))
                         conn.commit()
                         log_info(f'Marked album as compilation: "{artist} - {album}"')
@@ -4360,10 +4376,10 @@ def popularity_scan(
                             
                                 # Update last_spotify_lookup timestamp
                                 current_timestamp = datetime.now().isoformat()
-                                cursor.execute("""
+                                cursor.execute(f"""
                                     UPDATE tracks 
-                                    SET last_spotify_lookup = %s
-                                    WHERE id = %s
+                                    SET last_spotify_lookup = {placeholder}
+                                    WHERE id = {placeholder}
                                 """, (current_timestamp, track_id))
                                 log_debug(f'Updated last_spotify_lookup for track {track_id}')
                             
@@ -4961,7 +4977,7 @@ def popularity_scan(
                                         
                                         # Merge with existing musicbrainz_genres if present
                                         cursor.execute(
-                                            "SELECT musicbrainz_genres FROM tracks WHERE id = %s",
+                                            f"SELECT musicbrainz_genres FROM tracks WHERE id = {placeholder}",
                                             (track_id,)
                                         )
                                         existing = cursor.fetchone()
@@ -4981,7 +4997,7 @@ def popularity_scan(
                                         
                                         # Update track with merged tags
                                         cursor.execute(
-                                            "UPDATE tracks SET musicbrainz_genres = %s WHERE id = %s",
+                                            f"UPDATE tracks SET musicbrainz_genres = {placeholder} WHERE id = {placeholder}",
                                             (merged_json, track_id)
                                         )
                                         tags_updated += 1
@@ -5356,11 +5372,13 @@ def popularity_scan(
                     # Use a fresh short-lived connection (conn was closed before this loop to release locks)
                     try:
                         timestamp_conn = get_db_connection()
+                        timestamp_is_pg = is_postgres_connection(timestamp_conn)
+                        timestamp_placeholder = "%s" if timestamp_is_pg else "?"
                         timestamp_cursor = timestamp_conn.cursor()
-                        timestamp_cursor.execute("""
+                        timestamp_cursor.execute(f"""
                             UPDATE tracks 
-                            SET single_detection_last_updated = %s
-                            WHERE id = %s
+                            SET single_detection_last_updated = {timestamp_placeholder}
+                            WHERE id = {timestamp_placeholder}
                         """, (datetime.now().isoformat(), track_id))
                         timestamp_conn.commit()
                         timestamp_cursor.close()
@@ -5535,21 +5553,21 @@ def popularity_scan(
                     # Use conditional query for PostgreSQL vs SQLite
                     is_pg = is_postgres_connection(cursor.connection)
                     if is_pg:
-                        query = """
+                        query = f"""
                         SELECT COUNT(*) AS total_tracks,
                                SUM(CASE WHEN is_single THEN 1 ELSE 0 END) AS single_tracks
                         FROM tracks
-                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-                          AND album = %s
+                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                          AND album = {placeholder}
                         """
                         cursor.execute(query, (artist, album))
                     else:
-                        query = """
+                        query = f"""
                         SELECT COUNT(*) AS total_tracks,
                                SUM(CASE WHEN COALESCE(is_single, 0) = 1 THEN 1 ELSE 0 END) AS single_tracks
                         FROM tracks
-                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-                          AND album = %s
+                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                          AND album = {placeholder}
                         """
                         cursor.execute(query, (artist, album))
                     gh_row = cursor.fetchone()
@@ -5638,10 +5656,10 @@ def popularity_scan(
                             # Batch update z-score outliers
                             if zscore_outliers:
                                 for single_confidence, sources, track_id in zscore_outliers:
-                                    cursor.execute("""
+                                    cursor.execute(f"""
                                         UPDATE tracks 
-                                        SET single_confidence = %s, single_sources = %s
-                                        WHERE id = %s
+                                        SET single_confidence = {placeholder}, single_sources = {placeholder}
+                                        WHERE id = {placeholder}
                                     """, (single_confidence, sources, track_id))
                                 
                                 conn.commit()
@@ -5663,10 +5681,10 @@ def popularity_scan(
                 if artist_stats['track_count'] > 0:
                     # Update artist_stats table with popularity statistics
                     # Columns: mean_popularity, median_popularity, popularity_stddev, popularity_mad
-                    cursor.execute("""
+                    cursor.execute(f"""
                         UPDATE artist_stats 
-                        SET mean_popularity = %s, median_popularity = %s, popularity_stddev = %s, popularity_mad = %s
-                        WHERE artist_name = %s
+                        SET mean_popularity = {placeholder}, median_popularity = {placeholder}, popularity_stddev = {placeholder}, popularity_mad = {placeholder}
+                        WHERE artist_name = {placeholder}
                     """, (artist_stats['avg_popularity'], artist_stats['median_popularity'], 
                           artist_stats['stddev_popularity'], artist_stats['mad_popularity'], artist))
                     conn.commit()
@@ -5675,7 +5693,7 @@ def popularity_scan(
                 # Get all tracks for this album with their popularity scores and single detection
                 # Try matching on artist field first, then fall back to album_artist field
                 cursor.execute(
-                    "SELECT id, title, popularity_score, is_single, single_confidence, single_sources, lastfm_track_playcount, is_standout_track FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s ORDER BY popularity_score DESC",
+                    f"SELECT id, title, popularity_score, is_single, single_confidence, single_sources, lastfm_track_playcount, is_standout_track FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder} ORDER BY popularity_score DESC",
                     (artist, album)
                 )
                 album_tracks_with_scores = [dict(row) for row in cursor.fetchall()]
@@ -5932,7 +5950,7 @@ def popularity_scan(
                     
                     # Batch update all tracks at once for better performance
                     cursor.executemany(
-                        """UPDATE tracks SET stars = %s WHERE id = %s""",
+                        f"""UPDATE tracks SET stars = {placeholder} WHERE id = {placeholder}""",
                         updates
                     )
                     
