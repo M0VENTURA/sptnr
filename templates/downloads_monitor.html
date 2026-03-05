@@ -1231,90 +1231,193 @@ function renderActiveQueue(active) {
   badge.textContent = active.length;
   badge.style.display = 'inline-block';
 
+  // Group items by album
+  const grouped = groupByAlbum(active);
   const pendingRenderedAlbums = new Set();
+  
+  // Initialize expanded state from sessionStorage
+  const expandedState = JSON.parse(sessionStorage.getItem('activeQueueExpandedAlbums') || '{}');
 
   let html = '<div class="list-group list-group-flush">';
-  for (const item of active) {
-    const statusLabel = {
-      'queued': '⏳ Queued',
-      'searching': '🔍 Searching',
-      'downloading': '📥 Downloading',
-      'discovered': '📁 Discovered',
-      'possible_duplicate': '⚠️ Possible Duplicate',
-      'pending_match': '🧠 Match Review'
-    }[item.status] || item.status;
-
-    const existsInLibrary = item.exists_in_library === 1;
-    const isPossibleDuplicate = item.status === 'possible_duplicate';
-    const isPendingMatch = item.status === 'pending_match';
-    const albumKey = `${item.artist || ''}|||${item.album || ''}`;
-
-    let candidateHtml = '';
-    if (isPendingMatch && !pendingRenderedAlbums.has(albumKey)) {
-      pendingRenderedAlbums.add(albumKey);
-
-      let candidates = [];
-      try {
-        const rawCandidates = item.mb_match_candidates || '[]';
-        candidates = typeof rawCandidates === 'string' ? JSON.parse(rawCandidates) : (rawCandidates || []);
-      } catch (e) {
-        candidates = [];
-      }
-
-      const candidateRows = candidates.slice(0, 3).map(c => `
-        <div class="d-flex justify-content-between align-items-center border rounded p-2 mb-2">
-          <div>
-            <div><strong>${escapeHtml(c.title || 'Unknown')}</strong> ${c.year ? `<span class="text-muted">(${escapeHtml(c.year)})</span>` : ''}</div>
-            <div class="small text-muted">${escapeHtml(c.artist || item.artist || '')} · overlap ${Math.round((c.track_overlap || 0) * 100)}% · confidence ${Math.round((c.confidence || 0) * 100)}%</div>
-          </div>
-          <button class="btn btn-sm btn-primary" onclick="applyMusicBrainzMatch('${escapeHtml(item.artist)}','${escapeHtml(item.album)}','${escapeHtml(c.release_group_id || '')}')">
-            Use Match
-          </button>
-        </div>
-      `).join('');
-
-      candidateHtml = `
-        <div class="mt-2 p-2 border rounded bg-light-subtle">
-          <div class="small fw-semibold mb-2">MusicBrainz could not find a 100% match automatically. Choose one:</div>
-          ${candidateRows || '<div class="small text-muted mb-2">No close MusicBrainz candidates found.</div>'}
-          <div class="d-flex gap-2 flex-wrap">
-            <button class="btn btn-sm btn-success" onclick="useExistingMetadata('${escapeHtml(item.artist)}','${escapeHtml(item.album)}')">
-              <i class="bi bi-file-earmark-music"></i> Use Existing File Metadata
-            </button>
-            <button class="btn btn-sm btn-outline-info" onclick="searchOtherSources('${escapeHtml(item.artist)}','${escapeHtml(item.album)}')">
-              <i class="bi bi-search"></i> Search Other Sources
-            </button>
-          </div>
-        </div>
-      `;
-    }
-
+  
+  for (const group of grouped) {
+    const isExpanded = expandedState[group.key] !== false; // Default to expanded
+    const toggleId = `toggle-${group.key.replace(/[^\w]/g, '_')}`;
+    
+    // Album group header
     html += `
-      <div class="list-group-item ${existsInLibrary || isPossibleDuplicate ? 'bg-light' : ''}">
-        <div class="d-flex justify-content-between align-items-start">
-          <div class="flex-grow-1">
-            <h6 class="mb-1">
-              ${escapeHtml(item.title)}
-              ${existsInLibrary ? '<small class="text-muted"><i class="bi bi-check-circle-fill ms-2" title="Already in library"></i></small>' : ''}
-              ${isPossibleDuplicate ? '<small class="text-warning"><i class="bi bi-exclamation-triangle-fill ms-2" title="Duplicate album detected"></i></small>' : ''}
-            </h6>
-            <p class="text-muted small mb-2">${escapeHtml(item.artist)}${item.album ? ' · ' + escapeHtml(item.album) : ''}</p>
-            ${isPossibleDuplicate ? '<p class="text-warning small mb-0"><i class="bi bi-info-circle"></i> This album already exists in your library. Manual review required.</p>' : ''}
-            ${candidateHtml}
+      <div class="list-group-item bg-secondary-subtle border-bottom-0 py-2">
+        <div class="d-flex justify-content-between align-items-center">
+          <div class="d-flex align-items-center flex-grow-1 gap-2 cursor-pointer" onclick="toggleAlbumGroup('${toggleId}', '${group.key}')">
+            <i class="bi ${isExpanded ? 'bi-chevron-down' : 'bi-chevron-right'} expand-chevron" id="chevron-${toggleId}"></i>
+            <div>
+              <div class="fw-semibold">${escapeHtml(group.album || '(No Album)')}</div>
+              <div class="small text-muted">${escapeHtml(group.artist)} · ${group.items.length} ${group.items.length === 1 ? 'song' : 'songs'}</div>
+            </div>
           </div>
-          <div class="d-flex gap-2 align-items-center">
-            <span class="badge ${item.status === 'downloading' ? 'bg-warning' : item.status === 'discovered' ? 'bg-info' : isPossibleDuplicate ? 'bg-warning' : isPendingMatch ? 'bg-secondary' : 'bg-primary'}">${statusLabel}</span>
-            <span class="badge bg-secondary">${item.source || 'unknown'}</span>
-            <button class="btn btn-sm btn-outline-danger" onclick="deleteQueueItem(${item.id})" title="Remove from queue">
-              <i class="bi bi-x"></i>
+          <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-outline-danger" onclick="deleteAlbumGroup('${group.key}')" title="Delete all songs from this album">
+              <i class="bi bi-trash"></i> Delete Album
             </button>
           </div>
         </div>
       </div>
     `;
+    
+    // Items in group
+    if (isExpanded) {
+      for (const item of group.items) {
+        const statusLabel = {
+          'queued': '⏳ Queued',
+          'searching': '🔍 Searching',
+          'downloading': '📥 Downloading',
+          'discovered': '📁 Discovered',
+          'possible_duplicate': '⚠️ Possible Duplicate',
+          'pending_match': '🧠 Match Review'
+        }[item.status] || item.status;
+
+        const existsInLibrary = item.exists_in_library === 1;
+        const isPossibleDuplicate = item.status === 'possible_duplicate';
+        const isPendingMatch = item.status === 'pending_match';
+        const albumKey = `${item.artist || ''}|||${item.album || ''}`;
+
+        let candidateHtml = '';
+        if (isPendingMatch && !pendingRenderedAlbums.has(albumKey)) {
+          pendingRenderedAlbums.add(albumKey);
+
+          let candidates = [];
+          try {
+            const rawCandidates = item.mb_match_candidates || '[]';
+            candidates = typeof rawCandidates === 'string' ? JSON.parse(rawCandidates) : (rawCandidates || []);
+          } catch (e) {
+            candidates = [];
+          }
+
+          const candidateRows = candidates.slice(0, 3).map(c => `
+            <div class="d-flex justify-content-between align-items-center border rounded p-2 mb-2">
+              <div>
+                <div><strong>${escapeHtml(c.title || 'Unknown')}</strong> ${c.year ? `<span class="text-muted">(${escapeHtml(c.year)})</span>` : ''}</div>
+                <div class="small text-muted">${escapeHtml(c.artist || item.artist || '')} · overlap ${Math.round((c.track_overlap || 0) * 100)}% · confidence ${Math.round((c.confidence || 0) * 100)}%</div>
+              </div>
+              <button class="btn btn-sm btn-primary" onclick="applyMusicBrainzMatch('${escapeHtml(item.artist)}','${escapeHtml(item.album)}','${escapeHtml(c.release_group_id || '')}')">
+                Use Match
+              </button>
+            </div>
+          `).join('');
+
+          candidateHtml = `
+            <div class="mt-2 p-2 border rounded bg-light-subtle">
+              <div class="small fw-semibold mb-2">MusicBrainz could not find a 100% match automatically. Choose one:</div>
+              ${candidateRows || '<div class="small text-muted mb-2">No close MusicBrainz candidates found.</div>'}
+              <div class="d-flex gap-2 flex-wrap">
+                <button class="btn btn-sm btn-success" onclick="useExistingMetadata('${escapeHtml(item.artist)}','${escapeHtml(item.album)}')">
+                  <i class="bi bi-file-earmark-music"></i> Use Existing File Metadata
+                </button>
+                <button class="btn btn-sm btn-outline-info" onclick="searchOtherSources('${escapeHtml(item.artist)}','${escapeHtml(item.album)}')">
+                  <i class="bi bi-search"></i> Search Other Sources
+                </button>
+              </div>
+            </div>
+          `;
+        }
+
+        html += `
+          <div class="list-group-item ${existsInLibrary || isPossibleDuplicate ? 'bg-light' : ''} border-top-0" data-album-group="${group.key}" data-item-id="${item.id}">
+            <div class="d-flex justify-content-between align-items-start">
+              <div class="flex-grow-1">
+                <h6 class="mb-1 ms-4">
+                  ${escapeHtml(item.title)}
+                  ${existsInLibrary ? '<small class="text-muted"><i class="bi bi-check-circle-fill ms-2" title="Already in library"></i></small>' : ''}
+                  ${isPossibleDuplicate ? '<small class="text-warning"><i class="bi bi-exclamation-triangle-fill ms-2" title="Duplicate album detected"></i></small>' : ''}
+                </h6>
+                <p class="text-muted small mb-2 ms-4">${escapeHtml(item.artist)}${item.album ? ' · ' + escapeHtml(item.album) : ''}</p>
+                ${isPossibleDuplicate ? '<p class="text-warning small mb-0 ms-4"><i class="bi bi-info-circle"></i> This album already exists in your library. Manual review required.</p>' : ''}
+                ${candidateHtml}
+              </div>
+              <div class="d-flex gap-2 align-items-center flex-shrink-0">
+                <span class="badge ${item.status === 'downloading' ? 'bg-warning' : item.status === 'discovered' ? 'bg-info' : isPossibleDuplicate ? 'bg-warning' : isPendingMatch ? 'bg-secondary' : 'bg-primary'}">${statusLabel}</span>
+                <span class="badge bg-secondary">${item.source || 'unknown'}</span>
+                <button class="btn btn-sm btn-outline-danger" onclick="deleteQueueItem(${item.id})" title="Remove from queue">
+                  <i class="bi bi-x"></i>
+                </button>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+    }
   }
+  
   html += '</div>';
   container.innerHTML = html;
+}
+
+function toggleAlbumGroup(toggleId, groupKey) {
+  // Update chevron icon
+  const chevron = document.getElementById(`chevron-${toggleId}`);
+  if (chevron) {
+    chevron.classList.toggle('bi-chevron-down');
+    chevron.classList.toggle('bi-chevron-right');
+  }
+  
+  // Find and toggle all items in this group
+  const items = document.querySelectorAll(`[data-album-group="${groupKey}"]`);
+  items.forEach(item => {
+    item.style.display = item.style.display === 'none' ? '' : 'none';
+  });
+  
+  // Save expanded state to sessionStorage
+  const expandedState = JSON.parse(sessionStorage.getItem('activeQueueExpandedAlbums') || '{}');
+  expandedState[groupKey] = !expandedState[groupKey];
+  sessionStorage.setItem('activeQueueExpandedAlbums', JSON.stringify(expandedState));
+}
+
+async function deleteAlbumGroup(groupKey) {
+  if (!confirm('Delete all songs in this album from the queue?')) {
+    return;
+  }
+  
+  try {
+    // Find all items with this album group key and get their IDs
+    const items = Array.from(document.querySelectorAll(`[data-album-group="${groupKey}"]`))
+      .map(el => parseInt(el.getAttribute('data-item-id')))
+      .filter(id => !isNaN(id));
+    
+    if (items.length === 0) {
+      alert('No items found to delete');
+      return;
+    }
+    
+    // Delete each item sequentially
+    let successCount = 0;
+    for (const itemId of items) {
+      try {
+        const resp = await fetch(`/api/queue/${itemId}/delete`, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' }
+        });
+        
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data.success) {
+            successCount++;
+          }
+        }
+      } catch (e) {
+        console.error(`Failed to delete item ${itemId}:`, e);
+      }
+    }
+    
+    if (successCount > 0) {
+      alert(`✅ Deleted ${successCount} ${successCount === 1 ? 'song' : 'songs'} from queue`);
+      await loadQueueStatus();
+    } else {
+      alert('❌ Failed to delete songs. Check console for errors.');
+    }
+  } catch (error) {
+    console.error('Error deleting album group:', error);
+    alert('❌ Error: ' + error.message);
+  }
 }
 
 function renderFailedQueue(failed) {
