@@ -2153,7 +2153,7 @@ def artist_detail(name):
                 FROM tracks
                 WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
                 GROUP BY album
-                ORDER BY (album_year IS NULL), album_year DESC, album
+                ORDER BY (MIN(year) IS NULL), MIN(year) DESC, album
             """, (name,))
         else:
             cursor.execute("""
@@ -2171,7 +2171,7 @@ def artist_detail(name):
                 FROM tracks
                 WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
                 GROUP BY album
-                ORDER BY (album_year IS NULL), album_year DESC, album COLLATE NOCASE
+                ORDER BY (MIN(year) IS NULL), MIN(year) DESC, album COLLATE NOCASE
             """, (name,))
         albums_data = cursor.fetchall()
         
@@ -2419,7 +2419,7 @@ def artist_detail(name):
                 WHERE artist = %s
                   AND COALESCE(NULLIF(album_artist, ''), artist) != %s
                 GROUP BY album, COALESCE(NULLIF(album_artist, ''), artist)
-                ORDER BY (album_year IS NULL), album_year DESC, album
+                ORDER BY (MIN(year) IS NULL), MIN(year) DESC, album
             """, (name, name))
         else:
             cursor.execute("""
@@ -2435,7 +2435,7 @@ def artist_detail(name):
                 WHERE artist = ?
                   AND COALESCE(NULLIF(album_artist, ''), artist) != ?
                 GROUP BY album, COALESCE(NULLIF(album_artist, ''), artist)
-                ORDER BY (album_year IS NULL), album_year DESC, album COLLATE NOCASE
+                ORDER BY (MIN(year) IS NULL), MIN(year) DESC, album COLLATE NOCASE
             """, (name, name))
         appears_on_albums = cursor.fetchall()
         
@@ -2458,7 +2458,7 @@ def artist_detail(name):
                 FROM tracks
                 WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
                 GROUP BY album
-                ORDER BY (album_year IS NULL), album_year DESC, album
+                ORDER BY (MIN(year) IS NULL), MIN(year) DESC, album
             """, (name,))
         else:
             cursor.execute("""
@@ -2475,7 +2475,7 @@ def artist_detail(name):
                 FROM tracks
                 WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
                 GROUP BY album
-                ORDER BY (album_year IS NULL), album_year DESC, album COLLATE NOCASE
+                ORDER BY (MIN(year) IS NULL), MIN(year) DESC, album COLLATE NOCASE
             """, (name,))
         potential_albums = cursor.fetchall()
         
