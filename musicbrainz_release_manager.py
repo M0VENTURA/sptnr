@@ -263,8 +263,8 @@ class MusicBrainzReleaseManager:
                         if isrcs:
                             isrc = isrcs[0]
                         
-                        # Create search query
-                        search_query = f"{track_artist} {track_title}".strip()
+                        # Create search query (artist - title format, no album)
+                        search_query = f"{track_artist} - {track_title}".strip()
                         
                         # Add to download_queue
                         cursor.execute("""
