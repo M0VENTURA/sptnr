@@ -1036,6 +1036,108 @@ def update_schema(db_path):
         except:
             pass
 
+    # ✅ Ensure musicbrainz_releases table exists (for tracking release downloads)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS musicbrainz_releases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            release_id TEXT NOT NULL UNIQUE,
+            release_title TEXT NOT NULL,
+            artist TEXT NOT NULL,
+            release_year INTEGER,
+            total_tracks INTEGER,
+            
+            monitoring_folder_path TEXT,
+            final_folder_path TEXT,
+            
+            status TEXT DEFAULT 'active',
+            method TEXT,
+            
+            discovered_count INTEGER DEFAULT 0,
+            organized_count INTEGER DEFAULT 0,
+            finalized_count INTEGER DEFAULT 0,
+            
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            finalized_at TIMESTAMP
+        );
+    """)
+
+    # ✅ Ensure musicbrainz_release_tracks table exists
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS musicbrainz_release_tracks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            release_id TEXT NOT NULL,
+            queue_id INTEGER,
+            
+            track_number INTEGER,
+            track_title TEXT,
+            track_artist TEXT,
+            duration INTEGER,
+            isrc TEXT,
+            
+            found_filename TEXT,
+            file_path TEXT,
+            
+            status TEXT DEFAULT 'queued',
+            
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            
+            FOREIGN KEY (release_id) REFERENCES musicbrainz_releases(release_id),
+            FOREIGN KEY (queue_id) REFERENCES download_queue(id)
+        );
+    """)
+
+    # ✅ Add missing columns to download_queue for release tracking
+    cursor.execute("PRAGMA table_info(download_queue);")
+    existing_queue_columns = [row[1] for row in cursor.fetchall()]
+    
+    release_tracking_columns = {
+        "release_id": "TEXT",
+        "track_number": "INTEGER",
+        "is_final_file": "INTEGER DEFAULT 0",
+        "mb_release_download_id": "INTEGER"
+    }
+    
+    queue_release_columns_added = []
+    for col, col_type in release_tracking_columns.items():
+        if col not in existing_queue_columns:
+            try:
+                cursor.execute(f"ALTER TABLE download_queue ADD COLUMN {col} {col_type};")
+                queue_release_columns_added.append(col)
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" not in str(e).lower():
+                    print(f"⚠ Could not add column {col} to download_queue: {e}")
+    
+    if queue_release_columns_added:
+        print(f"✅ Added {len(queue_release_columns_added)} release tracking columns to download_queue: {', '.join(queue_release_columns_added)}")
+
+    # ✅ Create indexes for musicbrainz_releases
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_mb_releases_status 
+        ON musicbrainz_releases(status)
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_mb_releases_created 
+        ON musicbrainz_releases(created_at DESC)
+    """)
+
+    # ✅ Create indexes for musicbrainz_release_tracks
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_mb_release_tracks_release 
+        ON musicbrainz_release_tracks(release_id)
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_mb_release_tracks_status 
+        ON musicbrainz_release_tracks(release_id, status)
+    """)
+
+    # ✅ Create index for release_id in download_queue
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_download_queue_release_id 
+        ON download_queue(release_id)
+    """)
+
     conn.commit()
     conn.close()
     

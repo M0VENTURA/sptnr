@@ -9411,6 +9411,153 @@ def api_musicbrainz_remove(download_id):
         return jsonify({"error": str(e)}), 500
 
 
+# ============================================================================
+# MUSICBRAINZ RELEASE DOWNLOAD WORKFLOW (Track-by-Track)
+# ============================================================================
+
+@app.route("/api/musicbrainz/release/<release_id>/start", methods=["POST"])
+def api_start_release_download(release_id):
+    """Start downloading a complete MusicBrainz release track-by-track"""
+    try:
+        from musicbrainz_release_manager import get_manager
+        
+        data = request.json or {}
+        release_title = data.get("release_title", "").strip()
+        artist = data.get("artist", "").strip()
+        method = data.get("method", "slskd").lower()
+        
+        if not all([release_title, artist]):
+            return jsonify({"error": "Missing release_title or artist"}), 400
+        
+        if method not in ["slskd", "qbittorrent"]:
+            return jsonify({"error": "Invalid method. Use 'slskd' or 'qbittorrent'"}), 400
+        
+        manager = get_manager()
+        result = manager.start_release_download(release_id, release_title, artist, method)
+        
+        if result.get("success"):
+            return jsonify(result), 201
+        else:
+            return jsonify(result), 400
+        
+    except Exception as e:
+        logging.error(f"[MB_RELEASE_START] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/musicbrainz/releases/active", methods=["GET"])
+def api_get_active_releases():
+    """Get all active MusicBrainz releases with download progress"""
+    try:
+        from musicbrainz_release_manager import get_manager
+        
+        manager = get_manager()
+        releases = manager.get_active_releases()
+        
+        return jsonify({
+            "success": True,
+            "count": len(releases),
+            "releases": releases
+        })
+        
+    except Exception as e:
+        logging.error(f"[MB_RELEASES_ACTIVE] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/musicbrainz/release/<release_id>", methods=["GET"])
+def api_get_release_details(release_id):
+    """Get details of a specific release including all track statuses"""
+    try:
+        from musicbrainz_release_manager import get_manager
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get release info
+        cursor.execute("""
+            SELECT id, release_id, release_title, artist, release_year, 
+                   total_tracks, discovered_count, organized_count, 
+                   finalized_count, status, monitoring_folder_path, created_at
+            FROM musicbrainz_releases
+            WHERE release_id = ?
+        """, (release_id,))
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        if not row:
+            return jsonify({"error": "Release not found"}), 404
+        
+        manager = get_manager()
+        tracks = manager.get_release_tracks(release_id)
+        
+        return jsonify({
+            "success": True,
+            "release": {
+                "id": row[0],
+                "release_id": row[1],
+                "release_title": row[2],
+                "artist": row[3],
+                "release_year": row[4],
+                "total_tracks": row[5],
+                "discovered_count": row[6],
+                "organized_count": row[7],
+                "finalized_count": row[8],
+                "status": row[9],
+                "monitoring_folder": row[10],
+                "created_at": row[11],
+                "progress_percent": int((row[6] / row[5] * 100) if row[5] > 0 else 0)
+            },
+            "tracks": tracks
+        })
+        
+    except Exception as e:
+        logging.error(f"[MB_RELEASE_DETAILS] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/queue/release/<release_id>", methods=["GET"])
+def api_get_release_queue_items(release_id):
+    """Get all queue items for a specific release"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT id, artist, title, status, track_number, 
+                   found_filename, created_at, updated_at
+            FROM download_queue
+            WHERE release_id = ?
+            ORDER BY track_number
+        """, (release_id,))
+        
+        items = []
+        for row in cursor.fetchall():
+            items.append({
+                "id": row[0],
+                "artist": row[1],
+                "title": row[2],
+                "status": row[3],
+                "track_number": row[4],
+                "found_filename": row[5],
+                "created_at": row[6],
+                "updated_at": row[7]
+            })
+        
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "count": len(items),
+            "items": items
+        })
+        
+    except Exception as e:
+        logging.error(f"[QUEUE_RELEASE] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/slskd/search-results/<int:download_id>", methods=["GET"])
 def api_slskd_search_results(download_id):
     """Get Soulseek search results for a download awaiting user selection"""
