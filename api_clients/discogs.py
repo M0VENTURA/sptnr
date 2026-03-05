@@ -1150,6 +1150,43 @@ class DiscogsClient:
                 logger.error(f"Discogs lookup failed for '{title}': {e}")
             return []
     
+    def get_release(self, release_id: str, timeout: tuple[int, int] | int = (5, 10)) -> dict | None:
+        """
+        Fetch full release data for a specific Discogs release by ID.
+        
+        Args:
+            release_id: Discogs release ID
+            timeout: Request timeout
+            
+        Returns:
+            Release data dict with tracklist, genres, formats, etc., or None if failed
+        """
+        if not self.enabled or not self.token or not release_id:
+            logger.debug(f"Discogs release lookup skipped (disabled, token missing, or invalid release_id: {release_id})")
+            return None
+        
+        try:
+            _throttle_discogs()
+            release_url = f"{self.base_url}/releases/{release_id}"
+            
+            res = self.session.get(release_url, headers=self.headers, timeout=timeout)
+            
+            # Handle rate limiting
+            if res.status_code == 429:
+                retry_after = int(res.headers.get("Retry-After", 60))
+                time.sleep(retry_after)
+                res = self.session.get(release_url, headers=self.headers, timeout=timeout)
+            
+            res.raise_for_status()
+            release_data = res.json()
+            
+            logger.debug(f"Fetched Discogs release {release_id}")
+            return release_data
+            
+        except Exception as e:
+            logger.debug(f"Discogs release lookup failed for release_id {release_id}: {e}")
+            return None
+
     def get_release_genres_by_id(self, release_id: str, timeout: tuple[int, int] | int = (5, 10)) -> list[dict]:
         """
         Fetch genres and styles for a specific Discogs release by ID.
