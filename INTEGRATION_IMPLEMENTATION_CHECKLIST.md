@@ -160,11 +160,20 @@ GROUP BY mr.release_id
 
 **Goal:** Display releases with progress bars and track lists
 
-### Tasks
+**Status:** 🟨 PARTIALLY COMPLETED
 
-- [ ] **Task 3.1:** Find monitor page template
-  - File: `templates/downloads.html` or similar
-  - Or create new:  `templates/downloads_monitor.html`
+### Completed Work (Commit f337672)
+- ✅ Folder/Queue Integration
+  - Queue status loads synchronized with folder groups (5 second refresh together)
+  - Queue items with 'ready to organize' status now appear in folder groups view
+  - Merged virtual folder groups from queue to prevent duplicate displays
+  - Unified interface: single list shows both folder discoveries and queued items
+
+### Remaining Tasks
+
+- [ ] **Task 3.1:** Create `/api/queue/releases/status` endpoint
+  - Returns all active releases with progress by status
+  - See Phase 2 above for SQL template and structure
   
 - [ ] **Task 3.2:** Update layout
   - Remove/refactor current flat track list
@@ -189,9 +198,9 @@ GROUP BY mr.release_id
   - Test with multiple releases
 
 ### Files to Modify
-- `templates/downloads.html` (major update)
-- `static/js/downloads.js` (if separate file, or inline)
-- `app.py` - ensure `/downloads/monitor` calls correct template
+- `templates/downloads_monitor.html` (update display logic for release progress)
+- `static/js/downloads.js` (add release status rendering)
+- `app.py` - implement `/api/queue/releases/status` endpoint
 
 ### Sample HTML Structure
 ```html
