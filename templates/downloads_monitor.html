@@ -637,7 +637,14 @@ function getTrackSimilarity(a, b) {
   const ySet = new Set(yWords);
   const common = xWords.filter(w => ySet.has(w)).length;
   const maxLen = Math.max(xWords.length, yWords.length);
-  return maxLen > 0 ? (common / maxLen) : 0;
+  let score = maxLen > 0 ? (common / maxLen) : 0;
+
+  // Be more forgiving for common metadata variants (e.g. "feat", edit labels).
+  if (score >= 0.34 && (x.includes(' feat ') || y.includes(' feat ') || x.includes(' remaster') || y.includes(' remaster'))) {
+    score = Math.max(score, 0.5);
+  }
+
+  return score;
 }
 
 function buildFolderToReleaseTrackMap(folderTracks, releaseTracks) {
@@ -679,7 +686,8 @@ function buildFolderToReleaseTrackMap(folderTracks, releaseTracks) {
       }
     });
 
-    if (bestIndex >= 0 && bestScore >= 0.5) {
+    // Keep matching fairly fuzzy; user can override per-track in UI.
+    if (bestIndex >= 0 && bestScore >= 0.35) {
       mapping[folderIndex] = {
         releaseIndex: bestIndex,
         releaseTrack: releaseTracks[bestIndex],
@@ -691,6 +699,159 @@ function buildFolderToReleaseTrackMap(folderTracks, releaseTracks) {
   });
 
   return mapping;
+}
+
+function chooseBestReleaseCandidate(candidates, artist, album, folderTracks) {
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    return null;
+  }
+
+  const folderCount = Array.isArray(folderTracks) ? folderTracks.length : 0;
+
+  let best = candidates[0];
+  let bestScore = -1;
+
+  candidates.forEach((candidate) => {
+    const albumScore = getTrackSimilarity(album, candidate?.title || '');
+    const artistScore = getTrackSimilarity(artist, candidate?.artist || '');
+
+    let countScore = 0.55;
+    const candidateCount = Number(candidate?.track_count || 0);
+    if (folderCount > 0 && candidateCount > 0) {
+      countScore = Math.min(folderCount, candidateCount) / Math.max(folderCount, candidateCount);
+    }
+
+    const providerScore = Number(candidate?.confidence || candidate?.score || 0);
+
+    const total = (albumScore * 0.45) + (artistScore * 0.25) + (countScore * 0.20) + (providerScore * 0.10);
+    if (total > bestScore) {
+      bestScore = total;
+      best = candidate;
+    }
+  });
+
+  return best;
+}
+
+function openTrackMatchOverrideFromEncoded(folderPathEnc, trackIndex) {
+  const folderPath = decodeInlineArg(folderPathEnc, '');
+  return openTrackMatchOverride(folderPath, Number(trackIndex));
+}
+
+function openTrackMatchOverride(folderPath, trackIndex) {
+  const selection = folderMatchSelections[folderPath];
+  if (!selection || !Array.isArray(selection.releaseTracks) || selection.releaseTracks.length === 0) {
+    alert('No release tracklist available yet. Re-select the folder match first.');
+    return;
+  }
+
+  const folderTrack = (selection.tracks || [])[trackIndex];
+  if (!folderTrack) {
+    alert('Folder track not found.');
+    return;
+  }
+
+  const currentMap = selection.trackMapByIndex?.[trackIndex];
+  const currentReleaseIndex = Number.isInteger(currentMap?.releaseIndex) ? currentMap.releaseIndex : -1;
+
+  // Build modal HTML
+  let html = `
+    <div class="modal fade" id="trackMatchOverrideModal" tabindex="-1">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title"><i class="bi bi-shuffle"></i> Change Track Match</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div class="mb-3">
+              <strong>Folder Track:</strong><br>
+              <span class="text-primary">${escapeHtml(folderTrack.title || '(unknown)')}</span>
+            </div>
+            <div class="mb-2">
+              <strong>Select Release Track:</strong>
+            </div>
+            <div class="list-group">`;
+  
+  // Add "Clear Match" option
+  const clearSelected = currentReleaseIndex === -1 ? 'active' : '';
+  html += `
+              <button type="button" class="list-group-item list-group-item-action ${clearSelected}" 
+                      onclick="applyTrackMatchOverride('${encodeInlineArg(folderPath)}', ${trackIndex}, -1)">
+                <i class="bi bi-x-circle"></i> <em>Clear Match (Auto)</em>
+              </button>`;
+  
+  // Add each release track as an option
+  selection.releaseTracks.forEach((rt, idx) => {
+    const activeClass = idx === currentReleaseIndex ? 'active' : '';
+    const trackNumber = rt.position || (idx + 1);
+    const trackTitle = rt.title || '(unknown)';
+    html += `
+              <button type="button" class="list-group-item list-group-item-action ${activeClass}" 
+                      onclick="applyTrackMatchOverride('${encodeInlineArg(folderPath)}', ${trackIndex}, ${idx})">
+                <strong>${trackNumber}.</strong> ${escapeHtml(trackTitle)}
+              </button>`;
+  });
+  
+  html += `
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  
+  // Remove old modal if it exists
+  const oldModal = document.getElementById('trackMatchOverrideModal');
+  if (oldModal) oldModal.remove();
+  
+  // Add new modal to page
+  document.body.insertAdjacentHTML('beforeend', html);
+  
+  // Show modal
+  const modal = new bootstrap.Modal(document.getElementById('trackMatchOverrideModal'));
+  modal.show();
+}
+
+function applyTrackMatchOverride(folderPathEnc, trackIndex, releaseIndex) {
+  const folderPath = decodeInlineArg(folderPathEnc, '');
+  const selection = folderMatchSelections[folderPath];
+  
+  if (!selection) {
+    alert('Folder match selection not found.');
+    return;
+  }
+  
+  if (!selection.trackMapByIndex || typeof selection.trackMapByIndex !== 'object') {
+    selection.trackMapByIndex = {};
+  }
+
+  if (releaseIndex === -1) {
+    // Clear the override
+    delete selection.trackMapByIndex[trackIndex];
+  } else {
+    // Set the override
+    selection.trackMapByIndex[trackIndex] = {
+      releaseIndex,
+      releaseTrack: selection.releaseTracks[releaseIndex],
+      confidence: 1,
+      method: 'manual_override'
+    };
+  }
+
+  folderMatchSelections[folderPath] = selection;
+  
+  // Close modal
+  const modalEl = document.getElementById('trackMatchOverrideModal');
+  if (modalEl) {
+    const modal = bootstrap.Modal.getInstance(modalEl);
+    if (modal) modal.hide();
+  }
+  
+  // Refresh the folder groups display
+  loadFolderGroups();
 }
 
 function matchFolderGroupWithMusicBrainzFromEncoded(clickEvent, folderPathEnc, artistEnc, albumEnc, tracksEnc) {
@@ -1180,7 +1341,7 @@ async function loadFolderGroups(options = {}) {
               <div class="col-md-6 text-end">
                 <button class="btn btn-sm btn-outline-primary" 
                   onclick="matchFolderGroupWithMusicBrainzFromEncoded(event, '${folderPathEnc}', '${artistEnc}', '${albumEnc}', '${tracksEnc}')">
-                  <i class="bi bi-disc"></i> ${matchedSelection ? 'Change Match' : 'Auto Match'}
+                  <i class="bi bi-disc"></i> ${matchedSelection ? 'Change Match' : 'Auto Apply'}
                 </button>
                 <button class="btn btn-sm btn-outline-info ms-2" 
                   onclick="showAutoMatchSuggestionFromEncoded(event, '${folderPathEnc}', '${artistEnc}', '${albumEnc}', '${tracksEnc}')" 
@@ -1256,23 +1417,45 @@ async function loadFolderGroups(options = {}) {
                   }
                 }
                 
-                // Per-track move button (only show if a match is selected and track not yet moved)
+                // Per-track actions (move + manual match override)
                 let moveButtonHtml = '';
                 if (matchedSelection && !trackMatched) {
                   const trackEnc = encodeInlineArg(track);
                   const folderPathEnc2 = encodeInlineArg(group.folder_path);
                   const candidateEnc = encodeInlineArg(matchedSelection.candidate);
-                  moveButtonHtml = `<button class="btn btn-sm btn-outline-success" 
-                    title="Move this track individually" 
-                    onclick="moveIndividualTrackFromEncoded('${folderPathEnc2}', ${trackIdx}, '${trackEnc}', '${candidateEnc}')">
-                    <i class="bi bi-arrow-right-circle"></i> Move
-                  </button>`;
+                  moveButtonHtml = `<div class="d-flex flex-column gap-1 align-items-center">
+                    <button class="btn btn-sm btn-outline-success" 
+                      title="Move this track individually" 
+                      onclick="moveIndividualTrackFromEncoded('${folderPathEnc2}', ${trackIdx}, '${trackEnc}', '${candidateEnc}')">
+                      <i class="bi bi-arrow-right-circle"></i> Move
+                    </button>
+                    <button class="btn btn-sm btn-outline-info"
+                      title="Override automatic match for this track"
+                      onclick="openTrackMatchOverrideFromEncoded('${folderPathEnc2}', ${trackIdx})">
+                      <i class="bi bi-arrow-left-right"></i> Change Match
+                    </button>
+                  </div>`;
                 } else if (trackMatched) {
                   moveButtonHtml = `<small class="text-success"><i class="bi bi-check-circle"></i> Done</small>`;
                 } else if (preMatched) {
-                  moveButtonHtml = `<small class="text-info"><i class="bi bi-link-45deg"></i> Matched</small>`;
+                  const folderPathEnc2 = encodeInlineArg(group.folder_path);
+                  moveButtonHtml = `<div class="d-flex flex-column gap-1 align-items-center">
+                    <small class="text-info"><i class="bi bi-link-45deg"></i> Matched</small>
+                    <button class="btn btn-sm btn-outline-info"
+                      title="Override automatic match for this track"
+                      onclick="openTrackMatchOverrideFromEncoded('${folderPathEnc2}', ${trackIdx})">
+                      <i class="bi bi-arrow-left-right"></i> Change Match
+                    </button>
+                  </div>`;
                 } else {
-                  moveButtonHtml = `<small class="text-muted">Waiting for match</small>`;
+                  const folderPathEnc2 = encodeInlineArg(group.folder_path);
+                  moveButtonHtml = matchedSelection
+                    ? `<button class="btn btn-sm btn-outline-info"
+                        title="Set match for this track"
+                        onclick="openTrackMatchOverrideFromEncoded('${folderPathEnc2}', ${trackIdx})">
+                        <i class="bi bi-plus-circle"></i> Set Match
+                      </button>`
+                    : `<small class="text-muted">Waiting for match</small>`;
                 }
                 
                 html += `
@@ -1370,15 +1553,23 @@ async function matchFolderGroupWithMusicBrainz(clickEvent, folderPath, artist, a
       alert('❌ No matches found for: ' + searchTerm + '\n\nTried MusicBrainz and Discogs');
       if (btn) {
         btn.disabled = false;
-        btn.innerHTML = manualQuery ? '<i class="bi bi-search"></i> Search' : '<i class="bi bi-disc"></i> Auto Match';
+        btn.innerHTML = manualQuery ? '<i class="bi bi-search"></i> Search' : '<i class="bi bi-disc"></i> Auto Apply';
       }
       return;
     }
-    
-    // Show modal with candidates
+
+    if (!manualQuery) {
+      // Auto flow: apply closest candidate immediately, then allow per-track overrides in UI.
+      const bestCandidate = chooseBestReleaseCandidate(data.candidates, artist, album, tracks) || data.candidates[0];
+      const folderPathEnc = encodeInlineArg(folderPath);
+      const candidateEnc = encodeInlineArg(bestCandidate);
+      const tracksEnc = encodeInlineArg(tracks);
+      await stageFolderMatch(folderPathEnc, candidateEnc, tracksEnc);
+      return;
+    }
+
+    // Manual search flow: still let user choose from candidate list.
     showMusicBrainzMatchModal(folderPath, artist, album, tracks, data.candidates);
-    
-    // Also show release tracks comparison for better decision making
     await showReleaseTracksComparison(folderPath, artist, album, tracks, data.candidates);
     
   } catch (error) {
@@ -1387,7 +1578,7 @@ async function matchFolderGroupWithMusicBrainz(clickEvent, folderPath, artist, a
   } finally {
     if (btn) {
       btn.disabled = false;
-      btn.innerHTML = manualQuery ? '<i class="bi bi-search"></i> Search' : '<i class="bi bi-disc"></i> Auto Match';
+      btn.innerHTML = manualQuery ? '<i class="bi bi-search"></i> Search' : '<i class="bi bi-disc"></i> Auto Apply';
     }
   }
 }
