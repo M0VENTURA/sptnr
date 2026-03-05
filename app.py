@@ -2861,9 +2861,16 @@ def api_scan_all_missing_releases():
         try:
             conn = get_db()
             cursor = conn.cursor()
-            
-            # Get all distinct artists from tracks table
-            cursor.execute("SELECT DISTINCT artist FROM tracks WHERE artist IS NOT NULL AND artist != '' ORDER BY artist")
+
+            # Get canonical artist identities from album_artist when available.
+            # This avoids scanning featured track artists that do not represent a real catalog owner.
+            cursor.execute("""
+                SELECT DISTINCT COALESCE(NULLIF(album_artist, ''), artist) AS canonical_artist
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
+                  AND COALESCE(NULLIF(album_artist, ''), artist) != ''
+                ORDER BY canonical_artist
+            """)
             artists = [row[0] for row in cursor.fetchall()]
             total_artists = len(artists)
             
@@ -2927,28 +2934,37 @@ def api_scan_all_missing_releases():
                     try:
                         from api_clients.musicbrainz import lookup_and_save_artist_mbid
                         cursor.execute("""
-                            SELECT MAX(musicbrainz_artist_id) FROM tracks WHERE artist = ?
+                            SELECT MAX(musicbrainz_artist_id)
+                            FROM tracks
+                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
                         """, (artist_name,))
                         result = cursor.fetchone()
                         existing_mbid = result[0] if result and result[0] else None
+                        resolved_artist_mbid = existing_mbid
                         
                         if not existing_mbid:
                             # No MBID saved yet, try to look it up from MusicBrainz
                             mbid = lookup_and_save_artist_mbid(artist_name, conn)
                             if mbid:
+                                resolved_artist_mbid = mbid
                                 logging.debug(f"[MISSING_RELEASES] Artist MBID saved for {artist_name}: {mbid}")
                         else:
                             logging.debug(f"[MISSING_RELEASES] Artist {artist_name} already has MBID: {existing_mbid}")
                     except Exception as e:
                         logging.debug(f"[MISSING_RELEASES] Could not look up MBID for {artist_name}: {e}")
+                        resolved_artist_mbid = None
                     
                     # Get existing albums for this artist
-                    cursor.execute("SELECT DISTINCT album FROM tracks WHERE artist = ?", (artist_name,))
+                    cursor.execute("""
+                        SELECT DISTINCT album
+                        FROM tracks
+                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
+                    """, (artist_name,))
                     existing_albums = [row[0] for row in cursor.fetchall()]
                     existing_norm = {_normalize_release_title(a) for a in existing_albums if a}
                     
-                    # Fetch MusicBrainz releases
-                    mb_releases = _fetch_musicbrainz_releases(artist_name)
+                    # Fetch MusicBrainz releases, preferring MBID lookups for accuracy.
+                    mb_releases = _fetch_musicbrainz_releases(artist_name, artist_mbid=resolved_artist_mbid)
                     
                     # Check for missing releases AND update cover art for existing albums
                     for rg in mb_releases:
@@ -2965,7 +2981,8 @@ def api_scan_all_missing_releases():
                                     cursor.execute("""
                                         UPDATE tracks 
                                         SET cover_art_url = ?
-                                        WHERE artist = ? AND album = ?
+                                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
+                                          AND album = ?
                                     """, (cover_art_url, artist_name, original_album))
                                     
                                     # Also download and save the actual album art image data (same as popularity scan does)
