@@ -166,7 +166,8 @@
       <div class="d-flex align-items-center gap-2">
         <div class="btn-group btn-group-sm" role="group" aria-label="Folder group filter">
           <button type="button" class="btn btn-outline-light active" id="folderFilterAll" onclick="setFolderGroupFilter('all')">All</button>
-          <button type="button" class="btn btn-outline-light" id="folderFilterOnly" onclick="setFolderGroupFilter('folder')">Folder Scan</button>
+          <button type="button" class="btn btn-outline-light" id="folderFilterRelease" onclick="setFolderGroupFilter('release')">Releases</button>
+          <button type="button" class="btn btn-outline-light" id="folderFilterFolder" onclick="setFolderGroupFilter('folder')">Folders</button>
         </div>
         <span class="badge bg-info" id="folderGroupsBadge">0 groups</span>
       </div>
@@ -250,6 +251,7 @@
 
 <!-- Include existing JavaScript -->
 <script src="{{url_for('static', filename='js/downloads.js')}}"></script>
+<script src="{{url_for('static', filename='js/musicbrainz-folder-groups.js')}}"></script>
 
 <script>
 // Queue management functions for downloads monitor

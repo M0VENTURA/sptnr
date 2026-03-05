@@ -9572,6 +9572,62 @@ def api_get_release_queue_items(release_id):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/downloads/folder-groups", methods=["GET"])
+def api_get_folder_groups():
+    """Get organized folder groups including MusicBrainz releases (integrated view)"""
+    try:
+        from musicbrainz_folder_integration import get_folder_groups_with_musicbrainz
+        
+        result = get_folder_groups_with_musicbrainz()
+        return jsonify(result)
+        
+    except Exception as e:
+        logging.error(f"[FOLDER_GROUPS] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/downloads/folder/<path:folder_path>", methods=["GET"])
+def api_get_folder_details(folder_path):
+    """Get detailed info for a specific folder"""
+    try:
+        from musicbrainz_folder_integration import get_folder_group_details
+        
+        result = get_folder_group_details(f"/downloads/Music/{folder_path}")
+        return jsonify(result)
+        
+    except Exception as e:
+        logging.error(f"[FOLDER_DETAILS] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/musicbrainz/release/<release_id>/retry-match", methods=["POST"])
+def api_retry_matching(release_id):
+    """Retry file matching for a specific release"""
+    try:
+        from musicbrainz_folder_integration import retry_matching_for_release
+        
+        result = retry_matching_for_release(release_id)
+        return jsonify(result)
+        
+    except Exception as e:
+        logging.error(f"[RETRY_MATCH] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/downloads/folder/<path:folder_path>/cancel", methods=["POST"])
+def api_cancel_folder(folder_path):
+    """Cancel all downloads for a folder"""
+    try:
+        from musicbrainz_folder_integration import cancel_folder_downloads
+        
+        result = cancel_folder_downloads(f"/downloads/Music/{folder_path}")
+        return jsonify(result)
+        
+    except Exception as e:
+        logging.error(f"[CANCEL_FOLDER] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/slskd/search-results/<int:download_id>", methods=["GET"])
 def api_slskd_search_results(download_id):
     """Get Soulseek search results for a download awaiting user selection"""
