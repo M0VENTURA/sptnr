@@ -104,6 +104,11 @@ class MusicBrainzFileMatcher:
                     continue
             
             logger.info(f"[FILE_MATCHER] Matched {matched_count}/{len(unmatched_files)} files")
+            
+            # CHECK FOR AUTO-READY AND AUTOMATIC TRANSFER
+            # After matching, check if any releases have all tracks matched
+            self.check_and_trigger_auto_ready_and_transfer()
+            
             return {"matched": matched_count, "files_processed": len(unmatched_files)}
             
         except Exception as e:
@@ -424,6 +429,100 @@ class MusicBrainzFileMatcher:
         except Exception as e:
             logger.error(f"[FILE_MATCHER] Error moving file to monitoring folder: {e}")
             return False
+
+    def check_and_trigger_auto_ready_and_transfer(self):
+        """
+        Check all active releases to see if all queued tracks are now organized.
+        If so, mark them as ready_to_transfer and trigger automatic transfer.
+        """
+        try:
+            logger.info("[AUTO_TRANSFER] Checking for releases ready to transfer...")
+            conn = self.get_db()
+            cursor = conn.cursor()
+            
+            # Get all active releases with their import groups
+            cursor.execute("""
+                SELECT DISTINCT r.release_id, r.id, r.release_title, r.artist,
+                       r.monitoring_folder_path
+                FROM musicbrainz_releases r
+                WHERE r.status = 'active'
+            """)
+            
+            releases = cursor.fetchall()
+            transferred_count = 0
+            
+            for release in releases:
+                release_id = release[0]
+                mb_release_db_id = release[1]
+                release_title = release[2]
+                artist = release[3]
+                monitoring_folder = release[4]
+                
+                # Get all tracks for this release with their statuses
+                cursor.execute("""
+                    SELECT id, status, found_filename
+                    FROM musicbrainz_release_tracks
+                    WHERE release_id = %s
+                """, (release_id,))
+                
+                tracks = cursor.fetchall()
+                
+                # Check if all tracks are organized
+                all_tracks_organized = all(
+                    track[1] in ('organized', 'found', 'ready_to_transfer') 
+                    for track in tracks
+                )
+                
+                if all_tracks_organized and len(tracks) > 0:
+                    logger.info(f"[AUTO_TRANSFER] All {len(tracks)} tracks matched for '{artist} - {release_title}'")
+                    
+                    # Mark all tracks as ready_to_transfer
+                    cursor.execute("""
+                        UPDATE musicbrainz_release_tracks
+                        SET status = 'ready_to_transfer'
+                        WHERE release_id = %s
+                    """, (release_id,))
+                    conn.commit()
+                    logger.info(f"[AUTO_TRANSFER] Marked {len(tracks)} tracks as ready_to_transfer")
+                    
+                    # Trigger automatic transfer
+                    try:
+                        from musicbrainz_finalizer import MusicBrainzFinalizer
+                        finalizer = MusicBrainzFinalizer()
+                        
+                        logger.info(f"[AUTO_TRANSFER] Starting automatic transfer for '{artist} - {release_title}'")
+                        transfer_result = finalizer.organize_folder_to_music(
+                            monitoring_folder, 
+                            release_id
+                        )
+                        
+                        if transfer_result:
+                            # Update release status to completed
+                            cursor.execute("""
+                                UPDATE musicbrainz_releases
+                                SET status = 'completed'
+                                WHERE release_id = %s
+                            """, (release_id,))
+                            conn.commit()
+                            logger.info(f"[AUTO_TRANSFER] Successfully transferred '{artist} - {release_title}'")
+                            transferred_count += 1
+                        else:
+                            logger.warning(f"[AUTO_TRANSFER] Transfer failed for '{artist} - {release_title}'")
+                    
+                    except Exception as e:
+                        logger.error(f"[AUTO_TRANSFER] Error transferring '{artist} - {release_title}': {e}")
+                        continue
+            
+            conn.close()
+            
+            if transferred_count > 0:
+                logger.info(f"[AUTO_TRANSFER] Completed automatic transfer for {transferred_count} release(s)")
+            
+            return {"transferred": transferred_count}
+            
+        except Exception as e:
+            logger.error(f"[AUTO_TRANSFER] Error in auto-ready check: {e}")
+            return {"transferred": 0, "error": str(e)}
 
     @staticmethod
     def normalize_string(s):

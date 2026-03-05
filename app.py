@@ -10249,6 +10249,83 @@ def api_get_release_queue_items(release_id):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/queue/releases/status", methods=["GET"])
+def api_get_releases_status():
+    """Get status of all active MusicBrainz releases with track counts by status"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get all active releases
+        cursor.execute("""
+            SELECT r.id, r.release_id, r.release_title, r.artist, 
+                   r.release_year, r.total_tracks, r.monitoring_folder_path,
+                   r.status, r.created_at, r.updated_at
+            FROM musicbrainz_releases r
+            WHERE r.status != 'completed'
+            ORDER BY r.updated_at DESC
+        """)
+        
+        releases = []
+        for row in cursor.fetchall():
+            release_id = row[1]
+            
+            # Get track count by status for this release
+            cursor.execute("""
+                SELECT status, COUNT(*) as count
+                FROM musicbrainz_release_tracks
+                WHERE release_id = %s
+                GROUP BY status
+            """, (release_id,))
+            
+            status_counts = {}
+            for status_row in cursor.fetchall():
+                status_counts[status_row[0]] = status_row[1]
+            
+            total = row[5]
+            ready_count = status_counts.get('ready_to_transfer', 0)
+            organized_count = status_counts.get('organized', 0) or status_counts.get('found', 0)
+            downloading_count = status_counts.get('downloading', 0)
+            queued_count = status_counts.get('queued', 0) or status_counts.get('searching', 0)
+            
+            releases.append({
+                "id": row[0],
+                "release_id": release_id,
+                "title": row[2],
+                "artist": row[3],
+                "year": row[4],
+                "total_tracks": total,
+                "monitoring_folder": row[6],
+                "status": row[7],
+                "track_counts": {
+                    "queued": queued_count,
+                    "downloading": downloading_count,
+                    "organized": organized_count,
+                    "ready_to_transfer": ready_count,
+                    "completed": status_counts.get('completed', 0)
+                },
+                "progress": {
+                    "percent": int(((organized_count + ready_count) / total * 100) if total > 0 else 0),
+                    "downloaded": organized_count + ready_count,
+                    "total": total
+                },
+                "created_at": row[8],
+                "updated_at": row[9],
+                "all_matched": ready_count == total and total > 0
+            })
+        
+        conn.close()
+        return jsonify({
+            "success": True,
+            "count": len(releases),
+            "releases": releases
+        })
+        
+    except Exception as e:
+        logging.error(f"[RELEASES_STATUS] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/downloads/folder-groups", methods=["GET"])
 def api_get_folder_groups():
     """Get organized folder groups including MusicBrainz releases (integrated view)"""
