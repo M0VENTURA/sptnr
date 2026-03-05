@@ -379,7 +379,15 @@ def set_track_rating_for_all(track_id, stars):
     # Cache existing track IDs to avoid re-writing cached rows unless force=True
     existing_track_ids: set[str] = set()
     try:
-        conn = get_db_connection()
+        # Try app's get_db first (PostgreSQL-aware)
+        try:
+            from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
+            conn = app_get_db()
+            is_pg = bool(app_is_postgres_connection(conn))
+        except Exception:
+            conn = get_db_connection()
+            is_pg = False
+        
         cursor = conn.cursor()
         cursor.execute("SELECT id FROM tracks")
         existing_track_ids = {row[0] for row in cursor.fetchall()}
@@ -408,9 +416,18 @@ def set_track_rating_for_all(track_id, stars):
         # Prefetch cached tracks for this artist to enable per-artist skip decisions
         existing_album_tracks: dict[str, set[str]] = {}
         try:
-            conn = get_db_connection()
+            # Try app's get_db first (PostgreSQL-aware)
+            try:
+                from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
+                conn = app_get_db()
+                is_pg = bool(app_is_postgres_connection(conn))
+            except Exception:
+                conn = get_db_connection()
+                is_pg = False
+            
             cursor = conn.cursor()
-            cursor.execute("SELECT album, id FROM tracks WHERE artist = ?", (name,))
+            placeholder = "%s" if is_pg else "?"
+            cursor.execute(f"SELECT album, id FROM tracks WHERE artist = {placeholder}", (name,))
             for alb_name, tid in cursor.fetchall():
                 if alb_name not in existing_album_tracks:
                     existing_album_tracks[alb_name] = set()

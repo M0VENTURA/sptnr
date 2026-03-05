@@ -244,11 +244,20 @@ def increment_retry_count(queue_id, retry_delay_minutes=30):
 def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=30):
     """Mark queue item as failed, optionally scheduling retry"""
     try:
-        conn = get_db()
+        # Try app's get_db first (PostgreSQL-aware)
+        is_pg = False
+        try:
+            from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
+            conn = app_get_db()
+            is_pg = bool(app_is_postgres_connection(conn))
+        except Exception:
+            conn = get_db()
+        
         cursor = conn.cursor()
+        placeholder = "%s" if is_pg else "?"
         
         # Get current retry count
-        cursor.execute("SELECT retry_count FROM download_queue WHERE id = ?", (queue_id,))
+        cursor.execute(f"SELECT retry_count FROM download_queue WHERE id = {placeholder}", (queue_id,))
         row = cursor.fetchone()
         
         if not row:
@@ -267,11 +276,11 @@ def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=30):
             new_status = 'failed'
             logger.error(f"Queue {queue_id}: Failed permanently ({reason}) - retry not requested")
         
-        cursor.execute("""
+        cursor.execute(f"""
             UPDATE download_queue 
-            SET status = ?, retry_count = ?, failure_reason = ?, last_failure_time = CURRENT_TIMESTAMP,
-                next_retry_at = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
+            SET status = {placeholder}, retry_count = {placeholder}, failure_reason = {placeholder}, last_failure_time = CURRENT_TIMESTAMP,
+                next_retry_at = {placeholder}, updated_at = CURRENT_TIMESTAMP
+            WHERE id = {placeholder}
         """, (new_status, retry_count, reason, next_retry.isoformat() if next_retry else None, queue_id))
         
         conn.commit()

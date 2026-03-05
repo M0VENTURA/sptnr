@@ -1682,6 +1682,20 @@ def _is_postgres_connection(conn):
     return isinstance(conn, psycopg2.extensions.connection)  # type: ignore[name-defined]
 
 
+def get_placeholder(conn):
+    """
+    Get the appropriate SQL placeholder for the active database connection.
+    
+    Returns:
+        str: '%s' for PostgreSQL, '?' for SQLite
+    
+    Usage:
+        placeholder = get_placeholder(conn)
+        cursor.execute(f"SELECT * FROM table WHERE id = {placeholder}", (id_val,))
+    """
+    return "%s" if _is_postgres_connection(conn) else "?"
+
+
 # Debug: Log database configuration on startup
 print(f"{'='*60}")
 print(f"Database Configuration:")

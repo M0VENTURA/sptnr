@@ -479,8 +479,17 @@ def update_queue_item(queue_id, **kwargs):
     
     for attempt in range(max_retries):
         try:
-            conn = get_db()
+            # Try app's get_db first (PostgreSQL-aware)
+            is_pg = False
+            try:
+                from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
+                conn = app_get_db()
+                is_pg = bool(app_is_postgres_connection(conn))
+            except Exception:
+                conn = get_db()
+            
             cursor = conn.cursor()
+            placeholder = "%s" if is_pg else "?"
             
             # Build update query
             updates = []
@@ -492,14 +501,14 @@ def update_queue_item(queue_id, **kwargs):
                     # Special handling for file_path to avoid UNIQUE constraint issues
                     if key == 'file_path' and value:
                         # Check if this file_path is already in use by another item
-                        cursor.execute("SELECT COUNT(*) as cnt FROM download_queue WHERE file_path = ? AND id != ?", 
+                        cursor.execute(f"SELECT COUNT(*) as cnt FROM download_queue WHERE file_path = {placeholder} AND id != {placeholder}", 
                                      (value, queue_id))
                         result = cursor.fetchone()
                         if result and result['cnt'] > 0:
                             logger.warning(f"File path {value} already in use by another queue item, skipping update")
                             continue
                     
-                    updates.append(f"{key} = ?")
+                    updates.append(f"{key} = {placeholder}")
                     params.append(value)
             
             if not updates:
@@ -510,7 +519,7 @@ def update_queue_item(queue_id, **kwargs):
             updates.append("updated_at = CURRENT_TIMESTAMP")
             params.append(queue_id)
             
-            query = f"UPDATE download_queue SET {', '.join(updates)} WHERE id = ?"
+            query = f"UPDATE download_queue SET {', '.join(updates)} WHERE id = {placeholder}"
             cursor.execute(query, params)
             conn.commit()
             
@@ -522,7 +531,7 @@ def update_queue_item(queue_id, **kwargs):
             logger.debug(f"Updated {cursor.rowcount} row(s) for queue item {queue_id}: {list(kwargs.keys())}")
             
             # Return updated item
-            cursor.execute("SELECT * FROM download_queue WHERE id = ?", (queue_id,))
+            cursor.execute(f"SELECT * FROM download_queue WHERE id = {placeholder}", (queue_id,))
             item = cursor.fetchone()
             conn.close()
             
@@ -579,11 +588,20 @@ def mark_as_failed(queue_id, reason, retry_delay_minutes=30):
     
     for attempt in range(max_retries):
         try:
-            conn = get_db()
+            # Try app's get_db first (PostgreSQL-aware)
+            is_pg = False
+            try:
+                from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
+                conn = app_get_db()
+                is_pg = bool(app_is_postgres_connection(conn))
+            except Exception:
+                conn = get_db()
+            
             cursor = conn.cursor()
+            placeholder = "%s" if is_pg else "?"
             
             # Get current retry count
-            cursor.execute("SELECT retry_count, max_retries FROM download_queue WHERE id = ?", (queue_id,))
+            cursor.execute(f"SELECT retry_count, max_retries FROM download_queue WHERE id = {placeholder}", (queue_id,))
             row = cursor.fetchone()
             
             if not row:
@@ -601,16 +619,16 @@ def mark_as_failed(queue_id, reason, retry_delay_minutes=30):
                 new_status = 'queued'
                 logger.info(f"Queue item {queue_id} scheduled for retry (attempt {retry_count}/{row['max_retries']}) at {next_retry}: {reason}")
             
-            cursor.execute("""
+            cursor.execute(f"""
                 UPDATE download_queue 
-                SET status = ?, retry_count = ?, failure_reason = ?, last_failure_time = CURRENT_TIMESTAMP, next_retry_at = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
+                SET status = {placeholder}, retry_count = {placeholder}, failure_reason = {placeholder}, last_failure_time = CURRENT_TIMESTAMP, next_retry_at = {placeholder}, updated_at = CURRENT_TIMESTAMP
+                WHERE id = {placeholder}
             """, (new_status, retry_count, reason, next_retry.isoformat(), queue_id))
             
             conn.commit()
             
             # Return updated item
-            cursor.execute("SELECT * FROM download_queue WHERE id = ?", (queue_id,))
+            cursor.execute(f"SELECT * FROM download_queue WHERE id = {placeholder}", (queue_id,))
             item = cursor.fetchone()
             conn.close()
             
