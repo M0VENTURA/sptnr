@@ -9628,6 +9628,39 @@ def api_cancel_folder(folder_path):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/musicbrainz/check-files", methods=["POST"])
+def api_check_musicbrainz_files():
+    """
+    Background task to discover and match files to MusicBrainz releases
+    
+    Scans /downloads/Music for unmatched files and:
+    1. Matches them to active releases
+    2. Moves matched files to monitoring folders
+    3. Updates release progress
+    
+    Called periodically (every 30 seconds from queue processor)
+    """
+    try:
+        from musicbrainz_file_matcher import get_matcher
+        
+        matcher = get_matcher()
+        result = matcher.monitor_and_match()
+        
+        return jsonify({
+            "success": True,
+            "matched": result.get("matched", 0),
+            "files_processed": result.get("files_processed", 0),
+            "timestamp": datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logging.error(f"[CHECK_FILES] Error: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
 @app.route("/api/slskd/search-results/<int:download_id>", methods=["GET"])
 def api_slskd_search_results(download_id):
     """Get Soulseek search results for a download awaiting user selection"""
