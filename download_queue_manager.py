@@ -1184,9 +1184,20 @@ def cleanup_missing_files():
     for attempt in range(max_retries):
         conn = None
         try:
-            conn = get_db()
+            # Try to use the app's PostgreSQL-aware DB connection
+            is_pg = False
+            pg_configured = bool(os.environ.get("PG_HOST") and os.environ.get("PG_USER") and os.environ.get("PG_DATABASE"))
+            try:
+                from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
+                conn = app_get_db()
+                is_pg = bool(app_is_postgres_connection(conn))
+            except Exception:
+                if pg_configured:
+                    raise RuntimeError("PostgreSQL is configured, but cleanup could not connect")
+                conn = get_db()
+            
             cursor = conn.cursor()
-
+            
             # Get all queue items with file paths
             cursor.execute("""
                 SELECT id, file_path, artist, title, status
@@ -1214,7 +1225,8 @@ def cleanup_missing_files():
 
             # Remove items in batch
             if removed_ids:
-                placeholders = ','.join('?' * len(removed_ids))
+                placeholder = "%s" if is_pg else "?"
+                placeholders = ','.join([placeholder] * len(removed_ids))
                 cursor.execute(f"DELETE FROM download_queue WHERE id IN ({placeholders})", removed_ids)
                 conn.commit()
                 stats['removed'] = len(removed_ids)
@@ -1222,7 +1234,7 @@ def cleanup_missing_files():
 
             return stats
 
-        except sqlite3.OperationalError as e:
+        except (sqlite3.OperationalError, Exception) as e:
             if 'database is locked' in str(e).lower():
                 if attempt < max_retries - 1:
                     delay = initial_delay * (2 ** attempt)
@@ -1236,12 +1248,6 @@ def cleanup_missing_files():
                 logger.error(error_msg)
                 stats['errors'].append(error_msg)
                 return stats
-            error_msg = f"Error during cleanup: {str(e)}"
-            logger.error(error_msg)
-            stats['errors'].append(error_msg)
-            return stats
-
-        except Exception as e:
             error_msg = f"Error during cleanup: {str(e)}"
             logger.error(error_msg)
             stats['errors'].append(error_msg)

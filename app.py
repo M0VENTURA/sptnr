@@ -3642,12 +3642,14 @@ def api_artist_bio():
     try:
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         
         # Return cached biography from database only - no online calls
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT bio, image_url 
             FROM artists 
-            WHERE name = ?
+            WHERE name = {placeholder}
         """, (artist_name,))
         artist_row = cursor.fetchone()
         conn.close()
@@ -3798,15 +3800,17 @@ def api_artist_image():
     try:
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         
         # Return cached image URL from database only - no online calls
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT image_url 
             FROM artists 
-            WHERE LOWER(name) = LOWER(?)
+            WHERE LOWER(name) = LOWER({placeholder})
                 AND image_url IS NOT NULL
                 AND image_url != ''
-            ORDER BY CASE WHEN name = ? THEN 0 ELSE 1 END
+            ORDER BY CASE WHEN name = {placeholder} THEN 0 ELSE 1 END
             LIMIT 1
         """, (artist_name, artist_name))
         row = cursor.fetchone()
