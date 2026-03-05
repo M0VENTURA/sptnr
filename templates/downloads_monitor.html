@@ -706,10 +706,12 @@ function makeSafeDomId(value) {
 function setFolderGroupFilter(filter) {
   folderGroupsFilter = filter;
   const allBtn = document.getElementById('folderFilterAll');
-  const folderBtn = document.getElementById('folderFilterOnly');
+  const releaseBtn = document.getElementById('folderFilterRelease');
+  const folderBtn = document.getElementById('folderFilterFolder');
 
-  if (allBtn && folderBtn) {
+  if (allBtn && releaseBtn && folderBtn) {
     allBtn.classList.toggle('active', filter === 'all');
+    releaseBtn.classList.toggle('active', filter === 'release');
     folderBtn.classList.toggle('active', filter === 'folder');
   }
 
@@ -736,8 +738,16 @@ async function loadFolderGroups() {
     const list = document.getElementById('folderGroupsList');
     const badge = document.getElementById('folderGroupsBadge');
 
+    // Filter groups based on selected filter
+    let filteredGroups = groups;
+    if (folderGroupsFilter === 'release') {
+      filteredGroups = groups.filter(g => g.is_musicbrainz_release === true);
+    } else if (folderGroupsFilter === 'folder') {
+      filteredGroups = groups.filter(g => g.is_musicbrainz_release !== true);
+    }
+    
     const showFolderGroups = true;
-    const visibleFolderCount = groups.length;
+    const visibleFolderCount = filteredGroups.length;
     const totalGroups = visibleFolderCount;
     
     if (totalGroups === 0) {
@@ -747,7 +757,7 @@ async function loadFolderGroups() {
     
     // Preserve expanded state before re-rendering
     const expandedGroups = new Set();
-    groups.forEach((group, index) => {
+    filteredGroups.forEach((group, index) => {
       const trackList = document.getElementById(`group-${index}`);
       if (trackList && trackList.style.display !== 'none') {
         expandedGroups.add(index);
@@ -760,7 +770,7 @@ async function loadFolderGroups() {
     let html = '';
 
     if (showFolderGroups) {
-      groups.forEach((group, index) => {
+      filteredGroups.forEach((group, index) => {
       const folderStateKey = `folder-${makeSafeDomId(group.folder_path || group.folder_name || index)}`;
       const inconsistentClass = !group.is_consistent ? 'border-warning' : '';
       const inconsistentBadge = !group.is_consistent ? 
@@ -1612,7 +1622,6 @@ document.addEventListener('DOMContentLoaded', function() {
       loadQueueStatus();
     }
   });
-});
 });
 </script>
 {% endblock %}
