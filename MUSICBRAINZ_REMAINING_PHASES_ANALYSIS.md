@@ -23,130 +23,365 @@
 
 ---
 
-## Phase 4: Queue Display Integration
+## Phase 4: Queue Display Integration (Folder Groups)
 
 ### Current State
 - API endpoint `GET /api/musicbrainz/releases/active` exists and returns releases with progress
-- downloads_monitor.html has sections for Active Queue, Failed Queue, but **NO dedicated MusicBrainz releases section**
-- Infrastructure to display releases exists, but no UI yet
+- downloads_monitor.html already has **"Folder Groups Section"** (line ~160) for organized folder-based monitoring
+- This existing system is perfect for integrating MusicBrainz releases as a special folder type
+
+### ✅ Implementation Complete
+
+**Files Created/Modified:**
+
+- ✅ `musicbrainz_folder_integration.py` - Helper functions for folder operations
+- ✅ API endpoint: `GET /api/downloads/folder-groups` - Get all releases with discovered files
+- ✅ API endpoint: `GET /api/downloads/folder/<path>` - Get folder details and all files
+- ✅ API endpoint: `POST /api/musicbrainz/release/<id>/retry-match` - Retry file matching
+- ✅ API endpoint: `POST /api/downloads/folder/<path>/cancel` - Cancel folder and remove from queue
+- ✅ `static/js/musicbrainz-folder-groups.js` - Frontend with display, filtering, auto-refresh
+- ✅ `templates/downloads_monitor.html` - Integrated into folder groups section
+
+### Display Behavior
+
+**MusicBrainz Releases shown as GREEN folder entries with:**
+
+- Green background and left border (4px green line)
+- "Release" badge (green) to distinguish from regular folders
+- Disc icon (💿) instead of folder icon
+- Progress bar in green
+- Actual discovered files listed (e.g., "Track_01_Downloaded.mp3")
+- Status labels: "Ready to Finalize" (complete), "In Progress", "Waiting"
+- Action buttons: View, Retry Matching, Cancel
+
+**Progress Display:**
+
+- Shows "X of Y tracks discovered" below each folder
+- Files displayed as they're discovered
+- Auto-refresh every 5 seconds
+- Pauses refresh when tab is not visible (saves bandwidth)
+
+**Filtering:**
+
+- "All" - Shows both releases and regular folders
+- "Releases" - Shows only MusicBrainz releases
+- "Folders" - Shows only regular folder groups
+
+### Architecture Design
+
+**Integration Strategy:**
+- MusicBrainz releases appear as **green folder entries** in the existing "Downloads Organized by Folder" section
+- Initial display: Shows MusicBrainz release metadata (artist, album, year, track count)
+- As files are matched to tracks: Transition to show actual discovered files instead of track listing
+- Monitoring folder name shows progress: "2026 - Artist - Album [9/12]"
 
 ### Required Implementation
 
-#### 4a. UI Section in downloads_monitor.html
+#### 4a. API Endpoint for Folder Groups
 
-**Add new section after "Queue Status Cards" (around line 170):**
+Create new endpoint to get combined view:
 
-```html
-<!-- Active MusicBrainz Releases Section -->
-<div class="card mb-4" id="musicbrainzReleasesSection">
-  <div class="card-header d-flex justify-content-between align-items-center">
-    <h5 class="card-title mb-0">
-      <i class="bi bi-disc"></i> MusicBrainz Releases
-    </h5>
-    <span class="badge bg-info" id="mbReleasesBadge">0</span>
-  </div>
-  <div class="card-body p-0">
-    <div id="mbReleasesEmpty" class="alert alert-info alert-sm mb-0">
-      <i class="bi bi-info-circle"></i> No active MusicBrainz releases.
-    </div>
-    <div id="mbReleasesList" style="display:none">
-      <!-- Release cards rendered here -->
-    </div>
-  </div>
-</div>
+```python
+@app.route("/api/downloads/folder-groups", methods=["GET"])
+def api_get_folder_groups():
+    """Get organized folder groups including MusicBrainz releases"""
+    try:
+        from musicbrainz_release_manager import get_manager
+        
+        # Get MusicBrainz releases with folder info
+        manager = get_manager()
+        mb_releases = manager.get_active_releases()
+        
+        # Convert to folder group format
+        folder_groups = []
+        for release in mb_releases:
+            folder_groups.append({
+                "type": "musicbrainz",  # Mark as MB release (green)
+                "name": release["monitoring_folder"],
+                "display_name": f"{release['release_title']} ({release['artist']} - {release['release_year']})",
+                "release_id": release["release_id"],
+                "total_tracks": release["total_tracks"],
+                "discovered_count": release["discovered_count"],
+                "progress_percent": release["progress_percent"],
+                "status": "active",
+                "files": get_files_in_folder(release["monitoring_folder"]),  # Get actual files, not just track list
+                "metadata": {
+                    "artist": release["artist"],
+                    "album": release["release_title"],
+                    "year": release["release_year"],
+                    "source": "musicbrainz"
+                }
+            })
+        
+        # Get other folder groups (legacy folder grouping from processAlbums)
+        # These would be merged here if needed
+        
+        return jsonify({
+            "success": True,
+            "count": len(folder_groups),
+            "folder_groups": folder_groups
+        })
+    except Exception as e:
+        logging.error(f"Error getting folder groups: {e}")
+        return jsonify({"error": str(e)}), 500
 ```
 
-#### 4b. JavaScript Function to Load & Display Releases
+#### 4b. Update Folder Groups Display Function
 
-Create new function `loadMusicBrainzReleases()`:
+Modify existing `loadFolderGroups()` or create `loadFolderGroupsWithMB()`:
 
 ```javascript
-async function loadMusicBrainzReleases() {
+async function loadFolderGroupsWithMB() {
   try {
-    const response = await fetch('/api/musicbrainz/releases/active');
+    // Replace or augment existing folder groups with MusicBrainz releases
+    const response = await fetch('/api/downloads/folder-groups');
     const data = await response.json();
     
     if (!data.success || data.count === 0) {
-      document.getElementById('mbReleasesEmpty').style.display = 'block';
-      document.getElementById('mbReleasesList').style.display = 'none';
-      document.getElementById('mbReleasesBadge').textContent = '0';
+      document.getElementById('folderGroupsSection').style.display = 'none';
       return;
     }
     
-    document.getElementById('mbReleasesEmpty').style.display = 'none';
-    document.getElementById('mbReleasesList').style.display = 'block';
-    document.getElementById('mbReleasesBadge').textContent = data.count;
+    document.getElementById('folderGroupsSection').style.display = 'block';
+    document.getElementById('folderGroupsBadge').textContent = data.count;
     
-    const html = data.releases.map((release) => `
-      <div class="list-group-item">
-        <div class="d-flex justify-content-between align-items-start">
-          <div>
-            <h6 class="mb-1">${release.release_title}</h6>
-            <p class="text-muted small mb-2">${release.artist} (${release.release_year})</p>
-            <div class="progress" style="height: 20px;">
-              <div class="progress-bar" style="width: ${release.progress_percent}%">
-                ${release.progress_percent}%
+    const html = data.folder_groups.map((group) => {
+      const isMusicBrainz = group.type === 'musicbrainz';
+      const badgeColor = isMusicBrainz ? 'bg-success' : 'bg-secondary';  // Green for MB, gray for others
+      const icon = isMusicBrainz ? 'bi-disc' : 'bi-folder';
+      
+      // Initial state: Show track list (from MusicBrainz)
+      // Or actual files if files exist in folder
+      const displayList = group.files.length > 0 
+        ? group.files.map(f => `<small>📁 ${f.name}</small>`).join('<br>')
+        : `<small class="text-muted">Waiting for ${group.total_tracks} tracks...</small>`;
+      
+      return `
+        <div class="list-group-item" style="background-color: ${isMusicBrainz ? '#f0fff4' : ''};">
+          <div class="d-flex justify-content-between align-items-start">
+            <div style="flex: 1;">
+              <div class="d-flex align-items-center gap-2 mb-1">
+                <i class="bi ${icon}"></i>
+                <h6 class="mb-0">${group.display_name}</h6>
+                <span class="badge ${badgeColor}" style="font-size: 0.75rem;">
+                  ${isMusicBrainz ? 'Release' : 'Folder'}
+                </span>
               </div>
+              
+              <!-- Progress Bar -->
+              <div class="progress mb-2" style="height: 20px;">
+                <div class="progress-bar ${isMusicBrainz ? 'bg-success' : 'bg-info'}" 
+                     style="width: ${group.progress_percent}%">
+                  <small>${group.progress_percent}%</small>
+                </div>
+              </div>
+              
+              <!-- Track/File Listing -->
+              <div style="font-size: 0.9rem; max-height: 150px; overflow-y: auto;">
+                ${displayList}
+              </div>
+              
+              <!-- Stats -->
+              <small class="text-muted mt-2 d-block">
+                ${group.discovered_count} of ${group.total_tracks} tracks discovered
+              </small>
             </div>
-            <small class="text-muted">${release.discovered_count} of ${release.total_tracks} tracks discovered</small>
-          </div>
-          <div>
-            <button class="btn btn-sm btn-outline-info" onclick="showReleaseDetails('${release.release_id}')">
-              <i class="bi bi-eye"></i>
-            </button>
-            <button class="btn btn-sm btn-outline-danger" onclick="cancelRelease('${release.release_id}')">
-              <i class="bi bi-x"></i>
-            </button>
+            
+            <!-- Actions -->
+            <div class="btn-group btn-group-sm ms-2">
+              <button class="btn btn-outline-info" onclick="viewFolderContents('${group.name}')" title="View folder">
+                <i class="bi bi-folder-open"></i>
+              </button>
+              <button class="btn btn-outline-warning" onclick="retryMatching('${group.release_id}')" title="Retry matching">
+                <i class="bi bi-arrow-repeat"></i>
+              </button>
+              <button class="btn btn-outline-danger" onclick="cancelFolder('${group.name}')" title="Cancel">
+                <i class="bi bi-x"></i>
+              </button>
+            </div>
           </div>
         </div>
-      </div>
-    `).join('');
+      `;
+    }).join('');
     
-    document.getElementById('mbReleasesList').innerHTML = 
+    document.getElementById('folderGroupsList').innerHTML = 
       `<div class="list-group list-group-flush">${html}</div>`;
     
   } catch (error) {
-    console.error('Error loading MusicBrainz releases:', error);
+    console.error('Error loading folder groups:', error);
   }
 }
 ```
 
-#### 4c. Bind to Queue Status Refresh
+#### 4c. Update Status Card with MusicBrainz Count
 
-Update `loadQueueStatus()` to also call `loadMusicBrainzReleases()` at the end.
+Modify the status cards to show MusicBrainz releases specifically:
+
+```javascript
+async function updateStatusCards() {
+  const mbResponse = await fetch('/api/musicbrainz/releases/active');
+  const mbData = mbResponse.json();
+  
+  // Add MusicBrainz count to status
+  const mbCount = mbData.count || 0;
+  document.getElementById('queueActiveCount').textContent = mbCount + ' MB Releases';
+}
+```
+
+#### 4d. Auto-Refresh Integration
+
+```javascript
+// Refresh every 5 seconds when releases are active
+setInterval(async () => {
+  await loadFolderGroupsWithMB();
+  await updateStatusCards();
+}, 5000);
+
+// Initial load
+loadFolderGroupsWithMB();
+updateStatusCards();
+```
 
 ### Expected Display
 
 ```
-┌─ MusicBrainz Releases [3] ──────────────────────────┐
-│                                                      │
-│ Album Name (Artist - 2026)                    👁 ✕  │
-│ ▓▓▓▓▓░░░░░░░░░░░░░░░  75%                          │
-│ 9 of 12 tracks discovered                          │
-│                                                      │
-│ Another Album (Other Artist - 2025)           👁 ✕  │
-│ ▓▓░░░░░░░░░░░░░░░░░░  17%                          │
-│ 2 of 12 tracks discovered                          │
-│                                                      │
-└──────────────────────────────────────────────────────┘
+┌─ Downloads Organized by Folder [2] ────────────────────────────┐
+│                                                                 │
+│ 💿 2026 - Angus McSix - Album Name [Release]                   │
+│ ▓▓▓▓▓▓▓▓░░░░░░░░  75%                                           │
+│ 📁 Track_01_Downloaded.mp3                                      │
+│ 📁 Track_03_Downloaded.flac                                     │
+│ 📁 Track_05_Downloaded.mp3                                      │
+│ ... 6 more tracks waiting                                       │
+│ 9 of 12 tracks discovered              👁 🔄 ✕                │
+│                                                                 │
+│ 🎵 Song Name (Other Artist - Album) [Folder]                   │
+│ ▓░░░░░░░░░░░░  10%                                              │
+│ 📁 downloaded_song.mp3                                          │
+│ 1 of 1 track found                     👁 🔄 ✕                │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-### Improvements to Consider
+**Key Visual Differences:**
+- Green background for MusicBrainz releases (distinguishes them)
+- "Release" badge (green) vs "Folder" badge (gray)
+- Disc icon (💿) for MB releases vs folder icon (🎵)
+- Progress bar color: green for MB, blue for folders
+- Shows **actual files** that matched, not just track names
+- Shows progress: "9 of 12 tracks discovered"
 
-1. **Expandable Track List:** Click release to expand and show individual tracks with status badges
-2. **Auto-Refresh:** Refresh every 5 seconds when releases are active
-3. **Color Coding:** Status badges for each track (queued, searching, downloading, discovered)
-4. **Cancel/Pause Buttons:** Allow user to cancel incomplete releases
-5. **Estimated Time:** Show time remaining based on current download speed
+### Improvements & Features
+
+1. **Smart Display Transition:**
+   - Initial: Shows "Waiting for 12 tracks..."
+   - As files match: Shows actual file names as they're discovered
+   - Complete: Shows all 12 files plus "Ready to finalize"
+
+2. **Expandable File List:** Click to expand/collapse full list
+
+3. **One-Click Finalize:** When complete, single button to move to /music/
+
+4. **Match Confidence:** Show "High (95%)" for well-matched files vs "Low (72%)" for uncertain
+
+5. **Retry Matching:** If file didn't match automatically, user can force retry
+
+6. **Unified Interface:** Regular folders and MB releases side-by-side, same treatment
 
 ---
 
 ## Phase 5: File Matching & Movement Logic
 
 ### Current State
-- Monitoring folders created but no file discovery logic yet
-- Files downloaded by slskd go to `/downloads/` but not matched to release tracks
-- No movement to monitoring folder yet
+- ✅ Files discovered in `/downloads/Music` automatically
+- ✅ Files matched to release tracks using multi-strategy algorithm
+- ✅ Matched files moved to monitoring folders
+- ✅ Database updated with discovered status and file paths
+- ✅ Background task integrated into queue processor (runs every 30 seconds)
+
+### ✅ Implementation Complete
+
+**File Created:**
+- ✅ `musicbrainz_file_matcher.py` - Complete file matching system
+
+**API Endpoint:**
+- ✅ `POST /api/musicbrainz/check-files` - Trigger file matching (called automatically)
+
+**Integration:**
+- ✅ `queue_processor.py` - Added `maybe_check_musicbrainz_files()` to main loop
+- ✅ Runs automatically every 30 seconds alongside auto-discovery
+
+### Matching Algorithm
+
+**Strategy Priority (Confidence Scoring):**
+
+1. **ISRC Code Match** (100% confidence)
+   - Read ISRC from ID3 tags
+   - Compare against MusicBrainz release track ISRC
+   - Perfect accuracy if available
+
+2. **ID3 Tag Matching** (95-99% confidence)
+   - Extract artist + title from ID3 tags
+   - Exact match: 99%
+   - Fuzzy match (SequenceMatcher): Title 70%, Artist 30% weighted = 95%+
+   - Threshold: > 85% similarity
+
+3. **Filename Similarity** (80-90% confidence)
+   - Parse filename (remove extension)
+   - Compare against "track_title track_artist"
+   - SequenceMatcher ratio >= 80%
+
+**Confidence Threshold:** 75% minimum to accept match and move file
+
+### Key Features
+
+**File Discovery:**
+- Scans `/downloads/Music` recursively
+- Skips files already in monitoring folders
+- Skips non-audio formats (only .mp3, .flac, .m4a, .ogg, .wav, .aac, .wma)
+- Skips corrupted files (< 50KB = too small)
+
+**Metadata Extraction:**
+- Uses Mutagen library (ID3v2.4 compatible)
+- Handles multiple tag formats (TIT2, TPE1, TSRC for ID3)
+- Fallback: Parse from filename if ID3 tags not available
+- Graceful error handling
+
+**File Movement:**
+- Source: `/downloads/Music/Song Name.mp3`
+- Destination: `/downloads/Music/YEAR - Artist - Album/Song Name.mp3`
+- Preserves original filename (no renaming yet)
+- Handles collisions: versioned filenames if exists
+- Atomic file operations with error recovery
+
+**Database Updates:**
+```python
+UPDATE musicbrainz_release_tracks
+SET status = 'discovered',
+    found_filename = 'Song Name.mp3',
+    file_path = '/downloads/Music/2026 - Artist - Album/Song Name.mp3'
+WHERE release_id = ? AND track_number = ?
+
+UPDATE musicbrainz_releases
+SET discovered_count = (COUNT of discovered tracks)
+WHERE release_id = ?
+```
+
+### Logging & Monitoring
+
+**Log Prefix:** `[FILE_MATCHER]` for easy tracking
+
+**Log Examples:**
+```
+[FILE_MATCHER] Starting file discovery and matching...
+[FILE_MATCHER] Found 42 unmatched files
+[FILE_MATCHER] ISRC match: song.mp3 -> Track 3
+[FILE_MATCHER] ID3_exact match: song.mp3 -> Track 5 (99%)
+[FILE_MATCHER] filename match: song.mp3 -> Track 7 (87%)
+[FILE_MATCHER] Matched {matched}/{total} files
+[FILE_MATCHER] Moved song.mp3 -> 2026 - Artist - Album/song.mp3
+[FILE_MATCHER] Updated database for track 3 (confidence: 99%)
+```
 
 ### Architecture Design
 
