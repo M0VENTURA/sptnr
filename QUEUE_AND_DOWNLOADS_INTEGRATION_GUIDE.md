@@ -71,12 +71,15 @@ Your system already has comprehensive infrastructure for this workflow:
    - When ALL tracks in that specific queue import are matched
    - Important: Based on import count, not full album count
    - If 2/12 songs queued, waits for those 2 only
-   - Trigger is automatic when matched, transfer is manual
+   - Trigger is automatic when matched and AUTOMATICALLY TRANSFERS
+   - No manual step required - transfer happens automatically
 
-3. **Manual Transfer with Auto-Ready**
-   - "Ready to Transfer" shows automatically
-   - User clicks button to actually transfer
-   - Transfer not automatic - requires user confirmation
+3. **Automatic Transfer on Ready**
+   - Once auto-ready trigger fires
+   - Immediately move files from /downloads/ to /music/
+   - Delete monitoring folder
+   - Update database status
+   - Album appears in library immediately
 
 4. **File Naming Configuration**
    - Need config.html option to change default format
@@ -170,29 +173,29 @@ Active Queue - By Release
 │       [Transfer to Library] button
 ```
 
-### Phase 4: Batch Transfer Logic (Week 2)
+### Phase 4: Automatic Transfer Logic (Week 2)
 
-**File:** `app.py` - New endpoint
+**File:** `app.py` - New endpoint for monitoring, trigger function
 
 ```python
-@app.route("/api/queue/release/<release_id>/transfer", methods=["POST"])
-def transfer_release_to_library(release_id):
+@app.route("/api/queue/release/<release_id>/auto-transfer", methods=["POST"])
+def auto_transfer_release(release_id):
     """
-    Transfer all queued tracks from this import to music library
+    Automatically triggered when all tracks in import are matched
     
-    Process:
+    Process (automatic, no user action):
     1. Verify all queued tracks in 'organized' status
     2. Move from /downloads/Music/Album/ to /music/...
-    3. Rename files with proper format
+    3. Rename files with configured format
     4. Delete monitoring folder immediately
     5. Update release status to 'completed'
     
-    NOTE: This is MANUAL trigger - user clicks button
-    Auto-ready trigger happens separately when all tracks matched
+    NOTE: This is AUTOMATIC trigger - happens when ready
+    Called by file matcher when last track is found
     """
 ```
 
-This calls existing `musicbrainz_finalizer.py` logic.
+This calls existing `musicbrainz_finalizer.py` logic but triggered automatically.
 
 ### Phase 6: Status Sync with Navidrome (Week 3)
 
