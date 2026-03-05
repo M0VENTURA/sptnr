@@ -12628,6 +12628,29 @@ def api_downloads_apply_musicbrainz_match():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route("/api/downloads/release-tracks", methods=["POST"])
+def api_downloads_release_tracks():
+    """Get all tracks from a MusicBrainz release with their status (in folder, downloading, other folder, missing)."""
+    try:
+        from download_queue_manager import get_release_tracks_with_status
+
+        data = request.get_json() or {}
+        artist = (data.get("artist") or "").strip()
+        album = (data.get("album") or "").strip()
+        release_group_id = (data.get("release_group_id") or "").strip()
+        current_folder_files = data.get("folder_files") or []  # Optional: filenames in current folder
+
+        if not artist or not album or not release_group_id:
+            return jsonify({"success": False, "error": "artist, album, and release_group_id are required"}), 400
+
+        result = get_release_tracks_with_status(artist, album, release_group_id, current_folder_files)
+        status_code = 200 if result.get("success") else 400
+        return jsonify(result), status_code
+    except Exception as e:
+        logging.error(f"Error getting release tracks: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/downloads/process", methods=["POST"])
 def api_downloads_process():
     """Process downloads folder - organize and move files to /Music"""

@@ -1808,6 +1808,182 @@ def apply_musicbrainz_match_and_process(album, artist, release_group_id):
     }
 
 
+def get_release_tracks_with_status(artist, album, release_group_id, current_folder_files=None):
+    """
+    Get all tracks from a MusicBrainz release with their status.
+    
+    Status can be:
+    - 'in_folder': In current folder
+    - 'downloading': In download queue
+    - 'other_folder': In other folders
+    - 'missing': Not found anywhere
+    
+    Args:
+        artist: Artist name
+        album: Album name
+        release_group_id: MusicBrainz release group ID
+        current_folder_files: List of filenames in current folder (optional, for matching)
+    
+    Returns:
+        dict with 'tracks' list and summary stats
+    """
+    try:
+        headers = {
+            "User-Agent": "sptnr/2.0.0-alpha ( https://github.com/M0VENTURA/sptnr )"
+        }
+        
+        # Fetch the release group
+        rg_resp = session.get(
+            f"https://musicbrainz.org/ws/2/release-group/{release_group_id}",
+            params={"fmt": "json"},
+            headers=headers,
+            timeout=10
+        )
+        rg_resp.raise_for_status()
+        rg_data = rg_resp.json()
+        
+        # Get first release for this release group
+        releases_resp = session.get(
+            f"https://musicbrainz.org/ws/2/release-group/{release_group_id}/releases",
+            params={"fmt": "json", "limit": 1},
+            headers=headers,
+            timeout=10
+        )
+        releases_resp.raise_for_status()
+        releases = releases_resp.json().get("releases", [])
+        
+        if not releases:
+            return {"success": False, "error": "No releases found for this release group", "tracks": []}
+        
+        release_id = releases[0].get("id")
+        
+        # Fetch full release with tracks
+        release_resp = session.get(
+            f"https://musicbrainz.org/ws/2/release/{release_id}",
+            params={"fmt": "json", "inc": "recordings+artist-credits"},
+            headers=headers,
+            timeout=10
+        )
+        release_resp.raise_for_status()
+        release_data = release_resp.json()
+        
+        # Extract all tracks from media
+        all_tracks = []
+        for medium in release_data.get("media", []):
+            disc_number = medium.get("position", 1)
+            for track in medium.get("tracks", []):
+                recording = track.get("recording", {})
+                track_title = recording.get("title") or track.get("title") or ""
+                track_number = track.get("position", 0)
+                duration = recording.get("length", 0)  # in milliseconds
+                
+                all_tracks.append({
+                    "track_number": track_number,
+                    "disc_number": disc_number,
+                    "title": track_title,
+                    "duration": duration
+                })
+        
+        # Get queue items for this artist/album
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT id, title, file_path, status
+            FROM download_queue
+            WHERE LOWER(artist) = LOWER(?)
+            AND LOWER(album) = LOWER(?)
+            ORDER BY track_number, title
+        """, (artist, album))
+        
+        queue_items = {dict(row)['title'].lower(): dict(row) for row in cursor.fetchall()}
+        
+        # Check library for existing files
+        from api_clients.musicbrainz import search_library_for_track
+        music_dir = os.environ.get("MUSIC_ROOT", "/music")
+        
+        # Normalize filenames if provided
+        current_folder_files = [f.lower() for f in (current_folder_files or [])]
+        
+        # Match each track with status
+        tracks_with_status = []
+        for track in all_tracks:
+            title = track['title']
+            title_lower = title.lower()
+            status = "missing"
+            status_details = {}
+            
+            # Check if in queue
+            if title_lower in queue_items:
+                q_item = queue_items[title_lower]
+                status = "downloading"
+                status_details = {
+                    "queue_id": q_item.get('id'),
+                    "queue_status": q_item.get('status')
+                }
+            # Check if in current folder
+            elif current_folder_files:
+                # Fuzzy match filename
+                for folder_file in current_folder_files:
+                    if title_lower in folder_file or folder_file in title_lower:
+                        status = "in_folder"
+                        status_details = {"filename": folder_file}
+                        break
+            
+            # Check if in other folders (search library)
+            if status == "missing":
+                try:
+                    # Search for file in music directory
+                    for root, dirs, files in os.walk(music_dir):
+                        for file in files:
+                            if title_lower in file.lower():
+                                status = "other_folder"
+                                status_details = {"folder": root, "filename": file}
+                                break
+                        if status == "other_folder":
+                            break
+                except Exception as e:
+                    logger.debug(f"Error searching library for {title}: {e}")
+            
+            tracks_with_status.append({
+                **track,
+                "status": status,
+                "status_details": status_details
+            })
+        
+        # Calculate summary
+        statuses = [t['status'] for t in tracks_with_status]
+        summary = {
+            "total": len(all_tracks),
+            "in_folder": statuses.count("in_folder"),
+            "downloading": statuses.count("downloading"),
+            "other_folder": statuses.count("other_folder"),
+            "missing": statuses.count("missing")
+        }
+        
+        conn.close()
+        
+        return {
+            "success": True,
+            "release": {
+                "title": rg_data.get("title"),
+                "artist": artist,
+                "primary_type": rg_data.get("primary-type"),
+                "release_group_id": release_group_id
+            },
+            "summary": summary,
+            "tracks": tracks_with_status
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting release tracks: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "tracks": []
+        }
+
+
 def process_complete_albums():
     """Process complete discovered albums, using MusicBrainz smart matching when possible."""
     stats = {
