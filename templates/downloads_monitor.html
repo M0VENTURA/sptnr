@@ -738,10 +738,39 @@ function openTrackMatchOverrideFromEncoded(folderPathEnc, trackIndex) {
   return openTrackMatchOverride(folderPath, Number(trackIndex));
 }
 
-function openTrackMatchOverride(folderPath, trackIndex) {
+async function openTrackMatchOverride(folderPath, trackIndex) {
   const selection = folderMatchSelections[folderPath];
-  if (!selection || !Array.isArray(selection.releaseTracks) || selection.releaseTracks.length === 0) {
-    alert('No release tracklist available yet. Re-select the folder match first.');
+  if (!selection) {
+    alert('No saved match found for this folder. Select a release first.');
+    return;
+  }
+
+  // Recover gracefully if the initial release-track fetch failed during stage selection.
+  if (!Array.isArray(selection.releaseTracks) || selection.releaseTracks.length === 0) {
+    try {
+      const source = selection?.candidate?.source || 'musicbrainz';
+      const releaseId = selection?.candidate?.id;
+      if (!releaseId) {
+        throw new Error('Missing release id');
+      }
+
+      const response = await fetch(`/api/downloads/release/${encodeURIComponent(source)}/${encodeURIComponent(releaseId)}/tracks`);
+      const data = await response.json();
+      if (data.success && Array.isArray(data.tracks) && data.tracks.length > 0) {
+        selection.releaseTracks = data.tracks;
+        const tracks = Array.isArray(selection.tracks) ? selection.tracks : [];
+        if (!selection.trackMapByIndex || Object.keys(selection.trackMapByIndex).length === 0) {
+          selection.trackMapByIndex = buildFolderToReleaseTrackMap(tracks, selection.releaseTracks);
+        }
+        folderMatchSelections[folderPath] = selection;
+      }
+    } catch (err) {
+      console.warn('Failed to lazy-load release tracks for override modal:', err);
+    }
+  }
+
+  if (!Array.isArray(selection.releaseTracks) || selection.releaseTracks.length === 0) {
+    alert('Release tracklist is unavailable for this match. Try "Change Match" to pick another release.');
     return;
   }
 
