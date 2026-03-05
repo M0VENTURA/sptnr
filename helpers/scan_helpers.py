@@ -395,7 +395,7 @@ def pre_import_sync_album_artists(artist_id: str = None) -> dict:
 
 def fetch_artist_metadata(artist_name: str, verbose: bool = False):
     """
-    Fetch and store artist biography and images from external APIs.
+    Fetch and store artist biography, images, and country from external APIs.
     
     This is called after a successful artist scan to enhance artist metadata.
     Only fetches if data doesn't exist or if force=true in config.
@@ -405,6 +405,9 @@ def fetch_artist_metadata(artist_name: str, verbose: bool = False):
     2. Apple Music - unlimited, reliable
     3. MusicBrainz CAA - unlimited, good coverage
     
+    Country source:
+    - MusicBrainz (area/region of artist origin)
+    
     Args:
         artist_name: Name of the artist
         verbose: Enable verbose logging
@@ -412,7 +415,7 @@ def fetch_artist_metadata(artist_name: str, verbose: bool = False):
     from api_clients.discogs import get_discogs_artist_biography
     from api_clients.applemusic import get_artist_artwork
     from api_clients.audiodb import get_artist_fanart
-    from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
+    from api_clients.musicbrainz import get_artist_country, _USER_AGENT as MUSICBRAINZ_USER_AGENT
     from helpers import create_retry_session
     from config_loader import load_config
     
@@ -451,6 +454,10 @@ def fetch_artist_metadata(artist_name: str, verbose: bool = False):
         # Determine what needs to be fetched
         fetch_bio = force
         fetch_image = force
+        fetch_country = force
+        
+        existing_bio = ""
+        existing_image = ""
         
         if existing_row and not force:
             existing_bio = existing_row[0] or ""
@@ -459,10 +466,20 @@ def fetch_artist_metadata(artist_name: str, verbose: bool = False):
             # Only fetch if missing
             fetch_bio = not existing_bio
             fetch_image = not existing_image
+        
+        # Check if country needs to be fetched (from artists table, not artist_metadata)
+        cursor.execute("""
+            SELECT country FROM artists WHERE name = ?
+        """, (artist_name,))
+        country_row = cursor.fetchone()
+        existing_country = (country_row[0] if country_row else None) or ""
+        
+        if not force:
+            fetch_country = not existing_country
             
-            if not fetch_bio and not fetch_image:
+            if not fetch_bio and not fetch_image and not fetch_country:
                 logging.info(f"Artist metadata already exists for {artist_name}, skipping fetch")
-                logging.debug(f"Metadata exists - Bio length: {len(existing_bio)}, Image URL: {bool(existing_image)}")
+                logging.debug(f"Metadata exists - Bio: {bool(existing_bio)}, Image: {bool(existing_image)}, Country: {bool(existing_country)}")
                 conn.close()
                 return
         
@@ -538,6 +555,19 @@ def fetch_artist_metadata(artist_name: str, verbose: bool = False):
                 except Exception as e:
                     logging.debug(f"MusicBrainz fallback failed: {e}")
         
+        # Fetch country from MusicBrainz (only if needed)
+        artist_country = ""
+        if fetch_country:
+            logging.info(f"Fetching country for {artist_name} from MusicBrainz...")
+            logging.debug(f"API Call: get_artist_country(artist_name={artist_name})")
+            try:
+                artist_country = get_artist_country(artist_name, enabled=True)
+                if artist_country:
+                    logging.info(f"Retrieved artist country from MusicBrainz: {artist_country}")
+                    logging.debug(f"Country: {artist_country}")
+            except Exception as e:
+                logging.debug(f"Failed to fetch artist country: {e}")
+        
         # Store in database
         if biography or artist_image_url:
             conn = get_db_connection()
@@ -555,6 +585,32 @@ def fetch_artist_metadata(artist_name: str, verbose: bool = False):
             
             logging.info(f"Stored artist metadata for {artist_name}")
             logging.debug(f"Metadata saved - Bio: {bool(biography)}, Image: {bool(artist_image_url)}")
+        
+        # Store country in artists table and update all tracks
+        if artist_country:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            # Update or insert artist record
+            cursor.execute("""
+                INSERT OR IGNORE INTO artists (name) VALUES (?)
+            """, (artist_name,))
+            
+            cursor.execute("""
+                UPDATE artists SET country = ? WHERE name = ?
+            """, (artist_country, artist_name))
+            
+            # Update all tracks with this artist
+            cursor.execute("""
+                UPDATE tracks SET artist_country = ? WHERE artist = ?
+            """, (artist_country, artist_name))
+            
+            logging.debug(f"DB: Updated country for artist {artist_name} and all their tracks")
+            
+            conn.commit()
+            conn.close()
+            
+            logging.info(f"Stored artist country for {artist_name}: {artist_country}")
     
     except Exception as e:
         logging.info(f"Error fetching artist metadata for {artist_name}: {e}")

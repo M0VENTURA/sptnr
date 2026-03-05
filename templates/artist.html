@@ -1777,13 +1777,13 @@ function checkMissingReleases(artistName) {
           <td class="text-center"><span class="text-muted">—</span></td>
           <td class="text-center">
             <div class="btn-group btn-group-sm" role="group">
-              <button class="btn btn-outline-info" onclick='toggleTracklist(${JSON.stringify(artistName)}, ${JSON.stringify(item.title)})' title="Show tracklist" id="toggle-btn-${safeArtist}-${safeAlbum}">
+              <button class="btn btn-outline-info" onclick='toggleTracklist(${JSON.stringify(artistName)}, ${JSON.stringify(item.title || "")})' title="Show tracklist" id="toggle-btn-${safeArtist}-${safeAlbum}">
                 <i class="bi bi-list-ul"></i>
               </button>
-              <button class="btn btn-outline-success" onclick="importRelease(${JSON.stringify(artistName)}, ${JSON.stringify(item.id)}, ${JSON.stringify(item.title)})" title="Import this release">
+              <button class="btn btn-outline-success" onclick="importRelease(${JSON.stringify(artistName)}, ${JSON.stringify(item.id || "")}, ${JSON.stringify(item.title || "")})" title="Import this release">
                 <i class="bi bi-download"></i>
               </button>
-              <button class="btn btn-outline-secondary" onclick="searchMusicBrainzRelease(event, ${JSON.stringify(artistName)}, ${JSON.stringify(item.title)})" title="Search MusicBrainz">
+              <button class="btn btn-outline-secondary" onclick="searchMusicBrainzRelease(event, ${JSON.stringify(artistName)}, ${JSON.stringify(item.title || "")})" title="Search MusicBrainz">
                 <i class="bi bi-search"></i>
               </button>
             </div>

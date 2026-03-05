@@ -4713,7 +4713,7 @@ def popularity_scan(
 # Batch update all popularity scores and genre sources for this album in one commit (skipped in singles_only mode)
                 if writer_updates and not singles_only:
                     cursor.executemany(
-                        "UPDATE tracks SET writer = %s WHERE id = %s",
+                        f"UPDATE tracks SET writer = {placeholder} WHERE id = {placeholder}",
                         writer_updates
                     )
                     log_debug(f"Batch prepared {len(writer_updates)} writer credit update(s) for album '{album}'")
@@ -4758,7 +4758,7 @@ def popularity_scan(
                         updated_track_updates.append((popularity_score, spotify_score, lastfm_ratio, spotify_genres, lastfm_tags, discogs_genres, musicbrainz_genres, album_art_url, track_id))
                     
                     cursor.executemany(
-                        "UPDATE tracks SET popularity_score = %s, spotify_score = %s, lastfm_ratio = %s, spotify_genres = %s, lastfm_tags = %s, discogs_genres = %s, musicbrainz_genres = %s, cover_art_url = %s WHERE id = %s",
+                        f"UPDATE tracks SET popularity_score = {placeholder}, spotify_score = {placeholder}, lastfm_ratio = {placeholder}, spotify_genres = {placeholder}, lastfm_tags = {placeholder}, discogs_genres = {placeholder}, musicbrainz_genres = {placeholder}, cover_art_url = {placeholder} WHERE id = {placeholder}",
                         updated_track_updates
                     )
                     conn.commit()
@@ -4793,12 +4793,12 @@ def popularity_scan(
                         from popularity_helpers import get_top_standout_tracks_with_gap
                         MIN_SPREAD = 10.0  # Prevent flat-album noise amplification
                         log_info(f'Analyzing standout/star ratings for artist: {artist}')
-                        cursor.execute("""
+                        cursor.execute(f"""
                             SELECT id, title, album, popularity_score, lastfm_track_playcount FROM tracks
-                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND is_single = 0 AND album NOT IN (
-                                SELECT DISTINCT album FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album_context_live = 1
+                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND is_single = 0 AND album NOT IN (
+                                SELECT DISTINCT album FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album_context_live = 1
                             ) AND album NOT IN (
-                                SELECT DISTINCT album FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND discogs_format_descriptions LIKE '%live%'
+                                SELECT DISTINCT album FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND discogs_format_descriptions LIKE '%live%'
                             )
                         """, (artist, artist, artist))
                         artist_tracks = cursor.fetchall()
@@ -4837,14 +4837,14 @@ def popularity_scan(
                                     track_album = row_get(track, 'album', '')
                                     score = row_get(track, 'popularity_score', 0)
                                     if score <= 0 or artist_spread == 0:
-                                        cursor.execute("""
+                                        cursor.execute(f"""
                                             UPDATE tracks SET is_standout_track = 0, artist_z_score = 0, stars = 1
-                                            WHERE id = %s
+                                            WHERE id = {placeholder}
                                         """, (track_id,))
                                         continue
                                     # Album-level stats using median + MAD
-                                    cursor.execute("""
-                                        SELECT popularity_score FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s AND popularity_score > 0
+                                    cursor.execute(f"""
+                                        SELECT popularity_score FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder} AND popularity_score > 0
                                     """, (artist, track_album))
                                     track_album_scores = [row[0] for row in cursor.fetchall()]
                                     track_album_median = stat_median_standout(track_album_scores) if track_album_scores else 0
@@ -4877,9 +4877,9 @@ def popularity_scan(
                                         star = 2
                                     else:
                                         star = 1
-                                    cursor.execute("""
-                                        UPDATE tracks SET is_standout_track = %s, artist_z_score = %s, stars = %s
-                                        WHERE id = %s
+                                    cursor.execute(f"""
+                                        UPDATE tracks SET is_standout_track = {placeholder}, artist_z_score = {placeholder}, stars = {placeholder}
+                                        WHERE id = {placeholder}
                                     """, (1 if is_album_standout or is_artist_standout else 0, artist_z, star, track_id))
                                     log_debug(f"Track: {track_title} | Score: {score:.1f} | Album_z: {album_z:.2f} | Artist_z: {artist_z:.2f} | Album_standout: {is_album_standout} | Artist_standout: {is_artist_standout} | Star: {star}")
                                 conn.commit()
