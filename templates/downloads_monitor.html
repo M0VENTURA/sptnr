@@ -2398,7 +2398,7 @@ function renderActiveQueue(active) {
                   ${existsInLibrary ? '<small class="text-muted"><i class="bi bi-check-circle-fill ms-2" title="Already in library"></i></small>' : ''}
                   ${isPossibleDuplicate ? '<small class="text-warning"><i class="bi bi-exclamation-triangle-fill ms-2" title="Duplicate album detected"></i></small>' : ''}
                 </h6>
-                <p class="text-muted small mb-2 ms-4">${escapeHtml(item.artist)}</p>
+                <p class="text-muted small mb-2 ms-4">${escapeHtml(item.artist)}${item.album ? ' · ' + escapeHtml(item.album) : ''}</p>
                 ${isPossibleDuplicate ? '<p class="text-warning small mb-0 ms-4"><i class="bi bi-info-circle"></i> This album already exists in your library. Manual review required.</p>' : ''}
                 ${candidateHtml}
               </div>

@@ -320,9 +320,8 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         if not is_pg:
             _ensure_download_queue_columns(conn, cursor)
         
+        # Search query for Soulseek: artist and title only (no album)
         search_query = f"{artist} - {title}"
-        if album:
-            search_query = f"{artist} {album} {title}"
         
         try:
             if is_pg:
