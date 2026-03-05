@@ -1717,10 +1717,14 @@ def download_and_save_album_art(artist: str, album: str, art_url: str, conn=None
         if cursor is None:
             cursor = conn.cursor()
         
-        cursor.execute("""
+        # Determine database type for proper placeholder syntax
+        is_pg = is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+        
+        cursor.execute(f"""
             INSERT OR REPLACE INTO album_art 
             (artist_name, album_name, image_data, image_mime_type, source, downloaded_at)
-            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
         """, (artist, album, image_data, "image/jpeg", source))
         
         # Only commit if we created our own connection
@@ -2432,17 +2436,21 @@ def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection, artist
     try:
         cursor = conn.cursor()
         
+        # Determine database type for proper placeholder syntax
+        is_pg = is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+        
         # Get all tracks by artist with Last.fm listener data
         # Exclude live/remix/alternate versions to avoid skewing stats
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT id, title, album, lastfm_track_playcount
             FROM tracks
-            WHERE artist = ? AND lastfm_track_playcount > 0 AND is_single = 0 
+            WHERE artist = {placeholder} AND lastfm_track_playcount > 0 AND is_single = 0 
                 AND album NOT IN (
-                    SELECT DISTINCT album FROM tracks WHERE artist = ? AND album_context_live = 1
+                    SELECT DISTINCT album FROM tracks WHERE artist = {placeholder} AND album_context_live = 1
                 )
                 AND album NOT IN (
-                    SELECT DISTINCT album FROM tracks WHERE artist = ? AND discogs_format_descriptions LIKE '%live%'
+                    SELECT DISTINCT album FROM tracks WHERE artist = {placeholder} AND discogs_format_descriptions LIKE '%live%'
                 )
         """, (artist_name, artist_name, artist_name))
         
@@ -2799,6 +2807,10 @@ def popularity_scan(
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        
+        # Determine database type for proper placeholder syntax
+        is_pg = is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
 
         # Load strict matching configuration from config.yaml
         # Initialize config to empty dict to ensure it's always defined
@@ -2835,11 +2847,11 @@ def popularity_scan(
         if artist_filter:
             # Artist scans should only include albums owned by that album artist.
             # Fall back to track artist only when album_artist is missing.
-            sql_conditions.append("(COALESCE(NULLIF(album_artist, ''), artist) = ?)")
+            sql_conditions.append(f"(COALESCE(NULLIF(album_artist, ''), artist) = {placeholder})")
             sql_params.append(artist_filter)
         
         if album_filter and artist_filter:
-            sql_conditions.append("album = ?")
+            sql_conditions.append(f"album = {placeholder}")
             sql_params.append(album_filter)
         
         sql = f"""
@@ -3116,14 +3128,14 @@ def popularity_scan(
                     if artist_country:
                         log_info(f'Artist country found: {artist} -> {artist_country}')
                         # Update or insert artist entry using UPSERT
-                        cursor.execute("""
+                        cursor.execute(f"""
                             INSERT INTO artists (id, name, country) 
-                            VALUES (?, ?, ?)
+                            VALUES ({placeholder}, {placeholder}, {placeholder})
                             ON CONFLICT(id) DO UPDATE SET country = excluded.country
                         """, (artist, artist, artist_country))
                         
                         # Update tracks table with artist country
-                        cursor.execute("UPDATE tracks SET artist_country = ? WHERE COALESCE(album_artist, artist) = ?", 
+                        cursor.execute(f"UPDATE tracks SET artist_country = {placeholder} WHERE COALESCE(album_artist, artist) = {placeholder}", 
                                      (artist_country, artist))
                         conn.commit()
                         log_debug(f'Updated artist country in database: {artist} -> {artist_country}')
@@ -3155,9 +3167,9 @@ def popularity_scan(
                             
                             if artist_bio or artist_image:
                                 # Update artist entry with bio and image
-                                cursor.execute("""
+                                cursor.execute(f"""
                                     INSERT INTO artists (id, name, bio, image_url) 
-                                    VALUES (?, ?, ?, ?)
+                                    VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder})
                                     ON CONFLICT(id) DO UPDATE SET 
                                         bio = excluded.bio,
                                         image_url = excluded.image_url
@@ -3194,9 +3206,9 @@ def popularity_scan(
                                         final_image = lastfm_image
                                         
                                         if lastfm_bio or final_image:
-                                            cursor.execute("""
+                                            cursor.execute(f"""
                                                 INSERT INTO artists (id, name, bio, image_url) 
-                                                VALUES (?, ?, ?, ?)
+                                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder})
                                                 ON CONFLICT(id) DO UPDATE SET 
                                                     bio = excluded.bio,
                                                     image_url = excluded.image_url
@@ -3223,9 +3235,9 @@ def popularity_scan(
                                     artist_info = lastfm_client.get_artist_info(artist)
                                     lastfm_bio = artist_info.get("bio", "") or artist_info.get("bio_text", "")
                                     if lastfm_bio:
-                                        cursor.execute("""
+                                        cursor.execute(f"""
                                             INSERT INTO artists (id, name, bio) 
-                                            VALUES (?, ?, ?)
+                                            VALUES ({placeholder}, {placeholder}, {placeholder})
                                             ON CONFLICT(id) DO UPDATE SET bio = excluded.bio
                                         """, (artist, artist, lastfm_bio))
                                         conn.commit()
@@ -3288,9 +3300,9 @@ def popularity_scan(
                             log_debug(f"Last.fm bio/image fallback failed for {artist} (MusicBrainz unavailable): {e}")
 
                     if artist_bio or artist_image:
-                        cursor.execute("""
+                        cursor.execute(f"""
                             INSERT INTO artists (id, name, bio, image_url)
-                            VALUES (?, ?, ?, ?)
+                            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder})
                             ON CONFLICT(id) DO UPDATE SET
                                 bio = excluded.bio,
                                 image_url = excluded.image_url
@@ -3453,9 +3465,9 @@ def popularity_scan(
                         })
                         
                         # Update or insert artist with similar artists data
-                        cursor.execute("""
+                        cursor.execute(f"""
                             INSERT INTO artists (id, name, similar_artists_lastfm, similar_artists_listenbrainz, similar_artists_last_updated)
-                            VALUES (?, ?, ?, ?, ?)
+                            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
                             ON CONFLICT(id) DO UPDATE SET 
                                 similar_artists_lastfm = excluded.similar_artists_lastfm,
                                 similar_artists_listenbrainz = excluded.similar_artists_listenbrainz,
@@ -3517,7 +3529,7 @@ def popularity_scan(
                     log_debug(f"Checking for missing releases for '{artist}' on MusicBrainz")
                     
                     # Get existing albums for this artist
-                    cursor.execute("SELECT DISTINCT album FROM tracks WHERE artist = ?", (artist,))
+                    cursor.execute(f"SELECT DISTINCT album FROM tracks WHERE artist = {placeholder}", (artist,))
                     existing_albums = [row[0] for row in cursor.fetchall()]
                     existing_norm = set()
                     for a in existing_albums:
@@ -3533,7 +3545,7 @@ def popularity_scan(
                             existing_norm.add(normalized)
                     
                     # Get artist MBID for more accurate lookup
-                    cursor.execute("SELECT MAX(musicbrainz_artist_id) FROM tracks WHERE artist = ?", (artist,))
+                    cursor.execute(f"SELECT MAX(musicbrainz_artist_id) FROM tracks WHERE artist = {placeholder}", (artist,))
                     result = cursor.fetchone()
                     artist_mbid = result[0] if result and result[0] else None
                     
@@ -3597,10 +3609,10 @@ def popularity_scan(
                             category = "Single"
                         
                         # Insert missing release
-                        cursor.execute("""
+                        cursor.execute(f"""
                             INSERT OR REPLACE INTO missing_releases 
                             (artist, artist_mbid, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
                         """, (artist, artist_mbid, rg_id, rg_title, 
                               rg.get("primary-type", ""), rg.get("first-release-date", ""), 
                               cover_art_url, category))
@@ -5288,7 +5300,9 @@ def popularity_scan(
                     try:
                         temp_conn = get_db_connection()
                         temp_cursor = temp_conn.cursor()
-                        temp_cursor.execute("SELECT popularity_score FROM tracks WHERE id = ?", (track_id,))
+                        temp_is_pg = is_postgres_connection(temp_conn)
+                        temp_placeholder = "%s" if temp_is_pg else "?"
+                        temp_cursor.execute(f"SELECT popularity_score FROM tracks WHERE id = {temp_placeholder}", (track_id,))
                         pop_row = temp_cursor.fetchone()
                         if pop_row and pop_row[0]:
                             track_popularity = pop_row[0]
