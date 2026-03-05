@@ -6,7 +6,7 @@ Your system **already has 80% of the infrastructure** for this workflow. The mai
 
 1. **Folder creation timing** - Create at queue time, not finalization time
 2. **Status display UI** - Show progress by album with track counts
-3. **Batch transfer UI** - "Transfer to Library" button for complete albums
+3. **Automatic transfer logic** - Transfer automatically when all songs matched (no user action needed)
 4. **Artist/Album badges** - Show download status on browse pages
 
 ## Phase 1: Folder Creation (Hours: 2-3)
@@ -173,35 +173,37 @@ GROUP BY mr.release_id
 
 ## Phase 4: Batch Transfer Endpoint (Hours: 3-4)
 
-**Goal:** Button to transfer all queued tracks at once (auto-ready when all matched)
+**Goal:** Automatic transfer when all queued tracks are matched
 
 ### Key Distinction
 
-**Auto-Ready Trigger (Automatic):**
+**Auto-Ready + Automatic Transfer (All Automatic):**
 - When ALL songs in THIS specific import are matched/organized
-- Happens automatically - no user action needed
-- Updates status to "ready_to_transfer"
+- Auto-ready status set automatically - no user action needed
+- IMMEDIATELY triggers transfer automatically
+- Moves files to music library automatically
+- Deletes monitoring folder automatically
+- Album appears in library immediately
 
-**Transfer Action (Manual):**
-- User must click "Transfer to Library" button
-- button only appears when ready_to_transfer is true
-- User has choice to wait or transfer now
+**User Experience:**
+- Queue album → watch download → album appears in library (automatic)
+- No manual steps, no buttons to click
 
 ### Tasks
 
-- [ ] **Task 4.1:** Create auto-ready logic
+- [ ] **Task 4.1:** Create auto-ready + auto-transfer logic
   - File: `download_queue_manager.py` or new helper function
   - When file matched to queue item
   - Check: Are ALL items in this import_group matched?
-  - Action: Update all to 'ready_to_transfer' status automatically
+  - Action: Call transfer function immediately (automatic)
   
-- [ ] **Task 4.2:** Create transfer endpoint in `app.py`
-  - Path: `POST /api/queue/release/<release_id>/transfer`
-  - Action: Transfer all ready tracks to music library
-  - Note: This is MANUAL - user clicks button
+- [ ] **Task 4.2:** Create transfer trigger function
+  - File: `app.py` - new internal function (not exposed as REST endpoint)
+  - Action: Transfer all tracks to music library
+  - Called automatically from file matcher, not by user
   
 - [ ] **Task 4.3:** Pre-check before transfer
-  - Verify all queued tracks are "ready_to_transfer" status
+  - Verify all queued tracks are "organized" status
   - Get folder path from database
   - Verify source folder exists
   - Important: Only check tracks in THIS import, not full album
@@ -215,30 +217,30 @@ GROUP BY mr.release_id
 - [ ] **Task 4.5:** Post-transfer
   - Verify all files moved successfully
   - Update `musicbrainz_releases.status` to "completed"
-  - Return success/error response
+  - Return status to logging system
 
-- [ ] **Task 4.6:** UI components
-  - Show "Ready to Transfer" badge when auto-ready triggers
-  - Show button only when badge is visible
-  - Button text: "Transfer to Library"
-  - Call endpoint on click
-  - Show loading state
-  - Refresh page on success
+- [ ] **Task 4.6:** Integrate with file matcher
+  - Call this function from file matcher when last track found
+  - No user action required
+  - No UI button needed
 
-- [ ] **Task 4.7:** Test
-  - Manually set all tracks to matched status
-  - Verify auto-ready triggers (no user action)
-  - Verify button appears
-  - Click transfer button
+- [ ] **Task 4.7:** Monitor UI updates
+  - Show "Ready to Transfer" status when transfer starts
+  - Show "Transferred" status when complete
+  - Remove transfer button (not needed)
+  - Show progress of transfer in queue
+  
+- [ ] **Task 4.8:** Test
+  - Queue songs and let them download
+  - Verify auto-transfer triggers when all matched
   - Verify files in music library
   - Verify folder deleted
   - Verify naming correct
 
 ### Files to Modify
-- `app.py` (1 new route, ~40 lines)
+- `app.py` (1 new route for automatic transfer, ~40 lines)
 - `download_queue_manager.py` (auto-ready logic, ~20 lines)
-- `templates/downloads.html` (add button)
-- `static/js/downloads.js` (button click handler)
+- `musicbrainz_file_matcher.py` (trigger automatic transfer, ~10 lines)
 
 ### Sample Auto-Ready Logic
 ```python
@@ -486,13 +488,16 @@ GET /navidrome/api/albums?query=album_name
   - [ ] With partial import (2/12 songs)
   - [ ] With full album import
   - [ ] Status updates without user action
-- [ ] Transfer button appears only when ready
-- [ ] Button disabled during transfer
-- [ ] Files actually move to music library
-- [ ] Files renamed correctly with default format
-- [ ] Monitoring folder deleted immediately after transfer
-- [ ] Transfer report shows success/failures
+- [ ] **Automatic transfer happens immediately**
+  - [ ] No manual button needed - fully automatic
+  - [ ] Files actually move to music library
+  - [ ] Files renamed correctly with default format
+  - [ ] Monitoring folder deleted immediately after transfer
+  - [ ] Transfer report shows success/failures
+  - [ ] All happens automatically without user clicking anything
 - [ ] Release marked as completed after transfer
+  - [ ] Database updated with completed status
+  - [ ] Album now appears in library view
 
 ### Phase 4b Tests
 - [ ] Config option appears in settings
@@ -557,20 +562,19 @@ GET /navidrome/api/albums?query=album_name
 ✅ Folder created immediately when release queued
 ✅ Active queue shows albums with progress
 ✅ Track statuses visible and updating in real-time
-✅ Auto-ready trigger: "Ready to Transfer" appears when all queued songs matched
-✅ Transfer button visible only when ready
-✅ User clicks button to manually transfer
-✅ Files successfully move to music library
+✅ Auto-ready trigger: "Ready" status appears when all queued songs matched
+✅ **Automatic transfer: Files move immediately after all matched**
 ✅ Correct naming applied with configurable format
 ✅ Monitoring folder deleted immediately after transfer
 ✅ Artist/album pages show "Downloading" badge
 ✅ File naming format configurable in config.html
+✅ **No manual steps - completely automatic workflow**
 
 **Nice to Have:**
 - Duplicate folder detection/merge
 - Partial album transfers (user selects subset)
-- Retry failed transfers
-- Download speed monitoring
+- Transfer speed monitoring
+- Detailed transfer logs
 
 ---
 
@@ -587,18 +591,23 @@ GET /navidrome/api/albums?query=album_name
 
 ## Key Implementation Notes
 
-### Auto-Ready vs Manual Transfer
+### Automatic Transfer (Not Manual)
 
-- **Auto-Ready (Automatic, no user action):**
+- **Auto-Ready (Automatic):**
   - Triggered when ALL items in import_group are 'organized'
   - Update status to 'ready_to_transfer' automatically
   - "Ready to Transfer" badge appears automatically
 
-- **Transfer (Manual, user clicks button):**
-  - User must explicitly click "Transfer to Library"
-  - NOT automatic - gives user control
-  - Transfers only when user is ready
-  - Import count-aware: if 2/12 queued, waits only for those 2
+- **Automatic Transfer (Immediate, no user action):**
+  - NOT waiting for user to click button
+  - Transfer happens immediately when ready
+  - Files moved, folder deleted, database updated
+  - All automatic - user just watches it happen
+
+- **No Transfer Button:**
+  - Don't need manual transfer button in UI
+  - Only need to show status progress
+  - Show "Transferring..." then "Transferred"
 
 ### File Naming Configuration
 
