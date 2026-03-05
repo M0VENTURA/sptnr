@@ -746,6 +746,15 @@ async function downloadMusicBrainzRelease(artist, album, tracks, year, release_i
         const existingModal = bootstrap.Modal.getInstance(modalEl);
         if (existingModal) existingModal.hide();
       }
+      
+      // Try to trigger refresh on monitor page if it's open in another tab
+      try {
+        // Use localStorage to notify other tabs/windows to refresh
+        const timestamp = Date.now();
+        localStorage.setItem('sptnr_queue_updated', timestamp.toString());
+      } catch (e) {
+        console.warn('Could not update localStorage:', e);
+      }
     } else {
       alert('Error adding tracks: ' + (data.error || 'Unknown error'));
     }
