@@ -2317,7 +2317,7 @@ def artist_detail(name):
                         COALESCE(popularity_score, 0) as popularity_score,
                         COALESCE(stars, 0) as stars,
                         COALESCE(artist_z_score, 0) as artist_z_score,
-                        COALESCE(is_single, 0) as is_single,
+                        CASE WHEN is_single THEN 1 ELSE 0 END as is_single,
                         COALESCE(track_number, 0) as track_number,
                         COALESCE(disc_number, 1) as disc_number,
                         COALESCE(duration, 0) as duration
@@ -2355,7 +2355,7 @@ def artist_detail(name):
                         COALESCE(popularity_score, 0) as popularity_score,
                         COALESCE(stars, 0) as stars,
                         0 as artist_z_score,
-                        COALESCE(is_single, 0) as is_single,
+                        CASE WHEN is_single THEN 1 ELSE 0 END as is_single,
                         COALESCE(track_number, 0) as track_number,
                         COALESCE(disc_number, 1) as disc_number,
                         COALESCE(duration, 0) as duration
