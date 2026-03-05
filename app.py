@@ -12651,6 +12651,45 @@ def api_downloads_release_tracks_status():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route("/api/downloads/merge-folders", methods=["POST"])
+def api_downloads_merge_folders():
+    """Merge multiple download folders into a single destination folder."""
+    try:
+        from download_queue_manager import merge_folders
+        import os
+        
+        data = request.get_json() or {}
+        source_folders = data.get("source_folders") or []
+        destination_folder = (data.get("destination_folder") or "").strip()
+        conflict_strategy = (data.get("conflict_strategy") or "skip").lower()
+        dry_run = data.get("dry_run", False)
+        
+        # Validation
+        if not source_folders or not isinstance(source_folders, list):
+            return jsonify({"success": False, "error": "source_folders must be a non-empty list"}), 400
+        
+        if not destination_folder:
+            return jsonify({"success": False, "error": "destination_folder is required"}), 400
+        
+        # Validate strategy
+        if conflict_strategy not in ["skip", "overwrite", "keep-both"]:
+            return jsonify({"success": False, "error": "conflict_strategy must be 'skip', 'overwrite', or 'keep-both'"}), 400
+        
+        # Validate that all folders exist and are directories
+        for folder in source_folders:
+            if not os.path.isdir(folder):
+                return jsonify({"success": False, "error": f"Source folder does not exist: {folder}"}), 400
+        
+        # Call merge function
+        result = merge_folders(source_folders, destination_folder, conflict_strategy, dry_run)
+        status_code = 200 if result.get("success") else 400
+        return jsonify(result), status_code
+        
+    except Exception as e:
+        logging.error(f"Error merging folders: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/downloads/process", methods=["POST"])
 def api_downloads_process():
     """Process downloads folder - organize and move files to /Music"""

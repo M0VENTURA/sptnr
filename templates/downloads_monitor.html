@@ -163,18 +163,86 @@
       <h5 class="card-title mb-0">
         <i class="bi bi-folder-check"></i> Downloads Organized by Folder
       </h5>
-      <div class="d-flex align-items-center gap-2">
+      <div class="d-flex align-items-center gap-2 flex-wrap">
         <div class="btn-group btn-group-sm" role="group" aria-label="Folder group filter">
           <button type="button" class="btn btn-outline-light active" id="folderFilterAll" onclick="setFolderGroupFilter('all')">All</button>
           <button type="button" class="btn btn-outline-light" id="folderFilterRelease" onclick="setFolderGroupFilter('release')">Releases</button>
           <button type="button" class="btn btn-outline-light" id="folderFilterFolder" onclick="setFolderGroupFilter('folder')">Folders</button>
         </div>
         <span class="badge bg-info" id="folderGroupsBadge">0 groups</span>
+        <div class="ms-auto d-flex gap-2 align-items-center">
+          <span class="badge bg-warning" id="folderSelectionBadge" style="display:none">0 selected</span>
+          <button class="btn btn-sm btn-outline-success" id="mergeFoldersBtn" style="display:none" onclick="initiateFolderMerge()">
+            <i class="bi bi-arrow-left-right"></i> Merge Selected
+          </button>
+        </div>
       </div>
     </div>
     <div class="card-body p-0">
       <div id="folderGroupsList" style="max-height: 600px; overflow-y: auto;">
         <!-- Folder groups rendered here -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Merge Folders Modal -->
+  <div class="modal fade" id="mergeFoldersModal" tabindex="-1">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">Merge Folders</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div id="mergeModalContent">
+            <div class="mb-3">
+              <label class="form-label">Source Folders Selected:</label>
+              <div id="mergeSourceList" class="alert alert-info" style="max-height: 150px; overflow-y: auto;">
+                <!-- Selected folders will appear here -->
+              </div>
+            </div>
+            <div class="mb-3">
+              <label for="mergeDestinationPath" class="form-label">Destination Folder:</label>
+              <div class="input-group">
+                <input type="text" id="mergeDestinationPath" class="form-control" placeholder="/path/to/merged/folder" />
+                <button class="btn btn-outline-secondary" type="button" id="browseDestinationBtn" onclick="showDestinationFolderPicker()">
+                  <i class="bi bi-folder"></i> Browse
+                </button>
+              </div>
+            </div>
+            <div class="mb-3">
+              <label for="mergeConflictStrategy" class="form-label">Conflict Resolution:</label>
+              <select id="mergeConflictStrategy" class="form-select">
+                <option value="skip">Skip (keep existing files)</option>
+                <option value="overwrite">Overwrite (replace with new files)</option>
+                <option value="keep-both">Keep Both (rename duplicates)</option>
+              </select>
+            </div>
+            <div class="form-check mb-3">
+              <input class="form-check-input" type="checkbox" id="mergeDryRunCheckbox" checked />
+              <label class="form-check-label" for="mergeDryRunCheckbox">
+                Run in dry-run mode first (preview without moving files)
+              </label>
+            </div>
+          </div>
+          <div id="mergeProgressContent" style="display:none;">
+            <div class="alert alert-info">
+              <i class="spinner-border spinner-border-sm me-2"></i>
+              <span id="mergeProgressText">Processing merge...</span>
+            </div>
+            <div id="mergeProgressDetails"></div>
+          </div>
+          <div id="mergeResultsContent" style="display:none;">
+            <div id="mergeResultsAlert"></div>
+            <div id="mergeResultsDetails"></div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" id="mergeCancelBtn">Close</button>
+          <button type="button" class="btn btn-primary" id="mergeExecuteBtn" onclick="executeFolderMerge()">
+            <i class="bi bi-play-circle"></i> Execute Merge
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -1402,7 +1470,13 @@ async function loadFolderGroups(options = {}) {
         <div class="card border-bottom mb-2 ${inconsistentClass}">
           <div class="card-body p-3">
             <div class="row align-items-center">
-              <div class="col-md-6">
+              <div class="col-auto">
+                <input type="checkbox" 
+                       class="form-check-input" 
+                       data-folder-path="${group.folder_path}"
+                       onchange="toggleFolderSelection('${group.folder_path}')" />
+              </div>
+              <div class="col-md-5">
                 <h6 class="card-title mb-1">
                   <i class="bi bi-folder"></i> ${group.folder_name}
                   ${inconsistentBadge}
@@ -2907,6 +2981,181 @@ async function queueMissingTracks(tracksJson, artist) {
     console.error('Error queuing missing tracks:', error);
     alert(`Error: ${error.message}`);
   }
+}
+
+// Folder merge functionality
+let selectedFoldersForMerge = new Set();
+
+function toggleFolderSelection(folderPath) {
+  if (selectedFoldersForMerge.has(folderPath)) {
+    selectedFoldersForMerge.delete(folderPath);
+  } else {
+    selectedFoldersForMerge.add(folderPath);
+  }
+  updateFolderSelectionUI();
+}
+
+function updateFolderSelectionUI() {
+  const count = selectedFoldersForMerge.size;
+  const badge = document.getElementById('folderSelectionBadge');
+  const btn = document.getElementById('mergeFoldersBtn');
+  
+  if (count > 0) {
+    badge.textContent = `${count} selected`;
+    badge.style.display = 'inline-block';
+    btn.style.display = 'inline-block';
+  } else {
+    badge.style.display = 'none';
+    btn.style.display = 'none';
+  }
+  
+  // Update checkbox states in folder list
+  selectedFoldersForMerge.forEach(folder => {
+    const checkbox = document.querySelector(`input[data-folder-path="${folder}"]`);
+    if (checkbox) checkbox.checked = true;
+  });
+}
+
+function initiateFolderMerge() {
+  if (selectedFoldersForMerge.size === 0) {
+    alert('Please select folders to merge');
+    return;
+  }
+  
+  const sourceList = document.getElementById('mergeSourceList');
+  sourceList.innerHTML = selectedFoldersForMerge.size === 0 
+    ? '<div class="text-muted">No folders selected</div>'
+    : Array.from(selectedFoldersForMerge)
+        .map(f => `<div class="small"><code>${escapeHtml(f)}</code></div>`)
+        .join('');
+  
+  const modal = new bootstrap.Modal(document.getElementById('mergeFoldersModal'));
+  modal.show();
+}
+
+async function executeFolderMerge() {
+  const destinationPath = (document.getElementById('mergeDestinationPath').value || '').trim();
+  const strategy = document.getElementById('mergeConflictStrategy').value;
+  const dryRun = document.getElementById('mergeDryRunCheckbox').checked;
+  
+  if (!destinationPath) {
+    alert('Please specify a destination folder');
+    return;
+  }
+  
+  if (selectedFoldersForMerge.size === 0) {
+    alert('No folders selected');
+    return;
+  }
+  
+  try {
+    // Show progress
+    document.getElementById('mergeModalContent').style.display = 'none';
+    document.getElementById('mergeProgressContent').style.display = 'block';
+    document.getElementById('mergeResultsContent').style.display = 'none';
+    document.getElementById('mergeExecuteBtn').disabled = true;
+    document.getElementById('mergeCancelBtn').disabled = true;
+    
+    const mode = dryRun ? 'preview' : 'merge';
+    document.getElementById('mergeProgressText').textContent = `${mode === 'preview' ? 'Previewing' : 'Executing'} folder merge...`;
+    
+    const response = await fetch('/api/downloads/merge-folders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        source_folders: Array.from(selectedFoldersForMerge),
+        destination_folder: destinationPath,
+        conflict_strategy: strategy,
+        dry_run: dryRun
+      })
+    });
+    
+    const result = await response.json();
+    
+    // Show results
+    document.getElementById('mergeProgressContent').style.display = 'none';
+    document.getElementById('mergeResultsContent').style.display = 'block';
+    
+    if (result.success) {
+      const summary = result.summary || {};
+      const alertClass = dryRun ? 'alert-info' : 'alert-success';
+      const alertMessage = dryRun 
+        ? '✓ Dry-run preview completed successfully' 
+        : '✓ Folders merged successfully';
+      
+      const html = `
+        <div class="alert ${alertClass}">
+          ${alertMessage}
+          <div class="mt-2">
+            <strong>Summary:</strong><br>
+            Files analyzed: ${summary.total_files || 0}<br>
+            Files moved: ${summary.files_moved || 0}<br>
+            Files skipped: ${summary.files_skipped || 0}<br>
+            Conflicts found: ${summary.files_with_conflicts || 0}<br>
+            Total size: ${(summary.total_size_mb || 0).toFixed(2)} MB
+          </div>
+        </div>
+      `;
+      
+      document.getElementById('mergeResultsAlert').innerHTML = html;
+      
+      // Show conflicts if any
+      if (result.conflicts && result.conflicts.length > 0) {
+        let conflictHtml = '<div class="mt-3"><strong>Conflicts:</strong><div class="small">';
+        result.conflicts.forEach(c => {
+          conflictHtml += `<div class="text-warning mb-2">
+            <i class="bi bi-exclamation-triangle"></i> ${escapeHtml(c.file || 'Unknown')}
+            <br><small>${escapeHtml(c.reason || '')}</small>
+          </div>`;
+        });
+        conflictHtml += '</div></div>';
+        document.getElementById('mergeResultsDetails').innerHTML = conflictHtml;
+      }
+      
+      if (dryRun) {
+        // Show option to proceed
+        document.getElementById('mergeExecuteBtn').textContent = '✓ Proceed with Merge';
+        document.getElementById('mergeExecuteBtn').disabled = false;
+        document.getElementById('mergeExecuteBtn').onclick = function() {
+          document.getElementById('mergeDryRunCheckbox').checked = false;
+          executeFolderMerge();
+        };
+      } else {
+        // Success - close after delay
+        if (selectedFoldersForMerge.size > 0) {
+          setTimeout(() => {
+            bootstrap.Modal.getInstance(document.getElementById('mergeFoldersModal')).hide();
+            selectedFoldersForMerge.clear();
+            updateFolderSelectionUI();
+            loadFolderGroups({ forceRender: true });
+          }, 2000);
+        }
+      }
+    } else {
+      const alertHtml = `<div class="alert alert-danger">
+        <strong>Error:</strong> ${escapeHtml(result.error || 'Unknown error occurred')}
+      </div>`;
+      document.getElementById('mergeResultsAlert').innerHTML = alertHtml;
+      document.getElementById('mergeExecuteBtn').disabled = false;
+      document.getElementById('mergeCancelBtn').disabled = false;
+    }
+  } catch (error) {
+    console.error('Folder merge error:', error);
+    const alertHtml = `<div class="alert alert-danger">
+      <strong>Error:</strong> ${escapeHtml(error.message)}
+    </div>`;
+    document.getElementById('mergeResultsAlert').innerHTML = alertHtml;
+    document.getElementById('mergeProgressContent').style.display = 'none';
+    document.getElementById('mergeResultsContent').style.display = 'block';
+    document.getElementById('mergeExecuteBtn').disabled = false;
+    document.getElementById('mergeCancelBtn').disabled = false;
+  }
+}
+
+function showDestinationFolderPicker() {
+  // In Electron app, we could use a native folder picker
+  // For now, this is a placeholder - user can paste path directly
+  alert('Please specify the full path to your destination folder');
 }
 
 // Load queue status on page load

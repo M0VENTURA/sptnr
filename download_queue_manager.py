@@ -1984,6 +1984,247 @@ def get_release_tracks_with_status(artist, album, release_group_id, current_fold
         }
 
 
+def merge_folders(source_folders, destination_folder, conflict_strategy="skip", dry_run=False):
+    """
+    Merge multiple source folders into a single destination folder.
+    
+    Args:
+        source_folders: List of source folder paths
+        destination_folder: Target folder path
+        conflict_strategy: How to handle conflicts - "skip", "overwrite", or "keep-both"
+        dry_run: If True, analyze without moving files
+    
+    Returns:
+        Dict with merge results: summary, conflicts, operations, etc.
+    """
+    try:
+        import hashlib
+        import shutil
+        
+        # Validate inputs
+        if not source_folders or not isinstance(source_folders, list):
+            return {"success": False, "error": "source_folders must be a non-empty list"}
+        
+        if not destination_folder or not isinstance(destination_folder, str):
+            return {"success": False, "error": "destination_folder is required"}
+        
+        if conflict_strategy not in ("skip", "overwrite", "keep-both"):
+            return {"success": False, "error": f"Invalid conflict_strategy: {conflict_strategy}"}
+        
+        # Validate all source folders exist and are different from destination
+        for folder in source_folders:
+            if not os.path.isdir(folder):
+                return {"success": False, "error": f"Source folder does not exist: {folder}"}
+            if os.path.abspath(folder) == os.path.abspath(destination_folder):
+                return {"success": False, "error": f"Source and destination cannot be the same: {folder}"}
+        
+        # Create destination if it doesn't exist
+        if not dry_run:
+            os.makedirs(destination_folder, exist_ok=True)
+        
+        # Collect all files from source folders
+        source_files = {}  # filename -> [(full_path, folder_path), ...]
+        total_size = 0
+        
+        for source_folder in source_folders:
+            try:
+                for root, dirs, files in os.walk(source_folder):
+                    for filename in files:
+                        if filename.startswith('.'):
+                            continue
+                        
+                        full_path = os.path.join(root, filename)
+                        file_size = os.path.getsize(full_path)
+                        total_size += file_size
+                        
+                        if filename not in source_files:
+                            source_files[filename] = []
+                        source_files[filename].append({
+                            "full_path": full_path,
+                            "source_folder": source_folder,
+                            "size": file_size,
+                            "relative_path": os.path.relpath(full_path, source_folder)
+                        })
+            except Exception as e:
+                logger.warning(f"Error scanning source folder {source_folder}: {e}")
+        
+        # Check for conflicts and duplicates
+        conflicts = []
+        operations = []
+        files_skipped = 0
+        files_moved = 0
+        files_with_conflicts = 0
+        
+        # Check if files exist in destination
+        for filename, source_entries in source_files.items():
+            dest_path = os.path.join(destination_folder, filename)
+            
+            # Handle duplicates within source folders
+            if len(source_entries) > 1:
+                for idx, entry in enumerate(source_entries):
+                    if conflict_strategy == "skip":
+                        conflicts.append({
+                            "file": filename,
+                            "type": "duplicate_in_sources",
+                            "sources": [e["full_path"] for e in source_entries],
+                            "action": "skipped"
+                        })
+                        files_skipped += len(source_entries)
+                        files_with_conflicts += 1
+                        break
+                    elif conflict_strategy == "keep-both":
+                        # Rename duplicates: filename.1, filename.2, etc.
+                        name_parts = os.path.splitext(filename)
+                        new_name = f"{name_parts[0]}.{idx}{name_parts[1]}"
+                        new_dest = os.path.join(destination_folder, new_name)
+                        operations.append({
+                            "type": "move",
+                            "source": entry["full_path"],
+                            "destination": new_dest,
+                            "size": entry["size"]
+                        })
+                        files_moved += 1
+                    elif conflict_strategy == "overwrite" and idx == 0:
+                        operations.append({
+                            "type": "move",
+                            "source": entry["full_path"],
+                            "destination": dest_path,
+                            "size": entry["size"]
+                        })
+                        files_moved += 1
+            else:
+                # Single source file
+                entry = source_entries[0]
+                
+                # Check if file exists in destination
+                if os.path.exists(dest_path):
+                    dest_size = os.path.getsize(dest_path)
+                    source_size = entry["size"]
+                    files_different = source_size != dest_size
+                    
+                    if conflict_strategy == "skip":
+                        conflicts.append({
+                            "file": filename,
+                            "type": "duplicate_in_destination",
+                            "source_path": entry["full_path"],
+                            "dest_path": dest_path,
+                            "source_size": source_size,
+                            "dest_size": dest_size,
+                            "files_different": files_different,
+                            "action": "skipped"
+                        })
+                        files_skipped += 1
+                        files_with_conflicts += 1
+                    elif conflict_strategy == "overwrite":
+                        operations.append({
+                            "type": "move",
+                            "source": entry["full_path"],
+                            "destination": dest_path,
+                            "size": entry["size"],
+                            "overwrites": True
+                        })
+                        files_moved += 1
+                        files_with_conflicts += 1
+                    elif conflict_strategy == "keep-both":
+                        # Rename to avoid conflict
+                        name_parts = os.path.splitext(filename)
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        new_name = f"{name_parts[0]}_({timestamp}){name_parts[1]}"
+                        new_dest = os.path.join(destination_folder, new_name)
+                        operations.append({
+                            "type": "move",
+                            "source": entry["full_path"],
+                            "destination": new_dest,
+                            "size": entry["size"],
+                            "renamed": True,
+                            "original_dest": dest_path
+                        })
+                        files_moved += 1
+                        files_with_conflicts += 1
+                else:
+                    # No conflict, move file
+                    operations.append({
+                        "type": "move",
+                        "source": entry["full_path"],
+                        "destination": dest_path,
+                        "size": entry["size"]
+                    })
+                    files_moved += 1
+        
+        # If dry run, don't actually move files
+        if dry_run:
+            return {
+                "success": True,
+                "dry_run": True,
+                "summary": {
+                    "total_files": len(source_files),
+                    "files_to_move": files_moved,
+                    "files_to_skip": files_skipped,
+                    "files_with_conflicts": files_with_conflicts,
+                    "total_size_mb": round(total_size / (1024 * 1024), 2),
+                    "conflict_strategy": conflict_strategy
+                },
+                "conflicts": conflicts,
+                "operations": operations
+            }
+        
+        # Execute operations
+        moved_count = 0
+        failed_operations = []
+        
+        for op in operations:
+            try:
+                source = op["source"]
+                dest = op["destination"]
+                
+                # Create destination directory if needed
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                
+                # Move file
+                shutil.move(source, dest)
+                moved_count += 1
+            except Exception as e:
+                logger.error(f"Error moving file {op.get('source')}: {e}")
+                failed_operations.append({
+                    "operation": op,
+                    "error": str(e)
+                })
+        
+        # Clean up empty source folders
+        for source_folder in source_folders:
+            try:
+                if os.path.isdir(source_folder):
+                    remaining = os.listdir(source_folder)
+                    if not remaining:
+                        os.rmdir(source_folder)
+                        logger.info(f"Removed empty source folder: {source_folder}")
+            except Exception as e:
+                logger.debug(f"Could not remove empty folder {source_folder}: {e}")
+        
+        return {
+            "success": len(failed_operations) == 0,
+            "dry_run": False,
+            "summary": {
+                "total_files": len(source_files),
+                "files_moved": moved_count,
+                "files_skipped": files_skipped,
+                "files_with_conflicts": files_with_conflicts,
+                "failed": len(failed_operations),
+                "total_size_mb": round(total_size / (1024 * 1024), 2),
+                "conflict_strategy": conflict_strategy
+            },
+            "conflicts": conflicts,
+            "failed_operations": failed_operations if failed_operations else None
+        }
+    
+    except Exception as e:
+        logger.error(f"Error merging folders: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
 def process_complete_albums():
     """Process complete discovered albums, using MusicBrainz smart matching when possible."""
     stats = {
