@@ -636,6 +636,22 @@ function moveMatchedFolderFromEncoded(folderPathEnc) {
   return moveMatchedFolder(folderPath);
 }
 
+function showAutoMatchSuggestionFromEncoded(clickEvent, folderPathEnc, artistEnc, albumEnc, tracksEnc) {
+  const folderPath = decodeInlineArg(folderPathEnc, '');
+  const artist = decodeInlineArg(artistEnc, '');
+  const album = decodeInlineArg(albumEnc, '');
+  const tracks = decodeInlineArg(tracksEnc, []);
+  return showAutoMatchSuggestion(clickEvent, folderPath, artist, album, tracks);
+}
+
+function checkFolderDuplicatesFromEncoded(folderPathEnc, artistEnc, albumEnc, tracksEnc) {
+  const folderPath = decodeInlineArg(folderPathEnc, '');
+  const artist = decodeInlineArg(artistEnc, '');
+  const album = decodeInlineArg(albumEnc, '');
+  const tracks = decodeInlineArg(tracksEnc, []);
+  return checkFolderDuplicates(folderPath, artist, album, tracks);
+}
+
 async function loadFolderStatus() {
   // Load folder match status from database to show completion tracking
   try {
@@ -1239,6 +1255,317 @@ function showMusicBrainzMatchModal(folderPath, artist, album, tracks, candidates
   // Show modal
   const modal = new bootstrap.Modal(document.getElementById('mbMatchModal'));
   modal.show();
+}
+
+async function showAutoMatchSuggestion(event, folderPath, artist, album, tracks) {
+  // Try to get an auto-suggested match based on track similarity.
+  const btn = event?.currentTarget || null;
+  try {
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Analyzing...';
+    }
+    
+    const response = await fetch(`/api/downloads/folder/${encodeURIComponent(folderPath)}/auto-match`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ artist, album, tracks })
+    });
+    
+    const data = await response.json();
+    
+    if (!data.success || !data.auto_match) {
+      // No high-confidence auto-match; show all candidates
+      if (data.candidates && data.candidates.length > 0) {
+        showMusicBrainzMatchModal(folderPath, artist, album, tracks, data.candidates);
+        await showReleaseTracksComparison(folderPath, artist, album, tracks, data.candidates);
+      } else {
+        alert('❌ No matches found for: ' + artist + ' - ' + album);
+      }
+    } else {
+      // High-confidence match found; ask user to confirm
+      await showAutoMatchConfirmModal(folderPath, artist, album, tracks, data.auto_match, data.auto_match_confidence);
+    }
+    
+  } catch (error) {
+    console.error('Error auto-matching:', error);
+    alert('❌ Network error: ' + error.message);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-disc"></i> Auto Match';
+    }
+  }
+}
+
+function showAutoMatchConfirmModal(folderPath, artist, album, tracks, autoMatch, confidence) {
+  // Show confirmation modal for auto-suggested match.
+  const confPercent = Math.round(confidence * 100);
+  const html = `
+    <div class="modal fade" id="autoMatchConfirmModal" tabindex="-1">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header bg-success text-white">
+            <h5 class="modal-title"><i class="bi bi-check-circle"></i> High-Confidence Match Found</h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div class="alert alert-success mb-3">
+              <strong>${confPercent}% Confidence:</strong> Based on track matching analysis
+            </div>
+            <p class="mb-3"><strong>Folder:</strong> ${artist} - ${album}</p>
+            <p class="mb-3">
+              <strong>Suggested Match:</strong><br/>
+              ${autoMatch.title} (${autoMatch.date ? autoMatch.date.split('-')[0] : 'Unknown year'})
+              <span class="badge bg-primary ms-2">${autoMatch.source || 'musicbrainz'}</span>
+            </p>
+            <p class="text-muted small">
+              <strong>Match Details:</strong><br/>
+              ${autoMatch.match_details && autoMatch.match_details.track_count_match ? 
+                `• Track count: ${autoMatch.match_details.track_count_match.folder}/${autoMatch.match_details.track_count_match.release}<br/>` : ''}
+              ${autoMatch.track_count ? `• Release has ${autoMatch.track_count} tracks<br/>` : ''}
+            </p>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+              <i class="bi bi-search"></i> View Other Options
+            </button>
+            <button type="button" id="autoMatchConfirmBtn" class="btn btn-success">
+              <i class="bi bi-check-circle"></i> Use This Match
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  
+  const oldModal = document.getElementById('autoMatchConfirmModal');
+  if (oldModal) oldModal.remove();
+  
+  document.body.insertAdjacentHTML('beforeend', html);
+  
+  const modal = new bootstrap.Modal(document.getElementById('autoMatchConfirmModal'));
+  
+  const confirmBtn = document.getElementById('autoMatchConfirmBtn');
+  if (confirmBtn) {
+    confirmBtn.addEventListener('click', async () => {
+      modal.hide();
+      // Stage this match for organization
+      const folderPathEnc = encodeInlineArg(folderPath);
+      const autoMatchEnc = encodeInlineArg(autoMatch);
+      const tracksEnc = encodeInlineArg(tracks);
+      await stageFolderMatch(folderPathEnc, autoMatchEnc, tracksEnc);
+    });
+  }
+  
+  modal.show();
+}
+
+async function showReleaseTracksComparison(folderPath, artist, album, folderTracks, candidates) {
+  // Fetch and display release tracks with comparison to folder tracks.
+  if (candidates.length === 0) return;
+  
+  const firstCandidate = candidates[0];
+  const releaseId = firstCandidate.id;
+  const source = firstCandidate.source || 'musicbrainz';
+  
+  try {
+    const response = await fetch(`/api/downloads/release/${source}/${releaseId}/tracks`);
+    const data = await response.json();
+    
+    if (!data.success || !data.tracks) return;
+    
+    const releaseTracks = data.tracks;
+    
+    // Build comparison table
+    let comparisonHtml = `
+      <div class="mt-3">
+        <h6 class="mb-2">Track Comparison:</h6>
+        <div class="table-responsive" style="max-height: 300px; overflow-y: auto;">
+          <table class="table table-sm table-striped table-dark mb-0">
+            <thead class="sticky-top bg-secondary">
+              <tr>
+                <th style="width: 40%; text-align: left;">Folder Track</th>
+                <th style="width: 40%; text-align: left;">Release Track</th>
+                <th style="width: 20%; text-align: center;">Match</th>
+              </tr>
+            </thead>
+            <tbody>`;
+    
+    const maxRows = Math.max(folderTracks.length, releaseTracks.length);
+    for (let i = 0; i < maxRows; i++) {
+      const folderTrack = folderTracks[i] || {};
+      const releaseTrack = releaseTracks[i] || {};
+      
+      const folderTitle = folderTrack.title || '(missing)';
+      const releaseTitle = releaseTrack.title || '(missing)';
+      const matchStatus = folderTitle === releaseTitle ? 
+        '<i class="bi bi-check-circle text-success"></i>' : 
+        '<i class="bi bi-exclamation-circle text-warning"></i>';
+      
+      comparisonHtml += `
+              <tr>
+                <td><small>${escapeHtml(folderTitle)}</small></td>
+                <td><small>${escapeHtml(releaseTitle)}</small></td>
+                <td style="text-align: center;">${matchStatus}</td>
+              </tr>`;
+    }
+    
+    comparisonHtml += `
+            </tbody>
+          </table>
+        </div>
+      </div>`;
+    
+    // Append to match modal if it exists
+    const matchModal = document.getElementById('mbMatchModal');
+    if (matchModal) {
+      const modalBody = matchModal.querySelector('.modal-body');
+      const existingComparison = modalBody.querySelector('.track-comparison');
+      if (existingComparison) existingComparison.remove();
+      
+      const compDiv = document.createElement('div');
+      compDiv.className = 'track-comparison';
+      compDiv.innerHTML = comparisonHtml;
+      modalBody.appendChild(compDiv);
+    }
+    
+  } catch (error) {
+    console.error('Error fetching release tracks:', error);
+  }
+}
+
+async function checkFolderDuplicates(folderPath, artist, album, tracks) {
+  // Check if this folder's tracks already exist in library.
+  try {
+    const response = await fetch(`/api/downloads/folder/${encodeURIComponent(folderPath)}/duplicates`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ artist, album, tracks })
+    });
+    
+    const data = await response.json();
+    
+    if (data.has_duplicates) {
+      showDuplicateConflictModal(folderPath, data);
+    } else {
+      console.log('No duplicates detected');
+    }
+    
+    return data;
+    
+  } catch (error) {
+    console.error('Error checking duplicates:', error);
+    return { has_duplicates: false, error: error.message };
+  }
+}
+
+function showDuplicateConflictModal(folderPath, duplicateData) {
+  // Show conflict information and allows user to delete or skip.
+  let conflictHtml = `
+    <div class="alert alert-warning">
+      <strong><i class="bi bi-exclamation-triangle"></i> Duplicate Detected!</strong><br/>`;
+  
+  if (duplicateData.duplicate_type === 'exact_album') {
+    conflictHtml += `This album already exists in your library.`;
+  } else if (duplicateData.duplicate_type === 'partial_tracks') {
+    conflictHtml += `${duplicateData.conflict_tracks.length} tracks already exist in your library:`;
+  } else if (duplicateData.duplicate_type === 'album_exists') {
+    conflictHtml += `This album name exists for a different artist.`;
+  }
+  
+  conflictHtml += `</div>`;
+  
+  if (duplicateData.conflict_tracks && duplicateData.conflict_tracks.length > 0) {
+    conflictHtml += `<div class="mt-2"><strong>Conflicting Tracks:</strong><ul class="small">`;
+    duplicateData.conflict_tracks.forEach(ct => {
+      conflictHtml += `<li>"${escapeHtml(ct.local_title)}" - already at ${escapeHtml(ct.existing_path)}</li>`;
+    });
+    conflictHtml += `</ul></div>`;
+  }
+  
+  const html = `
+    <div class="modal fade" id="duplicateConflictModal" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header bg-warning text-dark">
+            <h5 class="modal-title">Potential Duplicate</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            ${conflictHtml}
+            <p class="text-muted mt-3"><small>You can:</small></p>
+            <ul class="text-muted small">
+              <li>Delete duplicate files from the folder</li>
+              <li>Skip this folder and check later</li>
+              <li>Force move anyway (overwrite existing)</li>
+            </ul>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+              Skip for Now
+            </button>
+            <button type="button" class="btn btn-danger" id="deleteDuplicatesBtn">
+              <i class="bi bi-trash"></i> Delete Duplicates
+            </button>
+            <button type="button" class="btn btn-warning" id="forceOrganizeBtn">
+              <i class="bi bi-arrow-right"></i> Force Move
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  
+  const oldModal = document.getElementById('duplicateConflictModal');
+  if (oldModal) oldModal.remove();
+  
+  document.body.insertAdjacentHTML('beforeend', html);
+  
+  const modal = new bootstrap.Modal(document.getElementById('duplicateConflictModal'));
+  modal.show();
+}
+
+async function moveIndividualTrack(folderPath, trackIndex, track, releaseMetadata) {
+  // Move a single track to the music library with duplicate checking.
+  try {
+    const response = await fetch(`/api/downloads/track/${trackIndex}/move`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        folder_path: folderPath,
+        track,
+        release_metadata: releaseMetadata,
+        check_duplicates: true
+      })
+    });
+    
+    const result = await response.json();
+    
+    if (result.success) {
+      return {
+        success: true,
+        message: `✅ Moved to: ${result.destination_file}`,
+        destination: result.destination_file
+      };
+    } else if (result.duplicate_detected) {
+      return {
+        success: false,
+        duplicate: true,
+        message: `⚠️ Track already in library: ${result.duplicate_info.conflict_tracks[0]?.existing_path || 'Unknown'}`
+      };
+    } else {
+      return {
+        success: false,
+        message: `❌ Failed: ${result.error}`
+      };
+    }
+    
+  } catch (error) {
+    console.error('Error moving track:', error);
+    return {
+      success: false,
+      message: `❌ Error: ${error.message}`
+    };
+  }
 }
 
 async function stageFolderMatch(folderPathEnc, candidateEnc, tracksEnc) {

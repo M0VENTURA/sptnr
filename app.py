@@ -60,7 +60,7 @@ def aggregate_genres_from_tracks(artist_name, db_path="/database/sptnr.db"):
         db_path: Path to database
     Returns:
         list: Sorted list of unique genres
-        
+
     Note: Returns empty list for Various Artists and Soundtracks as they
           have a lot of different artists and genres.
     """
@@ -68,37 +68,62 @@ def aggregate_genres_from_tracks(artist_name, db_path="/database/sptnr.db"):
     artist_lower = artist_name.lower()
     if artist_lower == "various artists" or "soundtrack" in artist_lower:
         return []
-    
+
     genres = set()
+    conn = None
     try:
-        import sqlite3
         import re
-        conn = sqlite3.connect(db_path)
+
+        # Use the app's active backend for the primary DB path, otherwise honor explicit SQLite paths.
+        if db_path == DB_PATH:
+            conn = get_db()
+        else:
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+
+        is_pg = _is_postgres_connection(conn)
         cursor = conn.cursor()
-        # Use navidrome_genres which are populated from Navidrome during import
-        # Query by COALESCE(album_artist, artist) to match the artist list page logic
-        # Use NULLIF to treat empty strings as NULL for proper COALESCE behavior
-        cursor.execute("SELECT navidrome_genres FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?", (artist_name,))
+        placeholder = "%s" if is_pg else "?"
+
+        # Use navidrome_genres which are populated from Navidrome during import.
+        # Query by COALESCE(album_artist, artist) to match the artist list page logic.
+        # Use NULLIF to treat empty strings as NULL for proper COALESCE behavior.
+        cursor.execute(
+            f"SELECT navidrome_genres FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}",
+            (artist_name,)
+        )
         rows = cursor.fetchall()
-        conn.close()
+
         for row in rows:
-            if row[0]:
+            if isinstance(row, dict):
+                genre_str = row.get("navidrome_genres")
+            elif hasattr(row, "keys"):
+                genre_str = row["navidrome_genres"]
+            else:
                 genre_str = row[0]
-                if isinstance(genre_str, str):
-                    try:
-                        import json
-                        genre_list = json.loads(genre_str)
-                        if isinstance(genre_list, list):
-                            genres.update(genre_list)
-                    except:
-                        # Split on both backslash and comma separators (same as split_genres filter)
-                        genre_list = re.split(r'[\\,]+', genre_str)
-                        for g in genre_list:
-                            g = g.strip().strip('"\'[]')
-                            if g:
-                                genres.add(g)
-    except:
+
+            if genre_str and isinstance(genre_str, str):
+                try:
+                    import json
+                    genre_list = json.loads(genre_str)
+                    if isinstance(genre_list, list):
+                        genres.update(genre_list)
+                except Exception:
+                    # Split on both backslash and comma separators (same as split_genres filter)
+                    genre_list = re.split(r'[\\,]+', genre_str)
+                    for g in genre_list:
+                        g = g.strip().strip('"\'[]')
+                        if g:
+                            genres.add(g)
+    except Exception:
         pass
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
     return sorted(list(genres))
 
 def correct_genre_capitalization(genre_str):
@@ -165,23 +190,35 @@ def log_genre_update(artist_name=None, album_name=None, track_id=None, genres_be
     """
     Log genre changes to genre_updates table for audit trail.
     """
+    conn = None
     try:
-        import sqlite3
-        conn = sqlite3.connect(db_path, timeout=120.0)
+        # Use the app's active backend for the primary DB path, otherwise honor explicit SQLite paths.
+        if db_path == DB_PATH:
+            conn = get_db()
+        else:
+            conn = sqlite3.connect(db_path, timeout=120.0)
+
+        is_pg = _is_postgres_connection(conn)
         cursor = conn.cursor()
-        
-        cursor.execute("""
+        placeholder = "%s" if is_pg else "?"
+
+        cursor.execute(f"""
             INSERT INTO genre_updates 
             (artist_name, album_name, track_id, genres_before, genres_after, 
              action_type, affected_track_count, change_summary, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        """, (artist_name, album_name, track_id, genres_before, genres_after, 
+            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
+        """, (artist_name, album_name, track_id, genres_before, genres_after,
               action_type, affected_count, change_summary))
-        
+
         conn.commit()
-        conn.close()
     except Exception as e:
         print(f"[ERROR] Failed to log genre update: {e}")
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
 
 from deprecated.check_db import update_schema
 from popularity_helpers import save_to_db
@@ -2229,20 +2266,21 @@ def artist_detail(name):
         # Use cached is_compilation field from background scan, with fallback to local heuristics
         compilation_albums = []
         
-        for album_row in potential_albums:
-            album_artist = row_get(album_row, 'album_artist', '')
-            spotify_type = row_get(album_row, 'album_type', '')
-            is_compilation_cached = row_get(album_row, 'is_compilation')
+        for album_row in potential_albums_dicts:
+            album_dict = album_row.copy() if isinstance(album_row, dict) else dict(album_row)
+            album_artist = album_dict.get('album_artist', '')
+            spotify_type = album_dict.get('album_type', '')
+            is_compilation_cached = album_dict.get('is_compilation')
             
             # Primary method: use cached compilation detection from background scan
             if is_compilation_cached:
-                compilation_albums.append(album_row)
+                compilation_albums.append(album_dict)
             # Fallback to local heuristics in case scan hasn't run yet
             elif album_artist and album_artist.lower() in ('various artists', 'various', 'compilation', 'soundtrack'):
-                compilation_albums.append(album_row)
+                compilation_albums.append(album_dict)
             elif spotify_type and spotify_type.lower() == 'compilation':
                 # Also check Spotify's designation as backup
-                compilation_albums.append(album_row)
+                compilation_albums.append(album_dict)
         
         # Get artist metadata (country, image, bio) from artists table if it exists
         artist_country = None
@@ -2257,6 +2295,14 @@ def artist_detail(name):
                 artist_bio = artist_row[2] if artist_row[2] else None
         except Exception as e:
             logging.debug(f"Error fetching artist metadata: {e}")
+        
+        # Convert all Row objects to dicts BEFORE closing connection
+        # This is critical because Row objects become invalid after connection closes
+        albums_data_dicts = [dict(album) for album in albums_data]
+        missing_releases_dicts = [dict(release) for release in missing_releases_data]
+        appears_on_dicts = [dict(album) for album in appears_on_albums]
+        top_tracks_dicts = [dict(track) for track in top_tracks]
+        potential_albums_dicts = [dict(album) for album in potential_albums]
         
         conn.close()
         
@@ -2292,23 +2338,16 @@ def artist_detail(name):
         # Track which albums we've already categorized to avoid duplicates
         categorized_albums = set()
         
-        for album in albums_data:
-            album_dict = dict(album)
+        for album in albums_data_dicts:
+            album_dict = album.copy()
             album_dict['is_missing'] = False  # Mark as discovered
             album_name = album_dict.get("album", "")
             
-            # Check if any tracks for this album are in "downloading" status
-            # (from MusicBrainz release downloads)
-            cursor.execute("""
-                SELECT COUNT(*) FROM tracks
-                WHERE album = ? AND COALESCE(NULLIF(album_artist, ''), artist) = ?
-                AND download_status = 'downloading'
-            """, (album_name, name))
-            downloading_count = cursor.fetchone()[0]
-            
-            if downloading_count > 0:
-                album_dict['is_downloading'] = True
-                album_dict['downloading_count'] = downloading_count
+            # Note: downloading status tracking requires a new connection
+            # Skip this check to avoid closed connection errors
+            # Users can refresh the page to see updated download status
+            album_dict['is_downloading'] = False
+            album_dict['downloading_count'] = 0
             
             album_type = (album_dict.get("album_type") or "").lower()
             track_count = album_dict.get("track_count", 0)
@@ -2356,8 +2395,8 @@ def artist_detail(name):
             "compilation": []
         }
         
-        for release in missing_releases_data:
-            release_dict = dict(release)
+        for release in missing_releases_dicts:
+            release_dict = release.copy()
             release_dict['is_missing'] = True  # Mark as missing
             category = (release_dict.get("category") or "Album").lower()
             
@@ -7773,41 +7812,52 @@ def api_scan_logs():
 @app.route("/api/track-count")
 def api_track_count():
     """API endpoint to get total track count for progress calculation"""
+    conn = None
     try:
-        with closing(sqlite3.connect(DB_PATH)) as conn:
-            cursor = conn.cursor()
-            
-            cursor.execute("SELECT COUNT(*) FROM tracks")
-            total_result = cursor.fetchone()
-            total_tracks = total_result[0] if total_result else 0
-            
-            # Also get counts with different metadata filled in
-            cursor.execute("SELECT COUNT(*) FROM tracks WHERE stars IS NOT NULL")
-            navidrome_result = cursor.fetchone()
-            navidrome_filled = navidrome_result[0] if navidrome_result else 0
-            
-            cursor.execute("SELECT COUNT(*) FROM tracks WHERE spotify_score IS NOT NULL")
-            popularity_result = cursor.fetchone()
-            popularity_filled = popularity_result[0] if popularity_result else 0
-            
-            cursor.execute("SELECT COUNT(*) FROM tracks WHERE is_single IS NOT NULL")
-            singles_result = cursor.fetchone()
-            singles_filled = singles_result[0] if singles_result else 0
-            
-            cursor.execute("SELECT COUNT(*) FROM tracks WHERE file_path IS NOT NULL")
-            filepath_result = cursor.fetchone()
-            filepath_filled = filepath_result[0] if filepath_result else 0
-            
-            return jsonify({
-                "total_tracks": total_tracks,
-                "navidrome_filled": navidrome_filled,
-                "popularity_filled": popularity_filled,
-                "singles_filled": singles_filled,
-                "filepath_filled": filepath_filled
-            })
+        conn = get_db()
+        cursor = conn.cursor()
+
+        def _scalar_value(row):
+            if row is None:
+                return 0
+            if isinstance(row, dict):
+                return next(iter(row.values()), 0)
+            if hasattr(row, "keys"):
+                return row[0]
+            return row[0]
+
+        cursor.execute("SELECT COUNT(*) AS count FROM tracks")
+        total_tracks = _scalar_value(cursor.fetchone())
+
+        # Also get counts with different metadata filled in.
+        cursor.execute("SELECT COUNT(*) AS count FROM tracks WHERE stars IS NOT NULL")
+        navidrome_filled = _scalar_value(cursor.fetchone())
+
+        cursor.execute("SELECT COUNT(*) AS count FROM tracks WHERE spotify_score IS NOT NULL")
+        popularity_filled = _scalar_value(cursor.fetchone())
+
+        cursor.execute("SELECT COUNT(*) AS count FROM tracks WHERE is_single IS NOT NULL")
+        singles_filled = _scalar_value(cursor.fetchone())
+
+        cursor.execute("SELECT COUNT(*) AS count FROM tracks WHERE file_path IS NOT NULL")
+        filepath_filled = _scalar_value(cursor.fetchone())
+
+        return jsonify({
+            "total_tracks": total_tracks,
+            "navidrome_filled": navidrome_filled,
+            "popularity_filled": popularity_filled,
+            "singles_filled": singles_filled,
+            "filepath_filled": filepath_filled
+        })
     except Exception as e:
         logging.error(f"Error getting track count: {e}")
         return jsonify({"error": str(e)}), 500
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
 
 
 @app.route("/downloads")
@@ -11708,6 +11758,225 @@ def api_downloads_folder_match_musicbrainz(folder_path):
             "success": False,
             "error": str(e),
             "candidates": []
+        }), 500
+
+
+@app.route("/api/downloads/folder/<path:folder_path>/auto-match", methods=["POST"])
+def api_downloads_folder_auto_match(folder_path):
+    """
+    Attempt to automatically match a folder group with high confidence.
+    Returns either a single suggested match or empty result if confidence too low.
+    
+    Args:
+        folder_path: URL-encoded relative folder path
+        artist: Detected artist name (in request JSON)
+        album: Detected album name (in request JSON)
+        tracks: List of track dicts (in request JSON)
+    
+    Returns:
+        JSON with auto_match (if found) or empty candidates array
+    """
+    try:
+        from folder_matching_enhancements import suggest_auto_match, get_musicbrainz_release_tracks
+        from download_folder_grouping import match_folder_group_with_musicbrainz
+        
+        data = request.get_json() or {}
+        artist = data.get('artist', '').strip()
+        album = data.get('album', '').strip()
+        tracks = data.get('tracks', [])
+        
+        if not artist or not album or not tracks:
+            return jsonify({
+                "success": False,
+                "error": "artist, album, and tracks are required",
+                "candidates": []
+            }), 400
+        
+        # Get candidate releases from MusicBrainz
+        candidates_result = match_folder_group_with_musicbrainz(
+            folder_path,
+            artist,
+            album
+        )
+        
+        if not candidates_result.get('success') or not candidates_result.get('candidates'):
+            return jsonify({
+                "success": False,
+                "candidates": [],
+                "auto_match": None
+            })
+        
+        candidates = candidates_result['candidates']
+        
+        # Try to auto-suggest best match
+        auto_match = suggest_auto_match(artist, album, candidates, tracks)
+        
+        return jsonify({
+            "success": True,
+            "candidates": candidates,
+            "auto_match": auto_match,
+            "auto_match_confidence": auto_match.get('auto_match_confidence') if auto_match else 0.0
+        })
+        
+    except Exception as e:
+        logging.error(f"Error auto-matching folder: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "candidates": []
+        }), 500
+
+
+@app.route("/api/downloads/release/<source>/<release_id>/tracks", methods=["GET"])
+def api_downloads_release_tracks(source, release_id):
+    """
+    Fetch full track listing for a release (MusicBrainz or Discogs).
+    Useful for showing what tracks are expected vs. what's in the folder.
+    
+    Args:
+        source: 'musicbrainz' or 'discogs'
+        release_id: Release ID from the source
+    
+    Returns:
+        JSON with track list and track count
+    """
+    try:
+        from folder_matching_enhancements import get_musicbrainz_release_tracks
+        
+        if source not in ['musicbrainz', 'discogs']:
+            return jsonify({
+                "success": False,
+                "error": f"Unknown source: {source}"
+            }), 400
+        
+        tracks = get_musicbrainz_release_tracks(release_id, source)
+        
+        return jsonify({
+            "success": True,
+            "source": source,
+            "release_id": release_id,
+            "track_count": len(tracks),
+            "tracks": tracks
+        })
+        
+    except Exception as e:
+        logging.error(f"Error fetching release tracks: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "tracks": []
+        }), 500
+
+
+@app.route("/api/downloads/folder/<path:folder_path>/duplicates", methods=["POST"])
+def api_downloads_check_folder_duplicates(folder_path):
+    """
+    Check if folder tracks/album already exist in the music library.
+    
+    Args:
+        folder_path: URL-encoded relative folder path
+        artist: Album artist (in request JSON)
+        album: Album name (in request JSON)
+        tracks: List of track dicts (in request JSON)
+    
+    Returns:
+        JSON with duplicate detection results
+    """
+    try:
+        from folder_matching_enhancements import detect_library_duplicates
+        
+        data = request.get_json() or {}
+        artist = data.get('artist', '').strip()
+        album = data.get('album', '').strip()
+        tracks = data.get('tracks', [])
+        
+        if not artist or not album:
+            return jsonify({
+                "success": False,
+                "error": "artist and album are required",
+                "has_duplicates": False
+            }), 400
+        
+        conn = get_db()
+        duplicates = detect_library_duplicates(conn, tracks, artist, album)
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            **duplicates
+        })
+        
+    except Exception as e:
+        logging.error(f"Error checking duplicates: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "has_duplicates": False
+        }), 500
+
+
+@app.route("/api/downloads/track/<track_index>/move", methods=["POST"])
+def api_downloads_move_individual_track(track_index):
+    """
+    Move a single track from a folder to the music library.
+    
+    Args:
+        track_index: Index of track in folder (in URL path)
+        folder_path: Relative folder path (in request JSON)
+        track: Track dict with file_path, title, artist (in request JSON)
+        release_metadata: Release info for destination path (in request JSON)
+    
+    Returns:
+        JSON with success status and destination path
+    """
+    try:
+        from folder_matching_enhancements import organize_individual_track
+        
+        data = request.get_json() or {}
+        track = data.get('track')
+        release_metadata = data.get('release_metadata')
+        check_duplicates = data.get('check_duplicates', True)
+        
+        if not track or not release_metadata:
+            return jsonify({
+                "success": False,
+                "error": "track and release_metadata are required"
+            }), 400
+        
+        # Get config for music directory
+        cfg = get_config()
+        music_dir = cfg.get('navidrome', {}).get('music_folder', '/music')
+        
+        # Get database connection if duplicate checking enabled
+        conn = get_db() if check_duplicates else None
+        
+        result = organize_individual_track(
+            track,
+            release_metadata,
+            music_dir=music_dir,
+            db_conn=conn,
+            check_duplicates=check_duplicates
+        )
+        
+        if conn:
+            conn.close()
+        
+        return jsonify({
+            "success": result.get('success', False),
+            **result
+        })
+        
+    except Exception as e:
+        logging.error(f"Error moving individual track: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
+        return jsonify({
+            "success": False,
+            "error": str(e)
         }), 500
 
 
@@ -16227,63 +16496,78 @@ def api_remove_genres():
     Remove specific genres from artist or album's tracks
     Updates database only
     """
+    conn = None
     try:
         data = request.get_json() or {}
         artist_name = data.get("artist_name", "").strip()
         album_name = data.get("album_name", "").strip()
         genres_to_remove = data.get("genres", [])
-        
+
         if not artist_name and not album_name:
             return jsonify({"error": "artist_name or album_name required"}), 400
-        
+
         if not genres_to_remove or not isinstance(genres_to_remove, list):
             return jsonify({"error": "genres must be a non-empty list"}), 400
-        
-        conn = sqlite3.connect(DB_PATH, timeout=120.0)
+
+        conn = get_db()
         cursor = conn.cursor()
-        
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+
         # Build WHERE clause
         if album_name:
-            cursor.execute("SELECT id, title, genres FROM tracks WHERE artist = ? AND album = ?", 
-                          (artist_name, album_name))
+            cursor.execute(
+                f"SELECT id, title, genres FROM tracks WHERE artist = {placeholder} AND album = {placeholder}",
+                (artist_name, album_name)
+            )
         else:
-            cursor.execute("SELECT id, title, genres FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?", 
-                          (artist_name,))
-        
+            cursor.execute(
+                f"SELECT id, title, genres FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}",
+                (artist_name,)
+            )
+
         rows = cursor.fetchall()
         affected_count = 0
-        
+
         # Build list of updates in memory first
         for row in rows:
-            track_id, title, genres_str = row
+            if isinstance(row, dict):
+                track_id = row.get("id")
+                genres_str = row.get("genres")
+            elif hasattr(row, "keys"):
+                track_id = row["id"]
+                genres_str = row["genres"]
+            else:
+                track_id = row[0]
+                genres_str = row[2]
+
             if not genres_str:
                 continue
-            
+
             # Parse genres
             genre_list = [g.strip() for g in re.split(r'[\\,]+', genres_str)]
-            
+
             # Remove specified genres (case-insensitive)
             genres_to_remove_lower = [g.lower() for g in genres_to_remove]
             filtered_genres = [
                 g for g in genre_list
                 if g.lower() not in genres_to_remove_lower
             ]
-            
+
             # Only update if changes were made
             if len(filtered_genres) != len(genre_list):
                 new_genres_str = '\\'.join(filtered_genres) if filtered_genres else ''
-                
+
                 # Update database
-                cursor.execute("""
-                    UPDATE tracks SET genres = ?
-                    WHERE id = ?
-                """, (new_genres_str, track_id))
-                
+                cursor.execute(
+                    f"UPDATE tracks SET genres = {placeholder} WHERE id = {placeholder}",
+                    (new_genres_str, track_id)
+                )
+
                 affected_count += 1
-        
+
         conn.commit()
-        conn.close()
-        
+
         # Log bulk change
         if affected_count > 0:
             log_genre_update(
@@ -16296,14 +16580,14 @@ def api_remove_genres():
                 affected_count=affected_count,
                 change_summary=f"Removed genres from {affected_count} tracks: {', '.join(genres_to_remove)}"
             )
-        
+
         # Trigger Navidrome scan in background
         def trigger_scan():
             try:
                 from api_clients.navidrome import NavidromeClient
                 cfg = get_config()
                 navidrome_config = cfg.get("navidrome", {})
-                
+
                 if navidrome_config.get("base_url"):
                     client = NavidromeClient(
                         navidrome_config.get("base_url"),
@@ -16313,21 +16597,27 @@ def api_remove_genres():
                     client.start_scan()
             except Exception as e:
                 logging.error(f"Failed to trigger Navidrome scan: {e}")
-        
+
         # Run scan in background thread
         scan_thread = threading.Thread(target=trigger_scan, daemon=True)
         scan_thread.start()
-        
+
         return jsonify({
             "success": True,
             "affected_tracks": affected_count,
             "message": f"Removed genres from {affected_count} track(s)",
             "scan_triggered": True
         }), 200
-        
+
     except Exception as e:
         logging.error(f"Error removing genres: {e}")
         return jsonify({"error": str(e)}), 500
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
 
 @app.route("/api/track/update-metadata", methods=["POST"])
 def api_track_update_metadata():
@@ -16533,55 +16823,96 @@ def api_recent_genre_updates():
     Get recent genre updates for the logs page
     Returns last 50 updates with pagination support
     """
+    conn = None
     try:
         limit = request.args.get("limit", 50, type=int)
         offset = request.args.get("offset", 0, type=int)
-        
-        conn = sqlite3.connect(DB_PATH, timeout=120.0)
+
+        conn = get_db()
         cursor = conn.cursor()
-        
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+
         # Get total count
-        cursor.execute("SELECT COUNT(*) FROM genre_updates")
-        total_count = cursor.fetchone()[0]
-        
+        cursor.execute("SELECT COUNT(*) AS count FROM genre_updates")
+        total_row = cursor.fetchone()
+        if isinstance(total_row, dict):
+            total_count = next(iter(total_row.values()), 0)
+        elif hasattr(total_row, "keys"):
+            total_count = total_row[0] if total_row else 0
+        else:
+            total_count = total_row[0] if total_row else 0
+
         # Get recent updates
-        cursor.execute("""
-            SELECT 
+        cursor.execute(f"""
+            SELECT
                 id, artist_name, album_name, track_id, genres_before, genres_after,
                 action_type, affected_track_count, change_summary, created_at
             FROM genre_updates
             ORDER BY created_at DESC
-            LIMIT ? OFFSET ?
+            LIMIT {placeholder} OFFSET {placeholder}
         """, (limit, offset))
-        
+
         rows = cursor.fetchall()
-        conn.close()
-        
+
         updates = []
         for row in rows:
-            updates.append({
-                "id": row[0],
-                "artist": row[1],
-                "album": row[2],
-                "track_id": row[3],
-                "genres_before": row[4],
-                "genres_after": row[5],
-                "action_type": row[6],
-                "affected_count": row[7],
-                "summary": row[8],
-                "timestamp": row[9]
-            })
-        
+            if isinstance(row, dict):
+                updates.append({
+                    "id": row.get("id"),
+                    "artist": row.get("artist_name"),
+                    "album": row.get("album_name"),
+                    "track_id": row.get("track_id"),
+                    "genres_before": row.get("genres_before"),
+                    "genres_after": row.get("genres_after"),
+                    "action_type": row.get("action_type"),
+                    "affected_count": row.get("affected_track_count"),
+                    "summary": row.get("change_summary"),
+                    "timestamp": row.get("created_at")
+                })
+            elif hasattr(row, "keys"):
+                updates.append({
+                    "id": row["id"],
+                    "artist": row["artist_name"],
+                    "album": row["album_name"],
+                    "track_id": row["track_id"],
+                    "genres_before": row["genres_before"],
+                    "genres_after": row["genres_after"],
+                    "action_type": row["action_type"],
+                    "affected_count": row["affected_track_count"],
+                    "summary": row["change_summary"],
+                    "timestamp": row["created_at"]
+                })
+            else:
+                updates.append({
+                    "id": row[0],
+                    "artist": row[1],
+                    "album": row[2],
+                    "track_id": row[3],
+                    "genres_before": row[4],
+                    "genres_after": row[5],
+                    "action_type": row[6],
+                    "affected_count": row[7],
+                    "summary": row[8],
+                    "timestamp": row[9]
+                })
+
         return jsonify({
             "updates": updates,
             "total": total_count,
             "limit": limit,
             "offset": offset
         }), 200
-        
+
     except Exception as e:
         logging.error(f"Error fetching genre updates: {e}")
         return jsonify({"error": str(e)}), 500
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
 
 # ==========================================================================
 # PLAYLIST MANAGER ROUTES

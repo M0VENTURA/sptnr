@@ -350,9 +350,31 @@ def try_discogs_match(folder_path, artist, album):
         Dict with Discogs candidates
     """
     try:
+        import os
         from api_clients.discogs import DiscogsClient
         
-        discogs = DiscogsClient()
+        # Get Discogs token from environment or config
+        discogs_token = os.environ.get("DISCOGS_TOKEN", "")
+        if not discogs_token:
+            try:
+                from app import get_config
+                cfg = get_config()
+                discogs_token = cfg.get("api_integrations", {}).get("discogs", {}).get("token", "")
+            except Exception:
+                pass
+        
+        if not discogs_token:
+            logger.warning("Discogs token not configured, skipping Discogs fallback")
+            return {
+                'folder_path': folder_path,
+                'artist': artist,
+                'album': album,
+                'candidates': [],
+                'success': False,
+                'error': 'Discogs token not configured'
+            }
+        
+        discogs = DiscogsClient(discogs_token)
         
         # Search Discogs for the release
         query = f"{artist} {album}".strip()
