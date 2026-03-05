@@ -572,6 +572,17 @@ async function loadFolderStatus() {
   // Load folder match status from database to show completion tracking
   try {
     const response = await fetch('/api/downloads/folder-status');
+    if (!response.ok) {
+      console.warn(`Folder status request failed: HTTP ${response.status}`);
+      return {};
+    }
+
+    const contentType = response.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      console.warn('Folder status response is not JSON');
+      return {};
+    }
+
     const data = await response.json();
     
     if (data.success && data.folder_matches) {
@@ -592,6 +603,19 @@ async function loadFolderDuplicates() {
   // Load duplicate folder detection results
   try {
     const response = await fetch('/api/downloads/folder-duplicates');
+    if (!response.ok) {
+      console.warn(`Folder duplicates request failed: HTTP ${response.status}`);
+      hideDuplicateWarnings();
+      return;
+    }
+
+    const contentType = response.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      console.warn('Folder duplicates response is not JSON');
+      hideDuplicateWarnings();
+      return;
+    }
+
     const data = await response.json();
     
     if (data.success && data.duplicates && data.duplicates.length > 0) {

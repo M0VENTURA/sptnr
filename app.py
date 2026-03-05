@@ -1622,6 +1622,55 @@ def get_db():
         return conn
 
 
+def _is_postgres_connection(conn):
+    """Return True when the active DB connection is PostgreSQL."""
+    return 'psycopg2' in globals() and isinstance(conn, psycopg2.extensions.connection)  # type: ignore[name-defined]
+
+
+def _table_exists(cursor, table_name, is_postgres=False):
+    """Check whether a table exists in the current database."""
+    if is_postgres:
+        cursor.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_name = %s
+            )
+            """,
+            (table_name,)
+        )
+        row = cursor.fetchone()
+        if isinstance(row, dict):
+            return bool(row.get('exists'))
+        return bool(row[0]) if row else False
+
+    cursor.execute(
+        """
+        SELECT name FROM sqlite_master
+        WHERE type='table' AND name=?
+        """,
+        (table_name,)
+    )
+    return cursor.fetchone() is not None
+
+
+def _row_get(row, key, index=None, default=None):
+    """Read a column from dict-like or indexable DB rows."""
+    if row is None:
+        return default
+
+    if hasattr(row, 'keys'):
+        return row.get(key, default)
+
+    if index is not None:
+        try:
+            return row[index]
+        except (IndexError, KeyError, TypeError):
+            return default
+
+    return default
+
+
 @app.route("/debug/static")
 def debug_static():
     """Debug endpoint to check static file configuration"""
@@ -11692,6 +11741,26 @@ def api_downloads_folder_status():
     try:
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+
+        # Gracefully handle environments where folder-tracking migration was not applied yet.
+        if not _table_exists(cursor, 'folder_album_matches', is_postgres=is_pg):
+            conn.close()
+            return jsonify({
+                "success": True,
+                "folder_matches": [],
+                "total": 0,
+                "message": "folder_album_matches table not found"
+            })
+
+        if not _table_exists(cursor, 'folder_track_matches', is_postgres=is_pg):
+            conn.close()
+            return jsonify({
+                "success": True,
+                "folder_matches": [],
+                "total": 0,
+                "message": "folder_track_matches table not found"
+            })
         
         # Get all folder matches with completion details
         cursor.execute("""
@@ -11714,41 +11783,45 @@ def api_downloads_folder_status():
         
         folder_matches = []
         for row in cursor.fetchall():
-            folder_id = row[0]
+            folder_id = _row_get(row, 'id', 0)
             
             # Get matched tracks for this folder
-            cursor.execute("""
+            placeholder = "%s" if is_pg else "?"
+            cursor.execute(f"""
                 SELECT file_path, organized_path, track_number, track_title, track_artist
                 FROM folder_track_matches
-                WHERE folder_match_id = ?
+                WHERE folder_match_id = {placeholder}
                 ORDER BY track_number
             """, (folder_id,))
             
             matched_tracks = [
                 {
-                    'file_path': t[0],
-                    'organized_path': t[1],
-                    'track_number': t[2],
-                    'track_title': t[3],
-                    'track_artist': t[4]
+                    'file_path': _row_get(t, 'file_path', 0),
+                    'organized_path': _row_get(t, 'organized_path', 1),
+                    'track_number': _row_get(t, 'track_number', 2),
+                    'track_title': _row_get(t, 'track_title', 3),
+                    'track_artist': _row_get(t, 'track_artist', 4)
                 }
                 for t in cursor.fetchall()
             ]
+
+            total_expected = _row_get(row, 'total_expected_tracks', 7, 0) or 0
+            matched_count = _row_get(row, 'matched_tracks_count', 8, 0) or 0
             
             folder_matches.append({
                 'id': folder_id,
-                'folder_path': row[1],
-                'mb_release_id': row[2],
-                'mb_source': row[3],
-                'artist': row[4],
-                'album': row[5],
-                'release_date': row[6],
-                'total_expected_tracks': row[7],
-                'matched_tracks_count': row[8],
-                'status': row[9],
-                'completion_percentage': round((row[8] / row[7] * 100) if row[7] > 0 else 0, 1),
-                'created_at': row[10],
-                'updated_at': row[11],
+                'folder_path': _row_get(row, 'folder_path', 1),
+                'mb_release_id': _row_get(row, 'mb_release_id', 2),
+                'mb_source': _row_get(row, 'mb_source', 3),
+                'artist': _row_get(row, 'artist', 4),
+                'album': _row_get(row, 'album', 5),
+                'release_date': _row_get(row, 'release_date', 6),
+                'total_expected_tracks': total_expected,
+                'matched_tracks_count': matched_count,
+                'status': _row_get(row, 'status', 9),
+                'completion_percentage': round((matched_count / total_expected * 100) if total_expected > 0 else 0, 1),
+                'created_at': _row_get(row, 'created_at', 10),
+                'updated_at': _row_get(row, 'updated_at', 11),
                 'matched_tracks': matched_tracks
             })
         
@@ -11779,10 +11852,25 @@ def api_downloads_folder_duplicates():
     try:
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+
+        if not _table_exists(cursor, 'folder_album_matches', is_postgres=is_pg):
+            conn.close()
+            return jsonify({
+                "success": True,
+                "duplicates": [],
+                "total_duplicate_groups": 0,
+                "message": "folder_album_matches table not found"
+            })
         
         # Find releases with multiple folder matches
         cursor.execute("""
-            SELECT mb_release_id, mb_source, artist, album, COUNT(*) as folder_count
+            SELECT
+                mb_release_id,
+                mb_source,
+                MIN(artist) AS artist,
+                MIN(album) AS album,
+                COUNT(*) as folder_count
             FROM folder_album_matches
             GROUP BY mb_release_id, mb_source
             HAVING COUNT(*) > 1
@@ -11791,27 +11879,28 @@ def api_downloads_folder_duplicates():
         
         duplicates = []
         for row in cursor.fetchall():
-            mb_release_id = row[0]
-            mb_source = row[1]
+            mb_release_id = _row_get(row, 'mb_release_id', 0)
+            mb_source = _row_get(row, 'mb_source', 1)
             
             # Get all folders for this release
-            cursor.execute("""
+            placeholder = "%s" if is_pg else "?"
+            cursor.execute(f"""
                 SELECT 
                     id, folder_path, total_expected_tracks, 
                     matched_tracks_count, status, created_at
                 FROM folder_album_matches
-                WHERE mb_release_id = ? AND mb_source = ?
+                WHERE mb_release_id = {placeholder} AND mb_source = {placeholder}
                 ORDER BY created_at ASC
             """, (mb_release_id, mb_source))
             
             folders = [
                 {
-                    'id': f[0],
-                    'folder_path': f[1],
-                    'total_expected_tracks': f[2],
-                    'matched_tracks_count': f[3],
-                    'status': f[4],
-                    'created_at': f[5]
+                    'id': _row_get(f, 'id', 0),
+                    'folder_path': _row_get(f, 'folder_path', 1),
+                    'total_expected_tracks': _row_get(f, 'total_expected_tracks', 2),
+                    'matched_tracks_count': _row_get(f, 'matched_tracks_count', 3),
+                    'status': _row_get(f, 'status', 4),
+                    'created_at': _row_get(f, 'created_at', 5)
                 }
                 for f in cursor.fetchall()
             ]
@@ -11819,9 +11908,9 @@ def api_downloads_folder_duplicates():
             duplicates.append({
                 'mb_release_id': mb_release_id,
                 'mb_source': mb_source,
-                'artist': row[2],
-                'album': row[3],
-                'folder_count': row[4],
+                'artist': _row_get(row, 'artist', 2),
+                'album': _row_get(row, 'album', 3),
+                'folder_count': _row_get(row, 'folder_count', 4),
                 'folders': folders,
                 'suggestion': 'merge_to_first' if len(folders) > 1 else None
             })
@@ -16966,6 +17055,47 @@ if __name__ == "__main__":
             retry_scheduler["running"] = True
     except Exception as e:
         logging.warning(f"Could not start Download Retry Manager: {e}")
+
+    # Start persistent auto-discovery watcher so queue updates even when UI is closed.
+    try:
+        def start_downloads_auto_discovery():
+            """Background thread that periodically scans downloads folder into queue."""
+            import time as time_module
+            from download_queue_manager import auto_discover_and_queue_files
+
+            # Wait for app bootstrap to settle before first scan.
+            time_module.sleep(8)
+
+            while True:
+                try:
+                    cfg = get_config() or {}
+                    feature_cfg = cfg.get("features", {}) if isinstance(cfg, dict) else {}
+                    discover_cfg = feature_cfg.get("downloads_auto_discover", {}) if isinstance(feature_cfg, dict) else {}
+
+                    enabled = discover_cfg.get("enabled", True)
+                    interval = int(discover_cfg.get("interval_seconds", 60))
+                    if interval < 15:
+                        interval = 15
+
+                    if enabled:
+                        stats = auto_discover_and_queue_files()
+                        if stats.get("queued", 0) > 0:
+                            logging.info(
+                                "[AUTO_DISCOVERY] Added %s new file(s) to queue (scanned=%s)",
+                                stats.get("queued", 0),
+                                stats.get("scanned", 0),
+                            )
+
+                    time_module.sleep(interval)
+                except Exception as watcher_error:
+                    logging.error(f"[AUTO_DISCOVERY] Background watcher error: {watcher_error}")
+                    time_module.sleep(30)
+
+        logging.info("Starting persistent Downloads auto-discovery watcher...")
+        auto_discovery_thread = threading.Thread(target=start_downloads_auto_discovery, daemon=True)
+        auto_discovery_thread.start()
+    except Exception as e:
+        logging.warning(f"Could not start Downloads auto-discovery watcher: {e}")
     
     # Start Flask application
     app.run(debug=False, host="0.0.0.0", port=5000)

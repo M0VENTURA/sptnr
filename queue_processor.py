@@ -471,6 +471,76 @@ def process_queue(client):
         logger.error(f"Error in process_queue: {e}")
         return 0
 
+
+def _load_auto_discovery_settings():
+    """Load persistent auto-discovery settings from config/env with safe defaults."""
+    enabled = True
+    interval_seconds = 60
+
+    # Optional env overrides for quick control.
+    env_enabled = os.environ.get("DOWNLOADS_AUTO_DISCOVER_ENABLED")
+    env_interval = os.environ.get("DOWNLOADS_AUTO_DISCOVER_INTERVAL_SECONDS")
+
+    if env_enabled is not None:
+        enabled = str(env_enabled).strip().lower() in {"1", "true", "yes", "on"}
+
+    if env_interval:
+        try:
+            interval_seconds = int(env_interval)
+        except ValueError:
+            logger.warning("Invalid DOWNLOADS_AUTO_DISCOVER_INTERVAL_SECONDS='%s'", env_interval)
+
+    # Config file settings override defaults when present.
+    config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+    try:
+        if os.path.exists(config_path):
+            with open(config_path, 'r', encoding='utf-8') as f:
+                cfg = yaml.safe_load(f) or {}
+
+            features = cfg.get('features') or {}
+            discovery_cfg = features.get('downloads_auto_discover') or {}
+
+            if 'enabled' in discovery_cfg:
+                enabled = bool(discovery_cfg.get('enabled'))
+            if 'interval_seconds' in discovery_cfg:
+                interval_seconds = int(discovery_cfg.get('interval_seconds') or interval_seconds)
+    except Exception as e:
+        logger.warning(f"Could not read auto-discovery settings: {e}")
+
+    if interval_seconds < 15:
+        interval_seconds = 15
+
+    return enabled, interval_seconds
+
+
+def maybe_auto_discover_files(now_ts, last_run_ts):
+    """Run background auto-discovery on interval and return updated last-run timestamp."""
+    enabled, interval_seconds = _load_auto_discovery_settings()
+    if not enabled:
+        return last_run_ts
+
+    if last_run_ts is not None and (now_ts - last_run_ts) < interval_seconds:
+        return last_run_ts
+
+    try:
+        from download_queue_manager import auto_discover_and_queue_files
+
+        stats = auto_discover_and_queue_files()
+        queued = int(stats.get('queued', 0) or 0)
+        scanned = int(stats.get('scanned', 0) or 0)
+        if queued > 0:
+            logger.info(
+                "[AUTO-DISCOVER] Added %s new files to queue (scanned=%s)",
+                queued,
+                scanned,
+            )
+        else:
+            logger.debug("[AUTO-DISCOVER] No new files found (scanned=%s)", scanned)
+    except Exception as e:
+        logger.error(f"[AUTO-DISCOVER] Error during background discovery: {e}")
+
+    return now_ts
+
 def run_processor(interval=30):
     """Run queue processor loop"""
     logger.info("=== Queue Processor Started ===")
@@ -482,12 +552,16 @@ def run_processor(interval=30):
         sys.exit(1)
     
     loop_count = 0
+    last_auto_discover_ts = None
     
     try:
         while True:
             try:
                 loop_count += 1
                 logger.debug(f"--- Loop {loop_count} ---")
+
+                now_ts = time.time()
+                last_auto_discover_ts = maybe_auto_discover_files(now_ts, last_auto_discover_ts)
                 
                 processed = process_queue(client)
                 
