@@ -1435,6 +1435,11 @@ async function loadFolderGroups(options = {}) {
                 <button class="btn btn-sm btn-success ms-2" 
                   onclick="moveMatchedFolderFromEncoded('${folderPathEnc}')">
                   <i class="bi bi-folder-check"></i> Move Files
+                </button>
+                <button class="btn btn-sm btn-outline-info ms-2" 
+                  onclick="showReleaseTracklistModal('${escapeHtml(JSON.stringify(matchedSelection.candidate))}', '${folderPathEnc}', event)" 
+                  title="View all tracks from the matched release">
+                  <i class="bi bi-list"></i> View Tracklist
                 </button>` : ''}
                 <button class="btn btn-sm btn-outline-secondary ms-2" 
                         onclick="toggleTrackList('${tracklistId}', '${folderStateKey}', this)">
@@ -2675,6 +2680,232 @@ async function autoDiscoverFiles() {
     }
   } catch (error) {
     console.debug(`Auto-discover error (expected if monitoring disabled): ${error.message}`);
+  }
+}
+
+// Show release tracklist modal with track status
+async function showReleaseTracklistModal(candidateJson, folderPathEnc, event) {
+  if (event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
+  try {
+    const candidate = JSON.parse(candidateJson);
+    const folderPath = decodeInlineArg(folderPathEnc);
+
+    // Fetch release tracks with status
+    const response = await fetch('/api/downloads/release-tracks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        artist: candidate.artist || candidate.credit_name || '',
+        album: candidate.title || '',
+        release_group_id: candidate.id || '',
+        folder_path: folderPath
+      })
+    });
+
+    if (!response.ok) {
+      alert(`Failed to fetch release tracks: ${response.status} ${response.statusText}`);
+      return;
+    }
+
+    const data = await response.json();
+    if (!data.success) {
+      alert(`Error: ${data.error || 'Failed to fetch release tracks'}`);
+      return;
+    }
+
+    // Render modal
+    renderTracklistModal(data, folderPath);
+  } catch (error) {
+    console.error('Error showing release tracklist:', error);
+    alert(`Error: ${error.message}`);
+  }
+}
+
+// Render the tracklist modal
+function renderTracklistModal(data, folderPath) {
+  const { release, summary, tracks } = data;
+  
+  // Create modal overlay
+  let existingModal = document.getElementById('releaseTracklistModal');
+  if (existingModal) {
+    existingModal.remove();
+  }
+
+  const modal = document.createElement('div');
+  modal.id = 'releaseTracklistModal';
+  modal.className = 'modal fade';
+  modal.setAttribute('tabindex', '-1');
+  modal.setAttribute('role', 'dialog');
+  modal.setAttribute('aria-labelledby', 'tracklistModalLabel');
+  modal.setAttribute('aria-hidden', 'true');
+
+  // Calculate progress
+  const totalTracks = summary.total || 0;
+  const inFolderCount = summary.in_folder_count || 0;
+  const progressPercent = totalTracks > 0 ? Math.round((inFolderCount / totalTracks) * 100) : 0;
+
+  // Build track rows HTML
+  let trackRows = '';
+  const statusIcons = {
+    'in_folder': '<i class="bi bi-check-circle-fill text-success"></i>',
+    'downloading': '<i class="bi bi-arrow-down-circle-fill text-primary"></i>',
+    'other_folder': '<i class="bi bi-folder-fill text-secondary"></i>',
+    'missing': '<i class="bi bi-x-circle-fill text-danger"></i>'
+  };
+  
+  const statusLabels = {
+    'in_folder': 'In Folder',
+    'downloading': 'Downloading',
+    'other_folder': 'In Library',
+    'missing': 'Missing'
+  };
+
+  (tracks || []).forEach((track, idx) => {
+    const status = track.status || 'missing';
+    const icon = statusIcons[status] || '';
+    const label = statusLabels[status] || status;
+    const durationStr = track.duration 
+      ? Math.floor(track.duration / 60) + ':' + String(track.duration % 60).padStart(2, '0')
+      : '-';
+
+    trackRows += `
+      <tr class="${status === 'in_folder' ? 'table-success' : (status === 'missing' ? 'text-muted' : '')}">
+        <td>${idx + 1}</td>
+        <td><strong>${escapeHtml(track.title || '')}</strong></td>
+        <td>${durationStr}</td>
+        <td>
+          <span class="badge ${
+            status === 'in_folder' ? 'bg-success' : 
+            (status === 'downloading' ? 'bg-primary' : 
+            (status === 'other_folder' ? 'bg-secondary' : 'bg-danger'))
+          }">
+            ${icon} ${label}
+          </span>
+        </td>
+      </tr>
+    `;
+  });
+
+  modal.innerHTML = `
+    <div class="modal-dialog modal-lg">
+      <div class="modal-content bg-dark text-light">
+        <div class="modal-header border-secondary">
+          <div>
+            <h5 class="modal-title" id="tracklistModalLabel">
+              ${escapeHtml(release.title || 'Release')} - ${escapeHtml(release.artist || '')}
+            </h5>
+            <small class="text-muted">${escapeHtml(release.type || 'Release')} • ${escapeHtml(release.date || '')}</small>
+          </div>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <strong>${inFolderCount}/${totalTracks} tracks downloaded</strong>
+              <span class="badge bg-info">${summary.downloading_count || 0} downloading • ${summary.other_folder_count || 0} in library</span>
+            </div>
+            <div class="progress" style="height: 20px;">
+              <div class="progress-bar bg-success" role="progressbar" 
+                   style="width: ${progressPercent}%" 
+                   aria-valuenow="${progressPercent}" aria-valuemin="0" aria-valuemax="100">
+                ${progressPercent}%
+              </div>
+            </div>
+          </div>
+
+          <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
+            <table class="table table-sm table-striped table-dark align-middle mb-0">
+              <thead class="sticky-top bg-dark">
+                <tr>
+                  <th>#</th>
+                  <th>Title</th>
+                  <th>Duration</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${trackRows}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="modal-footer border-secondary">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+          ${summary.missing_count > 0 ? `
+          <button type="button" class="btn btn-primary" 
+                  onclick="queueMissingTracks('${escapeHtml(JSON.stringify(tracks))}', '${escapeHtml(release.artist || '')}')">
+            <i class="bi bi-plus-circle"></i> Queue ${summary.missing_count} Missing Tracks
+          </button>
+          ` : ''}
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(modal);
+  
+  // Show modal using Bootstrap
+  const bsModal = new bootstrap.Modal(modal);
+  bsModal.show();
+
+  // Clean up modal when hidden
+  modal.addEventListener('hidden.bs.modal', function() {
+    modal.remove();
+  });
+}
+
+// Queue missing tracks to download queue
+async function queueMissingTracks(tracksJson, artist) {
+  try {
+    const tracks = JSON.parse(tracksJson);
+    const missingTracks = tracks.filter(t => t.status === 'missing');
+
+    if (missingTracks.length === 0) {
+      alert('No missing tracks to queue');
+      return;
+    }
+
+    // Queue each missing track
+    let queuedCount = 0;
+    for (const track of missingTracks) {
+      try {
+        const response = await fetch('/api/downloads/queue', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: track.title || '',
+            artist: artist,
+            album: track.release_title || '',
+            source: 'musicbrainz',
+            status: 'queued'
+          })
+        });
+
+        if (response.ok) {
+          queuedCount++;
+        }
+      } catch (error) {
+        console.error(`Failed to queue track ${track.title}:`, error);
+      }
+    }
+
+    if (queuedCount > 0) {
+      alert(`Successfully queued ${queuedCount}/${missingTracks.length} missing tracks`);
+      // Refresh queue display
+      setTimeout(loadQueueStatus, 500);
+      // Close modal
+      const modal = bootstrap.Modal.getInstance(document.getElementById('releaseTracklistModal'));
+      if (modal) modal.hide();
+    } else {
+      alert('Failed to queue any tracks');
+    }
+  } catch (error) {
+    console.error('Error queuing missing tracks:', error);
+    alert(`Error: ${error.message}`);
   }
 }
 
