@@ -294,16 +294,21 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         Queue item dict or None if failed
     """
     try:
-        # Prefer the app-level DB connector so PostgreSQL settings are honored.
-        # Fallback to local SQLite connector for standalone usage.
+        # Use the instance-configured DB method.
+        # If PostgreSQL is configured but cannot be resolved, fail fast instead of silently falling back to SQLite.
         is_pg = False
+        pg_configured = bool(os.environ.get("PG_HOST") and os.environ.get("PG_USER") and os.environ.get("PG_DATABASE"))
         try:
             from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
             conn = app_get_db()
             is_pg = bool(app_is_postgres_connection(conn))
         except Exception:
+            if pg_configured:
+                raise RuntimeError("PostgreSQL is configured for this instance, but queue manager could not acquire app DB connection")
             conn = get_db()
         cursor = conn.cursor()
+
+        logger.debug(f"[add_to_queue] Using {'PostgreSQL' if is_pg else 'SQLite'} backend")
         
         # Validate inputs
         if not artist or not title:
