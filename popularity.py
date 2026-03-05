@@ -5786,11 +5786,19 @@ def popularity_scan(
                                 log_info(f"5-star assignment: {title} (high-confidence single, zscore={track_zscore:.2f})")
                                 log_debug(f"High confidence single detected - track_id: {track_id}")
                             elif single_confidence == "popular":
-                                # Popular status: z-score > 2.0 without detection sources
-                                stars = 5
-                                is_popularity_based_5star = True
-                                log_info(f"5-star assignment: {title} (popular status - z-score={track_zscore:.2f} without metadata sources)")
-                                log_debug(f"Popular status track - track_id: {track_id}, zscore: {track_zscore:.2f}, is_single: {is_single}")
+                                # Backward-compatibility guard:
+                                # older scans may have persisted "popular" on many tracks.
+                                # Only honor it when the *current* album z-score is still a strong outlier.
+                                if track_zscore >= popularity_5star_z_threshold:
+                                    stars = 5
+                                    is_popularity_based_5star = True
+                                    log_info(f"5-star assignment: {title} (popular status - z-score={track_zscore:.2f} without metadata sources)")
+                                    log_debug(f"Popular status track - track_id: {track_id}, zscore: {track_zscore:.2f}, is_single: {is_single}")
+                                else:
+                                    log_info(
+                                        f"Ignoring stale popular status for {title} "
+                                        f"(current zscore={track_zscore:.2f} < {popularity_5star_z_threshold:.2f}); using baseline stars"
+                                    )
                             elif single_confidence == "medium":
                                 # Medium confidence: z-score determines requirements
                                 if track_zscore > 1.0:
