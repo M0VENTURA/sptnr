@@ -3661,6 +3661,15 @@ def popularity_scan(
                 log_debug(f"Missing releases lookup failed for {artist}: {e}")
             
             album_num = 0
+            total_albums = len(albums)
+            single_detection_albums_processed = 0
+            
+            # Calculate milestones for single detection progress tracking
+            single_detection_milestone_25 = int(total_albums * 0.25) if total_albums > 0 else 0
+            single_detection_milestone_50 = int(total_albums * 0.50) if total_albums > 0 else 0
+            single_detection_milestone_75 = int(total_albums * 0.75) if total_albums > 0 else 0
+            single_detection_milestones_logged = set()
+            
             for album, album_tracks in albums.items():
                 if _stop_requested():
                     log_info(f"Stop requested via progress file; exiting during artist '{artist}'")
@@ -6168,6 +6177,23 @@ def popularity_scan(
                                 log_unified(f"Single Detection Scan - ===== {album} - Rest of Album =====")
                                 for track_artist, title, stars, reason in rest_of_album:
                                     log_unified(f"Single Detection Scan - {stars} {track_artist} - {title}{reason}")
+                            
+                            # Track single detection progress (after logging results for this album)
+                            single_detection_albums_processed += 1
+                            
+                            # Check milestones for single detection progress
+                            if single_detection_albums_processed == single_detection_milestone_25 and 25 not in single_detection_milestones_logged:
+                                log_unified(f"Single Detection Scan - 25% completed - {single_detection_albums_processed}/{total_albums} albums")
+                                log_debug(f"Single detection progress milestone - 25% completed for artist '{artist}'")
+                                single_detection_milestones_logged.add(25)
+                            elif single_detection_albums_processed == single_detection_milestone_50 and 50 not in single_detection_milestones_logged:
+                                log_unified(f"Single Detection Scan - 50% completed - {single_detection_albums_processed}/{total_albums} albums")
+                                log_debug(f"Single detection progress milestone - 50% completed for artist '{artist}'")
+                                single_detection_milestones_logged.add(50)
+                            elif single_detection_albums_processed == single_detection_milestone_75 and 75 not in single_detection_milestones_logged:
+                                log_unified(f"Single Detection Scan - 75% completed - {single_detection_albums_processed}/{total_albums} albums")
+                                log_debug(f"Single detection progress milestone - 75% completed for artist '{artist}'")
+                                single_detection_milestones_logged.add(75)
                         except Exception as e:
                             log_debug(f"Exception logging album results for {album}: {type(e).__name__}: {str(e)}")
                         
