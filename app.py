@@ -12942,6 +12942,59 @@ def api_downloads_get_queue():
         return jsonify({"error": str(e)}), 400
 
 
+@app.route("/api/downloads/clear-queue", methods=["POST"])
+def api_downloads_clear_queue():
+    """Clear all items from the downloads monitor queue"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        
+        # Check if tables exist
+        if not _table_exists(cursor, 'folder_album_matches', is_postgres=is_pg):
+            conn.close()
+            return jsonify({
+                "success": True,
+                "folder_matches_deleted": 0,
+                "track_matches_deleted": 0,
+                "message": "folder_album_matches table not found"
+            })
+        
+        if not _table_exists(cursor, 'folder_track_matches', is_postgres=is_pg):
+            conn.close()
+            return jsonify({
+                "success": True,
+                "folder_matches_deleted": 0,
+                "track_matches_deleted": 0,
+                "message": "folder_track_matches table not found"
+            })
+        
+        # Count before deleting
+        cursor.execute("SELECT COUNT(*) FROM folder_album_matches")
+        folder_count = _row_get(cursor.fetchone(), 0, 0)
+        
+        cursor.execute("SELECT COUNT(*) FROM folder_track_matches")
+        track_count = _row_get(cursor.fetchone(), 0, 0)
+        
+        # Delete all entries
+        cursor.execute("DELETE FROM folder_track_matches")
+        cursor.execute("DELETE FROM folder_album_matches")
+        
+        conn.commit()
+        conn.close()
+        
+        logging.info(f"[CLEAR_QUEUE] Removed {folder_count} folder matches and {track_count} track matches")
+        
+        return jsonify({
+            "success": True,
+            "folder_matches_deleted": folder_count,
+            "track_matches_deleted": track_count
+        })
+    except Exception as e:
+        logging.error(f"Clear queue error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/debug/downloads/queue-stats", methods=["GET"])
 def api_debug_queue_stats():
     """Debug endpoint to check queue table statistics"""

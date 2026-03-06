@@ -249,7 +249,7 @@
 
   <!-- Queue Status Cards -->
   <div class="row g-3 mb-4">
-    <div class="col-md-3">
+    <div class="col-md-2">
       <div class="card text-center h-100">
         <div class="card-body">
           <div class="text-muted small mb-2">Active Downloads</div>
@@ -257,7 +257,7 @@
         </div>
       </div>
     </div>
-    <div class="col-md-3">
+    <div class="col-md-2">
       <div class="card text-center h-100">
         <div class="card-body">
           <div class="text-muted small mb-2">Ready to Organize</div>
@@ -265,7 +265,7 @@
         </div>
       </div>
     </div>
-    <div class="col-md-3">
+    <div class="col-md-2">
       <div class="card text-center h-100">
         <div class="card-body">
           <div class="text-muted small mb-2">Failed</div>
@@ -273,9 +273,22 @@
         </div>
       </div>
     </div>
-    <div class="col-md-3">
+    <div class="col-md-2">
+      <div class="card text-center h-100">
+        <div class="card-body">
+          <div class="text-muted small mb-2">Total Items</div>
+          <h4 class="mb-0" id="queueTotalCount">0</h4>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-2">
       <button class="btn btn-outline-primary w-100 h-100" onclick="loadQueueStatus()">
         <i class="bi bi-arrow-clockwise"></i> Refresh
+      </button>
+    </div>
+    <div class="col-md-2">
+      <button class="btn btn-outline-danger w-100 h-100" onclick="clearQueue()">
+        <i class="bi bi-trash"></i> Clear Queue
       </button>
     </div>
   </div>
@@ -2385,6 +2398,37 @@ async function moveMatchedFolder(folderPath) {
   }
 }
 
+async function clearQueue() {
+  if (!confirm('Are you sure you want to clear all items from the downloads queue? This will remove all tracked folders and releases. Files on disk will not be deleted.')) {
+    return;
+  }
+  
+  try {
+    const response = await fetch('/api/downloads/clear-queue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Server returned ${response.status}`);
+    }
+    
+    const data = await response.json();
+    
+    if (data.success) {
+      alert(`✅ Queue cleared successfully!\n\nRemoved:\n- ${data.folder_matches_deleted} folder matches\n- ${data.track_matches_deleted} track matches`);
+      
+      // Reload the page to refresh all displays
+      window.location.reload();
+    } else {
+      throw new Error(data.error || 'Failed to clear queue');
+    }
+  } catch (error) {
+    console.error('Error clearing queue:', error);
+    alert('❌ Error clearing queue: ' + error.message);
+  }
+}
+
 async function loadQueueStatus() {
   try {
     const data = await fetchJsonOrThrow('/api/downloads/queue?limit=500');
@@ -2411,6 +2455,7 @@ async function loadQueueStatus() {
     document.getElementById('queueActiveCount').textContent = active.length;
     document.getElementById('queueCompletedCount').textContent = completed.length;
     document.getElementById('queueFailedCount').textContent = failed.length;
+    document.getElementById('queueTotalCount').textContent = queue.length;
     
     // Keep counts only; queue rows are rendered inline inside folder groups section.
     const activeContainer = document.getElementById('activeQueueList');
