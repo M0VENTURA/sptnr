@@ -1748,10 +1748,10 @@ def download_and_save_album_art(artist: str, album: str, art_url: str, conn=None
                     downloaded_at = EXCLUDED.downloaded_at
             """, (artist, album, image_data, "image/jpeg", source))
         else:
-            cursor.execute(f"""
+            cursor.execute("""
                 INSERT OR REPLACE INTO album_art 
                 (artist_name, album_name, image_data, image_mime_type, source, downloaded_at)
-                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """, (artist, album, image_data, "image/jpeg", source))
         
         # Only commit if we created our own connection
