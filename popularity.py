@@ -5534,17 +5534,17 @@ def popularity_scan(
                         if stars_value is not None:
                             # Set both single status and stars for detected singles
                             cursor.execute(
-                                """UPDATE tracks 
-                                SET is_single = %s, single_confidence = %s, single_sources = %s, stars = %s
-                                WHERE id = %s""",
+                                f"""UPDATE tracks 
+                                SET is_single = {placeholder}, single_confidence = {placeholder}, single_sources = {placeholder}, stars = {placeholder}
+                                WHERE id = {placeholder}""",
                                 (is_single, single_confidence, single_sources, stars_value, track_id)
                             )
                         else:
                             # Only set single status if no stars update needed
                             cursor.execute(
-                                """UPDATE tracks 
-                                SET is_single = %s, single_confidence = %s, single_sources = %s
-                                WHERE id = %s""",
+                                f"""UPDATE tracks 
+                                SET is_single = {placeholder}, single_confidence = {placeholder}, single_sources = {placeholder}
+                                WHERE id = {placeholder}""",
                                 (is_single, single_confidence, single_sources, track_id)
                             )
                     conn.commit()
@@ -6015,7 +6015,7 @@ def popularity_scan(
                         if stars == 5:  # Only for 5-star tracks
                             # Fetch the single_confidence for this track
                             cursor.execute(
-                                "SELECT single_confidence, is_single FROM tracks WHERE id = %s",
+                                f"SELECT single_confidence, is_single FROM tracks WHERE id = {placeholder}",
                                 (track_id,)
                             )
                             single_row = cursor.fetchone()
@@ -6432,20 +6432,20 @@ def detect_covers_for_artist(artist_name: str, conn: sqlite3.Connection) -> int:
                 other_artist_name = other_artist[0]
                 reason = f"Cover detected: Original by '{other_artist_name}' (composer: '{composer}')"
                 
-                cursor.execute("""
+                cursor.execute(f"""
                     UPDATE tracks
-                    SET is_cover = 1, is_cover_reason = %s
-                    WHERE id = %s
+                    SET is_cover = 1, is_cover_reason = {placeholder}
+                    WHERE id = {placeholder}
                 """, (reason, track_id))
                 
                 log_debug(f"Cover detected: '{title}' by '{artist_name}' is a cover of original by '{other_artist_name}'")
                 covers_detected += 1
             else:
                 # No other artist found - clear cover flag if it was previously set
-                cursor.execute("""
+                cursor.execute(f"""
                     UPDATE tracks
                     SET is_cover = 0, is_cover_reason = NULL
-                    WHERE id = %s
+                    WHERE id = {placeholder}
                 """, (track_id,))
         
         if covers_detected > 0:
