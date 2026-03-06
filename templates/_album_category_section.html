@@ -81,9 +81,6 @@
         <button class="btn btn-outline-info" onclick='toggleTracklist({{ artist_name|tojson }}, {{ (album.album or album.title)|tojson }})' title="Show tracklist" id="toggle-btn-{{ safe_artist }}-{{ safe_album }}">
           <i class="bi bi-list-ul"></i>
         </button>
-        <button class="btn btn-outline-primary" onclick="openDownloadSearch({{ artist_name|tojson }}, {{ (album.album or album.title)|tojson }})" title="Search for download">
-          <i class="bi bi-search"></i>
-        </button>
         <a class="btn btn-outline-secondary" href="{{ url_for('album_detail', artist=artist_name, album=album.album) }}" title="View album">
           <i class="bi bi-arrow-right"></i>
         </a>

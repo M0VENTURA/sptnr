@@ -11734,6 +11734,8 @@ def api_album_tracklist():
         log_debug(f"Checking local database for tracklist: {artist} - {album}")
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         
         # Get tracks from the album in the database.
         # Prefer album artist identity; fall back to track artist for legacy rows.
@@ -11742,7 +11744,7 @@ def api_album_tracklist():
             cursor.execute(f"""
                 SELECT id, title, track_number, duration, artist
                 FROM tracks
-                WHERE {artist_clause} = ? AND album = ?
+                WHERE {artist_clause} = {placeholder} AND album = {placeholder}
                 ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 999), title COLLATE NOCASE
             """, (artist, album))
             db_tracks = cursor.fetchall()
@@ -11920,10 +11922,12 @@ def api_album_tracklist_match():
         log_debug(f"Matching tracklist for {artist} - {album}")
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         
         # Get all tracks for this album from the database
-        cursor.execute("""
-            SELECT title FROM tracks WHERE artist = ? AND album = ?
+        cursor.execute(f"""
+            SELECT title FROM tracks WHERE artist = {placeholder} AND album = {placeholder}
             ORDER BY track_number ASC, title ASC
         """, (artist, album))
         
@@ -11944,8 +11948,8 @@ def api_album_tracklist_match():
         # If no tracks found in database, fall back to checking all artist tracks
         log_debug(f"No album tracks found in database, checking all tracks for artist {artist}")
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT title FROM tracks WHERE artist = ?
+        cursor.execute(f"""
+            SELECT title FROM tracks WHERE artist = {placeholder}
         """, (artist,))
         
         library_tracks = {row['title'].lower(): True for row in cursor.fetchall()}
