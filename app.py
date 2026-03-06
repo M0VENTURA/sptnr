@@ -12953,46 +12953,50 @@ def api_downloads_clear_queue():
         conn = get_db()
         cursor = conn.cursor()
         is_pg = _is_postgres_connection(conn)
-        
-        # Check if tables exist
-        if not _table_exists(cursor, 'folder_album_matches', is_postgres=is_pg):
-            conn.close()
-            return jsonify({
-                "success": True,
-                "folder_matches_deleted": 0,
-                "track_matches_deleted": 0,
-                "message": "folder_album_matches table not found"
-            })
-        
-        if not _table_exists(cursor, 'folder_track_matches', is_postgres=is_pg):
-            conn.close()
-            return jsonify({
-                "success": True,
-                "folder_matches_deleted": 0,
-                "track_matches_deleted": 0,
-                "message": "folder_track_matches table not found"
-            })
-        
-        # Count before deleting
-        cursor.execute("SELECT COUNT(*) FROM folder_album_matches")
-        folder_count = _row_get(cursor.fetchone(), 0, 0)
-        
-        cursor.execute("SELECT COUNT(*) FROM folder_track_matches")
-        track_count = _row_get(cursor.fetchone(), 0, 0)
-        
-        # Delete all entries
-        cursor.execute("DELETE FROM folder_track_matches")
-        cursor.execute("DELETE FROM folder_album_matches")
+
+        folder_count = 0
+        track_count = 0
+        queue_count = 0
+
+        has_folder_albums = _table_exists(cursor, 'folder_album_matches', is_postgres=is_pg)
+        has_folder_tracks = _table_exists(cursor, 'folder_track_matches', is_postgres=is_pg)
+        has_download_queue = _table_exists(cursor, 'download_queue', is_postgres=is_pg)
+
+        # Count before deleting (only for tables that exist).
+        if has_folder_albums:
+            cursor.execute("SELECT COUNT(*) FROM folder_album_matches")
+            folder_count = _row_get(cursor.fetchone(), 0, 0)
+
+        if has_folder_tracks:
+            cursor.execute("SELECT COUNT(*) FROM folder_track_matches")
+            track_count = _row_get(cursor.fetchone(), 0, 0)
+
+        if has_download_queue:
+            cursor.execute("SELECT COUNT(*) FROM download_queue")
+            queue_count = _row_get(cursor.fetchone(), 0, 0)
+
+        # Delete dependent rows first, then parent rows.
+        if has_folder_tracks:
+            cursor.execute("DELETE FROM folder_track_matches")
+        if has_folder_albums:
+            cursor.execute("DELETE FROM folder_album_matches")
+
+        # Clear queue rows that are rendered inline in Downloads Organized by Folder.
+        if has_download_queue:
+            cursor.execute("DELETE FROM download_queue")
         
         conn.commit()
         conn.close()
         
-        logging.info(f"[CLEAR_QUEUE] Removed {folder_count} folder matches and {track_count} track matches")
+        logging.info(
+            f"[CLEAR_QUEUE] Removed {folder_count} folder matches, {track_count} track matches, and {queue_count} queue items"
+        )
         
         return jsonify({
             "success": True,
             "folder_matches_deleted": folder_count,
-            "track_matches_deleted": track_count
+            "track_matches_deleted": track_count,
+            "queue_items_deleted": queue_count
         })
     except Exception as e:
         logging.error(f"Clear queue error: {e}")

@@ -2416,7 +2416,8 @@ async function clearQueue() {
     const data = await response.json();
     
     if (data.success) {
-      alert(`✅ Queue cleared successfully!\n\nRemoved:\n- ${data.folder_matches_deleted} folder matches\n- ${data.track_matches_deleted} track matches`);
+      const queueItemsDeleted = Number(data.queue_items_deleted || 0);
+      alert(`✅ Queue cleared successfully!\n\nRemoved:\n- ${queueItemsDeleted} queue items\n- ${data.folder_matches_deleted} folder matches\n- ${data.track_matches_deleted} track matches`);
       
       // Reload the page to refresh all displays
       window.location.reload();
