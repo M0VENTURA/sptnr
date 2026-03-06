@@ -1381,8 +1381,57 @@ async function loadFolderGroups(options = {}) {
     ];
     const queueItemsToShow = queue.filter(item => queueStatusesToShowInline.includes(item.status));
     
-    // Create pseudo-groups from queue items
-    const queueGroups = queueItemsToShow.map((item, idx) => ({
+    // Group queue items by release_id when present (for MusicBrainz releases)
+    const releaseGroups = {};
+    const individualItems = [];
+    
+    queueItemsToShow.forEach(item => {
+      if (item.release_id) {
+        // Group by release_id for album releases
+        if (!releaseGroups[item.release_id]) {
+          releaseGroups[item.release_id] = {
+            release_id: item.release_id,
+            release_source: item.release_source,
+            artist: item.artist || '',
+            album: item.album || '',
+            tracks: []
+          };
+        }
+        releaseGroups[item.release_id].tracks.push({
+          id: item.id,
+          status: item.status,
+          source: item.source || 'soulseek',
+          title: item.title || '',
+          artist: item.artist || '',
+          album: item.album || '',
+          filename: item.title || '',
+          file_path: '',
+          track_number: item.track_number
+        });
+      } else {
+        // Individual queue items without release_id
+        individualItems.push(item);
+      }
+    });
+    
+    // Create pseudo-groups from release groups
+    const releaseQueueGroups = Object.values(releaseGroups).map(release => ({
+      folder_path: `__release_${release.release_id}__`,
+      folder_name: `[Queue] ${release.artist || 'Unknown'} - ${release.album || 'Unknown'}`,
+      artist: release.artist,
+      album: release.album,
+      track_count: release.tracks.length,
+      is_queue_item: true,
+      is_release_group: true,
+      release_id: release.release_id,
+      release_source: release.release_source,
+      queue_item_status: release.tracks[0]?.status || 'queued',
+      tracks: release.tracks.sort((a, b) => (a.track_number || 0) - (b.track_number || 0)),
+      is_musicbrainz_release: release.release_source === 'musicbrainz'
+    }));
+    
+    // Create pseudo-groups from individual queue items
+    const individualQueueGroups = individualItems.map((item, idx) => ({
       folder_path: `__queue_item_${item.id}__`,
       folder_name: `[Queue] ${item.artist || 'Unknown'} - ${(item.album || item.title || 'Unknown')}`,
       artist: item.artist || '',
@@ -1404,7 +1453,8 @@ async function loadFolderGroups(options = {}) {
       is_musicbrainz_release: false
     }));
     
-    // Merge queue items with folder groups
+    // Merge all groups: release groups + individual items + folder groups
+    const queueGroups = [...releaseQueueGroups, ...individualQueueGroups];
     groups = [...groups, ...queueGroups];
     
     console.log('[loadFolderGroups] API Response:', {
