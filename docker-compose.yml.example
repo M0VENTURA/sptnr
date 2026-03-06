@@ -12,6 +12,7 @@ services:
     entrypoint: ["./entrypoint.sh"]
 
     environment:
+      - TZ=Australia/Melbourne             #Container timezone
       - NAV_BASE_URL=                      #URL That Navidrome is hosted
       - NAV_USER=                          #Navidrome User that you want to sync ratings for
       - NAV_PASS=                          #Navidrome Password
