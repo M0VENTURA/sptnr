@@ -1664,6 +1664,7 @@ async function loadFolderGroups(options = {}) {
                       <th>#</th>
                       <th>Title</th>
                       <th>Duration</th>
+                      ${isQueueItem ? '<th style="width: 100px; text-align: center;">Status</th>' : ''}
                       <th style="width: 100px; text-align: center;">Actions</th>
                     </tr>
                   </thead>
@@ -1773,6 +1774,19 @@ async function loadFolderGroups(options = {}) {
                         <td><span style="font-size: 14px; font-weight: 500;">${trackIcon}${track.track_number || '-'}</span></td>
                         <td><span style="font-size: 14px;">${escapeHtml(track.title || 'Unknown')}</span>${mappingHint}</td>
                         <td><span style="font-size: 14px;">${duration}</span></td>
+                        ${isQueueItem ? (() => {
+                          const trackStatus = String(track.status || group.queue_item_status || 'queued').toLowerCase();
+                          const statusMap = {
+                            queued: ['secondary', 'Queued'],
+                            searching: ['info', 'Searching'],
+                            downloading: ['primary', 'Downloading'],
+                            completed: ['success', 'Completed'],
+                            discovered: ['warning', 'Discovered'],
+                            failed: ['danger', 'Failed']
+                          };
+                          const statusPair = statusMap[trackStatus] || ['secondary', trackStatus || 'Unknown'];
+                          return `<td style="text-align: center;"><span class="badge bg-${statusPair[0]}"><i class="bi bi-hourglass-split"></i> ${statusPair[1]}</span></td>`;
+                        })() : ''}
                         <td style="text-align: center; min-width: 120px;">${moveButtonHtml}</td>
                       </tr>`;
               });
