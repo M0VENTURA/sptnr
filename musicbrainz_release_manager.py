@@ -476,9 +476,8 @@ class MusicBrainzReleaseManager:
                             cursor.execute(f"""
                                 INSERT INTO tracks
                                 (id, artist, album, title, track_number, duration, isrc,
-                                 download_status, created_at, updated_at)
-                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'downloading',
-                                       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                                 download_status)
+                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'downloading')
                                 ON CONFLICT (id) DO UPDATE SET
                                     artist = EXCLUDED.artist,
                                     album = EXCLUDED.album,
@@ -486,17 +485,15 @@ class MusicBrainzReleaseManager:
                                     track_number = EXCLUDED.track_number,
                                     duration = EXCLUDED.duration,
                                     isrc = EXCLUDED.isrc,
-                                    download_status = EXCLUDED.download_status,
-                                    updated_at = CURRENT_TIMESTAMP
+                                    download_status = EXCLUDED.download_status
                             """, (track_id, track_artist, album, track_title,
                                   track_number, duration, isrc))
                         else:
                             cursor.execute(f"""
                                 INSERT OR REPLACE INTO tracks
                                 (id, artist, album, title, track_number, duration, isrc,
-                                 download_status, created_at, updated_at)
-                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'downloading',
-                                       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                                 download_status)
+                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'downloading')
                             """, (track_id, track_artist, album, track_title,
                                   track_number, duration, isrc))
                         
