@@ -16509,10 +16509,10 @@ def api_album_track_recommendations(artist, album):
         cursor.execute("""
             SELECT 
                 id, title, artist, track_number,
-                spotify_genres, spotify_artist_genres,
+                spotify_genres,
                 lastfm_tags,
-                discogs_genres, discogs_artist_genres,
-                musicbrainz_genres, musicbrainz_artist_genres,
+                discogs_genres,
+                musicbrainz_genres,
                 navidrome_genres
             FROM tracks
             WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ?
@@ -16538,13 +16538,10 @@ def api_album_track_recommendations(artist, album):
             # Parse each genre field
             genre_fields = {
                 'spotify_genres': track['spotify_genres'] if isinstance(track, dict) else track[4],
-                'spotify_artist_genres': track['spotify_artist_genres'] if isinstance(track, dict) else track[5],
-                'lastfm_tags': track['lastfm_tags'] if isinstance(track, dict) else track[6],
-                'discogs_genres': track['discogs_genres'] if isinstance(track, dict) else track[7],
-                'discogs_artist_genres': track['discogs_artist_genres'] if isinstance(track, dict) else track[8],
-                'musicbrainz_genres': track['musicbrainz_genres'] if isinstance(track, dict) else track[9],
-                'musicbrainz_artist_genres': track['musicbrainz_artist_genres'] if isinstance(track, dict) else track[10],
-                'navidrome_genres': track['navidrome_genres'] if isinstance(track, dict) else track[11],
+                'lastfm_tags': track['lastfm_tags'] if isinstance(track, dict) else track[5],
+                'discogs_genres': track['discogs_genres'] if isinstance(track, dict) else track[6],
+                'musicbrainz_genres': track['musicbrainz_genres'] if isinstance(track, dict) else track[7],
+                'navidrome_genres': track['navidrome_genres'] if isinstance(track, dict) else track[8],
             }
             
             # Extract genres from all fields
@@ -16803,15 +16800,28 @@ def api_album_spotify_genres():
         # Get Spotify artist genres from tracks in this album
         conn = get_db()
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT DISTINCT spotify_artist_genres
-            FROM tracks
-            WHERE artist = ? AND album = ? 
-            AND spotify_artist_genres IS NOT NULL 
-            AND spotify_artist_genres != ''
-        """, (artist, album))
         
-        genre_rows = cursor.fetchall()
+        # Try to get spotify_artist_genres column, fall back to spotify_genres if column doesn't exist
+        try:
+            cursor.execute("""
+                SELECT DISTINCT spotify_artist_genres
+                FROM tracks
+                WHERE artist = ? AND album = ? 
+                AND spotify_artist_genres IS NOT NULL 
+                AND spotify_artist_genres != ''
+            """, (artist, album))
+            genre_rows = cursor.fetchall()
+        except Exception:
+            # Fallback if spotify_artist_genres column doesn't exist
+            cursor.execute("""
+                SELECT DISTINCT spotify_genres
+                FROM tracks
+                WHERE artist = ? AND album = ? 
+                AND spotify_genres IS NOT NULL 
+                AND spotify_genres != ''
+            """, (artist, album))
+            genre_rows = cursor.fetchall()
+        
         conn.close()
         
         # Aggregate unique genres
