@@ -4576,13 +4576,15 @@ def api_get_album_genres(album, artist):
         
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         
         # Get all tracks for this album
         tracks = []
         for artist_clause in ["COALESCE(NULLIF(album_artist, ''), artist)", "artist"]:
             cursor.execute(f"""
                 SELECT * FROM tracks
-                WHERE {artist_clause} = ? AND album = ?
+                WHERE {artist_clause} = {placeholder} AND album = {placeholder}
                 ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 999)
             """, (artist, album))
             
@@ -5601,12 +5603,14 @@ def album_detail(artist, album):
         # Query by COALESCE(album_artist, artist) to match how artists are listed
         # Use NULLIF to treat empty strings as NULL for proper COALESCE behavior
         # Try both COALESCE and plain artist for backwards compatibility with old links
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         tracks_data = None
         for artist_clause in ["COALESCE(NULLIF(album_artist, ''), artist)", "artist"]:
             cursor.execute(f"""
                 SELECT *
                 FROM tracks
-                WHERE {artist_clause} = ? AND album = ?
+                WHERE {artist_clause} = {placeholder} AND album = {placeholder}
                 ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 999), title COLLATE NOCASE
             """, (artist, album))
             tracks_data = cursor.fetchall()
@@ -16506,7 +16510,9 @@ def api_album_track_recommendations(artist, album):
         cursor = conn.cursor()
         
         # Get all tracks in the album with their metadata and genres
-        cursor.execute("""
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+        cursor.execute(f"""
             SELECT 
                 id, title, artist, track_number,
                 spotify_genres,
@@ -16515,7 +16521,7 @@ def api_album_track_recommendations(artist, album):
                 musicbrainz_genres,
                 navidrome_genres
             FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ?
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
             ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 999), title COLLATE NOCASE
         """, (artist, album))
         
