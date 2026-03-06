@@ -5459,7 +5459,7 @@ def popularity_scan(
                         # Automatically set stars to 5 for detected singles
                         stars_for_single = 5 if is_single else None
                         singles_updates.append((
-                            1 if is_single else 0,
+                            bool(is_single),
                             single_confidence,
                             json.dumps(unique_sources),  # Use deduplicated sources
                             stars_for_single,
@@ -6006,18 +6006,20 @@ def popularity_scan(
                     
                     # Tag all 5-star medium+ confidence singles
                     if five_star_singles_to_tag:
+                        single_true_value = True if is_postgres_connection(conn) else 1
                         cursor.executemany(
-                            """UPDATE tracks SET is_single = 1 WHERE id = %s""",
-                            ((track_id,) for track_id in five_star_singles_to_tag)
+                            f"""UPDATE tracks SET is_single = {placeholder} WHERE id = {placeholder}""",
+                            ((single_true_value, track_id) for track_id in five_star_singles_to_tag)
                         )
                         log_info(f"Tagged {len(five_star_singles_to_tag)} 5-star track(s) as singles (medium+ confidence)")
                         log_debug(f"5-star singles tagged: {five_star_singles_to_tag}")
                     
                     # Upgrade is_single flag for medium confidence tracks with 2+ sources
                     if single_upgrades:
+                        single_true_value = True if is_postgres_connection(conn) else 1
                         cursor.executemany(
-                            """UPDATE tracks SET is_single = 1 WHERE id = %s""",
-                            ((track_id,) for track_id in single_upgrades)
+                            f"""UPDATE tracks SET is_single = {placeholder} WHERE id = {placeholder}""",
+                            ((single_true_value, track_id) for track_id in single_upgrades)
                         )
                         log_info(f"Upgraded {len(single_upgrades)} medium-confidence track(s) to single status (2+ sources) without overriding star rating")
                         log_debug(f"Upgraded tracks: {single_upgrades}")
