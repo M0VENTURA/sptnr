@@ -35,6 +35,23 @@ logger = logging.getLogger(__name__)
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 
 
+def _is_postgres_connection(conn):
+    """Return True when the active DB connection is PostgreSQL."""
+    try:
+        from app import _is_postgres_connection as app_is_postgres_connection
+        return bool(app_is_postgres_connection(conn))
+    except Exception:
+        try:
+            import psycopg2
+            return isinstance(conn, psycopg2.extensions.connection)
+        except Exception:
+            return False
+
+
+def _get_placeholder(conn):
+    return "%s" if _is_postgres_connection(conn) else "?"
+
+
 def resolve_downloads_dir():
     """Resolve downloads directory from env/config with safe fallback."""
     def _prefer_music_subfolder(path: str) -> str:
@@ -68,20 +85,26 @@ def resolve_downloads_dir():
 DOWNLOADS_DIR = resolve_downloads_dir()
 
 def get_db():
-    """Get database connection"""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    """Get database connection using app backend (PostgreSQL or SQLite)."""
+    try:
+        from app import get_db as app_get_db
+        return app_get_db()
+    except Exception:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        return conn
 
 def get_slskd_client():
     """Get configured SlskdClient instance"""
     try:
         import yaml
         
-        # Try both .yml and .yaml extensions
-        config_path = "/config/config.yml"
-        if not os.path.exists(config_path):
-            config_path = "/config/config.yaml"
+        # Prefer explicit CONFIG_PATH, then try common defaults.
+        config_path = os.environ.get("CONFIG_PATH", "").strip()
+        if not config_path:
+            config_path = "/config/config.yml"
+            if not os.path.exists(config_path):
+                config_path = "/config/config.yaml"
         
         if not os.path.exists(config_path):
             logger.error(f"Config file not found (tried config.yml and config.yaml)")
@@ -112,6 +135,7 @@ def cleanup_stuck_searching_items():
     try:
         conn = get_db()
         cursor = conn.cursor()
+        placeholder = _get_placeholder(conn)
         
         # Items stuck in 'searching' for more than 90 seconds are likely hung
         stuck_threshold = (datetime.now() - timedelta(seconds=90)).isoformat()
@@ -119,8 +143,8 @@ def cleanup_stuck_searching_items():
         cursor.execute("""
             SELECT id, artist, title, updated_at FROM download_queue
             WHERE status = 'searching'
-            AND updated_at < ?
-        """, (stuck_threshold,))
+            AND updated_at < {placeholder}
+        """.format(placeholder=placeholder), (stuck_threshold,))
         
         stuck_items = cursor.fetchall()
         
@@ -155,6 +179,7 @@ def get_queued_items(limit=10):
         
         conn = get_db()
         cursor = conn.cursor()
+        placeholder = _get_placeholder(conn)
         
         now = datetime.now().isoformat()
         
@@ -162,11 +187,11 @@ def get_queued_items(limit=10):
         cursor.execute("""
             SELECT * FROM download_queue 
             WHERE status = 'queued'
-            AND (next_retry_at IS NULL OR next_retry_at <= ?)
+            AND (next_retry_at IS NULL OR next_retry_at <= {placeholder})
             AND source = 'soulseek'
             ORDER BY priority ASC, retry_count ASC, next_retry_at ASC, created_at ASC
-            LIMIT ?
-        """, (now, limit))
+            LIMIT {placeholder}
+        """.format(placeholder=placeholder), (now, limit))
         
         items = [dict(row) for row in cursor.fetchall()]
         conn.close()
@@ -182,21 +207,22 @@ def update_queue_status(queue_id, status, **kwargs):
     try:
         conn = get_db()
         cursor = conn.cursor()
+        placeholder = _get_placeholder(conn)
         
-        updates = ["status = ?"]
+        updates = [f"status = {placeholder}"]
         params = [status]
         
         # Add any additional fields to update
         for key, value in kwargs.items():
             if key in ['found_filename', 'file_path', 'failure_reason', 'retry_count', 
                        'last_failure_time', 'source_id']:
-                updates.append(f"{key} = ?")
+                updates.append(f"{key} = {placeholder}")
                 params.append(value)
         
         updates.append("updated_at = CURRENT_TIMESTAMP")
         params.append(queue_id)
         
-        query = f"UPDATE download_queue SET {', '.join(updates)} WHERE id = ?"
+        query = f"UPDATE download_queue SET {', '.join(updates)} WHERE id = {placeholder}"
         cursor.execute(query, params)
         conn.commit()
         conn.close()
@@ -213,10 +239,11 @@ def increment_retry_count(queue_id, retry_delay_minutes=30):
     try:
         conn = get_db()
         cursor = conn.cursor()
+        placeholder = _get_placeholder(conn)
         
         # Get current retry count
-        cursor.execute("""
-            SELECT retry_count FROM download_queue WHERE id = ?
+        cursor.execute(f"""
+            SELECT retry_count FROM download_queue WHERE id = {placeholder}
         """, (queue_id,))
         
         row = cursor.fetchone()
@@ -228,10 +255,10 @@ def increment_retry_count(queue_id, retry_delay_minutes=30):
         
         next_retry = datetime.now() + timedelta(minutes=retry_delay_minutes)
         
-        cursor.execute("""
+        cursor.execute(f"""
             UPDATE download_queue 
-            SET retry_count = ?, next_retry_at = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
+            SET retry_count = {placeholder}, next_retry_at = {placeholder}, updated_at = CURRENT_TIMESTAMP
+            WHERE id = {placeholder}
         """, (retry_count, next_retry.isoformat(), queue_id))
         
         conn.commit()

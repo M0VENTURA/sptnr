@@ -3679,6 +3679,7 @@ def popularity_scan(
 
                 album_num += 1
                 album_scanned = 0  # Initialize before popularity section (may be skipped in singles_only)
+                skip_popularity_for_album = False
                 mb_writer_client = None
                 # Defensive defaults so downstream singles-detection context always has album type values.
                 # This prevents NameError regressions if stale variable names are referenced.
@@ -3735,7 +3736,7 @@ def popularity_scan(
                         log_unified(f'Popularity Scan - Skipping album "{album}" (scanned within last {album_skip_days} days)')
                         log_info(f'Album "{artist} - {album}" was already scanned within {album_skip_days} days')
                         skipped_count += 1
-                        continue
+                        skip_popularity_for_album = True
                     
                     log_unified(f'Popularity Scan - Scanning Album {album} ({album_num}/{len(albums)})')
                     log_info(f'Starting popularity scan for album: "{artist} - {album}"')
@@ -4236,7 +4237,7 @@ def popularity_scan(
 
                 
                 # In singles_only mode, skip all popularity scoring
-                if not singles_only:
+                if not singles_only and not skip_popularity_for_album:
                     # Batch updates for this album (commit once at end instead of per-track)
                     track_updates = []
                     writer_updates = []
@@ -4252,11 +4253,14 @@ def popularity_scan(
                 
                 else:
                     # Single-only mode: skip popularity processing, will do singles detection only
-                    log_info(f"Singles-only mode for album '{album}': all popularity processing skipped")
+                    if skip_popularity_for_album:
+                        log_info(f"Popularity already scanned for album '{album}'; running singles detection only")
+                    else:
+                        log_info(f"Singles-only mode for album '{album}': all popularity processing skipped")
                     track_updates = []
                     writer_updates = []
                 
-                if not singles_only:
+                if not singles_only and not skip_popularity_for_album:
                     for track in album_tracks:
                         track_id = track["id"]
                         title = track["title"]
