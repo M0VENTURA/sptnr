@@ -948,7 +948,9 @@ class MusicBrainzClient:
                 else:
                     time.sleep(1.0)
                 
-                # Search for recording with relationships
+                # Search for recording with both direct artist relationships and
+                # linked work relationships. Many lyricist/composer credits in
+                # MusicBrainz are attached to the Work entity, not the recording.
                 escaped_title = _escape_lucene_special_chars(title)
                 escaped_artist = _escape_lucene_special_chars(artist)
                 query = f'recording:"{escaped_title}" AND artist:"{escaped_artist}"'
@@ -956,7 +958,7 @@ class MusicBrainzClient:
                     "query": query,
                     "fmt": "json",
                     "limit": 1,
-                    "inc": "relationships"
+                    "inc": "artist-rels+work-rels"
                 }
                 
                 r = self.session.get(f"{self.base_url}recording/", params=params, headers=self.headers, timeout=(5, 10))
@@ -979,6 +981,17 @@ class MusicBrainzClient:
                         target = rel.get("artist", {})
                         if target and target.get("name"):
                             composers.append(target["name"])
+
+                    # Work relationships can contain nested writer/lyricist/composer
+                    # relations under rel['work']['relations'].
+                    work = rel.get("work", {})
+                    if work:
+                        for work_rel in work.get("relations", []) or []:
+                            work_rel_type = str(work_rel.get("type", "")).lower()
+                            if work_rel_type in ("composer", "writer", "lyricist"):
+                                work_target = work_rel.get("artist", {})
+                                if work_target and work_target.get("name"):
+                                    composers.append(work_target["name"])
                 
                 return list(dict.fromkeys(composers))  # Remove duplicates while preserving order
                 
