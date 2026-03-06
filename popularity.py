@@ -3684,6 +3684,20 @@ def popularity_scan(
                 # This prevents NameError regressions if stale variable names are referenced.
                 album_type_from_field = 'album'
                 pre_detected_album_type = 'album'
+
+                # PostgreSQL safeguard: if a previous album hit SQL error state,
+                # clear the failed transaction so this album can still run fully.
+                if is_pg and hasattr(conn, "get_transaction_status"):
+                    try:
+                        from psycopg2 import extensions as _pg_ext
+                        tx_status = conn.get_transaction_status()
+                        if tx_status == _pg_ext.TRANSACTION_STATUS_INERROR:
+                            conn.rollback()
+                            log_info(
+                                f"Recovered aborted PostgreSQL transaction before album scan: '{artist} - {album}'"
+                            )
+                    except Exception as e:
+                        log_debug(f"Failed PostgreSQL transaction-state check for '{artist} - {album}': {e}")
                 
                 # Fetch and store album tags from Last.fm
                 try:
