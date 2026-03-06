@@ -9245,8 +9245,8 @@ def api_musicbrainz_download():
                             except:
                                 pass
                         
-                        # Create search query for individual track
-                        search_query = f"{track_artist} {track_title}".strip()
+                        # Create search query for individual track (artist - title format, no album)
+                        search_query = f"{track_artist} - {track_title}".strip()
                         
                         # Add to download_queue
                         if is_pg:
