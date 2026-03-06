@@ -3508,8 +3508,9 @@ def api_apply_country_as_genre():
                     # Update database - use consistent delimiter
                     conn = get_db()
                     cursor = conn.cursor()
+                    placeholder = "%s" if _is_postgres_connection(conn) else "?"
                     new_genre = GENRE_DELIMITER.join(existing_genres)
-                    cursor.execute("UPDATE tracks SET genre = ? WHERE id = ?", (new_genre, track_id))
+                    cursor.execute(f"UPDATE tracks SET genre = {placeholder} WHERE id = {placeholder}", (new_genre, track_id))
                     conn.commit()
                     conn.close()
                     
@@ -3718,10 +3719,11 @@ def api_artist_singles_count():
         
         # Handle boolean type in PostgreSQL vs integer in SQLite
         is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         if is_pg:
-            cursor.execute("SELECT COUNT(*) as count FROM tracks WHERE artist = %s AND is_single = TRUE", (artist_name,))
+            cursor.execute(f"SELECT COUNT(*) as count FROM tracks WHERE artist = {placeholder} AND is_single = TRUE", (artist_name,))
         else:
-            cursor.execute("SELECT COUNT(*) as count FROM tracks WHERE artist = ? AND is_single = 1", (artist_name,))
+            cursor.execute(f"SELECT COUNT(*) as count FROM tracks WHERE artist = {placeholder} AND is_single = 1", (artist_name,))
         
         row = cursor.fetchone()
         conn.close()
@@ -4130,7 +4132,8 @@ def api_album_bulk_delete():
                                 logging.warning(f"[DELETE] Failed to delete MP3: {file_path} - {e}")
                     
                     # Delete from database
-                    cursor.execute("DELETE FROM tracks WHERE id = ?", (track_id,))
+                    placeholder = "%s" if _is_postgres_connection(conn) else "?"
+                    cursor.execute(f"DELETE FROM tracks WHERE id = {placeholder}", (track_id,))
                     deleted_count += 1
                     action = "and file(s)" if delete_files else "from database"
                     logging.info(f"[DELETE] Deleted track {track_id} {action}")
@@ -5416,9 +5419,10 @@ def api_add_artist():
     try:
         conn = get_db()
         cursor = conn.cursor()
+        placeholder = "%s" if _is_postgres_connection(conn) else "?"
         
         # Check if artist already exists in tracks
-        cursor.execute("SELECT COUNT(*) FROM tracks WHERE artist = ?", (artist_name,))
+        cursor.execute(f"SELECT COUNT(*) FROM tracks WHERE artist = {placeholder}", (artist_name,))
         result = cursor.fetchone()
         existing_count = result[0] if result else 0
         
@@ -5437,7 +5441,7 @@ def api_add_artist():
         # Get existing albums if artist exists
         existing_norm = set()
         if existing_count > 0:
-            cursor.execute("SELECT DISTINCT album FROM tracks WHERE artist = ?", (artist_name,))
+            cursor.execute(f"SELECT DISTINCT album FROM tracks WHERE artist = {placeholder}", (artist_name,))
             existing_albums = [row[0] for row in cursor.fetchall()]
             existing_norm = {_normalize_release_title(a) for a in existing_albums if a}
         
@@ -7285,8 +7289,9 @@ def api_delete_bookmark(bookmark_id):
     try:
         conn = get_db()
         cursor = conn.cursor()
+        placeholder = "%s" if _is_postgres_connection(conn) else "?"
         
-        cursor.execute("DELETE FROM bookmarks WHERE id = ?", (bookmark_id,))
+        cursor.execute(f"DELETE FROM bookmarks WHERE id = {placeholder}", (bookmark_id,))
         conn.commit()
         
         if cursor.rowcount == 0:
@@ -13636,7 +13641,8 @@ def api_downloads_folder_merge():
                     merged_count += 1
                 
                 # Delete secondary folder record
-                cursor.execute("DELETE FROM folder_album_matches WHERE id = ?", (secondary_id,))
+                placeholder = "%s" if _is_postgres_connection(conn) else "?"
+                cursor.execute(f"DELETE FROM folder_album_matches WHERE id = {placeholder}", (secondary_id,))
                 
                 logging.info(f"Merged folder {secondary_id} into {primary_id}")
                 
@@ -14032,8 +14038,9 @@ def api_queue_organize(queue_id):
         conn = get_db()
         cursor = conn.cursor()
         
-        cursor.execute("""
-            SELECT id, file_path, artist, album, title FROM download_queue WHERE id = ?
+        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        cursor.execute(f"""
+            SELECT id, file_path, artist, album, title FROM download_queue WHERE id = {placeholder}
         """, (queue_id,))
         
         item = cursor.fetchone()
@@ -14044,7 +14051,7 @@ def api_queue_organize(queue_id):
         
         if not item['file_path']:
             # No file path set - delete this orphaned item
-            cursor.execute("DELETE FROM download_queue WHERE id = ?", (queue_id,))
+            cursor.execute(f"DELETE FROM download_queue WHERE id = {placeholder}", (queue_id,))
             conn.commit()
             conn.close()
             return jsonify({"error": "File path missing - item removed from queue"}), 404
@@ -14055,7 +14062,7 @@ def api_queue_organize(queue_id):
         
         if not os.path.exists(file_path):
             # File was deleted - remove from queue
-            cursor.execute("DELETE FROM download_queue WHERE id = ?", (queue_id,))
+            cursor.execute(f"DELETE FROM download_queue WHERE id = {placeholder}", (queue_id,))
             conn.commit()
             conn.close()
             logging.info(f"[ORGANIZE] File no longer exists, removed from queue: {file_path}")
@@ -14608,9 +14615,10 @@ def api_lastfm_sync_now():
                 filtered_count += 1
         
         # Now execute all operations in a single transaction to avoid lock contention
+        placeholder = "%s" if _is_postgres_connection(conn) else "?"
         try:
             # Clear old recommendations for this user
-            cursor.execute("DELETE FROM lastfm_recommendations WHERE username = ?", (username_val,))
+            cursor.execute(f"DELETE FROM lastfm_recommendations WHERE username = {placeholder}", (username_val,))
             
             # Batch insert all recommendations using executemany
             if insert_data:
@@ -14828,6 +14836,7 @@ def api_lastfm_create_playlist():
         # Get database connection
         conn = get_db()
         cursor = conn.cursor()
+        placeholder = "%s" if _is_postgres_connection(conn) else "?"
         
         for rec in rec_list:
             if rec_type == "tracks":
@@ -14839,9 +14848,9 @@ def api_lastfm_create_playlist():
                     continue
                 
                 # Search by artist and title
-                cursor.execute("""
+                cursor.execute(f"""
                     SELECT id, artist, title FROM tracks 
-                    WHERE LOWER(artist) = LOWER(?) AND LOWER(title) = LOWER(?)
+                    WHERE LOWER(artist) = LOWER({placeholder}) AND LOWER(title) = LOWER({placeholder})
                     LIMIT 1
                 """, (artist_name, track_name))
                 result = cursor.fetchone()
@@ -14868,9 +14877,9 @@ def api_lastfm_create_playlist():
                     continue
                 
                 # Search for albums by artist and album name
-                cursor.execute("""
+                cursor.execute(f"""
                     SELECT id, artist, album FROM tracks 
-                    WHERE LOWER(artist) = LOWER(?) AND LOWER(album) = LOWER(?)
+                    WHERE LOWER(artist) = LOWER({placeholder}) AND LOWER(album) = LOWER({placeholder})
                     LIMIT 1
                 """, (artist_name, album_name))
                 result = cursor.fetchone()
@@ -14896,9 +14905,9 @@ def api_lastfm_create_playlist():
                     continue
                 
                 # Search for any tracks by this artist
-                cursor.execute("""
+                cursor.execute(f"""
                     SELECT id, artist, album FROM tracks 
-                    WHERE LOWER(artist) = LOWER(?)
+                    WHERE LOWER(artist) = LOWER({placeholder})
                     LIMIT 5
                 """, (artist_name,))
                 results = cursor.fetchall()
@@ -15127,9 +15136,10 @@ def api_listenbrainz_sync_now():
                 filtered_count += 1
         
         # Execute transaction
+        placeholder = "%s" if _is_postgres_connection(conn) else "?"
         try:
             # Clear old recommendations for this user
-            cursor.execute("DELETE FROM listenbrainz_recommendations WHERE username = ?", (username_val,))
+            cursor.execute(f"DELETE FROM listenbrainz_recommendations WHERE username = {placeholder}", (username_val,))
             
             # Batch insert all recommendations
             if insert_data:
@@ -15283,9 +15293,10 @@ def api_listenbrainz_sync_now():
                 filtered_count += 1
         
         # Execute transaction
+        placeholder = "%s" if _is_postgres_connection(conn) else "?"
         try:
             # Clear old recommendations for this user
-            cursor.execute("DELETE FROM listenbrainz_recommendations WHERE username = ?", (username_val,))
+            cursor.execute(f"DELETE FROM listenbrainz_recommendations WHERE username = {placeholder}", (username_val,))
             
             # Batch insert all recommendations
             if insert_data:
@@ -17424,9 +17435,10 @@ def api_track_update_metadata():
             return jsonify({"error": "At least one field required"}), 400
         
         # Update database
-        set_clause = ", ".join([f"{k} = ?" for k in db_updates.keys()])
+        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        set_clause = ", ".join([f"{k} = {placeholder}" for k in db_updates.keys()])
         values = list(db_updates.values()) + [track_id]
-        cursor.execute(f"UPDATE tracks SET {set_clause} WHERE id = ?", values)
+        cursor.execute(f"UPDATE tracks SET {set_clause} WHERE id = {placeholder}", values)
         conn.commit()
         
         conn.close()
@@ -18237,19 +18249,20 @@ def api_listenbrainz_create_playlist():
             artist_name = rec.get("artist_name", "")
             track_name = rec.get("recording_name") or rec.get("track_name", "")
             
+            placeholder = "%s" if _is_postgres_connection(c) else "?"
             track_id = None
             if mbid:
                 # Search by MBID in database
-                c.execute("SELECT id FROM tracks WHERE musicbrainz_id = ?", (mbid,))
+                c.execute(f"SELECT id FROM tracks WHERE musicbrainz_id = {placeholder}", (mbid,))
                 result = c.fetchone()
                 if result:
                     track_id = result[0]
             
             if not track_id and artist_name and track_name:
                 # Search by artist and title
-                c.execute("""
+                c.execute(f"""
                     SELECT id FROM tracks 
-                    WHERE LOWER(artist) = LOWER(?) AND LOWER(title) = LOWER(?)
+                    WHERE LOWER(artist) = LOWER({placeholder}) AND LOWER(title) = LOWER({placeholder})
                     LIMIT 1
                 """, (artist_name, track_name))
                 result = c.fetchone()
