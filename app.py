@@ -4401,15 +4401,23 @@ def api_update_album_tags(album, artist):
             # Get track IDs to sync
             conn = get_db()
             cursor = conn.cursor()
-            
+            placeholder = "%s" if _is_postgres_connection(conn) else "?"
+
             if selected_track_ids:
-                placeholders = ", ".join(["?" for _ in selected_track_ids])
-                cursor.execute(f"SELECT id FROM tracks WHERE album = ? AND artist = ? AND id IN ({placeholders})",
-                              [album, artist] + selected_track_ids)
+                id_placeholders = ", ".join([placeholder for _ in selected_track_ids])
+                query = (
+                    f"SELECT id FROM tracks WHERE album = {placeholder} "
+                    f"AND artist = {placeholder} AND id IN ({id_placeholders})"
+                )
+                cursor.execute(query, [album, artist] + selected_track_ids)
             else:
-                cursor.execute(f"SELECT id FROM tracks WHERE album = {placeholder} AND artist = {placeholder}", (album, artist))
-            
-            track_ids = [row[0] for row in cursor.fetchall()]
+                cursor.execute(
+                    f"SELECT id FROM tracks WHERE album = {placeholder} AND artist = {placeholder}",
+                    (album, artist)
+                )
+
+            rows = cursor.fetchall()
+            track_ids = [row.get("id") if isinstance(row, dict) else row[0] for row in rows]
             conn.close()
             
             for track_id in track_ids:
@@ -4655,20 +4663,23 @@ def api_get_similar_artists(artist):
                 "message": "Run 'Scan Artist' to fetch similar artists data"
             })
         
-        # Parse JSON arrays
+        # Parse JSON arrays (support both tuple rows and dict rows)
+        similar_lastfm_raw = row.get("similar_artists_lastfm") if isinstance(row, dict) else row[0]
+        similar_listenbrainz_raw = row.get("similar_artists_listenbrainz") if isinstance(row, dict) else row[1]
+
         similar_lastfm = []
         similar_listenbrainz = []
-        
+
         try:
-            if row[0]:
-                similar_lastfm = json.loads(row[0]) if isinstance(row[0], str) else row[0]
-        except:
+            if similar_lastfm_raw:
+                similar_lastfm = json.loads(similar_lastfm_raw) if isinstance(similar_lastfm_raw, str) else similar_lastfm_raw
+        except Exception:
             pass
-        
+
         try:
-            if row[1]:
-                similar_listenbrainz = json.loads(row[1]) if isinstance(row[1], str) else row[1]
-        except:
+            if similar_listenbrainz_raw:
+                similar_listenbrainz = json.loads(similar_listenbrainz_raw) if isinstance(similar_listenbrainz_raw, str) else similar_listenbrainz_raw
+        except Exception:
             pass
         
         return jsonify({
@@ -4709,40 +4720,53 @@ def api_library_similar_artists():
         similar_cache = {}
         
         for row in rows:
-            artist_name = row[0]
-            similar_lastfm = row[1]
-            similar_listenbrainz = row[2]
-            
+            artist_name = row.get("name") if isinstance(row, dict) else row[0]
+            similar_lastfm = row.get("similar_artists_lastfm") if isinstance(row, dict) else row[1]
+            similar_listenbrainz = row.get("similar_artists_listenbrainz") if isinstance(row, dict) else row[2]
+
             # Process Last.fm similar artists
             if similar_lastfm:
                 try:
                     artists = json.loads(similar_lastfm) if isinstance(similar_lastfm, str) else similar_lastfm
                     for similar in artists:
-                        name = similar.get('name', '')
+                        if isinstance(similar, str):
+                            name = similar.strip()
+                            match_value = 0
+                        elif isinstance(similar, dict):
+                            name = str(similar.get('name', '')).strip()
+                            match_value = float(similar.get('match', 0) or 0)
+                        else:
+                            continue
+
                         if name and name != artist_name:
                             key = (name.lower(), 'lastfm')
                             if key not in similar_cache:
                                 similar_cache[key] = {'name': name, 'count': 0, 'match': 0, 'from_artists': set(), 'source': 'lastfm'}
                             similar_cache[key]['count'] += 1
-                            if similar.get('match'):
-                                similar_cache[key]['match'] += similar['match']
+                            similar_cache[key]['match'] += match_value
                             similar_cache[key]['from_artists'].add(artist_name)
-                except:
+                except Exception:
                     pass
-            
+
             # Process ListenBrainz similar artists
             if similar_listenbrainz:
                 try:
                     artists = json.loads(similar_listenbrainz) if isinstance(similar_listenbrainz, str) else similar_listenbrainz
                     for similar in artists:
-                        name = similar.get('name', '')
+                        if isinstance(similar, str):
+                            name = similar.strip()
+                        elif isinstance(similar, dict):
+                            name = str(similar.get('name', '')).strip()
+                        else:
+                            continue
+
                         if name and name != artist_name:
                             key = (name.lower(), 'listenbrainz')
                             if key not in similar_cache:
                                 similar_cache[key] = {'name': name, 'count': 0, 'match': 0, 'from_artists': set(), 'source': 'listenbrainz'}
                             similar_cache[key]['count'] += 1
                             similar_cache[key]['from_artists'].add(artist_name)
-                except:
+                except Exception:
                     pass
         
         # Format results

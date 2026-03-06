@@ -3438,38 +3438,38 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
     const trackId = document.getElementById('editTrackId').value;
     const field = document.getElementById('editTrackCurrentField').value;
     const value = document.getElementById('editTrackValue').value.trim();
-    
+
     if (!trackId || !field) return;
-    
+
     const payload = {
       track_id: trackId,
       [field]: value,
       sync_to_file: true
     };
-    
+
     fetch('/api/track/update-metadata', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(payload)
     })
-    .then(r => r.json())
-    .then(data => {
-      if (data.success) {
-        if (data.file_synced === false) {
-          alert('⚠️ Track metadata saved to database, but file tags were not updated. Check file permissions/path and logs.');
+      .then(r => r.json())
+      .then(data => {
+        if (data.success) {
+          if (data.file_synced === false) {
+            alert('⚠️ Track metadata saved to database, but file tags were not updated. Check file permissions/path and logs.');
+          } else {
+            alert('✅ Track metadata updated (database + file tags)');
+          }
+          bootstrap.Modal.getInstance(document.getElementById('editTrackModal')).hide();
+          // Reload to show changes
+          setTimeout(() => location.reload(), 1000);
         } else {
-          alert('✅ Track metadata updated (database + file tags)');
+          alert('❌ Error: ' + (data.error || 'Failed to update'));
         }
-        bootstrap.Modal.getInstance(document.getElementById('editTrackModal')).hide();
-        // Reload to show changes
-        setTimeout(() => location.reload(), 1000);
-      } else {
-        alert('❌ Error: ' + (data.error || 'Failed to update'));
-      }
-    })
-    .catch(err => {
-      alert('❌ Network error: ' + err.message);
-      if (button) button.disabled = false;
+      })
+      .catch(err => {
+        alert('❌ Network error: ' + err.message);
+      });
   }
 
   // Load artist genres from API on page load
@@ -3596,9 +3596,15 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
         `;
         
         let genresHtml = '';
-        genres.forEach(genre => {
-          const count = genre.count ? ` <small class="text-muted">(${genre.count})</small>` : '';
-          genresHtml += `<span class="badge bg-${source.color} me-2 mb-2 artist-genre-source-badge">${escapeHtml(genre.name)}${count}</span>`;
+        genres.forEach(rawGenre => {
+          const genreName = typeof rawGenre === 'string'
+            ? rawGenre
+            : (rawGenre && rawGenre.name ? String(rawGenre.name) : '');
+          if (!genreName) return;
+
+          const genreCount = rawGenre && typeof rawGenre === 'object' ? rawGenre.count : null;
+          const count = genreCount ? ` <small class="text-muted">(${genreCount})</small>` : '';
+          genresHtml += `<span class="badge bg-${source.color} me-2 mb-2 artist-genre-source-badge">${escapeHtml(genreName)}${count}</span>`;
         });
         
         tabContent += `
@@ -3677,18 +3683,38 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
     
     const lastfmArtists = data.similar_artists.lastfm || [];
     const listenbrainzArtists = data.similar_artists.listenbrainz || [];
-    
+
+    const normalizeSimilarArtist = (entry, source) => {
+      if (typeof entry === 'string') {
+        const name = entry.trim();
+        return name ? { name, match: 0, source } : null;
+      }
+      if (!entry || typeof entry !== 'object') return null;
+
+      const name = String(entry.name || entry.artist || '').trim();
+      if (!name) return null;
+
+      const matchValue = Number(entry.match ?? entry.score ?? 0);
+      return {
+        ...entry,
+        name,
+        match: Number.isFinite(matchValue) ? matchValue : 0,
+        source
+      };
+    };
+
     // Combine and deduplicate similar artists
     const allArtists = [
-      ...lastfmArtists.map(a => ({...a, source: 'lastfm'})),
-      ...listenbrainzArtists.map(a => ({...a, source: 'listenbrainz'}))
+      ...lastfmArtists.map(a => normalizeSimilarArtist(a, 'lastfm')).filter(Boolean),
+      ...listenbrainzArtists.map(a => normalizeSimilarArtist(a, 'listenbrainz')).filter(Boolean)
     ];
-    
+
     // Deduplicate by name (keep first occurrence)
     const seen = new Set();
     const uniqueArtists = allArtists.filter(a => {
-      if (seen.has(a.name.toLowerCase())) return false;
-      seen.add(a.name.toLowerCase());
+      const key = a.name.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
       return true;
     });
     
