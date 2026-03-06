@@ -1755,9 +1755,9 @@ function checkMissingReleases(artistName) {
         const rowId = `tracklist-${safeArtist}-${safeAlbum}`;
         const contentId = `tracklist-content-${safeArtist}-${safeAlbum}`;
         
-        const artistEnc = encodeURIComponent(JSON.stringify(artistName || ""));
-        const titleEnc = encodeURIComponent(JSON.stringify(item.title || ""));
-        const releaseIdEnc = encodeURIComponent(JSON.stringify(item.id || ""));
+        const artistEnc = encodeURIComponent(JSON.stringify(artistName || "")).replace(/'/g, '%27');
+        const titleEnc = encodeURIComponent(JSON.stringify(item.title || "")).replace(/'/g, '%27');
+        const releaseIdEnc = encodeURIComponent(JSON.stringify(item.id || "")).replace(/'/g, '%27');
 
         const row = document.createElement('tr');
         row.className = 'album-row';
