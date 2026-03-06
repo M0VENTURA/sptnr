@@ -117,7 +117,24 @@ class MusicBrainzReleaseManager:
                                      COALESCE((SELECT MAX(id) FROM musicbrainz_releases), 0) + 1)
                     """)
                 except Exception as seq_error:
-                    logger.debug(f"[SCHEMA] Note: Could not ensure sequence (may already exist): {seq_error}")
+                    logger.debug(f"[SCHEMA] Note: Could not ensure musicbrainz_releases sequence (may already exist): {seq_error}")
+                
+                # Ensure download_queue sequence exists (required for foreign key from musicbrainz_release_tracks)
+                try:
+                    db_query.execute("""
+                        CREATE SEQUENCE IF NOT EXISTS download_queue_id_seq
+                        AS BIGINT START WITH 1 INCREMENT BY 1
+                    """)
+                    db_query.execute("""
+                        ALTER TABLE download_queue 
+                        ALTER COLUMN id SET DEFAULT nextval('download_queue_id_seq')
+                    """)
+                    db_query.execute("""
+                        SELECT setval('download_queue_id_seq', 
+                                     COALESCE((SELECT MAX(id) FROM download_queue), 0) + 1)
+                    """)
+                except Exception as seq_error:
+                    logger.debug(f"[SCHEMA] Note: Could not ensure download_queue sequence (may already exist): {seq_error}")
 
                 db_query.execute("""
                     CREATE TABLE IF NOT EXISTS musicbrainz_release_tracks (

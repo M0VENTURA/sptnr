@@ -11,6 +11,14 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
 
+def _is_postgres_connection(conn):
+    """Detect if connection is PostgreSQL."""
+    try:
+        import psycopg2
+        return isinstance(conn, psycopg2.extensions.connection)
+    except (ImportError, AttributeError):
+        return False
+
 def cleanup_old_downloads_paths():
     """Remove download_queue entries that point to old /downloads path instead of /downloads/Music or non-existent files"""
     
@@ -24,6 +32,10 @@ def cleanup_old_downloads_paths():
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
+        
+        # Detect database type
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         
         # Check table exists
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='download_queue'")
@@ -86,14 +98,14 @@ def cleanup_old_downloads_paths():
             # Show samples
             logger.info("\nSample entries with missing files:")
             for i, entry_id in enumerate(nonexistent_ids[:5]):
-                cursor.execute("SELECT filename, filepath FROM download_queue WHERE id = ?", (entry_id,))
+                cursor.execute(f"SELECT filename, filepath FROM download_queue WHERE id = {placeholder}", (entry_id,))
                 row = cursor.fetchone()
                 if row:
                     logger.info(f"  - {row['filename']} ({row['filepath']})")
             
             # Delete non-existent entries
             if nonexistent_ids:
-                placeholders = ','.join('?' * len(nonexistent_ids))
+                placeholders = ','.join([placeholder] * len(nonexistent_ids))
                 cursor.execute(f"DELETE FROM download_queue WHERE id IN ({placeholders})", nonexistent_ids)
                 deleted_nonexistent = cursor.rowcount
                 logger.info(f"✓ Removed {deleted_nonexistent} entries with non-existent files")

@@ -7,7 +7,7 @@ import os
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from .db_utils import get_db_connection
+from .db_utils import get_db_connection, _is_postgres_connection
 from colorama import Fore, Style
 from .logging_config import log_debug, log_info, log_unified
 from api_clients.navidrome import NavidromeClient
@@ -86,12 +86,14 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
         try:
             conn = get_db_connection()
             cursor = conn.cursor()
+            is_pg = _is_postgres_connection(conn)
+            placeholder = "%s" if is_pg else "?"
 
             # Critical fields that should be imported from Navidrome
             critical_fields = ['duration', 'track_number', 'year', 'file_path']
 
             # Get existing tracks and check for missing fields
-            cursor.execute(f"SELECT album, id, {', '.join(critical_fields)} FROM tracks WHERE artist = ?", (artist_name,))
+            cursor.execute(f"SELECT album, id, {', '.join(critical_fields)} FROM tracks WHERE artist = {placeholder}", (artist_name,))
             for row in cursor.fetchall():
                 alb_name = row[0]
                 tid = row[1]

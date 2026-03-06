@@ -253,10 +253,10 @@ class ArtistIdentityResolver:
         try:
             # Get all distinct artists on this album
             cursor.execute(
-                """
+                f"""
                 SELECT DISTINCT artist
                 FROM tracks
-                WHERE album = ? AND artist IS NOT NULL
+                WHERE album = {self.placeholder} AND artist IS NOT NULL
                 LIMIT 20
                 """,
                 (album,)
@@ -269,10 +269,10 @@ class ArtistIdentityResolver:
 
             # Count occurrences of each artist
             cursor.execute(
-                """
+                f"""
                 SELECT artist, COUNT(*) as count
                 FROM tracks
-                WHERE album = ?
+                WHERE album = {self.placeholder}
                 GROUP BY artist
                 ORDER BY count DESC
                 LIMIT 1
@@ -414,6 +414,7 @@ class PopularityCalculator:
             if exclude_alternate:
                 query += " AND is_alternate_version = 0"
 
+            query = query.replace("?", self.placeholder)
             cursor.execute(query, params)
             popularities = [row[0] for row in cursor.fetchall()]
 
@@ -447,10 +448,10 @@ class PopularityCalculator:
 
         try:
             cursor.execute(
-                """
+                f"""
                 SELECT popularity_score
                 FROM tracks
-                WHERE album = ? AND popularity_score IS NOT NULL
+                WHERE album = {self.placeholder} AND popularity_score IS NOT NULL
                 ORDER BY track_number
                 """,
                 (album,)

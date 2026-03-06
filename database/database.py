@@ -124,7 +124,9 @@ def insert_or_update_track(track_id, artist_id, album, title, genres, spotify_sc
 def get_tracks_by_artist(artist_id):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM tracks WHERE artist_id = ?", (artist_id,))
+    is_pg = is_postgres_connection(conn)
+    placeholder = "%s" if is_pg else "?"
+    cursor.execute(f"SELECT * FROM tracks WHERE artist_id = {placeholder}", (artist_id,))
     rows = cursor.fetchall()
     conn.close()
     return rows
@@ -132,7 +134,9 @@ def get_tracks_by_artist(artist_id):
 def get_top_tracks(limit=10):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT title, final_score, stars FROM tracks ORDER BY final_score DESC LIMIT ?", (limit,))
+    is_pg = is_postgres_connection(conn)
+    placeholder = "%s" if is_pg else "?"
+    cursor.execute(f"SELECT title, final_score, stars FROM tracks ORDER BY final_score DESC LIMIT {placeholder}", (limit,))
     rows = cursor.fetchall()
     conn.close()
     return rows

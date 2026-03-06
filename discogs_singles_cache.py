@@ -21,6 +21,14 @@ from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
+def _is_postgres_connection(conn):
+    """Detect if connection is PostgreSQL."""
+    try:
+        import psycopg2
+        return isinstance(conn, psycopg2.extensions.connection)
+    except (ImportError, AttributeError):
+        return False
+
 
 def normalize_track_title(title: str) -> str:
     """
@@ -84,6 +92,11 @@ class DiscogsArtistSinglesCache:
         """
         self.db_path = db_path
         self.cache_ttl_days = min(cache_ttl_days, 30)  # Cap at 30 days
+        
+        # Detect database type (for schema creation)
+        self.is_pg = False
+        self.placeholder = "?"
+        
         self._ensure_schema()
     
     def _ensure_schema(self):
@@ -91,6 +104,10 @@ class DiscogsArtistSinglesCache:
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
+            
+            # Detect database type after connection
+            self.is_pg = _is_postgres_connection(conn)
+            self.placeholder = "%s" if self.is_pg else "?"
             
             # Create table for caching artist Singles/EPs
             cursor.execute("""
@@ -234,28 +251,58 @@ class DiscogsArtistSinglesCache:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
+            # Detect database type for this operation
+            is_pg = _is_postgres_connection(conn)
+            placeholder = "%s" if is_pg else "?"
+            
             # Clear existing cache for this artist
-            cursor.execute("DELETE FROM discogs_singles_cache WHERE artist = ?", (artist,))
+            cursor.execute(f"DELETE FROM discogs_singles_cache WHERE artist = {placeholder}", (artist,))
             
             # Add new tracks
             added = 0
             for original_title, release_id, release_year, is_official, is_promo in tracks:
                 normalized_title = normalize_track_title(original_title)
                 
-                cursor.execute("""
-                    INSERT OR REPLACE INTO discogs_singles_cache
-                    (artist, normalized_title, original_title, release_id, release_year, is_official, is_promo)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (artist, normalized_title, original_title, release_id, release_year, is_official, is_promo))
+                if is_pg:
+                    # PostgreSQL: Use ON CONFLICT
+                    cursor.execute(f"""
+                        INSERT INTO discogs_singles_cache
+                        (artist, normalized_title, original_title, release_id, release_year, is_official, is_promo)
+                        VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
+                        ON CONFLICT(artist, normalized_title) DO UPDATE SET
+                        original_title = EXCLUDED.original_title,
+                        release_id = EXCLUDED.release_id,
+                        release_year = EXCLUDED.release_year,
+                        is_official = EXCLUDED.is_official,
+                        is_promo = EXCLUDED.is_promo,
+                        cached_at = CURRENT_TIMESTAMP
+                    """, (artist, normalized_title, original_title, release_id, release_year, is_official, is_promo))
+                else:
+                    # SQLite: Use INSERT OR REPLACE
+                    cursor.execute(f"""
+                        INSERT OR REPLACE INTO discogs_singles_cache
+                        (artist, normalized_title, original_title, release_id, release_year, is_official, is_promo)
+                        VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
+                    """, (artist, normalized_title, original_title, release_id, release_year, is_official, is_promo))
                 
                 added += 1
             
             # Update metadata
-            cursor.execute("""
-                INSERT OR REPLACE INTO discogs_cache_metadata
-                (artist, last_cached_at, total_tracks)
-                VALUES (?, datetime('now'), ?)
-            """, (artist, len(tracks)))
+            if is_pg:
+                cursor.execute(f"""
+                    INSERT INTO discogs_cache_metadata
+                    (artist, last_cached_at, total_tracks)
+                    VALUES ({placeholder}, CURRENT_TIMESTAMP, {placeholder})
+                    ON CONFLICT(artist) DO UPDATE SET
+                    last_cached_at = CURRENT_TIMESTAMP,
+                    total_tracks = EXCLUDED.total_tracks
+                """, (artist, len(tracks)))
+            else:
+                cursor.execute(f"""
+                    INSERT OR REPLACE INTO discogs_cache_metadata
+                    (artist, last_cached_at, total_tracks)
+                    VALUES ({placeholder}, datetime('now'), {placeholder})
+                """, (artist, len(tracks)))
             
             conn.commit()
             conn.close()
@@ -273,8 +320,12 @@ class DiscogsArtistSinglesCache:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
-            cursor.execute("DELETE FROM discogs_singles_cache WHERE artist = ?", (artist,))
-            cursor.execute("DELETE FROM discogs_cache_metadata WHERE artist = ?", (artist,))
+            # Detect database type for this operation
+            is_pg = _is_postgres_connection(conn)
+            placeholder = "%s" if is_pg else "?"
+            
+            cursor.execute(f"DELETE FROM discogs_singles_cache WHERE artist = {placeholder}", (artist,))
+            cursor.execute(f"DELETE FROM discogs_cache_metadata WHERE artist = {placeholder}", (artist,))
             
             conn.commit()
             conn.close()

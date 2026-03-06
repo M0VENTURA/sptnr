@@ -74,9 +74,11 @@ new_sync_func = '''def sync_track_tags_to_file(track_id: str) -> bool:
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
 
         # Get file path and all tags
-        cursor.execute("SELECT file_path FROM tracks WHERE id = ?", (track_id,))
+        cursor.execute(f"SELECT file_path FROM tracks WHERE id = {placeholder}", (track_id,))
         result = cursor.fetchone()
 
         if not result or not result[0]:

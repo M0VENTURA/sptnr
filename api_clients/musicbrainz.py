@@ -1306,15 +1306,25 @@ def lookup_and_save_artist_mbid(artist: str, db_connection) -> str:
         
         # Save MBID to database for all tracks by this artist
         cursor = db_connection.cursor()
-        cursor.execute("""
+        
+        # Detect database type
+        is_pg = False
+        try:
+            import psycopg2
+            is_pg = isinstance(db_connection, psycopg2.extensions.connection)
+        except (ImportError, AttributeError):
+            is_pg = False
+        placeholder = "%s" if is_pg else "?"
+        
+        cursor.execute(f"""
             UPDATE tracks 
-            SET musicbrainz_artist_id = ?
-            WHERE artist = ? AND musicbrainz_artist_id IS NULL
+            SET musicbrainz_artist_id = {placeholder}
+            WHERE artist = {placeholder} AND musicbrainz_artist_id IS NULL
         """, (mbid, artist))
         db_connection.commit()
         
         # Count how many tracks were updated
-        cursor.execute("SELECT COUNT(*) FROM tracks WHERE artist = ? AND musicbrainz_artist_id = ?", (artist, mbid))
+        cursor.execute(f"SELECT COUNT(*) FROM tracks WHERE artist = {placeholder} AND musicbrainz_artist_id = {placeholder}", (artist, mbid))
         result = cursor.fetchone()
         updated_count = result[0] if result else 0
         logger.info(f"Updated {updated_count} tracks for artist '{artist}' with MBID: {mbid}")

@@ -1998,7 +1998,8 @@ def artists():
         artists_data = [dict(row) for row in cursor.fetchall()]
     except:
         # Fallback for databases without album_artist column
-        cursor.execute("""
+        collate_nocase = "" if is_pg else " COLLATE NOCASE"
+        cursor.execute(f"""
             SELECT 
                 artist as display_name,
                 artist as link_artist,
@@ -2008,9 +2009,9 @@ def artists():
                 MAX(last_scanned) as last_updated
             FROM tracks
             WHERE artist IS NOT NULL AND artist != ''
-            GROUP BY artist COLLATE NOCASE
+            GROUP BY artist{collate_nocase}
             HAVING album_count > 0
-            ORDER BY display_name COLLATE NOCASE
+            ORDER BY display_name{collate_nocase}
         """)
         artists_data = [dict(row) for row in cursor.fetchall()]
     
@@ -2051,18 +2052,21 @@ def api_search():
         
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        collate_nocase = "" if is_pg else " COLLATE NOCASE"
+        placeholder = "%s" if is_pg else "?"
         
         # Prepare search pattern for LIKE queries
         search_pattern = f"%{query}%"
         
         # Search artists
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT 
                 artist as name,
                 COUNT(DISTINCT album) as album_count,
                 COUNT(*) as track_count
             FROM tracks
-            WHERE LOWER(artist) LIKE LOWER(?)
+            WHERE LOWER(artist) LIKE LOWER({placeholder})
             GROUP BY artist
             ORDER BY track_count DESC
             LIMIT 20
@@ -2077,14 +2081,14 @@ def api_search():
         ]
         
         # Search albums
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT 
                 artist,
                 album,
                 COUNT(*) as track_count,
                 AVG(stars) as avg_stars
             FROM tracks
-            WHERE LOWER(album) LIKE LOWER(?)
+            WHERE LOWER(album) LIKE LOWER({placeholder})
             GROUP BY artist, album
             ORDER BY track_count DESC
             LIMIT 20
@@ -2100,7 +2104,7 @@ def api_search():
         ]
         
         # Search tracks
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT 
                 id,
                 title,
@@ -2108,8 +2112,8 @@ def api_search():
                 album,
                 stars
             FROM tracks
-            WHERE LOWER(title) LIKE LOWER(?) OR LOWER(artist) LIKE LOWER(?)
-            ORDER BY stars DESC, title COLLATE NOCASE
+            WHERE LOWER(title) LIKE LOWER({placeholder}) OR LOWER(artist) LIKE LOWER({placeholder})
+            ORDER BY stars DESC, title{collate_nocase}
             LIMIT 50
         """, (search_pattern, search_pattern))
         tracks_results = [
@@ -5605,13 +5609,14 @@ def album_detail(artist, album):
         # Try both COALESCE and plain artist for backwards compatibility with old links
         is_pg = _is_postgres_connection(conn)
         placeholder = "%s" if is_pg else "?"
+        collate_nocase = "" if is_pg else " COLLATE NOCASE"
         tracks_data = None
         for artist_clause in ["COALESCE(NULLIF(album_artist, ''), artist)", "artist"]:
             cursor.execute(f"""
                 SELECT *
                 FROM tracks
                 WHERE {artist_clause} = {placeholder} AND album = {placeholder}
-                ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 999), title COLLATE NOCASE
+                ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 999), title{collate_nocase}
             """, (artist, album))
             tracks_data = cursor.fetchall()
             if tracks_data:
@@ -11840,6 +11845,7 @@ def api_album_tracklist():
         cursor = conn.cursor()
         is_pg = _is_postgres_connection(conn)
         placeholder = "%s" if is_pg else "?"
+        collate_nocase = "" if is_pg else " COLLATE NOCASE"
         
         # Get tracks from the album in the database.
         # Prefer album artist identity; fall back to track artist for legacy rows.
@@ -11849,7 +11855,7 @@ def api_album_tracklist():
                 SELECT id, title, track_number, duration, artist
                 FROM tracks
                 WHERE {artist_clause} = {placeholder} AND album = {placeholder}
-                ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 999), title COLLATE NOCASE
+                ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 999), title{collate_nocase}
             """, (artist, album))
             db_tracks = cursor.fetchall()
             if db_tracks:
@@ -16512,6 +16518,7 @@ def api_album_track_recommendations(artist, album):
         # Get all tracks in the album with their metadata and genres
         is_pg = _is_postgres_connection(conn)
         placeholder = "%s" if is_pg else "?"
+        collate_nocase = "" if is_pg else " COLLATE NOCASE"
         cursor.execute(f"""
             SELECT 
                 id, title, artist, track_number,
@@ -16522,7 +16529,7 @@ def api_album_track_recommendations(artist, album):
                 navidrome_genres
             FROM tracks
             WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
-            ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 999), title COLLATE NOCASE
+            ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 999), title{collate_nocase}
         """, (artist, album))
         
         tracks_data = cursor.fetchall()
@@ -18208,23 +18215,26 @@ def api_playlist_search_songs():
             try:
                 conn = get_db()
                 cursor = conn.cursor()
+                is_pg = _is_postgres_connection(conn)
+                placeholder = "%s" if is_pg else "?"
+                collate_nocase = "" if is_pg else " COLLATE NOCASE"
 
                 where_clauses = []
                 params = []
 
                 if title:
-                    where_clauses.append("LOWER(title) LIKE ?")
+                    where_clauses.append(f"LOWER(title) LIKE {placeholder}")
                     params.append(f"%{title.lower()}%")
                 if artist:
-                    where_clauses.append("LOWER(artist) LIKE ?")
+                    where_clauses.append(f"LOWER(artist) LIKE {placeholder}")
                     params.append(f"%{artist.lower()}%")
                 if album:
-                    where_clauses.append("LOWER(album) LIKE ?")
+                    where_clauses.append(f"LOWER(album) LIKE {placeholder}")
                     params.append(f"%{album.lower()}%")
 
                 if not where_clauses:
                     pattern = f"%{query.lower()}%"
-                    where_clauses.append("(LOWER(title) LIKE ? OR LOWER(artist) LIKE ? OR LOWER(album) LIKE ?)")
+                    where_clauses.append(f"(LOWER(title) LIKE {placeholder} OR LOWER(artist) LIKE {placeholder} OR LOWER(album) LIKE {placeholder})")
                     params.extend([pattern, pattern, pattern])
 
                 where_sql = " AND ".join(where_clauses)
@@ -18234,7 +18244,7 @@ def api_playlist_search_songs():
                     SELECT id, title, artist, album, duration
                     FROM tracks
                     WHERE {where_sql}
-                    ORDER BY stars DESC NULLS LAST, title COLLATE NOCASE
+                    ORDER BY stars DESC NULLS LAST, title{collate_nocase}
                     LIMIT 50
                     """,
                     tuple(params),

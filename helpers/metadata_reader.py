@@ -12,6 +12,14 @@ from mutagen.id3 import ID3
 from mutagen.easyid3 import EasyID3
 from mutagen.mp3 import MP3
 
+def _is_postgres_connection(conn):
+    """Detect if connection is PostgreSQL."""
+    try:
+        import psycopg2
+        return isinstance(conn, psycopg2.extensions.connection)
+    except (ImportError, AttributeError):
+        return False
+
 # Common MP3tag.de mapping fields
 MP3_FIELDS = {
     'title': 'TIT2',
@@ -426,7 +434,9 @@ def get_track_metadata_from_db(track_id, db_path="/database/sptnr.db"):
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM tracks WHERE id = ?", (track_id,))
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+        cursor.execute(f"SELECT * FROM tracks WHERE id = {placeholder}", (track_id,))
         row = cursor.fetchone()
         conn.close()
         

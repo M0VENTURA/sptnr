@@ -18,6 +18,15 @@ logger = logging.getLogger(__name__)
 class CoverDetector:
     """Detect and attribute cover songs using MusicBrainz writer/composer data."""
     
+    @staticmethod
+    def _is_postgres(conn):
+        """Detect if connection is PostgreSQL."""
+        try:
+            import psycopg2
+            return isinstance(conn, psycopg2.extensions.connection)
+        except (ImportError, AttributeError):
+            return False
+    
     def __init__(self, musicbrainz_client, db_connection=None):
         """
         Initialize cover detector.
@@ -28,6 +37,8 @@ class CoverDetector:
         """
         self.mb_client = musicbrainz_client
         self.db_conn = db_connection
+        self.is_pg = self._is_postgres(db_connection) if db_connection else False
+        self.placeholder = "%s" if self.is_pg else "?"
     
     def detect_covers_for_album(self, album: str, artist: str, tracks: List[Dict]) -> List[Dict]:
         """
@@ -312,13 +323,13 @@ class CoverDetector:
                 
                 # Update title
                 cursor.execute(
-                    "UPDATE tracks SET title = ? WHERE id = ?",
+                    f"UPDATE tracks SET title = {self.placeholder} WHERE id = {self.placeholder}",
                     (new_title, track_id)
                 )
                 
                 # Add "Cover" to genres
                 cursor.execute(
-                    "SELECT genres FROM tracks WHERE id = ?",
+                    f"SELECT genres FROM tracks WHERE id = {self.placeholder}",
                     (track_id,)
                 )
                 result = cursor.fetchone()
@@ -330,13 +341,13 @@ class CoverDetector:
                     new_genres = ", ".join(genres_list)
                     
                     cursor.execute(
-                        "UPDATE tracks SET genres = ? WHERE id = ?",
+                        f"UPDATE tracks SET genres = {self.placeholder} WHERE id = {self.placeholder}",
                         (new_genres, track_id)
                     )
                 
                 # Mark as cover
                 cursor.execute(
-                    "UPDATE tracks SET is_cover = 1, is_cover_reason = ? WHERE id = ?",
+                    f"UPDATE tracks SET is_cover = 1, is_cover_reason = {self.placeholder} WHERE id = {self.placeholder}",
                     (f"Writer-based detection: original by {original_artist}", track_id)
                 )
                 

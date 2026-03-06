@@ -4,6 +4,14 @@ import logging
 
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 
+def _is_postgres_connection(conn):
+    """Detect if connection is PostgreSQL."""
+    try:
+        import psycopg2
+        return isinstance(conn, psycopg2.extensions.connection)
+    except (ImportError, AttributeError):
+        return False
+
 def get_db_connection():
     """
     Get database connection.
@@ -221,7 +229,9 @@ def get_current_track_rating(track_id: str) -> int:
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT stars FROM tracks WHERE id = ?", (track_id,))
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+        cursor.execute(f"SELECT stars FROM tracks WHERE id = {placeholder}", (track_id,))
         row = cursor.fetchone()
         conn.close()
         return int(row[0]) if row else 0

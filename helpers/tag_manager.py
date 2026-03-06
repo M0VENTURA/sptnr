@@ -30,7 +30,7 @@ try:
 except ImportError:
     _FLAC_AVAILABLE = False
 
-from .db_utils import get_db_connection
+from .db_utils import get_db_connection, _is_postgres_connection
 
 
 logger = logging.getLogger(__name__)
@@ -92,10 +92,12 @@ def get_track_tags(track_id: str) -> Dict[str, Any]:
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         
         # Select editable fields
         fields = ", ".join(EDITABLE_FIELDS)
-        cursor.execute(f"SELECT {fields} FROM tracks WHERE id = ?", (track_id,))
+        cursor.execute(f"SELECT {fields} FROM tracks WHERE id = {placeholder}", (track_id,))
         result = cursor.fetchone()
         conn.close()
         
