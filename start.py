@@ -54,8 +54,7 @@ from popularity_helpers import (
     get_album_track_count_in_db,
 )
 # Import DB connection helper
-from helpers.db_utils import get_db_connection, get_current_track_rating
-from app import _is_postgres_connection
+from helpers.db_utils import get_db_connection, get_current_track_rating, _is_postgres_connection
 
 # Import scan helpers
 from helpers.scan_helpers import scan_library_to_db

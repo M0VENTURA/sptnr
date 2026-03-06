@@ -22,7 +22,7 @@ from api_clients.lastfm import LastFmClient
 from api_clients.audiodb_and_listenbrainz import score_by_age as _score_by_age
 from api_clients import timeout_safe_session
 from helpers.helpers import strip_cover_attribution
-from app import _is_postgres_connection
+from helpers.db_utils import _is_postgres_connection
 
 # ============================================================================
 # Shared z-score and popularity utilities (consolidated from duplicated code)
