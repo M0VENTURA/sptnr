@@ -6380,9 +6380,9 @@ def track_detail(track_id):
         recommended_genres = []
         artist_name = track.get('artist', '')
         if artist_name:
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT genres FROM tracks 
-                WHERE artist = ? AND genres IS NOT NULL AND genres != ''
+                WHERE artist = {placeholder} AND genres IS NOT NULL AND genres != ''
                 LIMIT 10
             """, (artist_name,))
             genre_rows = cursor.fetchall()
