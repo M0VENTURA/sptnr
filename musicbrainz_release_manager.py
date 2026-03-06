@@ -101,6 +101,23 @@ class MusicBrainzReleaseManager:
                         finalized_at TIMESTAMP
                     )
                 """)
+                
+                # Ensure sequence exists for id column (handles migration cases)
+                try:
+                    db_query.execute("""
+                        CREATE SEQUENCE IF NOT EXISTS musicbrainz_releases_id_seq
+                        AS BIGINT START WITH 1 INCREMENT BY 1
+                    """)
+                    db_query.execute("""
+                        ALTER TABLE musicbrainz_releases 
+                        ALTER COLUMN id SET DEFAULT nextval('musicbrainz_releases_id_seq')
+                    """)
+                    db_query.execute("""
+                        SELECT setval('musicbrainz_releases_id_seq', 
+                                     COALESCE((SELECT MAX(id) FROM musicbrainz_releases), 0) + 1)
+                    """)
+                except Exception as seq_error:
+                    logger.debug(f"[SCHEMA] Note: Could not ensure sequence (may already exist): {seq_error}")
 
                 db_query.execute("""
                     CREATE TABLE IF NOT EXISTS musicbrainz_release_tracks (
@@ -259,19 +276,44 @@ class MusicBrainzReleaseManager:
             else:
                 if is_pg:
                     # PostgreSQL: Use RETURNING to get the auto-generated ID
-                    cursor.execute(f"""
-                        INSERT INTO musicbrainz_releases
-                        (release_id, release_title, artist, release_year, total_tracks,
-                         monitoring_folder_path, status, method, created_at, updated_at)
-                        VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'active', {placeholder}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                        RETURNING id
-                    """, (release_id, release_title, artist, release_year, total_tracks,
-                          str(monitoring_folder_path), method))
-                    inserted = cursor.fetchone()
-                    if inserted:
-                        release_db_id = inserted[0] if isinstance(inserted, tuple) else self._row_get(inserted, 'id', 0, None)
-                    else:
-                        raise ValueError("Failed to retrieve inserted release ID from PostgreSQL RETURNING clause")
+                    try:
+                        cursor.execute(f"""
+                            INSERT INTO musicbrainz_releases
+                            (release_id, release_title, artist, release_year, total_tracks,
+                             monitoring_folder_path, status, method, created_at, updated_at)
+                            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'active', {placeholder}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                            RETURNING id
+                        """, (release_id, release_title, artist, release_year, total_tracks,
+                              str(monitoring_folder_path), method))
+                        inserted = cursor.fetchone()
+                        if inserted:
+                            release_db_id = inserted[0] if isinstance(inserted, tuple) else self._row_get(inserted, 'id', 0, None)
+                        else:
+                            raise ValueError("Failed to retrieve inserted release ID from PostgreSQL RETURNING clause")
+                    except Exception as pg_error:
+                        # Fallback: PostgreSQL RETURNING failed, try alternative approach
+                        # Check if it's due to missing id sequence and try to get the max id
+                        if 'null' in str(pg_error).lower() and 'id' in str(pg_error).lower():
+                            logger.warning(f"[RELEASE_ENTRY] PostgreSQL RETURNING failed: {pg_error}, attempting fallback")
+                            # Re-insert without error handling this time to see if it succeeds
+                            cursor.execute(f"""
+                                SELECT COALESCE(MAX(id), 0) + 1 FROM musicbrainz_releases
+                            """)
+                            next_id_result = cursor.fetchone()
+                            next_id = next_id_result[0] if next_id_result else 1
+                            
+                            cursor.execute(f"""
+                                INSERT INTO musicbrainz_releases
+                                (id, release_id, release_title, artist, release_year, total_tracks,
+                                 monitoring_folder_path, status, method, created_at, updated_at)
+                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'active', {placeholder}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                                RETURNING id
+                            """, (next_id, release_id, release_title, artist, release_year, total_tracks,
+                                  str(monitoring_folder_path), method))
+                            inserted = cursor.fetchone()
+                            release_db_id = inserted[0] if inserted else next_id
+                        else:
+                            raise
                 else:
                     # SQLite: Use lastrowid to get the auto-generated ID
                     cursor.execute("""
