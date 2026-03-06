@@ -2895,12 +2895,13 @@ def api_artist_missing_releases():
 
     conn = get_db()
     cursor = conn.cursor()
+    placeholder = "%s" if _is_postgres_connection(conn) else "?"
     
     # Get artist MBID if available for more accurate MusicBrainz lookup
     artist_mbid = None
     try:
-        cursor.execute("""
-            SELECT MAX(musicbrainz_artist_id) FROM tracks WHERE artist = ?
+        cursor.execute(f"""
+            SELECT MAX(musicbrainz_artist_id) FROM tracks WHERE artist = {placeholder}
         """, (artist,))
         row = cursor.fetchone()
         if row and row[0]:
@@ -2908,12 +2909,12 @@ def api_artist_missing_releases():
     except:
         pass
     
-    cursor.execute("""
-        SELECT DISTINCT album FROM tracks WHERE artist = ?
+    cursor.execute(f"""
+        SELECT DISTINCT album FROM tracks WHERE artist = {placeholder}
     """, (artist,))
     existing_albums = [row[0] for row in cursor.fetchall()]
-    cursor.execute("""
-        SELECT release_id FROM missing_releases WHERE artist = ?
+    cursor.execute(f"""
+        SELECT release_id FROM missing_releases WHERE artist = {placeholder}
     """, (artist,))
     existing_missing = {row[0] for row in cursor.fetchall()}
     conn.close()
@@ -3076,6 +3077,8 @@ def api_scan_all_missing_releases():
         try:
             conn = get_db()
             cursor = conn.cursor()
+            placeholder = "%s" if _is_postgres_connection(conn) else "?"
+            is_pg = _is_postgres_connection(conn)
 
             # Get canonical artist identities from album_artist when available.
             # This avoids scanning featured track artists that do not represent a real catalog owner.
@@ -3224,22 +3227,42 @@ def api_scan_all_missing_releases():
                         elif primary_type == "single" or "single" in secondary:
                             category = "Single"
                         
-                        # Insert missing release into database
-                        cursor.execute("""
-                            INSERT OR REPLACE INTO missing_releases 
-                            (artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """, (
-                            artist_name,
-                            rg.get("id", ""),
-                            rg.get("title", ""),
-                            rg.get("primary_type", "Album"),
-                            rg.get("first_release_date", ""),
-                            cover_art_url,
-                            category,
-                            datetime.now().isoformat()
-                        ))
-                        total_missing += 1
+                        # Insert missing release into database with DB-aware upsert
+                        try:
+                            if is_pg:
+                                cursor.execute(f"""
+                                    INSERT INTO missing_releases 
+                                    (artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
+                                    VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
+                                    ON CONFLICT (release_id) DO UPDATE SET
+                                        last_checked = CURRENT_TIMESTAMP,
+                                        category = EXCLUDED.category
+                                """, (
+                                    artist_name,
+                                    rg.get("id", ""),
+                                    rg.get("title", ""),
+                                    rg.get("primary_type", "Album"),
+                                    rg.get("first_release_date", ""),
+                                    cover_art_url,
+                                    category
+                                ))
+                            else:
+                                cursor.execute("""
+                                    INSERT OR REPLACE INTO missing_releases 
+                                    (artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                                """, (
+                                    artist_name,
+                                    rg.get("id", ""),
+                                    rg.get("title", ""),
+                                    rg.get("primary_type", "Album"),
+                                    rg.get("first_release_date", ""),
+                                    cover_art_url,
+                                    category
+                                ))
+                            total_missing += 1
+                        except Exception as e:
+                            logging.warning(f"[MISSING_RELEASES] Error inserting release {rg.get('title')}: {e}")
                     
                     conn.commit()
                     
@@ -3669,8 +3692,8 @@ def api_artist_bio():
         
         # Return cached biography from database only - no online calls
         cursor.execute(f"""
-            SELECT bio, image_url 
-            FROM artists 
+            SELECT bio, image_url
+            FROM artists
             WHERE name = {placeholder}
         """, (artist_name,))
         artist_row = cursor.fetchone()
@@ -3932,6 +3955,8 @@ def api_artist_set_image():
     try:
         conn = get_db()
         cursor = conn.cursor()
+        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        is_pg = _is_postgres_connection(conn)
         
         # Create artist_images table if it doesn't exist
         cursor.execute("""
@@ -3942,11 +3967,20 @@ def api_artist_set_image():
             )
         """)
         
-        # Insert or update
-        cursor.execute("""
-            INSERT OR REPLACE INTO artist_images (artist_name, image_url, updated_at)
-            VALUES (?, ?, ?)
-        """, (artist_name, image_url, datetime.now().isoformat()))
+        # Insert or update with DB-aware upsert
+        if is_pg:
+            cursor.execute(f"""
+                INSERT INTO artist_images (artist_name, image_url, updated_at)
+                VALUES ({placeholder}, {placeholder}, CURRENT_TIMESTAMP)
+                ON CONFLICT (artist_name) DO UPDATE SET
+                    image_url = EXCLUDED.image_url,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (artist_name, image_url))
+        else:
+            cursor.execute("""
+                INSERT OR REPLACE INTO artist_images (artist_name, image_url, updated_at)
+                VALUES (?, ?, ?)
+            """, (artist_name, image_url, datetime.now().isoformat()))
         
         conn.commit()
         conn.close()
@@ -5043,6 +5077,7 @@ def api_album_set_art():
     try:
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
         
         # Create album_art table if it doesn't exist
         cursor.execute("""
@@ -5056,10 +5091,20 @@ def api_album_set_art():
         """)
         
         # Insert or update
-        cursor.execute("""
-            INSERT OR REPLACE INTO album_art (artist_name, album_name, image_url, updated_at)
-            VALUES (?, ?, ?, ?)
-        """, (artist_name, album_name, image_url, datetime.now().isoformat()))
+        if is_pg:
+            cursor.execute("""
+                INSERT INTO album_art (artist_name, album_name, image_url, updated_at)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (artist_name, album_name)
+                DO UPDATE SET
+                    image_url = EXCLUDED.image_url,
+                    updated_at = EXCLUDED.updated_at
+            """, (artist_name, album_name, image_url, datetime.now().isoformat()))
+        else:
+            cursor.execute("""
+                INSERT OR REPLACE INTO album_art (artist_name, album_name, image_url, updated_at)
+                VALUES (?, ?, ?, ?)
+            """, (artist_name, album_name, image_url, datetime.now().isoformat()))
         
         conn.commit()
         conn.close()
@@ -5420,6 +5465,7 @@ def api_add_artist():
         conn = get_db()
         cursor = conn.cursor()
         placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        is_pg = _is_postgres_connection(conn)
         
         # Check if artist already exists in tracks
         cursor.execute(f"SELECT COUNT(*) FROM tracks WHERE artist = {placeholder}", (artist_name,))
@@ -5466,22 +5512,39 @@ def api_add_artist():
             elif primary_type == "single" or "single" in secondary:
                 category = "Single"
             
-            # Insert into missing_releases
+            # Insert into missing_releases with DB-aware upsert
             try:
-                cursor.execute("""
-                    INSERT OR REPLACE INTO missing_releases 
-                    (artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    artist_name,
-                    rg.get("id", ""),
-                    rg.get("title", ""),
-                    rg.get("primary_type", "Album"),
-                    rg.get("first_release_date", ""),
-                    rg.get("cover_art_url", ""),
-                    category,
-                    datetime.now().isoformat()
-                ))
+                if is_pg:
+                    cursor.execute(f"""
+                        INSERT INTO missing_releases 
+                        (artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
+                        VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
+                        ON CONFLICT (release_id) DO UPDATE SET
+                            last_checked = CURRENT_TIMESTAMP,
+                            category = EXCLUDED.category
+                    """, (
+                        artist_name,
+                        rg.get("id", ""),
+                        rg.get("title", ""),
+                        rg.get("primary_type", "Album"),
+                        rg.get("first_release_date", ""),
+                        rg.get("cover_art_url", ""),
+                        category
+                    ))
+                else:
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO missing_releases 
+                        (artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    """, (
+                        artist_name,
+                        rg.get("id", ""),
+                        rg.get("title", ""),
+                        rg.get("primary_type", "Album"),
+                        rg.get("first_release_date", ""),
+                        rg.get("cover_art_url", ""),
+                        category
+                    ))
                 added_count += 1
             except Exception as e:
                 logging.error(f"[ADD_ARTIST] Error inserting release {rg.get('title')}: {e}")
@@ -5490,11 +5553,19 @@ def api_add_artist():
         
         # Create artist_stats entry if it doesn't exist (so artist appears on artists page)
         if existing_count == 0:
-            cursor.execute("""
-                INSERT OR IGNORE INTO artist_stats 
-                (artist_name, last_updated)
-                VALUES (?, CURRENT_TIMESTAMP)
-            """, (artist_name,))
+            if is_pg:
+                cursor.execute(f"""
+                    INSERT INTO artist_stats 
+                    (artist_name, last_updated)
+                    VALUES ({placeholder}, CURRENT_TIMESTAMP)
+                    ON CONFLICT (artist_name) DO NOTHING
+                """, (artist_name,))
+            else:
+                cursor.execute("""
+                    INSERT OR IGNORE INTO artist_stats 
+                    (artist_name, last_updated)
+                    VALUES (?, CURRENT_TIMESTAMP)
+                """, (artist_name,))
             conn.commit()
         
         conn.close()
@@ -7227,6 +7298,8 @@ def api_bookmarks():
     """Get all bookmarks or add a new bookmark"""
     conn = get_db()
     cursor = conn.cursor()
+    placeholder = "%s" if _is_postgres_connection(conn) else "?"
+    is_pg = _is_postgres_connection(conn)
     
     if request.method == "GET":
         try:
@@ -7267,13 +7340,20 @@ def api_bookmarks():
             if not bookmark_type or not name:
                 return jsonify({"success": False, "error": "Missing required fields"}), 400
             
-            cursor.execute("""
-                INSERT OR IGNORE INTO bookmarks (type, name, artist, album, track_id)
-                VALUES (?, ?, ?, ?, ?)
-            """, (bookmark_type, name, artist, album, track_id))
+            if is_pg:
+                cursor.execute(f"""
+                    INSERT INTO bookmarks (type, name, artist, album, track_id)
+                    VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
+                    ON CONFLICT DO NOTHING
+                """, (bookmark_type, name, artist, album, track_id))
+            else:
+                cursor.execute("""
+                    INSERT OR IGNORE INTO bookmarks (type, name, artist, album, track_id)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (bookmark_type, name, artist, album, track_id))
             
             conn.commit()
-            bookmark_id = cursor.lastrowid
+            bookmark_id = cursor.lastrowid if hasattr(cursor, 'lastrowid') else None
             conn.close()
             
             return jsonify({"success": True, "id": bookmark_id, "message": "Bookmark added"})
@@ -9232,10 +9312,10 @@ def _initiate_slskd_download_bg(tracking_id, query):
                 try:
                     conn2 = get_db()
                     cursor2 = conn2.cursor()
-                    
+
                     # Sort by match score (descending)
                     all_files.sort(key=lambda x: x['match_score'], reverse=True)
-                    
+
                     # Insert all results into database
                     for file_result in all_files:
                         cursor2.execute("""
@@ -9244,19 +9324,19 @@ def _initiate_slskd_download_bg(tracking_id, query):
                             VALUES (?, ?, ?, ?, ?)
                         """, (tracking_id, file_result['username'], file_result['filename'], 
                               file_result['size'], file_result['match_score']))
-                    
+
                     # Update status to awaiting_selection
                     cursor2.execute("""
                         UPDATE managed_downloads 
                         SET status = 'awaiting_selection', updated_at = CURRENT_TIMESTAMP
                         WHERE id = ?
                     """, (tracking_id,))
-                    
+
                     conn2.commit()
                     conn2.close()
-                    
+
                     logging.info(f"[SLSKD_MONITOR] Found {len(all_files)} results for download {tracking_id}, awaiting user selection")
-                    
+
                 except Exception as e:
                     logging.error(f"[SLSKD_MONITOR] Error saving results: {e}")
                     try:
@@ -11301,11 +11381,27 @@ def _save_album_art_to_db(artist_name: str, album_name: str, image_data: bytes, 
             
         conn = get_db()
         cursor = conn.cursor()
-        cursor.execute("""
-            INSERT OR REPLACE INTO album_art 
-            (artist_name, album_name, image_data, image_mime_type, source, downloaded_at)
-            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        """, (artist_name, album_name, image_data, mime_type, source))
+        is_pg = _is_postgres_connection(conn)
+
+        if is_pg:
+            cursor.execute("""
+                INSERT INTO album_art 
+                (artist_name, album_name, image_data, image_mime_type, source, downloaded_at)
+                VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (artist_name, album_name)
+                DO UPDATE SET
+                    image_data = EXCLUDED.image_data,
+                    image_mime_type = EXCLUDED.image_mime_type,
+                    source = EXCLUDED.source,
+                    downloaded_at = EXCLUDED.downloaded_at
+            """, (artist_name, album_name, image_data, mime_type, source))
+        else:
+            cursor.execute("""
+                INSERT OR REPLACE INTO album_art 
+                (artist_name, album_name, image_data, image_mime_type, source, downloaded_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """, (artist_name, album_name, image_data, mime_type, source))
+
         conn.commit()
         conn.close()
         
@@ -11404,9 +11500,10 @@ def api_album_art(artist, album):
         try:
             conn = get_db()
             cursor = conn.cursor()
-            cursor.execute("""
+            placeholder = get_placeholder(conn)
+            cursor.execute(f"""
                 SELECT image_data, image_mime_type FROM album_art 
-                WHERE artist_name = ? AND album_name = ?
+                WHERE artist_name = {placeholder} AND album_name = {placeholder}
             """, (artist, album))
             result = cursor.fetchone()
             conn.close()
@@ -11427,13 +11524,14 @@ def api_album_art(artist, album):
         try:
             conn = get_db()
             cursor = conn.cursor()
+            placeholder = get_placeholder(conn)
             
             # Try multiple strategies to find the album
             # Strategy 1: Try matching by album_artist first
             try:
-                cursor.execute("""
+                cursor.execute(f"""
                     SELECT cover_art_url, spotify_album_art_url FROM tracks 
-                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ? 
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder} 
                     LIMIT 1
                 """, (artist, album))
                 result = cursor.fetchone()
@@ -11446,9 +11544,9 @@ def api_album_art(artist, album):
             # Strategy 2: If not found, try matching by artist alone (for backwards compat)
             if not cover_art_url:
                 try:
-                    cursor.execute("""
+                    cursor.execute(f"""
                         SELECT cover_art_url, spotify_album_art_url FROM tracks 
-                        WHERE artist = ? AND album = ? 
+                        WHERE artist = {placeholder} AND album = {placeholder} 
                         LIMIT 1
                     """, (artist, album))
                     result = cursor.fetchone()
@@ -11496,11 +11594,12 @@ def api_album_art(artist, album):
                             try:
                                 conn = get_db()
                                 cursor = conn.cursor()
-                                cursor.execute("""
+                                placeholder = get_placeholder(conn)
+                                cursor.execute(f"""
                                     UPDATE tracks 
-                                    SET cover_art_url = ?
-                                    WHERE (COALESCE(NULLIF(album_artist, ''), artist) = ? OR artist = ?) 
-                                    AND album = ?
+                                    SET cover_art_url = {placeholder}
+                                    WHERE (COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} OR artist = {placeholder}) 
+                                    AND album = {placeholder}
                                 """, (mb_cover_url, artist, artist, album))
                                 conn.commit()
                                 conn.close()
@@ -11657,14 +11756,15 @@ def api_album_art(artist, album):
             # Get a track file path from this album (try multiple strategies)
             conn = get_db()
             cursor = conn.cursor()
+            placeholder = get_placeholder(conn)
             
             file_path = None
             
             # Strategy 1: Try matching by album_artist
             try:
-                cursor.execute("""
+                cursor.execute(f"""
                     SELECT file_path FROM tracks 
-                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ? 
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder} 
                     AND file_path IS NOT NULL
                     LIMIT 1
                 """, (artist, album))
@@ -11677,9 +11777,9 @@ def api_album_art(artist, album):
             # Strategy 2: Try matching by artist alone
             if not file_path:
                 try:
-                    cursor.execute("""
+                    cursor.execute(f"""
                         SELECT file_path FROM tracks 
-                        WHERE artist = ? AND album = ? 
+                        WHERE artist = {placeholder} AND album = {placeholder} 
                         AND file_path IS NOT NULL
                         LIMIT 1
                     """, (artist, album))
@@ -14677,6 +14777,7 @@ def api_lastfm_sync_now():
         
         # Now execute all operations in a single transaction to avoid lock contention
         placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        is_pg = _is_postgres_connection(conn)
         try:
             # Clear old recommendations for this user
             cursor.execute(f"DELETE FROM lastfm_recommendations WHERE username = {placeholder}", (username_val,))
@@ -14706,12 +14807,21 @@ def api_lastfm_sync_now():
                 sync_end
             ))
             
-            # Update scheduler config with last sync time
-            cursor.execute("""
-                INSERT OR REPLACE INTO lastfm_scheduler_config 
-                (username, last_sync)
-                VALUES (?, ?)
-            """, (username_val, datetime.now()))
+            # Update scheduler config with last sync time with DB-aware upsert
+            if is_pg:
+                cursor.execute(f"""
+                    INSERT INTO lastfm_scheduler_config 
+                    (username, last_sync)
+                    VALUES ({placeholder}, CURRENT_TIMESTAMP)
+                    ON CONFLICT (username) DO UPDATE SET
+                        last_sync = CURRENT_TIMESTAMP
+                """, (username_val,))
+            else:
+                cursor.execute("""
+                    INSERT OR REPLACE INTO lastfm_scheduler_config 
+                    (username, last_sync)
+                    VALUES (?, ?)
+                """, (username_val, datetime.now()))
             
             conn.commit()
             conn.close()
@@ -17034,27 +17144,49 @@ def api_album_add_to_missing_releases():
         
         conn = get_db()
         cursor = conn.cursor()
+        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        is_pg = _is_postgres_connection(conn)
         
         # Check if missing_releases table exists
-        cursor.execute("""
-            SELECT name FROM sqlite_master 
-            WHERE type='table' AND name='missing_releases'
-        """)
+        if is_pg:
+            cursor.execute("""
+                SELECT tablename FROM pg_tables 
+                WHERE tablename='missing_releases'
+            """)
+        else:
+            cursor.execute("""
+                SELECT name FROM sqlite_master 
+                WHERE type='table' AND name='missing_releases'
+            """)
         if not cursor.fetchone():
             conn.close()
             return jsonify({"error": "Missing releases table not found"}), 500
         
-        # Insert or update the album in missing_releases
-        cursor.execute("""
-            INSERT OR REPLACE INTO missing_releases 
-            (artist, release_id, title, first_release_date, category, last_checked)
-            VALUES (?, ?, ?, ?, 'Album', CURRENT_TIMESTAMP)
-        """, (
-            artist,
-            f"{artist}-{album}".lower().replace(" ", "-"),  # Use artist-album as release_id if MusicBrainz ID not available
-            album,
-            year if year else None
-        ))
+        # Insert or update the album in missing_releases with DB-aware upsert
+        if is_pg:
+            cursor.execute(f"""
+                INSERT INTO missing_releases 
+                (artist, release_id, title, first_release_date, category, last_checked)
+                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'Album', CURRENT_TIMESTAMP)
+                ON CONFLICT (release_id) DO UPDATE SET
+                    last_checked = CURRENT_TIMESTAMP
+            """, (
+                artist,
+                f"{artist}-{album}".lower().replace(" ", "-"),
+                album,
+                year if year else None
+            ))
+        else:
+            cursor.execute("""
+                INSERT OR REPLACE INTO missing_releases 
+                (artist, release_id, title, first_release_date, category, last_checked)
+                VALUES (?, ?, ?, ?, 'Album', CURRENT_TIMESTAMP)
+            """, (
+                artist,
+                f"{artist}-{album}".lower().replace(" ", "-"),
+                album,
+                year if year else None
+            ))
         
         conn.commit()
         conn.close()

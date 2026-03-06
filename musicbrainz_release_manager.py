@@ -258,6 +258,7 @@ class MusicBrainzReleaseManager:
                 logger.info(f"[RELEASE_ENTRY] Updated existing release entry {release_db_id}")
             else:
                 if is_pg:
+                    # PostgreSQL: Use RETURNING to get the auto-generated ID
                     cursor.execute(f"""
                         INSERT INTO musicbrainz_releases
                         (release_id, release_title, artist, release_year, total_tracks,
@@ -267,16 +268,23 @@ class MusicBrainzReleaseManager:
                     """, (release_id, release_title, artist, release_year, total_tracks,
                           str(monitoring_folder_path), method))
                     inserted = cursor.fetchone()
-                    release_db_id = self._row_get(inserted, 'id', 0, 0)
+                    if inserted:
+                        release_db_id = inserted[0] if isinstance(inserted, tuple) else self._row_get(inserted, 'id', 0, None)
+                    else:
+                        raise ValueError("Failed to retrieve inserted release ID from PostgreSQL RETURNING clause")
                 else:
+                    # SQLite: Use lastrowid to get the auto-generated ID
                     cursor.execute("""
-                    INSERT INTO musicbrainz_releases
-                    (release_id, release_title, artist, release_year, total_tracks,
-                     monitoring_folder_path, status, method, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, 'active', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                """, (release_id, release_title, artist, release_year, total_tracks,
-                      str(monitoring_folder_path), method))
+                        INSERT INTO musicbrainz_releases
+                        (release_id, release_title, artist, release_year, total_tracks,
+                         monitoring_folder_path, status, method, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, 'active', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """, (release_id, release_title, artist, release_year, total_tracks,
+                          str(monitoring_folder_path), method))
                     release_db_id = cursor.lastrowid
+                
+                if not release_db_id:
+                    raise ValueError(f"Failed to get ID for new release: {release_id}")
                 logger.info(f"[RELEASE_ENTRY] Created new release entry {release_db_id}")
             
             conn.commit()
