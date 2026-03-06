@@ -3644,7 +3644,7 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
   // Similar Artists Loading
   async function loadSimilarArtistsForArtist(artist) {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
     
     try {
       const url = `/api/artist/${encodeURIComponent(artist)}/similar`;
