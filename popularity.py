@@ -5548,10 +5548,10 @@ def popularity_scan(
                         
                         # Get all tracks for this album with metadata
                         # Note: Use COALESCE to handle album_artist grouping like singles detection does
-                        cursor.execute("""
+                        cursor.execute(f"""
                             SELECT id, title, artist, writer, mbid 
                             FROM tracks 
-                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s
+                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
                             ORDER BY COALESCE(track_number, 0), title
                         """, (artist, album))
                         album_tracks_for_cover = [dict(row) for row in cursor.fetchall()]
@@ -5630,10 +5630,10 @@ def popularity_scan(
                 # These are tracks that are strong album standouts: zscore >= 2.0 AND popularity >> album mean
                 # This works alongside existing single detection to identify standout album tracks
                 try:
-                    cursor.execute("""
+                    cursor.execute(f"""
                         SELECT id, title, popularity_score, single_confidence, single_sources, is_single
                         FROM tracks 
-                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s
+                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
                         ORDER BY popularity_score DESC
                     """, (artist, album))
                     
@@ -6060,10 +6060,10 @@ def popularity_scan(
                     log_debug(f"Logging categorized tracks for album {album}: singles_count may be 0 if all tracks are non-singles")
                     try:
                         cursor.execute(
-                            """SELECT id, title, artist, stars, is_single, single_confidence, single_sources, 
+                            f"""SELECT id, title, artist, stars, is_single, single_confidence, single_sources, 
                                       is_standout_track, artist_z_score
                             FROM tracks 
-                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s 
+                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder} 
                             ORDER BY stars DESC, popularity_score DESC""",
                             (artist, album)
                         )
@@ -6180,9 +6180,9 @@ def popularity_scan(
                 # Update last_scanned timestamp for all tracks in this album
                 current_timestamp = datetime.now().isoformat()
                 cursor.execute(
-                    """UPDATE tracks 
-                    SET last_scanned = %s 
-                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s""",
+                    f"""UPDATE tracks 
+                    SET last_scanned = {placeholder} 
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}""",
                     (current_timestamp, artist, album)
                 )
                 
@@ -6211,9 +6211,9 @@ def popularity_scan(
             # After artist scans, evaluate essential playlist for artist (Case A: 10+ five-star OR Case B: 100+ tracks)
             # Get ALL tracks for this artist (not just 5-star) to properly apply Case A/B logic
             cursor.execute(
-                """SELECT id, artist, album, title, stars
+                f"""SELECT id, artist, album, title, stars
                 FROM tracks 
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
                 ORDER BY stars DESC, popularity_score DESC""",
                 (artist,)
             )
@@ -6507,9 +6507,9 @@ def refresh_all_playlists_from_db():
         
         for name in artists:
             cursor.execute(
-                """SELECT id, artist, album, title, stars
+                f"""SELECT id, artist, album, title, stars
                    FROM tracks
-                   WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s""",
+                   WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}""",
                 (name,)
             )
             rows = cursor.fetchall()
