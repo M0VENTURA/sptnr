@@ -72,9 +72,10 @@ new_sync_func = '''def sync_track_tags_to_file(track_id: str) -> bool:
         True if successful, False otherwise
     """
     try:
+        from app import _is_postgres_connection
         conn = get_db_connection()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
+        is_pg = bool(_is_postgres_connection(conn))
         placeholder = "%s" if is_pg else "?"
 
         # Get file path and all tags

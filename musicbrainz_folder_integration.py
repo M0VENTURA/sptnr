@@ -168,11 +168,15 @@ def retry_matching_for_release(release_id):
     cursor = conn.cursor()
     
     try:
+        from app import _is_postgres_connection as app_is_postgres_connection
+        is_pg = bool(app_is_postgres_connection(conn))
+        placeholder = "%s" if is_pg else "?"
+        
         # Get release info
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT id, monitoring_folder_path, total_tracks, discovered_count
             FROM musicbrainz_releases
-            WHERE release_id = ?
+            WHERE release_id = {placeholder}
         """, (release_id,))
         
         release_row = cursor.fetchone()
@@ -182,10 +186,10 @@ def retry_matching_for_release(release_id):
         release_db_id, monitor_folder, total_tracks, discovered_count = release_row
         
         # Get all unmatched tracks for this release
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT track_number, track_title, track_artist
             FROM musicbrainz_release_tracks
-            WHERE release_id = ? AND status != 'discovered' AND status != 'finalized'
+            WHERE release_id = {placeholder} AND status != 'discovered' AND status != 'finalized'
         """, (release_id,))
         
         unmatched_tracks = cursor.fetchall()
@@ -231,10 +235,14 @@ def cancel_folder_downloads(folder_path):
     cursor = conn.cursor()
     
     try:
+        from app import _is_postgres_connection as app_is_postgres_connection
+        is_pg = bool(app_is_postgres_connection(conn))
+        placeholder = "%s" if is_pg else "?"
+        
         # Check if this is a MusicBrainz release folder
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT id, release_id FROM musicbrainz_releases
-            WHERE monitoring_folder_path = ?
+            WHERE monitoring_folder_path = {placeholder}
         """, (folder_path,))
         
         mb_result = cursor.fetchone()
@@ -243,16 +251,16 @@ def cancel_folder_downloads(folder_path):
             release_db_id, release_id = mb_result
             
             # Remove from queue
-            cursor.execute("""
+            cursor.execute(f"""
                 DELETE FROM download_queue
-                WHERE mb_release_download_id = ?
+                WHERE mb_release_download_id = {placeholder}
             """, (release_db_id,))
             
             # Mark release as cancelled
-            cursor.execute("""
+            cursor.execute(f"""
                 UPDATE musicbrainz_releases
                 SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
+                WHERE id = {placeholder}
             """, (release_db_id,))
             
             conn.commit()

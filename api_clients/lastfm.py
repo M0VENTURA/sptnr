@@ -242,9 +242,13 @@ class LastFmClient:
             
             cursor = conn.cursor()
             
+            from app import _is_postgres_connection as app_is_postgres_connection
+            is_pg = bool(app_is_postgres_connection(conn))
+            placeholder = "%s" if is_pg else "?"
+            
             # Query for album matching both artist and album name (case-insensitive)
             cursor.execute(
-                "SELECT 1 FROM tracks WHERE LOWER(artist) = LOWER(?) AND LOWER(album) = LOWER(?) LIMIT 1",
+                f"SELECT 1 FROM tracks WHERE LOWER(artist) = LOWER({placeholder}) AND LOWER(album) = LOWER({placeholder}) LIMIT 1",
                 (artist, album)
             )
             
@@ -1163,6 +1167,8 @@ class LastFmClient:
                 rate_limit_delay=LASTFM_CONFIG["RATE_LIMIT_DELAY"]
             )
             res.raise_for_status()
+            
+            albums = []  # Initialize to avoid "possibly unbound" error
             
             if self.username:
                 # When using getTopAlbums, the response has a different structure

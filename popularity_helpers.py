@@ -22,6 +22,7 @@ from api_clients.lastfm import LastFmClient
 from api_clients.audiodb_and_listenbrainz import score_by_age as _score_by_age
 from api_clients import timeout_safe_session
 from helpers.helpers import strip_cover_attribution
+from app import _is_postgres_connection
 
 # ============================================================================
 # Shared z-score and popularity utilities (consolidated from duplicated code)
@@ -833,8 +834,10 @@ def save_to_db(track_data):
         track_id_for_writer = sanitized_data.get('id')
         if track_id_for_writer:
             try:
+                is_pg = bool(_is_postgres_connection(cursor.connection if hasattr(cursor, 'connection') else conn))
+                placeholder = "%s" if is_pg else "?"
                 _run_with_db_lock_retry(
-                    lambda: cursor.execute("SELECT writer FROM tracks WHERE id = ?", (track_id_for_writer,)),
+                    lambda: cursor.execute(f"SELECT writer FROM tracks WHERE id = {placeholder}", (track_id_for_writer,)),
                     "save_to_db writer lookup"
                 )
                 existing_row = cursor.fetchone()
@@ -943,8 +946,10 @@ def save_to_db(track_data):
             if new_score > existing_score:
                 # Keep new ID, delete old duplicate
                 logging.debug(f"Duplicate found: Keeping new track ID {track_id}, deleting {existing_id} (artist={artist}, title={title})")
+                is_pg = bool(_is_postgres_connection(cursor.connection if hasattr(cursor, 'connection') else conn))
+                placeholder = "%s" if is_pg else "?"
                 _run_with_db_lock_retry(
-                    lambda: cursor.execute("DELETE FROM tracks WHERE id = ?", (existing_id,)),
+                    lambda: cursor.execute(f"DELETE FROM tracks WHERE id = {placeholder}", (existing_id,)),
                     "save_to_db delete older duplicate"
                 )
             else:
@@ -1271,10 +1276,12 @@ def detect_via_iterative_zscore(
             return False
 
 
-def _check_artist_zscore(cursor, artist: str, track_id: int) -> float:
+def _check_artist_zscore(cursor, artist: str, track_id: int, conn=None) -> float:
     """Get z-score for a track within its artist catalog. Returns -999 on failure."""
     try:
-        cursor.execute("SELECT popularity_score FROM tracks WHERE id = ?", (track_id,))
+        is_pg = bool(_is_postgres_connection(cursor.connection if hasattr(cursor, 'connection') else conn))
+        placeholder = "%s" if is_pg else "?"
+        cursor.execute(f"SELECT popularity_score FROM tracks WHERE id = {placeholder}", (track_id,))
         row = cursor.fetchone()
         if not row:
             return -999

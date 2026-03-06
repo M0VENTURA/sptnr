@@ -151,9 +151,13 @@ class DiscogsArtistSinglesCache:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
-            cursor.execute("""
+            from app import _is_postgres_connection as app_is_postgres_connection
+            is_pg = bool(app_is_postgres_connection(conn))
+            placeholder = "%s" if is_pg else "?"
+            
+            cursor.execute(f"""
                 SELECT last_cached_at FROM discogs_cache_metadata
-                WHERE artist = ?
+                WHERE artist = {placeholder}
             """, (artist,))
             
             row = cursor.fetchone()
@@ -187,9 +191,13 @@ class DiscogsArtistSinglesCache:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
-            cursor.execute("""
+            from app import _is_postgres_connection as app_is_postgres_connection
+            is_pg = bool(app_is_postgres_connection(conn))
+            placeholder = "%s" if is_pg else "?"
+            
+            cursor.execute(f"""
                 SELECT normalized_title FROM discogs_singles_cache
-                WHERE artist = ?
+                WHERE artist = {placeholder}
             """, (artist,))
             
             titles = {row[0] for row in cursor.fetchall()}
@@ -212,10 +220,14 @@ class DiscogsArtistSinglesCache:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
-            cursor.execute("""
+            from app import _is_postgres_connection as app_is_postgres_connection
+            is_pg = bool(app_is_postgres_connection(conn))
+            placeholder = "%s" if is_pg else "?"
+            
+            cursor.execute(f"""
                 SELECT original_title, release_id, release_year, is_official, is_promo
                 FROM discogs_singles_cache
-                WHERE artist = ? AND normalized_title = ?
+                WHERE artist = {placeholder} AND normalized_title = {placeholder}
             """, (artist, normalized_title))
             
             row = cursor.fetchone()
@@ -345,15 +357,19 @@ class DiscogsArtistSinglesCache:
             cutoff = datetime.now() - timedelta(days=self.cache_ttl_days)
             
             # Delete expired entries
-            cursor.execute("""
+            from app import _is_postgres_connection as app_is_postgres_connection
+            is_pg = bool(app_is_postgres_connection(conn))
+            placeholder = "%s" if is_pg else "?"
+            
+            cursor.execute(f"""
                 DELETE FROM discogs_singles_cache
-                WHERE cached_at < ?
+                WHERE cached_at < {placeholder}
             """, (cutoff.isoformat(),))
             
             # Delete corresponding metadata
-            cursor.execute("""
+            cursor.execute(f"""
                 DELETE FROM discogs_cache_metadata
-                WHERE last_cached_at < ?
+                WHERE last_cached_at < {placeholder}
             """, (cutoff.isoformat(),))
             
             removed = cursor.rowcount

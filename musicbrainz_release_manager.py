@@ -446,12 +446,12 @@ class MusicBrainzReleaseManager:
                             queue_row = cursor.fetchone()
                             queue_id = self._row_get(queue_row, 'id', 0, 0)
                         else:
-                            cursor.execute("""
+                            cursor.execute(f"""
                                 INSERT INTO download_queue
                                 (artist, album, title, search_query, source, status,
                                  release_id, track_number, mb_release_download_id,
                                  created_at, updated_at)
-                                VALUES (?, ?, ?, ?, 'soulseek', 'queued', ?, ?, ?,
+                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'soulseek', 'queued', {placeholder}, {placeholder}, {placeholder},
                                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                             """, (track_artist, album, track_title, search_query,
                                   release_id, track_number, mb_release_db_id))
@@ -491,11 +491,11 @@ class MusicBrainzReleaseManager:
                             """, (track_id, track_artist, album, track_title,
                                   track_number, duration, isrc))
                         else:
-                            cursor.execute("""
+                            cursor.execute(f"""
                                 INSERT OR REPLACE INTO tracks
                                 (id, artist, album, title, track_number, duration, isrc,
                                  download_status, created_at, updated_at)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, 'downloading',
+                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'downloading',
                                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                             """, (track_id, track_artist, album, track_title,
                                   track_number, duration, isrc))

@@ -103,14 +103,18 @@ def import_featured_artists_for_track(artist, album, title, file_path=None, db_p
         conn = sqlite3.connect(db_path, timeout=120.0)
         cursor = conn.cursor()
         
-        cursor.execute("""
+        from app import _is_postgres_connection as app_is_postgres_connection
+        is_pg = bool(app_is_postgres_connection(conn))
+        placeholder = "%s" if is_pg else "?"
+        
+        cursor.execute(f"""
             UPDATE tracks 
             SET 
-                featured_artists = ?,
-                performers = ?,
-                is_compilation_track = ?,
-                compilation_artists = ?
-            WHERE artist = ? AND album = ? AND title = ?
+                featured_artists = {placeholder},
+                performers = {placeholder},
+                is_compilation_track = {placeholder},
+                compilation_artists = {placeholder}
+            WHERE artist = {placeholder} AND album = {placeholder} AND title = {placeholder}
         """, (
             json.dumps(featured_artists) if featured_artists else None,
             json.dumps(performers) if performers else None,
@@ -162,10 +166,14 @@ def import_featured_artists_for_album(artist, album, db_path="/database/sptnr.db
         cursor = conn.cursor()
         
         # Get all tracks for this album
-        cursor.execute("""
+        from app import _is_postgres_connection as app_is_postgres_connection
+        is_pg = bool(app_is_postgres_connection(conn))
+        placeholder = "%s" if is_pg else "?"
+        
+        cursor.execute(f"""
             SELECT id, artist, album, title, file_path
             FROM tracks 
-            WHERE artist = ? AND album = ?
+            WHERE artist = {placeholder} AND album = {placeholder}
             ORDER BY track_number
         """, (artist, album))
         

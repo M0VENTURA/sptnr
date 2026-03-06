@@ -340,14 +340,17 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                 conn.commit()
                 queue_id = inserted.get('id') if isinstance(inserted, dict) else inserted[0]
             else:
+                from app import _is_postgres_connection as app_is_postgres_connection
+                is_pg = bool(app_is_postgres_connection(conn))
+                placeholder = "%s" if is_pg else "?"
                 execute_write_with_retry(
                     cursor,
                     conn,
-                    """
+                    f"""
                     INSERT INTO download_queue 
                     (artist, title, album, search_query, source, status, priority, file_path, import_group, import_type, 
                      track_number, album_artist, year, release_id, release_source, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, 'queued', ?, NULL, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued', {placeholder}, NULL, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """,
                     (artist, title, album, search_query, source, priority, import_group, import_type,
                      track_number, album_artist, year, release_id, release_source),
@@ -428,18 +431,22 @@ def get_queue(status=None, source='soulseek', limit=50):
                 except Exception as e:
                     logger.warning(f"Could not add {col} column: {e}")
         
+        from app import _is_postgres_connection as app_is_postgres_connection
+        is_pg = bool(app_is_postgres_connection(conn))
+        placeholder = "%s" if is_pg else "?"
+        
         query = "SELECT * FROM download_queue"
         params = []
         
         # Only filter by source if column exists
         if 'source' in columns:
-            query += " WHERE source = ?"
+            query += f" WHERE source = {placeholder}"
             params.append(source)
             if status:
-                query += " AND status = ?"
+                query += f" AND status = {placeholder}"
                 params.append(status)
         elif status:
-            query += " WHERE status = ?"
+            query += f" WHERE status = {placeholder}"
             params.append(status)
         
         # Only use priority in ORDER BY if column exists
@@ -1015,9 +1022,12 @@ def auto_discover_and_queue_files():
                 )
                 
                 # Check if already in download_queue
-                cursor.execute("""
+                from app import _is_postgres_connection as app_is_postgres_connection
+                is_pg = bool(app_is_postgres_connection(conn))
+                placeholder = "%s" if is_pg else "?"
+                cursor.execute(f"""
                     SELECT id, status FROM download_queue 
-                    WHERE (file_path = ? OR found_filename = ?)
+                    WHERE (file_path = {placeholder} OR found_filename = {placeholder})
                 """, (full_path, filename))
                 
                 existing = cursor.fetchone()
@@ -1027,11 +1037,11 @@ def auto_discover_and_queue_files():
                     continue
                 
                 # Check if track exists in library (case-insensitive)
-                cursor.execute("""
+                cursor.execute(f"""
                     SELECT id FROM tracks 
-                    WHERE LOWER(artist) = LOWER(?) 
-                    AND LOWER(album) = LOWER(?) 
-                    AND LOWER(title) = LOWER(?)
+                    WHERE LOWER(artist) = LOWER({placeholder}) 
+                    AND LOWER(album) = LOWER({placeholder}) 
+                    AND LOWER(title) = LOWER({placeholder})
                 """, (artist, album, title))
                 
                 in_library = cursor.fetchone()
@@ -1043,11 +1053,11 @@ def auto_discover_and_queue_files():
                     execute_write_with_retry(
                         cursor,
                         conn,
-                        """
+                        f"""
                         INSERT INTO download_queue 
                         (artist, title, album, album_artist, track_number, disc_number, year, found_filename, file_path, 
                          status, source, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', 'discovered', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'completed', 'discovered', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """,
                         (artist, title, album, album_artist, track_number, disc_number, year, filename, full_path),
                         context="auto_discover in-library insert"
@@ -1060,11 +1070,11 @@ def auto_discover_and_queue_files():
                 execute_write_with_retry(
                     cursor,
                     conn,
-                    """
+                    f"""
                     INSERT INTO download_queue 
                     (artist, title, album, album_artist, track_number, disc_number, year, found_filename, file_path, 
                      status, source, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', 'discovered', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'completed', 'discovered', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """,
                     (artist, title, album, album_artist, track_number, disc_number, year, filename, full_path),
                     context="auto_discover insert"
@@ -1469,10 +1479,13 @@ def check_album_exists_in_library(album, artist):
         cursor = conn.cursor()
         
         # Check if any tracks from this album/artist combo exist
-        cursor.execute("""
+        from app import _is_postgres_connection as app_is_postgres_connection
+        is_pg = bool(app_is_postgres_connection(conn))
+        placeholder = "%s" if is_pg else "?"
+        cursor.execute(f"""
             SELECT COUNT(*) as count FROM tracks 
-            WHERE LOWER(album) = LOWER(?) 
-            AND (LOWER(artist) = LOWER(?) OR LOWER(album_artist) = LOWER(?))
+            WHERE LOWER(album) = LOWER({placeholder}) 
+            AND (LOWER(artist) = LOWER({placeholder}) OR LOWER(album_artist) = LOWER({placeholder}))
         """, (album, artist, artist))
         
         result = cursor.fetchone()
@@ -1764,11 +1777,15 @@ def check_album_complete(album, artist):
         conn = get_db()
         cursor = conn.cursor()
         
+        from app import _is_postgres_connection as app_is_postgres_connection
+        is_pg = bool(app_is_postgres_connection(conn))
+        placeholder = "%s" if is_pg else "?"
+        
         # Get all queue items for this album
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT * FROM download_queue 
-            WHERE LOWER(album) = LOWER(?) 
-            AND LOWER(artist) = LOWER(?)
+            WHERE LOWER(album) = LOWER({placeholder}) 
+            AND LOWER(artist) = LOWER({placeholder})
             AND status IN ('discovered', 'completed', 'pending_match')
             AND file_path IS NOT NULL
             ORDER BY track_number ASC, title ASC
@@ -1856,18 +1873,21 @@ def _process_album_tracks_with_metadata(album, artist, tracks, matched_metadata=
             result = rename_and_move_file(file_path, metadata)
 
             if result.get('success'):
+                from app import _is_postgres_connection as app_is_postgres_connection
+                is_pg = bool(app_is_postgres_connection(conn))
+                placeholder = "%s" if is_pg else "?"
                 cursor.execute(
-                    """
+                    f"""
                     UPDATE download_queue
                     SET status = 'imported',
-                        album_artist = ?,
-                        album = ?,
-                        year = ?,
-                        release_id = COALESCE(?, release_id),
-                        release_source = COALESCE(?, release_source),
+                        album_artist = {placeholder},
+                        album = {placeholder},
+                        year = {placeholder},
+                        release_id = COALESCE({placeholder}, release_id),
+                        release_source = COALESCE({placeholder}, release_source),
                         imported_at = CURRENT_TIMESTAMP,
                         updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
+                    WHERE id = {placeholder}
                     """,
                     (
                         consistent_album_artist,
@@ -2009,11 +2029,15 @@ def get_release_tracks_with_status(artist, album, release_group_id, current_fold
         conn = get_db()
         cursor = conn.cursor()
         
-        cursor.execute("""
+        from app import _is_postgres_connection as app_is_postgres_connection
+        is_pg = bool(app_is_postgres_connection(conn))
+        placeholder = "%s" if is_pg else "?"
+        
+        cursor.execute(f"""
             SELECT id, title, file_path, status
             FROM download_queue
-            WHERE LOWER(artist) = LOWER(?)
-            AND LOWER(album) = LOWER(?)
+            WHERE LOWER(artist) = LOWER({placeholder})
+            AND LOWER(album) = LOWER({placeholder})
             ORDER BY track_number, title
         """, (artist, album))
         
@@ -2395,12 +2419,15 @@ def process_complete_albums():
                     conn = get_db()
                     cursor = conn.cursor()
                     for track in completion['tracks']:
+                        from app import _is_postgres_connection as app_is_postgres_connection
+                        is_pg = bool(app_is_postgres_connection(conn))
+                        placeholder = "%s" if is_pg else "?"
                         cursor.execute(
-                            """
+                            f"""
                             UPDATE download_queue
                             SET status = 'possible_duplicate',
                                 updated_at = CURRENT_TIMESTAMP
-                            WHERE id = ?
+                            WHERE id = {placeholder}
                             """,
                             (track['id'],)
                         )

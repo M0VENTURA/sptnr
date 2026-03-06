@@ -55,6 +55,7 @@ from popularity_helpers import (
 )
 # Import DB connection helper
 from helpers.db_utils import get_db_connection, get_current_track_rating
+from app import _is_postgres_connection
 
 # Import scan helpers
 from helpers.scan_helpers import scan_library_to_db
@@ -339,7 +340,9 @@ def set_track_rating_for_all(track_id, stars):
     for name in artists:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, artist, album, title, stars FROM tracks WHERE artist = ?", (name,))
+        is_pg = bool(_is_postgres_connection(conn))
+        placeholder = "%s" if is_pg else "?"
+        cursor.execute(f"SELECT id, artist, album, title, stars FROM tracks WHERE artist = {placeholder}", (name,))
         rows = cursor.fetchall()
         conn.close()
         if not rows:
@@ -934,8 +937,10 @@ def run_scan(scan_type='full', verbose=False, force=False, dry_run=False):
                 print(f"âš ï¸ Force enabled: clearing cached data for artist '{name}'...")
                 conn = get_db_connection()
                 cursor = conn.cursor()
-                cursor.execute("DELETE FROM tracks WHERE artist = ?", (name,))
-                cursor.execute("DELETE FROM artist_stats WHERE artist_name = ?", (name,))
+                is_pg = bool(_is_postgres_connection(conn))
+                placeholder = "%s" if is_pg else "?"
+                cursor.execute(f"DELETE FROM tracks WHERE artist = {placeholder}", (name,))
+                cursor.execute(f"DELETE FROM artist_stats WHERE artist_name = {placeholder}", (name,))
                 conn.commit()
                 conn.close()
                 print(f"âœ… Cache cleared for artist '{name}'")

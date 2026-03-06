@@ -143,11 +143,14 @@ class MusicBrainzFinalizer:
             cursor = conn.cursor()
             
             # Step 1: Get release info
-            cursor.execute("""
+            from app import _is_postgres_connection as app_is_postgres_connection
+            is_pg = bool(app_is_postgres_connection(conn))
+            placeholder = "%s" if is_pg else "?"
+            cursor.execute(f"""
                 SELECT release_title, artist, release_year, monitoring_folder_path,
                        total_tracks, discovered_count
                 FROM musicbrainz_releases
-                WHERE id = ?
+                WHERE id = {placeholder}
             """, (release_db_id,))
             
             release = cursor.fetchone()
@@ -246,10 +249,13 @@ class MusicBrainzFinalizer:
             cursor = conn.cursor()
             
             # Find matching track in database
-            cursor.execute("""
+            from app import _is_postgres_connection as app_is_postgres_connection
+            is_pg = bool(app_is_postgres_connection(conn))
+            placeholder = "%s" if is_pg else "?"
+            cursor.execute(f"""
                 SELECT track_number, track_title, track_artist
                 FROM musicbrainz_release_tracks
-                WHERE release_id = ? AND (found_filename = ? OR file_path LIKE ?)
+                WHERE release_id = {placeholder} AND (found_filename = {placeholder} OR file_path LIKE {placeholder})
             """, (release_id, file_path.name, f"%{file_path.name}%"))
             
             track = cursor.fetchone()
@@ -302,12 +308,12 @@ class MusicBrainzFinalizer:
             logger.debug(f"[FINALIZER] Moved {file_path.name} → {destination.name}")
             
             # Update database with finalized info
-            cursor.execute("""
+            cursor.execute(f"""
                 UPDATE musicbrainz_release_tracks
                 SET status = 'finalized',
-                    file_path = ?,
+                    file_path = {placeholder},
                     updated_at = CURRENT_TIMESTAMP
-                WHERE release_id = ? AND track_number = ?
+                WHERE release_id = {placeholder} AND track_number = {placeholder}
             """, (str(destination), release_id, track_number))
             
             return True
@@ -344,12 +350,16 @@ class MusicBrainzFinalizer:
             conn = self.get_db()
             cursor = conn.cursor()
             
-            cursor.execute("""
+            from app import _is_postgres_connection as app_is_postgres_connection
+            is_pg = bool(app_is_postgres_connection(conn))
+            placeholder = "%s" if is_pg else "?"
+            
+            cursor.execute(f"""
                 SELECT id, release_title, artist, release_year,
                        total_tracks, discovered_count, status,
                        finalized_at
                 FROM musicbrainz_releases
-                WHERE release_id = ?
+                WHERE release_id = {placeholder}
             """, (release_id,))
             
             release = cursor.fetchone()
