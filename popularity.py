@@ -2786,6 +2786,8 @@ def popularity_scan(
         if force or clear_single_detection_sources:
             conn_for_cache = get_db_connection()
             cursor_for_cache = conn_for_cache.cursor()
+            cache_is_pg = is_postgres_connection(conn_for_cache)
+            cache_placeholder = "%s" if cache_is_pg else "?"
             
             if force:
                 # Clear entire single detection cache on --force
@@ -2802,11 +2804,11 @@ def popularity_scan(
                 # Clear cache only for specific sources that were changed
                 for source in clear_single_detection_sources:
                     log_info(f"Clearing single detection cache for source: {source}")
-                    cursor_for_cache.execute("""
+                    cursor_for_cache.execute(f"""
                         UPDATE tracks 
                         SET single_detection_last_updated = NULL
                         WHERE single_manual_override = 0
-                        AND single_sources LIKE ?
+                        AND single_sources LIKE {cache_placeholder}
                     """, (f'%{source}%',))
                     cleared_count = cursor_for_cache.rowcount
                     conn_for_cache.commit()
