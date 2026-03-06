@@ -2532,6 +2532,7 @@ function refreshMbDownloads() {
                     <td>
                         <div><strong>${dl.release_title}</strong>${persistentBadge}</div>
                         ${retryInfo ? `<div>${retryInfo}</div>` : ''}
+                        ${dl.total_tracks ? `<small class="text-muted">Tracks: ${dl.completed_tracks}/${dl.total_tracks} completed</small>` : ''}
                     </td>
                     <td>${dl.artist}</td>
                     <td class="text-center">

@@ -9159,15 +9159,15 @@ def api_musicbrainz_search():
 
 @app.route("/api/musicbrainz/download", methods=["POST"])
 def api_musicbrainz_download():
-    """Initiate a managed download from MusicBrainz release"""
+    """Initiate a managed download from MusicBrainz release with full track integration"""
     data = request.json or {}
     release_id = data.get("release_id", "").strip()
     release_title = data.get("release_title", "").strip()
     artist = data.get("artist", "").strip()
     method = data.get("method", "").strip().lower()
-    persistent_search = data.get("persistent_search", False)  # New: Keep searching until found
-    max_retries = data.get("max_retries", 3)  # New: Max number of retries
-    session_id = data.get("session_id", None)  # New: Link to playlist session (optional)
+    persistent_search = data.get("persistent_search", False)
+    max_retries = data.get("max_retries", 3)
+    session_id = data.get("session_id", None)
     
     if not all([release_id, release_title, artist, method]):
         return jsonify({"error": "Missing required parameters"}), 400
@@ -9176,22 +9176,46 @@ def api_musicbrainz_download():
         return jsonify({"error": "Invalid method. Use 'slskd' or 'qbittorrent'"}), 400
     
     try:
+        # Fetch MusicBrainz release data to get all tracks
+        from musicbrainz_release_manager import get_manager
+        manager = get_manager()
+        mb_data = manager.fetch_release_from_musicbrainz(release_id)
+        
+        if not mb_data or 'releases' not in mb_data or not mb_data['releases']:
+            logging.warning(f"[MB_DOWNLOAD] No release data found for {release_id}, proceeding with simple download")
+            # Fall back to simple download if no MB data available
+            return _simple_mb_download(release_id, release_title, artist, method, persistent_search, max_retries, session_id)
+        
         conn = get_db()
         cursor = conn.cursor()
         is_pg = _is_postgres_connection(conn)
         placeholder = "%s" if is_pg else "?"
         
-        # If session_id provided, verify it exists
+        # Verify session exists if provided
         if session_id:
             cursor.execute(f"SELECT id FROM playlist_download_sessions WHERE id = {placeholder}", (session_id,))
             if not cursor.fetchone():
                 conn.close()
                 return jsonify({"error": f"Session {session_id} not found"}), 404
         
-        # Create search query
-        download_query = f"{artist} {release_title}"
+        # Extract release year
+        release_year = None
+        if mb_data['releases']:
+            date_str = mb_data['releases'][0].get('first-release-date', '')
+            release_year = int(date_str.split('-')[0]) if date_str else None
+        if not release_year:
+            from datetime import datetime as dt
+            release_year = dt.now().year
         
-        # Insert into managed_downloads table with persistent search settings and session link
+        # Count total tracks
+        total_tracks = 0
+        if 'releases' in mb_data:
+            for release in mb_data['releases']:
+                for medium in release.get('media', []):
+                    total_tracks += len(medium.get('tracks', []))
+        
+        # Create managed_downloads entry
+        download_query = f"{artist} {release_title}"
         cursor.execute(f"""
             INSERT INTO managed_downloads 
             (release_id, release_title, artist, method, status, download_query, persistent_search, max_retries, session_id, created_at, updated_at)
@@ -9199,10 +9223,62 @@ def api_musicbrainz_download():
         """, (release_id, release_title, artist, method, download_query, 1 if persistent_search else 0, max_retries, session_id))
         
         tracking_id = cursor.lastrowid
+        
+        # Add all tracks to download_queue to ensure they're tracked
+        queue_ids = []
+        track_count = 0
+        if 'releases' in mb_data:
+            for release in mb_data['releases']:
+                for medium in release.get('media', []):
+                    for track in medium.get('tracks', []):
+                        track_count += 1
+                        track_title = track.get('title', f'Track {track_count}')
+                        track_number = track.get('position', track_count)
+                        duration = track.get('length', 0)
+                        isrc = track.get('isrc', None)
+                        
+                        # Use provided artist or extract from track data
+                        track_artist = artist
+                        if 'artist-credit' in track:
+                            try:
+                                track_artist = track['artist-credit'][0].get('name', artist) if track['artist-credit'] else artist
+                            except:
+                                pass
+                        
+                        # Create search query for individual track
+                        search_query = f"{track_artist} {track_title}".strip()
+                        
+                        # Add to download_queue
+                        if is_pg:
+                            cursor.execute(f"""
+                                INSERT INTO download_queue
+                                (artist, album, title, search_query, source, status,
+                                 release_id, track_number, created_at, updated_at)
+                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'soulseek', 'queued', {placeholder}, {placeholder},
+                                       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                                RETURNING id
+                            """, (track_artist, release_title, track_title, search_query, release_id, track_number))
+                            queue_row = cursor.fetchone()
+                            queue_id = queue_row[0] if queue_row else None
+                        else:
+                            cursor.execute(f"""
+                                INSERT INTO download_queue
+                                (artist, album, title, search_query, source, status,
+                                 release_id, track_number, created_at, updated_at)
+                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'soulseek', 'queued', {placeholder}, {placeholder},
+                                       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                            """, (track_artist, release_title, track_title, search_query, release_id, track_number))
+                            queue_id = cursor.lastrowid
+                        
+                        if queue_id:
+                            queue_ids.append(queue_id)
+        
         conn.commit()
         conn.close()
         
-        # Immediately initiate the download in background thread with fresh connection
+        logging.info(f"[MB_DOWNLOAD] Release {release_id}: Created tracking ID {tracking_id}, added {len(queue_ids)} tracks to queue")
+        
+        # Initiate search in background thread
         if method == "slskd":
             thread = threading.Thread(target=_initiate_slskd_download_bg, args=(tracking_id, download_query), daemon=True)
             thread.start()
@@ -9213,13 +9289,57 @@ def api_musicbrainz_download():
         return jsonify({
             "success": True,
             "tracking_id": tracking_id,
-            "message": f"Download queued for {release_title}",
+            "message": f"Download queued for {release_title} ({len(queue_ids)} tracks)",
+            "total_tracks": total_tracks,
+            "queued_tracks": len(queue_ids),
             "persistent_search": persistent_search,
             "session_id": session_id
-        })
+        }), 201
         
     except Exception as e:
         logging.error(f"[MB_DOWNLOAD] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+def _simple_mb_download(release_id, release_title, artist, method, persistent_search, max_retries, session_id):
+    """Fallback simple download when MusicBrainz data not available"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+        
+        download_query = f"{artist} {release_title}"
+        
+        cursor.execute(f"""
+            INSERT INTO managed_downloads 
+            (release_id, release_title, artist, method, status, download_query, persistent_search, max_retries, session_id, created_at, updated_at)
+            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued', {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """, (release_id, release_title, artist, method, download_query, 1 if persistent_search else 0, max_retries, session_id))
+        
+        tracking_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        
+        if method == "slskd":
+            thread = threading.Thread(target=_initiate_slskd_download_bg, args=(tracking_id, download_query), daemon=True)
+            thread.start()
+        elif method == "qbittorrent":
+            thread = threading.Thread(target=_initiate_qbit_download_bg, args=(tracking_id, download_query), daemon=True)
+            thread.start()
+        
+        return jsonify({
+            "success": True,
+            "tracking_id": tracking_id,
+            "message": f"Download queued for {release_title} (MusicBrainz data not available, using simple search)",
+            "persistent_search": persistent_search,
+            "session_id": session_id
+        }), 201
+        
+    except Exception as e:
+        logging.error(f"[MB_DOWNLOAD_SIMPLE] Error: {e}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -10152,10 +10272,12 @@ def api_list_playlist_download_sessions():
 @app.route("/api/musicbrainz/downloads", methods=["GET"])
 
 def api_musicbrainz_downloads():
-    """Get all managed downloads"""
+    """Get all managed downloads with track count information"""
     try:
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         
         cursor.execute("""
             SELECT id, release_id, release_title, artist, method, status, 
@@ -10167,10 +10289,28 @@ def api_musicbrainz_downloads():
         """)
         
         rows = cursor.fetchall()
-        conn.close()
         
         downloads = []
         for row in rows:
+            download_id = row[0]
+            release_id = row[1]
+            
+            # Count associated tracks in download_queue for this release
+            cursor.execute(f"""
+                SELECT COUNT(*) as total, 
+                       SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+                       SUM(CASE WHEN status IN ('downloading', 'in_progress') THEN 1 ELSE 0 END) as downloading,
+                       SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed
+                FROM download_queue
+                WHERE release_id = {placeholder}
+            """, (release_id,))
+            
+            track_row = cursor.fetchone()
+            total_tracks = track_row[0] if track_row else 0
+            completed_tracks = track_row[1] if track_row else 0
+            downloading_tracks = track_row[2] if track_row else 0
+            failed_tracks = track_row[3] if track_row else 0
+            
             downloads.append({
                 "id": row[0],
                 "release_id": row[1],
@@ -10182,9 +10322,14 @@ def api_musicbrainz_downloads():
                 "error_message": row[7],
                 "created_at": row[8],
                 "updated_at": row[9],
-                "completed_at": row[10]
+                "completed_at": row[10],
+                "total_tracks": total_tracks,
+                "completed_tracks": completed_tracks,
+                "downloading_tracks": downloading_tracks,
+                "failed_tracks": failed_tracks
             })
         
+        conn.close()
         return jsonify({"downloads": downloads})
         
     except Exception as e:
