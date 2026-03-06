@@ -9215,7 +9215,7 @@ def api_musicbrainz_download():
                     total_tracks += len(medium.get('tracks', []))
         
         # Create managed_downloads entry
-        download_query = f"{artist} {release_title}"
+        download_query = f"{artist} - {release_title}"
         cursor.execute(f"""
             INSERT INTO managed_downloads 
             (release_id, release_title, artist, method, status, download_query, persistent_search, max_retries, session_id, created_at, updated_at)
@@ -9311,7 +9311,7 @@ def _simple_mb_download(release_id, release_title, artist, method, persistent_se
         is_pg = _is_postgres_connection(conn)
         placeholder = "%s" if is_pg else "?"
         
-        download_query = f"{artist} {release_title}"
+        download_query = f"{artist} - {release_title}"
         
         cursor.execute(f"""
             INSERT INTO managed_downloads 
@@ -9365,7 +9365,7 @@ def _initiate_slskd_download_bg(tracking_id, query):
         api_key = slskd_config.get("api_key", "")
         
         client = SlskdClient(web_url, api_key, enabled=True)
-        search_id = client.search(query)
+        search_id = client.start_search(query)
         
         if not search_id:
             conn = get_db()
@@ -9534,7 +9534,7 @@ def _initiate_slskd_download(tracking_id, query, cursor, conn):
         api_key = slskd_config.get("api_key", "")
         
         client = SlskdClient(web_url, api_key, enabled=True)
-        search_id = client.search(query)
+        search_id = client.start_search(query)
         
         if not search_id:
             cursor.execute("""
