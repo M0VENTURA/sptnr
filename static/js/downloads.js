@@ -850,6 +850,44 @@ async function downloadMusicBrainzRelease(artist, album, tracks, year, release_i
   const selectionLabel = options.selectionLabel || null;
 
   try {
+    // For full release downloads with a known release_id, use the managed release flow.
+    // This creates a monitoring folder under /downloads/Music and enqueues tracks first.
+    if (release_id && tracks.length > 1) {
+      const startResp = await fetch(`/api/musicbrainz/release/${encodeURIComponent(release_id)}/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          release_title: album,
+          artist,
+          method: 'slskd'
+        })
+      });
+
+      const startData = await startResp.json();
+      if (startData.success) {
+        const created = startData.queue_items_created || tracks.length;
+        alert(`Created monitoring release and queued ${created} tracks: ${artist} - ${album}`);
+        if (closeModal) {
+          const modalEl = document.getElementById('musicBrainzModal');
+          if (modalEl) {
+            const existingModal = bootstrap.Modal.getInstance(modalEl);
+            if (existingModal) existingModal.hide();
+          }
+        }
+
+        try {
+          const timestamp = Date.now();
+          localStorage.setItem('sptnr_queue_updated', timestamp.toString());
+        } catch (e) {
+          console.warn('Could not update localStorage:', e);
+        }
+        return true;
+      }
+
+      alert('Error starting managed release download: ' + (startData.error || 'Unknown error'));
+      return false;
+    }
+
     let releaseYear = null;
     if (year) {
       const yearStr = String(year);

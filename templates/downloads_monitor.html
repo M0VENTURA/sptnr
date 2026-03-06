@@ -280,8 +280,8 @@
     </div>
   </div>
 
-  <!-- Active Queue -->
-  <div class="card mb-4">
+  <!-- Active Queue (hidden - queue is rendered inline with folder groups) -->
+  <div class="card mb-4" style="display:none;">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
         <i class="bi bi-hourglass-split"></i> Active Queue
@@ -298,8 +298,8 @@
     </div>
   </div>
 
-  <!-- Failed Queue (With Retry Options) -->
-  <div class="card">
+  <!-- Failed Queue (hidden - queue is rendered inline with folder groups) -->
+  <div class="card" style="display:none;">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
         <i class="bi bi-exclamation-circle"></i> Failed Downloads
@@ -1332,6 +1332,14 @@ async function loadFolderGroups(options = {}) {
 
   folderGroupsRequestInFlight = true;
   try {
+    // Trigger queue status scan first so newly downloaded files are matched immediately.
+    // This makes "Auto Apply" and queue/folder transitions appear in one refresh cycle.
+    try {
+      await fetch('/api/queue/status?limit=200');
+    } catch (syncErr) {
+      console.debug('Queue sync pre-pass failed (non-fatal):', syncErr);
+    }
+
     // Load folder status from database first
     await loadFolderStatus();
     await loadFolderDuplicates();
@@ -1353,13 +1361,17 @@ async function loadFolderGroups(options = {}) {
     
     // Add queue items that are ready to organize to the groups list
     // These show as pseudo-groups with queue_item=true to distinguish them
-    const readyToOrganizeStatuses = ['completed', 'discovered', 'pending_match', 'possible_duplicate'];
-    const queueItemsToShow = queue.filter(item => readyToOrganizeStatuses.includes(item.status));
+    const queueStatusesToShowInline = [
+      'queued', 'searching', 'downloading',
+      'completed', 'discovered', 'pending_match', 'possible_duplicate',
+      'failed'
+    ];
+    const queueItemsToShow = queue.filter(item => queueStatusesToShowInline.includes(item.status));
     
     // Create pseudo-groups from queue items
     const queueGroups = queueItemsToShow.map((item, idx) => ({
       folder_path: `__queue_item_${item.id}__`,
-      folder_name: `[Queue] ${item.artist || 'Unknown'} - ${item.album || 'Unknown Album'}`,
+      folder_name: `[Queue] ${item.artist || 'Unknown'} - ${(item.album || item.title || 'Unknown')}`,
       artist: item.artist || '',
       album: item.album || '',
       track_count: 1,
@@ -1464,6 +1476,22 @@ async function loadFolderGroups(options = {}) {
       const inconsistentBadge = !group.is_consistent ? 
         ' <span class="badge bg-warning">Mixed Metadata</span>' : '';
       const matchedSelection = folderMatchSelections[group.folder_path];
+      const isQueueItem = group.is_queue_item === true;
+      const queueStatus = String(group.queue_item_status || '').toLowerCase();
+      const queueStatusBadge = isQueueItem ? (() => {
+        const map = {
+          queued: ['secondary', 'Queued'],
+          searching: ['info', 'Searching'],
+          downloading: ['primary', 'Downloading'],
+          completed: ['success', 'Completed'],
+          discovered: ['warning', 'Discovered'],
+          pending_match: ['warning', 'Pending Match'],
+          possible_duplicate: ['danger', 'Possible Duplicate'],
+          failed: ['danger', 'Failed']
+        };
+        const pair = map[queueStatus] || ['secondary', queueStatus || 'Unknown'];
+        return ` <span class="badge bg-${pair[0]}"><i class="bi bi-hourglass-split"></i> ${pair[1]}</span>`;
+      })() : '';
       const matchedBadge = matchedSelection ? ' <span class="badge bg-success"><i class="bi bi-check-circle"></i> Matched</span>' : '';
       const mappedCount = matchedSelection && matchedSelection.trackMapByIndex
         ? Object.keys(matchedSelection.trackMapByIndex).length
@@ -1514,8 +1542,9 @@ async function loadFolderGroups(options = {}) {
               </div>
               <div class="col-md-5">
                 <h6 class="card-title mb-1">
-                  <i class="bi bi-folder"></i> ${group.folder_name}
+                  <i class="bi ${isQueueItem ? 'bi-list-task' : 'bi-folder'}"></i> ${group.folder_name}
                   ${inconsistentBadge}
+                  ${queueStatusBadge}
                   ${matchedBadge}
                   ${completionBadge}
                 </h6>
@@ -1528,6 +1557,7 @@ async function loadFolderGroups(options = {}) {
                 ${progressBar}
               </div>
               <div class="col-md-6 text-end">
+                ${!isQueueItem ? `
                 <button class="btn btn-sm btn-outline-primary" 
                   onclick="matchFolderGroupWithMusicBrainzFromEncoded(event, '${folderPathEnc}', '${artistEnc}', '${albumEnc}', '${tracksEnc}')">
                   <i class="bi bi-disc"></i> ${matchedSelection ? 'Change Match' : 'Auto Apply'}
@@ -1551,6 +1581,7 @@ async function loadFolderGroups(options = {}) {
                   title="View all tracks from the matched release">
                   <i class="bi bi-list"></i> View Tracklist
                 </button>` : ''}
+                ` : ''}
                 <button class="btn btn-sm btn-outline-secondary ms-2" 
                         onclick="toggleTrackList('${tracklistId}', '${folderStateKey}', this)">
                   <i class="bi ${toggleIcon}"></i> ${toggleLabel}
@@ -1617,7 +1648,9 @@ async function loadFolderGroups(options = {}) {
                 
                 // Per-track actions (move + manual match override)
                 let moveButtonHtml = '';
-                if (matchedSelection && !trackMatched) {
+                if (isQueueItem) {
+                  moveButtonHtml = `<small class="text-muted">Queue item</small>`;
+                } else if (matchedSelection && !trackMatched) {
                   const trackEnc = encodeInlineArg(track);
                   const folderPathEnc2 = encodeInlineArg(group.folder_path);
                   const candidateEnc = encodeInlineArg(matchedSelection.candidate);
@@ -2363,9 +2396,19 @@ async function loadQueueStatus() {
     document.getElementById('queueCompletedCount').textContent = completed.length;
     document.getElementById('queueFailedCount').textContent = failed.length;
     
-    // Render queues
-    renderActiveQueue(active);
-    renderFailedQueue(failed);
+    // Keep counts only; queue rows are rendered inline inside folder groups section.
+    const activeContainer = document.getElementById('activeQueueList');
+    const activeEmpty = document.getElementById('activeQueueEmpty');
+    const activeBadge = document.getElementById('activeBadge');
+    const failedContainer = document.getElementById('failedQueueList');
+    const failedEmpty = document.getElementById('failedQueueEmpty');
+    const failedBadge = document.getElementById('failedBadge');
+    if (activeContainer) activeContainer.style.display = 'none';
+    if (activeEmpty) activeEmpty.style.display = 'none';
+    if (activeBadge) activeBadge.style.display = 'none';
+    if (failedContainer) failedContainer.style.display = 'none';
+    if (failedEmpty) failedEmpty.style.display = 'none';
+    if (failedBadge) failedBadge.style.display = 'none';
     
   } catch (error) {
     console.error('Error loading queue status:', error);
