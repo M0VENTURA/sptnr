@@ -5294,6 +5294,7 @@ def popularity_scan(
                     # Skip re-detection if manually set by user
                     if single_manual_override:
                         log_debug(f"Single detection skipped (user override): {title}")
+                        singles_processed += 1
                         continue
                     
                     # Check cache age unless force scanning
@@ -5313,6 +5314,7 @@ def popularity_scan(
                             
                             if age_hours < cache_ttl:
                                 log_debug(f"Single detection cached: {title} (age: {age_hours:.1f}h, TTL: {cache_ttl}h, confidence: {current_confidence})")
+                                singles_processed += 1
                                 continue
                         except Exception as e:
                             log_debug(f"Failed to parse single detection timestamp: {e}")
