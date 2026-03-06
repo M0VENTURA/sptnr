@@ -12,21 +12,24 @@ import os
 import sys
 import time
 import sqlite3
-import logging
 import traceback
 import yaml
 from datetime import datetime, timedelta
 from pathlib import Path
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - [Queue Processor] %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("/config/queue_processor.log"),
-        logging.StreamHandler()
-    ]
+# Use unified logging system - all logs go to debug.log
+from helpers.logging_config import (
+    setup_logging,
+    log_unified,
+    log_info,
+    log_debug
 )
+
+# Set up logging with Queue Processor service name
+setup_logging("QueueProcessor")
+
+# Create logger reference for compatibility with existing code
+import logging
 logger = logging.getLogger(__name__)
 
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
