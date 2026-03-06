@@ -1513,6 +1513,96 @@ def _string_similarity(a, b):
     return SequenceMatcher(None, _normalize_match_text(a), _normalize_match_text(b)).ratio()
 
 
+def _extract_lyricist_and_writers(recording_data):
+    """
+    Extract lyricist and writer information from a MusicBrainz recording.
+    
+    MusicBrainz organizes credits through relationships on works and recordings.
+    This function extracts:
+    - Lyricists (from work relationships with type="lyricist")
+    - Composers (from work relationships with type="composer")
+    - Generic writers (from work relationships with type="writer")
+    - Track-level contributors (from recording relationships)
+    
+    Args:
+        recording_data: Recording dict from MusicBrainz API response
+        
+    Returns:
+        dict with keys: lyricists, composers, writers (all are lists of artist names)
+        Example: {
+            "lyricists": ["Lyricist Name"],
+            "composers": ["Composer Name"],
+            "writers": ["General Writer Name"]
+        }
+    """
+    result = {
+        "lyricists": [],
+        "composers": [],
+        "writers": []
+    }
+    
+    if not recording_data:
+        return result
+    
+    # Extract from work relationships if present
+    # Works contain relationships to lyricists, composers, and writers
+    work_relationships = recording_data.get("work-level-rels", []) or []
+    if not work_relationships and "relations" in recording_data:
+        # Fallback: check relations for work type
+        for rel in recording_data.get("relations", []):
+            if rel.get("target-type") == "work":
+                work_relationships.append(rel)
+    
+    for work_rel in work_relationships:
+        # Extract from work's own relationships
+        work = work_rel.get("work", {})
+        relations = work.get("relations", []) or []
+        
+        for rel in relations:
+            rel_type = rel.get("type", "").lower()
+            artist_credit = rel.get("artist-credit", [{}])[0] if rel.get("artist-credit") else {}
+            artist_name = artist_credit.get("name") or rel.get("artist", {}).get("name")
+            
+            if not artist_name:
+                continue
+                
+            if rel_type == "lyricist":
+                if artist_name not in result["lyricists"]:
+                    result["lyricists"].append(artist_name)
+            elif rel_type == "composer":
+                if artist_name not in result["composers"]:
+                    result["composers"].append(artist_name)
+            elif rel_type in ("writer", "text"):
+                if artist_name not in result["writers"]:
+                    result["writers"].append(artist_name)
+    
+    # Also check recording-level relationships for credit information
+    recording_rels = recording_data.get("relations", []) or []
+    for rel in recording_rels:
+        rel_type = rel.get("type", "").lower()
+        if rel_type not in ("lyricist", "composer", "writer", "text"):
+            continue
+            
+        # Extract artist from relationship
+        artist_credit = rel.get("artist-credit", [{}])[0] if rel.get("artist-credit") else {}
+        artist_name = artist_credit.get("name") or rel.get("artist", {}).get("name")
+        
+        if not artist_name:
+            continue
+            
+        if rel_type == "lyricist":
+            if artist_name not in result["lyricists"]:
+                result["lyricists"].append(artist_name)
+        elif rel_type == "composer":
+            if artist_name not in result["composers"]:
+                result["composers"].append(artist_name)
+        elif rel_type in ("writer", "text"):
+            if artist_name not in result["writers"]:
+                result["writers"].append(artist_name)
+    
+    return result
+
+
 def _fetch_musicbrainz_album_candidates(artist, album, limit=5):
     """Fetch album candidates from MusicBrainz release groups."""
     headers = {
@@ -1554,7 +1644,7 @@ def _fetch_musicbrainz_album_candidates(artist, album, limit=5):
                 if rel_id:
                     track_resp = session.get(
                         f"https://musicbrainz.org/ws/2/release/{rel_id}",
-                        params={"fmt": "json", "inc": "recordings+artist-credits+labels"},
+                        params={"fmt": "json", "inc": "recordings+artist-credits+work-level-rels+work-rels+artist-rels"},
                         headers=headers,
                         timeout=10
                     )
@@ -1563,7 +1653,8 @@ def _fetch_musicbrainz_album_candidates(artist, album, limit=5):
                         media = rel_json.get("media", [])
                         for medium in media:
                             for tr in medium.get("tracks", []):
-                                track_title = ((tr.get("recording") or {}).get("title") or tr.get("title") or "").strip()
+                                recording = tr.get("recording", {})
+                                track_title = (recording.get("title") or tr.get("title") or "").strip()
                                 if track_title:
                                     release_tracks.append(track_title)
 
@@ -1884,7 +1975,7 @@ def get_release_tracks_with_status(artist, album, release_group_id, current_fold
         # Fetch full release with tracks
         release_resp = session.get(
             f"https://musicbrainz.org/ws/2/release/{release_id}",
-            params={"fmt": "json", "inc": "recordings+artist-credits"},
+            params={"fmt": "json", "inc": "recordings+artist-credits+work-level-rels+work-rels+artist-rels"},
             headers=headers,
             timeout=10
         )
@@ -1901,11 +1992,17 @@ def get_release_tracks_with_status(artist, album, release_group_id, current_fold
                 track_number = track.get("position", 0)
                 duration = recording.get("length", 0)  # in milliseconds
                 
+                # Extract lyricist and writer information
+                credits = _extract_lyricist_and_writers(recording)
+                
                 all_tracks.append({
                     "track_number": track_number,
                     "disc_number": disc_number,
                     "title": track_title,
-                    "duration": duration
+                    "duration": duration,
+                    "lyricists": credits["lyricists"],
+                    "composers": credits["composers"],
+                    "writers": credits["writers"]
                 })
         
         # Get queue items for this artist/album

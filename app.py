@@ -17347,7 +17347,7 @@ def api_track_musicbrainz_lookup():
             try:
                 resp = requests.get(
                     "https://musicbrainz.org/ws/2/recording",
-                    params={"query": query, "fmt": "json", "limit": 10, "inc": "releases+artist-credits"},
+                    params={"query": query, "fmt": "json", "limit": 10, "inc": "releases+artist-credits+work-level-rels+work-rels"},
                     headers=headers,
                     timeout=5
                 )
