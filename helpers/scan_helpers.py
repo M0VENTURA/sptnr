@@ -349,11 +349,22 @@ def pre_import_sync_album_artists(artist_id: str = None) -> dict:
         # Batch insert new artists in a single transaction
         if new_artists_to_add:
             try:
+                from database_abstraction import is_postgres_connection
+                is_pg = is_postgres_connection(conn)
+                placeholder = "%s" if is_pg else "?"
+                
                 for artist_name in new_artists_to_add:
-                    cursor.execute("""
-                        INSERT OR IGNORE INTO artists (id, name)
-                        VALUES (?, ?)
-                    """, (artist_name.lower().replace(' ', '_'), artist_name))
+                    if is_pg:
+                        cursor.execute(f"""
+                            INSERT INTO artists (id, name)
+                            VALUES ({placeholder}, {placeholder})
+                            ON CONFLICT (name) DO NOTHING
+                        """, (artist_name.lower().replace(' ', '_'), artist_name))
+                    else:
+                        cursor.execute("""
+                            INSERT OR IGNORE INTO artists (id, name)
+                            VALUES (?, ?)
+                        """, (artist_name.lower().replace(' ', '_'), artist_name))
                     logging.debug(f"Created artist record: {artist_name}")
                 
                 conn.commit()
@@ -574,10 +585,24 @@ def fetch_artist_metadata(artist_name: str, verbose: bool = False):
             cursor = conn.cursor()
             
             # Insert or update artist metadata
-            cursor.execute("""
-                INSERT OR REPLACE INTO artist_metadata (artist_name, biography, image_url, updated_at)
-                VALUES (?, ?, ?, ?)
-            """, (artist_name, biography, artist_image_url, datetime.now().isoformat()))
+            from database_abstraction import is_postgres_connection
+            is_pg = is_postgres_connection(conn)
+            placeholder = "%s" if is_pg else "?"
+            
+            if is_pg:
+                cursor.execute(f"""
+                    INSERT INTO artist_metadata (artist_name, biography, image_url, updated_at)
+                    VALUES ({placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
+                    ON CONFLICT (artist_name) DO UPDATE SET
+                        biography = EXCLUDED.biography,
+                        image_url = EXCLUDED.image_url,
+                        updated_at = CURRENT_TIMESTAMP
+                """, (artist_name, biography, artist_image_url))
+            else:
+                cursor.execute("""
+                    INSERT OR REPLACE INTO artist_metadata (artist_name, biography, image_url, updated_at)
+                    VALUES (?, ?, ?, ?)
+                """, (artist_name, biography, artist_image_url, datetime.now().isoformat()))
             logging.debug(f"DB: INSERT OR REPLACE artist_metadata for {artist_name}")
             
             conn.commit()
@@ -592,13 +617,26 @@ def fetch_artist_metadata(artist_name: str, verbose: bool = False):
             cursor = conn.cursor()
             
             # Update or insert artist record
-            cursor.execute("""
-                INSERT OR IGNORE INTO artists (name) VALUES (?)
-            """, (artist_name,))
+            from database_abstraction import is_postgres_connection
+            is_pg = is_postgres_connection(conn)
+            placeholder = "%s" if is_pg else "?"
             
-            cursor.execute("""
-                UPDATE artists SET country = ? WHERE name = ?
-            """, (artist_country, artist_name))
+            if is_pg:
+                cursor.execute(f"""
+                    INSERT INTO artists (name)
+                    VALUES ({placeholder})
+                    ON CONFLICT (name) DO NOTHING
+                """, (artist_name,))
+                cursor.execute(f"""
+                    UPDATE artists SET country = {placeholder} WHERE name = {placeholder}
+                """, (artist_country, artist_name))
+            else:
+                cursor.execute("""
+                    INSERT OR IGNORE INTO artists (name) VALUES (?)
+                """, (artist_name,))
+                cursor.execute("""
+                    UPDATE artists SET country = ? WHERE name = ?
+                """, (artist_country, artist_name))
             
             # Update all tracks with this artist
             cursor.execute("""

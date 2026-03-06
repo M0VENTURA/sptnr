@@ -271,11 +271,15 @@ def update_track_tags(track_id: str, tag_updates: Dict[str, Any]) -> bool:
             logger.warning(f"No valid fields to update for track {track_id}")
             return False
         
-        # Build UPDATE statement
-        set_clause = ", ".join([f"{field} = ?" for field in validated.keys()])
-        query = f"UPDATE tracks SET {set_clause} WHERE id = ?"
-        
+        # Build UPDATE statement with DB-aware placeholders
+        from database_abstraction import is_postgres_connection
         conn = get_db_connection()
+        is_pg = is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+        
+        set_clause = ", ".join([f"{field} = {placeholder}" for field in validated.keys()])
+        query = f"UPDATE tracks SET {set_clause} WHERE id = {placeholder}"
+        
         cursor = conn.cursor()
         cursor.execute(query, list(validated.values()) + [track_id])
         conn.commit()
@@ -328,18 +332,23 @@ def update_album_tags(album: str, artist: str, tag_updates: Dict[str, Any], sele
             logger.warning(f"No valid fields to update for album {artist} - {album}")
             return 0
         
-        # Build UPDATE statement
-        set_clause = ", ".join([f"{field} = ?" for field in validated.keys()])
+        # Build UPDATE statement with DB-aware placeholders
+        from database_abstraction import is_postgres_connection
+        conn = get_db_connection()
+        is_pg = is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+        
+        set_clause = ", ".join([f"{field} = {placeholder}" for field in validated.keys()])
         query_values = list(validated.values()) + [album, artist]
         
         if selected_tracks:
             # Update only selected tracks
-            placeholders = ", ".join(["?" for _ in selected_tracks])
-            query = f"UPDATE tracks SET {set_clause} WHERE album = ? AND artist = ? AND id IN ({placeholders})"
+            track_placeholders = ", ".join([placeholder for _ in selected_tracks])
+            query = f"UPDATE tracks SET {set_clause} WHERE album = {placeholder} AND artist = {placeholder} AND id IN ({track_placeholders})"
             query_values.extend(selected_tracks)
         else:
             # Update all tracks in album
-            query = f"UPDATE tracks SET {set_clause} WHERE album = ? AND artist = ?"
+            query = f"UPDATE tracks SET {set_clause} WHERE album = {placeholder} AND artist = {placeholder}"
         
         # Retry logic for database locked errors
         max_retries = 3
@@ -348,7 +357,6 @@ def update_album_tags(album: str, artist: str, tag_updates: Dict[str, Any], sele
         for attempt in range(max_retries):
             conn = None
             try:
-                conn = get_db_connection()
                 cursor = conn.cursor()
                 cursor.execute(query, query_values)
                 updated_count = cursor.rowcount

@@ -989,12 +989,25 @@ def build_artist_index(verbose: bool = False):
         try:
             conn = get_db_connection()
             cursor = conn.cursor()
+            from database_abstraction import is_postgres_connection
+            is_pg = is_postgres_connection(conn)
+            placeholder = "%s" if is_pg else "?"
+            
             for artist_name, info in artist_map_from_api.items():
                 artist_id = info.get("id")
-                cursor.execute("""
-                    INSERT OR REPLACE INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (artist_id, artist_name, 0, 0, None))
+                if is_pg:
+                    cursor.execute(f"""
+                        INSERT INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
+                        VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
+                        ON CONFLICT (artist_id) DO UPDATE SET
+                            album_count = EXCLUDED.album_count,
+                            track_count = EXCLUDED.track_count
+                    """, (artist_id, artist_name, 0, 0, None))
+                else:
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (artist_id, artist_name, 0, 0, None))
                 if verbose:
                     print(f"   📝 Added artist to index: {artist_name} (ID: {artist_id})")
                     logging.info(f"Added artist to index: {artist_name} (ID: {artist_id})")

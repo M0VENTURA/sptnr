@@ -1,9 +1,28 @@
 import sqlite3
 import os
+import logging
 
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 
 def get_db_connection():
+    """
+    Get database connection.
+    Supports both PostgreSQL (if configured) and SQLite fallback.
+    """
+    # Try PostgreSQL first if configured
+    pg_dsn = os.environ.get("DATABASE_URL") or os.environ.get("PG_DSN")
+    if pg_dsn:
+        try:
+            import psycopg2
+            conn = psycopg2.connect(pg_dsn)
+            logging.debug(f"Connected to PostgreSQL: {pg_dsn.split('@')[1] if '@' in pg_dsn else 'configured'}")
+            return conn
+        except ImportError:
+            logging.warning("PostgreSQL configured but psycopg2 not installed, falling back to SQLite")
+        except Exception as e:
+            logging.warning(f"Failed to connect to PostgreSQL: {e}, falling back to SQLite")
+    
+    # Fall back to SQLite
     # Ensure database directory exists
     db_dir = os.path.dirname(DB_PATH)
     if db_dir and not os.path.exists(db_dir):
@@ -12,7 +31,6 @@ def get_db_connection():
         except (PermissionError, OSError) as e:
             # If we can't create the directory, the sqlite3.connect will fail with a more specific error
             # Log the warning but let the connection attempt proceed
-            import logging
             logging.warning(f"Could not create database directory {db_dir}: {e}")
     
     conn = sqlite3.connect(DB_PATH, timeout=120.0)
