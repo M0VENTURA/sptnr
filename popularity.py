@@ -4376,12 +4376,18 @@ def popularity_scan(
                             
                                 # Update last_spotify_lookup timestamp
                                 current_timestamp = datetime.now().isoformat()
-                                cursor.execute(f"""
-                                    UPDATE tracks 
-                                    SET last_spotify_lookup = {placeholder}
-                                    WHERE id = {placeholder}
-                                """, (current_timestamp, track_id))
-                                log_debug(f'Updated last_spotify_lookup for track {track_id}')
+                                try:
+                                    cursor.execute(f"""
+                                        UPDATE tracks 
+                                        SET last_spotify_lookup = {placeholder}
+                                        WHERE id = {placeholder}
+                                    """, (current_timestamp, track_id))
+                                    log_debug(f'Updated last_spotify_lookup for track {track_id}')
+                                except Exception as e:
+                                    # Don't let timestamp update fail the entire scan
+                                    # This can happen with PostgreSQL transaction state issues
+                                    log_debug(f'Warning: Failed to update last_spotify_lookup for track {track_id}: {e}')
+                                    # Continue anyway - popularity data is more important than timestamp
                             
                                 log_info(f'Spotify search completed. Results count: {len(spotify_search_results) if spotify_search_results else 0}')
                                 if spotify_search_results and isinstance(spotify_search_results, list) and len(spotify_search_results) > 0:
@@ -4728,11 +4734,19 @@ def popularity_scan(
 
 # Batch update all popularity scores and genre sources for this album in one commit (skipped in singles_only mode)
                 if writer_updates and not singles_only:
-                    cursor.executemany(
-                        f"UPDATE tracks SET writer = {placeholder} WHERE id = {placeholder}",
-                        writer_updates
-                    )
-                    log_debug(f"Batch prepared {len(writer_updates)} writer credit update(s) for album '{album}'")
+                    try:
+                        cursor.executemany(
+                            f"UPDATE tracks SET writer = {placeholder} WHERE id = {placeholder}",
+                            writer_updates
+                        )
+                        log_debug(f"Batch prepared {len(writer_updates)} writer credit update(s) for album '{album}'")
+                    except Exception as e:
+                        log_debug(f"Warning: Failed to batch update writer credits: {e}")
+                        # For PostgreSQL: try to rollback and get fresh connection
+                        try:
+                            conn.rollback()
+                        except:
+                            pass
 
                 if track_updates and not singles_only:
                     # Merge tags from album_tags_data into track_updates BEFORE committing
@@ -4773,11 +4787,29 @@ def popularity_scan(
                         # Append merged tuple
                         updated_track_updates.append((popularity_score, spotify_score, lastfm_ratio, spotify_genres, lastfm_tags, discogs_genres, musicbrainz_genres, album_art_url, track_id))
                     
-                    cursor.executemany(
-                        f"UPDATE tracks SET popularity_score = {placeholder}, spotify_score = {placeholder}, lastfm_ratio = {placeholder}, spotify_genres = {placeholder}, lastfm_tags = {placeholder}, discogs_genres = {placeholder}, musicbrainz_genres = {placeholder}, cover_art_url = {placeholder} WHERE id = {placeholder}",
-                        updated_track_updates
-                    )
-                    conn.commit()
+                    try:
+                        cursor.executemany(
+                            f"UPDATE tracks SET popularity_score = {placeholder}, spotify_score = {placeholder}, lastfm_ratio = {placeholder}, spotify_genres = {placeholder}, lastfm_tags = {placeholder}, discogs_genres = {placeholder}, musicbrainz_genres = {placeholder}, cover_art_url = {placeholder} WHERE id = {placeholder}",
+                            updated_track_updates
+                        )
+                        conn.commit()
+                    except Exception as e:
+                        # PostgreSQL may abort transaction if previous updates failed
+                        log_debug(f"Error batch updating popularity scores: {e}")
+                        try:
+                            conn.rollback()
+                            log_debug(f"Rolled back failed transaction")
+                        except:
+                            pass
+                        # Try to get fresh connection and continue
+                        try:
+                            from app import get_db
+                            conn = get_db()
+                            cursor = conn.cursor()
+                            log_debug(f"Got fresh database connection after transaction failure")
+                        except Exception as conn_error:
+                            log_debug(f"Failed to get fresh connection: {conn_error}")
+                            raise  # Re-raise if we can't recover
                     log_debug(f"Batch committed {len(updated_track_updates)} popularity scores and genre sources for album '{album}' with merged tag data")
                     if writer_updates:
                         log_debug(f"Committed {len(writer_updates)} writer credit update(s) for album '{album}'")
