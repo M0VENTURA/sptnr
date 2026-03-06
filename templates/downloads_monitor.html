@@ -1379,6 +1379,9 @@ async function loadFolderGroups(options = {}) {
       queue_item_id: item.id,
       queue_item_status: item.status,
       tracks: [{
+        id: item.id,
+        status: item.status,
+        source: item.source || 'soulseek',
         title: item.title || '',
         artist: item.artist || '',
         album: item.album || '',
@@ -1649,7 +1652,20 @@ async function loadFolderGroups(options = {}) {
                 // Per-track actions (move + manual match override)
                 let moveButtonHtml = '';
                 if (isQueueItem) {
-                  moveButtonHtml = `<small class="text-muted">Queue item</small>`;
+                  const queueId = Number(track.id || group.queue_item_id || 0);
+                  const queueStatusRow = String(track.status || group.queue_item_status || '').toLowerCase();
+                  const artistEnc = encodeInlineArg(track.artist || group.artist || '');
+                  const titleEnc = encodeInlineArg(track.title || group.album || '');
+                  const showRetry = queueStatusRow === 'failed';
+                  moveButtonHtml = `<div class="d-flex flex-column gap-1 align-items-center">
+                    <button class="btn btn-sm btn-outline-info" onclick="searchOtherSourcesFromEncoded('${artistEnc}','${titleEnc}', true)" title="Search manually in Soulseek">
+                      <i class="bi bi-search"></i>
+                    </button>
+                    ${showRetry ? `<button class="btn btn-sm btn-outline-warning" onclick="retryQueueItem(${queueId})" title="Retry queue item"><i class="bi bi-arrow-counterclockwise"></i></button>` : ''}
+                    <button class="btn btn-sm btn-outline-danger" onclick="deleteQueueItem(${queueId})" title="Remove from queue">
+                      <i class="bi bi-trash"></i>
+                    </button>
+                  </div>`;
                 } else if (matchedSelection && !trackMatched) {
                   const trackEnc = encodeInlineArg(track);
                   const folderPathEnc2 = encodeInlineArg(group.folder_path);
@@ -2731,12 +2747,13 @@ async function retryQueueItem(queueId) {
     const data = await fetchJsonOrThrow(`/api/queue/${queueId}/update`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'queued' })
+      body: JSON.stringify({ action: 'queued' })
     });
     
     if (data.success) {
       alert('✅ Retrying download...');
       await loadQueueStatus();
+      await loadFolderGroups({ forceRender: true });
     } else {
       alert('❌ Error: ' + (data.error || 'Failed to retry'));
     }
@@ -2867,6 +2884,7 @@ async function showReleaseTracklistModal(candidateJson, folderPathEnc, event) {
     const data = await response.json();
     if (!data.success) {
       alert(`Error: ${data.error || 'Failed to fetch release tracks'}`);
+      await loadFolderGroups({ forceRender: true });
       return;
     }
 

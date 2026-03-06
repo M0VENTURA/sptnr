@@ -77,10 +77,14 @@
           <!-- Artist Bio and Country/Origin -->
           <div class="col-12 col-md-9">
             <h5 class="mb-3"><i class="bi bi-info-circle"></i> Artist Bio</h5>
-            <div id="artistBio" class="text-muted" style="min-height: 120px;">
-              <p class="text-center mt-2">
-                <small>Loading artist information from MusicBrainz...</small>
-              </p>
+            <div id="artistBio" class="text-muted" style="min-height: 120px;" data-has-initial-bio="{{ '1' if artist_bio else '0' }}">
+              {% if artist_bio %}
+                <p>{{ artist_bio|e|replace('\n', '<br>')|safe }}</p>
+              {% else %}
+                <p class="text-center mt-2">
+                  <small>Loading artist information from database...</small>
+                </p>
+              {% endif %}
             </div>
             
             <!-- Country/Origin under Bio -->
@@ -1751,6 +1755,10 @@ function checkMissingReleases(artistName) {
         const rowId = `tracklist-${safeArtist}-${safeAlbum}`;
         const contentId = `tracklist-content-${safeArtist}-${safeAlbum}`;
         
+        const artistEnc = encodeURIComponent(JSON.stringify(artistName || ""));
+        const titleEnc = encodeURIComponent(JSON.stringify(item.title || ""));
+        const releaseIdEnc = encodeURIComponent(JSON.stringify(item.id || ""));
+
         const row = document.createElement('tr');
         row.className = 'album-row';
         row.setAttribute('data-year', year === '????' ? '9999' : year);
@@ -1777,13 +1785,13 @@ function checkMissingReleases(artistName) {
           <td class="text-center"><span class="text-muted">—</span></td>
           <td class="text-center">
             <div class="btn-group btn-group-sm" role="group">
-              <button class="btn btn-outline-info" onclick='toggleTracklist(${JSON.stringify(artistName)}, ${JSON.stringify(item.title || "")})' title="Show tracklist" id="toggle-btn-${safeArtist}-${safeAlbum}">
+              <button class="btn btn-outline-info" onclick="toggleTracklistFromEncoded('${artistEnc}', '${titleEnc}')" title="Show tracklist" id="toggle-btn-${safeArtist}-${safeAlbum}">
                 <i class="bi bi-list-ul"></i>
               </button>
-              <button class="btn btn-outline-success" onclick="importRelease(${JSON.stringify(artistName)}, ${JSON.stringify(item.id || "")}, ${JSON.stringify(item.title || "")})" title="Import this release">
+              <button class="btn btn-outline-success" onclick="importReleaseFromEncoded('${artistEnc}', '${releaseIdEnc}', '${titleEnc}')" title="Import this release">
                 <i class="bi bi-download"></i>
               </button>
-              <button class="btn btn-outline-secondary" onclick="searchMusicBrainzRelease(event, ${JSON.stringify(artistName)}, ${JSON.stringify(item.title || "")})" title="Search MusicBrainz">
+              <button class="btn btn-outline-secondary" onclick="searchMusicBrainzReleaseFromEncoded(event, '${artistEnc}', '${titleEnc}')" title="Search MusicBrainz">
                 <i class="bi bi-search"></i>
               </button>
             </div>
@@ -1798,7 +1806,7 @@ function checkMissingReleases(artistName) {
         tracklistRow.innerHTML = `
           <td colspan="7" style="padding: 1rem;">
             <div class="tracklist-container">
-              <button class="btn btn-sm btn-outline-info me-2 btn-tracklist-load" onclick='loadTracklist(${JSON.stringify(artistName)}, ${JSON.stringify(item.title)}, this, ${JSON.stringify(item.id)})'>
+              <button class="btn btn-sm btn-outline-info me-2 btn-tracklist-load" onclick="loadTracklistFromEncoded('${artistEnc}', '${titleEnc}', this, '${releaseIdEnc}')">
                 <span class="spinner-border spinner-border-sm me-2" style="display:none;"></span>
                 <i class="bi bi-music-note-list"></i> Load Tracklist from MusicBrainz
               </button>
@@ -1872,6 +1880,46 @@ function importRelease(artist, releaseId, title) {
     btn.disabled = false;
     btn.innerHTML = originalHtml;
   });
+}
+
+function decodeInlineArtistArg(value, fallback = '') {
+  try {
+    return JSON.parse(decodeURIComponent(value));
+  } catch (error) {
+    return fallback;
+  }
+}
+
+function toggleTracklistFromEncoded(artistEnc, albumEnc) {
+  return toggleTracklist(
+    decodeInlineArtistArg(artistEnc, ''),
+    decodeInlineArtistArg(albumEnc, '')
+  );
+}
+
+function importReleaseFromEncoded(artistEnc, releaseIdEnc, titleEnc) {
+  return importRelease(
+    decodeInlineArtistArg(artistEnc, ''),
+    decodeInlineArtistArg(releaseIdEnc, ''),
+    decodeInlineArtistArg(titleEnc, '')
+  );
+}
+
+function searchMusicBrainzReleaseFromEncoded(event, artistEnc, albumEnc) {
+  return searchMusicBrainzRelease(
+    event,
+    decodeInlineArtistArg(artistEnc, ''),
+    decodeInlineArtistArg(albumEnc, '')
+  );
+}
+
+function loadTracklistFromEncoded(artistEnc, albumEnc, buttonEl, releaseIdEnc) {
+  return loadTracklist(
+    decodeInlineArtistArg(artistEnc, ''),
+    decodeInlineArtistArg(albumEnc, ''),
+    buttonEl,
+    decodeInlineArtistArg(releaseIdEnc, '')
+  );
 }
 
 async function searchMusicBrainzRelease(event, artist, album) {
@@ -2330,7 +2378,11 @@ async function downloadMusicBrainzRelease(artist, album, tracks, year, release_i
 // Load artist bio on page load
 document.addEventListener('DOMContentLoaded', () => {
   const artistName = {{ artist_name|tojson }};
-  loadArtistBio(artistName);
+  const bioContainer = document.getElementById('artistBio');
+  const hasInitialBio = bioContainer && bioContainer.dataset && bioContainer.dataset.hasInitialBio === '1';
+  if (!hasInitialBio) {
+    loadArtistBio(artistName);
+  }
   loadSinglesCount(artistName);
 });
 
