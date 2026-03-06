@@ -155,6 +155,23 @@ class MusicBrainzReleaseManager:
                         FOREIGN KEY (queue_id) REFERENCES download_queue(id)
                     )
                 """)
+                
+                # Ensure musicbrainz_release_tracks sequence exists
+                try:
+                    db_query.execute("""
+                        CREATE SEQUENCE IF NOT EXISTS musicbrainz_release_tracks_id_seq
+                        AS BIGINT START WITH 1 INCREMENT BY 1
+                    """)
+                    db_query.execute("""
+                        ALTER TABLE musicbrainz_release_tracks 
+                        ALTER COLUMN id SET DEFAULT nextval('musicbrainz_release_tracks_id_seq')
+                    """)
+                    db_query.execute("""
+                        SELECT setval('musicbrainz_release_tracks_id_seq', 
+                                     COALESCE((SELECT MAX(id) FROM musicbrainz_release_tracks), 0) + 1)
+                    """)
+                except Exception as seq_error:
+                    logger.debug(f"[SCHEMA] Note: Could not ensure musicbrainz_release_tracks sequence (may already exist): {seq_error}")
             else:
                 db_query.execute("""
                     CREATE TABLE IF NOT EXISTS musicbrainz_releases (
