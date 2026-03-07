@@ -4625,6 +4625,7 @@ def popularity_scan(
                         # Collect genre sources from available APIs
                         spotify_genres_json = None
                         lastfm_tags_json = None
+                        listenbrainz_genres_json = None
                         discogs_genres_json = None
                         musicbrainz_genres_json = None
                         
@@ -4749,7 +4750,7 @@ def popularity_scan(
                             popularity_score = sum(s * w for s, w in zip(scores, weights)) / total_weight
                             
                             # Use weighted popularity score directly (restored to original working method)
-                            track_updates.append((popularity_score, spotify_score, lastfm_score, spotify_genres_json, lastfm_tags_json, discogs_genres_json, musicbrainz_genres_json, album_art_url, track_id))
+                            track_updates.append((popularity_score, spotify_score, lastfm_score, spotify_genres_json, lastfm_tags_json, listenbrainz_genres_json, discogs_genres_json, musicbrainz_genres_json, album_art_url, track_id))
                             scanned_count += 1
                             album_scanned += 1
                             log_info(f'Track scanned successfully: "{title}" (weighted: {popularity_score:.1f})')
@@ -4795,8 +4796,8 @@ def popularity_scan(
                     # This ensures Last.fm tags and other genre data are saved
                     updated_track_updates = []
                     for update_tuple in track_updates:
-                        # Unpack: (popularity_score, spotify_score, lastfm_ratio, spotify_genres, lastfm_tags, discogs_genres, musicbrainz_genres, album_art_url, track_id)
-                        popularity_score, spotify_score, lastfm_ratio, spotify_genres, lastfm_tags, discogs_genres, musicbrainz_genres, album_art_url, track_id = update_tuple
+                        # Unpack: (popularity_score, spotify_score, lastfm_ratio, spotify_genres, lastfm_tags, listenbrainz_genres, discogs_genres, musicbrainz_genres, album_art_url, track_id)
+                        popularity_score, spotify_score, lastfm_ratio, spotify_genres, lastfm_tags, listenbrainz_genres, discogs_genres, musicbrainz_genres, album_art_url, track_id = update_tuple
                         
                         # Check if we have tags for this track in album_tags_data
                         if track_id in album_tags_data:
@@ -4806,8 +4807,7 @@ def popularity_scan(
                                 lastfm_tags = json.dumps(tags_data["lastfm_tags"])
                                 log_debug(f"Using Last.fm tags for track {track_id}: {len(tags_data['lastfm_tags'])} tags")
                             if tags_data.get("listenbrainz_genres"):
-                                # Note: listenbrainz_genres maps to the musicbrainz_genres column in database
-                                musicbrainz_genres = json.dumps(tags_data["listenbrainz_genres"])
+                                listenbrainz_genres = json.dumps(tags_data["listenbrainz_genres"])
                                 log_debug(f"Using ListenBrainz genres for track {track_id}: {len(tags_data['listenbrainz_genres'])} genres")
                             if tags_data.get("discogs_genres"):
                                 discogs_genres = json.dumps(tags_data["discogs_genres"])
@@ -4827,11 +4827,11 @@ def popularity_scan(
                                 log_debug(f'Initialized genres with "Cover" for track: {title}')
                         
                         # Append merged tuple
-                        updated_track_updates.append((popularity_score, spotify_score, lastfm_ratio, spotify_genres, lastfm_tags, discogs_genres, musicbrainz_genres, album_art_url, track_id))
+                        updated_track_updates.append((popularity_score, spotify_score, lastfm_ratio, spotify_genres, lastfm_tags, listenbrainz_genres, discogs_genres, musicbrainz_genres, album_art_url, track_id))
                     
                     try:
                         cursor.executemany(
-                            f"UPDATE tracks SET popularity_score = {placeholder}, spotify_score = {placeholder}, lastfm_ratio = {placeholder}, spotify_genres = {placeholder}, lastfm_tags = {placeholder}, discogs_genres = {placeholder}, musicbrainz_genres = {placeholder}, cover_art_url = {placeholder} WHERE id = {placeholder}",
+                            f"UPDATE tracks SET popularity_score = {placeholder}, spotify_score = {placeholder}, lastfm_ratio = {placeholder}, spotify_genres = {placeholder}, lastfm_tags = {placeholder}, listenbrainz_genres = {placeholder}, discogs_genres = {placeholder}, musicbrainz_genres = {placeholder}, cover_art_url = {placeholder} WHERE id = {placeholder}",
                             updated_track_updates
                         )
                         conn.commit()
