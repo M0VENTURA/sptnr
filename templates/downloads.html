@@ -4387,13 +4387,14 @@ function renderCompletedQueue(completed) {
         
         for (const item of group.items) {
           const alreadyCopied = item.copied_individually;
+          const hasFile = item.file_path || item.found_filename;
           html += `
                 <div class="d-flex justify-content-between align-items-start py-2 border-bottom">
                   <div class="d-flex gap-2 flex-grow-1">
                     <input type="checkbox" class="form-check-input queue-item-checkbox" value="${item.id}" onchange="updateSelectedCount()">
                     <div>
                       <small class="d-block">${escapeHtml(item.title)}</small>
-                      <small class="text-muted">File: ${escapeHtml(item.found_filename || 'unknown')}</small>
+                      <small class="text-muted">File: ${escapeHtml(item.found_filename || 'not yet detected')}</small>
                       ${alreadyCopied ? '<small class="badge bg-info text-dark ms-1">Already Copied</small>' : ''}
                     </div>
                   </div>
@@ -4403,8 +4404,9 @@ function renderCompletedQueue(completed) {
                     </button>
                     ${alreadyCopied
                       ? '<span class="badge bg-info text-dark align-self-center"><i class="bi bi-check-circle"></i> Copied</span>'
-                      : `<button class="btn btn-sm btn-success" onclick="organizeFile(${item.id})" title="Copy to music library">
-                           <i class="bi bi-folder-check"></i> Copy
+                      : `<button class="btn btn-sm btn-success" onclick="organizeFile(${item.id})"
+                                 title="${hasFile ? 'Copy to music library' : 'Find file in downloads folder and transfer'}">
+                           <i class="bi bi-${hasFile ? 'folder-check' : 'search'}"></i> Transfer
                          </button>`
                     }
                     <button class="btn btn-sm btn-outline-danger" onclick="deleteQueueItem(${item.id})">
@@ -4438,6 +4440,7 @@ function renderCompletedQueue(completed) {
         // Show individual items
         for (const item of group.items) {
           const alreadyCopied = item.copied_individually;
+          const hasFile = item.file_path || item.found_filename;
           html += `
           <div class="list-group-item">
             <div class="d-flex justify-content-between align-items-start">
@@ -4446,7 +4449,7 @@ function renderCompletedQueue(completed) {
                 <div class="flex-grow-1">
                   <h6 class="mb-1">${escapeHtml(item.title)}</h6>
                   <p class="text-muted small mb-2">${escapeHtml(item.artist)}${item.album ? ' · ' + escapeHtml(item.album) : ''}</p>
-                  <small class="text-muted">File: ${escapeHtml(item.found_filename || 'unknown')}</small>
+                  <small class="text-muted">File: ${escapeHtml(item.found_filename || 'not yet detected')}</small>
                   ${alreadyCopied ? '<br><span class="badge bg-info text-dark mt-1"><i class="bi bi-check-circle"></i> Already Copied</span>' : ''}
                 </div>
               </div>
@@ -4456,8 +4459,9 @@ function renderCompletedQueue(completed) {
                 </button>
                 ${alreadyCopied
                   ? '<span class="badge bg-info text-dark align-self-center"><i class="bi bi-check-circle"></i> Copied</span>'
-                  : `<button class="btn btn-sm btn-success" onclick="organizeFile(${item.id})" title="Copy to music library">
-                       <i class="bi bi-folder-check"></i> Copy
+                  : `<button class="btn btn-sm btn-success" onclick="organizeFile(${item.id})"
+                             title="${hasFile ? 'Copy to music library' : 'Find file in downloads folder and transfer'}">
+                       <i class="bi bi-${hasFile ? 'folder-check' : 'search'}"></i> Transfer
                      </button>`
                 }
                 <button class="btn btn-sm btn-outline-danger" onclick="deleteQueueItem(${item.id})">
@@ -4556,10 +4560,14 @@ function renderQueueItem(item, statusColor) {
     ? `<small class="text-muted d-block">📎 ${escapeHtml(item.found_filename)}</small>`
     : '';
 
-  // Show "Copy" button for completed items not yet individually copied
-  const copyBtn = (item.status === 'completed' && !item.copied_individually)
-    ? `<button class="btn btn-sm btn-outline-success" onclick="organizeFile(${item.id})" title="Copy to music library">
-         <i class="bi bi-folder-check"></i>
+  // Show "Transfer" button for all items not yet individually copied.
+  // If the file hasn't been matched yet the backend will search the downloads
+  // folder independently when the button is clicked.
+  const hasFile = item.file_path || item.found_filename;
+  const copyBtn = !item.copied_individually
+    ? `<button class="btn btn-sm btn-outline-success" onclick="organizeFile(${item.id})"
+              title="${hasFile ? 'Copy to music library' : 'Find file in downloads folder and transfer to library'}">
+         <i class="bi bi-${hasFile ? 'folder-check' : 'search'}"></i>
        </button>`
     : '';
 
