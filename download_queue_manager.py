@@ -2721,3 +2721,278 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
         logger.error(traceback.format_exc())
         result['error'] = str(e)
         return result
+# ============================================================================
+# Individual File Copying Functions (NEW)
+# Handle copying individual files from downloads to music with MusicBrainz metadata
+# ============================================================================
+
+def copy_queue_item_file_to_music(queue_id, music_dir=None):
+    """
+    Copy a specific queue item file to the music directory with proper metadata.
+    Uses MusicBrainz metadata stored in the queue item to update tags before copying.
+    
+    Args:
+        queue_id: Queue item ID
+        music_dir: Optional override for music directory (defaults to /music)
+    
+    Returns:
+        dict: {
+            'success': bool,
+            'target_path': str or None,
+            'error': str or None,
+            'metadata_updated': bool,
+            'file_copied': bool
+        }
+    """
+    try:
+        from download_file_manager import copy_file_to_music as file_manager_copy
+        
+        if music_dir is None:
+            music_dir = MUSIC_DIR
+        
+        # Get queue item
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        from app import _is_postgres_connection as app_is_postgres_connection
+        is_pg = bool(app_is_postgres_connection(conn))
+        placeholder = "%s" if is_pg else "?"
+        
+        cursor.execute(f"SELECT * FROM download_queue WHERE id = {placeholder}", (queue_id,))
+        queue_item = cursor.fetchone()
+        conn.close()
+        
+        if not queue_item:
+            return {
+                'success': False,
+                'target_path': None,
+                'error': f'Queue item {queue_id} not found',
+                'metadata_updated': False,
+                'file_copied': False
+            }
+        
+        queue_item = dict(queue_item)
+        file_path = queue_item.get('file_path')
+        
+        if not file_path or not os.path.exists(file_path):
+            return {
+                'success': False,
+                'target_path': None,
+                'error': f'File not found: {file_path}',
+                'metadata_updated': False,
+                'file_copied': False
+            }
+        
+        # Use the file manager to copy with metadata
+        result = file_manager_copy(file_path, queue_item, music_dir)
+        
+        # Mark as copied individually if successful
+        if result['success']:
+            mark_file_as_copied_individually(queue_id, result.get('target_path'))
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error copying queue item {queue_id}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {
+            'success': False,
+            'target_path': None,
+            'error': str(e),
+            'metadata_updated': False,
+            'file_copied': False
+        }
+
+
+def mark_file_as_copied_individually(queue_id, target_path=None):
+    """
+    Mark a queue item file as copied individually.
+    This tracks that a file has been manually copied to /music and counts toward
+    the full album completion tracking.
+    
+    Args:
+        queue_id: Queue item ID
+        target_path: Optional path where file was copied to
+    
+    Returns:
+        Updated queue item dict or None
+    """
+    try:
+        result = update_queue_item(
+            queue_id,
+            copied_individually=1,
+            copied_individually_at=datetime.now().isoformat(),
+            status='imported',
+            file_path=target_path if target_path else None
+        )
+        
+        if result:
+            logger.info(f"✅ Marked queue item {queue_id} as copied individually")
+            return result
+        else:
+            logger.error(f"Could not mark queue item {queue_id} as copied individually")
+            return None
+    
+    except Exception as e:
+        logger.error(f"Error marking queue item {queue_id} as copied individually: {e}")
+        return None
+
+
+def get_album_files_with_status(album, album_artist, downloads_dir=None):
+    """
+    Get all files for an album showing their current copy status.
+    Useful for displaying UI showing which files have been copied and which haven't.
+    
+    Args:
+        album: Album name
+        album_artist: Album artist name
+        downloads_dir: Optional override for downloads directory
+    
+    Returns:
+        dict: {
+            'album': album name,
+            'artist': artist name,
+            'files': [
+                {
+                    'queue_id': int,
+                    'filename': str,
+                    'file_path': str,
+                    'title': str,
+                    'track_number': str,
+                    'status': 'discovered|downloading|completed|imported',
+                    'copied': bool,
+                    'copied_at': datetime or None
+                }
+            ],
+            'summary': {
+                'total': int,
+                'copied': int,
+                'pending': int,
+                'progress_pct': float
+            }
+        }
+    """
+    try:
+        if downloads_dir is None:
+            downloads_dir = get_downloads_dir()
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        from app import _is_postgres_connection as app_is_postgres_connection
+        is_pg = bool(app_is_postgres_connection(conn))
+        placeholder = "%s" if is_pg else "?"
+        
+        # Get all queue items for this album
+        cursor.execute(f"""
+            SELECT * FROM download_queue
+            WHERE LOWER(album) = LOWER({placeholder})
+            AND LOWER(COALESCE(album_artist, artist)) = LOWER({placeholder})
+            ORDER BY track_number ASC, title ASC
+        """, (album, album_artist))
+        
+        items = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        
+        files_list = []
+        total_copied = 0
+        
+        for item in items:
+            copied = bool(item.get('copied_individually'))
+            if copied:
+                total_copied += 1
+            
+            files_list.append({
+                'queue_id': item['id'],
+                'filename': item.get('found_filename') or os.path.basename(item.get('file_path', '')),
+                'file_path': item.get('file_path'),
+                'title': item.get('title', 'Unknown'),
+                'track_number': item.get('track_number', '0'),
+                'status': item.get('status', 'unknown'),
+                'copied': copied,
+                'copied_at': item.get('copied_individually_at')
+            })
+        
+        total = len(files_list)
+        pending = total - total_copied
+        progress_pct = ((total_copied / total) * 100) if total > 0 else 0
+        
+        return {
+            'album': album,
+            'artist': album_artist,
+            'files': files_list,
+            'summary': {
+                'total': total,
+                'copied': total_copied,
+                'pending': pending,
+                'progress_pct': round(progress_pct, 1)
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting album files status: {e}")
+        return {
+            'album': album,
+            'artist': album_artist,
+            'files': [],
+            'summary': {
+                'total': 0,
+                'copied': 0,
+                'pending': 0,
+                'progress_pct': 0.0
+            },
+            'error': str(e)
+        }
+
+
+def get_album_copy_progress(album, album_artist):
+    """
+    Get copy progress for an album (how many files have been copied to /music).
+    
+    Args:
+        album: Album name  
+        album_artist: Album artist name
+    
+    Returns:
+        dict: {
+            'album': album,
+            'artist': artist,
+            'total_tracks': int,
+            'copied_tracks': int,
+            'pending_tracks': int,
+            'progress_pct': float,
+            'is_complete': bool
+        }
+    """
+    try:
+        status = get_album_files_with_status(album, album_artist)
+        summary = status.get('summary', {})
+        
+        is_complete = (
+            summary.get('total', 0) > 0 and 
+            summary.get('pending', 0) == 0
+        )
+        
+        return {
+            'album': album,
+            'artist': album_artist,
+            'total_tracks': summary.get('total', 0),
+            'copied_tracks': summary.get('copied', 0),
+            'pending_tracks': summary.get('pending', 0),
+            'progress_pct': summary.get('progress_pct', 0.0),
+            'is_complete': is_complete
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting album copy progress: {e}")
+        return {
+            'album': album,
+            'artist': album_artist,
+            'total_tracks': 0,
+            'copied_tracks': 0,
+            'pending_tracks': 0,
+            'progress_pct': 0.0,
+            'is_complete': False,
+            'error': str(e)
+        }
