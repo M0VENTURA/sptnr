@@ -22,6 +22,7 @@ from datetime import datetime
 # Use centralized logging to ensure API activity appears in unified_scan.log, info.log, and debug.log
 # instead of Python's default logging system which doesn't route to these files
 from helpers.logging_config import log_unified, log_info, log_debug
+from database_abstraction import is_postgres_connection
 
 logger = logging.getLogger(__name__)
 
@@ -792,14 +793,16 @@ def calculate_album_stats(conn, artist: str, album: str) -> Tuple[float, float, 
     Returns:
         Tuple of (mean, stddev, median, count)
     """
+    is_pg = is_postgres_connection(conn)
+    placeholder = "%s" if is_pg else "?"
     cursor = conn.cursor()
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT popularity_score
         FROM tracks
-        WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ? AND popularity_score > 0
+        WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder} AND popularity_score > 0
     """, (artist, album))
     
-    popularities = [row[0] for row in cursor.fetchall()]
+    popularities = [row['popularity_score'] if is_pg else row[0] for row in cursor.fetchall()]
     
     if len(popularities) < 2:
         return 0.0, 0.0, 0.0, len(popularities)
@@ -821,20 +824,22 @@ def calculate_artist_stats(conn, artist: str) -> Tuple[float, float, int]:
     Returns:
         Tuple of (mean, stddev, count)
     """
+    is_pg = is_postgres_connection(conn)
+    placeholder = "%s" if is_pg else "?"
     cursor = conn.cursor()
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT popularity_score, title, album
         FROM tracks
-        WHERE artist = ? AND popularity_score > 0
+        WHERE artist = {placeholder} AND popularity_score > 0
     """, (artist,))
     
     # Filter out live/remix/alternate tracks before calculating statistics
     # Use word boundary matching to avoid false positives
     popularities = []
     for row in cursor.fetchall():
-        popularity_score = row[0]
-        title = row[1] if row[1] else ""
-        album = row[2] if row[2] else ""
+        popularity_score = row['popularity_score'] if is_pg else row[0]
+        title = (row['title'] if is_pg else row[1]) or ""
+        album = (row['album'] if is_pg else row[2]) or ""
         
         # Exclude live/remix/alternate versions from artist statistics
         # Use word boundary matching with regex for more precise detection
@@ -914,14 +919,16 @@ def calculate_mean_version_count(conn, artist: str, album: str) -> float:
     Returns:
         Mean version count across all tracks in the album (0.0 if no tracks)
     """
+    is_pg = is_postgres_connection(conn)
+    placeholder = "%s" if is_pg else "?"
     cursor = conn.cursor()
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT spotify_version_count
         FROM tracks
-        WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ? AND spotify_version_count IS NOT NULL
+        WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder} AND spotify_version_count IS NOT NULL
     """, (artist, album))
     
-    version_counts = [row[0] for row in cursor.fetchall()]
+    version_counts = [row['spotify_version_count'] if is_pg else row[0] for row in cursor.fetchall()]
     
     if not version_counts:
         return 0.0
@@ -1424,28 +1431,30 @@ def detect_single_enhanced(
         album_mean, album_stddev, album_median, album_track_count = 0.0, 0.0, 0.0, 0
 
     # Create cursor for queries
+    is_pg = is_postgres_connection(conn)
+    placeholder = "%s" if is_pg else "?"
     cursor = conn.cursor()
     
     # Get album popularities list for pre-filter
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT popularity_score
         FROM tracks
-        WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ? AND popularity_score > 0
+        WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder} AND popularity_score > 0
         ORDER BY popularity_score DESC
     """, (artist, album))
     album_pops_rows = cursor.fetchall()
-    album_popularities = [row[0] for row in album_pops_rows] if album_pops_rows else []
+    album_popularities = [row['popularity_score'] if is_pg else row[0] for row in album_pops_rows] if album_pops_rows else []
 
     # Get all artist popularities for context
     cursor = conn.cursor()
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT id, title, popularity_score, album
         FROM tracks
-        WHERE artist = ? AND popularity_score > 0
+        WHERE artist = {placeholder} AND popularity_score > 0
         ORDER BY popularity_score DESC
     """, (artist,))
     artist_rows = cursor.fetchall()
-    artist_popularities = [row[2] for row in artist_rows]
+    artist_popularities = [row['popularity_score'] if is_pg else row[2] for row in artist_rows]
 
     # --- Prefer canonical (non-alternate) version for single detection ---
     # If both canonical and alternate (e.g., acoustic) versions exist for the same base title,
@@ -1457,7 +1466,7 @@ def detect_single_enhanced(
 
     current_base = base_title(title)
     # Find all tracks with the same base title in artist's catalogue
-    same_base_tracks = [row for row in artist_rows if base_title(row[1]) == current_base]
+    same_base_tracks = [row for row in artist_rows if base_title(row['title'] if is_pg else row[1]) == current_base]
     if len(same_base_tracks) > 1:
         # Prefer canonical (non-alternate) version
         def is_alternate(t):
@@ -1465,7 +1474,7 @@ def detect_single_enhanced(
             t_low = t.lower()
             return any(alt in t_low for alt in alt_keywords)
         # If a canonical version exists, only allow it to be marked as single
-        canonical_tracks = [row for row in same_base_tracks if not is_alternate(row[1])]
+        canonical_tracks = [row for row in same_base_tracks if not is_alternate(row['title'] if is_pg else row[1])]
         if canonical_tracks:
             # If this is an alternate version, do not mark as single
             if is_alternate(title):
@@ -1653,12 +1662,12 @@ def detect_single_enhanced(
                     try:
                         cursor = conn.cursor()
                         cursor.execute(
-                            "SELECT COALESCE(musicbrainz_artist_id, lastfm_artist_mbid) as artist_mbid FROM tracks WHERE artist = ? AND (musicbrainz_artist_id IS NOT NULL OR lastfm_artist_mbid IS NOT NULL) LIMIT 1", 
+                            f"SELECT COALESCE(musicbrainz_artist_id, lastfm_artist_mbid) as artist_mbid FROM tracks WHERE artist = {placeholder} AND (musicbrainz_artist_id IS NOT NULL OR lastfm_artist_mbid IS NOT NULL) LIMIT 1", 
                             (artist,)
                         )
                         row = cursor.fetchone()
                         if row:
-                            artist_mbid = row[0]
+                            artist_mbid = row['artist_mbid'] if is_pg else row[0]
                             log_debug(f"[MUSICBRAINZ] Found artist MBID for '{artist}': {artist_mbid}")
                     except Exception as e:
                         log_debug(f"[MUSICBRAINZ] Could not fetch artist MBID: {e}")
@@ -1970,12 +1979,12 @@ def detect_single_enhanced(
                     try:
                         cursor = conn.cursor()
                         cursor.execute(
-                            "SELECT COALESCE(musicbrainz_artist_id, lastfm_artist_mbid) as artist_mbid FROM tracks WHERE artist = ? AND (musicbrainz_artist_id IS NOT NULL OR lastfm_artist_mbid IS NOT NULL) LIMIT 1", 
+                            f"SELECT COALESCE(musicbrainz_artist_id, lastfm_artist_mbid) as artist_mbid FROM tracks WHERE artist = {placeholder} AND (musicbrainz_artist_id IS NOT NULL OR lastfm_artist_mbid IS NOT NULL) LIMIT 1", 
                             (artist,)
                         )
                         row = cursor.fetchone()
                         if row:
-                            artist_mbid = row[0]
+                            artist_mbid = row['artist_mbid'] if is_pg else row[0]
                             log_debug(f"[MUSICBRAINZ] Found artist MBID for '{artist}': {artist_mbid}")
                     except Exception as e:
                         log_debug(f"[MUSICBRAINZ] Could not fetch artist MBID: {e}")
@@ -2473,24 +2482,36 @@ def store_single_detection_result(conn, track_id: str, result: Dict):
     while retry_count < max_retries:
         cursor = None
         try:
-            # Ensure proper timeout handling on the connection BEFORE any operations
-            conn.execute("PRAGMA busy_timeout = 120000")  # 120 seconds
-            conn.execute("PRAGMA journal_mode = WAL")  # Ensure WAL mode
-            
-            # Perform a checkpoint to free up commit logs and reduce lock contention
-            try:
-                conn.execute("PRAGMA wal_autocheckpoint = 1000")
-                conn.execute("PRAGMA optimize")
-            except:
-                pass  # These might fail if WAL isn't available, that's ok
+            is_pg = is_postgres_connection(conn)
+            placeholder = "%s" if is_pg else "?"
+
+            # SQLite-specific timeout/WAL settings
+            if not is_pg:
+                try:
+                    conn.execute("PRAGMA busy_timeout = 120000")  # 120 seconds
+                    conn.execute("PRAGMA journal_mode = WAL")  # Ensure WAL mode
+                except Exception:
+                    pass
+                try:
+                    conn.execute("PRAGMA wal_autocheckpoint = 1000")
+                    conn.execute("PRAGMA optimize")
+                except Exception:
+                    pass  # These might fail if WAL isn't available, that's ok
             
             cursor = conn.cursor()
             
             # Check if new columns exist in schema
-            cursor.execute("PRAGMA table_info(tracks)")
-            columns = {row[1] for row in cursor.fetchall()}
-            has_album_z = 'album_z_score' in columns
-            has_artist_z = 'artist_z_score' in columns
+            if is_pg:
+                cursor.execute("""
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_name = 'tracks' AND column_name IN ('album_z_score', 'artist_z_score')
+                """)
+                existing_cols = {row['column_name'] for row in cursor.fetchall()}
+            else:
+                cursor.execute("PRAGMA table_info(tracks)")
+                existing_cols = {row[1] for row in cursor.fetchall()}
+            has_album_z = 'album_z_score' in existing_cols
+            has_artist_z = 'artist_z_score' in existing_cols
             
             # Get z_score values with defaults
             z_score = result.get('z_score', 0.0)
@@ -2499,22 +2520,22 @@ def store_single_detection_result(conn, track_id: str, result: Dict):
             
             # Update with new columns if they exist
             if has_album_z and has_artist_z:
-                cursor.execute("""
+                cursor.execute(f"""
                     UPDATE tracks
-                    SET single_status = ?,
-                        single_confidence_score = ?,
-                        single_sources_used = ?,
-                        z_score = ?,
-                        album_z_score = ?,
-                        artist_z_score = ?,
-                        spotify_version_count = ?,
-                        discogs_release_ids = ?,
-                        musicbrainz_release_group_ids = ?,
-                        single_detection_last_updated = ?,
-                        is_single = ?,
-                        single_confidence = ?,
-                        single_sources = ?
-                    WHERE id = ?
+                    SET single_status = {placeholder},
+                        single_confidence_score = {placeholder},
+                        single_sources_used = {placeholder},
+                        z_score = {placeholder},
+                        album_z_score = {placeholder},
+                        artist_z_score = {placeholder},
+                        spotify_version_count = {placeholder},
+                        discogs_release_ids = {placeholder},
+                        musicbrainz_release_group_ids = {placeholder},
+                        single_detection_last_updated = {placeholder},
+                        is_single = {placeholder},
+                        single_confidence = {placeholder},
+                        single_sources = {placeholder}
+                    WHERE id = {placeholder}
                 """, (
                     result['single_status'],
                     result['single_confidence_score'],
@@ -2526,27 +2547,27 @@ def store_single_detection_result(conn, track_id: str, result: Dict):
                     json.dumps(result.get('discogs_release_ids', [])),
                     json.dumps(result.get('musicbrainz_release_group_ids', [])),
                     result['single_detection_last_updated'],
-                    1 if result['is_single'] else 0,
+                    result['is_single'] if is_pg else (1 if result['is_single'] else 0),
                     result['single_confidence'],
                     json.dumps(result['single_sources']),
                     track_id
                 ))
             else:
                 # Fallback to old schema without new z-score columns
-                cursor.execute("""
+                cursor.execute(f"""
                     UPDATE tracks
-                    SET single_status = ?,
-                        single_confidence_score = ?,
-                        single_sources_used = ?,
-                        z_score = ?,
-                        spotify_version_count = ?,
-                        discogs_release_ids = ?,
-                        musicbrainz_release_group_ids = ?,
-                        single_detection_last_updated = ?,
-                        is_single = ?,
-                        single_confidence = ?,
-                        single_sources = ?
-                    WHERE id = ?
+                    SET single_status = {placeholder},
+                        single_confidence_score = {placeholder},
+                        single_sources_used = {placeholder},
+                        z_score = {placeholder},
+                        spotify_version_count = {placeholder},
+                        discogs_release_ids = {placeholder},
+                        musicbrainz_release_group_ids = {placeholder},
+                        single_detection_last_updated = {placeholder},
+                        is_single = {placeholder},
+                        single_confidence = {placeholder},
+                        single_sources = {placeholder}
+                    WHERE id = {placeholder}
                 """, (
                     result['single_status'],
                     result['single_confidence_score'],
@@ -2556,7 +2577,7 @@ def store_single_detection_result(conn, track_id: str, result: Dict):
                     json.dumps(result.get('discogs_release_ids', [])),
                     json.dumps(result.get('musicbrainz_release_group_ids', [])),
                     result['single_detection_last_updated'],
-                    1 if result['is_single'] else 0,
+                    result['is_single'] if is_pg else (1 if result['is_single'] else 0),
                     result['single_confidence'],
                     json.dumps(result['single_sources']),
                     track_id

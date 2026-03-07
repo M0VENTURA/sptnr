@@ -2,7 +2,6 @@
 __all__ = ["rate_track_single_detection"]
 
 # --- DB Helper for single detection state ---
-import sqlite3
 import json
 import logging
 import re
@@ -17,13 +16,8 @@ from database_abstraction import DatabaseQuery, is_postgres_connection
 setup_logging("single_detector")
 
 def get_db_connection():
-    from helpers.db_utils import DB_PATH
-    conn = sqlite3.connect(DB_PATH, timeout=120.0)
-    # Only set PRAGMA for SQLite
-    if not is_postgres_connection(conn):
-        conn.execute("PRAGMA journal_mode=WAL")
-    conn.row_factory = sqlite3.Row
-    return conn
+    from helpers.db_utils import get_db_connection as _get_db_connection
+    return _get_db_connection()
 
 def get_current_single_detection(track_id: str) -> dict:
     """Query the current single detection values from the database.
@@ -40,7 +34,13 @@ def get_current_single_detection(track_id: str) -> dict:
         row = cursor.fetchone()
         conn.close()
         if row:
-            is_single, confidence, sources_json, stars = row
+            if isinstance(row, dict):
+                is_single = row['is_single']
+                confidence = row['single_confidence']
+                sources_json = row['single_sources']
+                stars = row['stars']
+            else:
+                is_single, confidence, sources_json, stars = row
             sources = json.loads(sources_json) if sources_json else []
             return {
                 "is_single": bool(is_single),

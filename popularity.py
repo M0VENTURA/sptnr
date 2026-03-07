@@ -2004,7 +2004,7 @@ def detect_single_for_track(
                 FROM tracks 
                 WHERE artist = {placeholder} AND album = {placeholder} AND popularity_score > 0
             """, (artist, album))
-            album_popularities = [row[0] for row in cursor.fetchall()]
+            album_popularities = [row['popularity_score'] for row in cursor.fetchall()]
             
             album_passed = True
             if album_popularities:
@@ -2042,7 +2042,7 @@ def detect_single_for_track(
                     FROM tracks 
                     WHERE artist = {placeholder} AND popularity_score > 0
                 """, (artist,))
-                artist_popularities = [row[0] for row in cursor.fetchall()]
+                artist_popularities = [row['popularity_score'] for row in cursor.fetchall()]
                 artist_passed = True
                 artist_zscore = 0.0
                 artist_mean = 0.0
@@ -5396,8 +5396,8 @@ def popularity_scan(
                         temp_placeholder = "%s" if temp_is_pg else "?"
                         temp_cursor.execute(f"SELECT popularity_score FROM tracks WHERE id = {temp_placeholder}", (track_id,))
                         pop_row = temp_cursor.fetchone()
-                        if pop_row and pop_row[0]:
-                            track_popularity = pop_row[0]
+                        if pop_row and pop_row['popularity_score']:
+                            track_popularity = pop_row['popularity_score']
                         temp_cursor.close()
                         temp_conn.close()
                     except Exception as e:
