@@ -1213,11 +1213,13 @@ def detect_via_iterative_zscore(
     
     with get_db_connection_context(conn) as db_conn:
         try:
+            is_pg = bool(_is_postgres_connection(db_conn))
+            placeholder = "%s" if is_pg else "?"
             cursor = db_conn.cursor()
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT id, title, popularity_score
                 FROM tracks
-                WHERE artist = ? AND album = ? AND popularity_score > 0
+                WHERE artist = {placeholder} AND album = {placeholder} AND popularity_score > 0
                 ORDER BY popularity_score DESC
             """, (artist, album))
             
@@ -1225,7 +1227,10 @@ def detect_via_iterative_zscore(
             if not album_tracks or len(album_tracks) < 2:
                 return False
             
-            album_data = [(row[0], row[1], row[2]) for row in album_tracks]
+            if is_pg:
+                album_data = [(row['id'], row['title'], row['popularity_score']) for row in album_tracks]
+            else:
+                album_data = [(row[0], row[1], row[2]) for row in album_tracks]
             identified_standouts = set()
             
             iteration = 0
@@ -1286,21 +1291,24 @@ def _check_artist_zscore(cursor, artist: str, track_id: int, conn=None) -> float
         if not row:
             return -999
         
-        track_score = row[0]
+        track_score = row['popularity_score'] if is_pg else row[0]
         if not track_score:
             return -999
         
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT mean_popularity, popularity_stddev
             FROM artist_stats
-            WHERE artist = ?
+            WHERE artist = {placeholder}
         """, (artist,))
         stats_row = cursor.fetchone()
-        if not stats_row or not stats_row[0]:
+        if not stats_row:
             return -999
         
-        artist_mean = stats_row[0]
-        artist_stdev = stats_row[1] if stats_row[1] else 1
+        artist_mean = stats_row['mean_popularity'] if is_pg else stats_row[0]
+        artist_stdev_val = stats_row['popularity_stddev'] if is_pg else stats_row[1]
+        if not artist_mean or artist_mean <= 0:
+            return -999
+        artist_stdev = artist_stdev_val if artist_stdev_val else 1
         if artist_stdev == 0:
             return -999
         
