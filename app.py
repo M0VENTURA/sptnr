@@ -14434,20 +14434,25 @@ def api_queue_clear():
 def api_queue_organize(queue_id):
     """Move a single file from /downloads to /music (individual copy).
 
-    Marks the item as ``copied_individually`` so the album auto-move can
-    recognise it as already done and skip it when the rest of the album
-    completes.
+    - Searches the downloads folder independently for the track when
+      file_path is missing or the file no longer exists at that path.
+    - Updates file metadata (ID3/FLAC tags) from the matched release
+      before copying.
+    - Marks the item as ``copied_individually`` so the album auto-move
+      can recognise it as already done and skip it when the rest of the
+      album completes.
     """
     try:
         import shutil
-        from download_queue_manager import update_queue_item
+        from download_queue_manager import update_queue_item, is_match
 
         conn = get_db()
         cursor = conn.cursor()
 
         placeholder = "%s" if _is_postgres_connection(conn) else "?"
         cursor.execute(f"""
-            SELECT id, file_path, artist, album, title, release_id
+            SELECT id, file_path, artist, album, title, release_id,
+                   album_artist, year, track_number, found_filename
             FROM download_queue WHERE id = {placeholder}
         """, (queue_id,))
 
@@ -14457,33 +14462,84 @@ def api_queue_organize(queue_id):
             conn.close()
             return jsonify({"error": "Queue item not found"}), 404
 
-        if not item['file_path']:
-            # No file path set - delete this orphaned item
-            cursor.execute(f"DELETE FROM download_queue WHERE id = {placeholder}", (queue_id,))
-            conn.commit()
-            conn.close()
-            return jsonify({"error": "File path missing - item removed from queue"}), 404
-
         file_path = item['file_path']
         artist = item['artist'] or 'Unknown Artist'
         album = item['album'] or 'Unknown Album'
+        album_artist = item['album_artist'] or artist
+        year = item['year']
+        track_number = item['track_number']
+        title = item['title']
         release_id = item['release_id']
+        found_filename = item['found_filename']
 
-        if not os.path.exists(file_path):
-            # File was deleted - remove from queue
-            cursor.execute(f"DELETE FROM download_queue WHERE id = {placeholder}", (queue_id,))
-            conn.commit()
-            conn.close()
-            logging.info(f"[ORGANIZE] File no longer exists, removed from queue: {file_path}")
-            return jsonify({"error": "File no longer exists - item removed from queue"}), 404
+        # If no file_path or file no longer exists, search downloads folder
+        # independently for this specific track.
+        if not file_path or not os.path.exists(file_path):
+            logging.info(f"[ORGANIZE] No valid file_path for queue {queue_id}, searching downloads folder independently...")
+            downloads_dir = os.environ.get("DOWNLOADS_DIR", "/downloads")
+            found_path = None
+
+            if os.path.isdir(downloads_dir):
+                item_dict = dict(item)
+                for root, dirs, files in os.walk(downloads_dir):
+                    for f in files:
+                        if not f.endswith(('.mp3', '.flac', '.m4a', '.ogg', '.wav')):
+                            continue
+                        full_path = os.path.join(root, f)
+                        rel_path = os.path.relpath(full_path, downloads_dir)
+                        # Exact filename match first
+                        if found_filename and f == found_filename:
+                            found_path = full_path
+                            break
+                        # Fuzzy match on artist/title
+                        if is_match(rel_path, item_dict):
+                            found_path = full_path
+                            break
+                    if found_path:
+                        break
+
+            if not found_path:
+                conn.close()
+                logging.warning(f"[ORGANIZE] Could not find file for queue {queue_id}: {artist} - {title}")
+                return jsonify({"error": f"Could not find file in downloads folder for: {artist} - {title}"}), 404
+
+            logging.info(f"[ORGANIZE] Found file via independent search: {found_path}")
+            file_path = found_path
+            # Update the queue item so future calls have the correct path
+            update_queue_item(
+                queue_id,
+                file_path=file_path,
+                status='completed',
+                found_filename=os.path.basename(file_path)
+            )
 
         conn.close()
 
         logging.info(f"[ORGANIZE] Starting individual copy for queue {queue_id}: {file_path}")
 
+        # Update file metadata from release info before copying
+        try:
+            from post_download_processor import update_file_metadata
+            metadata = {
+                'title': title,
+                'artist': artist,
+                'album_artist': album_artist,
+                'album': album,
+                'year': year,
+                'track_number': track_number,
+            }
+            if any(v for v in [title, artist, album, year, track_number, album_artist] if v):
+                success = update_file_metadata(file_path, metadata)
+                if success:
+                    logging.info(f"[ORGANIZE] ✅ Metadata updated for: {file_path}")
+                else:
+                    logging.warning(f"[ORGANIZE] Metadata update skipped/failed (non-fatal): {file_path}")
+        except Exception as meta_err:
+            logging.warning(f"[ORGANIZE] Metadata update error (non-fatal): {meta_err}")
+
         # Get paths and create directory structure
         music_root = os.environ.get("MUSIC_ROOT", "/music")
-        target_dir = os.path.join(music_root, artist, album)
+        target_dir = os.path.join(music_root, album_artist, album)
         os.makedirs(target_dir, exist_ok=True)
 
         # Get filename and handle duplicates
