@@ -424,7 +424,7 @@ def check_completed_downloads():
         
         # Get all downloading queue items
         cursor.execute("""
-            SELECT id, artist, title, album, search_query, found_filename FROM download_queue
+            SELECT id, artist, title, album, search_query, found_filename, release_id FROM download_queue
             WHERE status = 'downloading'
         """)
         
@@ -448,6 +448,7 @@ def check_completed_downloads():
             return
         
         # Try to match files to queue items
+        newly_completed = []
         for item in downloading:
             match_found = None
             
@@ -474,9 +475,29 @@ def check_completed_downloads():
                 file_path = os.path.join(DOWNLOADS_DIR, match_found)
                 logger.info(f"Queue {item['id']}: Matched file '{match_found}' - marking as completed")
                 update_queue_status(item['id'], 'completed', file_path=file_path, found_filename=match_found)
-        
+                newly_completed.append(item)
+
         conn.close()
-        
+
+        # After matching files, check whether any album is now fully complete
+        # and auto-move all its remaining tracks to the music library.
+        for item in newly_completed:
+            try:
+                from download_queue_manager import auto_move_completed_album
+                result = auto_move_completed_album(
+                    release_id=item.get('release_id'),
+                    artist=item.get('artist'),
+                    album=item.get('album')
+                )
+                if result.get('album_complete'):
+                    logger.info(
+                        f"[AUTO_MOVE] Album complete after download: "
+                        f"{item.get('artist')} – {item.get('album')} | "
+                        f"moved={result['moved']}, already_copied={result['already_copied']}"
+                    )
+            except Exception as auto_err:
+                logger.warning(f"[AUTO_MOVE] Error triggering auto-move for queue {item['id']}: {auto_err}")
+
     except Exception as e:
         logger.error(f"Error checking completed downloads: {e}")
 
