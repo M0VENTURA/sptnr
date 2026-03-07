@@ -3838,7 +3838,7 @@ def api_create_essential_playlist():
 
 @app.route("/api/artist/image")
 def api_artist_image():
-    """Get artist image from database cache only (fetched during scans, not real-time online)"""
+    """Get artist image from database cache, with AudioDB fallback for similar artists"""
     artist_name = request.args.get("name", "").strip()
     if not artist_name:
         return Response("", status=404)
@@ -3883,6 +3883,36 @@ def api_artist_image():
                 return redirect(img_row['image_url'])
         except Exception as e:
             logging.debug(f"[ARTIST IMAGE] artist_images lookup failed for {artist_name}: {e}")
+        
+        # AudioDB fallback: try to fetch artist image from AudioDB and cache it
+        try:
+            from api_clients.audiodb import get_artist_fanart, DEFAULT_API_KEY
+            image_url = get_artist_fanart(artist_name, api_key=DEFAULT_API_KEY, enabled=True)
+            if image_url:
+                # Cache the result in artist_images table for future requests
+                try:
+                    if is_pg:
+                        cursor.execute("""
+                            INSERT INTO artist_images (artist_name, image_url, updated_at)
+                            VALUES (%s, %s, CURRENT_TIMESTAMP)
+                            ON CONFLICT (artist_name) DO UPDATE SET
+                                image_url = EXCLUDED.image_url,
+                                updated_at = CURRENT_TIMESTAMP
+                        """, (artist_name, image_url))
+                    else:
+                        from datetime import datetime as _dt
+                        cursor.execute("""
+                            INSERT OR REPLACE INTO artist_images (artist_name, image_url, updated_at)
+                            VALUES (?, ?, ?)
+                        """, (artist_name, image_url, _dt.now().isoformat()))
+                    conn.commit()
+                except Exception as cache_err:
+                    logging.debug(f"[ARTIST IMAGE] Failed to cache AudioDB image for {artist_name}: {cache_err}")
+                conn.close()
+                logging.debug(f"[ARTIST IMAGE] Found AudioDB image for {artist_name}")
+                return redirect(image_url)
+        except Exception as e:
+            logging.debug(f"[ARTIST IMAGE] AudioDB fallback failed for {artist_name}: {e}")
         
         conn.close()
         logging.debug(f"[ARTIST IMAGE] No image for {artist_name} - run scan to fetch")
@@ -12062,7 +12092,7 @@ def api_album_tracklist():
             log_debug(f"Fetching tracklist for {artist} - {album} using provided MBID: {mbid}")
             
             # Fetch the release directly using the provided MBID
-            release_url = f"https://musicbrainz.org/ws/2/releases/{mbid}"
+            release_url = f"https://musicbrainz.org/ws/2/release/{mbid}"
             release_params = {"fmt": "json", "inc": "recordings"}
             
             try:
@@ -12156,22 +12186,35 @@ def api_album_tracklist():
         if not releases:
             return jsonify({"error": "No releases found"}), 404
         
-        # Get first release with media/tracks
+        # Get first release - need to fetch with inc=recordings to get track data
         tracklist = []
         release_id = None
         for release in releases:
-            media = release.get("media", [])
-            if media:
-                release_id = release.get("id", "")
-                for track_obj in media[0].get("tracks", []):
-                    recording = track_obj.get("recording", {})
-                    tracklist.append({
-                        "position": track_obj.get("position", ""),
-                        "title": recording.get("title", "Unknown"),
-                        "artist": " feat. ".join([a.get("name", "") for a in recording.get("artist-credit", []) if a.get("name")])
-                    })
-                break
-        
+            candidate_id = release.get("id", "")
+            if not candidate_id:
+                continue
+            # Fetch full release details with recordings included
+            try:
+                full_release_url = f"https://musicbrainz.org/ws/2/release/{candidate_id}"
+                full_release_params = {"fmt": "json", "inc": "recordings"}
+                full_resp = requests.get(full_release_url, params=full_release_params, headers=headers, timeout=5)
+                full_resp.raise_for_status()
+                full_data = full_resp.json()
+                media = full_data.get("media", [])
+                if media and media[0].get("tracks"):
+                    release_id = candidate_id
+                    for track_obj in media[0].get("tracks", []):
+                        recording = track_obj.get("recording", {})
+                        tracklist.append({
+                            "position": str(track_obj.get("position", "")),
+                            "title": recording.get("title", "Unknown"),
+                            "artist": " feat. ".join([a.get("name", "") for a in recording.get("artist-credit", []) if a.get("name")])
+                        })
+                    break
+            except Exception as e:
+                log_debug(f"Error fetching release {candidate_id}: {e}")
+                continue
+
         if not tracklist:
             return jsonify({"error": "No tracks found"}), 404
         

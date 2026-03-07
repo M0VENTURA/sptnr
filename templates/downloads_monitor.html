@@ -157,30 +157,19 @@
     </div>
   </div>
 
-  <!-- Folder Groups Section (for organized batch matching) -->
+  <!-- Download Queue Section -->
   <div class="card mb-4" id="folderGroupsSection" style="display: none;">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
-        <i class="bi bi-folder-check"></i> Downloads Organized by Folder
+        <i class="bi bi-list-task"></i> Download Queue
       </h5>
       <div class="d-flex align-items-center gap-2 flex-wrap">
-        <div class="btn-group btn-group-sm" role="group" aria-label="Folder group filter">
-          <button type="button" class="btn btn-outline-light active" id="folderFilterAll" onclick="setFolderGroupFilter('all')">All</button>
-          <button type="button" class="btn btn-outline-light" id="folderFilterRelease" onclick="setFolderGroupFilter('release')">Releases</button>
-          <button type="button" class="btn btn-outline-light" id="folderFilterFolder" onclick="setFolderGroupFilter('folder')">Folders</button>
-        </div>
-        <span class="badge bg-info" id="folderGroupsBadge">0 groups</span>
-        <div class="ms-auto d-flex gap-2 align-items-center">
-          <span class="badge bg-warning" id="folderSelectionBadge" style="display:none">0 selected</span>
-          <button class="btn btn-sm btn-outline-success" id="mergeFoldersBtn" style="display:none" onclick="initiateFolderMerge()">
-            <i class="bi bi-arrow-left-right"></i> Merge Selected
-          </button>
-        </div>
+        <span class="badge bg-info" id="folderGroupsBadge">0 items</span>
       </div>
     </div>
     <div class="card-body p-0">
       <div id="folderGroupsList" style="max-height: 600px; overflow-y: auto;">
-        <!-- Folder groups rendered here -->
+        <!-- Queue items rendered here -->
       </div>
     </div>
   </div>
@@ -1368,8 +1357,8 @@ async function loadFolderGroups(options = {}) {
           title: item.title || '',
           artist: item.artist || '',
           album: item.album || '',
-          filename: item.title || '',
-          file_path: '',
+          filename: item.found_filename || item.title || '',
+          file_path: item.file_path || '',
           track_number: item.track_number
         });
       } else {
@@ -1411,16 +1400,33 @@ async function loadFolderGroups(options = {}) {
         title: item.title || '',
         artist: item.artist || '',
         album: item.album || '',
-        filename: item.title || '',
-        file_path: ''
+        filename: item.found_filename || item.title || '',
+        file_path: item.file_path || ''
       }],
       is_musicbrainz_release: false
     }));
     
-    // Merge all groups: release groups + individual items + folder groups
-    const queueGroups = [...releaseQueueGroups, ...individualQueueGroups];
-    groups = [...groups, ...queueGroups];
-    
+    // Build a lookup map from real folder groups: normalised "artist|album" -> folder_path
+    // This lets each queue item show its matched download folder.
+    const folderLookup = {};
+    (folderData.folder_groups || []).forEach(fg => {
+      const key = `${(fg.artist || '').toLowerCase()}|${(fg.album || '').toLowerCase()}`;
+      if (key !== '|') {
+        folderLookup[key] = fg.folder_path || '';
+      }
+    });
+
+    // Enrich queue items with matched folder paths and then show ONLY queue items.
+    queueGroups.forEach(qg => {
+      const key = `${(qg.artist || '').toLowerCase()}|${(qg.album || '').toLowerCase()}`;
+      if (folderLookup[key]) {
+        qg.matched_folder_path = folderLookup[key];
+      }
+    });
+
+    // Only display queue items — real folder groups are reflected via the matched_folder_path above.
+    groups = queueGroups;
+
     console.log('[loadFolderGroups] API Response:', {
       success: folderData.success,
       total_folders: folderData.total_folders,
@@ -1433,13 +1439,8 @@ async function loadFolderGroups(options = {}) {
     const list = document.getElementById('folderGroupsList');
     const badge = document.getElementById('folderGroupsBadge');
 
-    // Filter groups based on selected filter
+    // Only show queue items
     let filteredGroups = groups;
-    if (folderGroupsFilter === 'release') {
-      filteredGroups = groups.filter(g => g.is_musicbrainz_release === true);
-    } else if (folderGroupsFilter === 'folder') {
-      filteredGroups = groups.filter(g => g.is_musicbrainz_release !== true);
-    }
 
     // Keep ordering stable to prevent unnecessary re-renders on refresh.
     filteredGroups = filteredGroups.sort((a, b) => {
@@ -1453,26 +1454,25 @@ async function loadFolderGroups(options = {}) {
     const totalGroups = visibleFolderCount;
 
     const nextSignature = JSON.stringify({
-      filter: folderGroupsFilter,
+      filter: 'queue',
       groups: filteredGroups.map(group => ({
         folder_path: group.folder_path,
         folder_name: group.folder_name,
         track_count: group.track_count,
         artist: group.artist,
         album: group.album,
-        is_musicbrainz_release: group.is_musicbrainz_release,
-        matched: !!folderMatchSelections[group.folder_path],
-        completion_percentage: folderStatusData[group.folder_path]?.completion_percentage || 0
+        matched_folder_path: group.matched_folder_path || null,
+        queue_item_status: group.queue_item_status
       }))
     });
     
     if (totalGroups === 0) {
       if (keepVisibleOnEmpty) {
         section.style.display = 'block';
-        badge.textContent = '0 groups';
+        badge.textContent = '0 items';
         list.innerHTML = `
           <div class="alert alert-info m-3 mb-0">
-            <i class="bi bi-info-circle"></i> No folder groups found right now.
+            <i class="bi bi-info-circle"></i> No items in download queue right now.
           </div>`;
       } else {
         section.style.display = 'none';
@@ -1484,12 +1484,12 @@ async function loadFolderGroups(options = {}) {
     // Avoid tearing down and rebuilding the full list if the data did not change.
     if (!forceRender && nextSignature === lastFolderGroupsRenderSignature) {
       section.style.display = 'block';
-      badge.textContent = `${totalGroups} groups`;
+      badge.textContent = `${totalGroups} items`;
       return;
     }
     
     section.style.display = 'block';
-    badge.textContent = `${totalGroups} groups`;
+    badge.textContent = `${totalGroups} items`;
     
     let html = '';
 
@@ -1564,54 +1564,21 @@ async function loadFolderGroups(options = {}) {
         <div class="card border-bottom mb-2 ${inconsistentClass}">
           <div class="card-body p-3">
             <div class="row align-items-center">
-              <div class="col-auto">
-                <input type="checkbox" 
-                       class="form-check-input" 
-                       data-folder-path="${group.folder_path}"
-                       onchange="toggleFolderSelection('${group.folder_path}')" />
-              </div>
-              <div class="col-md-5">
+              <div class="col-md-6">
                 <h6 class="card-title mb-1">
-                  <i class="bi ${isQueueItem ? 'bi-list-task' : 'bi-folder'}"></i> ${group.folder_name}
-                  ${inconsistentBadge}
+                  <i class="bi bi-list-task"></i> ${escapeHtml(group.artist || '')} – ${escapeHtml(group.album || '')}
                   ${queueStatusBadge}
-                  ${matchedBadge}
-                  ${completionBadge}
                 </h6>
                 <div class="text-muted small">
                   <span class="badge bg-light text-dark">${group.track_count} tracks</span>
-                  <span class="ms-2"><strong>Artist:</strong> ${group.artist}</span>
-                  <span class="ms-2"><strong>Album:</strong> ${group.album}</span>
+                  ${group.matched_folder_path ? `
+                    <span class="ms-2 text-success"><i class="bi bi-folder-check"></i> <strong>Folder:</strong> <code>${escapeHtml(group.matched_folder_path)}</code></span>
+                  ` : `
+                    <span class="ms-2 text-muted"><i class="bi bi-folder-x"></i> No matching folder found yet</span>
+                  `}
                 </div>
-                ${matchedDetails}
-                ${progressBar}
               </div>
               <div class="col-md-6 text-end">
-                ${!isQueueItem ? `
-                <button class="btn btn-sm btn-outline-primary" 
-                  onclick="matchFolderGroupWithMusicBrainzFromEncoded(event, '${folderPathEnc}', '${artistEnc}', '${albumEnc}', '${tracksEnc}')">
-                  <i class="bi bi-disc"></i> ${matchedSelection ? 'Change Match' : 'Auto Apply'}
-                </button>
-                <button class="btn btn-sm btn-outline-info ms-2" 
-                  onclick="showAutoMatchSuggestionFromEncoded(event, '${folderPathEnc}', '${artistEnc}', '${albumEnc}', '${tracksEnc}')" 
-                  title="Get auto-suggested match based on track similarity">
-                  <i class="bi bi-sparkles"></i> Suggest
-                </button>
-                <button class="btn btn-sm btn-outline-secondary ms-2" 
-                        onclick="showManualSearchModalFromEncoded(event, '${folderPathEnc}', '${artistEnc}', '${albumEnc}', '${tracksEnc}')">
-                  <i class="bi bi-search"></i> Manual Search
-                </button>
-                ${matchedSelection ? `
-                <button class="btn btn-sm btn-success ms-2" 
-                  onclick="moveMatchedFolderFromEncoded('${folderPathEnc}')">
-                  <i class="bi bi-folder-check"></i> Move Files
-                </button>
-                <button class="btn btn-sm btn-outline-info ms-2" 
-                  onclick="showReleaseTracklistModal('${escapeHtml(JSON.stringify(matchedSelection.candidate))}', '${folderPathEnc}', event)" 
-                  title="View all tracks from the matched release">
-                  <i class="bi bi-list"></i> View Tracklist
-                </button>` : ''}
-                ` : ''}
                 <button class="btn btn-sm btn-outline-secondary ms-2" 
                         onclick="toggleTrackList('${tracklistId}', '${folderStateKey}', this)">
                   <i class="bi ${toggleIcon}"></i> ${toggleLabel}

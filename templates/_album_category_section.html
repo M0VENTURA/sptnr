@@ -71,7 +71,7 @@
         <button class="btn btn-outline-info" onclick='toggleTracklist({{ artist_name|tojson }}, {{ album.title|tojson }})' title="Show tracklist" id="toggle-btn-{{ safe_artist }}-{{ safe_album }}">
           <i class="bi bi-list-ul"></i>
         </button>
-        <button class="btn btn-outline-secondary" onclick="openDownloadSearch({{ artist_name|tojson }})" title="Search for download">
+        <button class="btn btn-outline-secondary" onclick="searchMusicBrainzRelease(event, {{ artist_name|tojson }}, {{ album.title|tojson }})" title="Search MusicBrainz for this release">
           <i class="bi bi-search"></i>
         </button>
       {% else %}
