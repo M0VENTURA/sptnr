@@ -169,7 +169,9 @@ def _ensure_download_queue_columns(conn, cursor):
             'album_artist': "TEXT",
             'year': "TEXT",
             'release_id': "TEXT",
-            'release_source': "TEXT"
+            'release_source': "TEXT",
+            'copied_individually': "INTEGER DEFAULT 0",
+            'copied_individually_at': "TEXT",
         }
 
         for col, col_type in required_cols.items():
@@ -451,9 +453,9 @@ def get_queue(status=None, source='soulseek', limit=50):
         
         # Only use priority in ORDER BY if column exists
         if 'priority' in columns:
-            query += " ORDER BY priority ASC, created_at DESC LIMIT ?"
+            query += f" ORDER BY priority ASC, created_at DESC LIMIT {placeholder}"
         else:
-            query += " ORDER BY created_at DESC LIMIT ?"
+            query += f" ORDER BY created_at DESC LIMIT {placeholder}"
         params.append(limit)
         
         cursor.execute(query, params)
@@ -504,7 +506,8 @@ def update_queue_item(queue_id, **kwargs):
             
             for key, value in kwargs.items():
                 if key in ['status', 'source_id', 'found_filename', 'file_path', 'failure_reason', 
-                           'retry_count', 'last_failure_time', 'imported_at', 'metadata', 'import_group', 'import_type']:
+                           'retry_count', 'last_failure_time', 'imported_at', 'metadata', 'import_group', 'import_type',
+                           'copied_individually', 'copied_individually_at']:
                     # Special handling for file_path to avoid UNIQUE constraint issues
                     if key == 'file_path' and value:
                         # Check if this file_path is already in use by another item
@@ -1166,13 +1169,17 @@ def get_completed_queue(limit=50):
     try:
         conn = get_db()
         cursor = conn.cursor()
-        
-        cursor.execute("""
+
+        from app import _is_postgres_connection as app_is_postgres_connection
+        is_pg = bool(app_is_postgres_connection(conn))
+        placeholder = "%s" if is_pg else "?"
+
+        cursor.execute(f"""
             SELECT * FROM download_queue 
             WHERE status = 'completed'
             AND file_path IS NOT NULL
             ORDER BY updated_at DESC
-            LIMIT ?
+            LIMIT {placeholder}
         """, (limit,))
         
         items = [dict(row) for row in cursor.fetchall()]
@@ -2518,3 +2525,199 @@ def process_complete_albums():
         logger.error(traceback.format_exc())
         stats['errors'].append(error_msg)
         return stats
+
+
+def auto_move_completed_album(release_id=None, artist=None, album=None):
+    """
+    Auto-move all completed tracks for an album/release to the music library.
+
+    Called after a queue item is marked 'completed' to check whether every track
+    in the same album (identified by release_id, or artist+album) is now either
+    'completed' or 'imported'.  When the album is fully ready the remaining
+    'completed' tracks (those NOT yet individually copied) are moved to /music
+    and their queue status is updated to 'imported'.
+
+    Tracks that were already individually copied (copied_individually=1) are
+    counted as done but are not moved again.
+
+    Args:
+        release_id: MusicBrainz release ID to look up tracks by (preferred).
+        artist:     Artist name – used when release_id is not available.
+        album:      Album name – used when release_id is not available.
+
+    Returns:
+        dict with keys: moved (int), already_copied (int), skipped (int),
+                        album_complete (bool), error (str|None)
+    """
+    result = {
+        'moved': 0,
+        'already_copied': 0,
+        'skipped': 0,
+        'album_complete': False,
+        'error': None
+    }
+
+    if not release_id and not (artist and album):
+        result['error'] = "release_id or artist+album required"
+        return result
+
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        from app import _is_postgres_connection as app_is_postgres_connection
+        is_pg = bool(app_is_postgres_connection(conn))
+        placeholder = "%s" if is_pg else "?"
+
+        # Fetch all queue items for this album
+        if release_id:
+            cursor.execute(
+                f"""
+                SELECT id, status, file_path, found_filename, artist, title,
+                       album, album_artist, track_number, disc_number, year,
+                       copied_individually
+                FROM download_queue
+                WHERE release_id = {placeholder}
+                  AND status NOT IN ('removed', 'cancelled')
+                ORDER BY track_number ASC, title ASC
+                """,
+                (release_id,)
+            )
+        else:
+            cursor.execute(
+                f"""
+                SELECT id, status, file_path, found_filename, artist, title,
+                       album, album_artist, track_number, disc_number, year,
+                       copied_individually
+                FROM download_queue
+                WHERE LOWER(artist) = LOWER({placeholder})
+                  AND LOWER(album)  = LOWER({placeholder})
+                  AND status NOT IN ('removed', 'cancelled')
+                ORDER BY track_number ASC, title ASC
+                """,
+                (artist, album)
+            )
+
+        tracks = [dict(row) for row in cursor.fetchall()]
+
+        if not tracks:
+            conn.close()
+            result['error'] = "No tracks found for this album"
+            return result
+
+        # --- Check album completeness ---
+        # A track is "done" when it is imported, individually copied, or
+        # completed with a file ready to move.
+        def _is_done(t):
+            if t['status'] == 'imported':
+                return True
+            if t.get('copied_individually') == 1:
+                return True
+            if t['status'] == 'completed' and t.get('file_path'):
+                return True
+            return False
+
+        # Are ALL tracks done?
+        all_done = all(_is_done(t) for t in tracks)
+
+        if not all_done:
+            # Album not yet complete – nothing to auto-move
+            conn.close()
+            return result
+
+        result['album_complete'] = True
+
+        # Determine destination directory from already-imported tracks or metadata
+        music_root = os.environ.get("MUSIC_ROOT", "/music")
+
+        # Use consistent album artist / year from completed tracks
+        album_artists = [t.get('album_artist') or t.get('artist') for t in tracks if t.get('album_artist') or t.get('artist')]
+        years = [t.get('year') for t in tracks if t.get('year')]
+        albums = [t.get('album') for t in tracks if t.get('album')]
+
+        def _most_common(lst):
+            if not lst:
+                return None
+            counts = {}
+            for v in lst:
+                counts[v] = counts.get(v, 0) + 1
+            return max(counts, key=counts.get)
+
+        dest_album_artist = _most_common(album_artists) or artist or 'Unknown Artist'
+        dest_album = _most_common(albums) or album or 'Unknown Album'
+        dest_year = _most_common(years)
+
+        if dest_year:
+            dest_dir = os.path.join(music_root, dest_album_artist, f"{dest_year} - {dest_album}")
+        else:
+            dest_dir = os.path.join(music_root, dest_album_artist, dest_album)
+
+        os.makedirs(dest_dir, exist_ok=True)
+
+        import shutil
+
+        for track in tracks:
+            if track['status'] == 'imported':
+                # Already moved (individually or previously)
+                result['already_copied'] += 1
+                continue
+
+            if not track.get('file_path') or not os.path.exists(track['file_path']):
+                result['skipped'] += 1
+                continue
+
+            src = track['file_path']
+            filename = os.path.basename(src)
+            dest = os.path.join(dest_dir, filename)
+
+            # Avoid overwriting
+            if os.path.exists(dest):
+                base, ext = os.path.splitext(filename)
+                counter = 1
+                while os.path.exists(os.path.join(dest_dir, f"{base}_{counter}{ext}")):
+                    counter += 1
+                dest = os.path.join(dest_dir, f"{base}_{counter}{ext}")
+
+            try:
+                shutil.move(src, dest)
+                cursor.execute(
+                    f"""
+                    UPDATE download_queue
+                    SET status = 'imported',
+                        file_path = {placeholder},
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = {placeholder}
+                    """,
+                    (dest, track['id'])
+                )
+                result['moved'] += 1
+                logger.info(
+                    f"[AUTO_MOVE] Moved {filename} → {dest} "
+                    f"(queue id={track['id']})"
+                )
+            except Exception as move_err:
+                logger.error(f"[AUTO_MOVE] Failed to move {src}: {move_err}")
+                result['skipped'] += 1
+
+        conn.commit()
+        conn.close()
+
+        if result['moved'] > 0:
+            try:
+                trigger_navidrome_scan()
+            except Exception as scan_err:
+                logger.warning(f"[AUTO_MOVE] Could not trigger Navidrome scan: {scan_err}")
+
+        logger.info(
+            f"[AUTO_MOVE] Album complete: {dest_album_artist} – {dest_album} | "
+            f"moved={result['moved']}, already_copied={result['already_copied']}, "
+            f"skipped={result['skipped']}"
+        )
+        return result
+
+    except Exception as e:
+        logger.error(f"[AUTO_MOVE] Error in auto_move_completed_album: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        result['error'] = str(e)
+        return result

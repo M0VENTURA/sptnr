@@ -4386,6 +4386,7 @@ function renderCompletedQueue(completed) {
               <div class="ps-3 border-start">`;
         
         for (const item of group.items) {
+          const alreadyCopied = item.copied_individually;
           html += `
                 <div class="d-flex justify-content-between align-items-start py-2 border-bottom">
                   <div class="d-flex gap-2 flex-grow-1">
@@ -4393,28 +4394,40 @@ function renderCompletedQueue(completed) {
                     <div>
                       <small class="d-block">${escapeHtml(item.title)}</small>
                       <small class="text-muted">File: ${escapeHtml(item.found_filename || 'unknown')}</small>
+                      ${alreadyCopied ? '<small class="badge bg-info text-dark ms-1">Already Copied</small>' : ''}
                     </div>
                   </div>
                   <div class="d-flex gap-1 flex-wrap justify-content-end">
                     <button class="btn btn-sm btn-outline-primary" onclick="openEditTrackFromDownloads(${item.id})" title="Edit track metadata">
                       <i class="bi bi-pencil"></i>
                     </button>
-                    <button class="btn btn-sm btn-success" onclick="organizeFile(${item.id})" title="Move to /music">
-                      <i class="bi bi-folder-check"></i>
-                    </button>
+                    ${alreadyCopied
+                      ? '<span class="badge bg-info text-dark align-self-center"><i class="bi bi-check-circle"></i> Copied</span>'
+                      : `<button class="btn btn-sm btn-success" onclick="organizeFile(${item.id})" title="Copy to music library">
+                           <i class="bi bi-folder-check"></i> Copy
+                         </button>`
+                    }
                     <button class="btn btn-sm btn-outline-danger" onclick="deleteQueueItem(${item.id})">
                       <i class="bi bi-trash"></i>
                     </button>
                   </div>
                 </div>`;
         }
-        
+
+        // Count how many are already individually copied
+        const copiedCount = group.items.filter(i => i.copied_individually).length;
+        const pendingCount = group.items.length - copiedCount;
+        const organizeLabel = copiedCount > 0
+          ? `<i class="bi bi-folder-check"></i> Copy Remaining (${pendingCount})`
+          : `<i class="bi bi-folder-check"></i> Copy All to Library`;
+
         html += `
               </div>
             </div>
-            <div class="d-flex gap-2 mt-2 pt-2 border-top">
-              <button class="btn btn-sm btn-success flex-grow-1" onclick="organizeGroup('${group.groupId}')" title="Organize all in this group">
-                <i class="bi bi-folder-check"></i> Organize All
+            <div class="d-flex gap-2 mt-2 pt-2 border-top align-items-center">
+              ${copiedCount > 0 ? `<small class="text-muted me-auto"><i class="bi bi-check-circle text-info"></i> ${copiedCount} already copied</small>` : ''}
+              <button class="btn btn-sm btn-success${copiedCount > 0 ? '' : ' flex-grow-1'}" onclick="organizeGroup('${group.groupId}')" title="Copy remaining tracks to music library">
+                ${organizeLabel}
               </button>
               <button class="btn btn-sm btn-outline-danger" onclick="deleteGroup('${group.groupId}')">
                 <i class="bi bi-trash"></i> Delete All
@@ -4424,6 +4437,7 @@ function renderCompletedQueue(completed) {
       } else {
         // Show individual items
         for (const item of group.items) {
+          const alreadyCopied = item.copied_individually;
           html += `
           <div class="list-group-item">
             <div class="d-flex justify-content-between align-items-start">
@@ -4433,15 +4447,19 @@ function renderCompletedQueue(completed) {
                   <h6 class="mb-1">${escapeHtml(item.title)}</h6>
                   <p class="text-muted small mb-2">${escapeHtml(item.artist)}${item.album ? ' · ' + escapeHtml(item.album) : ''}</p>
                   <small class="text-muted">File: ${escapeHtml(item.found_filename || 'unknown')}</small>
+                  ${alreadyCopied ? '<br><span class="badge bg-info text-dark mt-1"><i class="bi bi-check-circle"></i> Already Copied</span>' : ''}
                 </div>
               </div>
               <div class="d-flex gap-2">
                 <button class="btn btn-sm btn-outline-primary" onclick="openEditTrackFromDownloads(${item.id})" title="Edit track metadata">
                   <i class="bi bi-pencil"></i> Edit
                 </button>
-                <button class="btn btn-sm btn-success" onclick="organizeFile(${item.id})" title="Move to /music">
-                  <i class="bi bi-folder-check"></i> Organize
-                </button>
+                ${alreadyCopied
+                  ? '<span class="badge bg-info text-dark align-self-center"><i class="bi bi-check-circle"></i> Copied</span>'
+                  : `<button class="btn btn-sm btn-success" onclick="organizeFile(${item.id})" title="Copy to music library">
+                       <i class="bi bi-folder-check"></i> Copy
+                     </button>`
+                }
                 <button class="btn btn-sm btn-outline-danger" onclick="deleteQueueItem(${item.id})">
                   <i class="bi bi-trash"></i>
                 </button>
@@ -4520,7 +4538,7 @@ function renderQueueItem(item, statusColor) {
     'queued': '⏳ Queued',
     'searching': '🔍 Searching',
     'downloading': '📥 Downloading',
-    'completed': '✅ Completed',
+    'completed': '✅ Downloaded',
     'imported': '📁 Imported',
     'failed': '❌ Failed'
   }[item.status] || item.status;
@@ -4532,7 +4550,19 @@ function renderQueueItem(item, statusColor) {
     'success': 'bg-success',
     'danger': 'bg-danger'
   }[statusColor] || 'bg-primary';
-  
+
+  // Show a file hint when the file has been matched
+  const fileHint = item.found_filename
+    ? `<small class="text-muted d-block">📎 ${escapeHtml(item.found_filename)}</small>`
+    : '';
+
+  // Show "Copy" button for completed items not yet individually copied
+  const copyBtn = (item.status === 'completed' && !item.copied_individually)
+    ? `<button class="btn btn-sm btn-outline-success" onclick="organizeFile(${item.id})" title="Copy to music library">
+         <i class="bi bi-folder-check"></i>
+       </button>`
+    : '';
+
   return `
     <div class="list-group-item">
       <div class="d-flex justify-content-between align-items-start">
@@ -4540,10 +4570,12 @@ function renderQueueItem(item, statusColor) {
           <h6 class="mb-1">${escapeHtml(item.title)}</h6>
           <p class="text-muted small mb-2">${escapeHtml(item.artist)}${item.album ? ' · ' + escapeHtml(item.album) : ''}</p>
           ${item.search_query ? `<small class="text-muted">Search: ${escapeHtml(item.search_query)}</small>` : ''}
+          ${fileHint}
         </div>
         <div class="d-flex gap-2 align-items-center">
           <span class="badge ${statusBg}">${statusLabel}</span>
           <span class="badge bg-secondary">${item.source}</span>
+          ${copyBtn}
           <button class="btn btn-sm btn-outline-danger" onclick="deleteQueueItem(${item.id})" title="Remove from queue">
             <i class="bi bi-x"></i>
           </button>
@@ -4554,7 +4586,7 @@ function renderQueueItem(item, statusColor) {
 }
 
 async function organizeFile(queueId) {
-  if (!confirm('Move file to /music?')) {
+  if (!confirm('Copy file to music library?')) {
     return;
   }
   
@@ -4572,10 +4604,13 @@ async function organizeFile(queueId) {
     const data = await response.json();
     
     if (data.success) {
-      alert('✅ File organized successfully!');
+      const msg = data.copied_individually
+        ? '✅ File copied to music library! (marked as individually copied)'
+        : '✅ File copied to music library!';
+      alert(msg);
       await loadQueueStatus();
     } else {
-      alert('❌ Error: ' + (data.error || 'Failed to organize'));
+      alert('❌ Error: ' + (data.error || 'Failed to copy file'));
     }
   } catch (error) {
     console.error('Error organizing file:', error);

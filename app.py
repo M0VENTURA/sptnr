@@ -10516,36 +10516,42 @@ def api_get_release_queue_items(release_id):
     try:
         conn = get_db()
         cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT id, artist, title, status, track_number, 
-                   found_filename, created_at, updated_at
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+
+        cursor.execute(f"""
+            SELECT id, artist, title, status, track_number,
+                   found_filename, file_path, copied_individually,
+                   copied_individually_at, created_at, updated_at
             FROM download_queue
-            WHERE release_id = ?
+            WHERE release_id = {placeholder}
             ORDER BY track_number
         """, (release_id,))
-        
+
         items = []
         for row in cursor.fetchall():
             items.append({
-                "id": row[0],
-                "artist": row[1],
-                "title": row[2],
-                "status": row[3],
-                "track_number": row[4],
-                "found_filename": row[5],
-                "created_at": row[6],
-                "updated_at": row[7]
+                "id": _row_get(row, 'id', 0),
+                "artist": _row_get(row, 'artist', 1),
+                "title": _row_get(row, 'title', 2),
+                "status": _row_get(row, 'status', 3),
+                "track_number": _row_get(row, 'track_number', 4),
+                "found_filename": _row_get(row, 'found_filename', 5),
+                "file_path": _row_get(row, 'file_path', 6),
+                "copied_individually": _row_get(row, 'copied_individually', 7, 0) == 1,
+                "copied_individually_at": _row_get(row, 'copied_individually_at', 8),
+                "created_at": _row_get(row, 'created_at', 9),
+                "updated_at": _row_get(row, 'updated_at', 10),
             })
-        
+
         conn.close()
-        
+
         return jsonify({
             "success": True,
             "count": len(items),
             "items": items
         })
-        
+
     except Exception as e:
         logging.error(f"[QUEUE_RELEASE] Error: {e}")
         return jsonify({"error": str(e)}), 500
@@ -10557,7 +10563,9 @@ def api_get_releases_status():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+
         # Get all active releases
         cursor.execute("""
             SELECT r.id, r.release_id, r.release_title, r.artist, 
@@ -10567,38 +10575,38 @@ def api_get_releases_status():
             WHERE r.status != 'completed'
             ORDER BY r.updated_at DESC
         """)
-        
+
         releases = []
         for row in cursor.fetchall():
-            release_id = row[1]
-            
+            release_id = _row_get(row, 'release_id', 1)
+
             # Get track count by status for this release
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT status, COUNT(*) as count
                 FROM musicbrainz_release_tracks
-                WHERE release_id = %s
+                WHERE release_id = {placeholder}
                 GROUP BY status
             """, (release_id,))
-            
+
             status_counts = {}
             for status_row in cursor.fetchall():
-                status_counts[status_row[0]] = status_row[1]
-            
-            total = row[5]
+                status_counts[_row_get(status_row, 'status', 0)] = _row_get(status_row, 'count', 1)
+
+            total = _row_get(row, 'total_tracks', 5) or 0
             ready_count = status_counts.get('ready_to_transfer', 0)
             organized_count = status_counts.get('organized', 0) or status_counts.get('found', 0)
             downloading_count = status_counts.get('downloading', 0)
             queued_count = status_counts.get('queued', 0) or status_counts.get('searching', 0)
-            
+
             releases.append({
-                "id": row[0],
+                "id": _row_get(row, 'id', 0),
                 "release_id": release_id,
-                "title": row[2],
-                "artist": row[3],
-                "year": row[4],
+                "title": _row_get(row, 'release_title', 2),
+                "artist": _row_get(row, 'artist', 3),
+                "year": _row_get(row, 'release_year', 4),
                 "total_tracks": total,
-                "monitoring_folder": row[6],
-                "status": row[7],
+                "monitoring_folder": _row_get(row, 'monitoring_folder_path', 6),
+                "status": _row_get(row, 'status', 7),
                 "track_counts": {
                     "queued": queued_count,
                     "downloading": downloading_count,
@@ -10611,18 +10619,18 @@ def api_get_releases_status():
                     "downloaded": organized_count + ready_count,
                     "total": total
                 },
-                "created_at": row[8],
-                "updated_at": row[9],
+                "created_at": _row_get(row, 'created_at', 8),
+                "updated_at": _row_get(row, 'updated_at', 9),
                 "all_matched": ready_count == total and total > 0
             })
-        
+
         conn.close()
         return jsonify({
             "success": True,
             "count": len(releases),
             "releases": releases
         })
-        
+
     except Exception as e:
         logging.error(f"[RELEASES_STATUS] Error: {e}")
         return jsonify({"error": str(e)}), 500
@@ -14346,36 +14354,43 @@ def api_queue_clear():
 
 @app.route("/api/queue/<int:queue_id>/organize", methods=["POST"])
 def api_queue_organize(queue_id):
-    """Move file from /downloads to /music"""
+    """Move a single file from /downloads to /music (individual copy).
+
+    Marks the item as ``copied_individually`` so the album auto-move can
+    recognise it as already done and skip it when the rest of the album
+    completes.
+    """
     try:
         import shutil
         from download_queue_manager import update_queue_item
-        
+
         conn = get_db()
         cursor = conn.cursor()
-        
+
         placeholder = "%s" if _is_postgres_connection(conn) else "?"
         cursor.execute(f"""
-            SELECT id, file_path, artist, album, title FROM download_queue WHERE id = {placeholder}
+            SELECT id, file_path, artist, album, title, release_id
+            FROM download_queue WHERE id = {placeholder}
         """, (queue_id,))
-        
+
         item = cursor.fetchone()
-        
+
         if not item:
             conn.close()
             return jsonify({"error": "Queue item not found"}), 404
-        
+
         if not item['file_path']:
             # No file path set - delete this orphaned item
             cursor.execute(f"DELETE FROM download_queue WHERE id = {placeholder}", (queue_id,))
             conn.commit()
             conn.close()
             return jsonify({"error": "File path missing - item removed from queue"}), 404
-        
+
         file_path = item['file_path']
         artist = item['artist'] or 'Unknown Artist'
         album = item['album'] or 'Unknown Album'
-        
+        release_id = item['release_id']
+
         if not os.path.exists(file_path):
             # File was deleted - remove from queue
             cursor.execute(f"DELETE FROM download_queue WHERE id = {placeholder}", (queue_id,))
@@ -14383,20 +14398,20 @@ def api_queue_organize(queue_id):
             conn.close()
             logging.info(f"[ORGANIZE] File no longer exists, removed from queue: {file_path}")
             return jsonify({"error": "File no longer exists - item removed from queue"}), 404
-        
+
         conn.close()
-        
-        logging.info(f"[ORGANIZE] Starting organization for queue {queue_id}: {file_path}")
-        
+
+        logging.info(f"[ORGANIZE] Starting individual copy for queue {queue_id}: {file_path}")
+
         # Get paths and create directory structure
         music_root = os.environ.get("MUSIC_ROOT", "/music")
         target_dir = os.path.join(music_root, artist, album)
         os.makedirs(target_dir, exist_ok=True)
-        
+
         # Get filename and handle duplicates
         filename = os.path.basename(file_path)
         target_path = os.path.join(target_dir, filename)
-        
+
         # If target exists, add suffix
         if os.path.exists(target_path):
             base, ext = os.path.splitext(filename)
@@ -14405,25 +14420,34 @@ def api_queue_organize(queue_id):
                 counter += 1
             target_path = os.path.join(target_dir, f"{base}_{counter}{ext}")
             logging.info(f"[ORGANIZE] Target file exists, using: {target_path}")
-        
+
         # Move file
         logging.info(f"[ORGANIZE] Moving file from {file_path} to {target_path}")
         shutil.move(file_path, target_path)
-        
+
         # Verify it moved
         if os.path.exists(target_path) and not os.path.exists(file_path):
             logging.info(f"[ORGANIZE] ✅ File moved successfully: {target_path}")
-            update_queue_item(queue_id, status='imported', file_path=target_path)
+            # Mark as imported AND as individually copied so the album auto-move
+            # knows this track is already done.
+            update_queue_item(
+                queue_id,
+                status='imported',
+                file_path=target_path,
+                copied_individually=1,
+                copied_individually_at=datetime.now().isoformat()
+            )
             return jsonify({
                 "success": True,
-                "message": "File organized successfully",
-                "target_path": target_path
+                "message": "File copied to library successfully",
+                "target_path": target_path,
+                "copied_individually": True
             })
         else:
             logging.error(f"[ORGANIZE] Move verification failed: target_exists={os.path.exists(target_path)}, original_exists={os.path.exists(file_path)}")
             update_queue_item(queue_id, status='failed', failure_reason='File move verification failed')
             return jsonify({"error": "File move verification failed"}), 400
-            
+
     except Exception as e:
         logging.error(f"[ORGANIZE] Error organizing file: {e}")
         log_debug(f"[ORGANIZE] Error organizing file: {e}")
@@ -14431,7 +14455,6 @@ def api_queue_organize(queue_id):
         logging.error(traceback.format_exc())
         log_debug(traceback.format_exc())
         return jsonify({"error": str(e)}), 400
-
 
 @app.route("/api/queue/organize-group", methods=["POST"])
 def api_queue_organize_group():
