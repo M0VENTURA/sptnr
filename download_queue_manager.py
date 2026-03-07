@@ -515,14 +515,14 @@ def update_queue_item(queue_id, **kwargs):
                                      (value, queue_id))
                         result = cursor.fetchone()
                         if result and result['cnt'] > 0:
-                            logger.warning(f"File path {value} already in use by another queue item, skipping update")
+                            logger.debug(f"File path {value} already in use by another queue item, skipping update")
                             continue
                     
                     updates.append(f"{key} = {placeholder}")
                     params.append(value)
             
             if not updates:
-                logger.warning(f"No valid fields to update for queue item {queue_id}")
+                logger.debug(f"No valid fields to update for queue item {queue_id}")
                 conn.close()
                 return None
             
@@ -534,7 +534,7 @@ def update_queue_item(queue_id, **kwargs):
             conn.commit()
             
             if cursor.rowcount == 0:
-                logger.warning(f"No rows updated for queue item {queue_id} - item may not exist")
+                logger.debug(f"No rows updated for queue item {queue_id} - item may not exist or was already processed")
                 conn.close()
                 return None
             
@@ -792,7 +792,7 @@ def check_downloads_folder():
                         'album': queue_item['album']
                     })
                 else:
-                    logger.warning(f"Failed to update queue item {queue_item['id']}")
+                    logger.debug(f"Could not update queue item {queue_item['id']} - item may have been processed already")
             else:
                 # Debug: show what we're looking for
                 search_query = queue_item.get('search_query', f"{queue_item.get('artist', '')} {queue_item.get('title', '')}")
