@@ -3720,11 +3720,66 @@ def api_artist_bio():
             WHERE name = {placeholder}
         """, (artist_name,))
         artist_row = cursor.fetchone()
+
+        # Also look up the artist's known external IDs from tracks for accuracy context
+        mb_artist_id = None
+        discogs_artist_id = None
+        try:
+            cursor.execute(f"""
+                SELECT MAX(musicbrainz_artist_id) AS mb_id, MAX(discogs_artist_id) AS discogs_id
+                FROM tracks
+                WHERE COALESCE(album_artist, artist) = {placeholder}
+                  AND (musicbrainz_artist_id IS NOT NULL AND musicbrainz_artist_id != ''
+                       OR discogs_artist_id IS NOT NULL AND discogs_artist_id != '')
+            """, (artist_name,))
+            ids_row = cursor.fetchone()
+            if ids_row:
+                mb_artist_id = ids_row['mb_id'] if isinstance(ids_row, dict) else ids_row[0]
+                discogs_artist_id = ids_row['discogs_id'] if isinstance(ids_row, dict) else ids_row[1]
+        except Exception as e:
+            logging.debug(f"[ARTIST BIO] Could not fetch artist IDs for {artist_name}: {e}")
+
+        # If no bio found by name but we have a MusicBrainz/Discogs ID, try ID-based lookup in artists table
+        if (not artist_row or not (artist_row['bio'] if isinstance(artist_row, dict) else artist_row[0])):
+            if mb_artist_id:
+                try:
+                    cursor.execute(f"""
+                        SELECT a.bio, a.image_url
+                        FROM artists a
+                        JOIN tracks t ON COALESCE(t.album_artist, t.artist) = a.name
+                        WHERE t.musicbrainz_artist_id = {placeholder}
+                          AND a.bio IS NOT NULL AND a.bio != ''
+                        LIMIT 1
+                    """, (mb_artist_id,))
+                    mb_row = cursor.fetchone()
+                    if mb_row:
+                        artist_row = mb_row
+                        logging.debug(f"[ARTIST BIO] Found bio via MusicBrainz ID {mb_artist_id} for {artist_name}")
+                except Exception as e:
+                    logging.debug(f"[ARTIST BIO] MusicBrainz ID bio fallback failed for {artist_name}: {e}")
+
+            if (not artist_row or not (artist_row['bio'] if isinstance(artist_row, dict) else artist_row[0])) and discogs_artist_id:
+                try:
+                    cursor.execute(f"""
+                        SELECT a.bio, a.image_url
+                        FROM artists a
+                        JOIN tracks t ON COALESCE(t.album_artist, t.artist) = a.name
+                        WHERE t.discogs_artist_id = {placeholder}
+                          AND a.bio IS NOT NULL AND a.bio != ''
+                        LIMIT 1
+                    """, (discogs_artist_id,))
+                    discogs_row = cursor.fetchone()
+                    if discogs_row:
+                        artist_row = discogs_row
+                        logging.debug(f"[ARTIST BIO] Found bio via Discogs ID {discogs_artist_id} for {artist_name}")
+                except Exception as e:
+                    logging.debug(f"[ARTIST BIO] Discogs ID bio fallback failed for {artist_name}: {e}")
+
         conn.close()
         
         if artist_row:
-            bio = artist_row['bio'] if artist_row['bio'] else ""
-            image_url = artist_row['image_url'] if artist_row['image_url'] else ""
+            bio = (artist_row['bio'] if isinstance(artist_row, dict) else artist_row[0]) or ""
+            image_url = (artist_row['image_url'] if isinstance(artist_row, dict) else artist_row[1]) or ""
             
             # Clean up the biography text (for old cached data with artist IDs)
             if bio:
@@ -3736,7 +3791,9 @@ def api_artist_bio():
             return jsonify({
                 "bio": cleaned_bio,
                 "source": "Database (from scan)",
-                "image_url": image_url
+                "image_url": image_url,
+                "musicbrainz_artist_id": mb_artist_id,
+                "discogs_artist_id": discogs_artist_id
             })
         else:
             # Artist not in database yet - return empty with helpful message
@@ -3744,7 +3801,9 @@ def api_artist_bio():
             return jsonify({
                 "bio": "",
                 "source": "Not yet populated (run Scan Artist button to fetch)",
-                "image_url": ""
+                "image_url": "",
+                "musicbrainz_artist_id": mb_artist_id,
+                "discogs_artist_id": discogs_artist_id
             })
         
     except Exception as e:

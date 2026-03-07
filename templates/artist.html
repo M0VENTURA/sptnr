@@ -716,6 +716,13 @@
             </button>
           </li>
           {% endif %}
+          <li class="nav-item" role="presentation">
+            <button class="nav-link" id="mb-download-tab" data-bs-toggle="tab" data-bs-target="#mb-download-content"
+                    type="button" role="tab" aria-controls="mb-download-content" aria-selected="false"
+                    onclick="onMbDownloadTabClick()">
+              <i class="bi bi-disc"></i> MusicBrainz
+            </button>
+          </li>
         </ul>
 
         <!-- Tabs Content -->
@@ -771,6 +778,27 @@
             <div id="slskdResults"></div>
           </div>
           {% endif %}
+
+          <!-- MusicBrainz Search Tab -->
+          <div class="tab-pane fade" id="mb-download-content" role="tabpanel" aria-labelledby="mb-download-tab">
+            <div class="mb-3">
+              <div class="input-group">
+                <input type="text" class="form-control" id="mbDownloadSearchInput" placeholder="Search artist or release on MusicBrainz..." onkeypress="if(event.key==='Enter') performMbDownloadSearch()">
+                <button class="btn btn-info" onclick="performMbDownloadSearch()">
+                  <i class="bi bi-search"></i> Search
+                </button>
+              </div>
+              <div class="form-text">Search MusicBrainz for releases to add to your download queue</div>
+            </div>
+            <div id="mbDownloadLoading" class="text-center py-4" style="display: none;">
+              <div class="spinner-border text-info" role="status">
+                <span class="visually-hidden">Searching MusicBrainz...</span>
+              </div>
+              <p class="mt-2">Searching MusicBrainz...</p>
+            </div>
+            <div id="mbDownloadError" class="alert alert-danger" style="display:none;"></div>
+            <div id="mbDownloadResults"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -1122,6 +1150,15 @@ function openDownloadSearch(artistName, albumName) {
     // Clear track queue section
     document.getElementById('slskdTracksContainer').innerHTML = '';
   }
+
+  // Pre-fill MusicBrainz search input
+  const mbDownloadInput = document.getElementById('mbDownloadSearchInput');
+  if (mbDownloadInput) {
+    mbDownloadInput.value = query;
+    document.getElementById('mbDownloadResults').innerHTML = '';
+    const mbDownloadError = document.getElementById('mbDownloadError');
+    if (mbDownloadError) mbDownloadError.style.display = 'none';
+  }
   
   const modal = new bootstrap.Modal(document.getElementById('downloadModal'));
   modal.show();
@@ -1139,6 +1176,113 @@ function openDownloadSearch(artistName, albumName) {
       performSlskdSearch();
     }
   }, 300);
+}
+
+function onMbDownloadTabClick() {
+  // Auto-search when MusicBrainz tab is clicked if input is pre-filled
+  const mbDownloadInput = document.getElementById('mbDownloadSearchInput');
+  const mbDownloadResults = document.getElementById('mbDownloadResults');
+  if (mbDownloadInput && mbDownloadInput.value && mbDownloadResults && !mbDownloadResults.innerHTML.trim()) {
+    performMbDownloadSearch();
+  }
+}
+
+async function performMbDownloadSearch() {
+  const input = document.getElementById('mbDownloadSearchInput');
+  const loadingDiv = document.getElementById('mbDownloadLoading');
+  const errorDiv = document.getElementById('mbDownloadError');
+  const resultsDiv = document.getElementById('mbDownloadResults');
+
+  if (!input || !loadingDiv || !errorDiv || !resultsDiv) return;
+
+  const query = input.value.trim();
+  if (!query) return;
+
+  loadingDiv.style.display = 'block';
+  errorDiv.style.display = 'none';
+  resultsDiv.innerHTML = '';
+
+  try {
+    const response = await fetch('/api/musicbrainz/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query })
+    });
+    const data = await response.json();
+    loadingDiv.style.display = 'none';
+
+    if (data.error) {
+      errorDiv.textContent = 'Search error: ' + data.error;
+      errorDiv.style.display = 'block';
+      return;
+    }
+
+    const releases = data.releases || [];
+    if (releases.length === 0) {
+      resultsDiv.innerHTML = `<div class="alert alert-info"><i class="bi bi-info-circle"></i> No releases found for "${escapeHtml(query)}".</div>`;
+      return;
+    }
+
+    let html = '<div class="row g-3">';
+    releases.forEach(release => {
+      const coverArt = release.cover_art_url || 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22150%22 height=%22150%22%3E%3Crect fill=%22%23333%22 width=%22150%22 height=%22150%22/%3E%3C/svg%3E';
+      const releaseDate = release.first_release_date || 'Unknown';
+      const releaseType = release.category || release.primary_type || 'Release';
+      const artistName = release.artist || 'Unknown Artist';
+
+      html += `
+        <div class="col-12 col-sm-6 col-md-4">
+          <div class="card h-100">
+            <img src="${escapeHtml(coverArt)}" class="card-img-top" alt="${escapeHtml(release.title)}" loading="lazy" style="height: 150px; object-fit: cover;" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22150%22 height=%22150%22%3E%3Crect fill=%22%23333%22 width=%22150%22 height=%22150%22/%3E%3C/svg%3E'">
+            <div class="card-body d-flex flex-column">
+              <h6 class="card-title text-truncate">${escapeHtml(release.title)}</h6>
+              <p class="card-text small text-muted mb-2">
+                <span class="badge bg-secondary">${escapeHtml(releaseType)}</span>
+                <span class="badge bg-info ms-1">${escapeHtml(releaseDate)}</span>
+              </p>
+              <div class="mt-auto">
+                <button class="btn btn-sm btn-primary w-100" onclick="downloadMbRelease('${escapeHtml(release.id)}', '${escapeHtml(release.title)}', '${escapeHtml(artistName)}', 'slskd')">
+                  <i class="bi bi-download"></i> Add to Queue
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    });
+    html += '</div>';
+    resultsDiv.innerHTML = html;
+  } catch (error) {
+    loadingDiv.style.display = 'none';
+    errorDiv.textContent = 'Network error: ' + error.message;
+    errorDiv.style.display = 'block';
+  }
+}
+
+function downloadMbRelease(releaseId, releaseTitle, artist, method) {
+  const safeTitle = String(releaseTitle || '').replace(/"/g, '\\"');
+  const safeArtist = String(artist || '').replace(/"/g, '\\"');
+  if (!confirm(`Add "${safeTitle}" by ${safeArtist} to download queue?`)) return;
+  fetch('/api/musicbrainz/download', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      release_id: releaseId,
+      release_title: releaseTitle,
+      artist: artist,
+      method: method || 'slskd',
+      persistent_search: false
+    })
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.error) {
+      alert('Error: ' + data.error);
+    } else {
+      alert(`✅ Download queued: ${releaseTitle}`);
+    }
+  })
+  .catch(err => alert('Network error: ' + err.message));
 }
 
 function showSlskdTrackQueueOption() {
@@ -3749,10 +3893,7 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
       return;
     }
     
-    // Initialize with collapsed view
-    let isExpanded = false;
-    
-    // Minimized list view
+    // Minimized list view - render immediately with no images to keep initial load fast
     const minimizedHtml = `
       <div id="artistSimilarArtistsMinimized">
         <div class="d-flex justify-content-between align-items-center mb-3">
@@ -3771,33 +3912,45 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
       </div>
     `;
     
-    // Expanded grid view
-    let expandedHtml = `
-      <div id="artistSimilarArtistsExpanded" style="display: none;">
+    // Expanded grid view placeholder - images are loaded lazily when user expands
+    const expandedHtml = `
+      <div id="artistSimilarArtistsExpanded" style="display: none;" data-loaded="false">
         <div class="d-flex justify-content-between align-items-center mb-3">
           <strong>${uniqueArtists.length} similar artists</strong>
           <button class="btn btn-sm btn-outline-primary" onclick="toggleSimilarArtistsExpand()">
             <i class="bi bi-chevron-up"></i> Collapse
           </button>
         </div>
-        <div class="row g-3">
+        <div class="row g-3" id="artistSimilarArtistsGrid"></div>
+      </div>
     `;
     
+    // Combine both views (expanded images are NOT loaded yet)
+    container.innerHTML = minimizedHtml + expandedHtml;
+    
+    // Store artist data for lazy expand
+    window.artistSimilarArtistsData = uniqueArtists;
+  }
+
+  function buildSimilarArtistsExpandedGrid(uniqueArtists) {
+    const grid = document.getElementById('artistSimilarArtistsGrid');
+    if (!grid) return;
+    let html = '';
     uniqueArtists.forEach(artist => {
       const matchPercent = artist.match ? Math.round(artist.match * 100) : 0;
-      const matchBadge = matchPercent > 0 ? `<span class="badge bg-success position-absolute" style="top: 8px; right: 8px;">${matchPercent}%</span>` : '';
+      const matchBadge = matchPercent > 0 ? `<span class="badge bg-success position-absolute" style="top: 8px; right: 8px;">${escapeHtml(String(matchPercent))}%</span>` : '';
       const sourceBadge = artist.source === 'lastfm' 
         ? '<span class="badge bg-primary" title="From Last.fm">Last.fm</span>'
         : '<span class="badge bg-info" title="From ListenBrainz">ListenBrainz</span>';
       const artistImageUrl = `/api/artist/image?name=${encodeURIComponent(artist.name)}`;
       
-      expandedHtml += `
+      html += `
         <div class="col-6 col-md-4 col-lg-3">
           <div class="card h-100 overflow-hidden" style="cursor: pointer; position: relative;">
             ${matchBadge}
             <!-- Artist Card Image/Avatar -->
             <div style="aspect-ratio: 1; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); display: flex; align-items: center; justify-content: center; position: relative;">
-              <img src="${artistImageUrl}" alt="${escapeHtml(artist.name)}" style="width: 100%; height: 100%; object-fit: cover;" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+              <img src="${artistImageUrl}" alt="${escapeHtml(artist.name)}" loading="lazy" style="width: 100%; height: 100%; object-fit: cover;" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
               <i class="bi bi-person-circle" style="font-size: 3rem; color: white; opacity: 0.8; display: none;"></i>
             </div>
             
@@ -3817,8 +3970,8 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
                 <a href="javascript:void(0)" onclick="navigateToArtist('${escapeHtml(artist.name)}', event)" class="btn btn-outline-primary btn-sm" title="View in library">
                   <i class="bi bi-eye"></i> View
                 </a>
-                <a href="/downloads/search?q=${encodeURIComponent(artist.name)}" class="btn btn-outline-secondary btn-sm" title="Download">
-                  <i class="bi bi-download"></i> Download
+                <a href="javascript:void(0)" onclick="openArtistMusicBrainzLookup('${escapeHtml(artist.name)}')" class="btn btn-outline-secondary btn-sm" title="Search releases">
+                  <i class="bi bi-search"></i> Search
                 </a>
                 <a href="https://www.last.fm/music/${encodeURIComponent(artist.name)}" target="_blank" class="btn btn-outline-info btn-sm" title="View on Last.fm">
                   <i class="bi bi-box-arrow-up-right"></i> Last.fm
@@ -3829,18 +3982,7 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
         </div>
       `;
     });
-    
-    expandedHtml += `
-        </div>
-      </div>
-    `;
-    
-    // Combine both views
-    const html = minimizedHtml + expandedHtml;
-    container.innerHTML = html;
-    
-    // Store artist data for toggle function
-    window.artistSimilarArtistsData = uniqueArtists;
+    grid.innerHTML = html;
   }
   
   function toggleSimilarArtistsExpand() {
@@ -3851,6 +3993,11 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
       if (expanded.style.display === 'none') {
         minimized.style.display = 'none';
         expanded.style.display = 'block';
+        // Lazily build the expanded grid on first expand to avoid eager image loading
+        if (expanded.getAttribute('data-loaded') === 'false' && window.artistSimilarArtistsData) {
+          buildSimilarArtistsExpandedGrid(window.artistSimilarArtistsData);
+          expanded.setAttribute('data-loaded', 'true');
+        }
       } else {
         minimized.style.display = 'block';
         expanded.style.display = 'none';

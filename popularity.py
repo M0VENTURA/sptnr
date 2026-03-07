@@ -3222,12 +3222,14 @@ def popularity_scan(
                                         
                                         lastfm_client = LastFmClient(lastfm_config.get("api_key"))
                                         
-                                        # Fetch artist info from Last.fm
+                                        # Fetch artist info from Last.fm, using MusicBrainz ID when
+                                        # available for more accurate matching
                                         artist_info = _run_with_timeout(
                                             lastfm_client.get_artist_info,
                                             8,
                                             "Last.fm artist info lookup timed out after 8s",
-                                            artist
+                                            artist,
+                                            artist_mbid or ""
                                         )
                                         
                                         lastfm_bio = artist_info.get("bio", "") or artist_info.get("bio_text", "")
@@ -3263,7 +3265,7 @@ def popularity_scan(
                                 if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
                                     from api_clients.lastfm import LastFmClient
                                     lastfm_client = LastFmClient(lastfm_config.get("api_key"))
-                                    artist_info = lastfm_client.get_artist_info(artist)
+                                    artist_info = lastfm_client.get_artist_info(artist, artist_mbid or "")
                                     lastfm_bio = artist_info.get("bio", "") or artist_info.get("bio_text", "")
                                     if lastfm_bio:
                                         cursor.execute(f"""
@@ -3322,7 +3324,8 @@ def popularity_scan(
                                     lastfm_client.get_artist_info,
                                     8,
                                     "Last.fm artist info lookup timed out after 8s",
-                                    artist
+                                    artist,
+                                    artist_mbid or ""
                                 )
 
                                 artist_bio = artist_info.get("bio", "") or artist_info.get("bio_text", "") or ""

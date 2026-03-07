@@ -1328,12 +1328,13 @@ class LastFmClient:
             logger.error(f"Failed to fetch Last.fm recommended tracks: {e}")
             return []
 
-    def get_artist_info(self, artist: str) -> dict:
+    def get_artist_info(self, artist: str, mbid: str = "") -> dict:
         """
         Fetch artist bio and info from Last.fm.
         
         Args:
             artist: Artist name
+            mbid: Optional MusicBrainz artist ID for more accurate matching
             
         Returns:
             Dict with 'bio' (HTML string), 'bio_text' (plain text), 'image' (URL), 'similar' (list of similar artists)
@@ -1344,10 +1345,14 @@ class LastFmClient:
         
         params = {
             "method": "artist.getInfo",
-            "artist": artist,
             "api_key": self.api_key,
             "format": "json"
         }
+        # Use MusicBrainz ID when available for accurate matching; fall back to name
+        if mbid:
+            params["mbid"] = mbid
+        else:
+            params["artist"] = artist
         
         try:
             res = self.session.get(self.base_url, params=params, timeout=(5, 10))
