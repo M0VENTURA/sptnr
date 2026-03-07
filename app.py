@@ -2526,9 +2526,9 @@ def artist_detail(name):
             cursor.execute(f"SELECT country, image_url, bio FROM artists WHERE name = {placeholder}", (name,))
             artist_row = cursor.fetchone()
             if artist_row:
-                artist_country = artist_row[0] if artist_row[0] else None
-                artist_image_url = artist_row[1] if artist_row[1] else None
-                artist_bio = artist_row[2] if artist_row[2] else None
+                artist_country = artist_row['country'] if artist_row['country'] else None
+                artist_image_url = artist_row['image_url'] if artist_row['image_url'] else None
+                artist_bio = artist_row['bio'] if artist_row['bio'] else None
         except Exception as e:
             logging.debug(f"Error fetching artist metadata: {e}")
         
@@ -3482,10 +3482,10 @@ def api_apply_country_as_genre():
         cursor.execute(f"SELECT country FROM artists WHERE name = {placeholder}", (artist_name,))
         artist_row = cursor.fetchone()
         
-        if not artist_row or not artist_row[0]:
+        if not artist_row or not artist_row['country']:
             return jsonify({"error": "No country information available for this artist"}), 404
         
-        country = artist_row[0]
+        country = artist_row['country']
         
         # Get all tracks by this artist with file paths
         cursor.execute(f"SELECT id, file_path, genre FROM tracks WHERE artist = {placeholder}", (artist_name,))
