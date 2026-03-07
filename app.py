@@ -2868,18 +2868,18 @@ def api_artist_exists():
     try:
         conn = get_db()
         cursor = conn.cursor()
+        placeholder = "%s" if _is_postgres_connection(conn) else "?"
         
         # Check if artist exists using the same logic as the artist listing page
         # Look for artist as main artist or album artist
-        cursor.execute("""
-            SELECT COUNT(*) FROM tracks 
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? 
-            LIMIT 1
+        cursor.execute(f"""
+            SELECT COUNT(*) AS cnt FROM tracks 
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
         """, (artist,))
         result = cursor.fetchone()
         conn.close()
         
-        exists = result[0] > 0 if result else False
+        exists = result['cnt'] > 0 if result else False
         
         return jsonify({
             "exists": exists,
@@ -2905,22 +2905,22 @@ def api_artist_missing_releases():
     artist_mbid = None
     try:
         cursor.execute(f"""
-            SELECT MAX(musicbrainz_artist_id) FROM tracks WHERE artist = {placeholder}
+            SELECT MAX(musicbrainz_artist_id) AS mbid FROM tracks WHERE artist = {placeholder}
         """, (artist,))
         row = cursor.fetchone()
-        if row and row[0]:
-            artist_mbid = row[0]
+        if row and row['mbid']:
+            artist_mbid = row['mbid']
     except:
         pass
     
     cursor.execute(f"""
         SELECT DISTINCT album FROM tracks WHERE artist = {placeholder}
     """, (artist,))
-    existing_albums = [row[0] for row in cursor.fetchall()]
+    existing_albums = [row['album'] for row in cursor.fetchall()]
     cursor.execute(f"""
         SELECT release_id FROM missing_releases WHERE artist = {placeholder}
     """, (artist,))
-    existing_missing = {row[0] for row in cursor.fetchall()}
+    existing_missing = {row['release_id'] for row in cursor.fetchall()}
     conn.close()
 
     existing_norm = {_normalize_release_title(a) for a in existing_albums if a}
@@ -3849,7 +3849,7 @@ def api_artist_image():
         is_pg = _is_postgres_connection(conn)
         placeholder = "%s" if is_pg else "?"
         
-        # Return cached image URL from database only - no online calls
+        # First check artists table (populated by scans)
         cursor.execute(f"""
             SELECT image_url 
             FROM artists 
@@ -3860,14 +3860,32 @@ def api_artist_image():
             LIMIT 1
         """, (artist_name, artist_name))
         row = cursor.fetchone()
-        conn.close()
         
         if row and row['image_url']:
-            # Redirect to the stored image URL
+            conn.close()
             logging.debug(f"[ARTIST IMAGE] Found image for {artist_name}")
             return redirect(row['image_url'])
-        else:
-            logging.debug(f"[ARTIST IMAGE] No image for {artist_name} - run scan to fetch")
+        
+        # Fall back to artist_images table (populated by manual image selection)
+        try:
+            cursor.execute(f"""
+                SELECT image_url
+                FROM artist_images
+                WHERE LOWER(artist_name) = LOWER({placeholder})
+                    AND image_url IS NOT NULL
+                    AND image_url != ''
+                LIMIT 1
+            """, (artist_name,))
+            img_row = cursor.fetchone()
+            if img_row and img_row['image_url']:
+                conn.close()
+                logging.debug(f"[ARTIST IMAGE] Found image in artist_images for {artist_name}")
+                return redirect(img_row['image_url'])
+        except Exception as e:
+            logging.debug(f"[ARTIST IMAGE] artist_images lookup failed for {artist_name}: {e}")
+        
+        conn.close()
+        logging.debug(f"[ARTIST IMAGE] No image for {artist_name} - run scan to fetch")
         
     except Exception as e:
         logging.error(f"[ARTIST IMAGE] Error fetching image for {artist_name}: {e}")
@@ -9049,13 +9067,14 @@ def api_musicbrainz_search():
         try:
             conn = get_db()
             cursor = conn.cursor()
+            placeholder = "%s" if _is_postgres_connection(conn) else "?"
             
             # Search for artists matching the query
             query_pattern = f"%{query}%"
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT DISTINCT artist, release_id, title, primary_type, first_release_date, cover_art_url, category
                 FROM missing_releases
-                WHERE artist LIKE ? OR title LIKE ?
+                WHERE artist LIKE {placeholder} OR title LIKE {placeholder}
                 ORDER BY artist, first_release_date DESC
                 LIMIT 50
             """, (query_pattern, query_pattern))
@@ -9065,17 +9084,23 @@ def api_musicbrainz_search():
             
             # Add local results
             for row in local_results:
-                artist, release_id, title, primary_type, first_release_date, cover_art_url, category = row
+                artist_name = row['artist']
+                release_id = row['release_id']
+                title = row['title']
+                primary_type = row['primary_type']
+                first_release_date = row['first_release_date']
+                cover_art_url = row['cover_art_url']
+                category = row['category']
                 
                 # Create unique ID to check for duplicates
-                result_id = f"{artist}_{release_id}"
+                result_id = f"{artist_name}_{release_id}"
                 if result_id not in seen_ids:
                     seen_ids.add(result_id)
                     releases.append({
                         "id": release_id,
                         "title": title,
-                        "artist": artist,
-                        "artist-credit": [{"name": artist}],
+                        "artist": artist_name,
+                        "artist-credit": [{"name": artist_name}],
                         "primary_type": primary_type,
                         "first_release_date": first_release_date,
                         "cover_art_url": cover_art_url,

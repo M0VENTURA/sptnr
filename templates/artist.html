@@ -1963,8 +1963,8 @@ async function searchMusicBrainzRelease(event, artist, album) {
     });
     const data = await response.json();
 
-    // Match Upcoming Releases behavior: use MusicBrainz results as soon as any are found.
-    if (data.success && data.results && data.results.length >= 1) {
+    // Match Upcoming Releases behavior: try Discogs fallback when MusicBrainz has fewer than 3 results.
+    if (data.success && data.results && data.results.length >= 3) {
       statusEl.style.display = 'none';
       displayMusicBrainzResults(data.results);
       return;
