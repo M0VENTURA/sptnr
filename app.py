@@ -3900,11 +3900,10 @@ def api_artist_image():
                                 updated_at = CURRENT_TIMESTAMP
                         """, (artist_name, image_url))
                     else:
-                        from datetime import datetime as _dt
                         cursor.execute("""
                             INSERT OR REPLACE INTO artist_images (artist_name, image_url, updated_at)
                             VALUES (?, ?, ?)
-                        """, (artist_name, image_url, _dt.now().isoformat()))
+                        """, (artist_name, image_url, datetime.now().isoformat()))
                     conn.commit()
                 except Exception as cache_err:
                     logging.debug(f"[ARTIST IMAGE] Failed to cache AudioDB image for {artist_name}: {cache_err}")
@@ -12206,7 +12205,7 @@ def api_album_tracklist():
                     for track_obj in media[0].get("tracks", []):
                         recording = track_obj.get("recording", {})
                         tracklist.append({
-                            "position": str(track_obj.get("position", "")),
+                            "position": track_obj.get("position", ""),
                             "title": recording.get("title", "Unknown"),
                             "artist": " feat. ".join([a.get("name", "") for a in recording.get("artist-credit", []) if a.get("name")])
                         })
