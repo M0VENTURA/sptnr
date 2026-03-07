@@ -22,6 +22,7 @@
             class="form-control" 
             placeholder="Search for artists, albums, or songs..."
             autofocus
+            autocomplete="off"
           />
           <button type="submit" class="btn btn-primary">
             <i class="bi bi-search"></i> Search
@@ -184,12 +185,19 @@
 </style>
 
 <script>
+  let searchDebounceTimer = null;
+
   async function performSearch(event) {
-    event.preventDefault();
+    if (event) event.preventDefault();
     
     const query = document.getElementById('searchQuery').value.trim();
     if (!query) return;
     
+    // Update URL without page reload so the query can be shared/bookmarked
+    const url = new URL(window.location);
+    url.searchParams.set('q', query);
+    window.history.replaceState({}, '', url);
+
     const searchResults = document.getElementById('searchResults');
     const emptyState = document.getElementById('emptyState');
     
@@ -391,12 +399,44 @@
     return div.innerHTML;
   }
   
-  // Allow Enter key to trigger search
-  document.getElementById('searchQuery').addEventListener('keypress', function(event) {
-    if (event.key === 'Enter') {
-      performSearch(event);
+  // Debounced live search: trigger search 500ms after the user stops typing
+  document.getElementById('searchQuery').addEventListener('input', function() {
+    clearTimeout(searchDebounceTimer);
+    const query = this.value.trim();
+    if (query.length >= 2) {
+      searchDebounceTimer = setTimeout(() => performSearch(null), 500);
+    } else if (query.length === 0) {
+      // Clear results when input is cleared
+      document.getElementById('searchResults').style.display = 'none';
+      document.getElementById('emptyState').style.display = 'block';
+      document.getElementById('emptyState').innerHTML = `
+        <div class="row">
+          <div class="col-12">
+            <div class="card text-center">
+              <div class="card-body py-5">
+                <i class="bi bi-search" style="font-size: 3rem; color: var(--text-secondary); margin-bottom: 1rem; display: block;"></i>
+                <h5 class="text-secondary">Start searching</h5>
+                <p class="text-tertiary">Enter an artist name, album, or song title to find results</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+      const url = new URL(window.location);
+      url.searchParams.delete('q');
+      window.history.replaceState({}, '', url);
     }
   });
+
+  // Pre-fill and auto-execute search from URL query parameter
+  (function() {
+    const initialQuery = {{ initial_query | tojson }};
+    if (initialQuery) {
+      const input = document.getElementById('searchQuery');
+      input.value = initialQuery;
+      performSearch(null);
+    }
+  })();
 </script>
 
 {% endblock %}
