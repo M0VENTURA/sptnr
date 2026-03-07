@@ -3483,6 +3483,13 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
         artistGenresLoaded = true;
       }
       loadSimilarArtistsForArtist(artistName);
+      
+      // Clear similar artists cache when a scan is triggered so fresh data loads afterwards
+      document.querySelectorAll('form[action*="scan_start"]').forEach(form => {
+        form.addEventListener('submit', function() {
+          sessionStorage.removeItem(`similarArtists_${artistName}`);
+        });
+      });
     } else {
       // If no artist data, show error in both containers
       const genreContainer = document.getElementById('artistGenreSourcesContainer');
@@ -3643,6 +3650,19 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
 
   // Similar Artists Loading
   async function loadSimilarArtistsForArtist(artist) {
+    // Check sessionStorage cache first to avoid reloading on every page visit
+    const cacheKey = `similarArtists_${artist}`;
+    const cached = sessionStorage.getItem(cacheKey);
+    if (cached) {
+      try {
+        const cachedData = JSON.parse(cached);
+        displayArtistSimilarArtists(cachedData);
+        return;
+      } catch (e) {
+        sessionStorage.removeItem(cacheKey);
+      }
+    }
+
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
     
@@ -3659,6 +3679,12 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
       }
       
       const data = await response.json();
+      // Cache the response so subsequent page visits don't reload
+      try {
+        sessionStorage.setItem(cacheKey, JSON.stringify(data));
+      } catch (e) {
+        // sessionStorage might be full; ignore
+      }
       displayArtistSimilarArtists(data);
     } catch (error) {
       clearTimeout(timeoutId);

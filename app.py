@@ -3841,11 +3841,7 @@ def api_artist_image():
     """Get artist image from database cache only (fetched during scans, not real-time online)"""
     artist_name = request.args.get("name", "").strip()
     if not artist_name:
-        svg = '''<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200">
-            <rect fill="#2a2a2a" width="200" height="200"/>
-            <text x="50%" y="50%" text-anchor="middle" dy=".3em" fill="#666" font-size="16">No Image</text>
-        </svg>'''
-        return Response(svg, mimetype='image/svg+xml')
+        return Response("", status=404)
     
     try:
         conn = get_db()
@@ -3876,12 +3872,8 @@ def api_artist_image():
     except Exception as e:
         logging.error(f"[ARTIST IMAGE] Error fetching image for {artist_name}: {e}")
     
-    # Return placeholder if no cached image
-    svg = '''<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200">
-        <rect fill="#2a2a2a" width="200" height="200"/>
-        <text x="50%" y="50%" text-anchor="middle" dy=".3em" fill="#666" font-size="16">No Image</text>
-    </svg>'''
-    return Response(svg, mimetype='image/svg+xml')
+    # Return 404 when no cached image - allows frontend onerror handlers to show fallback icons
+    return Response("", status=404)
 
 
 @app.route("/api/artist/search-images")

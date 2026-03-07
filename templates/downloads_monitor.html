@@ -293,41 +293,6 @@
     </div>
   </div>
 
-  <!-- Active Queue (hidden - queue is rendered inline with folder groups) -->
-  <div class="card mb-4" style="display:none;">
-    <div class="card-header d-flex justify-content-between align-items-center">
-      <h5 class="card-title mb-0">
-        <i class="bi bi-hourglass-split"></i> Active Queue
-      </h5>
-      <span class="badge bg-success" id="activeBadge" style="display:none">0</span>
-    </div>
-    <div class="card-body p-0">
-      <div id="activeQueueEmpty" class="alert alert-info alert-sm mb-0">
-        <i class="bi bi-info-circle"></i> No active downloads. Add one above!
-      </div>
-      <div id="activeQueueList" style="display:none">
-        <!-- Active items rendered here -->
-      </div>
-    </div>
-  </div>
-
-  <!-- Failed Queue (hidden - queue is rendered inline with folder groups) -->
-  <div class="card" style="display:none;">
-    <div class="card-header d-flex justify-content-between align-items-center">
-      <h5 class="card-title mb-0">
-        <i class="bi bi-exclamation-circle"></i> Failed Downloads
-      </h5>
-      <span class="badge bg-danger" id="failedBadge" style="display:none">0</span>
-    </div>
-    <div class="card-body p-0">
-      <div id="failedQueueEmpty" class="alert alert-info alert-sm mb-0">
-        <i class="bi bi-info-circle"></i> No failed downloads.
-      </div>
-      <div id="failedQueueList" style="display:none">
-        <!-- Failed items rendered here -->
-      </div>
-    </div>
-  </div>
 </div>
 
 <style>
@@ -712,7 +677,6 @@ function saveExpandedFolderGroupState() {
 loadExpandedFolderGroupState();
 let folderStatusData = {}; // Tracks completion status from database
 let lastFolderGroupsRenderSignature = null;
-let lastActiveQueueSignature = null;
 let folderGroupsRequestInFlight = false;
 
 function encodeInlineArg(value) {
@@ -2522,186 +2486,9 @@ async function loadQueueStatus() {
     document.getElementById('queueFailedCount').textContent = failed.length;
     document.getElementById('queueTotalCount').textContent = queue.length;
     
-    // Keep counts only; queue rows are rendered inline inside folder groups section.
-    const activeContainer = document.getElementById('activeQueueList');
-    const activeEmpty = document.getElementById('activeQueueEmpty');
-    const activeBadge = document.getElementById('activeBadge');
-    const failedContainer = document.getElementById('failedQueueList');
-    const failedEmpty = document.getElementById('failedQueueEmpty');
-    const failedBadge = document.getElementById('failedBadge');
-    if (activeContainer) activeContainer.style.display = 'none';
-    if (activeEmpty) activeEmpty.style.display = 'none';
-    if (activeBadge) activeBadge.style.display = 'none';
-    if (failedContainer) failedContainer.style.display = 'none';
-    if (failedEmpty) failedEmpty.style.display = 'none';
-    if (failedBadge) failedBadge.style.display = 'none';
-    
   } catch (error) {
     console.error('Error loading queue status:', error);
   }
-}
-
-function renderActiveQueue(active) {
-  const container = document.getElementById('activeQueueList');
-  const empty = document.getElementById('activeQueueEmpty');
-  const badge = document.getElementById('activeBadge');
-
-  if (active.length === 0) {
-    container.style.display = 'none';
-    empty.style.display = 'block';
-    badge.style.display = 'none';
-    return;
-  }
-
-  container.style.display = 'block';
-  empty.style.display = 'none';
-  badge.textContent = active.length;
-  badge.style.display = 'inline-block';
-
-  const nextSignature = JSON.stringify(active.map(item => ({
-    id: item.id,
-    status: item.status,
-    title: item.title,
-    artist: item.artist,
-    album: item.album,
-    source: item.source,
-    exists_in_library: item.exists_in_library,
-    retry_count: item.retry_count,
-    mb_match_candidates: item.mb_match_candidates
-  })));
-
-  if (nextSignature === lastActiveQueueSignature) {
-    return;
-  }
-
-  // Group items by album
-  const grouped = groupByAlbum(active);
-  const pendingRenderedAlbums = new Set();
-  
-  // Initialize expanded state from sessionStorage
-  const expandedState = JSON.parse(sessionStorage.getItem('activeQueueExpandedAlbums') || '{}');
-
-  let html = '<div class="list-group list-group-flush">';
-  
-  for (const group of grouped) {
-    const isExpanded = expandedState[group.key] !== false; // Default to expanded
-    const groupAttrKey = encodeURIComponent(group.key || '');
-    const toggleId = `toggle-${makeSafeDomId(group.key || '')}`;
-    const groupKeyEnc = encodeInlineArg(group.key || '');
-    const groupAttrKeyEnc = encodeInlineArg(groupAttrKey);
-    
-    // Album group header
-    html += `
-      <div class="list-group-item active-album-header border-bottom-0 py-2">
-        <div class="d-flex justify-content-between align-items-center">
-          <div class="d-flex align-items-center flex-grow-1 gap-2 cursor-pointer" onclick="toggleAlbumGroupFromEncoded('${toggleId}', '${groupKeyEnc}', '${groupAttrKeyEnc}')">
-            <i class="bi ${isExpanded ? 'bi-chevron-down' : 'bi-chevron-right'} expand-chevron" id="chevron-${toggleId}"></i>
-            <div>
-              <div class="fw-semibold">${escapeHtml(group.album || '(No Album)')}</div>
-              <div class="small text-muted">${escapeHtml(group.artist)} · ${group.items.length} ${group.items.length === 1 ? 'song' : 'songs'}</div>
-            </div>
-          </div>
-          <div class="d-flex gap-2">
-            <button class="btn btn-sm btn-outline-danger" onclick="deleteAlbumGroupFromEncoded('${groupAttrKeyEnc}')" title="Delete all songs from this album">
-              <i class="bi bi-trash"></i> Delete Album
-            </button>
-          </div>
-        </div>
-      </div>
-    `;
-    
-    // Items in group: always render, but hide when collapsed so expand works instantly.
-    for (const item of group.items) {
-        const statusLabel = {
-          'queued': '⏳ Queued',
-          'searching': '🔍 Searching',
-          'downloading': '📥 Downloading',
-          'discovered': '📁 Discovered',
-          'possible_duplicate': '⚠️ Possible Duplicate',
-          'pending_match': '🧠 Match Review'
-        }[item.status] || item.status;
-
-        const existsInLibrary = item.exists_in_library === 1;
-        const isPossibleDuplicate = item.status === 'possible_duplicate';
-        const isPendingMatch = item.status === 'pending_match';
-        const albumKey = `${item.artist || ''}|||${item.album || ''}`;
-
-        let candidateHtml = '';
-        if (isPendingMatch && !pendingRenderedAlbums.has(albumKey)) {
-          pendingRenderedAlbums.add(albumKey);
-
-          const artistEnc = encodeInlineArg(item.artist || '');
-          const albumEnc = encodeInlineArg(item.album || '');
-          const titleEnc = encodeInlineArg(item.title || '');
-
-          let candidates = [];
-          try {
-            const rawCandidates = item.mb_match_candidates || '[]';
-            candidates = typeof rawCandidates === 'string' ? JSON.parse(rawCandidates) : (rawCandidates || []);
-          } catch (e) {
-            candidates = [];
-          }
-
-          const candidateRows = candidates.slice(0, 3).map(c => {
-            const releaseGroupIdEnc = encodeInlineArg(c.release_group_id || '');
-            return `
-            <div class="d-flex justify-content-between align-items-center border rounded p-2 mb-2">
-              <div>
-                <div><strong>${escapeHtml(c.title || 'Unknown')}</strong> ${c.year ? `<span class="text-muted">(${escapeHtml(c.year)})</span>` : ''}</div>
-                <div class="small text-muted">${escapeHtml(c.artist || item.artist || '')} · overlap ${Math.round((c.track_overlap || 0) * 100)}% · confidence ${Math.round((c.confidence || 0) * 100)}%</div>
-              </div>
-              <button class="btn btn-sm btn-primary" onclick="applyMusicBrainzMatchFromEncoded('${artistEnc}','${albumEnc}','${releaseGroupIdEnc}')">
-                Use Match
-              </button>
-            </div>
-          `;
-          }).join('');
-
-          candidateHtml = `
-            <div class="mt-2 p-2 border rounded bg-light-subtle">
-              <div class="small fw-semibold mb-2">MusicBrainz could not find a 100% match automatically. Choose one:</div>
-              ${candidateRows || '<div class="small text-muted mb-2">No close MusicBrainz candidates found.</div>'}
-              <div class="d-flex gap-2 flex-wrap">
-                <button class="btn btn-sm btn-success" onclick="useExistingMetadataFromEncoded('${artistEnc}','${albumEnc}')">
-                  <i class="bi bi-file-earmark-music"></i> Use Existing File Metadata
-                </button>
-                <button class="btn btn-sm btn-outline-info" onclick="searchOtherSourcesFromEncoded('${artistEnc}','${titleEnc}', true)">
-                  <i class="bi bi-search"></i> Search Other Sources
-                </button>
-              </div>
-            </div>
-          `;
-        }
-
-        html += `
-          <div class="list-group-item ${existsInLibrary || isPossibleDuplicate ? 'bg-light' : ''} border-top-0" data-album-group="${groupAttrKey}" data-item-id="${item.id}" style="display: ${isExpanded ? '' : 'none'};">
-            <div class="d-flex justify-content-between align-items-start">
-              <div class="flex-grow-1">
-                <h6 class="mb-1 ms-4">
-                  ${escapeHtml(item.title)}
-                  ${existsInLibrary ? '<small class="text-muted"><i class="bi bi-check-circle-fill ms-2" title="Already in library"></i></small>' : ''}
-                  ${isPossibleDuplicate ? '<small class="text-warning"><i class="bi bi-exclamation-triangle-fill ms-2" title="Duplicate album detected"></i></small>' : ''}
-                </h6>
-                <p class="text-muted small mb-2 ms-4">${escapeHtml(item.artist)}${item.album ? ' · ' + escapeHtml(item.album) : ''}</p>
-                ${isPossibleDuplicate ? '<p class="text-warning small mb-0 ms-4"><i class="bi bi-info-circle"></i> This album already exists in your library. Manual review required.</p>' : ''}
-                ${candidateHtml}
-              </div>
-              <div class="d-flex gap-2 align-items-center flex-shrink-0">
-                <span class="badge ${item.status === 'downloading' ? 'bg-success text-dark' : item.status === 'discovered' ? 'bg-info' : isPossibleDuplicate ? 'bg-warning' : isPendingMatch ? 'bg-secondary' : 'bg-success'}">${statusLabel}</span>
-                <span class="badge bg-secondary">${item.source || 'unknown'}</span>
-                <button class="btn btn-sm btn-outline-danger" onclick="deleteQueueItem(${item.id})" title="Remove from queue">
-                  <i class="bi bi-x"></i>
-                </button>
-              </div>
-            </div>
-          </div>
-        `;
-    }
-  }
-  
-  html += '</div>';
-  container.innerHTML = html;
-  lastActiveQueueSignature = nextSignature;
 }
 
 function toggleAlbumGroupFromEncoded(toggleId, groupKeyEnc, groupAttrKeyEnc) {
@@ -2783,51 +2570,6 @@ async function deleteAlbumGroup(groupAttrKey) {
     console.error('Error deleting album group:', error);
     alert('❌ Error: ' + error.message);
   }
-}
-
-function renderFailedQueue(failed) {
-  const container = document.getElementById('failedQueueList');
-  const empty = document.getElementById('failedQueueEmpty');
-  const badge = document.getElementById('failedBadge');
-  
-  if (failed.length === 0) {
-    container.style.display = 'none';
-    empty.style.display = 'block';
-    badge.style.display = 'none';
-    return;
-  }
-  
-  container.style.display = 'block';
-  empty.style.display = 'none';
-  badge.textContent = failed.length;
-  badge.style.display = 'inline-block';
-  
-  let html = '<div class="list-group list-group-flush">';
-  for (const item of failed) {
-    html += `
-      <div class="list-group-item">
-        <div class="d-flex justify-content-between align-items-start">
-          <div class="flex-grow-1">
-            <h6 class="mb-1">${escapeHtml(item.title)}</h6>
-            <p class="text-muted small mb-2">${escapeHtml(item.artist)}${item.album ? ' · ' + escapeHtml(item.album) : ''}</p>
-            <small class="text-danger">❌ ${escapeHtml(item.failure_reason || 'Unknown error')}</small>
-            <br>
-            <small class="text-muted">Attempts: ${item.retry_count || 0}/${item.max_retries || 3}</small>
-          </div>
-          <div class="d-flex gap-2">
-            <button class="btn btn-sm btn-outline-warning" onclick="retryQueueItem(${item.id})" title="Retry now">
-              <i class="bi bi-arrow-counterclockwise"></i> Retry
-            </button>
-            <button class="btn btn-sm btn-outline-danger" onclick="deleteQueueItem(${item.id})">
-              <i class="bi bi-trash"></i>
-            </button>
-          </div>
-        </div>
-      </div>
-    `;
-  }
-  html += '</div>';
-  container.innerHTML = html;
 }
 
 async function organizeFile(queueId) {
