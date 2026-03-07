@@ -1406,6 +1406,9 @@ async function loadFolderGroups(options = {}) {
       is_musicbrainz_release: false
     }));
     
+    // Combine release groups and individual queue items into a single list.
+    const queueGroups = [...releaseQueueGroups, ...individualQueueGroups];
+
     // Build a lookup map from real folder groups: normalised "artist|album" -> folder_path
     // This lets each queue item show its matched download folder.
     const folderLookup = {};
