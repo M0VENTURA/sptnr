@@ -2037,7 +2037,8 @@ def artists():
 @app.route("/search")
 def search():
     """Search page for artists, albums, and tracks"""
-    return render_template("search.html")
+    query = request.args.get("q", "").strip()
+    return render_template("search.html", initial_query=query)
 
 
 @app.route("/api/search", methods=["POST"])
@@ -2056,21 +2057,28 @@ def api_search():
         collate_nocase = "" if is_pg else " COLLATE NOCASE"
         placeholder = "%s" if is_pg else "?"
         
-        # Prepare search pattern for LIKE queries
-        search_pattern = f"%{query}%"
+        # Prepare search patterns: exact, starts-with, contains
+        exact_pattern = query
+        starts_pattern = f"{query}%"
+        contains_pattern = f"%{query}%"
         
-        # Search artists
+        # Search artists - ranked by: exact match > starts-with > contains, then by track count
         cursor.execute(f"""
             SELECT 
                 artist as name,
                 COUNT(DISTINCT album) as album_count,
-                COUNT(*) as track_count
+                COUNT(*) as track_count,
+                CASE
+                    WHEN LOWER(artist) = {placeholder} THEN 0
+                    WHEN LOWER(artist) LIKE {placeholder} THEN 1
+                    ELSE 2
+                END as match_rank
             FROM tracks
-            WHERE LOWER(artist) LIKE LOWER({placeholder})
+            WHERE LOWER(artist) LIKE {placeholder}
             GROUP BY artist
-            ORDER BY track_count DESC
+            ORDER BY match_rank ASC, track_count DESC
             LIMIT 20
-        """, (search_pattern,))
+        """, (exact_pattern, starts_pattern, contains_pattern))
         artists_results = [
             {
                 "name": row["name"],
@@ -2080,19 +2088,24 @@ def api_search():
             for row in cursor.fetchall()
         ]
         
-        # Search albums
+        # Search albums - ranked by: exact match > starts-with > contains, then by track count
         cursor.execute(f"""
             SELECT 
                 artist,
                 album,
                 COUNT(*) as track_count,
-                AVG(stars) as avg_stars
+                AVG(stars) as avg_stars,
+                CASE
+                    WHEN LOWER(album) = {placeholder} THEN 0
+                    WHEN LOWER(album) LIKE {placeholder} THEN 1
+                    ELSE 2
+                END as match_rank
             FROM tracks
-            WHERE LOWER(album) LIKE LOWER({placeholder})
+            WHERE LOWER(album) LIKE {placeholder}
             GROUP BY artist, album
-            ORDER BY track_count DESC
+            ORDER BY match_rank ASC, track_count DESC
             LIMIT 20
-        """, (search_pattern,))
+        """, (exact_pattern, starts_pattern, contains_pattern))
         albums_results = [
             {
                 "artist": row["artist"],
@@ -2103,19 +2116,25 @@ def api_search():
             for row in cursor.fetchall()
         ]
         
-        # Search tracks
+        # Search tracks - ranked by: exact title match > starts-with > contains, then by stars
         cursor.execute(f"""
             SELECT 
                 id,
                 title,
                 artist,
                 album,
-                stars
+                stars,
+                CASE
+                    WHEN LOWER(title) = {placeholder} THEN 0
+                    WHEN LOWER(title) LIKE {placeholder} THEN 1
+                    WHEN LOWER(title) LIKE {placeholder} THEN 2
+                    ELSE 3
+                END as match_rank
             FROM tracks
-            WHERE LOWER(title) LIKE LOWER({placeholder}) OR LOWER(artist) LIKE LOWER({placeholder})
-            ORDER BY stars DESC, title{collate_nocase}
+            WHERE LOWER(title) LIKE {placeholder} OR LOWER(artist) LIKE {placeholder}
+            ORDER BY match_rank ASC, stars DESC, title{collate_nocase}
             LIMIT 50
-        """, (search_pattern, search_pattern))
+        """, (exact_pattern, starts_pattern, contains_pattern, contains_pattern, contains_pattern))
         tracks_results = [
             {
                 "id": row["id"],

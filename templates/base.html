@@ -996,9 +996,21 @@
             </a>
           </li>
           <li class="nav-item">
-            <a class="nav-link" href="{{ url_for('search') }}">
-              <i class="bi bi-search"></i> Search
-            </a>
+            <form class="d-flex" id="navSearchForm" onsubmit="navSearch(event)">
+              <div class="input-group input-group-sm" style="width: 220px;">
+                <input
+                  type="text"
+                  id="navSearchInput"
+                  class="form-control form-control-sm"
+                  placeholder="Search library…"
+                  autocomplete="off"
+                  aria-label="Search library"
+                />
+                <button class="btn btn-outline-secondary btn-sm" type="submit" title="Search">
+                  <i class="bi bi-search"></i>
+                </button>
+              </div>
+            </form>
           </li>
           <li class="nav-item dropdown">
             <a class="nav-link dropdown-toggle" href="#" id="artistsDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
@@ -1443,6 +1455,14 @@
         // Continue anyway
         updateAlbumsSequentially(folders, index + 1, onComplete);
       });
+    }
+
+    function navSearch(event) {
+      event.preventDefault();
+      const query = document.getElementById('navSearchInput').value.trim();
+      if (query) {
+        window.location.href = '/search?q=' + encodeURIComponent(query);
+      }
     }
   </script>
 </body>
