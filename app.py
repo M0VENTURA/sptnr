@@ -2674,6 +2674,12 @@ def artist_detail(name):
                 albums_by_category["unknown"].append(album_dict)
                 categorized_albums.add(album_name)
         
+        # SAFETY: Remove live albums from non-live categories to prevent duplicates
+        live_album_names = set(a.get('album', '').lower() for a in albums_by_category.get("live_album", []))
+        for cat in ["album", "ep", "single", "unknown"]:
+            if live_album_names:
+                albums_by_category[cat] = [a for a in albums_by_category[cat] if a.get('album', '').lower() not in live_album_names]
+
         # Process compilation albums
         for album in compilation_albums:
             album_dict = dict(album)
@@ -2712,6 +2718,12 @@ def artist_detail(name):
             else:
                 missing_by_category["album"].append(release_dict)
         
+        # SAFETY: Remove live albums from missing releases in wrong categories
+        missing_live_names = set(a.get('title', '').lower() for a in missing_by_category.get("live_album", []))
+        for cat in ["album", "ep", "single"]:
+            if missing_live_names:
+                missing_by_category[cat] = [a for a in missing_by_category[cat] if a.get('title', '').lower() not in missing_live_names]
+
         # Merge discovered and missing albums by category, then sort by release date
         merged_albums_by_category = {}
         for category in ["album", "compilation", "live_album", "ep", "single", "unknown"]:
