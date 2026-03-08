@@ -2019,40 +2019,48 @@ def detect_single_for_track(
             cursor = conn.cursor()
             
             # STAGE 1: Album-level filter (must be album standout)
-            cursor.execute(f"""
-                SELECT popularity_score 
-                FROM tracks 
-                WHERE artist = {placeholder} AND album = {placeholder} AND popularity_score > 0
-            """, (artist, album))
-            album_popularities = [row['popularity_score'] for row in cursor.fetchall()]
-            
-            album_passed = True
-            if album_popularities:
-                from statistics import stdev as stat_stdev, median as stat_median
-                album_median = stat_median(album_popularities)
-                album_stddev = stdev(album_popularities) if len(album_popularities) > 1 else 0
+            # Skip this filter for compilations and greatest hits albums (all tracks are hits)
+            is_compilation_or_greatest_hits = (
+                album_type in ["various_artists", "greatest_hits", "compilation"] or
+                is_compilation_type(album_type)
+            )
+
+            if is_compilation_or_greatest_hits:
+                if verbose:
+                    log_verbose(f"   ⓘ Skipping album popularity filter for compilation/greatest hits album")
+            else:
+                cursor.execute(f"""
+                    SELECT popularity_score 
+                    FROM tracks 
+                    WHERE artist = {placeholder} AND album = {placeholder} AND popularity_score > 0
+                """, (artist, album))
+                album_popularities = [row['popularity_score'] for row in cursor.fetchall()]
                 
-                # Must be in top 3 of album OR above album median - 0.5*stddev
-                sorted_album = sorted(album_popularities, reverse=True)
-                is_top_3_album = popularity in sorted_album[:3]
-                album_threshold = album_median - (0.5 * album_stddev) if album_stddev > 0 else album_median
-                meets_album_threshold = popularity >= album_threshold
-                
-                if not (is_top_3_album or meets_album_threshold):
-                    if verbose:
-                        log_verbose(f"   ⊗ Album filter blocked: {title} (pop {popularity:.1f}, album median {album_median:.1f})")
-                    conn.close()
-                    return {
-                        "sources": [],
-                        "confidence": "low",
-                        "is_single": False,
-                        "stage_blocked": "album_filter"
-                    }
+                album_passed = True
+                if album_popularities:
+                    from statistics import stdev as stat_stdev, median as stat_median
+                    album_median = stat_median(album_popularities)
+                    album_stddev = stdev(album_popularities) if len(album_popularities) > 1 else 0
+                    
+                    # Must be in top 3 of album OR above album median - 0.5*stddev
+                    sorted_album = sorted(album_popularities, reverse=True)
+                    is_top_3_album = popularity in sorted_album[:3]
+                    album_threshold = album_median - (0.5 * album_stddev) if album_stddev > 0 else album_median
+                    meets_album_threshold = popularity >= album_threshold
+                    
+                    if not (is_top_3_album or meets_album_threshold):
+                        if verbose:
+                            log_verbose(f"   ⊗ Album filter blocked: {title} (pop {popularity:.1f}, album median {album_median:.1f})")
+                        conn.close()
+                        return {
+                            "sources": [],
+                            "confidence": "low",
+                            "is_single": False,
+                            "stage_blocked": "album_filter"
+                        }
             
             # STAGE 2: Artist-level filter (must be artist standout)
             # Skip this filter for compilations and greatest hits albums
-            is_compilation_or_greatest_hits = album_type in ["various_artists", "greatest_hits", "compilation"]
-            
             if is_compilation_or_greatest_hits:
                 if verbose:
                     log_verbose(f"   ⓘ Skipping artist z-score filter for compilation/greatest hits album")
@@ -6078,8 +6086,36 @@ def popularity_scan(
                                     single_downgrades.append(track_id)
                             else:
                                 # Negative z-score
-                                stars = 3
-                                log_info(f"3-star assignment: {title} (negative zscore={track_zscore:.2f})")
+                                # For greatest hits/compilation albums, bypass the z-score
+                                # requirement when there is sufficient detection evidence
+                                # (same gates as the z >= 0 branch).
+                                is_greatest_hits_or_compilation_album = (
+                                    album_type in ("greatest_hits", "various_artists", "compilation") or
+                                    is_compilation or
+                                    is_compilation_type(album_type)
+                                )
+                                if is_greatest_hits_or_compilation_album and (medium_conf_count >= 2 or high_conf_source_count >= 1):
+                                    stars = 5
+                                    if not is_single:
+                                        single_upgrades.append(track_id)
+                                        log_info(
+                                            f"5-star assignment: {title} "
+                                            f"(evidence={medium_conf_count}, high_sources={high_conf_source_count}, "
+                                            f"z-score={track_zscore:.2f}, greatest-hits/compilation) - upgraded to single"
+                                        )
+                                    else:
+                                        log_info(
+                                            f"5-star assignment: {title} "
+                                            f"(evidence={medium_conf_count}, high_sources={high_conf_source_count}, "
+                                            f"z-score={track_zscore:.2f}, greatest-hits/compilation)"
+                                        )
+                                    log_debug(
+                                        f"Evidence gate passed (greatest-hits/compilation, negative z) - track_id: {track_id}, "
+                                        f"sources: {medium_conf_count}, high_sources: {high_conf_source_count}, zscore: {track_zscore:.2f}"
+                                    )
+                                else:
+                                    stars = 3
+                                    log_info(f"3-star assignment: {title} (negative zscore={track_zscore:.2f})")
 
                             # Popularity-only 5★ must be recomputed every scan from current z-score,
                             # never from persisted confidence flags.
