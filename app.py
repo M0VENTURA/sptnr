@@ -5163,11 +5163,8 @@ def _get_artists_in_collection(cursor, names, placeholder):
             WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) IN ({in_clause})
         """, [n.lower() for n in names])
         rows = cursor.fetchall()
-        return {
-            (row["artist_name"] if isinstance(row, dict) else row[0]).lower()
-            for row in rows
-            if (row["artist_name"] if isinstance(row, dict) else row[0])
-        }
+        get_name = lambda row: row["artist_name"] if isinstance(row, dict) else row[0]
+        return {get_name(row).lower() for row in rows if get_name(row)}
     except Exception:
         return set()
 

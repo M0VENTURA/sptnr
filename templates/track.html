@@ -1357,7 +1357,7 @@ function displaySimilarArtists(data) {
                                     <i class="bi bi-three-dots-vertical"></i>
                                 </button>
                                 <ul class="dropdown-menu dropdown-menu-end" style="min-width: auto;">
-                                    <li><button class="dropdown-item" onclick="searchMusicBrainzForAllReleasesTrack('${escapeHtml(a.name).replace(/'/g, "\\'")}')"><i class="bi bi-download"></i> Find Releases</button></li>
+                                    <li><button class="dropdown-item" data-artist-mb="${escapeHtml(a.name)}" data-action="find-releases-track"><i class="bi bi-download"></i> Find Releases</button></li>
                                     <li><a class="dropdown-item" href="https://www.last.fm/music/${encodeURIComponent(a.name)}" target="_blank"><i class="bi bi-box-arrow-up-right"></i> Last.fm</a></li>
                                 </ul>
                             </div>
@@ -1373,8 +1373,15 @@ function displaySimilarArtists(data) {
     }
 
     container.innerHTML = html;
-}
 
+    // Attach event listeners for find-releases buttons (XSS-safe)
+    container.querySelectorAll('[data-action="find-releases-track"]').forEach(btn => {
+        btn.addEventListener('click', function () {
+            const artistName = this.getAttribute('data-artist-mb');
+            if (artistName) searchMusicBrainzForAllReleasesTrack(artistName);
+        });
+    });
+}
 const mergeFieldCandidates = {
     mbid: [
         { source: 'Beets MBID', value: {{ track.beets_mbid|tojson }} },
