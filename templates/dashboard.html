@@ -628,9 +628,9 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     function updateRecentScans() {
-        fetch('/api/recent-scans')
-            .then(response => response.json())
+        fetchJsonOrThrow('/api/recent-scans')
             .then(data => {
+                clearApiError('/api/recent-scans');
                 const payload = data.scans || [];
                 const serialized = JSON.stringify(payload);
                 if (serialized !== lastRenderedRecentScans) {
@@ -638,7 +638,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     renderRecentScans(payload);
                 }
             })
-            .catch(error => console.error('Error fetching recent scans:', error));
+            .catch(error => logApiError('/api/recent-scans', 'Error fetching recent scans', error));
     }
 
     // Render initial recent scans
@@ -646,9 +646,9 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Poll scan status
     function updateScanStatus() {
-        fetch('/api/scan-status')
-            .then(response => response.json())
+        fetchJsonOrThrow('/api/scan-status')
             .then(data => {
+                clearApiError('/api/scan-status');
                 let navRunning = false;
                 // Update badge and progress container visibility based on running status
                 document.querySelectorAll('.scan-badge').forEach(badge => {
@@ -682,7 +682,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     }
                 }
             })
-            .catch(error => console.error('Error fetching scan status:', error));
+            .catch(error => logApiError('/api/scan-status', 'Error fetching scan status', error));
     }
     
     // Track which scans are currently running
@@ -690,9 +690,9 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Poll scan progress and update unified progress bar
     function updateIndividualScanProgress() {
-        fetch('/api/scan-progress')
-            .then(response => response.json())
+        fetchJsonOrThrow('/api/scan-progress')
             .then(data => {
+                clearApiError('/api/scan-progress');
                 // Get unified progress bar elements
                 const progressBar = document.getElementById('unified-progress-bar');
                 const progressPercent = document.getElementById('unified-progress-percent');
@@ -837,7 +837,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 startButtons.forEach(btn => btn.disabled = true);
                 if (stopButton) stopButton.style.display = 'block';
             })
-            .catch(error => console.error('Error fetching scan progress:', error));
+            .catch(error => logApiError('/api/scan-progress', 'Error fetching scan progress', error));
     }
     
     // Update unified log area
@@ -852,9 +852,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
     function updateUnifiedLog() {
         if (logPaused) return;
-        fetch('/api/unified-log?lines=1000')
-            .then(response => response.json())
+        fetchJsonOrThrow('/api/unified-log?lines=1000')
             .then(data => {
+                clearApiError('/api/unified-log?lines=1000');
                 const logEl = document.getElementById('unifiedLog');
                 if (logEl && data && data.lines) {
                     // textContent handles HTML escaping safely - no manual escaping needed
@@ -862,7 +862,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     logEl.scrollTop = logEl.scrollHeight;
                 }
             })
-            .catch(error => console.error('Error fetching unified log:', error));
+            .catch(error => logApiError('/api/unified-log?lines=1000', 'Error fetching unified log', error));
     }
 
     // Combined update function to reduce API calls
@@ -880,6 +880,44 @@ document.addEventListener('DOMContentLoaded', function() {
     setInterval(updateAll, 3000);
 });
 
+const dashboardApiErrorState = new Map();
+
+function _summarizeTextForError(text, maxLen = 120) {
+    const compact = String(text || '').replace(/\s+/g, ' ').trim();
+    return compact.length > maxLen ? compact.slice(0, maxLen) + '...' : compact;
+}
+
+async function fetchJsonOrThrow(url, options = {}) {
+    const response = await fetch(url, options);
+    const contentType = (response.headers.get('content-type') || '').toLowerCase();
+
+    if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        const detail = _summarizeTextForError(text);
+        throw new Error(`HTTP ${response.status} ${response.statusText}${detail ? ` :: ${detail}` : ''}`);
+    }
+
+    if (!contentType.includes('application/json')) {
+        const text = await response.text().catch(() => '');
+        const detail = _summarizeTextForError(text);
+        throw new Error(`Expected JSON but received '${contentType || 'unknown'}'${detail ? ` :: ${detail}` : ''}`);
+    }
+
+    return response.json();
+}
+
+function logApiError(endpoint, label, error) {
+    const current = String(error && error.message ? error.message : error);
+    if (dashboardApiErrorState.get(endpoint) !== current) {
+        dashboardApiErrorState.set(endpoint, current);
+        console.error(`${label}:`, error);
+    }
+}
+
+function clearApiError(endpoint) {
+    dashboardApiErrorState.delete(endpoint);
+}
+
 // Switch between Navidrome users
 function switchUser(userIndex) {
     // Store selected user in session/localStorage
@@ -892,10 +930,10 @@ function switchUser(userIndex) {
 // Load selected user on page load
 async function loadUpcomingReleasesBanner() {
     try {
-        const response = await fetch('/api/upcoming-releases?collection=true');
-        const data = await response.json();
+        const data = await fetchJsonOrThrow('/api/upcoming-releases?collection=true');
+        clearApiError('/api/upcoming-releases?collection=true');
         
-        if (!response.ok || !data.releases || data.releases.length === 0) {
+        if (!data.releases || data.releases.length === 0) {
             document.getElementById('upcomingBannerContent').innerHTML = `
                 <p class="text-muted text-center"><i class="bi bi-info-circle"></i> No upcoming releases from artists in your collection.</p>
             `;
@@ -949,7 +987,7 @@ async function loadUpcomingReleasesBanner() {
         document.getElementById('upcomingBannerContent').innerHTML = html;
         
     } catch (error) {
-        console.error('Error loading upcoming releases:', error);
+        logApiError('/api/upcoming-releases?collection=true', 'Error loading upcoming releases', error);
         document.getElementById('upcomingBannerContent').innerHTML = `
             <p class="text-muted text-center text-danger"><i class="bi bi-exclamation-triangle"></i> Error loading releases</p>
         `;
@@ -973,8 +1011,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
 async function checkQueueProcessorStatus() {
     try {
-        const response = await fetch('/api/queue-processor/status');
-        const data = await response.json();
+        const data = await fetchJsonOrThrow('/api/queue-processor/status');
+        clearApiError('/api/queue-processor/status');
         
         const statusBadge = document.getElementById('processorStatusBadge');
         const statusContent = document.getElementById('processorStatusContent');
@@ -1034,7 +1072,7 @@ async function checkQueueProcessorStatus() {
             restartBtn.classList.remove('btn-primary');
         }
     } catch (error) {
-        console.error('Error checking queue processor status:', error);
+        logApiError('/api/queue-processor/status', 'Error checking queue processor status', error);
         document.getElementById('processorStatusBadge').innerHTML = '<span class="badge bg-secondary">Error</span>';
         document.getElementById('processorStatusContent').innerHTML = `
             <p class="text-danger mb-0"><i class="bi bi-exclamation-circle"></i> Failed to check processor status</p>
@@ -1049,15 +1087,14 @@ async function restartQueueProcessor() {
     try {
         btn.disabled = true;
         btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Restarting...';
-        
-        const response = await fetch('/api/queue-processor/restart', {
+
+        const data = await fetchJsonOrThrow('/api/queue-processor/restart', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             }
         });
-        
-        const data = await response.json();
+        clearApiError('/api/queue-processor/restart');
         
         if (data.success) {
             btn.innerHTML = '<i class="bi bi-check-circle"></i> Restarted!';
@@ -1080,7 +1117,7 @@ async function restartQueueProcessor() {
             }, 3000);
         }
     } catch (error) {
-        console.error('Error restarting processor:', error);
+        logApiError('/api/queue-processor/restart', 'Error restarting processor', error);
         btn.innerHTML = '<i class="bi bi-exclamation-circle"></i> Error!';
         btn.classList.add('btn-danger');
         

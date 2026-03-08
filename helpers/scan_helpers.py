@@ -4,7 +4,9 @@
 import logging
 import json
 import os
+import re
 import time
+import unicodedata
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from .db_utils import get_db_connection, _is_postgres_connection
@@ -42,6 +44,126 @@ def _now_local_iso() -> str:
         return datetime.now(ZoneInfo(LOCAL_TZ)).isoformat()
     except Exception:
         return datetime.now().isoformat()
+
+
+def _normalize_artist_key(value: str) -> str:
+    """Normalize artist text for matching equivalent variants."""
+    if not value:
+        return ""
+    text = unicodedata.normalize("NFKD", str(value))
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    text = text.lower()
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return " ".join(text.split())
+
+
+def _clean_artist_name_for_storage(value: str) -> str:
+    """Conservative canonicalization for artist/album_artist fields."""
+    if not value:
+        return ""
+
+    cleaned = " ".join(str(value).strip().split())
+    if not cleaned:
+        return ""
+
+    # Collapse repeated bullet-separated forms: "X • X" -> "X"
+    parts = [p.strip() for p in re.split(r"\s*[•·]+\s*", cleaned) if p.strip()]
+    if len(parts) > 1:
+        part_keys = {_normalize_artist_key(p) for p in parts}
+        if len(part_keys) == 1:
+            cleaned = parts[0]
+
+    # Normalize pure alpha-numeric all-caps/all-lower variants (e.g. EELS/eels -> Eels).
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9' .-]*", cleaned):
+        letters = re.sub(r"[^A-Za-z]+", "", cleaned)
+        if letters and (letters.islower() or letters.isupper()):
+            cleaned = cleaned.title()
+
+    return " ".join(cleaned.split())
+
+
+def _normalize_existing_artist_rows(conn, canonical_artist_name: str, aliases: list[str] | None = None) -> int:
+    """Rewrite known case/variant aliases for a scanned artist to one canonical value."""
+    if not canonical_artist_name:
+        return 0
+
+    canonical_key = _normalize_artist_key(canonical_artist_name)
+    if not canonical_key:
+        return 0
+
+    cursor = conn.cursor()
+    is_pg = _is_postgres_connection(conn)
+    placeholder = "%s" if is_pg else "?"
+    updates = 0
+
+    alias_candidates = set(a for a in (aliases or []) if a)
+    alias_candidates.update({
+        canonical_artist_name,
+        canonical_artist_name.lower(),
+        canonical_artist_name.upper(),
+        canonical_artist_name.title(),
+    })
+
+    for original in alias_candidates:
+        if not original:
+            continue
+        if _normalize_artist_key(original) != canonical_key:
+            continue
+        if original == canonical_artist_name:
+            continue
+
+        for col in ["album_artist", "artist"]:
+            cursor.execute(
+                f"UPDATE tracks SET {col} = {placeholder} WHERE {col} = {placeholder}",
+                (canonical_artist_name, original),
+            )
+            updates += max(cursor.rowcount or 0, 0)
+
+    if updates:
+        conn.commit()
+    return updates
+
+
+def _normalize_album_artist_file_tag(file_path: str, album_artist_value: str) -> bool:
+    """Best-effort normalization of album artist tag for imported files (MP3/FLAC)."""
+    if not file_path or not album_artist_value or not os.path.exists(file_path):
+        return False
+
+    try:
+        lower_path = file_path.lower()
+        if lower_path.endswith('.mp3'):
+            from mutagen.easyid3 import EasyID3
+            from mutagen.id3 import ID3NoHeaderError
+
+            try:
+                audio = EasyID3(file_path)
+            except ID3NoHeaderError:
+                return False
+
+            current = (audio.get('albumartist') or [''])[0].strip() if audio.get('albumartist') else ''
+            if current == album_artist_value:
+                return False
+
+            audio['albumartist'] = [album_artist_value]
+            audio.save()
+            return True
+
+        if lower_path.endswith('.flac'):
+            from mutagen.flac import FLAC
+
+            audio = FLAC(file_path)
+            current_values = audio.get('albumartist', [])
+            current = current_values[0].strip() if current_values else ''
+            if current == album_artist_value:
+                return False
+
+            audio['albumartist'] = [album_artist_value]
+            audio.save()
+            return True
+    except Exception as e:
+        logging.debug(f"[ARTIST_NORMALIZE] Could not normalize album artist tag for {file_path}: {e}")
+
+    return False
 
 
 def _extract_writer_from_file_tags(file_path: str) -> str:
@@ -146,6 +268,8 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
     from start import fetch_artist_albums, fetch_album_tracks, save_to_db
     
     try:
+        canonical_artist_name = _clean_artist_name_for_storage(artist_name) or artist_name
+
         # Prefetch cached track IDs for this artist and check for missing critical fields
         existing_track_ids: set[str] = set()
         existing_album_tracks: dict[str, set[str]] = {}
@@ -161,7 +285,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
             critical_fields = ['duration', 'track_number', 'year', 'file_path']
 
             # Get existing tracks and check for missing fields
-            cursor.execute(f"SELECT album, id, {', '.join(critical_fields)} FROM tracks WHERE artist = {placeholder}", (artist_name,))
+            cursor.execute(f"SELECT album, id, {', '.join(critical_fields)} FROM tracks WHERE artist = {placeholder}", (canonical_artist_name,))
             for row in cursor.fetchall():
                 alb_name = row[0]
                 tid = row[1]
@@ -176,6 +300,19 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     if verbose and alb_name not in albums_logged:
                         logging.info(f"Album '{alb_name}' flagged for re-import due to missing fields")
                         albums_logged.add(alb_name)
+            # Normalize previously imported variants for this artist so future
+            # list/detail queries use the same canonical value.
+            try:
+                updated_rows = _normalize_existing_artist_rows(
+                    conn,
+                    canonical_artist_name,
+                    aliases=[artist_name],
+                )
+                if updated_rows:
+                    logging.info(f"[ARTIST_NORMALIZE] {canonical_artist_name}: normalized {updated_rows} existing rows")
+            except Exception as normalize_err:
+                logging.debug(f"[ARTIST_NORMALIZE] Existing-row normalization skipped for {canonical_artist_name}: {normalize_err}")
+
             conn.close()
         except Exception as e:
             logging.debug(f"Prefetch existing tracks for artist '{artist_name}' failed: {e}")
@@ -248,7 +385,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
             # 2. alb.get("artist") - from getArtist.view response 
             # 3. artist_name - the function parameter (artist we're importing)
             # Note: track.albumArtist field can be incorrect (e.g., containing track artist with feat.)
-            album_artist_value = api_album_artist or alb.get("artist") or artist_name
+            album_artist_value = _clean_artist_name_for_storage(api_album_artist or alb.get("artist") or canonical_artist_name) or canonical_artist_name
 
             for t in tracks:
                 track_id = t.get("id")
@@ -265,7 +402,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 
                 # Extract track-level artist for featured artist detection
                 # Fallback to album artist if track artist not available
-                track_artist = t.get("artist", "") or artist_name
+                track_artist = _clean_artist_name_for_storage(t.get("artist", "") or canonical_artist_name) or canonical_artist_name
                 
                 td = {
                     "id": track_id,
@@ -318,6 +455,9 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "album_context_unplugged": 1 if album_context.get("is_unplugged") else 0,
                 }
                 save_to_db(td)
+
+                # Keep embedded tag consistent with normalized DB album_artist.
+                _normalize_album_artist_file_tag(td.get("file_path", ""), album_artist_value)
                 album_tracks_processed += 1
 
             # Log this album completion to scan_history
@@ -370,9 +510,15 @@ def pre_import_sync_album_artists(artist_id: str = None) -> dict:
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Get current artists in database
-        cursor.execute("SELECT DISTINCT LOWER(name) FROM artists WHERE name IS NOT NULL AND name != ''")
-        existing_artists = set(row[0] for row in cursor.fetchall())
+        # Get current artists in database using normalized keys to avoid
+        # case/punctuation duplicates.
+        cursor.execute("SELECT DISTINCT name FROM artists WHERE name IS NOT NULL AND name != ''")
+        existing_artists = set()
+        for row in cursor.fetchall():
+            existing_name = row[0] if isinstance(row, tuple) else row.get('name', '')
+            key = _normalize_artist_key(existing_name)
+            if key:
+                existing_artists.add(key)
         logging.debug(f"Found {len(existing_artists)} existing artists in database")
         
         # Fetch all artists from Navidrome
@@ -387,7 +533,7 @@ def pre_import_sync_album_artists(artist_id: str = None) -> dict:
         logging.info(f"Pre-import sync: Scanning {len(artists_to_sync)} artist(s) from Navidrome")
         
         # Extract unique album artists from all albums of all artists
-        unique_album_artists = {}  # name -> count
+        unique_album_artists = {}  # normalized_key -> {'original': str, 'count': int}
         
         for artist_data in artists_to_sync:
             artist_name = artist_data.get('name', '')
@@ -402,9 +548,12 @@ def pre_import_sync_album_artists(artist_id: str = None) -> dict:
                 for album in albums:
                     album_artist = album.get('artist', '').strip()
                     if album_artist:
-                        key = album_artist.lower()
+                        cleaned_album_artist = _clean_artist_name_for_storage(album_artist) or album_artist
+                        key = _normalize_artist_key(cleaned_album_artist)
+                        if not key:
+                            continue
                         if key not in unique_album_artists:
-                            unique_album_artists[key] = {'original': album_artist, 'count': 0}
+                            unique_album_artists[key] = {'original': cleaned_album_artist, 'count': 0}
                         unique_album_artists[key]['count'] += 1
             except Exception as e:
                 logging.debug(f"Error fetching albums for artist {artist_name}: {e}")
@@ -416,7 +565,9 @@ def pre_import_sync_album_artists(artist_id: str = None) -> dict:
         new_artists_to_add = []
         for artist_key, artist_info in unique_album_artists.items():
             if artist_key not in existing_artists:
-                new_artists_to_add.append(artist_info['original'])
+                cleaned_name = _clean_artist_name_for_storage(artist_info['original']) or artist_info['original']
+                if cleaned_name not in new_artists_to_add:
+                    new_artists_to_add.append(cleaned_name)
         
         logging.info(f"Pre-import sync: {len(new_artists_to_add)} new album artists need to be added to database")
         

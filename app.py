@@ -1438,7 +1438,8 @@ def _baseline_config():
             "custom_links": []
         },
         "downloads": {
-            "folder": "/downloads/Music"
+            "folder": "/downloads/Music",
+            "file_name_format": "{album_artist}/{year} - {album}/{track_number}. {artist} - {title}"
         },
         "weights": {"spotify": 0.4, "lastfm": 0.3, "age": 0.3},
         "database": {"path": DB_PATH, "vacuum_on_start": False},
@@ -14746,7 +14747,7 @@ def _queue_safe_track_number(track_number_value):
 
 
 def _read_queue_naming_format():
-    """Read configurable queue filename format from config, with sensible default."""
+    """Read configurable queue organize path format from config, with sensible default."""
     try:
         cfg, _ = _read_yaml(CONFIG_PATH)
         downloads_cfg = cfg.get('downloads', {}) if isinstance(cfg, dict) else {}
@@ -14755,23 +14756,15 @@ def _read_queue_naming_format():
             return fmt.strip()
     except Exception as cfg_err:
         logging.debug(f"[ORGANIZE] Could not read naming config: {cfg_err}")
-    return '{track_number}. {artist} - {title}'
+    return '{album_artist}/{year} - {album}/{track_number}. {artist} - {title}'
 
 
 def _build_queue_target_path(music_root_value, album_artist_value, year_value, album_value, track_artist_value, title_value, track_number_value, source_file_path):
+    file_name_format = _read_queue_naming_format()
+    ext_local = os.path.splitext(source_file_path)[1]
     album_artist_part = _queue_sanitize_component(album_artist_value) or 'Unknown Artist'
     album_part = _queue_sanitize_component(album_value) or 'Unknown Album'
     year_part = str(year_value).strip()[:4] if year_value else ''
-
-    if year_part:
-        target_dir_local = os.path.join(music_root_value, album_artist_part, _queue_sanitize_component(f"{year_part} - {album_part}"))
-    else:
-        target_dir_local = os.path.join(music_root_value, album_artist_part, album_part)
-
-    os.makedirs(target_dir_local, exist_ok=True)
-
-    file_name_format = _read_queue_naming_format()
-    ext_local = os.path.splitext(source_file_path)[1]
     format_vars = {
         'track_number': _queue_safe_track_number(track_number_value),
         'artist': _queue_sanitize_component(track_artist_value) or 'Unknown Artist',
@@ -14781,18 +14774,47 @@ def _build_queue_target_path(music_root_value, album_artist_value, year_value, a
         'year': year_part or 'Unknown',
     }
 
-    try:
-        base_name = file_name_format.format(**format_vars)
-    except Exception:
-        base_name = f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}"
+    fallback_rel = f"{album_artist_part}/{format_vars['year']} - {album_part}/{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}"
 
-    base_name = _queue_sanitize_component(base_name) or f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}"
-    target_path_local = os.path.join(target_dir_local, f"{base_name}{ext_local}")
+    try:
+        relative_path = file_name_format.format(**format_vars)
+    except Exception:
+        relative_path = fallback_rel
+
+    if not isinstance(relative_path, str) or not relative_path.strip():
+        relative_path = fallback_rel
+
+    # Keep target under MUSIC_ROOT; strip absolute prefixes and traversal segments.
+    relative_path = relative_path.strip().replace('\\', '/').lstrip('/').lstrip('\\')
+    relative_parts = []
+    for part in relative_path.split('/'):
+        clean_part = _queue_sanitize_component(part)
+        if not clean_part or clean_part in ('.', '..'):
+            continue
+        relative_parts.append(clean_part)
+
+    if not relative_parts:
+        relative_parts = [
+            album_artist_part,
+            _queue_sanitize_component(f"{format_vars['year']} - {album_part}"),
+            f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}"
+        ]
+
+    relative_path_safe = os.path.join(*relative_parts)
+    base_name_local, ext_from_format = os.path.splitext(relative_path_safe)
+    if ext_from_format:
+        target_path_local = os.path.join(music_root_value, relative_path_safe)
+    else:
+        target_path_local = os.path.join(music_root_value, f"{relative_path_safe}{ext_local}")
+
+    target_dir_local = os.path.dirname(target_path_local)
+    os.makedirs(target_dir_local, exist_ok=True)
 
     if os.path.exists(target_path_local):
         counter_local = 1
+        file_stem, file_ext = os.path.splitext(target_path_local)
         while True:
-            candidate = os.path.join(target_dir_local, f"{base_name}_{counter_local}{ext_local}")
+            candidate = f"{file_stem}_{counter_local}{file_ext}"
             if not os.path.exists(candidate):
                 target_path_local = candidate
                 break
