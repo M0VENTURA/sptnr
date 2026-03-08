@@ -128,11 +128,17 @@ class SSLAdapter(HTTPAdapter):
 def detect_live_album(album_title: str) -> dict:
     """
     Detect if an album is a live or unplugged album based on its title.
-    
-    Only matches format indicators, not "live" as part of the actual title.
+
+    This function provides a conservative heuristic for initial detection only.
+    MusicBrainz secondary album type is the authoritative source and will override
+    this result during the popularity scan (see popularity.py album type detection).
+
+    Only matches unambiguous format indicators, not words that could appear in
+    regular album titles.
     Examples:
     - "Album Live at Venue" -> live=True
     - "(how to live) AS GHOSTS" -> live=False (live is part of title)
+    - "13 Ways to Bleed on Stage" -> live=False (no unambiguous live indicator)
     - "Album (Live)" -> live=True
     - "Album - Live 2023" -> live=True
     
@@ -150,6 +156,9 @@ def detect_live_album(album_title: str) -> dict:
     # Check for SPECIFIC live format indicators (not just any "live" word)
     # These patterns require "live" to be in a format tag position (end, after separator, between brackets)
     # NOT inside the actual title like "(how to live)"
+    # Note: Ambiguous patterns like "on stage" or standalone "concert" are intentionally
+    # excluded to avoid false positives (e.g., "13 Ways to Bleed on Stage").
+    # MusicBrainz secondary type detection in popularity.py is the authoritative source.
     live_patterns = [
         # Standalone format tags (anchored to end)
         r'\(live\)\s*$',           # "(live)" at the end
@@ -165,9 +174,7 @@ def detect_live_album(album_title: str) -> dict:
         r'live\s+session',         # "live session"
         r'live\s+recording',       # "live recording"
         
-        # Concert-related
-        r'\bconcert\b',            # "concert" album
-        r'\bon\s+stage\b',         # "on stage"
+        # Concert-related (only unambiguous forms)
         r'\bin\s+concert\b',       # "in concert"
     ]
     
