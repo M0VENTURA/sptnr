@@ -1211,14 +1211,22 @@ def determine_final_status(
             log_debug(f"[CONFIDENCE] → RETURNING 'high' (z>= 1.0: needs 1 source, has high={high_confidence_count}, medium={medium_confidence_count})")
             return 'high'
     
-    # Z-score 0-1: Need 1 high OR 2 medium sources
-    elif max_z >= 0.0:
+    # Z-score 0-1 (strictly greater than 0): Need 1 high OR 2 medium sources
+    elif 0.0 < max_z < 1.0:
         if high_confidence_count >= 1:
             log_debug(f"[CONFIDENCE] → RETURNING 'high' (z 0-1: has {high_confidence_count} high source)")
             return 'high'
         elif medium_confidence_count >= 2:
             log_debug(f"[CONFIDENCE] → RETURNING 'medium' (z 0-1: has {medium_confidence_count} medium sources)")
             return 'medium'
+
+    # z <= 0: never pass single confidence regardless of source counts
+    elif max_z <= 0.0:
+        log_debug(
+            f"[CONFIDENCE] → RETURNING 'none' (z<=0 gate: max_z={max_z:.2f}, "
+            f"requires z>0 before confidence sources can qualify)"
+        )
+        return 'none'
     
     # No confidence achieved
     log_debug(f"[CONFIDENCE] → RETURNING 'none' (insufficient sources for z-score threshold: max_z={max_z:.2f}, high={high_confidence_count}, medium={medium_confidence_count})")
@@ -1551,20 +1559,16 @@ def detect_single_enhanced(
     
     # Z-Score Gate: Skip single detection if artist_z < 0
     # LOGIC:
-    # - z < 0: Skip detection (UNLESS compilation/greatest hits)
+    # - z < 0: Skip detection (always)
     # - z 0-1: Require 2 medium OR 1 high confidence sources
     # - z >= 1: Require 1 medium OR 1 high confidence source
     # - z > 2 with NO sources: Mark as "Popular" with 5★ rating (not as single)
-    # EXCEPTION: For compilations/greatest hits, skip z-score filter entirely
-    if artist_z < 0.0 and not is_compilation:
+    if artist_z < 0.0:
         log_debug(f"[ZSCORE] ✗ Artist z-score below 0 (artist_z={artist_z:.2f}, album_z={album_z:.2f})")
-        log_info(f"   ⓘ Skipping single detection for {title}: z-score too low")
+        log_info(f"   ⓘ Skipping single detection for {title}: artist z-score below 0")
         if verbose:
             log_debug(f"Z-score filter: Skipping {title} (artist_z < 0)")
         return result
-    
-    if is_compilation and artist_z < 0.0:
-        log_debug(f"[ZSCORE] ⓘ Compilation/greatest hits override: Proceeding with detection despite low z-score (artist_z={artist_z:.2f})")
     
     log_debug(f"[ZSCORE] ✓ Track qualifies for metadata checks (album_z={album_z:.2f}, artist_z={artist_z:.2f})")
     if verbose:
@@ -1574,9 +1578,9 @@ def detect_single_enhanced(
     # STAGE 2a: Discogs Check (NOW GATED BY Z-SCORE)
     # Only check Discogs if track shows standout characteristics
     # This conserves API quota while still catching confirmed singles
-    # EXCEPTION: For compilations/greatest hits, always check regardless of z-score
+    # Require positive artist z-score before Discogs single detection.
     discogs_confirmed = False
-    if artist_z > 0.0 or is_compilation:  # Apply z-score gate (skip for compilations)
+    if artist_z > 0.0:
         if discogs_client and hasattr(discogs_client, 'enabled') and discogs_client.enabled:
             try:
                 log_debug(f"[DISCOGS] Querying Discogs API for single: {title} by {artist} (z-score gate passed: artist_z={artist_z:.2f})")
