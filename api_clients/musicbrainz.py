@@ -924,7 +924,16 @@ class MusicBrainzClient:
         """
         Fetch composer(s) for a track from MusicBrainz.
         
-        Looks up the recording and extracts composer information from relationships.
+        Uses a two-step approach:
+          1. Search for the recording to obtain its MBID.
+          2. Look up the recording by MBID with inc=artist-rels+work-rels+work-level-rels
+             so that composer/writer/lyricist credits on both the recording and any
+             linked Work entities are returned inline.
+        
+        The MusicBrainz search endpoint does not support the ``inc`` parameter for
+        relationship data, so passing ``inc`` to a search request always returns empty
+        ``relations``.  The lookup endpoint (/recording/{mbid}) is the only way to
+        retrieve relationship data.
         
         Args:
             title: Track title
@@ -941,49 +950,77 @@ class MusicBrainzClient:
         
         for attempt in range(max_retries):
             try:
-                # Use rate limiter
+                # Step 1: Search for the recording to obtain its MBID.
+                # The search endpoint does NOT support ``inc`` for relationship data;
+                # only the lookup endpoint does.
                 if _rate_limiter:
                     _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
                     _rate_limiter.record_musicbrainz_request()
                 else:
                     time.sleep(1.0)
                 
-                # Search for recording with both direct artist relationships and
-                # linked work relationships. Many lyricist/composer credits in
-                # MusicBrainz are attached to the Work entity, not the recording.
                 escaped_title = _escape_lucene_special_chars(title)
                 escaped_artist = _escape_lucene_special_chars(artist)
                 query = f'recording:"{escaped_title}" AND artist:"{escaped_artist}"'
-                params = {
+                search_params = {
                     "query": query,
                     "fmt": "json",
                     "limit": 1,
-                    "inc": "artist-rels+work-rels"
                 }
                 
-                r = self.session.get(f"{self.base_url}recording/", params=params, headers=self.headers, timeout=(5, 10))
+                r = self.session.get(f"{self.base_url}recording/", params=search_params, headers=self.headers, timeout=(5, 10))
                 r.raise_for_status()
                 recordings = r.json().get("recordings", [])
                 
                 if not recordings:
                     return []
                 
-                # Get the top match
-                recording = recordings[0]
-                relationships = recording.get("relationships", [])
+                recording_mbid = recordings[0].get("id")
+                if not recording_mbid:
+                    return []
+                
+                # Step 2: Look up the recording by MBID with relationship includes.
+                # ``artist-rels``      – direct artist credits on the recording itself
+                # ``work-rels``        – works (songs) the recording is a performance of
+                # ``work-level-rels``  – inline artist-rels on each linked work so that
+                #                        composer/lyricist/writer credits attached to
+                #                        the Work entity are returned without a third hop
+                if _rate_limiter:
+                    _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
+                    _rate_limiter.record_musicbrainz_request()
+                else:
+                    time.sleep(1.0)
+                
+                lookup_params = {
+                    "fmt": "json",
+                    "inc": "artist-rels+work-rels+work-level-rels",
+                }
+                rl = self.session.get(
+                    f"{self.base_url}recording/{recording_mbid}",
+                    params=lookup_params,
+                    headers=self.headers,
+                    timeout=(5, 10),
+                )
+                rl.raise_for_status()
+                recording = rl.json()
+                
+                # The lookup endpoint returns relationships under ``relations``
+                # (not ``relationships`` which is used by some older endpoints).
+                relations = recording.get("relations", [])
                 
                 composers = []
-                for rel in relationships:
-                    # Look for composer, writer, or lyricist relationships
+                for rel in relations:
+                    # Look for composer, writer, or lyricist relationships directly
+                    # on the recording (uncommon but possible).
                     rel_type = rel.get("type", "").lower()
                     if rel_type in ("composer", "writer", "lyricist"):
-                        # Get the artist/person name from the relationship
                         target = rel.get("artist", {})
                         if target and target.get("name"):
                             composers.append(target["name"])
 
-                    # Work relationships can contain nested writer/lyricist/composer
-                    # relations under rel['work']['relations'].
+                    # Work relationships: the recording is a "performance" of a Work.
+                    # With work-level-rels the Work entity has its own ``relations``
+                    # list containing the composer/lyricist/writer credits we need.
                     work = rel.get("work", {})
                     if work:
                         for work_rel in work.get("relations", []) or []:

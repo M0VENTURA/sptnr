@@ -314,7 +314,25 @@ class NavidromeClient:
             for name in _normalize_people(candidate):
                 if name not in writers_list:
                     writers_list.append(name)
-        
+
+        # OpenSubsonic extension: Navidrome exposes lyricist/composer/writer credits
+        # via a ``contributors`` array where each entry has a ``role`` string and an
+        # ``artist`` object.  This is the primary way Navidrome surfaces these credits
+        # when the underlying tags use roles rather than dedicated tag fields.
+        contributors = track.get("contributors")
+        if isinstance(contributors, list):
+            _writer_roles = {"composer", "lyricist", "writer", "author"}
+            for contributor in contributors:
+                if not isinstance(contributor, dict):
+                    continue
+                role = str(contributor.get("role", "")).lower()
+                if role in _writer_roles:
+                    artist_info = contributor.get("artist", {})
+                    if isinstance(artist_info, dict):
+                        name = artist_info.get("name", "").strip()
+                        if name and name not in writers_list:
+                            writers_list.append(name)
+
         # Debug: Log available fields if no writer data found
         if not writers_list:
             logger.debug(f"[WRITER] No writer extracted for '{track.get('title', 'Unknown')}'. Track fields: {list(track.keys())}")
