@@ -2648,9 +2648,15 @@ def artist_detail(name):
             album_type = (album_dict.get("album_type") or "").lower()
             track_count = album_dict.get("track_count", 0)
             album_artist = (album_dict.get("album_artist") or "").lower()
+            album_name_lower = (album_name or "").lower()
+            is_compilation_cached = bool(album_dict.get("is_compilation"))
             
-            # First check: if album_artist is a compilation-type value, mark as compilation
-            if album_artist and album_artist in ('various artists', 'various', 'compilation', 'soundtrack'):
+            # First check compilation markers so they never fall through into Albums.
+            if (
+                is_compilation_cached
+                or (album_artist and album_artist in ('various artists', 'various', 'compilation', 'soundtrack'))
+                or (album_type and 'compilation' in album_type)
+            ):
                 albums_by_category["compilation"].append(album_dict)
                 categorized_albums.add(album_name)
             # Categorize based on spotify_album_type and track count
@@ -2660,11 +2666,11 @@ def artist_detail(name):
             elif album_type and 'remix' in album_type and 'live' not in album_type and 'compilation' not in album_type:
                 albums_by_category["remix_album"].append(album_dict)
                 categorized_albums.add(album_name)
-            elif album_name and ('live' in album_name.lower() or 'unplugged' in album_name.lower()):
+            elif album_name and ('live' in album_name_lower or 'unplugged' in album_name_lower):
                 albums_by_category["live_album"].append(album_dict)
                 categorized_albums.add(album_name)
-            elif album_type and 'compilation' in album_type.lower():
-                albums_by_category["compilation"].append(album_dict)
+            elif album_name and ('remix' in album_name_lower):
+                albums_by_category["remix_album"].append(album_dict)
                 categorized_albums.add(album_name)
             elif album_type == "album" or (not album_type and track_count > 6):
                 albums_by_category["album"].append(album_dict)
@@ -2705,6 +2711,19 @@ def artist_detail(name):
                     if _normalize_release_title(a.get('album', '')) not in remix_album_names
                 ]
 
+        # SAFETY: Remove compilation albums from non-compilation categories to prevent duplicates
+        compilation_album_names = {
+            _normalize_release_title(a.get('album', ''))
+            for a in albums_by_category.get("compilation", [])
+            if a.get('album')
+        }
+        for cat in ["album", "live_album", "remix_album", "ep", "single", "unknown"]:
+            if compilation_album_names:
+                albums_by_category[cat] = [
+                    a for a in albums_by_category[cat]
+                    if _normalize_release_title(a.get('album', '')) not in compilation_album_names
+                ]
+
         # Process compilation albums
         for album in compilation_albums:
             album_dict = dict(album)
@@ -2733,15 +2752,40 @@ def artist_detail(name):
             release_dict['is_missing'] = True  # Mark as missing
             primary_type = (release_dict.get("primary_type") or "").lower()
             category = (release_dict.get("category") or "").lower()
+            title_lower = (release_dict.get("title") or "").lower()
+
+            is_live = (
+                category in ("live album", "live_album", "live")
+                or "live" in primary_type
+                or "live" in title_lower
+                or "unplugged" in title_lower
+            )
+            is_remix = (
+                category in ("remix", "remix album", "remix_album")
+                or "remix" in primary_type
+                or "remix" in title_lower
+            )
+            is_compilation = (
+                category in ("compilation",)
+                or "compilation" in primary_type
+                or "greatest hits" in title_lower
+                or "best of" in title_lower
+                or "anthology" in title_lower
+                or "collection" in title_lower
+            )
 
             # Route missing releases by category so dedicated sections can display them.
-            if primary_type == "album" and category in ("remix", "remix album", "remix_album"):
-                missing_by_category["remix_album"].append(release_dict)
-            elif primary_type == "album" and category in ("live album", "live_album"):
-                missing_by_category["live_album"].append(release_dict)
-            elif primary_type == "album" and category in ("compilation",):
+            if is_compilation:
                 missing_by_category["compilation"].append(release_dict)
-            elif primary_type == "album" and category not in ("live album", "live_album", "compilation", "remix", "remix album", "remix_album"):
+            elif is_live:
+                missing_by_category["live_album"].append(release_dict)
+            elif is_remix:
+                missing_by_category["remix_album"].append(release_dict)
+            elif primary_type == "ep":
+                missing_by_category["ep"].append(release_dict)
+            elif primary_type == "single":
+                missing_by_category["single"].append(release_dict)
+            elif primary_type == "album" or not primary_type:
                 missing_by_category["album"].append(release_dict)
         
         # SAFETY: Remove live albums from missing releases in wrong categories
