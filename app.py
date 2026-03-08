@@ -3226,7 +3226,7 @@ def api_artist_missing_releases():
                     INSERT INTO missing_releases
                     (artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
                     VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
-                    ON CONFLICT (release_id) DO UPDATE SET
+                    ON CONFLICT (artist, release_id) DO UPDATE SET
                         artist = EXCLUDED.artist,
                         title = EXCLUDED.title,
                         primary_type = EXCLUDED.primary_type,
@@ -3558,7 +3558,7 @@ def api_scan_all_missing_releases():
                                     INSERT INTO missing_releases 
                                     (artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
                                     VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
-                                    ON CONFLICT (release_id) DO UPDATE SET
+                                    ON CONFLICT (artist, release_id) DO UPDATE SET
                                         last_checked = CURRENT_TIMESTAMP,
                                         category = EXCLUDED.category
                                 """, (
