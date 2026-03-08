@@ -6591,6 +6591,7 @@ def _auto_detect_album_type(artist_name: str, album_name: str):
         # Determine new type using priority order
         new_type = None
         classification_reason = ""
+        new_type_from_discogs = False
         
         # ===== PRIORITY 1: Discogs Format Data (Most Reliable) =====
         if discogs_formats_raw:
@@ -6601,10 +6602,12 @@ def _auto_detect_album_type(artist_name: str, album_name: str):
                 # Check for EP in formats
                 if any('ep' in fmt for fmt in formats_lower):
                     new_type = 'ep'
+                    new_type_from_discogs = True
                     classification_reason = f"Discogs format contains 'EP'"
                 # Check for Single in formats
                 elif any('single' in fmt for fmt in formats_lower):
                     new_type = 'single'
+                    new_type_from_discogs = True
                     classification_reason = f"Discogs format contains 'Single'"
             except (json.JSONDecodeError, TypeError):
                 # If parsing fails, fall through to heuristics
@@ -6614,6 +6617,7 @@ def _auto_detect_album_type(artist_name: str, album_name: str):
         # But sanity check: ignore if album has 6+ tracks (can't be a single)
         if not new_type and discogs_is_single == 1 and total_tracks < 6:
             new_type = 'single'
+            new_type_from_discogs = True
             classification_reason = "Discogs confirmed as single"
         
         # ===== PRIORITY 2: Metadata & Track Count Heuristics =====
@@ -6641,8 +6645,20 @@ def _auto_detect_album_type(artist_name: str, album_name: str):
                 new_type = 'album'
                 classification_reason = f"{total_tracks} total tracks"
         
-        # Update album type in database if it's different from current
-        if new_type and new_type != current_type:
+        # Update album type in database if it's different from current.
+        # Guard: do not let heuristic-only results strip secondary type info that was
+        # previously detected by MusicBrainz (e.g. "album (compilation)", "album+live").
+        # Secondary type presence is indicated by a "+" or "(" in the type string.
+        # Discogs data (authoritative) is allowed to override in all cases.
+        def _has_secondary_type(t):
+            return bool(t and ('+' in t or '(' in t))
+        
+        if (new_type and new_type != current_type
+                and _has_secondary_type(current_type)
+                and not _has_secondary_type(new_type)
+                and not new_type_from_discogs):
+            log_unified(f"Preserving secondary type info in '{current_type}' (heuristic would set '{new_type}')")
+        elif new_type and new_type != current_type:
             cursor.execute(f"""
                 UPDATE tracks 
                 SET spotify_album_type = {placeholder}
