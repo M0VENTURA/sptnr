@@ -318,7 +318,6 @@ def is_live_or_alternate_album(album: str) -> bool:
         r'\bunplugged\b',          # "unplugged"
         r'\bacoustic\b',           # "acoustic"
         r'\bconcert\b',            # "concert" album
-        r'\bon\s+stage\b',         # "on stage"
         r'\bin\s+concert\b',       # "in concert"
     ]
     
@@ -3824,6 +3823,26 @@ def popularity_scan(
                 album_type_from_field = detected_album_type or current_album_type or 'album'
                 pre_detected_album_type = album_type_from_field
 
+                # Update album_context_live based on MusicBrainz secondary type.
+                # MusicBrainz is the authoritative source for live detection - it uses the
+                # official "Live" secondary release group type, which is more reliable than
+                # album name heuristics (e.g. avoids false positives like "13 Ways to Bleed on Stage").
+                # This overrides whatever was set during initial import via name-based detection.
+                if type_detection_source == "musicbrainz":
+                    type_lower = (detected_album_type or '').lower()
+                    mb_is_live = '+live' in type_lower or '(live)' in type_lower
+                    mb_live_value = 1 if mb_is_live else 0
+                    cursor.execute(f"""
+                        UPDATE tracks
+                        SET album_context_live = {placeholder}
+                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
+                    """, (mb_live_value, artist, album))
+                    conn.commit()
+                    if mb_is_live:
+                        log_info(f'MusicBrainz confirmed live album: "{artist} - {album}" (type: {detected_album_type})')
+                    else:
+                        log_debug(f'MusicBrainz confirms non-live album: "{artist} - {album}" (type: {detected_album_type}), album_context_live reset to 0')
+
                 # Override misclassified EPs: if labeled as 'ep' but has >6 tracks, it's likely a full album
                 # MusicBrainz sometimes incorrectly classifies live albums or special releases as EPs
                 # Example: Metallica - S&M (21 tracks) was wrongly classified as EP
@@ -3892,8 +3911,13 @@ def popularity_scan(
                     log_debug(f'Discogs not configured or disabled, skipping album-level genre fetch')
                 
                 # Detect if this is a live/unplugged album
-                # Check album type field first (now freshly updated), fall back to name pattern detection
-                is_live_album = '+live' in album_type_from_field or is_live_or_alternate_album(album)
+                # When MusicBrainz is the detection source, trust its secondary type exclusively.
+                # Fall back to name-based heuristics only when MusicBrainz data is unavailable.
+                if type_detection_source == "musicbrainz":
+                    album_type_lower = (album_type_from_field or '').lower()
+                    is_live_album = '+live' in album_type_lower or '(live)' in album_type_lower
+                else:
+                    is_live_album = '+live' in album_type_from_field or is_live_or_alternate_album(album)
                 
                 if is_live_album:
                     log_info(f'Detected live/unplugged album: "{album}"')

@@ -193,7 +193,6 @@ class GenreDetector:
             r'\s+live\s*$',            # ends with " live"
             r'\s+live\s*[\)\]]',       # "live)" or "live]"
             r'\bconcert\b',            # "concert"
-            r'\bon\s+stage\b',         # "on stage"
             r'\bin\s+concert\b',       # "in concert"
         ]
         
