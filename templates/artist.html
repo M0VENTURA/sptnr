@@ -3940,12 +3940,10 @@ function addMissingReleaseForDownload(releaseId, releaseTitle, artistName) {
   // Genre sources are now pre-rendered server-side from database data populated during scans.
   // External source fetching only happens during the popularity/singles detection scan.
 
-  const preloadedSimilarArtistsData = {{ {"similar_artists": similar_artists_data}|tojson }};
-
   document.addEventListener('DOMContentLoaded', function() {
     const artistName = {{ artist_name|tojson }};
     if (artistName && artistName.length > 0) {
-      displayArtistSimilarArtists(preloadedSimilarArtistsData);
+      loadSimilarArtists(artistName);
     } else {
       const similarContainer = document.getElementById('artistSimilarArtistsContainer');
       if (similarContainer) {
@@ -3953,6 +3951,51 @@ function addMissingReleaseForDownload(releaseId, releaseTitle, artistName) {
       }
     }
   });
+
+  // Similar Artists Loading (fetch from API like album page does)
+  async function loadSimilarArtists(artist) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
+    
+    try {
+      const url = `/api/artist/${encodeURIComponent(artist)}/similar`;
+      console.log('[SIMILAR ARTISTS] Fetching from:', url);
+      const response = await fetch(url, {
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+      
+      console.log('[SIMILAR ARTISTS] Response status:', response.status);
+      
+      if (!response.ok) {
+        const errorText = `Server returned ${response.status}${response.statusText ? ': ' + response.statusText : ''}`;
+        console.error('[SIMILAR ARTISTS] Error response:', errorText);
+        showArtistSimilarArtistsError(`Failed to load similar artists (${errorText})`);
+        return;
+      }
+      
+      const data = await response.json();
+      console.log('[SIMILAR ARTISTS] Received data:', data);
+      displayArtistSimilarArtists(data);
+    } catch (error) {
+      clearTimeout(timeoutId);
+      console.error('[SIMILAR ARTISTS] Exception:', error.name, error.message);
+      if (error.name === 'AbortError') {
+        console.warn('Similar artists loading timeout (15s)');
+        showArtistSimilarArtistsError('Similar artists loading timed out after 15 seconds');
+      } else {
+        console.error('Error loading similar artists:', error);
+        showArtistSimilarArtistsError('Error loading similar artists: ' + error.message);
+      }
+    }
+  }
+
+  function showArtistSimilarArtistsError(message) {
+    const container = document.getElementById('artistSimilarArtistsContainer');
+    if (container) {
+      container.innerHTML = `<div class="alert alert-warning mb-0"><i class="bi bi-exclamation-triangle"></i> ${message}</div>`;
+    }
+  }
 
   function displayArtistSimilarArtists(data) {
     const container = document.getElementById('artistSimilarArtistsContainer');
