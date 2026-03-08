@@ -2624,6 +2624,7 @@ def artist_detail(name):
         albums_by_category = {
             "album": [],
             "live_album": [],
+            "remix_album": [],
             "ep": [],
             "single": [],
             "compilation": [],
@@ -2655,6 +2656,9 @@ def artist_detail(name):
             # Categorize based on spotify_album_type and track count
             elif album_type and 'live' in album_type:
                 albums_by_category["live_album"].append(album_dict)
+                categorized_albums.add(album_name)
+            elif album_type and 'remix' in album_type and 'live' not in album_type and 'compilation' not in album_type:
+                albums_by_category["remix_album"].append(album_dict)
                 categorized_albums.add(album_name)
             elif album_name and ('live' in album_name.lower() or 'unplugged' in album_name.lower()):
                 albums_by_category["live_album"].append(album_dict)
@@ -2688,6 +2692,19 @@ def artist_detail(name):
                     if _normalize_release_title(a.get('album', '')) not in live_album_names
                 ]
 
+        # SAFETY: Remove remix albums from non-remix categories to prevent duplicates
+        remix_album_names = {
+            _normalize_release_title(a.get('album', ''))
+            for a in albums_by_category.get("remix_album", [])
+            if a.get('album')
+        }
+        for cat in ["album", "ep", "single", "unknown"]:
+            if remix_album_names:
+                albums_by_category[cat] = [
+                    a for a in albums_by_category[cat]
+                    if _normalize_release_title(a.get('album', '')) not in remix_album_names
+                ]
+
         # Process compilation albums
         for album in compilation_albums:
             album_dict = dict(album)
@@ -2705,6 +2722,7 @@ def artist_detail(name):
         missing_by_category = {
             "album": [],
             "live_album": [],
+            "remix_album": [],
             "ep": [],
             "single": [],
             "compilation": []
@@ -2717,7 +2735,9 @@ def artist_detail(name):
             category = (release_dict.get("category") or "").lower()
 
             # Album-only missing release display: ignore secondary classifications.
-            if primary_type == "album" and category not in ("live album", "live_album", "compilation"):
+            if primary_type == "album" and category in ("remix", "remix album", "remix_album"):
+                missing_by_category["remix_album"].append(release_dict)
+            elif primary_type == "album" and category not in ("live album", "live_album", "compilation", "remix", "remix album", "remix_album"):
                 missing_by_category["album"].append(release_dict)
         
         # SAFETY: Remove live albums from missing releases in wrong categories
@@ -2733,9 +2753,22 @@ def artist_detail(name):
                     if _normalize_release_title(a.get('title', '')) not in missing_live_names
                 ]
 
+        # SAFETY: Remove remix albums from missing releases in wrong categories
+        missing_remix_names = {
+            _normalize_release_title(a.get('title', ''))
+            for a in missing_by_category.get("remix_album", [])
+            if a.get('title')
+        }
+        for cat in ["album", "ep", "single"]:
+            if missing_remix_names:
+                missing_by_category[cat] = [
+                    a for a in missing_by_category[cat]
+                    if _normalize_release_title(a.get('title', '')) not in missing_remix_names
+                ]
+
         # Merge discovered and missing albums by category, then sort by release date
         merged_albums_by_category = {}
-        for category in ["album", "compilation", "live_album", "ep", "single", "unknown"]:
+        for category in ["album", "compilation", "live_album", "remix_album", "ep", "single", "unknown"]:
             merged_list = albums_by_category.get(category, []) + missing_by_category.get(category, [])
             
             # Sort by release date (newest first)
