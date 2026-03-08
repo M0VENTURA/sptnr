@@ -49,6 +49,13 @@
                   <i class="bi bi-collection-play"></i> Playlist Downloads
                 </button>
               </li>
+              <li><hr class="dropdown-divider"></li>
+              <li role="presentation">
+                <button class="dropdown-item" id="queueTab" data-bs-toggle="tab" data-bs-target="#queueContent" type="button" role="tab">
+                  <i class="bi bi-list-check"></i> Download Queue
+                  <span id="queueNavBadge" class="badge bg-primary ms-1" style="display:none"></span>
+                </button>
+              </li>
             </ul>
           </li>
 
@@ -768,6 +775,118 @@
       </div>
     </div>
     <!-- End Upcoming Releases Tab -->
+
+    <!-- Download Queue Tab -->
+    <div class="tab-pane fade" id="queueContent" role="tabpanel">
+      <!-- Add to Queue Form -->
+      <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-plus-circle"></i> Add to Queue
+          </h5>
+        </div>
+        <div class="card-body">
+          <form id="addToQueueForm" onsubmit="addToQueue(event)">
+            <div class="row g-2">
+              <div class="col-md-3">
+                <input type="text" class="form-control" id="queueArtist" placeholder="Artist *" required>
+              </div>
+              <div class="col-md-3">
+                <input type="text" class="form-control" id="queueTitle" placeholder="Song Title *" required>
+              </div>
+              <div class="col-md-3">
+                <input type="text" class="form-control" id="queueAlbum" placeholder="Album (optional)">
+              </div>
+              <div class="col-md-1">
+                <select class="form-select" id="queueSource">
+                  <option value="soulseek">Soulseek</option>
+                  <option value="qbittorrent">qBittorrent</option>
+                </select>
+              </div>
+              <div class="col-md-1">
+                <input type="number" class="form-control" id="queuePriority" value="5" min="1" max="10" title="Priority (1=highest)">
+              </div>
+              <div class="col-md-1">
+                <button type="submit" class="btn btn-primary w-100">
+                  <i class="bi bi-plus"></i> Add
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- Active Queue -->
+      <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-arrow-down-circle"></i> Active Queue
+            <span id="queueActiveCount" class="badge bg-primary ms-2" style="display:none"></span>
+          </h5>
+          <button class="btn btn-sm btn-outline-primary" onclick="loadQueueStatus()">
+            <i class="bi bi-arrow-clockwise"></i> Refresh
+          </button>
+        </div>
+        <div class="card-body p-0">
+          <div id="activeQueueEmpty" class="text-center py-4 text-muted">
+            <i class="bi bi-inbox fs-3 d-block mb-2"></i>
+            Queue is empty. Use the form above or a search tab to add downloads.
+          </div>
+          <div id="activeQueueList" style="display:none"></div>
+        </div>
+      </div>
+
+      <!-- Completed & Ready to Organize (includes unmatched) -->
+      <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-check-circle"></i> Completed &amp; Ready to Organize
+            <span id="completedBadge" class="badge bg-success ms-2" style="display:none"></span>
+            <span id="queueCompletedCount" style="display:none"></span>
+          </h5>
+          <div class="d-flex gap-2 align-items-center">
+            <span class="badge bg-warning text-dark">
+              <i class="bi bi-exclamation-triangle"></i> Unmatched files are shown with a warning badge
+            </span>
+          </div>
+        </div>
+        <div class="card-body p-0">
+          <div id="completedQueueEmpty" class="text-center py-4 text-muted">
+            <i class="bi bi-folder2-open fs-3 d-block mb-2"></i>
+            No completed downloads yet.
+          </div>
+          <div id="completedQueueList" style="display:none"></div>
+          <div id="completedQueueActions" class="card-footer d-flex align-items-center gap-3 flex-wrap" style="display:none">
+            <span id="selectedCount" class="text-muted small">0 selected</span>
+            <button id="groupBtn" class="btn btn-sm btn-outline-primary" disabled onclick="organizeSelected()">
+              <i class="bi bi-folder-check"></i> Organize Selected
+            </button>
+            <button id="batchGroupBtn" class="btn btn-sm btn-outline-success" disabled onclick="batchOrganizeSelected()">
+              <i class="bi bi-collection"></i> Batch Group &amp; Organize
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Failed Queue -->
+      <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-x-circle"></i> Failed Downloads
+            <span id="failedBadge" class="badge bg-danger ms-2" style="display:none"></span>
+            <span id="queueFailedCount" style="display:none"></span>
+          </h5>
+        </div>
+        <div class="card-body p-0">
+          <div id="failedQueueEmpty" class="text-center py-4 text-muted">
+            <i class="bi bi-check-all fs-3 d-block mb-2"></i>
+            No failed downloads.
+          </div>
+          <div id="failedQueueList" style="display:none"></div>
+        </div>
+      </div>
+    </div>
+    <!-- End Download Queue Tab -->
 
     <!-- MusicBrainz Search Modal -->
     <div class="modal fade" id="musicBrainzModal" tabindex="-1" aria-labelledby="musicBrainzModalLabel" aria-hidden="true">
@@ -4221,13 +4340,24 @@ async function loadQueueStatus() {
     
     // Separate items by status
     const active = data.active.filter(item => ['queued', 'searching', 'downloading'].includes(item.status));
-    const completed = data.completed.filter(item => item.status === 'completed' && item.file_path);
+    const completed = data.completed.filter(item => ['completed', 'unmatched'].includes(item.status) && item.file_path);
     const failed = data.active.filter(item => item.status === 'failed');
-    
-    // Update counts
-    document.getElementById('queueActiveCount').textContent = active.length + data.newly_completed.length;
-    document.getElementById('queueCompletedCount').textContent = completed.length + imported.length;
-    document.getElementById('queueFailedCount').textContent = failed.length;
+
+    // Update counts (elements may not exist if queue tab is not shown)
+    const activeCountEl = document.getElementById('queueActiveCount');
+    const completedCountEl = document.getElementById('queueCompletedCount');
+    const failedCountEl = document.getElementById('queueFailedCount');
+    if (activeCountEl) activeCountEl.textContent = active.length + data.newly_completed.length;
+    if (completedCountEl) completedCountEl.textContent = completed.length + imported.length;
+    if (failedCountEl) failedCountEl.textContent = failed.length;
+
+    // Update navbar badge with active count
+    const navBadge = document.getElementById('queueNavBadge');
+    if (navBadge) {
+      const totalActive = active.length + data.newly_completed.length;
+      navBadge.textContent = totalActive;
+      navBadge.style.display = totalActive > 0 ? 'inline-block' : 'none';
+    }
     
     // Render active queue
     renderActiveQueue(active, data.newly_completed);
@@ -4246,13 +4376,15 @@ async function loadQueueStatus() {
 function renderActiveQueue(active, newly_completed) {
   const container = document.getElementById('activeQueueList');
   const empty = document.getElementById('activeQueueEmpty');
-  
+
+  if (!container || !empty) return;  // Queue section not visible on current tab
+
   if (active.length === 0 && newly_completed.length === 0) {
     container.style.display = 'none';
     empty.style.display = 'block';
     return;
   }
-  
+
   container.style.display = 'block';
   empty.style.display = 'none';
   
@@ -4276,13 +4408,15 @@ function renderActiveQueue(active, newly_completed) {
 function renderCompletedQueue(completed) {
   const container = document.getElementById('completedQueueList');
   const empty = document.getElementById('completedQueueEmpty');
-  
+
+  if (!container || !empty) return;  // Queue section not visible on current tab
+
   if (completed.length === 0) {
     container.style.display = 'none';
     empty.style.display = 'block';
     return;
   }
-  
+
   container.style.display = 'block';
   empty.style.display = 'none';
   document.getElementById('completedBadge').textContent = completed.length;
@@ -4396,6 +4530,7 @@ function renderCompletedQueue(completed) {
                       <small class="d-block">${escapeHtml(item.title)}</small>
                       <small class="text-muted">File: ${escapeHtml(item.found_filename || 'not yet detected')}</small>
                       ${alreadyCopied ? '<small class="badge bg-info text-dark ms-1">Already Copied</small>' : ''}
+                      ${item.status === 'unmatched' ? '<small class="badge bg-warning text-dark ms-1"><i class="bi bi-exclamation-triangle"></i> Unmatched</small>' : ''}
                     </div>
                   </div>
                   <div class="d-flex gap-1 flex-wrap justify-content-end">
@@ -4451,6 +4586,7 @@ function renderCompletedQueue(completed) {
                   <p class="text-muted small mb-2">${escapeHtml(item.artist)}${item.album ? ' · ' + escapeHtml(item.album) : ''}</p>
                   <small class="text-muted">File: ${escapeHtml(item.found_filename || 'not yet detected')}</small>
                   ${alreadyCopied ? '<br><span class="badge bg-info text-dark mt-1"><i class="bi bi-check-circle"></i> Already Copied</span>' : ''}
+                  ${item.status === 'unmatched' ? '<br><span class="badge bg-warning text-dark mt-1"><i class="bi bi-exclamation-triangle"></i> Unmatched – no queue item found</span>' : ''}
                 </div>
               </div>
               <div class="d-flex gap-2">
@@ -4494,13 +4630,15 @@ function renderCompletedQueue(completed) {
 function renderFailedQueue(failed) {
   const container = document.getElementById('failedQueueList');
   const empty = document.getElementById('failedQueueEmpty');
-  
+
+  if (!container || !empty) return;  // Queue section not visible on current tab
+
   if (failed.length === 0) {
     container.style.display = 'none';
     empty.style.display = 'block';
     return;
   }
-  
+
   container.style.display = 'block';
   empty.style.display = 'none';
   document.getElementById('failedBadge').textContent = failed.length;
@@ -4544,15 +4682,17 @@ function renderQueueItem(item, statusColor) {
     'downloading': '📥 Downloading',
     'completed': '✅ Downloaded',
     'imported': '📁 Imported',
-    'failed': '❌ Failed'
+    'failed': '❌ Failed',
+    'unmatched': '⚠️ Unmatched'
   }[item.status] || item.status;
-  
+
   const statusBg = {
     'primary': 'bg-primary',
-    'warning': 'bg-warning',
+    'warning': 'bg-warning text-dark',
     'info': 'bg-info',
     'success': 'bg-success',
-    'danger': 'bg-danger'
+    'danger': 'bg-danger',
+    'secondary': 'bg-secondary'
   }[statusColor] || 'bg-primary';
 
   // Show a file hint when the file has been matched
