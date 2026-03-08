@@ -215,10 +215,13 @@
         <i class="bi bi-person-heart"></i> Similar Artists
       </h5>
     </div>
-    <div class="card-body">
-      <div id="artistSimilarArtistsContainer">
-        <div class="spinner-border" role="status">
-          <span class="visually-hidden">Loading similar artists...</span>
+    <div class="card-body" style="background-color: var(--secondary-bg); min-height: 200px; display: flex; align-items: center; justify-content: center;">
+      <div id="artistSimilarArtistsContainer" style="width: 100%; display: flex; align-items: center; justify-content: center;">
+        <div class="text-center">
+          <div class="spinner-border text-primary" role="status" style="color: var(--spotify-green) !important;">
+            <span class="visually-hidden">Loading similar artists...</span>
+          </div>
+          <p class="text-muted mt-3 mb-0">Loading similar artists...</p>
         </div>
       </div>
     </div>
@@ -425,6 +428,9 @@
             <i class="bi bi-eye-slash"></i> <span class="d-none d-sm-inline">Show Missing</span>
           </button>
         {% endif %}
+        <button class="btn btn-sm btn-outline-info" onclick='searchMusicBrainzForAllReleases({{ artist_name|tojson }})' title="Search MusicBrainz for all artist releases to download">
+          <i class="bi bi-cloud-download"></i> <span class="d-none d-sm-inline">Search All Releases</span>
+        </button>
         <button class="btn btn-sm btn-outline-warning" onclick='checkMissingReleases({{ artist_name|tojson }})' title="Check MusicBrainz and add missing releases inline">
           <i class="bi bi-flag"></i> Check for Missing
         </button>
@@ -476,6 +482,9 @@
             <i class="bi bi-eye-slash"></i> <span class="d-none d-sm-inline">Show Missing</span>
           </button>
         {% endif %}
+        <button class="btn btn-sm btn-outline-info" onclick='searchMusicBrainzForAllReleases({{ artist_name|tojson }})' title="Search MusicBrainz for all artist releases to download">
+          <i class="bi bi-cloud-download"></i> <span class="d-none d-sm-inline">Search All Releases</span>
+        </button>
         <button class="btn btn-sm btn-outline-warning" onclick='checkMissingReleases({{ artist_name|tojson }})' title="Check MusicBrainz and add missing releases inline">
           <i class="bi bi-flag"></i> Check for Missing
         </button>
@@ -527,6 +536,9 @@
             <i class="bi bi-eye-slash"></i> <span class="d-none d-sm-inline">Show Missing</span>
           </button>
         {% endif %}
+        <button class="btn btn-sm btn-outline-info" onclick='searchMusicBrainzForAllReleases({{ artist_name|tojson }})' title="Search MusicBrainz for all artist releases to download">
+          <i class="bi bi-cloud-download"></i> <span class="d-none d-sm-inline">Search All Releases</span>
+        </button>
         <button class="btn btn-sm btn-outline-warning" onclick='checkMissingReleases({{ artist_name|tojson }})' title="Check MusicBrainz and add missing releases inline">
           <i class="bi bi-flag"></i> Check for Missing
         </button>
@@ -3185,6 +3197,191 @@ function initializeMissingToggle() {
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', initializeMissingToggle);
+
+// Search for all releases on MusicBrainz for an artist
+function searchMusicBrainzForAllReleases(artistName) {
+  // Show the MusicBrainz modal if it exists
+  const modalElement = document.getElementById('musicBrainzModal');
+  if (!modalElement) {
+    alert('MusicBrainz search modal not found. Please ensure the modal is properly included.');
+    return;
+  }
+  
+  // Reset modal content
+  const mbSearchInfo = document.getElementById('mbSearchInfo');
+  const mbSearchStatus = document.getElementById('mbSearchStatus');
+  const mbSearchError = document.getElementById('mbSearchError');
+  const mbSearchResults = document.getElementById('mbSearchResults');
+  const mbSearchArtist = document.getElementById('mbSearchArtist');
+  
+  if (mbSearchInfo) mbSearchInfo.style.display = 'none';
+  if (mbSearchError) mbSearchError.style.display = 'none';
+  if (mbSearchResults) mbSearchResults.innerHTML = '';
+  if (mbSearchStatus) mbSearchStatus.style.display = 'none';
+  
+  // Show the modal
+  const modal = new bootstrap.Modal(modalElement);
+  modal.show();
+  
+  // Trigger the search after modal is shown
+  setTimeout(() => {
+    performMusicBrainzSearchForArtist(artistName);
+  }, 500);
+}
+
+function performMusicBrainzSearchForArtist(artistName) {
+  const mbSearchInfo = document.getElementById('mbSearchInfo');
+  const mbSearchStatus = document.getElementById('mbSearchStatus');
+  const mbSearchError = document.getElementById('mbSearchError');
+  const mbSearchResults = document.getElementById('mbSearchResults');
+  const mbSearchArtist = document.getElementById('mbSearchArtist');
+  
+  // Show search info
+  if (mbSearchArtist) mbSearchArtist.textContent = artistName;
+  if (mbSearchInfo) mbSearchInfo.style.display = 'block';
+  if (mbSearchStatus) mbSearchStatus.style.display = 'block';
+  
+  // Fetch and display artist releases from MusicBrainz
+  fetch('/api/artist/missing-releases?artist=' + encodeURIComponent(artistName))
+    .then(r => r.json())
+    .then(data => {
+      if (mbSearchStatus) mbSearchStatus.style.display = 'none';
+      
+      // Handle errors
+      if (data.error) {
+        throw new Error(data.error);
+      }
+      
+      const missing = data.missing || [];
+      
+      if (missing.length === 0) {
+        if (mbSearchResults) {
+          mbSearchResults.innerHTML = `
+            <div class="alert alert-info">
+              <i class="bi bi-info-circle"></i> No releases found for this artist on MusicBrainz, or all releases are already in your library.
+            </div>
+          `;
+        }
+        return;
+      }
+      
+      // Group by type
+      const byType = {
+        Album: [],
+        EP: [],
+        Single: [],
+        Compilation: [],
+        Other: []
+      };
+      
+      missing.forEach(release => {
+        const type = release.category || release.primary_type || 'Album';
+        if (!byType[type]) byType[type] = [];
+        byType[type].push(release);
+      });
+      
+      // Build results HTML
+      let html = `
+        <div class="accordion" id="mbResultsAccordion">
+      `;
+      
+      Object.entries(byType).forEach(([type, releases]) => {
+        if (releases.length === 0) return;
+        
+        const itemId = 'accordion-' + type.replace(/\s+/g, '-').toLowerCase();
+        
+        html += `
+          <div class="accordion-item">
+            <h2 class="accordion-header">
+              <button class="accordion-button${type !== 'Album' ? ' collapsed' : ''}" type="button" data-bs-toggle="collapse" data-bs-target="#${itemId}" aria-expanded="${type === 'Album'}" aria-controls="${itemId}">
+                <i class="bi bi-disc"></i> ${type} (${releases.length})
+              </button>
+            </h2>
+            <div id="${itemId}" class="accordion-collapse ${type !== 'Album' ? 'collapse' : 'collapse show'}" data-bs-parent="#mbResultsAccordion">
+              <div class="accordion-body p-0">
+                <div class="list-group list-group-flush">
+        `;
+        
+        releases.forEach(release => {
+          const year = release.first_release_date ? release.first_release_date.substring(0, 4) : 'Unknown';
+          const coverUrl = release.cover_art_url || '';
+          const coverImg = coverUrl ? `<img src="${escapeHtml(coverUrl)}" alt="${escapeHtml(release.title)}" style="width: 40px; height: 40px; object-fit: cover; border-radius: 3px; margin-right: 0.5rem;">` : '<i class="bi bi-disc" style="font-size: 1.5rem; margin-right: 0.5rem; opacity: 0.5;"></i>';
+          
+          html += `
+            <div class="list-group-item d-flex align-items-center justify-content-between">
+              <div class="d-flex align-items-center" style="flex: 1; min-width: 0;">
+                ${coverImg}
+                <div style="min-width: 0; flex: 1;">
+                  <div class="text-truncate"><strong>${escapeHtml(release.title)}</strong></div>
+                  <small class="text-muted">${escapeHtml(year)}</small>
+                </div>
+              </div>
+              <button class="btn btn-sm btn-outline-success ms-2" onclick="addMissingReleaseForDownload('${escapeJsString(release.release_id)}', '${escapeJsString(release.title)}', '${escapeJsString(artistName)}')" title="Add to query for download search">
+                <i class="bi bi-download"></i> Download
+              </button>
+            </div>
+          `;
+        });
+        
+        html += `
+                </div>
+              </div>
+            </div>
+          </div>
+        `;
+      });
+      
+      html += `</div>`;
+      
+      if (mbSearchResults) mbSearchResults.innerHTML = html;
+    })
+    .catch(error => {
+      if (mbSearchStatus) mbSearchStatus.style.display = 'none';
+      if (mbSearchError) {
+        mbSearchError.textContent = error.message;
+        mbSearchError.style.display = 'block';
+      }
+    });
+}
+
+function addMissingReleaseForDownload(releaseId, releaseTitle, artistName) {
+  // Open download modal with the release title pre-populated
+  const downloadModal = document.getElementById('downloadModal');
+  if (downloadModal) {
+    const modal = new bootstrap.Modal(downloadModal);
+    
+    // Pre-populate search fields with release info
+    const qbitInput = document.getElementById('qbitSearchInput');
+    const slskdInput = document.getElementById('slskdSearchInput');
+    const query = artistName + ' ' + releaseTitle;
+    
+    if (qbitInput) qbitInput.value = query;
+    if (slskdInput) slskdInput.value = query;
+    
+    // Clear previous results
+    document.getElementById('qbitResults').innerHTML = '';
+    document.getElementById('slskdResults').innerHTML = '';
+    document.getElementById('slskdTracksContainer').innerHTML = '';
+    
+    modal.show();
+    
+    // Auto-search on the active tab
+    setTimeout(() => {
+      const activeTab = document.querySelector('#downloadTabs .nav-link.active');
+      if (activeTab && activeTab.id === 'qbit-tab') {
+        performQbitSearch();
+      } else if (activeTab && activeTab.id === 'slskd-tab') {
+        performSlskdSearch();
+      }
+    }, 300);
+  } else {
+    alert('Download modal not found. Please ensure the download functionality is properly configured.');
+  }
+  
+  // Close the MusicBrainz modal
+  const mbModal = bootstrap.Modal.getInstance(document.getElementById('musicBrainzModal'));
+  if (mbModal) mbModal.hide();
+}
 </script>
 <script src="{{ url_for('static', filename='js/genre-utils.js') }}"></script>
 <style>
@@ -3817,7 +4014,7 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
                 <a href="javascript:void(0)" onclick="navigateToArtist('${escapeHtml(artist.name)}', event)" class="btn btn-outline-primary btn-sm" title="View in library">
                   <i class="bi bi-eye"></i> View
                 </a>
-                <a href="/downloads/search?q=${encodeURIComponent(artist.name)}" class="btn btn-outline-secondary btn-sm" title="Download">
+                <a href="javascript:void(0)" onclick="searchMusicBrainzForAllReleases('${escapeJsString(artist.name)}')" class="btn btn-outline-secondary btn-sm" title="Find missing releases">
                   <i class="bi bi-download"></i> Download
                 </a>
                 <a href="https://www.last.fm/music/${encodeURIComponent(artist.name)}" target="_blank" class="btn btn-outline-info btn-sm" title="View on Last.fm">

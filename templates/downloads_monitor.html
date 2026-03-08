@@ -1409,19 +1409,45 @@ async function loadFolderGroups(options = {}) {
     // Combine release groups and individual queue items into a single list.
     const queueGroups = [...releaseQueueGroups, ...individualQueueGroups];
 
-    // Build a lookup map from real folder groups: normalised "artist|album" -> folder_path
-    // This lets each queue item show its matched download folder.
+    // Build lookup maps from real folder groups.
+    // Prefer exact release_id linkage when present, then fall back to normalized artist/album matching.
     const folderLookup = {};
+    const folderLookupByReleaseId = {};
+
+    function normalizeMatchPart(value) {
+      return String(value || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+
     (folderData.folder_groups || []).forEach(fg => {
-      const key = `${(fg.artist || '').toLowerCase()}|${(fg.album || '').toLowerCase()}`;
+      const folderPath = fg.folder_path || fg.name || '';
+      const metadata = fg.metadata || {};
+      const artist = fg.artist || metadata.artist || '';
+      const album = fg.album || metadata.album || '';
+      const releaseId = fg.release_id || null;
+
+      const key = `${normalizeMatchPart(artist)}|${normalizeMatchPart(album)}`;
       if (key !== '|') {
-        folderLookup[key] = fg.folder_path || '';
+        folderLookup[key] = folderPath;
+      }
+
+      if (releaseId) {
+        folderLookupByReleaseId[String(releaseId)] = folderPath;
       }
     });
 
     // Enrich queue items with matched folder paths and then show ONLY queue items.
     queueGroups.forEach(qg => {
-      const key = `${(qg.artist || '').toLowerCase()}|${(qg.album || '').toLowerCase()}`;
+      const releaseId = qg.release_id ? String(qg.release_id) : '';
+      if (releaseId && folderLookupByReleaseId[releaseId]) {
+        qg.matched_folder_path = folderLookupByReleaseId[releaseId];
+        return;
+      }
+
+      const key = `${normalizeMatchPart(qg.artist)}|${normalizeMatchPart(qg.album)}`;
       if (folderLookup[key]) {
         qg.matched_folder_path = folderLookup[key];
       }

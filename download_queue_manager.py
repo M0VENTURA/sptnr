@@ -40,6 +40,10 @@ _scan_progress = {
     'current_path': '',
 }
 
+# Throttle repetitive empty-scan logs to avoid warning spam when downloads folder is idle.
+_last_no_audio_log_at = 0.0
+_NO_AUDIO_LOG_INTERVAL_SECONDS = 600
+
 _queue_schema_checked = False
 _queue_schema_lock = threading.Lock()
 
@@ -978,7 +982,17 @@ def auto_discover_and_queue_files():
         logger.info(f"[AUTO-DISCOVER] Scanning {len(discovered_files)} audio files in {downloads_dir}")
         
         if len(discovered_files) == 0:
-            logger.warning(f"[AUTO-DISCOVER] No audio files found in {downloads_dir}")
+            global _last_no_audio_log_at
+            now_ts = time.time()
+            if (now_ts - _last_no_audio_log_at) >= _NO_AUDIO_LOG_INTERVAL_SECONDS:
+                logger.info(
+                    f"[AUTO-DISCOVER] No audio files found in {downloads_dir} "
+                    f"(this message is throttled to once every {_NO_AUDIO_LOG_INTERVAL_SECONDS}s)"
+                )
+                _last_no_audio_log_at = now_ts
+            else:
+                logger.debug(f"[AUTO-DISCOVER] No audio files found in {downloads_dir}")
+            update_scan_progress(scanning=False)
             return stats
         
         for file_info in discovered_files:
