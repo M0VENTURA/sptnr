@@ -246,38 +246,56 @@ def ensure_writer_column():
     
     This is called on app startup to automatically add the writer column
     if it doesn't exist, allowing Navidrome lyricist data to be stored.
+    Supports both SQLite and PostgreSQL.
     """
     import logging
     
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
         
-        # Check if tracks table exists
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tracks'")
-        if not cursor.fetchone():
+        # Check if tracks table exists (database-agnostic)
+        if is_pg:
+            cursor.execute(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'tracks'"
+            )
+        else:
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tracks'")
+        row = cursor.fetchone()
+        table_exists = (row[0] if row else 0) if is_pg else bool(row)
+        if not table_exists:
             logging.warning("Tracks table does not exist yet, skipping writer column migration")
             conn.close()
             return False
         
-        # Check if writer column exists
-        cursor.execute("PRAGMA table_info(tracks)")
-        columns = {row[1] for row in cursor.fetchall()}
+        # Check if writer column exists (database-agnostic)
+        if is_pg:
+            cursor.execute(
+                "SELECT COUNT(*) FROM information_schema.columns "
+                "WHERE table_name = 'tracks' AND column_name = 'writer'"
+            )
+            writer_exists = (cursor.fetchone()[0] or 0) > 0
+        else:
+            cursor.execute("PRAGMA table_info(tracks)")
+            columns = {row[1] for row in cursor.fetchall()}
+            writer_exists = 'writer' in columns
         
-        if 'writer' not in columns:
+        if not writer_exists:
             # Add the writer column
             logging.info("Creating writer column for lyricist/songwriter data...")
             try:
                 cursor.execute("ALTER TABLE tracks ADD COLUMN writer TEXT")
                 conn.commit()
                 logging.info("✓ Successfully added writer column to tracks table")
-            except sqlite3.OperationalError as e:
-                if "duplicate column name" not in str(e).lower():
+            except Exception as e:
+                err_msg = str(e).lower()
+                if "duplicate column" in err_msg or "already exists" in err_msg:
+                    logging.info("✓ Writer column already exists")
+                else:
                     logging.error(f"✗ Failed to add writer column: {e}")
                     conn.close()
                     raise
-                else:
-                    logging.info("✓ Writer column already exists")
         else:
             logging.debug("✓ Writer column already exists in tracks table")
         
