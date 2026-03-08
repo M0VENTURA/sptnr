@@ -3261,10 +3261,11 @@ def api_artist_missing_releases():
         if not norm_title or norm_title in existing_norm:
             continue
 
-        # Keep primary albums and route by secondary type so artist page sections
-        # (Albums, Live Albums, Remix Albums, Compilations) can display missing items.
+        # Include albums, EPs, and singles. Route by primary type and secondary type
+        # so artist page sections (Albums, Live Albums, Remix Albums, Compilations,
+        # EPs, Singles) can display missing items.
         primary_type = (rg.get("primary_type") or "").lower()
-        if primary_type != "album":
+        if primary_type not in ("album", "ep", "single"):
             continue
 
         secondary = [s.lower() for s in rg.get("secondary_types") or []]
@@ -3274,6 +3275,10 @@ def api_artist_missing_releases():
             category = "Live Album"
         elif "remix" in secondary:
             category = "Remix"
+        elif primary_type == "ep":
+            category = "EP"
+        elif primary_type == "single":
+            category = "Single"
         else:
             category = "Album"
 
@@ -3546,10 +3551,10 @@ def api_scan_all_missing_releases():
                     # This strengthens MusicBrainz lookups for album type detection
                     try:
                         from api_clients.musicbrainz import lookup_and_save_artist_mbid
-                        cursor.execute("""
+                        cursor.execute(f"""
                             SELECT MAX(musicbrainz_artist_id)
                             FROM tracks
-                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
+                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
                         """, (artist_name,))
                         result = cursor.fetchone()
                         existing_mbid = result[0] if result and result[0] else None
@@ -3568,10 +3573,10 @@ def api_scan_all_missing_releases():
                         resolved_artist_mbid = None
                     
                     # Get existing albums for this artist
-                    cursor.execute("""
+                    cursor.execute(f"""
                         SELECT DISTINCT album
                         FROM tracks
-                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
+                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
                     """, (artist_name,))
                     existing_albums = [row[0] for row in cursor.fetchall()]
                     existing_norm = {_normalize_release_title(a) for a in existing_albums if a}
@@ -3591,11 +3596,11 @@ def api_scan_all_missing_releases():
                                 original_album = next((a for a in existing_albums if _normalize_release_title(a) == norm_title), None)
                                 if original_album:
                                     # Update the URL in tracks table
-                                    cursor.execute("""
+                                    cursor.execute(f"""
                                         UPDATE tracks 
-                                        SET cover_art_url = ?
-                                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
-                                          AND album = ?
+                                        SET cover_art_url = {placeholder}
+                                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                                          AND album = {placeholder}
                                     """, (cover_art_url, artist_name, original_album))
                                     
                                     # Also download and save the actual album art image data (same as popularity scan does)
@@ -3611,10 +3616,10 @@ def api_scan_all_missing_releases():
                         if not norm_title:
                             continue
                         
-                        # Keep primary albums and route by secondary type so artist page
-                        # sections can display missing items by category.
+                        # Include albums, EPs, and singles. Route by primary type and secondary
+                        # type so artist page sections can display missing items by category.
                         primary_type = (rg.get("primary_type") or "").lower()
-                        if primary_type != "album":
+                        if primary_type not in ("album", "ep", "single"):
                             continue
 
                         secondary = [s.lower() for s in rg.get("secondary_types") or []]
@@ -3624,6 +3629,10 @@ def api_scan_all_missing_releases():
                             category = "Live Album"
                         elif "remix" in secondary:
                             category = "Remix"
+                        elif primary_type == "ep":
+                            category = "EP"
+                        elif primary_type == "single":
+                            category = "Single"
                         else:
                             category = "Album"
                         
