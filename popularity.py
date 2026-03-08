@@ -2317,20 +2317,16 @@ def detect_single_for_track(
         except Exception as e:
             log_debug(f"   Iterative z-score detection error for {title}: {e}")
     
-    # Calculate confidence based on sources with iterative z-score as required baseline
-    # High confidence: iterative_zscore + at least one other method
-    # Medium confidence: iterative_zscore only
-    # Low confidence: no iterative_zscore
+    # Calculate confidence based on sources.
+    # Discogs is the only high-confidence source; all other sources are medium.
     has_iterative_zscore = "iterative_zscore" in single_sources
     has_discogs_single = "discogs" in single_sources
     has_discogs_video = "discogs_video" in single_sources
     has_other_sources = any(s in single_sources for s in ["spotify", "musicbrainz", "lastfm"])
     
-    if has_iterative_zscore and (has_discogs_single or has_discogs_video or has_other_sources):
+    if has_discogs_single:
         single_confidence = "high"
-    elif has_iterative_zscore:
-        single_confidence = "medium"
-    elif has_other_sources or has_discogs_video or has_discogs_single:
+    elif has_iterative_zscore or has_other_sources or has_discogs_video:
         single_confidence = "medium"
     else:
         single_confidence = "low"
@@ -2342,7 +2338,7 @@ def detect_single_for_track(
         if verbose:
             log_verbose(f"   Downgraded {title} confidence to low (album has {album_track_count} tracks)")
     
-    # is_single = True only for high confidence singles (5* singles)
+    # is_single = True only for high confidence singles (Discogs-confirmed)
     is_single = single_confidence == "high"
     
     # Deduplicate sources to ensure no duplicates slip through
@@ -5408,8 +5404,8 @@ def popularity_scan(
                     track_album_type = row_get(track, "spotify_album_type", None)
                     
                     # Short-circuit: if the track's own Spotify album type is 'single',
-                    # it was released as a single release. Mark with high confidence immediately,
-                    # skipping the heavier API-based detection pipeline.
+                    # treat it as a medium-confidence metadata signal. Star assignment should
+                    # still be decided by z-score + source-count gates later in the pipeline.
                     if track_album_type and track_album_type.lower() == 'single':
                         album_live_context = (
                             is_live_or_alternate_album(album)
@@ -5428,8 +5424,8 @@ def popularity_scan(
                             log_info(f"Single detected via album type: {title} (spotify_album_type='single')")
                             detection_result = {
                                 "sources": ["spotify_album_type"],
-                                "confidence": "high",
-                                "is_single": True
+                                "confidence": "medium",
+                                "is_single": False
                             }
                             single_sources = detection_result["sources"]
                             single_confidence = detection_result["confidence"]
@@ -5440,7 +5436,7 @@ def popularity_scan(
                                 bool(is_single),
                                 single_confidence,
                                 json.dumps(single_sources),
-                                5,  # stars for single
+                                None,  # defer stars to z-score + confidence gates
                                 track_id
                             ))
                             singles_detected += 1
@@ -5991,11 +5987,11 @@ def popularity_scan(
                         # Skip confidence-based upgrades for excluded tracks (e.g., bonus tracks with parentheses)
                         # These tracks were excluded from statistics calculation, so their z-scores are not meaningful
                         if not is_excluded_track:
-                            # Count only medium-confidence evidence sources.
-                            # Do not count internal markers (e.g. iterative_zscore/version_count)
-                            # toward the "2 medium sources" rule for z-score < 1 tracks.
+                            # Count evidence sources for star gating.
+                            # Do not count internal markers (e.g. iterative_zscore/version_count).
                             medium_conf_eligible_sources = {
                                 "spotify",
+                                "spotify_album_type",
                                 "musicbrainz",
                                 "musicbrainz_video",
                                 "musicbrainz_compilation",
@@ -6003,12 +5999,16 @@ def popularity_scan(
                                 "discogs_video",
                                 "lastfm",
                             }
-                            medium_conf_count = (
-                                len([s for s in single_sources if s in medium_conf_eligible_sources])
-                                if single_sources and single_confidence == "medium"
-                                else 0
-                            )
-                            has_high_confidence = (single_confidence == "high" or single_confidence == "user")
+                            medium_conf_count = len([s for s in single_sources if s in medium_conf_eligible_sources]) if single_sources else 0
+
+                            # True high-confidence metadata sources that can override the
+                            # 2-medium requirement for 0<=z<1.
+                            # Discogs is intentionally the only high-confidence source.
+                            high_conf_eligible_sources = {
+                                "discogs",
+                            }
+                            high_conf_source_count = len([s for s in single_sources if s in high_conf_eligible_sources]) if single_sources else 0
+                            has_high_confidence = (single_confidence == "user" or high_conf_source_count >= 1)
                             
                             # Never trust persisted "popular" confidence for star assignment.
                             # It is historical and can become stale when popularity shifts between scans.
@@ -6025,47 +6025,60 @@ def popularity_scan(
                                 stars = 5
                                 log_info(f"5-star assignment: {title} (user-set single)")
                                 log_debug(f"User-set single - track_id: {track_id}")
-                            elif single_confidence == "high":
-                                # High confidence always gets 5 stars (z-score agnostic)
-                                stars = 5
-                                log_info(f"5-star assignment: {title} (high-confidence single, zscore={track_zscore:.2f})")
-                                log_debug(f"High confidence single detected - track_id: {track_id}")
-                            elif single_confidence == "medium":
-                                # Medium confidence: z-score determines requirements
-                                if track_zscore > 1.0:
-                                    # z-score > 1: only 1 medium source needed
-                                    if medium_conf_count >= 1:
-                                        stars = 5
-                                        if not is_single:
-                                            single_upgrades.append(track_id)
-                                            log_info(f"5-star assignment: {title} ({medium_conf_count} medium-confidence source + z-score={track_zscore:.2f} > 1.0) - upgraded to single")
-                                        else:
-                                            log_info(f"5-star assignment: {title} ({medium_conf_count} medium-confidence source + z-score={track_zscore:.2f} > 1.0)")
-                                        log_debug(f"Medium confidence with z > 1.0 - track_id: {track_id}, zscore: {track_zscore:.2f}")
+                            elif track_zscore > 1.0:
+                                # z-score > 1: requires at least one evidence source
+                                # (medium or true high-confidence metadata source).
+                                if medium_conf_count >= 1 or high_conf_source_count >= 1:
+                                    stars = 5
+                                    if not is_single:
+                                        single_upgrades.append(track_id)
+                                        log_info(
+                                            f"5-star assignment: {title} "
+                                            f"(evidence={medium_conf_count}, high_sources={high_conf_source_count}, z-score={track_zscore:.2f} > 1.0) - upgraded to single"
+                                        )
                                     else:
-                                        # Medium confidence but no sources
-                                        stars = 3
-                                        log_info(f"3-star assignment: {title} (medium confidence, zscore={track_zscore:.2f})")
-                                elif track_zscore >= 0.0:
-                                    # z-score 0-1: requires 2 medium sources
-                                    if medium_conf_count >= 2:
-                                        stars = 5
-                                        if not is_single:
-                                            single_upgrades.append(track_id)
-                                            log_info(f"5-star assignment: {title} ({medium_conf_count} medium-confidence sources + z-score={track_zscore:.2f}) - upgraded to single")
-                                        else:
-                                            log_info(f"5-star assignment: {title} ({medium_conf_count} medium-confidence sources + z-score={track_zscore:.2f})")
-                                        log_debug(f"Medium confidence with 2+ sources - track_id: {track_id}, zscore: {track_zscore:.2f}")
-                                    else:
-                                        # Only 1 medium source with z-score < 1.0
-                                        stars = 3
-                                        log_info(f"3-star assignment: {title} ({medium_conf_count} medium-confidence source(s), zscore={track_zscore:.2f} < 1.0)")
-                                        log_debug(f"Medium confidence insufficient - track_id: {track_id}, sources: {medium_conf_count}, zscore: {track_zscore:.2f}")
-                                        single_downgrades.append(track_id)
+                                        log_info(
+                                            f"5-star assignment: {title} "
+                                            f"(evidence={medium_conf_count}, high_sources={high_conf_source_count}, z-score={track_zscore:.2f} > 1.0)"
+                                        )
+                                    log_debug(
+                                        f"Evidence gate passed (z>1) - track_id: {track_id}, "
+                                        f"sources: {medium_conf_count}, high_sources: {high_conf_source_count}, zscore: {track_zscore:.2f}"
+                                    )
                                 else:
-                                    # Negative z-score
                                     stars = 3
-                                    log_info(f"3-star assignment: {title} (medium confidence, negative zscore={track_zscore:.2f})")
+                                    log_info(f"3-star assignment: {title} (no qualifying evidence, zscore={track_zscore:.2f})")
+                            elif track_zscore >= 0.0:
+                                # z-score 0-1: requires 2 medium sources OR 1 true high-confidence metadata source.
+                                if medium_conf_count >= 2 or high_conf_source_count >= 1:
+                                    stars = 5
+                                    if not is_single:
+                                        single_upgrades.append(track_id)
+                                        log_info(
+                                            f"5-star assignment: {title} "
+                                            f"(evidence={medium_conf_count}, high_sources={high_conf_source_count}, z-score={track_zscore:.2f}) - upgraded to single"
+                                        )
+                                    else:
+                                        log_info(
+                                            f"5-star assignment: {title} "
+                                            f"(evidence={medium_conf_count}, high_sources={high_conf_source_count}, z-score={track_zscore:.2f})"
+                                        )
+                                    log_debug(
+                                        f"Evidence gate passed (0<=z<1) - track_id: {track_id}, "
+                                        f"sources: {medium_conf_count}, high_sources: {high_conf_source_count}, zscore: {track_zscore:.2f}"
+                                    )
+                                else:
+                                    stars = 3
+                                    log_info(f"3-star assignment: {title} ({medium_conf_count} source(s), zscore={track_zscore:.2f} < 1.0)")
+                                    log_debug(
+                                        f"Evidence gate failed (0<=z<1) - track_id: {track_id}, "
+                                        f"sources: {medium_conf_count}, high_sources: {high_conf_source_count}, zscore: {track_zscore:.2f}"
+                                    )
+                                    single_downgrades.append(track_id)
+                            else:
+                                # Negative z-score
+                                stars = 3
+                                log_info(f"3-star assignment: {title} (negative zscore={track_zscore:.2f})")
 
                             # Popularity-only 5★ must be recomputed every scan from current z-score,
                             # never from persisted confidence flags.
