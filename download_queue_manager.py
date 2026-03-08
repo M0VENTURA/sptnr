@@ -739,7 +739,7 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
     Move a single completed track from /downloads into the /music library tree.
 
     Folder structure: <music_root>/<album_artist>/<year> - <album>/
-    (year omitted when not available)
+    (year defaults to 'Unknown' when not available)
 
     Args:
         queue_item_dict: dict from download_queue row with at least file_path,
@@ -767,12 +767,15 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
             queue_item_dict.get('album_artist') or queue_item_dict.get('artist') or 'Unknown Artist'
         )
         album = _sanitize_path_component(queue_item_dict.get('album') or 'Unknown Album')
-        year = queue_item_dict.get('year')
-
-        if year:
-            dest_folder = os.path.join(music_root, album_artist, f"{year} - {album}")
-        else:
-            dest_folder = os.path.join(music_root, album_artist, album)
+        year = queue_item_dict.get('year') or ''
+        
+        # Clean up year (extract just the year if it's a full date)
+        if year and len(str(year)) >= 4:
+            year = str(year)[:4]
+        elif not year:
+            year = 'Unknown'
+        
+        dest_folder = os.path.join(music_root, album_artist, f"{year} - {album}")
 
         os.makedirs(dest_folder, exist_ok=True)
 
@@ -2872,12 +2875,15 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
 
         dest_album_artist = _most_common(album_artists) or artist or 'Unknown Artist'
         dest_album = _most_common(albums) or album or 'Unknown Album'
-        dest_year = _most_common(years)
+        dest_year = _most_common(years) or ''
+        
+        # Clean up year (extract just the year if it's a full date)
+        if dest_year and len(str(dest_year)) >= 4:
+            dest_year = str(dest_year)[:4]
+        elif not dest_year:
+            dest_year = 'Unknown'
 
-        if dest_year:
-            dest_dir = os.path.join(music_root, dest_album_artist, f"{dest_year} - {dest_album}")
-        else:
-            dest_dir = os.path.join(music_root, dest_album_artist, dest_album)
+        dest_dir = os.path.join(music_root, dest_album_artist, f"{dest_year} - {dest_album}")
 
         os.makedirs(dest_dir, exist_ok=True)
 
