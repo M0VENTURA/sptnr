@@ -6442,7 +6442,6 @@ def album_edit(artist, album):
         try:
             # Get the actual artist and album names from the database after the update
             # Use the same COALESCE logic as album_detail to get the correct artist
-            cursor.execute("""
             cursor.execute(f"""
                 SELECT 
                     COALESCE(NULLIF(album_artist, ''), artist) as effective_artist,
@@ -6455,9 +6454,8 @@ def album_edit(artist, album):
             db_row = cursor.fetchone()
             
             if db_row:
-                # db_row[0] = effective_artist, db_row[1] = album
-                redirect_artist = db_row[0]
-                redirect_album = db_row[1]
+                redirect_artist = db_row['effective_artist']
+                redirect_album = db_row['album']
             else:
                 # Fallback: use form data if names changed, otherwise use original URL params
                 redirect_artist = album_artist if names_changed else artist
