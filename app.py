@@ -9260,7 +9260,9 @@ def slskd_download_single():
 @app.route("/api/musicbrainz/search", methods=["POST"])
 def api_musicbrainz_search():
     """Search MusicBrainz for releases + local cached missing releases"""
-    query = request.json.get("query", "").strip()
+    payload = request.get_json(silent=True) or {}
+    query = str(payload.get("query", "")).strip()
+    artist_only = bool(payload.get("artist_only", False))
     if not query:
         return jsonify({"error": "Query parameter required"}), 400
     
@@ -9274,15 +9276,24 @@ def api_musicbrainz_search():
             cursor = conn.cursor()
             placeholder = "%s" if _is_postgres_connection(conn) else "?"
             
-            # Search for artists matching the query
-            query_pattern = f"%{query}%"
-            cursor.execute(f"""
-                SELECT DISTINCT artist, release_id, title, primary_type, first_release_date, cover_art_url, category
-                FROM missing_releases
-                WHERE artist LIKE {placeholder} OR title LIKE {placeholder}
-                ORDER BY artist, first_release_date DESC
-                LIMIT 50
-            """, (query_pattern, query_pattern))
+            # Search local missing releases with either broad term mode or artist-only mode.
+            if artist_only:
+                cursor.execute(f"""
+                    SELECT DISTINCT artist, release_id, title, primary_type, first_release_date, cover_art_url, category
+                    FROM missing_releases
+                    WHERE LOWER(artist) = LOWER({placeholder})
+                    ORDER BY first_release_date DESC
+                    LIMIT 250
+                """, (query,))
+            else:
+                query_pattern = f"%{query}%"
+                cursor.execute(f"""
+                    SELECT DISTINCT artist, release_id, title, primary_type, first_release_date, cover_art_url, category
+                    FROM missing_releases
+                    WHERE artist LIKE {placeholder} OR title LIKE {placeholder}
+                    ORDER BY artist, first_release_date DESC
+                    LIMIT 50
+                """, (query_pattern, query_pattern))
             
             local_results = cursor.fetchall()
             conn.close()
@@ -9321,10 +9332,11 @@ def api_musicbrainz_search():
             
             # Search for release groups
             url = "https://musicbrainz.org/ws/2/release-group"
+            mb_query = f'artist:"{query}"' if artist_only else query
             params = {
                 "fmt": "json",
-                "limit": 50,
-                "query": query
+                "limit": 250 if artist_only else 50,
+                "query": mb_query
             }
             
             resp = requests.get(url, headers=headers, params=params, timeout=10)
@@ -9370,7 +9382,10 @@ def api_musicbrainz_search():
             logging.error(f"[MB_SEARCH] MusicBrainz search error: {e}")
         
         # Sort by artist and release date
-        releases.sort(key=lambda x: (x.get("artist", "").lower(), x.get("first_release_date", "")), reverse=True)
+        if artist_only:
+            releases.sort(key=lambda x: x.get("first_release_date", ""), reverse=True)
+        else:
+            releases.sort(key=lambda x: (x.get("artist", "").lower(), x.get("first_release_date", "")), reverse=True)
         
         return jsonify({"releases": releases, "total": len(releases)})
         

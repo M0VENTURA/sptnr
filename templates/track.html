@@ -1763,7 +1763,7 @@ async function performArtistMusicBrainzSearch(artistName) {
         const mbResponse = await fetch('/api/musicbrainz/search', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query: artistName })
+            body: JSON.stringify({ query: artistName, artist_only: true })
         });
         
         const mbData = await mbResponse.json();

@@ -1933,7 +1933,7 @@ function checkMissingReleases(artistName) {
               <button class="btn btn-outline-success" onclick="importReleaseFromEncoded('${artistEnc}', '${releaseIdEnc}', '${titleEnc}')" title="Import this release">
                 <i class="bi bi-download"></i>
               </button>
-              <button class="btn btn-outline-secondary" onclick="searchMusicBrainzReleaseFromEncoded(event, '${artistEnc}', '${titleEnc}')" title="Search MusicBrainz">
+              <button class="btn btn-outline-secondary" onclick="searchMusicBrainzReleaseFromEncoded(null, '${artistEnc}', '${titleEnc}')" title="Search MusicBrainz">
                 <i class="bi bi-search"></i>
               </button>
             </div>
@@ -4362,7 +4362,7 @@ function addMissingReleaseForDownload(releaseId, releaseTitle, artistName) {
       const mbResponse = await fetch('/api/musicbrainz/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: artistName })
+        body: JSON.stringify({ query: artistName, artist_only: true })
       });
       
       const mbData = await mbResponse.json();
