@@ -325,6 +325,25 @@ def is_live_or_alternate_album(album: str) -> bool:
     return any(re.search(pattern, album_lower) for pattern in live_patterns)
 
 
+def is_live_or_unplugged_track_title(title: str) -> bool:
+    """Return True when a track title clearly indicates a live/unplugged version."""
+    if not title:
+        return False
+
+    title_lower = title.lower()
+    live_title_patterns = [
+        r'\blive\s+at\b',
+        r'\blive\s+in\b',
+        r'\blive\s+from\b',
+        r'\blive\s+session\b',
+        r'\(live[^)]*\)',
+        r'\[live[^\]]*\]',
+        r'-\s*live\b',
+        r'\bunplugged\b',
+    ]
+    return any(re.search(pattern, title_lower) for pattern in live_title_patterns)
+
+
 def detect_alternate_takes(tracks: list) -> dict:
     """
     Detect alternate takes in a list of tracks by comparing titles with/without parentheses.
@@ -5392,27 +5411,41 @@ def popularity_scan(
                     # it was released as a single release. Mark with high confidence immediately,
                     # skipping the heavier API-based detection pipeline.
                     if track_album_type and track_album_type.lower() == 'single':
-                        log_info(f"Single detected via album type: {title} (spotify_album_type='single')")
-                        detection_result = {
-                            "sources": ["spotify_album_type"],
-                            "confidence": "high",
-                            "is_single": True
-                        }
-                        single_sources = detection_result["sources"]
-                        single_confidence = detection_result["confidence"]
-                        is_single = detection_result["is_single"]
-                        log_debug(f"Single detection result (album type shortcut) - is_single: {is_single}, confidence: {single_confidence}, sources: {single_sources}")
-                        # Queue for batch update and continue to next track
-                        singles_updates.append((
-                            bool(is_single),
-                            single_confidence,
-                            json.dumps(single_sources),
-                            5,  # stars for single
-                            track_id
-                        ))
-                        singles_detected += 1
-                        singles_processed += 1
-                        continue
+                        album_live_context = (
+                            is_live_or_alternate_album(album)
+                            or "+live" in ((album_type or "").strip().lower())
+                        )
+                        track_is_live_variant = is_live_or_unplugged_track_title(title)
+
+                        # Guard the shortcut path so live B-sides on otherwise normal singles
+                        # are not incorrectly promoted to 5-star detected singles.
+                        if track_is_live_variant and not album_live_context:
+                            log_debug(
+                                f"Skipping album-type single shortcut for live/unplugged track: "
+                                f"{title} (album='{album}')"
+                            )
+                        else:
+                            log_info(f"Single detected via album type: {title} (spotify_album_type='single')")
+                            detection_result = {
+                                "sources": ["spotify_album_type"],
+                                "confidence": "high",
+                                "is_single": True
+                            }
+                            single_sources = detection_result["sources"]
+                            single_confidence = detection_result["confidence"]
+                            is_single = detection_result["is_single"]
+                            log_debug(f"Single detection result (album type shortcut) - is_single: {is_single}, confidence: {single_confidence}, sources: {single_sources}")
+                            # Queue for batch update and continue to next track
+                            singles_updates.append((
+                                bool(is_single),
+                                single_confidence,
+                                json.dumps(single_sources),
+                                5,  # stars for single
+                                track_id
+                            ))
+                            singles_detected += 1
+                            singles_processed += 1
+                            continue
                     
                     # Get the popularity score for this track (may have been calculated earlier)
                     # Open a fresh short-lived connection (conn was closed before this loop to release locks)
@@ -5901,6 +5934,8 @@ def popularity_scan(
                     updates = []
                     # Track which medium-confidence tracks should be upgraded to is_single=1
                     single_upgrades = []
+                    # Track medium-confidence tracks that must be downgraded to low and untagged as single
+                    single_downgrades = []
                     # Popularity-only 5★ promotions require a strong outlier signal.
                     # Keep this stricter than album standout tagging to avoid over-promotion.
                     popularity_5star_z_threshold = 2.0
@@ -6026,6 +6061,7 @@ def popularity_scan(
                                         stars = 3
                                         log_info(f"3-star assignment: {title} ({medium_conf_count} medium-confidence source(s), zscore={track_zscore:.2f} < 1.0)")
                                         log_debug(f"Medium confidence insufficient - track_id: {track_id}, sources: {medium_conf_count}, zscore: {track_zscore:.2f}")
+                                        single_downgrades.append(track_id)
                                 else:
                                     # Negative z-score
                                     stars = 3
@@ -6073,8 +6109,9 @@ def popularity_scan(
                         updates
                     )
                     
-                    # NEW: Tag 5-star songs that are detected as singles (medium+ confidence)
-                    # This ensures that ANY 5-star track detected as a single is properly flagged
+                    # Tag 5-star songs as singles only for high/user confidence.
+                    # Medium-confidence promotion is handled exclusively by the explicit gate above
+                    # (2 sources for 0<=z<1, 1 source for z>1).
                     five_star_singles_to_tag = []
                     for stars, track_id in updates:
                         if stars == 5:  # Only for 5-star tracks
@@ -6087,18 +6124,18 @@ def popularity_scan(
                             if single_row:
                                 single_confidence = single_row["single_confidence"] if single_row["single_confidence"] else "low"
                                 is_single = single_row["is_single"] if single_row["is_single"] else 0
-                                # Tag as single if medium+ confidence and not already tagged
-                                if single_confidence in ["medium", "high"] and not is_single:
+                                # Tag as single if high/user confidence and not already tagged
+                                if single_confidence in ["high", "user"] and not is_single:
                                     five_star_singles_to_tag.append(track_id)
                     
-                    # Tag all 5-star medium+ confidence singles
+                    # Tag 5-star high/user-confidence singles
                     if five_star_singles_to_tag:
                         single_true_value = True if is_postgres_connection(conn) else 1
                         cursor.executemany(
                             f"""UPDATE tracks SET is_single = {placeholder} WHERE id = {placeholder}""",
                             ((single_true_value, track_id) for track_id in five_star_singles_to_tag)
                         )
-                        log_info(f"Tagged {len(five_star_singles_to_tag)} 5-star track(s) as singles (medium+ confidence)")
+                        log_info(f"Tagged {len(five_star_singles_to_tag)} 5-star track(s) as singles (high/user confidence)")
                         log_debug(f"5-star singles tagged: {five_star_singles_to_tag}")
                     
                     # Upgrade is_single flag for medium confidence tracks with 2+ sources
@@ -6110,6 +6147,18 @@ def popularity_scan(
                         )
                         log_info(f"Upgraded {len(single_upgrades)} medium-confidence track(s) to single status (2+ sources) without overriding star rating")
                         log_debug(f"Upgraded tracks: {single_upgrades}")
+
+                    # Enforce downgrade rule for medium confidence tracks that fail the z-score/source gate.
+                    if single_downgrades:
+                        single_false_value = False if is_postgres_connection(conn) else 0
+                        cursor.executemany(
+                            f"""UPDATE tracks
+                            SET is_single = {placeholder}, single_confidence = {placeholder}
+                            WHERE id = {placeholder}""",
+                            ((single_false_value, "low", track_id) for track_id in set(single_downgrades))
+                        )
+                        log_info(f"Downgraded {len(set(single_downgrades))} track(s) to low confidence (medium source gate failed for 0<=z<1)")
+                        log_debug(f"Downgraded tracks: {list(set(single_downgrades))}")
                     
                     conn.commit()
                     log_debug(f"Batch committed {len(updates)} star ratings for album '{album}'")
