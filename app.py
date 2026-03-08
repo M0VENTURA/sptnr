@@ -4285,8 +4285,15 @@ def api_artist_image():
     except Exception as e:
         logging.error(f"[ARTIST IMAGE] Error fetching image for {artist_name}: {e}")
     
-    # Return 404 when no cached image - allows frontend onerror handlers to show fallback icons
-    return Response("", status=404)
+    # Return a lightweight placeholder instead of 404 to avoid noisy console errors.
+    placeholder_svg = """<svg xmlns='http://www.w3.org/2000/svg' width='300' height='300' viewBox='0 0 300 300'>
+<rect width='300' height='300' fill='#1b1b1b'/>
+<circle cx='150' cy='110' r='48' fill='#7d7d7d'/>
+<rect x='78' y='180' width='144' height='80' rx='40' fill='#7d7d7d'/>
+</svg>"""
+    response = Response(placeholder_svg, status=200, mimetype="image/svg+xml")
+    response.headers["Cache-Control"] = "public, max-age=3600"
+    return response
 
 
 @app.route("/api/artist/search-images")

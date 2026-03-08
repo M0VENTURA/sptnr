@@ -2139,8 +2139,17 @@ async function searchMusicBrainzRelease(event, artist, album) {
     return;
   }
 
-  const modal = new bootstrap.Modal(modalEl);
-  modal.show();
+  const hasBootstrapModal = !!(window.bootstrap && window.bootstrap.Modal);
+  if (hasBootstrapModal) {
+    const modal = new bootstrap.Modal(modalEl);
+    modal.show();
+  } else {
+    // Fallback for environments where Bootstrap JS is not loaded.
+    modalEl.style.display = 'block';
+    modalEl.classList.add('show');
+    modalEl.removeAttribute('aria-hidden');
+    document.body.classList.add('modal-open');
+  }
 
   if (infoEl && infoArtistEl && infoAlbumEl) {
     infoArtistEl.textContent = artist;
