@@ -18072,11 +18072,12 @@ def api_album_majority_artist():
         
         conn = get_db()
         cursor = conn.cursor()
+        placeholder = get_placeholder(conn)
         
         # Get all track artists from this album
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT artist FROM tracks 
-            WHERE album = ? 
+            WHERE album = {placeholder} 
             ORDER BY track_number ASC
         """, (album,))
         
@@ -18692,7 +18693,7 @@ def api_track_update_metadata():
         if 'stars' in data:
             db_updates['stars'] = int(data['stars']) if data['stars'] else 0
         if 'is_single' in data:
-            db_updates['is_single'] = 1 if data['is_single'] else 0
+            db_updates['is_single'] = bool(data['is_single'])
         if 'single_confidence' in data and data['single_confidence'] is not None:
             db_updates['single_confidence'] = data['single_confidence'].strip()
         if 'year' in data and data['year'] is not None:
