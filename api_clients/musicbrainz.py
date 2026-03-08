@@ -920,70 +920,108 @@ class MusicBrainzClient:
         
         return False
     
-    def get_composers_for_track(self, title: str, artist: str) -> list[str]:
+    def get_composers_for_track(self, title: str, artist: str, mbid: str = None) -> list[str]:
         """
         Fetch composer(s) for a track from MusicBrainz.
-        
-        Looks up the recording and extracts composer information from relationships.
-        
+
+        Uses a two-step approach:
+        1. If no MBID is provided, search for the recording to obtain its MBID.
+        2. Look up the recording directly by MBID with ``inc=artist-rels+work-rels``
+           to retrieve writer/composer/lyricist relationships.
+
+        The MusicBrainz *search* endpoint does not return relationship data even when
+        ``inc=artist-rels`` is passed; relationships are only available via the
+        *lookup* endpoint (``/recording/{mbid}``).  The correct response key for
+        relationships is ``"relations"``, not ``"relationships"``.
+
         Args:
             title: Track title
             artist: Artist name
-            
+            mbid: Optional MusicBrainz recording MBID – skips the search step when
+                  provided, saving one API call.
+
         Returns:
-            List of composer names (empty list if not found or error)
+            List of composer/writer/lyricist names (empty list if not found or error)
         """
         if not self.enabled:
             return []
-        
+
         max_retries = 3
         retry_delay = 1.0
-        
+
+        # Preserve the MBID across retries so we don't repeat the search step if it
+        # already succeeded but the subsequent lookup failed.
+        recording_mbid = mbid
+
         for attempt in range(max_retries):
             try:
-                # Use rate limiter
+                # Step 1: If we don't already have an MBID, search for the recording.
+                # The search endpoint does NOT support artist-rels/work-rels includes,
+                # so we only use it to find the recording MBID.
+                if not recording_mbid:
+                    if _rate_limiter:
+                        _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
+                        _rate_limiter.record_musicbrainz_request()
+                    else:
+                        time.sleep(1.0)
+
+                    escaped_title = _escape_lucene_special_chars(title)
+                    escaped_artist = _escape_lucene_special_chars(artist)
+                    query = f'recording:"{escaped_title}" AND artist:"{escaped_artist}"'
+                    search_params = {
+                        "query": query,
+                        "fmt": "json",
+                        "limit": 1,
+                    }
+
+                    r = self.session.get(
+                        f"{self.base_url}recording/",
+                        params=search_params,
+                        headers=self.headers,
+                        timeout=(5, 10),
+                    )
+                    r.raise_for_status()
+                    recordings = r.json().get("recordings", [])
+
+                    if not recordings:
+                        return []
+
+                    recording_mbid = recordings[0].get("id")
+                    if not recording_mbid:
+                        return []
+
+                # Step 2: Look up the recording by MBID.
+                # The lookup endpoint supports artist-rels and work-rels, which expose
+                # composer/writer/lyricist credits attached directly to the recording
+                # or inherited from linked Work entities.
                 if _rate_limiter:
                     _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
                     _rate_limiter.record_musicbrainz_request()
                 else:
                     time.sleep(1.0)
-                
-                # Search for recording with both direct artist relationships and
-                # linked work relationships. Many lyricist/composer credits in
-                # MusicBrainz are attached to the Work entity, not the recording.
-                escaped_title = _escape_lucene_special_chars(title)
-                escaped_artist = _escape_lucene_special_chars(artist)
-                query = f'recording:"{escaped_title}" AND artist:"{escaped_artist}"'
-                params = {
-                    "query": query,
-                    "fmt": "json",
-                    "limit": 1,
-                    "inc": "artist-rels+work-rels"
-                }
-                
-                r = self.session.get(f"{self.base_url}recording/", params=params, headers=self.headers, timeout=(5, 10))
+
+                r = self.session.get(
+                    f"{self.base_url}recording/{recording_mbid}",
+                    params={"fmt": "json", "inc": "artist-rels+work-rels"},
+                    headers=self.headers,
+                    timeout=(5, 10),
+                )
                 r.raise_for_status()
-                recordings = r.json().get("recordings", [])
-                
-                if not recordings:
-                    return []
-                
-                # Get the top match
-                recording = recordings[0]
-                relationships = recording.get("relationships", [])
-                
+                recording = r.json()
+
+                # The MusicBrainz API uses "relations" (not "relationships").
+                relations = recording.get("relations", [])
+
                 composers = []
-                for rel in relationships:
-                    # Look for composer, writer, or lyricist relationships
-                    rel_type = rel.get("type", "").lower()
+                for rel in relations:
+                    rel_type = str(rel.get("type", "")).lower()
                     if rel_type in ("composer", "writer", "lyricist"):
-                        # Get the artist/person name from the relationship
                         target = rel.get("artist", {})
                         if target and target.get("name"):
                             composers.append(target["name"])
 
-                    # Work relationships can contain nested writer/lyricist/composer
-                    # relations under rel['work']['relations'].
+                    # Work relationships may carry nested writer/lyricist/composer
+                    # credits under rel['work']['relations'].
                     work = rel.get("work", {})
                     if work:
                         for work_rel in work.get("relations", []) or []:
@@ -992,21 +1030,27 @@ class MusicBrainzClient:
                                 work_target = work_rel.get("artist", {})
                                 if work_target and work_target.get("name"):
                                     composers.append(work_target["name"])
-                
-                return list(dict.fromkeys(composers))  # Remove duplicates while preserving order
-                
+
+                return list(dict.fromkeys(composers))  # deduplicate, preserve order
+
             except (requests.exceptions.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
                 if attempt < max_retries - 1:
-                    logger.debug(f"MusicBrainz composer lookup attempt {attempt + 1} failed for '{title}' by '{artist}': {e}, retrying...")
+                    logger.debug(
+                        f"MusicBrainz composer lookup attempt {attempt + 1} failed for "
+                        f"'{title}' by '{artist}': {e}, retrying..."
+                    )
                     time.sleep(retry_delay)
                     retry_delay *= 2
                 else:
-                    logger.debug(f"MusicBrainz composer lookup failed for '{title}' by '{artist}' after {max_retries} retries: {e}")
+                    logger.debug(
+                        f"MusicBrainz composer lookup failed for '{title}' by '{artist}' "
+                        f"after {max_retries} retries: {e}"
+                    )
                     return []
             except Exception as e:
                 logger.debug(f"MusicBrainz composer lookup error for '{title}' by '{artist}': {e}")
                 return []
-        
+
         return []
 
 

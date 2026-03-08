@@ -243,47 +243,64 @@ def get_current_track_rating(track_id: str) -> int:
 
 def ensure_writer_column():
     """Ensure the writer column exists in the tracks table for storing lyricist/songwriter info.
-    
+
     This is called on app startup to automatically add the writer column
     if it doesn't exist, allowing Navidrome lyricist data to be stored.
+    Supports both SQLite and PostgreSQL.
     """
     import logging
-    
+
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        
-        # Check if tracks table exists
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tracks'")
-        if not cursor.fetchone():
-            logging.warning("Tracks table does not exist yet, skipping writer column migration")
-            conn.close()
-            return False
-        
-        # Check if writer column exists
-        cursor.execute("PRAGMA table_info(tracks)")
-        columns = {row[1] for row in cursor.fetchall()}
-        
-        if 'writer' not in columns:
-            # Add the writer column
+        is_pg = _is_postgres_connection(conn)
+
+        if is_pg:
+            # PostgreSQL: use information_schema to check table and column existence
+            cursor.execute(
+                "SELECT 1 FROM information_schema.tables WHERE table_name = 'tracks' LIMIT 1"
+            )
+            if not cursor.fetchone():
+                logging.warning("Tracks table does not exist yet, skipping writer column migration")
+                conn.close()
+                return False
+
+            cursor.execute(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name = 'tracks' AND column_name = 'writer' LIMIT 1"
+            )
+            column_exists = cursor.fetchone() is not None
+        else:
+            # SQLite: use sqlite_master and PRAGMA
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tracks'")
+            if not cursor.fetchone():
+                logging.warning("Tracks table does not exist yet, skipping writer column migration")
+                conn.close()
+                return False
+
+            cursor.execute("PRAGMA table_info(tracks)")
+            column_exists = any(row[1] == 'writer' for row in cursor.fetchall())
+
+        if not column_exists:
             logging.info("Creating writer column for lyricist/songwriter data...")
             try:
                 cursor.execute("ALTER TABLE tracks ADD COLUMN writer TEXT")
                 conn.commit()
                 logging.info("✓ Successfully added writer column to tracks table")
-            except sqlite3.OperationalError as e:
-                if "duplicate column name" not in str(e).lower():
+            except Exception as e:
+                err_lower = str(e).lower()
+                if "duplicate column name" in err_lower or "already exists" in err_lower:
+                    logging.info("✓ Writer column already exists")
+                else:
                     logging.error(f"✗ Failed to add writer column: {e}")
                     conn.close()
                     raise
-                else:
-                    logging.info("✓ Writer column already exists")
         else:
             logging.debug("✓ Writer column already exists in tracks table")
-        
+
         conn.close()
         return True
-        
+
     except Exception as e:
         logging.error(f"✗ Error ensuring writer column exists: {e}", exc_info=True)
         # Don't fail app startup, but log the error

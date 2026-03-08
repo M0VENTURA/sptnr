@@ -2887,7 +2887,8 @@ def popularity_scan(
         
         sql = f"""
             SELECT id, artist, title, album, isrc, duration, spotify_album_type, track_number, mbid, year,
-                   spotify_popularity, lastfm_track_playcount, last_spotify_lookup, popularity_score, album_artist
+                   spotify_popularity, lastfm_track_playcount, last_spotify_lookup, popularity_score, album_artist,
+                   writer
             FROM tracks
             {('WHERE ' + ' AND '.join(sql_conditions)) if sql_conditions else ''}
             ORDER BY artist, album, title
@@ -4278,7 +4279,8 @@ def popularity_scan(
                                     API_CALL_TIMEOUT,
                                     f"MusicBrainz writer lookup timed out after {API_CALL_TIMEOUT}s",
                                     strip_cover_attribution(title),
-                                    track_artist
+                                    track_artist,
+                                    row_get(track, 'mbid') or None,
                                 )
 
                                 if mb_writer_names:
