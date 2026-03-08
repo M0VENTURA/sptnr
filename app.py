@@ -3265,12 +3265,16 @@ def api_artist_missing_releases():
                 f"DELETE FROM missing_releases WHERE LOWER(artist) = LOWER({placeholder})",
                 (artist,)
             )
+            cursor.execute("SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM missing_releases")
+            next_id_row = cursor.fetchone()
+            next_missing_release_id = int(next_id_row.get("next_id", 1)) if isinstance(next_id_row, dict) else int(next_id_row[0] if next_id_row else 1)
             for item in missing:
                 cursor.execute(f"""
                     INSERT INTO missing_releases
-                    (artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
-                    VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
+                    (id, artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
+                    VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
                 """, (
+                    next_missing_release_id,
                     artist,
                     item.get("id", ""),
                     item.get("title", ""),
@@ -3279,6 +3283,7 @@ def api_artist_missing_releases():
                     item.get("cover_art_url", ""),
                     item.get("category", "Album")
                 ))
+                next_missing_release_id += 1
         else:
             cursor.execute(
                 "DELETE FROM missing_releases WHERE LOWER(artist) = LOWER(?)",
@@ -3594,11 +3599,15 @@ def api_scan_all_missing_releases():
                                     f"DELETE FROM missing_releases WHERE LOWER(artist) = LOWER({placeholder}) AND release_id = {placeholder}",
                                     (artist_name, rg.get("id", ""))
                                 )
+                                cursor.execute("SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM missing_releases")
+                                next_id_row = cursor.fetchone()
+                                next_missing_release_id = int(next_id_row.get("next_id", 1)) if isinstance(next_id_row, dict) else int(next_id_row[0] if next_id_row else 1)
                                 cursor.execute(f"""
                                     INSERT INTO missing_releases 
-                                    (artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
-                                    VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
+                                    (id, artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
+                                    VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
                                 """, (
+                                    next_missing_release_id,
                                     artist_name,
                                     rg.get("id", ""),
                                     rg.get("title", ""),
@@ -6030,11 +6039,15 @@ def api_add_artist():
                         f"DELETE FROM missing_releases WHERE LOWER(artist) = LOWER({placeholder}) AND release_id = {placeholder}",
                         (artist_name, rg.get("id", ""))
                     )
+                    cursor.execute("SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM missing_releases")
+                    next_id_row = cursor.fetchone()
+                    next_missing_release_id = int(next_id_row.get("next_id", 1)) if isinstance(next_id_row, dict) else int(next_id_row[0] if next_id_row else 1)
                     cursor.execute(f"""
                         INSERT INTO missing_releases 
-                        (artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
-                        VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
+                        (id, artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
+                        VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
                     """, (
+                        next_missing_release_id,
                         artist_name,
                         rg.get("id", ""),
                         rg.get("title", ""),
@@ -18194,11 +18207,15 @@ def api_album_add_to_missing_releases():
                 f"DELETE FROM missing_releases WHERE LOWER(artist) = LOWER({placeholder}) AND release_id = {placeholder}",
                 (artist, generated_release_id)
             )
+            cursor.execute("SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM missing_releases")
+            next_id_row = cursor.fetchone()
+            next_missing_release_id = int(next_id_row.get("next_id", 1)) if isinstance(next_id_row, dict) else int(next_id_row[0] if next_id_row else 1)
             cursor.execute(f"""
                 INSERT INTO missing_releases 
-                (artist, release_id, title, first_release_date, category, last_checked)
-                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'Album', CURRENT_TIMESTAMP)
+                (id, artist, release_id, title, first_release_date, category, last_checked)
+                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'Album', CURRENT_TIMESTAMP)
             """, (
+                next_missing_release_id,
                 artist,
                 generated_release_id,
                 album,
