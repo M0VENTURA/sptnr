@@ -281,6 +281,7 @@ from compilation_manager import (
     import_featured_artists_for_track,
     import_featured_artists_for_album
 )
+from genre_tag_aggregator import get_artist_genres_summary, get_album_genres_summary
 
 # Import centralized logging configuration
 from helpers.logging_config import (
@@ -2574,6 +2575,20 @@ def artist_detail(name):
         except Exception as e:
             logging.debug(f"Error fetching artist metadata: {e}")
         
+        # Fetch genre source data for all tracks to pre-render on the artist page.
+        # Genres are populated from external sources (Spotify, Last.fm, etc.) only during
+        # the popularity/singles scan and saved to the database. On page open we read
+        # them directly from the DB so no AJAX call to external sources is needed.
+        tracks_genre_data = []
+        try:
+            cursor.execute(f"""
+                SELECT spotify_genres, lastfm_tags, listenbrainz_genres, discogs_genres, musicbrainz_genres
+                FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+            """, (name,))
+            tracks_genre_data = [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            logging.debug(f"Error fetching genre data for artist page: {e}")
+
         # Convert all Row objects to dicts BEFORE closing connection
         # This is critical because Row objects become invalid after connection closes
         albums_data_dicts = [dict(album) for album in albums_data]
@@ -2726,6 +2741,13 @@ def artist_detail(name):
         # Aggregate genres from all tracks by this artist
         genres = aggregate_genres_from_tracks(name, DB_PATH)
         
+        # Compute genre sources for server-side rendering (from DB data populated during scans)
+        genre_sources = {}
+        try:
+            genre_sources = get_artist_genres_summary(tracks_genre_data, limit=30)
+        except Exception as e:
+            logging.debug(f"Error computing genre sources for artist page: {e}")
+        
         # Get qBittorrent and slskd configs
         cfg = get_config()
         qbit_config = cfg.get("qbittorrent", {"enabled": False, "web_url": "http://localhost:8080"})
@@ -2740,6 +2762,7 @@ def artist_detail(name):
         appears_on_albums = convert_row_to_json_serializable(appears_on_dicts)
         artist_stats = convert_row_to_json_serializable(artist_stats)
         genres = convert_row_to_json_serializable(genres)
+        genre_sources = convert_row_to_json_serializable(genre_sources)
         
         return render_template("artist.html", 
                              artist_name=name,
@@ -2750,6 +2773,7 @@ def artist_detail(name):
                              appears_on_albums=appears_on_albums,
                              stats=artist_stats,
                              genres=genres,
+                             genre_sources=genre_sources,
                              artist_country=artist_country,
                              artist_image_url=artist_image_url,
                              artist_bio=artist_bio,
@@ -5967,6 +5991,15 @@ def album_detail(artist, album):
         
         conn.close()
         
+        # Compute genre sources for server-side rendering (from DB data populated during scans)
+        # Genres are only fetched from external sources (Spotify, Last.fm, etc.) during the
+        # popularity/singles scan and saved to the database. Pre-rendering avoids AJAX on page open.
+        genre_sources = {}
+        try:
+            genre_sources = get_album_genres_summary(tracks_with_genre_fit, limit=25)
+        except Exception as e:
+            logging.debug(f"Error computing genre sources for album page: {e}")
+        
         # Get qBittorrent and slskd config
         cfg = get_config()
         qbit_config = cfg.get("qbittorrent", {"enabled": False, "web_url": "http://localhost:8080"})
@@ -5979,6 +6012,7 @@ def album_detail(artist, album):
                              tracks_by_disc=tracks_by_disc,
                              album_data=album_data,
                              album_genres=sorted(list(album_genres)),
+                             genre_sources=genre_sources,
                              qbit_config=qbit_config,
                              slskd_config=slskd_config)
     except Exception as e:
