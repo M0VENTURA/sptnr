@@ -3226,14 +3226,6 @@ def api_artist_missing_releases():
                     INSERT INTO missing_releases
                     (artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
                     VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
-                    ON CONFLICT (artist, release_id) DO UPDATE SET
-                        artist = EXCLUDED.artist,
-                        title = EXCLUDED.title,
-                        primary_type = EXCLUDED.primary_type,
-                        first_release_date = EXCLUDED.first_release_date,
-                        cover_art_url = EXCLUDED.cover_art_url,
-                        category = EXCLUDED.category,
-                        last_checked = CURRENT_TIMESTAMP
                 """, (
                     artist,
                     item.get("id", ""),
@@ -3554,13 +3546,14 @@ def api_scan_all_missing_releases():
                         # Insert missing release into database with DB-aware upsert
                         try:
                             if is_pg:
+                                cursor.execute(
+                                    f"DELETE FROM missing_releases WHERE LOWER(artist) = LOWER({placeholder}) AND release_id = {placeholder}",
+                                    (artist_name, rg.get("id", ""))
+                                )
                                 cursor.execute(f"""
                                     INSERT INTO missing_releases 
                                     (artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
                                     VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
-                                    ON CONFLICT (artist, release_id) DO UPDATE SET
-                                        last_checked = CURRENT_TIMESTAMP,
-                                        category = EXCLUDED.category
                                 """, (
                                     artist_name,
                                     rg.get("id", ""),
@@ -5989,13 +5982,14 @@ def api_add_artist():
             # Insert into missing_releases with DB-aware upsert
             try:
                 if is_pg:
+                    cursor.execute(
+                        f"DELETE FROM missing_releases WHERE LOWER(artist) = LOWER({placeholder}) AND release_id = {placeholder}",
+                        (artist_name, rg.get("id", ""))
+                    )
                     cursor.execute(f"""
                         INSERT INTO missing_releases 
                         (artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
                         VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
-                        ON CONFLICT (artist, release_id) DO UPDATE SET
-                            last_checked = CURRENT_TIMESTAMP,
-                            category = EXCLUDED.category
                     """, (
                         artist_name,
                         rg.get("id", ""),
@@ -18151,15 +18145,18 @@ def api_album_add_to_missing_releases():
         
         # Insert or update the album in missing_releases with DB-aware upsert
         if is_pg:
+            generated_release_id = f"{artist}-{album}".lower().replace(" ", "-")
+            cursor.execute(
+                f"DELETE FROM missing_releases WHERE LOWER(artist) = LOWER({placeholder}) AND release_id = {placeholder}",
+                (artist, generated_release_id)
+            )
             cursor.execute(f"""
                 INSERT INTO missing_releases 
                 (artist, release_id, title, first_release_date, category, last_checked)
                 VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'Album', CURRENT_TIMESTAMP)
-                ON CONFLICT (artist, release_id) DO UPDATE SET
-                    last_checked = CURRENT_TIMESTAMP
             """, (
                 artist,
-                f"{artist}-{album}".lower().replace(" ", "-"),
+                generated_release_id,
                 album,
                 year if year else None
             ))
