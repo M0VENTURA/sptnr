@@ -419,8 +419,10 @@
                         </h5>
                     </div>
                     <div class="card-body">
-                        <div id="albumSimilarArtistsContainer" class="spinner-border spinner-border-sm" role="status">
-                            <span class="visually-hidden">Loading similar artists...</span>
+                        <div id="albumSimilarArtistsContainer">
+                            <div class="spinner-border spinner-border-sm" role="status">
+                                <span class="visually-hidden">Loading similar artists...</span>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -2899,20 +2901,38 @@
 
     function displayAlbumSimilarArtists(data) {
         const container = document.getElementById('albumSimilarArtistsContainer');
-        
-        // Remove spinner class from container
-        container.classList.remove('spinner-border');
-        
+
+        const normalizeSimilarArtist = (entry, source) => {
+            if (typeof entry === 'string') {
+                const name = entry.trim();
+                return name ? { name, match: 0, source } : null;
+            }
+            if (!entry || typeof entry !== 'object') return null;
+            const name = String(entry.name || entry.artist || '').trim();
+            if (!name) return null;
+            const matchValue = Number(entry.match ?? entry.score ?? 0);
+            return {
+                ...entry,
+                name,
+                match: Number.isFinite(matchValue) ? matchValue : 0,
+                source
+            };
+        };
+
+        const lastfmArtists = (data.similar_artists && data.similar_artists.lastfm) || [];
+        const listenbrainzArtists = (data.similar_artists && data.similar_artists.listenbrainz) || [];
+
         const allArtists = [
-            ...data.similar_artists.lastfm.map(a => ({...a, source: 'lastfm'})),
-            ...data.similar_artists.listenbrainz.map(a => ({...a, source: 'listenbrainz'}))
+            ...lastfmArtists.map(a => normalizeSimilarArtist(a, 'lastfm')).filter(Boolean),
+            ...listenbrainzArtists.map(a => normalizeSimilarArtist(a, 'listenbrainz')).filter(Boolean)
         ];
         
         // Deduplicate by name (keep first occurrence)
         const seen = new Set();
         const uniqueArtists = allArtists.filter(a => {
-            if (seen.has(a.name.toLowerCase())) return false;
-            seen.add(a.name.toLowerCase());
+            const key = a.name.toLowerCase();
+            if (seen.has(key)) return false;
+            seen.add(key);
             return true;
         });
         
@@ -2922,9 +2942,7 @@
         }
         
         // Create grid layout
-        let html = `
-            <div class="row g-3">
-        `;
+        let html = `<div class="row g-3">`;
         
         uniqueArtists.forEach(artist => {
             const artistUrl = `/artist/${encodeURIComponent(artist.name)}`;
@@ -2934,20 +2952,22 @@
             const sourceBadge = artist.source === 'lastfm' 
                 ? '<span class="badge bg-primary" title="From Last.fm">Last.fm</span>'
                 : '<span class="badge bg-info" title="From ListenBrainz">ListenBrainz</span>';
+            const artistImageUrl = `/api/artist/image?name=${encodeURIComponent(artist.name)}`;
             
             html += `
                 <div class="col-6 col-md-4 col-lg-3">
-                    <div class="card h-100 overflow-hidden transition-all" style="cursor: pointer; position: relative;">
+                    <div class="card h-100 overflow-hidden" style="cursor: pointer; position: relative;">
                         ${matchBadge}
                         <!-- Artist Card Image/Avatar -->
                         <div style="aspect-ratio: 1; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); display: flex; align-items: center; justify-content: center; position: relative;">
-                            <i class="bi bi-person-circle" style="font-size: 3rem; color: white; opacity: 0.8;"></i>
+                            <img src="${artistImageUrl}" alt="${escapeHtml(artist.name)}" style="width: 100%; height: 100%; object-fit: cover;" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+                            <i class="bi bi-person-circle" style="font-size: 3rem; color: white; opacity: 0.8; display: none;" aria-label="Artist placeholder icon"></i>
                         </div>
                         
                         <div class="card-body d-flex flex-column">
                             <!-- Artist Name -->
                             <h6 class="card-title mb-2 fw-bold text-truncate" title="${escapeHtml(artist.name)}">
-                                ${escapeHtml(artist.name)}
+                                <a href="${artistUrl}" class="text-decoration-none">${escapeHtml(artist.name)}</a>
                             </h6>
                             
                             <!-- Source Badge -->
@@ -2973,17 +2993,13 @@
             `;
         });
         
-        html += `
-            </div>
-        `;
+        html += `</div>`;
         
         container.innerHTML = html;
     }
 
     function showAlbumSimilarArtistsError(message) {
         const container = document.getElementById('albumSimilarArtistsContainer');
-        // Remove spinner class from container
-        container.classList.remove('spinner-border');
         container.innerHTML = `<div class="alert alert-danger mb-0"><i class="bi bi-exclamation-circle"></i> ${escapeHtml(message)}</div>`;
     }
 

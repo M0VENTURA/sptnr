@@ -6144,16 +6144,17 @@ def _auto_detect_album_type(artist_name: str, album_name: str):
         cursor = conn.cursor()
         is_pg = _is_postgres_connection(conn)
         placeholder = "%s" if is_pg else "?"
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
         
         # Get current album type, track counts, and Discogs format data
+        # Use database-appropriate boolean comparison for the is_single column
+        if is_pg:
+            is_single_expr = "CASE WHEN is_single THEN 1 ELSE 0 END"
+        else:
+            is_single_expr = "CASE WHEN COALESCE(is_single, 0) = 1 THEN 1 ELSE 0 END"
         cursor.execute(f"""
             SELECT 
                 COUNT(*) as total_tracks,
-                SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END) as singles_count,
+                SUM({is_single_expr}) as singles_count,
                 MAX(spotify_album_type) as current_type,
                 MAX(discogs_formats) as discogs_formats,
                 MAX(discogs_is_single) as discogs_is_single
@@ -6607,7 +6608,10 @@ def track_edit(track_id):
     artist = request.form.get("artist", "").strip() or None
     album = request.form.get("album", "").strip() or None
     stars = request.form.get("stars", type=int)
-    is_single = 1 if request.form.get("is_single") == "on" else 0
+    if request.form.get("is_single") == "on":
+        is_single = True if is_pg else 1
+    else:
+        is_single = False if is_pg else 0
     single_confidence = request.form.get("single_confidence", "low")
     mbid = request.form.get("mbid", "").strip() or None
     suggested_mbid = request.form.get("suggested_mbid", "").strip() or None
@@ -17381,8 +17385,9 @@ def api_album_apply_discogs_id():
                 # Update all tracks in this album with Discogs ID and is_single flag if detected
                 if is_single:
                     # If Discogs detected this as a Single, mark tracks as singles with high confidence and set 5★ rating
+                    is_single_true = "TRUE" if is_pg else "1"
                     cursor.execute(
-                        f"UPDATE tracks SET discogs_album_id = {placeholder}, is_single = 1, single_confidence = 'high', single_sources = CASE WHEN single_sources IS NULL THEN 'discogs' ELSE single_sources || ',discogs' END, stars = 5 WHERE artist = {placeholder} AND album = {placeholder}",
+                        f"UPDATE tracks SET discogs_album_id = {placeholder}, is_single = {is_single_true}, single_confidence = 'high', single_sources = CASE WHEN single_sources IS NULL THEN 'discogs' ELSE single_sources || ',discogs' END, stars = 5 WHERE artist = {placeholder} AND album = {placeholder}",
                         (discogs_id, artist, album)
                     )
                 else:

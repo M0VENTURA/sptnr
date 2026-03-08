@@ -2471,10 +2471,11 @@ def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection, artist
         
         # Get all tracks by artist with Last.fm listener data
         # Exclude live/remix/alternate versions to avoid skewing stats
+        is_single_false_expr = "is_single = FALSE" if is_pg else "is_single = 0"
         cursor.execute(f"""
             SELECT id, title, album, lastfm_track_playcount
             FROM tracks
-            WHERE artist = {placeholder} AND lastfm_track_playcount > 0 AND is_single = 0 
+            WHERE artist = {placeholder} AND lastfm_track_playcount > 0 AND {is_single_false_expr} 
                 AND album NOT IN (
                     SELECT DISTINCT album FROM tracks WHERE artist = {placeholder} AND album_context_live = 1
                 )
@@ -4883,9 +4884,10 @@ def popularity_scan(
                         from popularity_helpers import get_top_standout_tracks_with_gap
                         MIN_SPREAD = 10.0  # Prevent flat-album noise amplification
                         log_info(f'Analyzing standout/star ratings for artist: {artist}')
+                        is_single_false_expr = "is_single = FALSE" if is_pg else "is_single = 0"
                         cursor.execute(f"""
                             SELECT id, title, album, popularity_score, lastfm_track_playcount FROM tracks
-                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND is_single = 0 AND album NOT IN (
+                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND {is_single_false_expr} AND album NOT IN (
                                 SELECT DISTINCT album FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album_context_live = 1
                             ) AND album NOT IN (
                                 SELECT DISTINCT album FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND discogs_format_descriptions LIKE '%live%'
@@ -5200,15 +5202,15 @@ def popularity_scan(
                     is_single = row_get(track, "is_single", 0)
                     single_sources_json = row_get(track, "single_sources", "[]")
                     
-                    # Track is user-set if is_single=1 but has no automated sources
+                    # Track is user-set if is_single is truthy but has no automated sources
                     try:
                         sources = json.loads(single_sources_json) if single_sources_json else []
-                        if is_single == 1 and (not sources or len(sources) == 0):
+                        if is_single and (not sources or len(sources) == 0):
                             user_set_singles.add(track_id)
                             log_info(f"Preserving user-set single: {row_get(track, 'title', 'Unknown')}")
                             log_debug(f"User-set single detected - track_id: {track_id}, title: {row_get(track, 'title', 'Unknown')}")
                     except (json.JSONDecodeError, TypeError):
-                        if is_single == 1:
+                        if is_single:
                             user_set_singles.add(track_id)
                             log_info(f"Preserving user-set single (malformed sources): {row_get(track, 'title', 'Unknown')}")
                 
@@ -5294,7 +5296,7 @@ def popularity_scan(
                 gh_tracks_detected_single = 0
 
                 # Also honor prior state: if every track is already marked single, keep full detection enabled.
-                pre_marked_singles = sum(1 for t in album_tracks if row_get(t, "is_single", 0) == 1)
+                pre_marked_singles = sum(1 for t in album_tracks if row_get(t, "is_single", 0))
                 if album_track_count >= 5 and pre_marked_singles == album_track_count:
                     force_full_single_detection = True
                     if (album_type or "").strip().lower() == "regular":
@@ -5385,6 +5387,32 @@ def popularity_scan(
                     track_isrc = row_get(track, "isrc", None)
                     track_duration = row_get(track, "duration", None)
                     track_album_type = row_get(track, "spotify_album_type", None)
+                    
+                    # Short-circuit: if the track's own Spotify album type is 'single',
+                    # it was released as a single release. Mark with high confidence immediately,
+                    # skipping the heavier API-based detection pipeline.
+                    if track_album_type and track_album_type.lower() == 'single':
+                        log_info(f"Single detected via album type: {title} (spotify_album_type='single')")
+                        detection_result = {
+                            "sources": ["spotify_album_type"],
+                            "confidence": "high",
+                            "is_single": True
+                        }
+                        single_sources = detection_result["sources"]
+                        single_confidence = detection_result["confidence"]
+                        is_single = detection_result["is_single"]
+                        log_debug(f"Single detection result (album type shortcut) - is_single: {is_single}, confidence: {single_confidence}, sources: {single_sources}")
+                        # Queue for batch update and continue to next track
+                        singles_updates.append((
+                            bool(is_single),
+                            single_confidence,
+                            json.dumps(single_sources),
+                            5,  # stars for single
+                            track_id
+                        ))
+                        singles_detected += 1
+                        singles_processed += 1
+                        continue
                     
                     # Get the popularity score for this track (may have been calculated earlier)
                     # Open a fresh short-lived connection (conn was closed before this loop to release locks)
