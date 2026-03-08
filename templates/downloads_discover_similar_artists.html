@@ -54,11 +54,114 @@
     </div>
   </nav>
 
-  <div class="alert alert-info">
-    <i class="bi bi-info-circle"></i> Similar artists page functionality to be implemented
+  <!-- Page intro -->
+  <div class="alert alert-info mb-4">
+    <i class="bi bi-info-circle"></i>
+    Similar artists that appear in your collection's artist recommendations but are <strong>not yet in your collection</strong>, sorted by how many of your artists recommend them.
+  </div>
+
+  <!-- Loading / Results container -->
+  <div id="similarArtistsDiscoverContainer">
+    <div class="text-center py-5">
+      <div class="spinner-border text-primary" role="status">
+        <span class="visually-hidden">Loading similar artists...</span>
+      </div>
+      <p class="text-muted mt-3">Loading similar artists from your collection...</p>
+    </div>
   </div>
 </div>
 
-<!-- Include existing JavaScript -->
 <script src="{{url_for('static', filename='js/downloads.js')}}"></script>
+
+<script>
+(function () {
+  function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.appendChild(document.createTextNode(String(text || '')));
+    return div.innerHTML;
+  }
+
+  async function loadSimilarArtistsDiscover() {
+    const container = document.getElementById('similarArtistsDiscoverContainer');
+    try {
+      const resp = await fetch('/api/library/artists/similar');
+      if (!resp.ok) throw new Error('Server returned ' + resp.status);
+      const data = await resp.json();
+
+      if (!data.success || !data.similar_artists || data.similar_artists.length === 0) {
+        container.innerHTML = '<div class="alert alert-info"><i class="bi bi-info-circle"></i> No similar artists data found. Scan some artists first to populate recommendations.</div>';
+        return;
+      }
+
+      // Only show artists NOT in the collection
+      const notInCollection = data.similar_artists.filter(a => !a.in_collection);
+
+      if (notInCollection.length === 0) {
+        container.innerHTML = '<div class="alert alert-success"><i class="bi bi-check-circle"></i> Great news — all similar artists recommended by your collection are already in your library!</div>';
+        return;
+      }
+
+      let html = `
+        <div class="d-flex justify-content-between align-items-center mb-3">
+          <span class="text-muted">${notInCollection.length} artist${notInCollection.length !== 1 ? 's' : ''} recommended but not in your collection</span>
+        </div>
+        <div class="row g-3">
+      `;
+
+      notInCollection.forEach(artist => {
+        const artistImageUrl = `/api/artist/image?name=${encodeURIComponent(artist.name)}`;
+        const countBadge = artist.count > 1
+          ? `<span class="badge bg-warning text-dark position-absolute" style="top: 8px; right: 8px;" title="Recommended by ${artist.count} of your artists">${artist.count}×</span>`
+          : '';
+        const fromArtistsList = (artist.from_artists || []).slice(0, 3).map(n => escapeHtml(n)).join(', ');
+        const fromArtistsNote = fromArtistsList ? `<small class="text-muted d-block mt-1">Via: ${fromArtistsList}${(artist.from_artists || []).length > 3 ? ' & more' : ''}</small>` : '';
+
+        html += `
+          <div class="col-6 col-md-4 col-lg-3">
+            <div class="card h-100 overflow-hidden" style="position: relative;">
+              ${countBadge}
+              <div style="aspect-ratio: 1; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); display: flex; align-items: center; justify-content: center; position: relative;">
+                <img src="${artistImageUrl}" alt="${escapeHtml(artist.name)}" style="width: 100%; height: 100%; object-fit: cover;"
+                     onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+                <i class="bi bi-person-circle" style="font-size: 3rem; color: white; opacity: 0.8; display: none;"></i>
+              </div>
+              <div class="card-body d-flex flex-column">
+                <h6 class="card-title mb-1 fw-bold text-truncate" title="${escapeHtml(artist.name)}">${escapeHtml(artist.name)}</h6>
+                ${fromArtistsNote}
+                <div class="btn-group-vertical btn-group-sm mt-auto pt-2" role="group">
+                  <button class="btn btn-outline-secondary btn-sm" data-artist-name="${escapeHtml(artist.name)}" data-action="find-releases" title="Search MusicBrainz for releases">
+                    <i class="bi bi-download"></i> Find Releases
+                  </button>
+                  <a href="https://www.last.fm/music/${encodeURIComponent(artist.name)}" target="_blank" class="btn btn-outline-info btn-sm" title="View on Last.fm">
+                    <i class="bi bi-box-arrow-up-right"></i> Last.fm
+                  </a>
+                </div>
+              </div>
+            </div>
+          </div>
+        `;
+      });
+
+      html += '</div>';
+      container.innerHTML = html;
+
+      // Attach event listeners for find-releases buttons (XSS-safe approach)
+      container.querySelectorAll('[data-action="find-releases"]').forEach(btn => {
+        btn.addEventListener('click', function () {
+          const artistName = this.getAttribute('data-artist-name');
+          if (artistName && typeof searchMusicBrainzRelease === 'function') {
+            searchMusicBrainzRelease(null, artistName, '');
+          }
+        });
+      });
+
+    } catch (err) {
+      container.innerHTML = `<div class="alert alert-danger"><i class="bi bi-exclamation-triangle"></i> Failed to load similar artists: ${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded', loadSimilarArtistsDiscover);
+})();
+</script>
 {% endblock %}
+

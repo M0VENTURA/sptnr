@@ -5138,6 +5138,52 @@ def api_get_artist_genres(artist):
         return jsonify({"error": str(e)}), 500
 
 
+def _similar_artist_name(entry):
+    """Extract artist name from a similar artists entry (string or dict)."""
+    if isinstance(entry, str):
+        return entry.strip()
+    if isinstance(entry, dict):
+        return str(entry.get("name") or entry.get("artist") or "").strip()
+    return ""
+
+
+def _get_artists_in_collection(cursor, names, placeholder):
+    """Return a set of lowercased artist names that exist in the tracks table."""
+    if not names:
+        return set()
+    names = [n for n in names if n]
+    if not names:
+        return set()
+    # Build parameterized IN clause
+    in_clause = ", ".join([placeholder] * len(names))
+    try:
+        cursor.execute(f"""
+            SELECT DISTINCT COALESCE(NULLIF(album_artist, ''), artist) AS artist_name
+            FROM tracks
+            WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) IN ({in_clause})
+        """, [n.lower() for n in names])
+        rows = cursor.fetchall()
+        get_name = lambda row: row["artist_name"] if isinstance(row, dict) else row[0]
+        return {get_name(row).lower() for row in rows if get_name(row)}
+    except Exception:
+        return set()
+
+
+def _annotate_in_collection(artists, in_collection_set):
+    """Add in_collection flag to each artist entry."""
+    result = []
+    for entry in artists:
+        if isinstance(entry, str):
+            name = entry.strip()
+            result.append({"name": name, "in_collection": name.lower() in in_collection_set})
+        elif isinstance(entry, dict):
+            name = str(entry.get("name") or entry.get("artist") or "").strip()
+            annotated = dict(entry)
+            annotated["in_collection"] = name.lower() in in_collection_set
+            result.append(annotated)
+    return result
+
+
 @app.route("/api/artist/<path:artist>/similar", methods=["GET"])
 def api_get_similar_artists(artist):
     """Get similar artists for a given artist (from Last.fm and ListenBrainz)
@@ -5190,15 +5236,20 @@ def api_get_similar_artists(artist):
         except Exception:
             pass
         
-        # If we have data, return it
+        # If we have data, annotate with in_collection and return it
         if similar_lastfm or similar_listenbrainz:
+            in_collection = _get_artists_in_collection(
+                cursor,
+                [_similar_artist_name(a) for a in similar_lastfm[:10] + similar_listenbrainz[:10]],
+                placeholder
+            )
             conn.close()
             return jsonify({
                 "success": True,
                 "artist": artist,
                 "similar_artists": {
-                    "lastfm": similar_lastfm[:10],
-                    "listenbrainz": similar_listenbrainz[:10]
+                    "lastfm": _annotate_in_collection(similar_lastfm[:10], in_collection),
+                    "listenbrainz": _annotate_in_collection(similar_listenbrainz[:10], in_collection)
                 },
                 "cached": True
             })
@@ -5287,14 +5338,24 @@ def api_get_similar_artists(artist):
             except Exception as e:
                 logging.warning(f"[SIMILAR ARTISTS] Failed to cache data: {e}")
         
+        # Annotate with in_collection before returning
+        if similar_lastfm or similar_listenbrainz:
+            in_collection = _get_artists_in_collection(
+                cursor,
+                [_similar_artist_name(a) for a in similar_lastfm[:10] + similar_listenbrainz[:10]],
+                placeholder
+            )
+        else:
+            in_collection = set()
+
         conn.close()
         
         return jsonify({
             "success": True,
             "artist": artist,
             "similar_artists": {
-                "lastfm": similar_lastfm[:10],
-                "listenbrainz": similar_listenbrainz[:10]
+                "lastfm": _annotate_in_collection(similar_lastfm[:10], in_collection),
+                "listenbrainz": _annotate_in_collection(similar_listenbrainz[:10], in_collection)
             },
             "cached": False
         })
@@ -5323,7 +5384,6 @@ def api_library_similar_artists():
         """)
         
         rows = cursor.fetchall()
-        conn.close()
         
         similar_cache = {}
         
@@ -5347,9 +5407,9 @@ def api_library_similar_artists():
                             continue
 
                         if name and name != artist_name:
-                            key = (name.lower(), 'lastfm')
+                            key = name.lower()
                             if key not in similar_cache:
-                                similar_cache[key] = {'name': name, 'count': 0, 'match': 0, 'from_artists': set(), 'source': 'lastfm'}
+                                similar_cache[key] = {'name': name, 'count': 0, 'match': 0, 'from_artists': set()}
                             similar_cache[key]['count'] += 1
                             similar_cache[key]['match'] += match_value
                             similar_cache[key]['from_artists'].add(artist_name)
@@ -5369,29 +5429,35 @@ def api_library_similar_artists():
                             continue
 
                         if name and name != artist_name:
-                            key = (name.lower(), 'listenbrainz')
+                            key = name.lower()
                             if key not in similar_cache:
-                                similar_cache[key] = {'name': name, 'count': 0, 'match': 0, 'from_artists': set(), 'source': 'listenbrainz'}
+                                similar_cache[key] = {'name': name, 'count': 0, 'match': 0, 'from_artists': set()}
                             similar_cache[key]['count'] += 1
                             similar_cache[key]['from_artists'].add(artist_name)
                 except Exception:
                     pass
-        
+
+        # Check which similar artists are in the collection
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+        all_names = list(similar_cache.keys())
+        in_collection = _get_artists_in_collection(cursor, [similar_cache[k]['name'] for k in all_names], placeholder)
+        conn.close()
+
         # Format results
         results = []
-        for data in similar_cache.values():
+        for key, data in similar_cache.items():
             count = data.get('count', 0)
             match = data.get('match', 0)
             avg_match = (match / count) if count > 0 else 0
             from_artists = data.get('from_artists', set())
-            from_artist = list(from_artists)[0] if from_artists else ''
             
             results.append({
                 'name': data['name'],
-                'source': data['source'],
                 'count': count,
                 'match': avg_match,
-                'from_artist': from_artist
+                'from_artists': sorted(from_artists),
+                'in_collection': data['name'].lower() in in_collection
             })
         
         # Sort by frequency then by match score
