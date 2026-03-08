@@ -806,6 +806,24 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
         # Get file extension
         ext = os.path.splitext(file_path)[1].lower()
         
+        # Update embedded file tags before moving so the library reflects the
+        # album context (not whatever single/release the file was originally
+        # tagged with on Soulseek).
+        try:
+            from post_download_processor import update_file_metadata
+            tag_metadata = {
+                'title': title,
+                'artist': artist,
+                'album_artist': queue_item_dict.get('album_artist') or artist,
+                'album': queue_item_dict.get('album') or 'Unknown Album',
+                'year': queue_item_dict.get('year') or '',
+                'track_number': queue_item_dict.get('track_number'),
+                'disc_number': queue_item_dict.get('disc_number'),
+            }
+            update_file_metadata(file_path, tag_metadata)
+        except Exception as tag_err:
+            logger.warning(f"[MOVE] Could not update file tags before move (non-fatal): {tag_err}")
+
         # Build filename with proper format
         filename = _sanitize_path_component(f"{track_num}. {artist} - {title}{ext}")
         dest_path = os.path.join(dest_folder, filename)
@@ -2961,6 +2979,26 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
                 while os.path.exists(os.path.join(dest_dir, f"{base}_{counter}{ext_only}")):
                     counter += 1
                 dest = os.path.join(dest_dir, f"{base}_{counter}{ext_only}")
+
+            # Update embedded file tags before moving so the library reflects
+            # the album context rather than the original single/release tags.
+            try:
+                from post_download_processor import update_file_metadata
+                tag_metadata = {
+                    'title': track_title,
+                    'artist': track_artist,
+                    'album_artist': dest_album_artist,
+                    'album': dest_album,
+                    'year': dest_year,
+                    'track_number': track.get('track_number'),
+                    'disc_number': track.get('disc_number'),
+                }
+                update_file_metadata(src, tag_metadata)
+            except Exception as tag_err:
+                logger.warning(
+                    f"[AUTO_MOVE] Could not update file tags for queue {track['id']} "
+                    f"(non-fatal): {tag_err}"
+                )
 
             try:
                 shutil.move(src, dest)
