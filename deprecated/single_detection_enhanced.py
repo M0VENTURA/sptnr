@@ -2414,7 +2414,10 @@ def detect_single_enhanced(
     
     result['single_status'] = final_status
     result['single_confidence'] = final_status
-    result['is_single'] = final_status in ('high', 'medium')
+    # Only high-confidence singles are marked as is_single=True.
+    # Medium-confidence tracks retain their confidence level for star-rating logic
+    # but do not get the is_single flag until they are promoted during star rating.
+    result['is_single'] = final_status == 'high'
     
     # ===== SPECIAL CASE: High Z-Score without sources = "Popular" =====
     # If z-score > 2 but no confidence sources were found, mark as "Popular" (not as single)
