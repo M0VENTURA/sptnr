@@ -3724,6 +3724,87 @@ function addMissingReleaseForDownload(releaseId, releaseTitle, artistName) {
   font-size: 0.95rem !important;
   padding: 0.45rem 0.65rem;
 }
+
+@media (max-width: 767.98px) {
+  .artist-page .table-responsive {
+    overflow-x: hidden;
+  }
+
+  .artist-page tr.album-row {
+    display: block;
+    margin-bottom: 0.75rem;
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    background-color: var(--secondary-bg);
+    overflow: hidden;
+  }
+
+  .artist-page tr.album-row td {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    width: 100%;
+    padding: 0.5rem 0.75rem;
+    border: 0 !important;
+  }
+
+  .artist-page tr.album-row td:nth-child(1) {
+    justify-content: center;
+    padding-top: 0.75rem;
+  }
+
+  .artist-page tr.album-row td:nth-child(1) img {
+    width: 92px !important;
+    height: 92px !important;
+  }
+
+  .artist-page tr.album-row td:nth-child(2) {
+    justify-content: flex-start;
+    font-weight: 600;
+    padding-top: 0.25rem;
+  }
+
+  .artist-page tr.album-row td:nth-child(3)::before {
+    content: 'Year';
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+  }
+
+  .artist-page tr.album-row td:nth-child(4)::before {
+    content: 'Status';
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+  }
+
+  .artist-page tr.album-row td:nth-child(5)::before {
+    content: 'Tracks';
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+  }
+
+  .artist-page tr.album-row td:nth-child(6)::before {
+    content: 'Avg';
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+  }
+
+  .artist-page tr.album-row td:nth-child(7)::before {
+    content: 'Actions';
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+  }
+
+  .artist-page tr.album-row td:nth-child(7) .btn-group {
+    width: 100%;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+
+  .artist-page tr.tracklist-row td {
+    padding: 0.5rem 0.25rem !important;
+  }
+}
 </style>
 
 <!-- Track Editing Modal -->
@@ -3803,17 +3884,12 @@ function addMissingReleaseForDownload(releaseId, releaseTitle, artistName) {
   // Genre sources are now pre-rendered server-side from database data populated during scans.
   // External source fetching only happens during the popularity/singles detection scan.
 
+  const preloadedSimilarArtistsData = {{ {"similar_artists": similar_artists_data}|tojson }};
+
   document.addEventListener('DOMContentLoaded', function() {
     const artistName = {{ artist_name|tojson }};
     if (artistName && artistName.length > 0) {
-      loadSimilarArtistsForArtist(artistName);
-      
-      // Clear similar artists cache when a scan is triggered so fresh data loads afterwards
-      document.querySelectorAll('form[action*="scan_start"]').forEach(form => {
-        form.addEventListener('submit', function() {
-          sessionStorage.removeItem(`similarArtists_${artistName}`);
-        });
-      });
+      displayArtistSimilarArtists(preloadedSimilarArtistsData);
     } else {
       const similarContainer = document.getElementById('artistSimilarArtistsContainer');
       if (similarContainer) {
@@ -3821,56 +3897,6 @@ function addMissingReleaseForDownload(releaseId, releaseTitle, artistName) {
       }
     }
   });
-  
-  // Similar Artists Loading
-  async function loadSimilarArtistsForArtist(artist) {
-    // Check sessionStorage cache first to avoid reloading on every page visit
-    const cacheKey = `similarArtists_${artist}`;
-    const cached = sessionStorage.getItem(cacheKey);
-    if (cached) {
-      try {
-        const cachedData = JSON.parse(cached);
-        displayArtistSimilarArtists(cachedData);
-        return;
-      } catch (e) {
-        sessionStorage.removeItem(cacheKey);
-      }
-    }
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
-    
-    try {
-      const url = `/api/artist/${encodeURIComponent(artist)}/similar`;
-      const response = await fetch(url, {
-        signal: controller.signal
-      });
-      clearTimeout(timeoutId);
-      
-      if (!response.ok) {
-        showArtistSimilarArtistsError('Failed to load similar artists');
-        return;
-      }
-      
-      const data = await response.json();
-      // Cache the response so subsequent page visits don't reload
-      try {
-        sessionStorage.setItem(cacheKey, JSON.stringify(data));
-      } catch (e) {
-        // sessionStorage might be full; ignore
-      }
-      displayArtistSimilarArtists(data);
-    } catch (error) {
-      clearTimeout(timeoutId);
-      if (error.name === 'AbortError') {
-        console.warn('Similar artists loading timeout (5s)');
-        showArtistSimilarArtistsError('Similar artists loading timed out - server may be busy');
-      } else {
-        console.error('Error loading similar artists:', error);
-        showArtistSimilarArtistsError('Error loading similar artists: ' + error.message);
-      }
-    }
-  }
 
   function displayArtistSimilarArtists(data) {
     const container = document.getElementById('artistSimilarArtistsContainer');
@@ -4404,7 +4430,7 @@ function addMissingReleaseForDownload(releaseId, releaseTitle, artistName) {
                   <span class="badge bg-info ms-1">${releaseDate}</span>
                 </p>
                 <div class="mt-auto">
-                  <button class="btn btn-sm btn-primary w-100" onclick="downloadMbRelease('${release.id}', '${escapeHtml(release.title)}', '${escapeHtml(artist)}', 'slskd')">
+                  <button class="btn btn-sm btn-primary w-100" onclick="openSlskdSearch('${escapeJsString(release.title)}', '${escapeJsString(artist)}'); bootstrap.Modal.getInstance(document.getElementById('artistMBLookupModal'))?.hide();">
                     <i class="bi bi-download"></i> Add to Queue
                   </button>
                 </div>

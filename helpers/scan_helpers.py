@@ -43,6 +43,74 @@ def _now_local_iso() -> str:
     except Exception:
         return datetime.now().isoformat()
 
+
+def _extract_writer_from_file_tags(file_path: str) -> str:
+    """Best-effort writer/lyricist extraction from local audio tags (returns JSON array string)."""
+    if not file_path or not os.path.exists(file_path):
+        return "[]"
+
+    writer_aliases = [
+        "TWRT", "TOLY", "TXXX:WRITER", "TXXX:LYRICIST", "TXXX:AUTHOR",
+        "WRITER", "LYRICIST", "AUTHOR", "\u00a9wrt"
+    ]
+
+    try:
+        writers = []
+        lower_path = file_path.lower()
+
+        if lower_path.endswith('.mp3'):
+            from mutagen.mp3 import MP3
+            from mutagen.id3 import ID3
+
+            audio = MP3(file_path, ID3=ID3)
+            tags = audio.tags
+            if tags:
+                for alias in writer_aliases:
+                    if alias.startswith("TXXX:"):
+                        desc = alias.split(":", 1)[1].upper()
+                        for frame in tags.values():
+                            if frame.FrameID == 'TXXX' and hasattr(frame, 'desc'):
+                                if frame.desc and frame.desc.upper() == desc and hasattr(frame, 'text') and frame.text:
+                                    value = str(frame.text[0])
+                                    writers.extend([w.strip() for w in value.replace(';', ',').split(',') if w.strip()])
+                    elif alias in tags:
+                        frame = tags[alias]
+                        if hasattr(frame, 'text') and frame.text:
+                            value = str(frame.text[0])
+                            writers.extend([w.strip() for w in value.replace(';', ',').split(',') if w.strip()])
+                    elif alias.startswith("\u00a9") and alias in tags:
+                        frame = tags[alias]
+                        if hasattr(frame, 'text') and frame.text:
+                            value = str(frame.text[0])
+                            writers.extend([w.strip() for w in value.replace(';', ',').split(',') if w.strip()])
+
+        elif lower_path.endswith('.flac'):
+            from mutagen.flac import FLAC
+
+            audio = FLAC(file_path)
+            for alias in writer_aliases:
+                if alias.startswith(("TXXX", "\u00a9")):
+                    continue
+                key = alias.upper()
+                if key in audio and audio[key]:
+                    for value in audio[key]:
+                        writers.extend([w.strip() for w in str(value).replace(';', ',').split(',') if w.strip()])
+
+        seen = set()
+        unique_writers = []
+        for writer in writers:
+            token = writer.lower()
+            if token and token not in seen:
+                seen.add(token)
+                unique_writers.append(writer)
+
+        if unique_writers:
+            return json.dumps(unique_writers)
+    except Exception as e:
+        logging.debug(f"[WRITER] Could not read writer tags from {file_path}: {e}")
+
+    return "[]"
+
 def save_navidrome_scan_progress(current_artist, processed_artists, total_artists):
     """Save Navidrome scan progress to JSON file (using artist list for progress tracking)"""
     try:
@@ -190,6 +258,10 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 # Use NavidromeClient's extract_track_metadata to avoid duplication
                 navi_client = NavidromeClient(base_url="", username="", password="")  # URLs/auth not needed for extraction
                 extracted = navi_client.extract_track_metadata(t)
+
+                writer_json = extracted.get("writer", "[]")
+                if writer_json in (None, "", "[]"):
+                    writer_json = _extract_writer_from_file_tags(extracted.get("file_path", "") or t.get("path", ""))
                 
                 # Extract track-level artist for featured artist detection
                 # Fallback to album artist if track artist not available
@@ -237,7 +309,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "track_number": extracted.get("track_number"),
                     "disc_number": extracted.get("disc_number"),
                     "year": extracted.get("year"),
-                    "writer": extracted.get("writer", "[]"),  # JSON array of lyricists from Navidrome
+                    "writer": writer_json,  # JSON array of lyricists/writers from Navidrome or file tags
                     "album_artist": album_artist_value,
                     "bitrate": extracted.get("bitrate"),
                     "sample_rate": extracted.get("sample_rate"),

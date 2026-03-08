@@ -1,0 +1,197 @@
+commit b78a8d44f404bb2176a292243647ea2b8ed6384a
+Author: cgdmonson <aaron.monson@cgd.vic.gov.au>
+Date:   Sun Mar 8 17:27:54 2026 +1100
+
+    Improve Soulseek result scoring to avoid album token collisions
+
+diff --git a/queue_processor.py b/queue_processor.py
+index 6c18cdb..44d1c9f 100644
+--- a/queue_processor.py
++++ b/queue_processor.py
+@@ -13,9 +13,11 @@ import sys
+ import time
+ import sqlite3
+ import traceback
++import re
+ import yaml
+ from datetime import datetime, timedelta
+ from pathlib import Path
++from difflib import SequenceMatcher
+ 
+ # Use unified logging system - all logs go to debug.log
+ from helpers.logging_config import (
+@@ -84,6 +86,73 @@ def resolve_downloads_dir():
+ 
+ DOWNLOADS_DIR = resolve_downloads_dir()
+ 
++
++def _normalize_match_text(value):
++    """Normalize text for conservative filename/metadata matching."""
++    if not value:
++        return ""
++    value = str(value).lower()
++    value = re.sub(r"[^a-z0-9]+", " ", value)
++    return " ".join(value.split())
++
++
++def _tokenize_meaningful(value):
++    """Tokenize and remove short/common words to reduce false positives."""
++    stop_words = {"the", "and", "of", "a", "an", "to", "in", "on", "for", "with"}
++    normalized = _normalize_match_text(value)
++    return [t for t in normalized.split() if len(t) >= 3 and t not in stop_words]
++
++
++def _score_soulseek_candidate(filename, queue_item):
++    """
++    Score a Soulseek candidate path/name against queue metadata.
++
++    Returns float score in [0, 1]. Higher is better.
++    """
++    filename_norm = _normalize_match_text(filename)
++    artist_norm = _normalize_match_text(queue_item.get('artist'))
++    title_norm = _normalize_match_text(queue_item.get('title'))
++    album_norm = _normalize_match_text(queue_item.get('album'))
++
++    if not artist_norm or not title_norm or not filename_norm:
++        return 0.0
++
++    # Require both core fields to be reasonably represented in filename/path.
++    artist_sim = SequenceMatcher(None, artist_norm, filename_norm).ratio()
++    title_sim = SequenceMatcher(None, title_norm, filename_norm).ratio()
++    if artist_sim < 0.12 or title_sim < 0.12:
++        return 0.0
++
++    score = (artist_sim * 0.45) + (title_sim * 0.55)
++
++    # Strongly prefer explicit artist/title phrases when present.
++    if artist_norm in filename_norm:
++        score += 0.18
++    if title_norm in filename_norm:
++        score += 0.25
++
++    # Album disambiguation: prevent "Power"-style partial collisions.
++    if album_norm:
++        album_tokens = _tokenize_meaningful(album_norm)
++        if album_tokens:
++            shared_album_tokens = sum(1 for tok in album_tokens if tok in filename_norm)
++            token_ratio = shared_album_tokens / len(album_tokens)
++
++            # When we have >=2 meaningful album tokens, require at least 2 matches.
++            # This rejects near misses like "Sword of Power" for "Power of Metal".
++            if len(album_tokens) >= 2 and shared_album_tokens < 2:
++                return 0.0
++
++            # Reward strong album evidence and penalize weak/partial album alignment.
++            if album_norm in filename_norm:
++                score += 0.30
++            else:
++                score += (0.20 * token_ratio)
++                if token_ratio < 0.5:
++                    score -= 0.10
++
++    return max(0.0, min(1.0, score))
++
+ def get_db():
+     """Get database connection using app backend (PostgreSQL or SQLite)."""
+     try:
+@@ -341,6 +410,7 @@ def search_and_download(queue_id, queue_item, client):
+         # Increased timeout to 45 seconds to handle slow Soulseek peer responses
+         MAX_POLL_ATTEMPTS = 45
+         best_result = None
++        best_score = 0.0
+         poll_start_time = datetime.now()
+         
+         for poll_attempt in range(MAX_POLL_ATTEMPTS):
+@@ -352,27 +422,44 @@ def search_and_download(queue_id, queue_item, client):
+                 logger.debug(f"Queue {queue_id}: Poll {poll_attempt+1}/{MAX_POLL_ATTEMPTS} - Got {len(responses)} responses, state={state}")
+                 
+                 if responses:
+-                    # Find best result (first file from first user with files)
++                    # Score all available files and choose the strongest semantic match.
+                     for resp_idx, resp in enumerate(responses):
+-                        if hasattr(resp, 'files') and resp.files and len(resp.files) > 0:
+-                            logger.debug(f"Queue {queue_id}: Response {resp_idx} from {resp.username} has {len(resp.files)} files")
+-                            # Get file info - handle both object and dict formats
+-                            file_info = resp.files[0]
+-                            filename = getattr(file_info, 'filename', file_info.get('filename', '')) if isinstance(file_info, dict) else getattr(file_info, 'filename', '')
+-                            size = getattr(file_info, 'size', file_info.get('size', 0)) if isinstance(file_info, dict) else getattr(file_info, 'size', 0)
+-                            
+-                            best_result = {
+-                                "username": resp.username,
+-                                "filename": filename,
+-                                "size": size
+-                            }
+-                            logger.info(f"Queue {queue_id}: Ô£ô Found result after {poll_attempt+1}s from {resp.username}")
+-                            logger.info(f"Queue {queue_id}: File: {str(filename)[:80]}... ({size} bytes)")
+-                            break
+-                        else:
+-                            logger.debug(f"Queue {queue_id}: Response {resp_idx} from {getattr(resp, 'username', 'unknown')} has no files or empty files list")
+-                    
+-                    if best_result:
++                        if not (hasattr(resp, 'files') and resp.files and len(resp.files) > 0):
++                            logger.debug(
++                                f"Queue {queue_id}: Response {resp_idx} from "
++                                f"{getattr(resp, 'username', 'unknown')} has no files or empty files list"
++                            )
++                            continue
++
++                        logger.debug(f"Queue {queue_id}: Response {resp_idx} from {resp.username} has {len(resp.files)} files")
++                        for file_info in resp.files:
++                            filename = (
++                                getattr(file_info, 'filename', file_info.get('filename', ''))
++                                if isinstance(file_info, dict)
++                                else getattr(file_info, 'filename', '')
++                            )
++                            size = (
++                                getattr(file_info, 'size', file_info.get('size', 0))
++                                if isinstance(file_info, dict)
++                                else getattr(file_info, 'size', 0)
++                            )
++
++                            candidate_score = _score_soulseek_candidate(filename, queue_item)
++                            if candidate_score > best_score:
++                                best_score = candidate_score
++                                best_result = {
++                                    "username": resp.username,
++                                    "filename": filename,
++                                    "size": size,
++                                    "score": candidate_score,
++                                }
++
++                    # If we already have a strong candidate, no need to keep polling.
++                    if best_result and best_score >= 0.72:
++                        logger.info(
++                            f"Queue {queue_id}: Ô£ô Found high-confidence match after {poll_attempt+1}s "
++                            f"(score={best_score:.2f})"
++                        )
+                         break
+                 
+                 # Exit early if search is complete and we have results
+@@ -389,9 +476,26 @@ def search_and_download(queue_id, queue_item, client):
+             logger.warning(f"Queue {queue_id}: Ô£ù No results found after {elapsed:.0f}s of polling")
+             mark_failed(queue_id, f"No results found for '{search_query}'", schedule_retry=True, retry_delay_minutes=60)
+             return False
++
++        if best_score < 0.45:
++            elapsed = (datetime.now() - poll_start_time).total_seconds()
++            logger.warning(
++                f"Queue {queue_id}: Ô£ù Results found but no safe match for '{search_query}' "
++                f"(best_score={best_score:.2f}, elapsed={elapsed:.0f}s)"
++            )
++            mark_failed(
++                queue_id,
++                f"No safe Soulseek match for '{search_query}' (best_score={best_score:.2f})",
++                schedule_retry=True,
++                retry_delay_minutes=60,
++            )
++            return False
+         
+         # Download the result
+-        logger.info(f"Queue {queue_id}: Downloading '{best_result['filename']}' from {best_result['username']}...")
++        logger.info(
++            f"Queue {queue_id}: Downloading '{best_result['filename']}' from "
++            f"{best_result['username']} (score={best_score:.2f})..."
++        )
+         update_queue_status(queue_id, 'downloading', found_filename=best_result['filename'])
+         
+         success = client.download_file(best_result['username'], best_result['filename'], best_result['size'])

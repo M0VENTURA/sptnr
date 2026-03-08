@@ -1805,7 +1805,7 @@ async function performArtistMusicBrainzSearch(artistName) {
                                 <span class="badge bg-info ms-1">${releaseDate}</span>
                             </p>
                             <div class="mt-auto">
-                                <button class="btn btn-sm btn-primary w-100" onclick="downloadMbRelease('${release.id}', '${escapeHtml(release.title)}', '${escapeHtml(artist)}', 'slskd')">
+                                <button class="btn btn-sm btn-primary w-100" onclick="openSlskdSearchTrack('${escapeJsString(artist)}', '${escapeJsString(release.title)}'); bootstrap.Modal.getInstance(document.getElementById('artistMBLookupModal'))?.hide();">
                                     <i class="bi bi-download"></i> Add to Queue
                                 </button>
                             </div>

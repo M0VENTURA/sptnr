@@ -2675,10 +2675,17 @@ def artist_detail(name):
                 categorized_albums.add(album_name)
         
         # SAFETY: Remove live albums from non-live categories to prevent duplicates
-        live_album_names = set(a.get('album', '').lower() for a in albums_by_category.get("live_album", []))
+        live_album_names = {
+            _normalize_release_title(a.get('album', ''))
+            for a in albums_by_category.get("live_album", [])
+            if a.get('album')
+        }
         for cat in ["album", "ep", "single", "unknown"]:
             if live_album_names:
-                albums_by_category[cat] = [a for a in albums_by_category[cat] if a.get('album', '').lower() not in live_album_names]
+                albums_by_category[cat] = [
+                    a for a in albums_by_category[cat]
+                    if _normalize_release_title(a.get('album', '')) not in live_album_names
+                ]
 
         # Process compilation albums
         for album in compilation_albums:
@@ -2705,24 +2712,25 @@ def artist_detail(name):
         for release in missing_releases_dicts:
             release_dict = release.copy()
             release_dict['is_missing'] = True  # Mark as missing
-            category = (release_dict.get("category") or "Album").lower()
-            
-            if category in ("live album", "live_album"):
-                missing_by_category["live_album"].append(release_dict)
-            elif category == "ep":
-                missing_by_category["ep"].append(release_dict)
-            elif category == "single":
-                missing_by_category["single"].append(release_dict)
-            elif category == "compilation":
-                missing_by_category["compilation"].append(release_dict)
-            else:
+            primary_type = (release_dict.get("primary_type") or "").lower()
+            category = (release_dict.get("category") or "").lower()
+
+            # Album-only missing release display: ignore secondary classifications.
+            if primary_type == "album" and category not in ("live album", "live_album", "compilation"):
                 missing_by_category["album"].append(release_dict)
         
         # SAFETY: Remove live albums from missing releases in wrong categories
-        missing_live_names = set(a.get('title', '').lower() for a in missing_by_category.get("live_album", []))
+        missing_live_names = {
+            _normalize_release_title(a.get('title', ''))
+            for a in missing_by_category.get("live_album", [])
+            if a.get('title')
+        }
         for cat in ["album", "ep", "single"]:
             if missing_live_names:
-                missing_by_category[cat] = [a for a in missing_by_category[cat] if a.get('title', '').lower() not in missing_live_names]
+                missing_by_category[cat] = [
+                    a for a in missing_by_category[cat]
+                    if _normalize_release_title(a.get('title', '')) not in missing_live_names
+                ]
 
         # Merge discovered and missing albums by category, then sort by release date
         merged_albums_by_category = {}
@@ -2759,6 +2767,50 @@ def artist_detail(name):
             genre_sources = get_artist_genres_summary(tracks_genre_data, limit=30)
         except Exception as e:
             logging.debug(f"Error computing genre sources for artist page: {e}")
+
+        # Preload similar artists from DB; page should not re-fetch on open.
+        similar_artists_data = {
+            "lastfm": [],
+            "listenbrainz": []
+        }
+        try:
+            if is_pg:
+                cursor.execute("""
+                    SELECT similar_artists_lastfm, similar_artists_listenbrainz
+                    FROM artists
+                    WHERE name = %s
+                    LIMIT 1
+                """, (name,))
+            else:
+                cursor.execute("""
+                    SELECT similar_artists_lastfm, similar_artists_listenbrainz
+                    FROM artists
+                    WHERE name = ?
+                    LIMIT 1
+                """, (name,))
+
+            similar_row = cursor.fetchone()
+            if similar_row:
+                similar_lastfm_raw = similar_row.get("similar_artists_lastfm") if isinstance(similar_row, dict) else similar_row[0]
+                similar_listenbrainz_raw = similar_row.get("similar_artists_listenbrainz") if isinstance(similar_row, dict) else similar_row[1]
+
+                try:
+                    if similar_lastfm_raw:
+                        parsed_lastfm = json.loads(similar_lastfm_raw) if isinstance(similar_lastfm_raw, str) else similar_lastfm_raw
+                        if isinstance(parsed_lastfm, list):
+                            similar_artists_data["lastfm"] = parsed_lastfm[:10]
+                except Exception:
+                    pass
+
+                try:
+                    if similar_listenbrainz_raw:
+                        parsed_listenbrainz = json.loads(similar_listenbrainz_raw) if isinstance(similar_listenbrainz_raw, str) else similar_listenbrainz_raw
+                        if isinstance(parsed_listenbrainz, list):
+                            similar_artists_data["listenbrainz"] = parsed_listenbrainz[:10]
+                except Exception:
+                    pass
+        except Exception as e:
+            logging.debug(f"Error loading similar artists for artist page: {e}")
         
         # Get qBittorrent and slskd configs
         cfg = get_config()
@@ -2775,6 +2827,7 @@ def artist_detail(name):
         artist_stats = convert_row_to_json_serializable(artist_stats)
         genres = convert_row_to_json_serializable(genres)
         genre_sources = convert_row_to_json_serializable(genre_sources)
+        similar_artists_data = convert_row_to_json_serializable(similar_artists_data)
         
         return render_template("artist.html", 
                              artist_name=name,
@@ -2786,6 +2839,7 @@ def artist_detail(name):
                              stats=artist_stats,
                              genres=genres,
                              genre_sources=genre_sources,
+                             similar_artists_data=similar_artists_data,
                              artist_country=artist_country,
                              artist_image_url=artist_image_url,
                              artist_bio=artist_bio,
@@ -3032,7 +3086,8 @@ def api_artist_missing_releases():
 
     conn = get_db()
     cursor = conn.cursor()
-    placeholder = "%s" if _is_postgres_connection(conn) else "?"
+    is_pg = _is_postgres_connection(conn)
+    placeholder = "%s" if is_pg else "?"
     
     # Use canonical artist identity for all comparisons (album_artist preferred)
     artist_compare_expr = "COALESCE(NULLIF(album_artist, ''), artist)"
@@ -3064,7 +3119,6 @@ def api_artist_missing_releases():
         WHERE LOWER({artist_compare_expr}) = LOWER({placeholder})
     """, (artist,))
     existing_albums = [row['album'] for row in cursor.fetchall()]
-    conn.close()
 
     existing_norm = {_normalize_release_title(a) for a in existing_albums if a}
 
@@ -3076,26 +3130,27 @@ def api_artist_missing_releases():
         norm_title = _normalize_release_title(rg.get("title") or "")
         if not norm_title or norm_title in existing_norm:
             continue
-        # Categorize by type
-        secondary = [s.lower() for s in rg.get("secondary_types") or []]
+
+        # Album-only mode: keep primary albums, ignore secondary classification
+        # such as live albums and compilations.
         primary_type = (rg.get("primary_type") or "").lower()
+        if primary_type != "album":
+            continue
+
+        secondary = [s.lower() for s in rg.get("secondary_types") or []]
+        if any(sec in {"live", "compilation"} for sec in secondary):
+            continue
+
         category = "Album"
-        if primary_type == "album" and "compilation" in secondary:
-            category = "Compilation"
-        elif primary_type == "album" and "live" in secondary:
-            category = "Live Album"
-        elif primary_type == "ep":
-            category = "EP"
-        elif primary_type == "single" or "single" in secondary:
-            category = "Single"
 
         dedupe_key = (norm_title, category)
         if dedupe_key in seen_missing_keys:
             continue
         seen_missing_keys.add(dedupe_key)
 
+        release_id = rg.get("id", "") or f"{artist}-{norm_title}"
         missing.append({
-            "id": rg.get("id", ""),
+            "id": release_id,
             "title": rg.get("title", ""),
             "primary_type": rg.get("primary_type", ""),
             "first_release_date": rg.get("first_release_date", ""),
@@ -3103,6 +3158,60 @@ def api_artist_missing_releases():
             "cover_art_url": rg.get("cover_art_url", ""),
             "category": category,
         })
+
+    # Persist latest artist-level missing releases so they survive page reloads/restarts.
+    try:
+        if is_pg:
+            cursor.execute(
+                f"DELETE FROM missing_releases WHERE LOWER(artist) = LOWER({placeholder})",
+                (artist,)
+            )
+            for item in missing:
+                cursor.execute(f"""
+                    INSERT INTO missing_releases
+                    (artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
+                    VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
+                    ON CONFLICT (release_id) DO UPDATE SET
+                        artist = EXCLUDED.artist,
+                        title = EXCLUDED.title,
+                        primary_type = EXCLUDED.primary_type,
+                        first_release_date = EXCLUDED.first_release_date,
+                        cover_art_url = EXCLUDED.cover_art_url,
+                        category = EXCLUDED.category,
+                        last_checked = CURRENT_TIMESTAMP
+                """, (
+                    artist,
+                    item.get("id", ""),
+                    item.get("title", ""),
+                    item.get("primary_type", "Album"),
+                    item.get("first_release_date", ""),
+                    item.get("cover_art_url", ""),
+                    item.get("category", "Album")
+                ))
+        else:
+            cursor.execute(
+                "DELETE FROM missing_releases WHERE LOWER(artist) = LOWER(?)",
+                (artist,)
+            )
+            for item in missing:
+                cursor.execute("""
+                    INSERT OR REPLACE INTO missing_releases
+                    (artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """, (
+                    artist,
+                    item.get("id", ""),
+                    item.get("title", ""),
+                    item.get("primary_type", "Album"),
+                    item.get("first_release_date", ""),
+                    item.get("cover_art_url", ""),
+                    item.get("category", "Album")
+                ))
+        conn.commit()
+    except Exception as persist_error:
+        logging.warning(f"[MISSING_RELEASES] Could not persist artist missing releases for {artist}: {persist_error}")
+    finally:
+        conn.close()
 
     return jsonify({
         "artist": artist,
@@ -3371,18 +3480,17 @@ def api_scan_all_missing_releases():
                         if not norm_title:
                             continue
                         
-                        # Categorize by type (including compilations)
-                        secondary = [s.lower() for s in rg.get("secondary_types") or []]
+                        # Album-only mode: keep primary albums, ignore secondary
+                        # classification such as live albums and compilations.
                         primary_type = (rg.get("primary_type") or "").lower()
+                        if primary_type != "album":
+                            continue
+
+                        secondary = [s.lower() for s in rg.get("secondary_types") or []]
+                        if any(sec in {"live", "compilation"} for sec in secondary):
+                            continue
+
                         category = "Album"
-                        if primary_type == "album" and "compilation" in secondary:
-                            category = "Compilation"
-                        elif primary_type == "album" and "live" in secondary:
-                            category = "Live Album"
-                        elif primary_type == "ep":
-                            category = "EP"
-                        elif primary_type == "single" or "single" in secondary:
-                            category = "Single"
                         
                         # Insert missing release into database with DB-aware upsert
                         try:

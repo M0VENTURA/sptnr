@@ -803,6 +803,37 @@
 .table-hover tbody tr:hover td {
     background-color: var(--primary-bg) !important;
 }
+
+@media (max-width: 767.98px) {
+    #album-tracks-section .table-responsive {
+        overflow-x: hidden;
+    }
+
+    #album-tracks-section tbody tr.d-flex.flex-column {
+        border: 1px solid var(--border-color);
+        border-radius: 0.5rem;
+        margin-bottom: 0.6rem;
+        padding: 0.35rem 0.6rem;
+        background-color: var(--secondary-bg);
+    }
+
+    #album-tracks-section tbody tr.d-flex.flex-column td {
+        border: 0 !important;
+        padding: 0.35rem 0 !important;
+    }
+
+    #album-tracks-section tbody tr.table-secondary {
+        display: block;
+        border-radius: 0.5rem;
+        margin-top: 0.8rem;
+        overflow: hidden;
+    }
+
+    #album-tracks-section .btn-group,
+    #album-tracks-section .d-flex.gap-2 {
+        flex-wrap: wrap;
+    }
+}
 </style>
 
 <!-- Bulk Genre Tagger Modal -->
@@ -1930,7 +1961,7 @@
             html += `
                 <span class="badge bg-primary me-1 mb-1" style="font-size: 0.9rem;">
                     ${escapeHtml(genre)}
-                    <button type="button" class="btn-close btn-close-white ms-1" style="font-size: 0.6rem;" onclick="removeAlbumGenre('${escapeHtml(genre)}', {{ artist_name|tojson }}, {{ album_name|tojson }})" aria-label="Remove"></button>
+                    <button type="button" class="btn-close btn-close-white ms-1" style="font-size: 0.6rem;" onclick='removeAlbumGenre("${escapeHtml(genre)}", {{ artist_name|tojson }}, {{ album_name|tojson }})' aria-label="Remove"></button>
                 </span>
             `;
         });

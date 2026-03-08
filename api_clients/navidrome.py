@@ -278,7 +278,7 @@ class NavidromeClient:
         navidrome_genres = "\\".join(genres_list) if genres_list else ""
 
         # Extract writer/lyricist credits from multiple possible Navidrome fields.
-        # Different Navidrome/library tag mappings can expose these as writer, lyricists, writers, composer.
+        # Different Navidrome/library tag mappings can expose these under singular/plural keys.
         def _normalize_people(value):
             names = []
             if not value:
@@ -307,8 +307,12 @@ class NavidromeClient:
         credit_candidates = [
             track.get("writer"),
             track.get("writers"),
+            track.get("lyricist"),
             track.get("lyricists"),
+            track.get("author"),
+            track.get("authors"),
             track.get("composer"),
+            track.get("composers"),
         ]
         for candidate in credit_candidates:
             for name in _normalize_people(candidate):
@@ -327,9 +331,18 @@ class NavidromeClient:
                     continue
                 role = str(contributor.get("role", "")).lower()
                 if role in _writer_roles:
+                    # Different payloads may store contributor names either at top-level
+                    # ("name") or nested under "artist".
+                    names = []
+                    if contributor.get("name"):
+                        names.extend(_normalize_people(contributor.get("name")))
                     artist_info = contributor.get("artist", {})
                     if isinstance(artist_info, dict):
-                        name = artist_info.get("name", "").strip()
+                        names.extend(_normalize_people(artist_info.get("name")))
+                    elif artist_info:
+                        names.extend(_normalize_people(artist_info))
+
+                    for name in names:
                         if name and name not in writers_list:
                             writers_list.append(name)
 
