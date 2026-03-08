@@ -14379,20 +14379,21 @@ def api_queue_status():
     """Get queue status and items"""
     try:
         from download_queue_manager import get_queue, get_completed_queue, check_downloads_folder
-        
+
         status = request.args.get('status')
-        source = request.args.get('source', 'soulseek')
+        # source=None returns all sources (soulseek, qbittorrent, discovered/unmatched)
+        source = request.args.get('source') or None
         limit = int(request.args.get('limit', 50))
-        
-        # Get queue items
+
+        # Get queue items (all sources by default)
         active_queue = get_queue(status=status, source=source, limit=limit)
-        
-        # Get completed items
+
+        # Get completed items (includes 'unmatched')
         completed = get_completed_queue(limit=20)
-        
+
         # Check downloads folder for new files
         newly_completed = check_downloads_folder()
-        
+
         return jsonify({
             "success": True,
             "active": active_queue,
@@ -14401,7 +14402,7 @@ def api_queue_status():
             "total_active": len(active_queue),
             "total_completed": len(completed)
         })
-        
+
     except Exception as e:
         logging.error(f"Error getting queue status: {e}")
         return jsonify({"error": str(e)}), 400

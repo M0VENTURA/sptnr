@@ -422,9 +422,9 @@ def check_completed_downloads():
             logger.warning(f"Downloads directory does not exist: {DOWNLOADS_DIR}")
             return
         
-        # Get all downloading queue items
+        # Get all downloading queue items (select all columns for metadata needed to move)
         cursor.execute("""
-            SELECT id, artist, title, album, search_query, found_filename, release_id FROM download_queue
+            SELECT * FROM download_queue
             WHERE status = 'downloading'
         """)
         
@@ -475,6 +475,31 @@ def check_completed_downloads():
                 file_path = os.path.join(DOWNLOADS_DIR, match_found)
                 logger.info(f"Queue {item['id']}: Matched file '{match_found}' - marking as completed")
                 update_queue_status(item['id'], 'completed', file_path=file_path, found_filename=match_found)
+
+                # Immediately move the file to /music
+                try:
+                    from download_queue_manager import move_single_track_to_music_dir, update_queue_item
+                    # Build a minimal item dict with the metadata needed for folder determination
+                    item_for_move = dict(item)
+                    item_for_move['file_path'] = file_path
+                    move_result = move_single_track_to_music_dir(item_for_move)
+                    if move_result['success']:
+                        update_queue_item(
+                            item['id'],
+                            status='imported',
+                            file_path=move_result['target_path'],
+                            copied_individually=1,
+                            copied_individually_at=datetime.now().isoformat()
+                        )
+                        logger.info(f"[AUTO_MOVE] Queue {item['id']}: moved to {move_result['target_path']}")
+                    else:
+                        logger.warning(
+                            f"[AUTO_MOVE] Queue {item['id']}: could not move "
+                            f"({move_result.get('error')}), keeping as 'completed'"
+                        )
+                except Exception as move_err:
+                    logger.warning(f"[AUTO_MOVE] Queue {item['id']}: move error: {move_err}")
+
                 newly_completed.append(item)
 
         conn.close()

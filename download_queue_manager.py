@@ -398,26 +398,28 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         return None
 
 
-def get_queue(status=None, source='soulseek', limit=50):
+def get_queue(status=None, source=None, limit=50):
     """
     Get queue items
-    
+
     Args:
-        status: Filter by status (queued, searching, downloading, completed, failed, imported)
-        source: Filter by source (soulseek, qbittorrent)
+        status: Filter by status (queued, searching, downloading, completed, failed, imported, unmatched).
+                If None, returns all active statuses (queued, searching, downloading, unmatched).
+        source: Filter by source (soulseek, qbittorrent, discovered).
+                If None (default), all sources are returned.
         limit: Max results
-    
+
     Returns:
         List of queue items
     """
     try:
         conn = get_db()
         cursor = conn.cursor()
-        
+
         # First ensure required columns exist
         cursor.execute("PRAGMA table_info(download_queue);")
         columns = [row[1] for row in cursor.fetchall()]
-        
+
         # Add missing columns if needed
         missing_cols = {
             'source': "TEXT DEFAULT 'soulseek'",
@@ -426,7 +428,7 @@ def get_queue(status=None, source='soulseek', limit=50):
             'import_group': "TEXT",
             'import_type': "TEXT DEFAULT 'song'"
         }
-        
+
         for col, col_type in missing_cols.items():
             if col not in columns:
                 logger.warning(f"'{col}' column missing from download_queue, attempting to add it")
@@ -436,38 +438,47 @@ def get_queue(status=None, source='soulseek', limit=50):
                     columns.append(col)
                 except Exception as e:
                     logger.warning(f"Could not add {col} column: {e}")
-        
+
         from app import _is_postgres_connection as app_is_postgres_connection
         is_pg = bool(app_is_postgres_connection(conn))
         placeholder = "%s" if is_pg else "?"
-        
-        query = "SELECT * FROM download_queue"
+
+        conditions = []
         params = []
-        
-        # Only filter by source if column exists
-        if 'source' in columns:
-            query += f" WHERE source = {placeholder}"
+
+        # Source filter (optional)
+        if source and 'source' in columns:
+            conditions.append(f"source = {placeholder}")
             params.append(source)
-            if status:
-                query += f" AND status = {placeholder}"
-                params.append(status)
-        elif status:
-            query += f" WHERE status = {placeholder}"
+
+        # Status filter
+        if status:
+            conditions.append(f"status = {placeholder}")
             params.append(status)
-        
+        else:
+            # Default: return all non-archived statuses
+            if is_pg:
+                conditions.append("status NOT IN ('imported', 'removed', 'cancelled')")
+            else:
+                conditions.append("status NOT IN ('imported', 'removed', 'cancelled')")
+
+        query = "SELECT * FROM download_queue"
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+
         # Only use priority in ORDER BY if column exists
         if 'priority' in columns:
             query += f" ORDER BY priority ASC, created_at DESC LIMIT {placeholder}"
         else:
             query += f" ORDER BY created_at DESC LIMIT {placeholder}"
         params.append(limit)
-        
+
         cursor.execute(query, params)
         items = [dict(row) for row in cursor.fetchall()]
         conn.close()
-        
+
         return items
-        
+
     except Exception as e:
         logger.error(f"Error getting queue: {type(e).__name__}: {e}")
         import traceback
@@ -705,11 +716,115 @@ def clear_queue(keep_completed=False):
         }
 
 
+def _sanitize_path_component(value):
+    """Remove characters that are invalid in directory/file names."""
+    if not value:
+        return value
+    invalid = '<>:"|?*\\'
+    for ch in invalid:
+        value = value.replace(ch, '_')
+    return value.strip('. ')
+
+
+def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
+    """
+    Move a single completed track from /downloads into the /music library tree.
+
+    Folder structure: <music_root>/<album_artist>/<year> - <album>/
+    (year omitted when not available)
+
+    Args:
+        queue_item_dict: dict from download_queue row with at least file_path,
+                         artist, album, album_artist, year, title.
+        music_dir:       Optional override for MUSIC_ROOT (defaults to env var).
+
+    Returns:
+        dict with keys:
+            success  (bool)
+            target_path (str | None)
+            error (str | None)
+    """
+    import shutil
+
+    try:
+        file_path = queue_item_dict.get('file_path')
+        if not file_path:
+            return {'success': False, 'target_path': None, 'error': 'No file_path in queue item'}
+        if not os.path.exists(file_path):
+            return {'success': False, 'target_path': None, 'error': f'File not found: {file_path}'}
+
+        music_root = music_dir or MUSIC_DIR
+
+        album_artist = _sanitize_path_component(
+            queue_item_dict.get('album_artist') or queue_item_dict.get('artist') or 'Unknown Artist'
+        )
+        album = _sanitize_path_component(queue_item_dict.get('album') or 'Unknown Album')
+        year = queue_item_dict.get('year')
+
+        if year:
+            dest_folder = os.path.join(music_root, album_artist, f"{year} - {album}")
+        else:
+            dest_folder = os.path.join(music_root, album_artist, album)
+
+        os.makedirs(dest_folder, exist_ok=True)
+
+        filename = os.path.basename(file_path)
+        dest_path = os.path.join(dest_folder, filename)
+
+        # Avoid overwriting
+        if os.path.exists(dest_path):
+            base, ext = os.path.splitext(filename)
+            counter = 1
+            while os.path.exists(os.path.join(dest_folder, f"{base}_{counter}{ext}")):
+                counter += 1
+            dest_path = os.path.join(dest_folder, f"{base}_{counter}{ext}")
+
+        shutil.move(file_path, dest_path)
+        logger.info(f"[MOVE] {filename} → {dest_path}")
+        return {'success': True, 'target_path': dest_path, 'error': None}
+
+    except Exception as e:
+        logger.error(f"[MOVE] Failed to move file: {e}")
+        return {'success': False, 'target_path': None, 'error': str(e)}
+
+
+def _metadata_matches_queue_item(file_meta, queue_item, threshold=0.6):
+    """
+    Check if discovered file metadata is a good match for a pending queue item.
+
+    Compares artist + title (required), with album as a bonus.
+    Returns True when the similarity exceeds `threshold`.
+    """
+    def _sim(a, b):
+        if not a or not b:
+            return 0.0
+        return SequenceMatcher(None, a.lower().strip(), b.lower().strip()).ratio()
+
+    artist_score = _sim(file_meta.get('artist'), queue_item.get('artist'))
+    title_score = _sim(file_meta.get('title'), queue_item.get('title'))
+
+    # Each individual field must clear a minimum similarity floor (0.5) before
+    # the weighted average is tested against the overall threshold parameter.
+    _FIELD_MIN = 0.5
+    if artist_score < _FIELD_MIN or title_score < _FIELD_MIN:
+        return False
+
+    combined = (artist_score + title_score) / 2
+
+    # Album similarity gives a small boost if available
+    album_score = _sim(file_meta.get('album'), queue_item.get('album'))
+    if album_score > 0:
+        combined = (combined * 2 + album_score) / 3
+
+    return combined >= threshold
+
+
 def check_downloads_folder():
     """
     Monitor /downloads folder for completed files.
     Match files to queue items and update their status.
-    
+    Automatically moves matched files to /music and marks them as 'imported'.
+
     Returns:
         List of newly completed items
     """
@@ -775,38 +890,68 @@ def check_downloads_folder():
             
             if match_found and match_path:
                 logger.info(f"Matched queue {queue_item['id']} ({queue_item['search_query']}) to file: {match_found}")
-                
-                # Update queue item with completed status
-                result = update_queue_item(
+
+                # First mark as completed so the item has file_path set
+                updated_item = update_queue_item(
                     queue_item['id'],
                     status='completed',
                     found_filename=match_found,
                     file_path=match_path,
                     imported_at=datetime.now().isoformat()
                 )
-                
-                if result:
-                    logger.info(f"Updated queue item {queue_item['id']} to completed")
-                    completed_items.append({
-                        'queue_id': queue_item['id'],
-                        'filename': match_found,
-                        'file_path': match_path,
-                        'artist': queue_item['artist'],
-                        'title': queue_item['title'],
-                        'album': queue_item['album']
-                    })
+
+                if updated_item:
+                    # Immediately move the file to /music
+                    item_for_move = dict(queue_item)
+                    item_for_move['file_path'] = match_path
+                    move_result = move_single_track_to_music_dir(item_for_move)
+                    if move_result['success']:
+                        # Update to 'imported' with the new /music path
+                        update_queue_item(
+                            queue_item['id'],
+                            status='imported',
+                            file_path=move_result['target_path'],
+                            copied_individually=1,
+                            copied_individually_at=datetime.now().isoformat()
+                        )
+                        logger.info(
+                            f"[MOVE] Queue {queue_item['id']}: moved to {move_result['target_path']}"
+                        )
+                        completed_items.append({
+                            'queue_id': queue_item['id'],
+                            'filename': match_found,
+                            'file_path': move_result['target_path'],
+                            'artist': queue_item['artist'],
+                            'title': queue_item['title'],
+                            'album': queue_item['album'],
+                            'moved': True
+                        })
+                    else:
+                        logger.warning(
+                            f"[MOVE] Queue {queue_item['id']}: could not move file "
+                            f"({move_result.get('error')}), keeping as 'completed'"
+                        )
+                        completed_items.append({
+                            'queue_id': queue_item['id'],
+                            'filename': match_found,
+                            'file_path': match_path,
+                            'artist': queue_item['artist'],
+                            'title': queue_item['title'],
+                            'album': queue_item['album'],
+                            'moved': False
+                        })
                 else:
                     logger.debug(f"Could not update queue item {queue_item['id']} - item may have been processed already")
             else:
                 # Debug: show what we're looking for
                 search_query = queue_item.get('search_query', f"{queue_item.get('artist', '')} {queue_item.get('title', '')}")
                 logger.debug(f"No match found for queue item {queue_item['id']}: {search_query}")
-        
+
         conn.close()
-        
+
         if completed_items:
             logger.info(f"Found {len(completed_items)} completed downloads")
-        
+
         return completed_items
         
     except Exception as e:
@@ -1082,8 +1227,66 @@ def auto_discover_and_queue_files():
 
                     stats['queued'] += 1
                     continue
-                
-                # Add to queue with 'completed' status (found in downloads folder, ready to organize)
+
+                # Check if this file matches a pending queue item (queued/searching/downloading)
+                file_meta = {
+                    'artist': artist,
+                    'title': title,
+                    'album': album,
+                }
+                cursor.execute(f"""
+                    SELECT id, artist, title, album, album_artist, year, track_number, disc_number
+                    FROM download_queue
+                    WHERE status IN ('queued', 'searching', 'downloading')
+                """)
+                pending_items = [dict(row) for row in cursor.fetchall()]
+
+                matched_pending = None
+                for pending in pending_items:
+                    if _metadata_matches_queue_item(file_meta, pending):
+                        matched_pending = pending
+                        break
+
+                if matched_pending:
+                    # File belongs to an existing queue item - update it and move to /music
+                    item_for_move = dict(matched_pending)
+                    item_for_move['file_path'] = full_path
+                    # Enrich with discovered file's metadata where queue item is sparse
+                    if not item_for_move.get('album_artist'):
+                        item_for_move['album_artist'] = album_artist
+                    if not item_for_move.get('year'):
+                        item_for_move['year'] = year
+
+                    updated = update_queue_item(
+                        matched_pending['id'],
+                        status='completed',
+                        found_filename=filename,
+                        file_path=full_path,
+                        imported_at=datetime.now().isoformat()
+                    )
+                    if updated:
+                        move_result = move_single_track_to_music_dir(item_for_move)
+                        if move_result['success']:
+                            update_queue_item(
+                                matched_pending['id'],
+                                status='imported',
+                                file_path=move_result['target_path'],
+                                copied_individually=1,
+                                copied_individually_at=datetime.now().isoformat()
+                            )
+                            logger.info(
+                                f"[AUTO-DISCOVER] Matched & moved: {artist} - {title} "
+                                f"→ {move_result['target_path']}"
+                            )
+                        else:
+                            logger.warning(
+                                f"[AUTO-DISCOVER] Matched but could not move {filename}: "
+                                f"{move_result.get('error')}"
+                            )
+                    stats['queued'] += 1
+                    continue
+
+                # No pending queue item matches → add as 'unmatched'
                 execute_write_with_retry(
                     cursor,
                     conn,
@@ -1091,20 +1294,20 @@ def auto_discover_and_queue_files():
                     INSERT INTO download_queue 
                     (artist, title, album, album_artist, track_number, disc_number, year, found_filename, file_path, 
                      status, source, created_at, updated_at)
-                    VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'completed', 'discovered', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'unmatched', 'discovered', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """,
                     (artist, title, album, album_artist, track_number, disc_number, year, filename, full_path),
-                    context="auto_discover insert"
+                    context="auto_discover unmatched insert"
                 )
 
                 stats['queued'] += 1
-                
+
                 # Log discovery with metadata and format info
                 metadata_status = "✓ metadata" if metadata else "✗ fallback"
                 if file_ext == '.flac':
-                    logger.info(f"✅ Discovered [FLAC→MP3] [{metadata_status}]: {artist} - {title}")
+                    logger.info(f"⚠️  Unmatched [FLAC] [{metadata_status}]: {artist} - {title}")
                 else:
-                    logger.info(f"✅ Discovered [{metadata_status}]: {artist} - {title} from {os.path.basename(os.path.dirname(full_path))}/{filename}")
+                    logger.info(f"⚠️  Unmatched [{metadata_status}]: {artist} - {title} from {os.path.basename(os.path.dirname(full_path))}/{filename}")
                 
             except Exception as e:
                 error_msg = f"Error processing {file_info['filename']}: {str(e)}"
@@ -1175,10 +1378,12 @@ def get_retry_queue(limit=50):
 
 def get_completed_queue(limit=50):
     """
-    Get completed downloads waiting for organization
-    
+    Get completed downloads (and unmatched files) waiting for organization.
+
+    Includes items with status 'completed' or 'unmatched' that have a file_path.
+
     Returns:
-        List of completed queue items
+        List of completed/unmatched queue items
     """
     try:
         conn = get_db()
@@ -1190,17 +1395,17 @@ def get_completed_queue(limit=50):
 
         cursor.execute(f"""
             SELECT * FROM download_queue 
-            WHERE status = 'completed'
+            WHERE status IN ('completed', 'unmatched')
             AND file_path IS NOT NULL
             ORDER BY updated_at DESC
             LIMIT {placeholder}
         """, (limit,))
-        
+
         items = [dict(row) for row in cursor.fetchall()]
         conn.close()
-        
+
         return items
-        
+
     except Exception as e:
         logger.error(f"Error getting completed queue: {e}")
         return []
@@ -1807,7 +2012,7 @@ def check_album_complete(album, artist):
             SELECT * FROM download_queue 
             WHERE LOWER(album) = LOWER({placeholder}) 
             AND LOWER(artist) = LOWER({placeholder})
-            AND status IN ('discovered', 'completed', 'pending_match')
+            AND status IN ('discovered', 'completed', 'pending_match', 'unmatched')
             AND file_path IS NOT NULL
             ORDER BY track_number ASC, title ASC
         """, (album, artist))
@@ -2412,7 +2617,7 @@ def process_complete_albums():
             """
             SELECT DISTINCT album, artist
             FROM download_queue
-            WHERE status IN ('discovered', 'pending_match')
+            WHERE status IN ('discovered', 'pending_match', 'unmatched')
             AND album IS NOT NULL
             AND artist IS NOT NULL
             AND file_path IS NOT NULL
