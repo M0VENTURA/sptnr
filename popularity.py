@@ -230,6 +230,7 @@ def is_compilation_type(album_type: str) -> bool:
     Handles both:
     - Old format: 'compilation' (standalone)
     - New MusicBrainz secondary type format: 'album+compilation'
+    - MusicBrainz parentheses format: 'album (compilation)'
     
     Args:
         album_type: Album type string from database or MusicBrainz
@@ -240,7 +241,11 @@ def is_compilation_type(album_type: str) -> bool:
     if not album_type:
         return False
     album_type_lower = album_type.lower()
-    return album_type_lower == 'compilation' or '+compilation' in album_type_lower
+    return (
+        album_type_lower == 'compilation'
+        or '+compilation' in album_type_lower
+        or '(compilation)' in album_type_lower
+    )
 
 
 def should_exclude_track_from_stats(title: str, album: str = "") -> bool:
@@ -3874,7 +3879,14 @@ def popularity_scan(
                 album_type_lower = album_type_from_field.lower()
                 
                 # Check for heterogeneous types (compilation, soundtrack, live, remix, spoken word)
-                heterogeneous_markers = ['+compilation', '+soundtrack', '+live', '+remix', '+spokenword']
+                # Handles both '+type' (internal format) and '(type)' (MusicBrainz parentheses format)
+                heterogeneous_markers = [
+                    '+compilation', '(compilation)',
+                    '+soundtrack', '(soundtrack)',
+                    '+live', '(live)',
+                    '+remix', '(remix)',
+                    '+spokenword', '(spokenword)',
+                ]
                 if any(marker in album_type_lower for marker in heterogeneous_markers):
                     is_homogeneous_album = False
                     log_debug(f'Heterogeneous album type detected ("{album_type_from_field}"), will fetch Discogs genres per-track')
