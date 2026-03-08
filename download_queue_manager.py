@@ -149,7 +149,7 @@ def get_db():
     return conn
 
 
-def _ensure_download_queue_columns(conn, cursor):
+def _ensure_download_queue_columns(conn, cursor, is_pg=False):
     """Ensure expected queue columns exist (run once per process)."""
     global _queue_schema_checked
     if _queue_schema_checked:
@@ -159,8 +159,16 @@ def _ensure_download_queue_columns(conn, cursor):
         if _queue_schema_checked:
             return
 
-        cursor.execute("PRAGMA table_info(download_queue);")
-        columns = [row[1] for row in cursor.fetchall()]
+        if is_pg:
+            cursor.execute("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = 'download_queue'
+                  AND table_schema = current_schema()
+            """)
+            columns = [row['column_name'] for row in cursor.fetchall()]
+        else:
+            cursor.execute("PRAGMA table_info(download_queue);")
+            columns = [row[1] for row in cursor.fetchall()]
 
         required_cols = {
             'search_query': "TEXT",
@@ -322,9 +330,8 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
             conn.close()
             return None
         
-        # Ensure schema only on SQLite path (PRAGMA/ALTER logic is SQLite-specific).
-        if not is_pg:
-            _ensure_download_queue_columns(conn, cursor)
+        # Ensure required columns exist for both SQLite and PostgreSQL.
+        _ensure_download_queue_columns(conn, cursor, is_pg=is_pg)
         
         # Search query for Soulseek: artist and title only (no album)
         search_query = f"{artist} - {title}"
