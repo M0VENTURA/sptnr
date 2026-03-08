@@ -740,10 +740,16 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
 
     Folder structure: <music_root>/<album_artist>/<year> - <album>/
     (year defaults to 'Unknown' when not available)
+    
+    File naming: [track_number]. [artist] - [title].[ext]
+    
+    Examples:
+        - 01. Tool - Fear Inoculum.mp3
+        - 103. Pink Floyd - Shine On You Crazy Diamond.flac (disc 1, track 3)
 
     Args:
         queue_item_dict: dict from download_queue row with at least file_path,
-                         artist, album, album_artist, year, title.
+                         artist, album, album_artist, year, title, track_number.
         music_dir:       Optional override for MUSIC_ROOT (defaults to env var).
 
     Returns:
@@ -779,16 +785,38 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
 
         os.makedirs(dest_folder, exist_ok=True)
 
-        filename = os.path.basename(file_path)
+        # Build proper filename: [track_number]. [artist] - [title].[ext]
+        artist = queue_item_dict.get('artist', 'Unknown Artist')
+        title = queue_item_dict.get('title', 'Unknown Title')
+        track_num = queue_item_dict.get('track_number', '00')
+        disc_num = queue_item_dict.get('disc_number', 1)
+        
+        # Format track number with disc prefix if needed
+        try:
+            track_num = int(str(track_num).split('/')[0]) if track_num else 0
+            disc_num = int(str(disc_num).split('/')[0]) if disc_num else 1
+            
+            if disc_num > 1:
+                track_num = f"{disc_num}{track_num:02d}"
+            else:
+                track_num = f"{track_num:02d}"
+        except:
+            track_num = "00"
+        
+        # Get file extension
+        ext = os.path.splitext(file_path)[1].lower()
+        
+        # Build filename with proper format
+        filename = _sanitize_path_component(f"{track_num}. {artist} - {title}{ext}")
         dest_path = os.path.join(dest_folder, filename)
 
         # Avoid overwriting
         if os.path.exists(dest_path):
-            base, ext = os.path.splitext(filename)
+            base, ext_only = os.path.splitext(filename)
             counter = 1
-            while os.path.exists(os.path.join(dest_folder, f"{base}_{counter}{ext}")):
+            while os.path.exists(os.path.join(dest_folder, f"{base}_{counter}{ext_only}")):
                 counter += 1
-            dest_path = os.path.join(dest_folder, f"{base}_{counter}{ext}")
+            dest_path = os.path.join(dest_folder, f"{base}_{counter}{ext_only}")
 
         shutil.move(file_path, dest_path)
         logger.info(f"[MOVE] {filename} → {dest_path}")
@@ -2900,16 +2928,39 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
                 continue
 
             src = track['file_path']
-            filename = os.path.basename(src)
+            
+            # Build proper filename: [track_number]. [artist] - [title].[ext]
+            track_artist = track.get('artist', 'Unknown Artist')
+            track_title = track.get('title', 'Unknown Title')
+            track_num = track.get('track_number', '00')
+            disc_num = track.get('disc_number', 1)
+            
+            # Format track number with disc prefix if needed
+            try:
+                track_num = int(str(track_num).split('/')[0]) if track_num else 0
+                disc_num = int(str(disc_num).split('/')[0]) if disc_num else 1
+                
+                if disc_num > 1:
+                    track_num = f"{disc_num}{track_num:02d}"
+                else:
+                    track_num = f"{track_num:02d}"
+            except:
+                track_num = "00"
+            
+            # Get file extension
+            ext = os.path.splitext(src)[1].lower()
+            
+            # Build filename with proper format
+            filename = _sanitize_path_component(f"{track_num}. {track_artist} - {track_title}{ext}")
             dest = os.path.join(dest_dir, filename)
 
             # Avoid overwriting
             if os.path.exists(dest):
-                base, ext = os.path.splitext(filename)
+                base, ext_only = os.path.splitext(filename)
                 counter = 1
-                while os.path.exists(os.path.join(dest_dir, f"{base}_{counter}{ext}")):
+                while os.path.exists(os.path.join(dest_dir, f"{base}_{counter}{ext_only}")):
                     counter += 1
-                dest = os.path.join(dest_dir, f"{base}_{counter}{ext}")
+                dest = os.path.join(dest_dir, f"{base}_{counter}{ext_only}")
 
             try:
                 shutil.move(src, dest)
