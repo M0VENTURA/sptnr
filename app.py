@@ -2584,6 +2584,7 @@ def artist_detail(name):
         # Categorize discovered albums by type
         albums_by_category = {
             "album": [],
+            "live_album": [],
             "ep": [],
             "single": [],
             "compilation": [],
@@ -2613,6 +2614,12 @@ def artist_detail(name):
                 albums_by_category["compilation"].append(album_dict)
                 categorized_albums.add(album_name)
             # Categorize based on spotify_album_type and track count
+            elif album_type and 'live' in album_type:
+                albums_by_category["live_album"].append(album_dict)
+                categorized_albums.add(album_name)
+            elif album_name and ('live' in album_name.lower() or 'unplugged' in album_name.lower()):
+                albums_by_category["live_album"].append(album_dict)
+                categorized_albums.add(album_name)
             elif album_type and 'compilation' in album_type.lower():
                 albums_by_category["compilation"].append(album_dict)
                 categorized_albums.add(album_name)
@@ -2645,6 +2652,7 @@ def artist_detail(name):
         # Categorize missing releases
         missing_by_category = {
             "album": [],
+            "live_album": [],
             "ep": [],
             "single": [],
             "compilation": []
@@ -2655,7 +2663,9 @@ def artist_detail(name):
             release_dict['is_missing'] = True  # Mark as missing
             category = (release_dict.get("category") or "Album").lower()
             
-            if category == "ep":
+            if category in ("live album", "live_album"):
+                missing_by_category["live_album"].append(release_dict)
+            elif category == "ep":
                 missing_by_category["ep"].append(release_dict)
             elif category == "single":
                 missing_by_category["single"].append(release_dict)
@@ -2666,7 +2676,7 @@ def artist_detail(name):
         
         # Merge discovered and missing albums by category, then sort by release date
         merged_albums_by_category = {}
-        for category in ["album", "ep", "single", "compilation", "unknown"]:
+        for category in ["album", "compilation", "live_album", "ep", "single", "unknown"]:
             merged_list = albums_by_category.get(category, []) + missing_by_category.get(category, [])
             
             # Sort by release date (newest first)
@@ -2700,11 +2710,11 @@ def artist_detail(name):
         
         # Convert all template data to JSON-serializable format
         # This ensures Row objects, datetime, Decimal, etc. are all properly converted
-        albums_data_dicts = convert_row_to_json_serializable(albums_data)
+        albums_data_dicts = convert_row_to_json_serializable(albums_data_dicts)
         merged_albums_by_category = convert_row_to_json_serializable(merged_albums_by_category)
         missing_by_category = convert_row_to_json_serializable(missing_by_category)
-        top_tracks = convert_row_to_json_serializable(top_tracks)
-        appears_on_albums = convert_row_to_json_serializable(appears_on_albums)
+        top_tracks = convert_row_to_json_serializable(top_tracks_dicts)
+        appears_on_albums = convert_row_to_json_serializable(appears_on_dicts)
         artist_stats = convert_row_to_json_serializable(artist_stats)
         genres = convert_row_to_json_serializable(genres)
         
@@ -2743,6 +2753,17 @@ def _normalize_release_title(text: str) -> str:
     return " ".join(text.split())
 
 
+def _normalize_artist_name(text: str) -> str:
+    """Normalize artist names for strict artist-credit comparison."""
+    if not text:
+        return ""
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    text = text.lower()
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return " ".join(text.split())
+
+
 def _fetch_musicbrainz_releases(artist_name: str, limit: int = 100, artist_mbid: str | None = None) -> list[dict]:
     """
     Fetch release-groups from MusicBrainz for an artist with retry logic and pagination.
@@ -2760,6 +2781,8 @@ def _fetch_musicbrainz_releases(artist_name: str, limit: int = 100, artist_mbid:
     releases: list[dict] = []
     url = "https://musicbrainz.org/ws/2/release-group"
     
+    requested_artist_norm = _normalize_artist_name(artist_name)
+
     # Use artist MBID for lookup if available (more accurate than text search)
     if artist_mbid:
         query = f'arid:"{artist_mbid}" AND (primarytype:album OR primarytype:ep OR primarytype:single)'
@@ -2780,7 +2803,13 @@ def _fetch_musicbrainz_releases(artist_name: str, limit: int = 100, artist_mbid:
     max_pages = 10  # Additional safety: max 10 pages (1000 releases if page_size=100)
     
     while offset < max_total and pages_fetched < max_pages:
-        params = {"fmt": "json", "limit": page_size, "query": query, "offset": offset}
+        params = {
+            "fmt": "json",
+            "limit": page_size,
+            "query": query,
+            "offset": offset,
+            "inc": "artist-credits",
+        }
         
         fetched_this_page = False
         for attempt in range(max_retries):
@@ -2793,6 +2822,32 @@ def _fetch_musicbrainz_releases(artist_name: str, limit: int = 100, artist_mbid:
                 total_count = data.get("count", 0)
                 
                 for rg in release_groups:
+                    # When no MBID is available, tighten matching to avoid cross-artist overmatches
+                    # from broad text search (e.g., artists with similar names).
+                    if not artist_mbid:
+                        raw_score = rg.get("score", 0)
+                        try:
+                            rg_score = int(raw_score)
+                        except (TypeError, ValueError):
+                            rg_score = 0
+
+                        # Require a strong text score when relying on name-based query.
+                        if rg_score and rg_score < 90:
+                            continue
+
+                        artist_credit_names = []
+                        for credit in rg.get("artist-credit") or []:
+                            if isinstance(credit, dict):
+                                artist_obj = credit.get("artist") or {}
+                                name = artist_obj.get("name") or credit.get("name") or ""
+                                if name:
+                                    artist_credit_names.append(name)
+
+                        # If artist credits are provided, require an exact normalized artist match.
+                        if artist_credit_names:
+                            if not any(_normalize_artist_name(n) == requested_artist_norm for n in artist_credit_names):
+                                continue
+
                     rg_id = rg.get("id", "")
                     primary_type = rg.get("primary-type", "")
                     releases.append({
@@ -2920,26 +2975,36 @@ def api_artist_missing_releases():
     cursor = conn.cursor()
     placeholder = "%s" if _is_postgres_connection(conn) else "?"
     
+    # Use canonical artist identity for all comparisons (album_artist preferred)
+    artist_compare_expr = "COALESCE(NULLIF(album_artist, ''), artist)"
+
     # Get artist MBID if available for more accurate MusicBrainz lookup
     artist_mbid = None
     try:
         cursor.execute(f"""
-            SELECT MAX(musicbrainz_artist_id) AS mbid FROM tracks WHERE artist = {placeholder}
+            SELECT MAX(musicbrainz_artist_id) AS mbid
+            FROM tracks
+            WHERE LOWER({artist_compare_expr}) = LOWER({placeholder})
         """, (artist,))
         row = cursor.fetchone()
         if row and row['mbid']:
             artist_mbid = row['mbid']
     except:
         pass
+
+    if not artist_mbid:
+        try:
+            from api_clients.musicbrainz import lookup_and_save_artist_mbid
+            artist_mbid = lookup_and_save_artist_mbid(artist, conn) or None
+        except Exception as e:
+            logging.debug(f"[MISSING_RELEASES] Could not resolve artist MBID for {artist}: {e}")
     
     cursor.execute(f"""
-        SELECT DISTINCT album FROM tracks WHERE artist = {placeholder}
+        SELECT DISTINCT album
+        FROM tracks
+        WHERE LOWER({artist_compare_expr}) = LOWER({placeholder})
     """, (artist,))
     existing_albums = [row['album'] for row in cursor.fetchall()]
-    cursor.execute(f"""
-        SELECT release_id FROM missing_releases WHERE artist = {placeholder}
-    """, (artist,))
-    existing_missing = {row['release_id'] for row in cursor.fetchall()}
     conn.close()
 
     existing_norm = {_normalize_release_title(a) for a in existing_albums if a}
@@ -2947,6 +3012,7 @@ def api_artist_missing_releases():
     # Use artist MBID for accurate lookup when available
     mb_releases = _fetch_musicbrainz_releases(artist, artist_mbid=artist_mbid)
     missing = []
+    seen_missing_keys = set()
     for rg in mb_releases:
         norm_title = _normalize_release_title(rg.get("title") or "")
         if not norm_title or norm_title in existing_norm:
@@ -2955,12 +3021,19 @@ def api_artist_missing_releases():
         secondary = [s.lower() for s in rg.get("secondary_types") or []]
         primary_type = (rg.get("primary_type") or "").lower()
         category = "Album"
-        if "compilation" in secondary:
+        if primary_type == "album" and "compilation" in secondary:
             category = "Compilation"
+        elif primary_type == "album" and "live" in secondary:
+            category = "Live Album"
         elif primary_type == "ep":
             category = "EP"
         elif primary_type == "single" or "single" in secondary:
             category = "Single"
+
+        dedupe_key = (norm_title, category)
+        if dedupe_key in seen_missing_keys:
+            continue
+        seen_missing_keys.add(dedupe_key)
 
         missing.append({
             "id": rg.get("id", ""),
@@ -3243,8 +3316,10 @@ def api_scan_all_missing_releases():
                         secondary = [s.lower() for s in rg.get("secondary_types") or []]
                         primary_type = (rg.get("primary_type") or "").lower()
                         category = "Album"
-                        if "compilation" in secondary:
+                        if primary_type == "album" and "compilation" in secondary:
                             category = "Compilation"
+                        elif primary_type == "album" and "live" in secondary:
+                            category = "Live Album"
                         elif primary_type == "ep":
                             category = "EP"
                         elif primary_type == "single" or "single" in secondary:

@@ -412,6 +412,8 @@
   {% set total_missing_singles = albums_by_category.single|selectattr('is_missing', 'equalto', True)|list|length %}
   {% set total_discovered_compilations = albums_by_category.compilation|selectattr('is_missing', 'equalto', False)|list|length %}
   {% set total_missing_compilations = albums_by_category.compilation|selectattr('is_missing', 'equalto', True)|list|length %}
+  {% set total_discovered_live_albums = albums_by_category.live_album|selectattr('is_missing', 'equalto', False)|list|length %}
+  {% set total_missing_live_albums = albums_by_category.live_album|selectattr('is_missing', 'equalto', True)|list|length %}
   
   <div class="card mb-4" id="albums-section">
     <div class="card-header d-flex justify-content-between align-items-center">
@@ -458,6 +460,109 @@
             <tr>
               <td colspan="7" class="text-center text-muted py-4">
                 <i class="bi bi-info-circle"></i> No albums found
+              </td>
+            </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Compilations Section -->
+  <div class="card mb-4" id="compilations-section">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <div>
+        <h5 class="card-title mb-0">
+          <i class="bi bi-collection"></i> Compilations
+          <span class="badge bg-primary">{{ total_discovered_compilations }}</span>
+          {% if total_missing_compilations > 0 %}
+            <span class="badge bg-warning text-dark">{{ total_missing_compilations }} missing</span>
+          {% endif %}
+        </h5>
+        <p class="text-muted small mb-0 mt-1">Albums where this artist is featured (Various Artists, soundtracks, tributes, etc.)</p>
+      </div>
+      {% if total_missing_compilations > 0 %}
+        <button class="btn btn-sm btn-outline-secondary toggle-missing-btn" onclick="toggleMissing('compilations')" title="Show/hide missing compilations" data-show="false">
+          <i class="bi bi-eye-slash"></i> <span class="d-none d-sm-inline">Show Missing</span>
+        </button>
+      {% endif %}
+    </div>
+    <div class="table-responsive">
+      <table class="table table-hover mb-0">
+        <thead class="d-none d-md-table-header-group">
+          <tr>
+            <th style="width: 100px;">Art</th>
+            <th>Title</th>
+            <th class="text-center" style="width: 80px;">Year</th>
+            <th class="text-center" style="width: 100px;">Status</th>
+            <th class="text-center" style="width: 80px;">Tracks</th>
+            <th class="text-center" style="width: 100px;">Avg ★</th>
+            <th class="text-center" style="width: 150px;">Actions</th>
+          </tr>
+        </thead>
+        <tbody class="compilations-tbody">
+          {% if albums_by_category.compilation|length > 0 %}
+            {% for album in albums_by_category.compilation %}
+              {{ render_album_row(album, artist_name, album.is_missing) }}
+            {% endfor %}
+          {% else %}
+            <tr>
+              <td colspan="7" class="text-center text-muted py-4">
+                <i class="bi bi-info-circle"></i> No compilations found
+              </td>
+            </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Live Albums Section -->
+  <div class="card mb-4" id="live-albums-section">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <h5 class="card-title mb-0">
+        <i class="bi bi-broadcast"></i> Live Albums
+        <span class="badge bg-primary">{{ total_discovered_live_albums }}</span>
+        {% if total_missing_live_albums > 0 %}
+          <span class="badge bg-warning text-dark">{{ total_missing_live_albums }} missing</span>
+        {% endif %}
+      </h5>
+      <div class="d-flex gap-2">
+        {% if total_missing_live_albums > 0 %}
+          <button class="btn btn-sm btn-outline-secondary toggle-missing-btn" onclick="toggleMissing('live-albums')" title="Show/hide missing live albums" data-show="false">
+            <i class="bi bi-eye-slash"></i> <span class="d-none d-sm-inline">Show Missing</span>
+          </button>
+        {% endif %}
+        <button class="btn btn-sm btn-outline-info" onclick='searchMusicBrainzForAllReleases({{ artist_name|tojson }})' title="Search MusicBrainz for all artist releases to download">
+          <i class="bi bi-cloud-download"></i> <span class="d-none d-sm-inline">Search All Releases</span>
+        </button>
+        <button class="btn btn-sm btn-outline-warning" onclick='checkMissingReleases({{ artist_name|tojson }})' title="Check MusicBrainz and add missing releases inline">
+          <i class="bi bi-flag"></i> Check for Missing
+        </button>
+      </div>
+    </div>
+    <div class="table-responsive">
+      <table class="table table-hover mb-0">
+        <thead class="d-none d-md-table-header-group">
+          <tr>
+            <th style="width: 100px;">Art</th>
+            <th>Title</th>
+            <th class="text-center" style="width: 80px;">Year</th>
+            <th class="text-center" style="width: 100px;">Status</th>
+            <th class="text-center" style="width: 80px;">Tracks</th>
+            <th class="text-center" style="width: 100px;">Avg ★</th>
+            <th class="text-center" style="width: 150px;">Actions</th>
+          </tr>
+        </thead>
+        <tbody class="live-albums-tbody">
+          {% if albums_by_category.live_album|length > 0 %}
+            {% for album in albums_by_category.live_album %}
+              {{ render_album_row(album, artist_name, album.is_missing) }}
+            {% endfor %}
+          {% else %}
+            <tr>
+              <td colspan="7" class="text-center text-muted py-4">
+                <i class="bi bi-info-circle"></i> No live albums found
               </td>
             </tr>
           {% endif %}
@@ -566,55 +671,6 @@
             <tr>
               <td colspan="7" class="text-center text-muted py-4">
                 <i class="bi bi-info-circle"></i> No singles found
-              </td>
-            </tr>
-          {% endif %}
-        </tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- Compilations Section -->
-  <div class="card mb-4" id="compilations-section">
-    <div class="card-header d-flex justify-content-between align-items-center">
-      <div>
-        <h5 class="card-title mb-0">
-          <i class="bi bi-collection"></i> Compilations
-          <span class="badge bg-primary">{{ total_discovered_compilations }}</span>
-          {% if total_missing_compilations > 0 %}
-            <span class="badge bg-warning text-dark">{{ total_missing_compilations }} missing</span>
-          {% endif %}
-        </h5>
-        <p class="text-muted small mb-0 mt-1">Albums where this artist is featured (Various Artists, soundtracks, tributes, etc.)</p>
-      </div>
-      {% if total_missing_compilations > 0 %}
-        <button class="btn btn-sm btn-outline-secondary toggle-missing-btn" onclick="toggleMissing('compilations')" title="Show/hide missing compilations" data-show="false">
-          <i class="bi bi-eye-slash"></i> <span class="d-none d-sm-inline">Show Missing</span>
-        </button>
-      {% endif %}
-    </div>
-    <div class="table-responsive">
-      <table class="table table-hover mb-0">
-        <thead class="d-none d-md-table-header-group">
-          <tr>
-            <th style="width: 100px;">Art</th>
-            <th>Title</th>
-            <th class="text-center" style="width: 80px;">Year</th>
-            <th class="text-center" style="width: 100px;">Status</th>
-            <th class="text-center" style="width: 80px;">Tracks</th>
-            <th class="text-center" style="width: 100px;">Avg ★</th>
-            <th class="text-center" style="width: 150px;">Actions</th>
-          </tr>
-        </thead>
-        <tbody class="compilations-tbody">
-          {% if albums_by_category.compilation|length > 0 %}
-            {% for album in albums_by_category.compilation %}
-              {{ render_album_row(album, artist_name, album.is_missing) }}
-            {% endfor %}
-          {% else %}
-            <tr>
-              <td colspan="7" class="text-center text-muted py-4">
-                <i class="bi bi-info-circle"></i> No compilations found
               </td>
             </tr>
           {% endif %}
@@ -3168,7 +3224,7 @@ function toggleMissing(category) {
 
 // Initialize toggle states on page load
 function initializeMissingToggle() {
-  const categories = ['albums', 'eps', 'singles', 'compilations'];
+  const categories = ['albums', 'compilations', 'live-albums', 'eps', 'singles'];
   categories.forEach(category => {
     const section = document.getElementById(category + '-section');
     if (!section) return;
@@ -3268,9 +3324,10 @@ function performMusicBrainzSearchForArtist(artistName) {
       // Group by type
       const byType = {
         Album: [],
+        Compilation: [],
+        'Live Album': [],
         EP: [],
         Single: [],
-        Compilation: [],
         Other: []
       };
       
