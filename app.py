@@ -5043,10 +5043,15 @@ def api_get_artist_genres(artist):
 
 @app.route("/api/artist/<path:artist>/similar", methods=["GET"])
 def api_get_similar_artists(artist):
-    """Get similar artists for a given artist (from Last.fm and ListenBrainz)"""
+    """Get similar artists for a given artist (from Last.fm and ListenBrainz)
+    
+    If data exists in database, return it immediately.
+    If not, fetch from APIs, cache in database, and return.
+    """
     try:
         from urllib.parse import unquote
         import json
+        import requests
         
         artist = unquote(artist)
         
@@ -5064,23 +5069,14 @@ def api_get_similar_artists(artist):
         """, (artist,))
         
         row = cursor.fetchone()
-        conn.close()
-        
-        if not row:
-            logging.info(f"[SIMILAR ARTISTS] No artist record for {artist} - run scan to populate")
-            return jsonify({
-                "success": True,
-                "artist": artist,
-                "similar_artists": {
-                    "lastfm": [],
-                    "listenbrainz": []
-                },
-                "message": "Run 'Scan Artist' to fetch similar artists data"
-            })
         
         # Parse JSON arrays (support both tuple rows and dict rows)
-        similar_lastfm_raw = row.get("similar_artists_lastfm") if isinstance(row, dict) else row[0]
-        similar_listenbrainz_raw = row.get("similar_artists_listenbrainz") if isinstance(row, dict) else row[1]
+        similar_lastfm_raw = None
+        similar_listenbrainz_raw = None
+        
+        if row:
+            similar_lastfm_raw = row.get("similar_artists_lastfm") if isinstance(row, dict) else row[0]
+            similar_listenbrainz_raw = row.get("similar_artists_listenbrainz") if isinstance(row, dict) else row[1]
 
         similar_lastfm = []
         similar_listenbrainz = []
@@ -5097,13 +5093,113 @@ def api_get_similar_artists(artist):
         except Exception:
             pass
         
+        # If we have data, return it
+        if similar_lastfm or similar_listenbrainz:
+            conn.close()
+            return jsonify({
+                "success": True,
+                "artist": artist,
+                "similar_artists": {
+                    "lastfm": similar_lastfm[:10],
+                    "listenbrainz": similar_listenbrainz[:10]
+                },
+                "cached": True
+            })
+        
+        # No cached data - fetch from APIs
+        logging.info(f"[SIMILAR ARTISTS] No cached data for {artist}, fetching from APIs...")
+        
+        # Fetch from Last.fm
+        try:
+            cfg = get_config()
+            api_integrations = cfg.get("api_integrations", {})
+            lastfm_config = api_integrations.get("lastfm", api_integrations.get("last_fm", {}))
+            
+            if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
+                api_key = lastfm_config.get("api_key")
+                if api_key not in ["your_lastfm_api_key", "YOUR_API_KEY", "<your_api_key>", ""]:
+                    from api_clients.lastfm import LastFmClient
+                    lastfm_client = LastFmClient(api_key)
+                    
+                    try:
+                        similar_lastfm = lastfm_client.get_similar_artists(artist, limit=10)
+                        if similar_lastfm:
+                            logging.info(f"[SIMILAR ARTISTS] Found {len(similar_lastfm)} from Last.fm")
+                    except Exception as e:
+                        logging.debug(f"[SIMILAR ARTISTS] Last.fm fetch failed: {e}")
+        except Exception as e:
+            logging.debug(f"[SIMILAR ARTISTS] Last.fm API error: {e}")
+        
+        # Fetch from ListenBrainz (requires artist MBID)
+        try:
+            from api_clients.musicbrainz import MusicBrainzClient
+            mb_client = MusicBrainzClient()
+            
+            # Try to get artist MBID
+            artist_mbid, confidence = mb_client.get_suggested_mbid(
+                title=artist,
+                artist="",
+                limit=1
+            )
+            
+            if artist_mbid:
+                logging.debug(f"[SIMILAR ARTISTS] Found MBID {artist_mbid} for {artist}")
+                
+                # Fetch from ListenBrainz
+                lb_url = "https://labs.api.listenbrainz.org/similar-artists/json"
+                params = {"artist_mbids": artist_mbid}
+                
+                lb_response = requests.get(lb_url, params=params, timeout=(5, 10))
+                lb_response.raise_for_status()
+                lb_results = lb_response.json()
+                
+                if lb_results and "payload" in lb_results:
+                    similar_records = lb_results.get("payload", {}).get("artists", [])
+                    
+                    if similar_records:
+                        similar_listenbrainz = [
+                            {
+                                "name": record.get("artist_name", ""),
+                                "mbid": record.get("artist_mbid", "")
+                            }
+                            for record in similar_records[:10]
+                        ]
+                        logging.info(f"[SIMILAR ARTISTS] Found {len(similar_listenbrainz)} from ListenBrainz")
+        except Exception as e:
+            logging.debug(f"[SIMILAR ARTISTS] ListenBrainz fetch failed: {e}")
+        
+        # Store in database if we fetched anything
+        if similar_lastfm or similar_listenbrainz:
+            try:
+                cursor.execute(f"""
+                    INSERT INTO artists (id, name, similar_artists_lastfm, similar_artists_listenbrainz, similar_artists_last_updated)
+                    VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
+                    ON CONFLICT(id) DO UPDATE SET 
+                        similar_artists_lastfm = excluded.similar_artists_lastfm,
+                        similar_artists_listenbrainz = excluded.similar_artists_listenbrainz,
+                        similar_artists_last_updated = excluded.similar_artists_last_updated
+                """, (
+                    artist,
+                    artist,
+                    json.dumps(similar_lastfm) if similar_lastfm else None,
+                    json.dumps(similar_listenbrainz) if similar_listenbrainz else None,
+                    datetime.now().isoformat()
+                ))
+                conn.commit()
+                logging.info(f"[SIMILAR ARTISTS] Cached data for {artist}")
+            except Exception as e:
+                logging.warning(f"[SIMILAR ARTISTS] Failed to cache data: {e}")
+        
+        conn.close()
+        
         return jsonify({
             "success": True,
             "artist": artist,
             "similar_artists": {
-                "lastfm": similar_lastfm[:10],  # Limit to 10
+                "lastfm": similar_lastfm[:10],
                 "listenbrainz": similar_listenbrainz[:10]
-            }
+            },
+            "cached": False
         })
     
     except Exception as e:
