@@ -442,9 +442,10 @@ def detect_compilation_album(artist: str, album: str, tracks: list, album_artist
             log_debug(f'Compilation detected for "{album}": album_artist="{album_artist}"')
             return True
     
-    # Check Spotify classification
-    if spotify_album_type and spotify_album_type.lower() == 'compilation':
-        log_debug(f'Compilation detected for "{album}": spotify_album_type="compilation"')
+    # Check Spotify/MusicBrainz classification (handles 'compilation', 'album+compilation',
+    # 'album (compilation)' and any other composite format containing "compilation")
+    if spotify_album_type and is_compilation_type(spotify_album_type):
+        log_debug(f'Compilation detected for "{album}": spotify_album_type="{spotify_album_type}"')
         return True
     
     # Check if there are multiple distinct artists in the track listing
@@ -3796,8 +3797,27 @@ def popularity_scan(
                 else:
                     try:
                         from api_clients.musicbrainz import get_album_type_with_fallback
+                        # Look up release group MBID for a direct, accurate lookup if available
+                        release_group_mbid = None
+                        try:
+                            cursor.execute(f"""
+                                SELECT musicbrainz_album_mbid FROM tracks
+                                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                                  AND album = {placeholder}
+                                  AND musicbrainz_album_mbid IS NOT NULL
+                                  AND musicbrainz_album_mbid != ''
+                                LIMIT 1
+                            """, (artist, album))
+                            mbid_row = cursor.fetchone()
+                            if mbid_row:
+                                release_group_mbid = row_get(mbid_row, 'musicbrainz_album_mbid')
+                                if release_group_mbid:
+                                    log_debug(f'Using release group MBID {release_group_mbid} for direct MusicBrainz lookup')
+                        except Exception:
+                            pass  # Column may not exist in older schemas
                         detected_album_type, type_detection_source = get_album_type_with_fallback(
-                            artist, album, current_album_type, enabled=HAVE_MUSICBRAINZ, track_count=len(album_tracks)
+                            artist, album, current_album_type, enabled=HAVE_MUSICBRAINZ,
+                            track_count=len(album_tracks), release_group_mbid=release_group_mbid
                         )
                         log_debug(f'MusicBrainz album type: "{detected_album_type}" (source: {type_detection_source})')
                     except Exception as e:

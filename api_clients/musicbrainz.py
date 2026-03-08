@@ -1078,16 +1078,17 @@ def get_artist_country(artist: str, enabled: bool = True) -> str:
     return client.get_artist_country(artist)
 
 
-def get_album_type_with_fallback(artist: str, album: str, spotify_album_type: str = None, enabled: bool = True, track_count: int = None) -> tuple[str, str]:
+def get_album_type_with_fallback(artist: str, album: str, spotify_album_type: str = None, enabled: bool = True, track_count: int = None, release_group_mbid: str = None) -> tuple[str, str]:
     """
     Get album type from MusicBrainz with Spotify fallback using intelligent candidate scoring.
 
     Strategy:
-    1. Query MusicBrainz for release group by artist + album title
-    2. Score all candidates by relevance (title match, track count validation)
-    3. Return primary_type and secondary_types (check for "compilation")
-    4. Fall back to Spotify album_type if MusicBrainz doesn't find it
-    5. Use track count to validate/correct misclassifications (e.g., EP with >6 tracks)
+    1. If release_group_mbid is provided, do a direct lookup by MBID (most accurate)
+    2. Otherwise query MusicBrainz for release group by artist + album title
+    3. Score all candidates by relevance (title match, track count validation)
+    4. Return primary_type and secondary_types (check for "compilation")
+    5. Fall back to Spotify album_type if MusicBrainz doesn't find it
+    6. Use track count to validate/correct misclassifications (e.g., EP with >6 tracks)
 
     Args:
         artist: Artist name
@@ -1095,6 +1096,7 @@ def get_album_type_with_fallback(artist: str, album: str, spotify_album_type: st
         spotify_album_type: Spotify album type (as fallback)
         enabled: Whether MusicBrainz is enabled
         track_count: Number of tracks in the album (for validation/scoring)
+        release_group_mbid: MusicBrainz release group MBID for direct lookup (optional)
 
     Returns:
         Tuple of (album_type, source) where:
@@ -1109,13 +1111,56 @@ def get_album_type_with_fallback(artist: str, album: str, spotify_album_type: st
     try:
         client = _get_musicbrainz_client(enabled)
         
-        # Query MusicBrainz for the album
         # Use rate limiter before request
         if _rate_limiter:
             _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
             _rate_limiter.record_musicbrainz_request()
         else:
             time.sleep(1.0)
+        
+        # If we have a release group MBID, do a direct lookup (more accurate than text search)
+        # Validate the MBID format (UUID: 8-4-4-4-12 hex digits) before using it in a URL.
+        _UUID_RE = re.compile(
+            r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE
+        )
+        if release_group_mbid and _UUID_RE.match(str(release_group_mbid)):
+            try:
+                rg_res = client.session.get(
+                    f"{client.base_url}release-group/{release_group_mbid}",
+                    params={"fmt": "json"},
+                    headers=client.headers,
+                    timeout=(5, 10)
+                )
+                rg_res.raise_for_status()
+                rg = rg_res.json()
+                primary_type = (rg.get("primary-type") or "").lower()
+                secondary_types = [s.lower() for s in (rg.get("secondary-types") or [])]
+                
+                album_type = primary_type
+                if primary_type in ("album", "single", "ep"):
+                    displayable_secondary = None
+                    for sec_type in ["compilation", "live", "remix", "soundtrack", "spokenword", "demo", "dj-mix", "mixtape/street"]:
+                        if sec_type in secondary_types:
+                            displayable_secondary = sec_type
+                            break
+                    
+                    if displayable_secondary:
+                        if displayable_secondary == "spokenword":
+                            displayable_secondary = "spoken word"
+                        elif displayable_secondary == "dj-mix":
+                            displayable_secondary = "dj mix"
+                        album_type = f"{primary_type} ({displayable_secondary})"
+                
+                logger.debug(f"MusicBrainz: Album '{album}' by '{artist}' type={album_type} (primary={primary_type}, secondary={secondary_types}, via MBID={release_group_mbid})")
+                return (album_type, "musicbrainz")
+            except Exception as mbid_err:
+                logger.debug(f"MusicBrainz direct MBID lookup failed for '{release_group_mbid}': {mbid_err}, falling back to text search")
+                # Rate limit before the text search fallback
+                if _rate_limiter:
+                    _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
+                    _rate_limiter.record_musicbrainz_request()
+                else:
+                    time.sleep(1.0)
         
         # Escape special characters for Lucene query
         escaped_artist = _escape_lucene_special_chars(artist)
