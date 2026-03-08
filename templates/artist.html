@@ -257,11 +257,65 @@
         </button>
       </div>
       <div class="card-body">
-        <!-- Genre Sources from External Databases (Dynamic) -->
+        <!-- Genre Sources from Database (pre-rendered from scan data) -->
         <div class="mb-4">
           <h6 class="mb-3"><i class="bi bi-database-fill"></i> Genre & Tag Sources</h6>
           <div id="artistGenreSourcesContainer" class="text-muted small">
-            <p><i class="bi bi-info-circle"></i> Loading genres from sources...</p>
+            {% set sources = [
+              ('spotify_genres', 'Spotify', 'success'),
+              ('lastfm_tags', 'Last.fm', 'danger'),
+              ('listenbrainz_genres', 'ListenBrainz', 'info'),
+              ('discogs_genres', 'Discogs', 'warning'),
+              ('musicbrainz_genres', 'MusicBrainz', 'primary')
+            ] %}
+            {% set ns = namespace(has_any=False) %}
+            {% for key, label, color in sources %}
+              {% if genre_sources and genre_sources.get(key) %}{% set ns.has_any = True %}{% endif %}
+            {% endfor %}
+            {% if ns.has_any %}
+              {% set ns2 = namespace(first=True) %}
+              <ul class="nav nav-tabs" role="tablist">
+                {% for key, label, color in sources %}
+                  {% if genre_sources and genre_sources.get(key) %}
+                    <li class="nav-item" role="presentation">
+                      <button class="nav-link {{ 'active' if ns2.first else '' }}"
+                              id="artistGenreTab{{ key }}-tab" data-bs-toggle="tab"
+                              data-bs-target="#artistGenreTab{{ key }}-content"
+                              type="button" role="tab">
+                        <i class="bi bi-tag"></i> {{ label }}
+                        <span class="badge bg-secondary ms-2">{{ genre_sources[key]|length }}</span>
+                      </button>
+                    </li>
+                    {% set ns2.first = False %}
+                  {% endif %}
+                {% endfor %}
+              </ul>
+              {% set ns3 = namespace(first=True) %}
+              <div class="tab-content mt-3">
+                {% for key, label, color in sources %}
+                  {% if genre_sources and genre_sources.get(key) %}
+                    <div class="tab-pane fade {{ 'active show' if ns3.first else '' }}"
+                         id="artistGenreTab{{ key }}-content" role="tabpanel">
+                      <p class="text-muted small mb-3">Top genres collected during scan</p>
+                      <div class="d-flex flex-wrap gap-2">
+                        {% for genre in genre_sources[key] %}
+                          <span class="badge bg-{{ color }} me-2 mb-2 artist-genre-source-badge">
+                            {{ genre.name }}{% if genre.count %} <small class="text-muted">({{ genre.count }})</small>{% endif %}
+                          </span>
+                        {% endfor %}
+                      </div>
+                    </div>
+                    {% set ns3.first = False %}
+                  {% endif %}
+                {% endfor %}
+              </div>
+            {% else %}
+              <div class="alert alert-info mb-0">
+                <i class="bi bi-info-circle"></i> No genres available yet.
+                <br><small>Genres are collected during popularity scans from Spotify, Last.FM, ListenBrainz, Discogs, and MusicBrainz.</small>
+                <br><small class="text-muted mt-2">Next scan will populate genre data.</small>
+              </div>
+            {% endif %}
           </div>
         </div>
         
@@ -1774,6 +1828,7 @@ function checkMissingReleases(artistName) {
   const safeForDomId = (value) => String(value || '').replace(/\s+/g, '_').replace(/[^\w\-]/g, '_');
   const categoryToSection = {
     album: 'albums',
+    live_album: 'live-albums',
     ep: 'eps',
     single: 'singles',
     compilation: 'compilations'
@@ -1782,6 +1837,7 @@ function checkMissingReleases(artistName) {
   const getMissingCategory = (item) => {
     const categoryRaw = String(item.category || item.primary_type || 'album').toLowerCase();
     if (categoryRaw.includes('compilation')) return 'compilation';
+    if (categoryRaw.includes('live')) return 'live_album';
     if (categoryRaw.includes('ep')) return 'ep';
     if (categoryRaw.includes('single')) return 'single';
     return 'album';
@@ -3744,16 +3800,12 @@ function addMissingReleaseForDownload(releaseId, releaseTitle, artistName) {
       });
   }
 
-  // Load artist genres from API on page load
-  let artistGenresLoaded = false;
-  
+  // Genre sources are now pre-rendered server-side from database data populated during scans.
+  // External source fetching only happens during the popularity/singles detection scan.
+
   document.addEventListener('DOMContentLoaded', function() {
     const artistName = {{ artist_name|tojson }};
     if (artistName && artistName.length > 0) {
-      if (!artistGenresLoaded) {
-        loadArtistGenres(artistName);
-        artistGenresLoaded = true;
-      }
       loadSimilarArtistsForArtist(artistName);
       
       // Clear similar artists cache when a scan is triggered so fresh data loads afterwards
@@ -3763,11 +3815,6 @@ function addMissingReleaseForDownload(releaseId, releaseTitle, artistName) {
         });
       });
     } else {
-      // If no artist data, show error in both containers
-      const genreContainer = document.getElementById('artistGenreSourcesContainer');
-      if (genreContainer) {
-        showArtistGenresError('Artist details not available');
-      }
       const similarContainer = document.getElementById('artistSimilarArtistsContainer');
       if (similarContainer) {
         similarContainer.innerHTML = '<div class="alert alert-info mb-0"><i class="bi bi-info-circle"></i> Artist details not available</div>';
@@ -3775,151 +3822,6 @@ function addMissingReleaseForDownload(releaseId, releaseTitle, artistName) {
     }
   });
   
-  async function loadArtistGenres(artist) {
-    const container = document.getElementById('artistGenreSourcesContainer');
-    if (!container) {
-      console.error('Artist genres container not found');
-      return;
-    }
-    
-    const controller = new AbortController();
-    let timeoutId = setTimeout(() => {
-      console.warn('Artist genres request timeout (10s)');
-      controller.abort();
-    }, 10000); // Increased timeout from 5s to 10s
-    
-    try {
-      const url = `/api/genres/artist/${encodeURIComponent(artist)}`;
-      console.log(`Fetching genres from: ${url}`);
-      
-      const response = await fetch(url, {
-        signal: controller.signal
-      });
-      clearTimeout(timeoutId);
-      
-      console.log(`Genres API response status: ${response.status}`);
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`Genres API error: ${response.status} - ${errorText}`);
-        showArtistGenresError(`Failed to load genres (HTTP ${response.status})`);
-        return;
-      }
-      
-      const data = await response.json();
-      console.log(`Genres data received:`, data);
-      displayArtistGenres(data);
-    } catch (error) {
-      clearTimeout(timeoutId);
-      if (error.name === 'AbortError') {
-        console.warn('Artist genres loading timeout (10s)');
-        showArtistGenresError('Genres loading timed out - server may be busy or genres not yet populated');
-      } else {
-        console.error('Error loading artist genres:', error);
-        showArtistGenresError('Error loading genres: ' + (error.message || 'Unknown error'));
-      }
-    }
-  }
-  
-  function displayArtistGenres(data) {
-    const container = document.getElementById('artistGenreSourcesContainer');
-    
-    if (!data || !data.genres) {
-      console.warn('Invalid genres response:', data);
-      container.innerHTML = '<div class="alert alert-warning mb-0"><i class="bi bi-exclamation-triangle"></i> Could not parse genres response</div>';
-      return;
-    }
-    
-    // Count total genres across all sources
-    const totalGenres = Object.values(data.genres).reduce((sum, genres) => sum + (genres ? genres.length : 0), 0);
-    
-    if (totalGenres === 0) {
-      console.info('No genres available for artist');
-      container.innerHTML = `
-        <div class="alert alert-info mb-0">
-          <i class="bi bi-info-circle"></i> No genres available yet.
-          <br><small>Genres are collected during popularity scans from Spotify, Last.FM, ListenBrainz, Discogs, and MusicBrainz.</small>
-          <br><small class="text-muted mt-2">Next scan will populate genre data.</small>
-        </div>
-      `;
-      return;
-    }
-    
-    const sources = [
-      { key: 'spotify_genres', label: 'Spotify', color: 'success' },
-      { key: 'lastfm_tags', label: 'Last.fm', color: 'danger' },
-      { key: 'listenbrainz_genres', label: 'ListenBrainz', color: 'info' },
-      { key: 'discogs_genres', label: 'Discogs', color: 'warning' },
-      { key: 'musicbrainz_genres', label: 'MusicBrainz', color: 'primary' }
-    ];
-    
-    let html = '<ul class="nav nav-tabs" role="tablist">';
-    let tabContent = '<div class="tab-content mt-3">';
-    
-    let firstTab = true;
-    sources.forEach((source, index) => {
-      const genres = data.genres[source.key] || [];
-      
-      if (genres.length > 0) {
-        const tabId = `artistGenreTab${source.key}`;
-        const activeClass = firstTab ? 'active' : '';
-        
-        html += `
-          <li class="nav-item" role="presentation">
-            <button class="nav-link ${activeClass}" id="${tabId}-tab" data-bs-toggle="tab" 
-                    data-bs-target="#${tabId}-content" type="button" role="tab">
-              <i class="bi bi-tag"></i> ${source.label}
-              <span class="badge bg-secondary ms-2">${genres.length}</span>
-            </button>
-          </li>
-        `;
-        
-        let genresHtml = '';
-        genres.forEach(rawGenre => {
-          const genreName = typeof rawGenre === 'string'
-            ? rawGenre
-            : (rawGenre && rawGenre.name ? String(rawGenre.name) : '');
-          if (!genreName) return;
-
-          const genreCount = rawGenre && typeof rawGenre === 'object' ? rawGenre.count : null;
-          const count = genreCount ? ` <small class="text-muted">(${genreCount})</small>` : '';
-          genresHtml += `<span class="badge bg-${source.color} me-2 mb-2 artist-genre-source-badge">${escapeHtml(genreName)}${count}</span>`;
-        });
-        
-        tabContent += `
-          <div class="tab-pane fade ${activeClass} show" id="${tabId}-content" role="tabpanel">
-            <p class="text-muted small mb-3">Top genres from ${data.track_count || 0} track${data.track_count === 1 ? '' : 's'}</p>
-            <div class="d-flex flex-wrap gap-2">
-              ${genresHtml}
-            </div>
-          </div>
-        `;
-        
-        firstTab = false;
-      }
-    });
-    
-    html += '</ul>';
-    tabContent += '</div>';
-    
-    if (firstTab) {
-      container.innerHTML = '<div class="alert alert-info mb-0"><i class="bi bi-info-circle"></i> No genres available from any source</div>';
-    } else {
-      container.innerHTML = html + tabContent;
-    }
-  }
-  
-  function showArtistGenresError(message) {
-    const container = document.getElementById('artistGenreSourcesContainer');
-    if (container) {
-      const isTimeout = message && message.includes('timeout');
-      const errorContent = isTimeout 
-        ? `<i class="bi bi-exclamation-circle"></i> ${escapeHtml(message)}<br><small class="mt-2">Try refreshing the page, or check browser console for details.</small>`
-        : `<i class="bi bi-exclamation-circle"></i> ${escapeHtml(message)}`;
-      container.innerHTML = `<div class="alert alert-danger mb-0">${errorContent}</div>`;
-    }
-  }
-
   // Similar Artists Loading
   async function loadSimilarArtistsForArtist(artist) {
     // Check sessionStorage cache first to avoid reloading on every page visit
