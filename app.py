@@ -1754,6 +1754,29 @@ def _table_exists(cursor, table_name, is_postgres=False):
     )
     return cursor.fetchone() is not None
 
+def _get_table_columns(cursor, table_name, is_postgres=False):
+    """Return a set of column names for a table across SQLite/Postgres."""
+    if is_postgres:
+        cursor.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = %s
+            """,
+            (table_name,)
+        )
+        rows = cursor.fetchall() or []
+        cols = set()
+        for row in rows:
+            if hasattr(row, 'keys'):
+                cols.add(row.get('column_name'))
+            elif row and len(row) > 0:
+                cols.add(row[0])
+        return {c for c in cols if c}
+
+    cursor.execute(f"PRAGMA table_info({table_name})")
+    return {row[1] for row in (cursor.fetchall() or []) if len(row) > 1}
+
 
 def _row_get(row, key, index=None, default=None):
     """Read a column from dict-like or indexable DB rows."""
@@ -2216,7 +2239,7 @@ def artist_detail(name):
         # Query by COALESCE(album_artist, artist) to handle cases where album_artist is empty
         # Use NULLIF to treat empty strings as NULL for proper COALESCE behavior
         if is_pg:
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT 
                     COUNT(*) as track_count,
                     COUNT(DISTINCT album) as album_count,
@@ -4133,18 +4156,26 @@ def api_artist_set_image():
 def api_artist_update_ids():
     """Update artist IDs (Spotify, Last.fm, MusicBrainz, Discogs) for an artist"""
     try:
-        data = request.get_json()
-        artist_name = data.get("artist")
-        spotify_id = data.get("spotify_artist_id", "").strip()
-        lastfm_mbid = data.get("lastfm_artist_mbid", "").strip()
-        musicbrainz_id = data.get("musicbrainz_artist_id", "").strip()
-        discogs_id = data.get("discogs_artist_id", "").strip()
+        data = request.get_json(silent=True) or {}
+
+        def _clean_str(value):
+            if value is None:
+                return ""
+            return str(value).strip()
+
+        artist_name = _clean_str(data.get("artist"))
+        spotify_id = _clean_str(data.get("spotify_artist_id"))
+        lastfm_mbid = _clean_str(data.get("lastfm_artist_mbid"))
+        musicbrainz_id = _clean_str(data.get("musicbrainz_artist_id"))
+        discogs_id = _clean_str(data.get("discogs_artist_id"))
         
         if not artist_name:
             return jsonify({"error": "Missing artist name"}), 400
         
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         
         # Update all tracks for this artist with the new IDs
         # Only update non-NULL values
@@ -4152,24 +4183,24 @@ def api_artist_update_ids():
         params = []
         
         if spotify_id:
-            updates.append("spotify_artist_id = ?")
+            updates.append(f"spotify_artist_id = {placeholder}")
             params.append(spotify_id)
         
         if lastfm_mbid:
-            updates.append("lastfm_artist_mbid = ?")
+            updates.append(f"lastfm_artist_mbid = {placeholder}")
             params.append(lastfm_mbid)
         
         if musicbrainz_id:
-            updates.append("musicbrainz_artist_id = ?")
+            updates.append(f"musicbrainz_artist_id = {placeholder}")
             params.append(musicbrainz_id)
         
         if discogs_id:
-            updates.append("discogs_artist_id = ?")
+            updates.append(f"discogs_artist_id = {placeholder}")
             params.append(discogs_id)
         
         if updates:
             params.append(artist_name)
-            query = f"UPDATE tracks SET {', '.join(updates)} WHERE artist = ?"
+            query = f"UPDATE tracks SET {', '.join(updates)} WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}"
             cursor.execute(query, params)
             conn.commit()
         
@@ -4206,10 +4237,11 @@ def api_album_update_ids():
         
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
 
         # Use canonical MusicBrainz album MBID column.
-        cursor.execute("PRAGMA table_info(tracks)")
-        track_columns = {row[1] for row in cursor.fetchall()}
+        track_columns = _get_table_columns(cursor, "tracks", is_postgres=is_pg)
 
         mb_album_column = "musicbrainz_album_mbid" if "musicbrainz_album_mbid" in track_columns else None
 
@@ -4224,26 +4256,30 @@ def api_album_update_ids():
         params = []
         
         if spotify_album_id:
-            updates.append("spotify_album_id = ?")
+            updates.append(f"spotify_album_id = {placeholder}")
             params.append(spotify_album_id)
         
         if musicbrainz_release_id:
             if mb_album_column:
-                updates.append(f"{mb_album_column} = ?")
+                updates.append(f"{mb_album_column} = {placeholder}")
                 params.append(musicbrainz_release_id)
             else:
                 logging.warning("Skipping MusicBrainz release ID update: no MB album ID column found in tracks table")
         
         if discogs_release_id:
             if discogs_album_column:
-                updates.append(f"{discogs_album_column} = ?")
+                updates.append(f"{discogs_album_column} = {placeholder}")
                 params.append(discogs_release_id)
             else:
                 logging.warning("Skipping Discogs release ID update: no Discogs album ID column found in tracks table")
         
         if updates:
             params.extend([artist_name, album_name])
-            query = f"UPDATE tracks SET {', '.join(updates)} WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ?"
+            query = (
+                f"UPDATE tracks SET {', '.join(updates)} "
+                f"WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} "
+                f"AND album = {placeholder}"
+            )
             cursor.execute(query, params)
             conn.commit()
         
@@ -5769,7 +5805,7 @@ def album_detail(artist, album):
         
         # Get album metadata from first track
         try:
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT 
                     COUNT(*) as track_count,
                     AVG(stars) as avg_stars,
@@ -5785,11 +5821,11 @@ def album_detail(artist, album):
                     MAX(spotify_artist_id) as spotify_artist_id,
                     MAX(discogs_artist_id) as discogs_artist_id
                 FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ?
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
             """, (artist, album))
         except:
             # Fallback for databases without beets columns or album_artist column
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT 
                     COUNT(*) as track_count,
                     AVG(stars) as avg_stars,
@@ -5805,7 +5841,7 @@ def album_detail(artist, album):
                     NULL as spotify_artist_id,
                     NULL as discogs_artist_id
                 FROM tracks
-                WHERE COALESCE(album_artist, artist) = ? AND album = ?
+                WHERE COALESCE(album_artist, artist) = {placeholder} AND album = {placeholder}
             """, (artist, album))
         album_data = cursor.fetchone()
         
@@ -5842,9 +5878,9 @@ def album_detail(artist, album):
         album_data['singles_count'] = singles_row['singles_count'] if singles_row else 0
         
         # Aggregate genres from tracks in this album - use navidrome_genres which comes from Navidrome
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT DISTINCT navidrome_genres FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ? AND navidrome_genres IS NOT NULL AND navidrome_genres != ''
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder} AND navidrome_genres IS NOT NULL AND navidrome_genres != ''
         """, (artist, album))
         genre_rows = cursor.fetchall()
         album_genres = set()
@@ -6108,6 +6144,10 @@ def _auto_detect_album_type(artist_name: str, album_name: str):
         cursor = conn.cursor()
         is_pg = _is_postgres_connection(conn)
         placeholder = "%s" if is_pg else "?"
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         
         # Get current album type, track counts, and Discogs format data
         cursor.execute(f"""
@@ -6334,6 +6374,8 @@ def album_edit(artist, album):
     try:
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         
         # Update all tracks in this album
         update_fields = []
@@ -6344,27 +6386,27 @@ def album_edit(artist, album):
         
         # If album title or artist changed, update those
         if names_changed:
-            update_fields.extend(["album = ?", "artist = ?"])
+            update_fields.extend([f"album = {placeholder}", f"artist = {placeholder}"])
             update_values.extend([album_title, album_artist])
         
         # Update year if provided
         if release_year:
-            update_fields.append("year = ?")
+            update_fields.append(f"year = {placeholder}")
             update_values.append(int(release_year))
         
         # Update album type if provided
         if album_type:
-            update_fields.append("spotify_album_type = ?")
+            update_fields.append(f"spotify_album_type = {placeholder}")
             update_values.append(album_type)
         
         # Update album MBID if provided
         if album_mbid:
-            update_fields.append("musicbrainz_album_mbid = ?")
+            update_fields.append(f"musicbrainz_album_mbid = {placeholder}")
             update_values.append(album_mbid)
         
         # Update genres
         if album_genres:
-            update_fields.append("genres = ?")
+            update_fields.append(f"genres = {placeholder}")
             update_values.append(album_genres)
         
         # Add WHERE clause values
@@ -6373,7 +6415,7 @@ def album_edit(artist, album):
         # Execute update
         if update_fields:
             # Validate that update_fields only contains safe column assignments
-            # All field assignments should be in the format "column_name = ?"
+            # All field assignments should be in the format "column_name = <placeholder>"
             allowed_columns = {'album', 'artist', 'year', 'spotify_album_type', 'musicbrainz_album_mbid', 'genres'}
             for field in update_fields:
                 column_name = field.split('=')[0].strip()
@@ -6381,7 +6423,10 @@ def album_edit(artist, album):
                     flash(f"Invalid column name in update: {column_name}", "danger")
                     return redirect(url_for("album_detail", artist=artist, album=album))
             
-            sql = f"UPDATE tracks SET {', '.join(update_fields)} WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ?"
+            sql = (
+                f"UPDATE tracks SET {', '.join(update_fields)} "
+                f"WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}"
+            )
             cursor.execute(sql, update_values)
             rows_updated = cursor.rowcount
             conn.commit()
@@ -6398,12 +6443,13 @@ def album_edit(artist, album):
             # Get the actual artist and album names from the database after the update
             # Use the same COALESCE logic as album_detail to get the correct artist
             cursor.execute("""
+            cursor.execute(f"""
                 SELECT 
                     COALESCE(NULLIF(album_artist, ''), artist) as effective_artist,
                     album
                 FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
-                    AND album = ?
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                    AND album = {placeholder}
                 LIMIT 1
             """, (album_artist, album_title))
             db_row = cursor.fetchone()
@@ -17190,23 +17236,25 @@ def api_album_spotify_genres():
         # Get Spotify artist genres from tracks in this album
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         
         # Try to get spotify_artist_genres column, fall back to spotify_genres if column doesn't exist
         try:
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT DISTINCT spotify_artist_genres
                 FROM tracks
-                WHERE artist = ? AND album = ? 
+                WHERE artist = {placeholder} AND album = {placeholder} 
                 AND spotify_artist_genres IS NOT NULL 
                 AND spotify_artist_genres != ''
             """, (artist, album))
             genre_rows = cursor.fetchall()
         except Exception:
             # Fallback if spotify_artist_genres column doesn't exist
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT DISTINCT spotify_genres
                 FROM tracks
-                WHERE artist = ? AND album = ? 
+                WHERE artist = {placeholder} AND album = {placeholder} 
                 AND spotify_genres IS NOT NULL 
                 AND spotify_genres != ''
             """, (artist, album))
@@ -17248,10 +17296,11 @@ def api_album_apply_mbid():
         
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
 
         # Detect compatible MBID column for mixed schema deployments.
-        cursor.execute("PRAGMA table_info(tracks)")
-        track_columns = {row[1] for row in cursor.fetchall()}
+        track_columns = _get_table_columns(cursor, "tracks", is_postgres=is_pg)
         mb_album_column = None
         if "musicbrainz_album_mbid" in track_columns:
             mb_album_column = "musicbrainz_album_mbid"
@@ -17261,18 +17310,18 @@ def api_album_apply_mbid():
         # Update all tracks in this album with MBID and cover art
         updates = []
         if mbid:
-            updates.append("mbid = ?")
+            updates.append(f"mbid = {placeholder}")
             if mb_album_column:
-                updates.append(f"{mb_album_column} = ?")
+                updates.append(f"{mb_album_column} = {placeholder}")
         if cover_art_url:
-            updates.append("cover_art_url = ?")
+            updates.append(f"cover_art_url = {placeholder}")
         
         if not updates:
             return jsonify({"error": "No data to update"}), 400
         
         query = (
             f"UPDATE tracks SET {', '.join(updates)} "
-            "WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ?"
+            f"WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}"
         )
         params = []
         if mbid:
@@ -17324,20 +17373,23 @@ def api_album_apply_discogs_id():
         for attempt in range(max_retries):
             try:
                 conn = get_db()
-                conn.isolation_level = None  # Autocommit mode
+                is_pg = _is_postgres_connection(conn)
+                placeholder = "%s" if is_pg else "?"
+                if not is_pg:
+                    conn.isolation_level = None  # Autocommit mode for sqlite
                 cursor = conn.cursor()
                 
                 # Update all tracks in this album with Discogs ID and is_single flag if detected
                 if is_single:
                     # If Discogs detected this as a Single, mark tracks as singles with high confidence and set 5★ rating
                     cursor.execute(
-                        "UPDATE tracks SET discogs_album_id = ?, is_single = 1, single_confidence = 'high', single_sources = CASE WHEN single_sources IS NULL THEN 'discogs' ELSE single_sources || ',discogs' END, stars = 5 WHERE artist = ? AND album = ?",
+                        f"UPDATE tracks SET discogs_album_id = {placeholder}, is_single = 1, single_confidence = 'high', single_sources = CASE WHEN single_sources IS NULL THEN 'discogs' ELSE single_sources || ',discogs' END, stars = 5 WHERE artist = {placeholder} AND album = {placeholder}",
                         (discogs_id, artist, album)
                     )
                 else:
                     # Just update the Discogs ID
                     cursor.execute(
-                        "UPDATE tracks SET discogs_album_id = ? WHERE artist = ? AND album = ?",
+                        f"UPDATE tracks SET discogs_album_id = {placeholder} WHERE artist = {placeholder} AND album = {placeholder}",
                         (discogs_id, artist, album)
                     )
                 

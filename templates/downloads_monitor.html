@@ -1413,10 +1413,27 @@ async function loadFolderGroups(options = {}) {
     // Prefer exact release_id linkage when present, then fall back to normalized artist/album matching.
     const folderLookup = {};
     const folderLookupByReleaseId = {};
+    const folderLookupByFilename = {};
 
     function normalizeMatchPart(value) {
       return String(value || '')
         .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+
+    function getBasename(pathLike) {
+      const raw = String(pathLike || '').trim();
+      if (!raw) return '';
+      const parts = raw.replace(/\\/g, '/').split('/');
+      return parts[parts.length - 1] || '';
+    }
+
+    function normalizeFilename(value) {
+      return getBasename(value)
+        .toLowerCase()
+        .replace(/\.[a-z0-9]{2,5}$/i, '')
         .replace(/[^a-z0-9]+/g, ' ')
         .replace(/\s+/g, ' ')
         .trim();
@@ -1437,6 +1454,13 @@ async function loadFolderGroups(options = {}) {
       if (releaseId) {
         folderLookupByReleaseId[String(releaseId)] = folderPath;
       }
+
+      (fg.tracks || []).forEach(track => {
+        const filenameKey = normalizeFilename(track.file_path || track.filename || track.path || track.title || '');
+        if (filenameKey) {
+          folderLookupByFilename[filenameKey] = folderPath;
+        }
+      });
     });
 
     // Enrich queue items with matched folder paths and then show ONLY queue items.
@@ -1450,6 +1474,15 @@ async function loadFolderGroups(options = {}) {
       const key = `${normalizeMatchPart(qg.artist)}|${normalizeMatchPart(qg.album)}`;
       if (folderLookup[key]) {
         qg.matched_folder_path = folderLookup[key];
+        return;
+      }
+
+      for (const track of (qg.tracks || [])) {
+        const filenameKey = normalizeFilename(track.file_path || track.filename || '');
+        if (filenameKey && folderLookupByFilename[filenameKey]) {
+          qg.matched_folder_path = folderLookupByFilename[filenameKey];
+          break;
+        }
       }
     });
 
@@ -1681,7 +1714,9 @@ async function loadFolderGroups(options = {}) {
                   const artistEnc = encodeInlineArg(track.artist || group.artist || '');
                   const titleEnc = encodeInlineArg(track.title || group.album || '');
                   const showRetry = queueStatusRow === 'failed';
+                  const canMoveToMusic = ['completed', 'discovered', 'pending_match', 'possible_duplicate'].includes(queueStatusRow) && queueId > 0;
                   moveButtonHtml = `<div class="d-flex flex-column gap-1 align-items-center">
+                    ${canMoveToMusic ? `<button class="btn btn-sm btn-outline-success" onclick="organizeFile(${queueId})" title="Move this detected file to your configured music folder"><i class="bi bi-arrow-right-circle"></i></button>` : ''}
                     <button class="btn btn-sm btn-outline-info" onclick="searchOtherSourcesFromEncoded('${artistEnc}','${titleEnc}', true)" title="Search manually in Soulseek">
                       <i class="bi bi-search"></i>
                     </button>
@@ -2581,6 +2616,7 @@ async function organizeFile(queueId) {
     if (data.success) {
       alert('✅ File organized successfully!');
       await loadQueueStatus();
+      await loadFolderGroups({ forceRender: true });
     } else {
       alert('❌ Error: ' + (data.error || 'Failed to organize'));
     }
@@ -2624,6 +2660,7 @@ async function deleteQueueItem(queueId) {
     if (data.success) {
       alert('✅ Removed from queue');
       await loadQueueStatus();
+      await loadFolderGroups({ forceRender: true });
     } else {
       alert('❌ Error: ' + (data.error || 'Failed to delete'));
     }

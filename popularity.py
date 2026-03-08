@@ -5928,8 +5928,23 @@ def popularity_scan(
                         # Skip confidence-based upgrades for excluded tracks (e.g., bonus tracks with parentheses)
                         # These tracks were excluded from statistics calculation, so their z-scores are not meaningful
                         if not is_excluded_track:
-                            # Count confidence sources
-                            medium_conf_count = len(single_sources) if single_sources and single_confidence == "medium" else 0
+                            # Count only medium-confidence evidence sources.
+                            # Do not count internal markers (e.g. iterative_zscore/version_count)
+                            # toward the "2 medium sources" rule for z-score < 1 tracks.
+                            medium_conf_eligible_sources = {
+                                "spotify",
+                                "musicbrainz",
+                                "musicbrainz_video",
+                                "musicbrainz_compilation",
+                                "discogs",
+                                "discogs_video",
+                                "lastfm",
+                            }
+                            medium_conf_count = (
+                                len([s for s in single_sources if s in medium_conf_eligible_sources])
+                                if single_sources and single_confidence == "medium"
+                                else 0
+                            )
                             has_high_confidence = (single_confidence == "high" or single_confidence == "user")
                             
                             # Never trust persisted "popular" confidence for star assignment.

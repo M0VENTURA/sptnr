@@ -3,7 +3,25 @@
 {% block title %}{{ artist_name }} · Popularr{% endblock %}
 
 {% block content %}
-<div class="container-fluid mt-4">
+<style>
+/* Critical artist-page table colors to prevent white flash before late styles load. */
+.artist-page .card,
+.artist-page .table-responsive,
+.artist-page .table,
+.artist-page .table tbody,
+.artist-page .table tbody tr,
+.artist-page .table tbody td {
+  background-color: var(--secondary-bg, #1e1e1e) !important;
+  color: var(--text-primary, #e8e8e8) !important;
+}
+
+.artist-page .table thead,
+.artist-page .table thead th {
+  background-color: var(--primary-bg, #141414) !important;
+  color: var(--text-primary, #e8e8e8) !important;
+}
+</style>
+<div class="container-fluid mt-4 artist-page">
   <nav aria-label="breadcrumb">
     <ol class="breadcrumb">
       <li class="breadcrumb-item"><a href="{{ url_for('dashboard') }}">Dashboard</a></li>
