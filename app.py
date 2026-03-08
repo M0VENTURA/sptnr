@@ -2734,9 +2734,13 @@ def artist_detail(name):
             primary_type = (release_dict.get("primary_type") or "").lower()
             category = (release_dict.get("category") or "").lower()
 
-            # Album-only missing release display: ignore secondary classifications.
+            # Route missing releases by category so dedicated sections can display them.
             if primary_type == "album" and category in ("remix", "remix album", "remix_album"):
                 missing_by_category["remix_album"].append(release_dict)
+            elif primary_type == "album" and category in ("live album", "live_album"):
+                missing_by_category["live_album"].append(release_dict)
+            elif primary_type == "album" and category in ("compilation",):
+                missing_by_category["compilation"].append(release_dict)
             elif primary_type == "album" and category not in ("live album", "live_album", "compilation", "remix", "remix album", "remix_album"):
                 missing_by_category["album"].append(release_dict)
         
@@ -2764,6 +2768,19 @@ def artist_detail(name):
                 missing_by_category[cat] = [
                     a for a in missing_by_category[cat]
                     if _normalize_release_title(a.get('title', '')) not in missing_remix_names
+                ]
+
+        # SAFETY: Remove compilation albums from missing releases in wrong categories
+        missing_compilation_names = {
+            _normalize_release_title(a.get('title', ''))
+            for a in missing_by_category.get("compilation", [])
+            if a.get('title')
+        }
+        for cat in ["album", "ep", "single"]:
+            if missing_compilation_names:
+                missing_by_category[cat] = [
+                    a for a in missing_by_category[cat]
+                    if _normalize_release_title(a.get('title', '')) not in missing_compilation_names
                 ]
 
         # Merge discovered and missing albums by category, then sort by release date
@@ -3165,17 +3182,21 @@ def api_artist_missing_releases():
         if not norm_title or norm_title in existing_norm:
             continue
 
-        # Album-only mode: keep primary albums, ignore secondary classification
-        # such as live albums and compilations.
+        # Keep primary albums and route by secondary type so artist page sections
+        # (Albums, Live Albums, Remix Albums, Compilations) can display missing items.
         primary_type = (rg.get("primary_type") or "").lower()
         if primary_type != "album":
             continue
 
         secondary = [s.lower() for s in rg.get("secondary_types") or []]
-        if any(sec in {"live", "compilation"} for sec in secondary):
-            continue
-
-        category = "Album"
+        if "compilation" in secondary:
+            category = "Compilation"
+        elif "live" in secondary:
+            category = "Live Album"
+        elif "remix" in secondary:
+            category = "Remix"
+        else:
+            category = "Album"
 
         dedupe_key = (norm_title, category)
         if dedupe_key in seen_missing_keys:
@@ -3514,17 +3535,21 @@ def api_scan_all_missing_releases():
                         if not norm_title:
                             continue
                         
-                        # Album-only mode: keep primary albums, ignore secondary
-                        # classification such as live albums and compilations.
+                        # Keep primary albums and route by secondary type so artist page
+                        # sections can display missing items by category.
                         primary_type = (rg.get("primary_type") or "").lower()
                         if primary_type != "album":
                             continue
 
                         secondary = [s.lower() for s in rg.get("secondary_types") or []]
-                        if any(sec in {"live", "compilation"} for sec in secondary):
-                            continue
-
-                        category = "Album"
+                        if "compilation" in secondary:
+                            category = "Compilation"
+                        elif "live" in secondary:
+                            category = "Live Album"
+                        elif "remix" in secondary:
+                            category = "Remix"
+                        else:
+                            category = "Album"
                         
                         # Insert missing release into database with DB-aware upsert
                         try:
