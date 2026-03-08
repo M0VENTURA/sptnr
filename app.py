@@ -3002,6 +3002,7 @@ def _fetch_musicbrainz_releases(artist_name: str, limit: int = 100, artist_mbid:
     # Retry with exponential backoff
     max_retries = 3
     base_delay = 1
+    used_relaxed_query_fallback = False
     
     # Pagination loop - fetch all pages of results
     offset = 0
@@ -3022,7 +3023,7 @@ def _fetch_musicbrainz_releases(artist_name: str, limit: int = 100, artist_mbid:
         fetched_this_page = False
         for attempt in range(max_retries):
             try:
-                resp = requests.get(url, headers=headers, params=params, timeout=10)
+                resp = requests.get(url, headers=headers, params=params, timeout=(6, 20))
                 resp.raise_for_status()
                 data = resp.json()
                 
@@ -3030,6 +3031,11 @@ def _fetch_musicbrainz_releases(artist_name: str, limit: int = 100, artist_mbid:
                 total_count = data.get("count", 0)
                 
                 for rg in release_groups:
+                    primary_type = (rg.get("primary-type") or "").lower()
+                    # Keep response consistent with the intended query scope.
+                    if primary_type not in ("album", "ep", "single"):
+                        continue
+
                     # When no MBID is available, tighten matching to avoid cross-artist overmatches
                     # from broad text search (e.g., artists with similar names).
                     if not artist_mbid:
@@ -3057,11 +3063,10 @@ def _fetch_musicbrainz_releases(artist_name: str, limit: int = 100, artist_mbid:
                                 continue
 
                     rg_id = rg.get("id", "")
-                    primary_type = rg.get("primary-type", "")
                     releases.append({
                         "id": rg_id,
                         "title": rg.get("title", ""),
-                        "primary_type": primary_type,
+                        "primary_type": rg.get("primary-type", ""),
                         "first_release_date": rg.get("first-release-date", ""),
                         "secondary_types": rg.get("secondary-types", []),
                         "cover_art_url": f"https://coverartarchive.org/release-group/{rg_id}/front-500" if rg_id else "",
@@ -3085,6 +3090,27 @@ def _fetch_musicbrainz_releases(artist_name: str, limit: int = 100, artist_mbid:
                 logging.debug(f"MusicBrainz timeout (attempt {attempt+1}/{max_retries}) for {artist_name} at offset {offset}")
                 if attempt < max_retries - 1:
                     time.sleep(base_delay * (2 ** attempt))  # Exponential backoff
+            except requests.exceptions.HTTPError as e:
+                status_code = e.response.status_code if e.response is not None else None
+                if status_code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
+                    retry_after = None
+                    if e.response is not None:
+                        retry_after_raw = e.response.headers.get("Retry-After")
+                        try:
+                            retry_after = float(retry_after_raw) if retry_after_raw else None
+                        except (TypeError, ValueError):
+                            retry_after = None
+                    wait_seconds = retry_after if retry_after is not None else float(base_delay * (2 ** attempt))
+                    logging.debug(
+                        f"MusicBrainz transient HTTP {status_code} (attempt {attempt+1}/{max_retries}) "
+                        f"for {artist_name} at offset {offset}; waiting {wait_seconds:.1f}s"
+                    )
+                    time.sleep(wait_seconds)
+                else:
+                    logging.debug(
+                        f"MusicBrainz HTTP error for {artist_name} at offset {offset}: {status_code}"
+                    )
+                    break
             except requests.exceptions.ConnectionError as e:
                 # Includes SSLEOFError and other connection issues
                 logging.debug(f"MusicBrainz connection error (attempt {attempt+1}/{max_retries}) for {artist_name}: {type(e).__name__}")
@@ -3099,6 +3125,15 @@ def _fetch_musicbrainz_releases(artist_name: str, limit: int = 100, artist_mbid:
         
         # If we failed to fetch this page after all retries, return what we have
         if not fetched_this_page:
+            if offset == 0 and not releases and not artist_mbid and not used_relaxed_query_fallback:
+                # Some environments fail strict query parsing/routing intermittently.
+                # Retry once with a relaxed query and filter types client-side.
+                query = f'artist:"{artist_name}"'
+                used_relaxed_query_fallback = True
+                logging.debug(
+                    f"MusicBrainz: retrying first page for {artist_name} with relaxed query fallback"
+                )
+                continue
             logging.warning(f"MusicBrainz: Failed to fetch page at offset {offset} for {artist_name}, returning {len(releases)} releases")
             return releases
     
