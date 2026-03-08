@@ -29,6 +29,7 @@ from statistics import median, mean, stdev
 from concurrent.futures import ThreadPoolExecutor
 import concurrent.futures
 from api_clients import session, timeout_safe_session
+from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
 from helpers.helpers import find_matching_spotify_single, strip_cover_attribution
 from helpers.matching_utils import normalize_album
 from database_abstraction import DatabaseQuery, is_postgres_connection
@@ -1594,7 +1595,7 @@ def fetch_album_art_from_discogs(artist: str, album: str, discogs_token: str = N
             "type": "release",
             "token": discogs_token
         }
-        headers = {"User-Agent": "sptnr/1.0 (https://github.com/discogs)"}
+        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
         
         resp = requests.get(search_url, params=params, headers=headers, timeout=5)
         resp.raise_for_status()
@@ -1684,7 +1685,7 @@ def fetch_album_art_url_from_musicbrainz(artist: str, album: str) -> str | None:
                     "fmt": "json",
                     "limit": 1
                 }
-                headers = {"User-Agent": "sptnr/1.0 (https://github.com/sptnr)"}
+                headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
                 resp = requests.get(search_url, params=params, headers=headers, timeout=3)
                 resp.raise_for_status()
                 data = resp.json()
@@ -3609,7 +3610,7 @@ def popularity_scan(
                     
                     # Search for release groups
                     import requests
-                    headers = {"User-Agent": "sptnr/1.0"}
+                    headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
                     url = "https://musicbrainz.org/ws/2/release-group"
                     params = {"fmt": "json", "limit": 100, "query": query}
                     

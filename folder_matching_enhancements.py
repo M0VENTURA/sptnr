@@ -17,6 +17,7 @@ import time
 from typing import Dict, List, Tuple, Optional, Any
 from difflib import SequenceMatcher
 from database_abstraction import DatabaseQuery
+from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +51,7 @@ def _fetch_musicbrainz_tracks(release_id: str) -> List[Dict]:
     try:
         base_url = "https://musicbrainz.org/ws/2/"
         headers = {
-            "User-Agent": "sptnr/2.0.0 ( https://github.com/M0VENTURA/sptnr )",
+            "User-Agent": MUSICBRAINZ_USER_AGENT,
             "Accept": "application/json"
         }
         

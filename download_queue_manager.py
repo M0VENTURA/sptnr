@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from helpers.metadata_reader import read_mp3_metadata
 from api_clients import session  # Use shared session with retry logic & connection pooling
+from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
 
 logging.basicConfig(
     level=logging.INFO,
@@ -1852,7 +1853,7 @@ def _extract_lyricist_and_writers(recording_data):
 def _fetch_musicbrainz_album_candidates(artist, album, limit=5):
     """Fetch album candidates from MusicBrainz release groups."""
     headers = {
-        "User-Agent": "sptnr/2.0.0-alpha ( https://github.com/M0VENTURA/sptnr )"
+        "User-Agent": MUSICBRAINZ_USER_AGENT
     }
     query = f'releasegroup:"{album}" AND artist:"{artist}"'
 
@@ -2197,7 +2198,7 @@ def get_release_tracks_with_status(artist, album, release_group_id, current_fold
     """
     try:
         headers = {
-            "User-Agent": "sptnr/2.0.0-alpha ( https://github.com/M0VENTURA/sptnr )"
+            "User-Agent": MUSICBRAINZ_USER_AGENT
         }
         
         # Fetch the release group

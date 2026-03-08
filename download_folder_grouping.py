@@ -10,6 +10,7 @@ import os
 import logging
 from datetime import datetime
 from pathlib import Path
+from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
 
 logger = logging.getLogger(__name__)
 
@@ -220,7 +221,7 @@ def match_folder_group_with_musicbrainz(folder_path, artist, album, mb_client=No
         # MusicBrainz API base URL
         base_url = "https://musicbrainz.org/ws/2/"
         headers = {
-            "User-Agent": "sptnr/2.0.0 ( https://github.com/M0VENTURA/sptnr )",
+            "User-Agent": MUSICBRAINZ_USER_AGENT,
             "Accept": "application/json"
         }
         
