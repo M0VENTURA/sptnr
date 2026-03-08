@@ -5993,7 +5993,7 @@ def api_add_artist():
                         INSERT INTO missing_releases 
                         (artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
                         VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
-                        ON CONFLICT (release_id) DO UPDATE SET
+                        ON CONFLICT (artist, release_id) DO UPDATE SET
                             last_checked = CURRENT_TIMESTAMP,
                             category = EXCLUDED.category
                     """, (
@@ -18155,7 +18155,7 @@ def api_album_add_to_missing_releases():
                 INSERT INTO missing_releases 
                 (artist, release_id, title, first_release_date, category, last_checked)
                 VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'Album', CURRENT_TIMESTAMP)
-                ON CONFLICT (release_id) DO UPDATE SET
+                ON CONFLICT (artist, release_id) DO UPDATE SET
                     last_checked = CURRENT_TIMESTAMP
             """, (
                 artist,
