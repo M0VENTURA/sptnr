@@ -2911,7 +2911,8 @@ def popularity_scan(
         
         sql = f"""
             SELECT id, artist, title, album, isrc, duration, spotify_album_type, track_number, mbid, year,
-                   spotify_popularity, lastfm_track_playcount, last_spotify_lookup, popularity_score, album_artist
+                   spotify_popularity, lastfm_track_playcount, last_spotify_lookup, popularity_score, album_artist,
+                   writer
             FROM tracks
             {('WHERE ' + ' AND '.join(sql_conditions)) if sql_conditions else ''}
             ORDER BY artist, album, title
@@ -3832,16 +3833,23 @@ def popularity_scan(
                     type_lower = (detected_album_type or '').lower()
                     mb_is_live = '+live' in type_lower or '(live)' in type_lower
                     mb_live_value = 1 if mb_is_live else 0
-                    cursor.execute(f"""
-                        UPDATE tracks
-                        SET album_context_live = {placeholder}
-                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
-                    """, (mb_live_value, artist, album))
-                    conn.commit()
-                    if mb_is_live:
-                        log_info(f'MusicBrainz confirmed live album: "{artist} - {album}" (type: {detected_album_type})')
-                    else:
-                        log_debug(f'MusicBrainz confirms non-live album: "{artist} - {album}" (type: {detected_album_type}), album_context_live reset to 0')
+                    try:
+                        cursor.execute(f"""
+                            UPDATE tracks
+                            SET album_context_live = {placeholder}
+                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
+                        """, (mb_live_value, artist, album))
+                        conn.commit()
+                        if mb_is_live:
+                            log_info(f'MusicBrainz confirmed live album: "{artist} - {album}" (type: {detected_album_type})')
+                        else:
+                            log_debug(f'MusicBrainz confirms non-live album: "{artist} - {album}" (type: {detected_album_type}), album_context_live reset to 0')
+                    except Exception as e:
+                        log_debug(f'Failed to update album_context_live for "{artist} - {album}": {e}')
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
 
                 # Override misclassified EPs: if labeled as 'ep' but has >6 tracks, it's likely a full album
                 # MusicBrainz sometimes incorrectly classifies live albums or special releases as EPs
@@ -4285,39 +4293,17 @@ def popularity_scan(
                         log_info(f'Continuing with per-track fallback for tag/genre data for this album')
 
                 
-                # In singles_only mode, skip all popularity scoring
-                if not singles_only and not skip_popularity_for_album:
-                    # Batch updates for this album (commit once at end instead of per-track)
-                    track_updates = []
-                    writer_updates = []
-                    
-                    # Track progress within album
-                    total_tracks = len(album_tracks)
-                    tracks_processed = 0
-                    # Pre-calculate milestone track counts for efficient checking
-                    milestone_25 = int(total_tracks * 0.25)
-                    milestone_50 = int(total_tracks * 0.50)
-                    milestone_75 = int(total_tracks * 0.75)
-                    milestones_logged = set()
-                
-                else:
-                    # Single-only mode: skip popularity processing, will do singles detection only
-                    if skip_popularity_for_album:
-                        log_info(f"Popularity already scanned for album '{album}'; running singles detection only")
-                    else:
-                        log_info(f"Singles-only mode for album '{album}': all popularity processing skipped")
-                    track_updates = []
-                    writer_updates = []
-                
-                if not singles_only and not skip_popularity_for_album:
+                # Writer backfill: run independently of popularity scoring so that writer credits
+                # are populated even when the album's popularity was already scanned recently.
+                # This ensures writer data is always kept up to date from MusicBrainz.
+                writer_updates = []
+                if HAVE_MUSICBRAINZ and not singles_only:
                     for track in album_tracks:
                         track_id = track["id"]
                         title = track["title"]
                         track_artist = track["artist"]
 
-                        # Backfill missing writer credits from MusicBrainz during popularity scan.
-                        # This runs before popularity cache short-circuit so metadata still improves on cached scans.
-                        if HAVE_MUSICBRAINZ and _writer_is_empty(row_get(track, 'writer')):
+                        if _writer_is_empty(row_get(track, 'writer')):
                             try:
                                 if mb_writer_client is None:
                                     mb_writer_client = MusicBrainzClient()
@@ -4350,6 +4336,50 @@ def popularity_scan(
                                 log_debug(f'MusicBrainz writer lookup timed out for "{title}": {e}')
                             except Exception as e:
                                 log_debug(f'Failed MusicBrainz writer backfill for "{title}": {e}')
+
+                # Commit writer updates immediately, independent of popularity scoring.
+                if writer_updates:
+                    try:
+                        cursor.executemany(
+                            f"UPDATE tracks SET writer = {placeholder} WHERE id = {placeholder}",
+                            writer_updates
+                        )
+                        conn.commit()
+                        log_debug(f"Committed {len(writer_updates)} writer credit update(s) for album '{album}'")
+                    except Exception as e:
+                        log_debug(f"Warning: Failed to batch update writer credits: {e}")
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
+
+                # In singles_only mode, skip all popularity scoring
+                if not singles_only and not skip_popularity_for_album:
+                    # Batch updates for this album (commit once at end instead of per-track)
+                    track_updates = []
+                    
+                    # Track progress within album
+                    total_tracks = len(album_tracks)
+                    tracks_processed = 0
+                    # Pre-calculate milestone track counts for efficient checking
+                    milestone_25 = int(total_tracks * 0.25)
+                    milestone_50 = int(total_tracks * 0.50)
+                    milestone_75 = int(total_tracks * 0.75)
+                    milestones_logged = set()
+                
+                else:
+                    # Single-only mode: skip popularity processing, will do singles detection only
+                    if skip_popularity_for_album:
+                        log_info(f"Popularity already scanned for album '{album}'; running singles detection only")
+                    else:
+                        log_info(f"Singles-only mode for album '{album}': all popularity processing skipped")
+                    track_updates = []
+                
+                if not singles_only and not skip_popularity_for_album:
+                    for track in album_tracks:
+                        track_id = track["id"]
+                        title = track["title"]
+                        track_artist = track["artist"]
                         
                         # Skip popularity scoring for tracks already detected as singles
                         # Singles have their own prominence rating, no need for popularity scoring
@@ -4825,21 +4855,6 @@ def popularity_scan(
                             milestones_logged.add(75)
 
 # Batch update all popularity scores and genre sources for this album in one commit (skipped in singles_only mode)
-                if writer_updates and not singles_only:
-                    try:
-                        cursor.executemany(
-                            f"UPDATE tracks SET writer = {placeholder} WHERE id = {placeholder}",
-                            writer_updates
-                        )
-                        log_debug(f"Batch prepared {len(writer_updates)} writer credit update(s) for album '{album}'")
-                    except Exception as e:
-                        log_debug(f"Warning: Failed to batch update writer credits: {e}")
-                        # For PostgreSQL: try to rollback and get fresh connection
-                        try:
-                            conn.rollback()
-                        except:
-                            pass
-
                 if track_updates and not singles_only:
                     # Merge tags from album_tags_data into track_updates BEFORE committing
                     # This ensures Last.fm tags and other genre data are saved
@@ -4902,15 +4917,10 @@ def popularity_scan(
                             log_debug(f"Failed to get fresh connection: {conn_error}")
                             raise  # Re-raise if we can't recover
                     log_debug(f"Batch committed {len(updated_track_updates)} popularity scores and genre sources for album '{album}' with merged tag data")
-                    if writer_updates:
-                        log_debug(f"Committed {len(writer_updates)} writer credit update(s) for album '{album}'")
                     if album_art_url:
                         log_info(f"[ALBUM_ART] Album art URL cached for {album}: {album_art_url}")
                     else:
                         log_debug(f"[ALBUM_ART] Album art will be fetched on-demand from Navidrome or Apple Music sources")
-                elif writer_updates and not singles_only:
-                    conn.commit()
-                    log_debug(f"Committed {len(writer_updates)} writer credit update(s) for album '{album}'")
                 
                 if not singles_only:
                     log_unified(f'Popularity Scan - Popularity Scanning for {album} Complete')
