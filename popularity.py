@@ -282,6 +282,66 @@ def should_exclude_track_from_stats(title: str, album: str = "") -> bool:
     return any(keyword in combined_text for keyword in IGNORE_SINGLE_KEYWORDS)
 
 
+# Modifiers that make a remastered track NOT equivalent to the original studio release
+# (i.e. it is also live, acoustic, etc.)
+_REMASTER_INCOMPATIBLE_MODIFIERS = [
+    r'\blive\b', r'\bunplugged\b', r'\bacoustic\b', r'\borchestral\b',
+    r'\bsymphonic\b', r'\bremix\b', r'\bdemo\b', r'\binstrumental\b',
+    r'\bkaraoke\b',
+]
+
+
+def strip_remaster_suffix(title: str) -> str:
+    """Strip remastered/remaster markers from a track title to get the base title.
+
+    Handles patterns such as:
+      - "Higher (remastered 2024)"              → "Higher"
+      - "Higher (radio edit / remastered 2024)" → "Higher (radio edit)"
+      - "Song - Remastered 2024"                → "Song"
+    """
+    result = title
+    # Remove standalone "(remastered [year])" parenthetical
+    result = re.sub(r'\s*\(\s*remaster(?:ed)?(?:\s+\d{4})?\s*\)', '', result, flags=re.IGNORECASE)
+    # Remove "/ remastered [year]" or "- remastered [year]" inside parentheticals
+    result = re.sub(r'\s*[/\-]\s*remaster(?:ed)?(?:\s+\d{4})?', '', result, flags=re.IGNORECASE)
+    # Remove trailing "- Remastered [year]" (dash-separated title suffix)
+    result = re.sub(r'\s*-\s*remaster(?:ed)?(?:\s+\d{4})?\s*$', '', result, flags=re.IGNORECASE)
+    # Clean up empty parentheses left over after stripping
+    result = re.sub(r'\(\s*\)', '', result)
+    return result.strip()
+
+
+def is_remastered_only_variant(title: str) -> bool:
+    """Return True when the track title is a remastered version with no other
+    non-canonical modifiers (live, acoustic, remix, etc.).
+
+    Remastered tracks inherently have lower Spotify popularity than the original
+    because listeners tend to stream the original release.  Their negative z-score
+    does NOT mean they are not singles — we should still run single detection on them.
+
+    Examples that return True:
+      - "Higher (remastered 2024)"
+      - "Higher (radio edit / remastered 2024)"
+      - "What If (remastered 2024)"
+
+    Examples that return False:
+      - "Roadhouse Blues (live at Woodstock / remastered 2024)"  – has 'live'
+      - "With Arms Wide Open (acoustic version / remastered 2024)" – has 'acoustic'
+      - "Higher"  – no remaster marker at all
+    """
+    base = strip_remaster_suffix(title)
+    # No remaster marker found — return False so normal gating applies
+    if base.lower().strip() == title.lower().strip():
+        return False
+    # If the remaining base title still contains a non-canonical (incompatible) modifier,
+    # this is NOT a simple remastered variant.
+    base_lower = base.lower()
+    for pattern in _REMASTER_INCOMPATIBLE_MODIFIERS:
+        if re.search(pattern, base_lower):
+            return False
+    return True
+
+
 def is_live_or_alternate_album(album: str) -> bool:
     """
     Determine if an album is a live, unplugged, or acoustic album.
@@ -5460,9 +5520,14 @@ def popularity_scan(
                         # For regular albums, skip single detection if z-score is negative (below album average)
                         # Rationale: Below-average tracks are unlikely to be real singles
                         # Exception: For compilations/greatest hits, run detection on all tracks (different popularity patterns)
+                        # Exception: Remastered-only variants — their lower popularity reflects listeners preferring
+                        #            the original release, not that the song is not a single.
                         if track_zscore < 0.0:
-                            skip_single_detection = True
-                            log_debug(f"Skipping single detection for '{title}' (z-score: {track_zscore:.2f} < 0.0 - below album average)")
+                            if is_remastered_only_variant(title):
+                                log_debug(f"Not skipping '{title}' despite negative z-score ({track_zscore:.2f}): remastered-only variant, treating as original release")
+                            else:
+                                skip_single_detection = True
+                                log_debug(f"Skipping single detection for '{title}' (z-score: {track_zscore:.2f} < 0.0 - below album average)")
                     else:
                         # Greatest hits/compilation/various artists: Run detection on all tracks
                         # These collections have different popularity patterns, so average tracks can still be genuine singles

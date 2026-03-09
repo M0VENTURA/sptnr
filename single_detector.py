@@ -82,7 +82,8 @@ def is_valid_version(title: str, allow_live_remix: bool = False) -> bool:
         r'\bremix\b',
         r'\bedit\b',
         r'\bmix\b',
-        r'\bremaster\b',
+        # NOTE: 'remaster'/'remastered' intentionally omitted — remastered versions are
+        # the same song as the original and should be treated as canonical single candidates.
         r'\bacoustic\b',
         r'\bdemo\b',
         r'\bkaraoke\b',

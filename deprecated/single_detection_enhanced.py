@@ -589,34 +589,117 @@ def normalize_title_strict(title: str) -> str:
     return normalized
 
 
+# Keywords that indicate a non-canonical modifier INCOMPATIBLE with the remastered bypass.
+# Tracks containing these modifiers (after stripping remastered) are NOT treated as the
+# original studio release and will not bypass z-score gating.
+_REMASTER_INCOMPATIBLE_MODIFIERS = [
+    r'\blive\b', r'\bunplugged\b', r'\bacoustic\b', r'\borchestral\b',
+    r'\bsymphonic\b', r'\bremix\b', r'\bdemo\b', r'\binstrumental\b',
+    r'\bkaraoke\b',
+]
+
+
+def strip_remaster_suffix(title: str) -> str:
+    """Strip remastered/remaster markers from a track title to get the base title.
+
+    Handles patterns such as:
+      - "Higher (remastered 2024)"         → "Higher"
+      - "Higher (radio edit / remastered 2024)" → "Higher (radio edit)"
+      - "Song - Remastered 2024"           → "Song"
+    """
+    result = title
+    # Remove standalone "(remastered [year])" parenthetical
+    result = re.sub(r'\s*\(\s*remaster(?:ed)?(?:\s+\d{4})?\s*\)', '', result, flags=re.IGNORECASE)
+    # Remove "/ remastered [year]" or "- remastered [year]" inside parentheticals
+    result = re.sub(r'\s*[/\-]\s*remaster(?:ed)?(?:\s+\d{4})?', '', result, flags=re.IGNORECASE)
+    # Remove trailing "- Remastered [year]" (dash-separated title suffix)
+    result = re.sub(r'\s*-\s*remaster(?:ed)?(?:\s+\d{4})?\s*$', '', result, flags=re.IGNORECASE)
+    # Clean up empty parentheses left over after stripping
+    result = re.sub(r'\(\s*\)', '', result)
+    return result.strip()
+
+
+def is_remastered_only_variant(title: str) -> bool:
+    """Return True when the track title is a remastered version with no other
+    non-canonical modifiers (live, acoustic, remix, etc.).
+
+    Such tracks should be scanned exactly like the original release — their lower
+    Spotify popularity merely reflects that listeners stream the original, not that
+    the song is not a single.
+
+    Examples that return True:
+      - "Higher (remastered 2024)"
+      - "Higher (radio edit / remastered 2024)"
+      - "What If (remastered 2024)"
+
+    Examples that return False:
+      - "Roadhouse Blues (live at Woodstock / remastered 2024)"  – has 'live'
+      - "With Arms Wide Open (acoustic version / remastered 2024)" – has 'acoustic'
+      - "Higher"  – no remaster marker at all
+    """
+    base = strip_remaster_suffix(title)
+    # No remaster marker found — return False so normal gating applies
+    if base.lower().strip() == title.lower().strip():
+        return False
+    # If the remaining base title still has non-canonical (incompatible) modifiers
+    # this is NOT a simple remastered variant.
+    base_lower = base.lower()
+    for pattern in _REMASTER_INCOMPATIBLE_MODIFIERS:
+        if re.search(pattern, base_lower):
+            return False
+    return True
+
+
+
 def is_non_canonical_version_strict(title: str) -> bool:
     """
     Check if title contains non-canonical version markers per Stage 6.
-    Reject: remix, remaster, acoustic, live, unplugged, orchestral, symphonic,
+    Reject: remix, acoustic, live, unplugged, orchestral, symphonic,
             demo, instrumental, edit, extended, version, alt, alternate, mix
-    
-    EXCEPTION: Allow (radio edit), (single), and (remastered) in brackets/parentheses
+
+    EXCEPTION: Allow (radio edit) and (single) in brackets/parentheses
     as these are canonical single versions that should not be excluded.
+
+    REMASTER HANDLING: Remastered versions are treated as the original release
+    (same song, improved audio quality).  All remaster markers are stripped
+    before the non-canonical check so that titles like:
+      - "Higher (remastered 2024)"       → treated as "Higher"         ✓
+      - "Higher (radio edit / remastered 2024)" → treated as "Higher (radio edit)" ✓
+      - "Roadhouse Blues (live / remastered 2024)" → still rejected (has 'live') ✓
     """
     title_lower = title.lower()
-    
-    # Check for allowed parenthetical tags that should NOT cause rejection
-    # These are canonical single versions
-    allowed_parenthetical_tags = [
-        r'\(radio\s+edit\)',
-        r'\(single\)',
-        r'\(remastered\)',
-    ]
-    
-    # First, temporarily remove allowed parenthetical tags from the title
-    # so they don't trigger rejection
+
+    # PRE-PROCESSING: Strip all remaster/remastered markers before checking
+    # non-canonical patterns.  Remastered versions are the same song as the
+    # original; only the audio quality differs, making them valid single candidates.
     temp_title = title_lower
+    # Remove standalone "(remastered [year])" parenthetical, e.g. "(remastered 2024)"
+    temp_title = re.sub(r'\(\s*remaster(?:ed)?(?:\s+\d{4})?\s*\)', '', temp_title)
+    # Remove "/ remastered [year]" or "- remastered [year]" inside/after parentheticals,
+    # e.g. "radio edit / remastered 2024" → "radio edit"
+    temp_title = re.sub(r'[/\-]\s*remaster(?:ed)?(?:\s+\d{4})?', '', temp_title)
+    # Remove any remaining standalone remaster keywords not already covered above
+    # e.g. "- Remastered 2024" at the end of the title (dash-separated suffix form)
+    temp_title = re.sub(r'\bremaster(?:ed)?(?:\s+\d{4})?\b', '', temp_title)
+    # Clean up empty parentheses left over after stripping, e.g. "()"
+    temp_title = re.sub(r'\(\s*\)', '', temp_title)
+    temp_title = temp_title.strip()
+
+    # Check for additional allowed parenthetical tags that should NOT cause rejection
+    # These are canonical single versions.
+    # Use \s* inside to handle trailing whitespace left after remaster-stripping,
+    # e.g. "(radio edit )" becomes canonical after stripping "/ remastered 2024".
+    allowed_parenthetical_tags = [
+        r'\(radio\s+edit\s*\)',
+        r'\(single\s*\)',
+    ]
+
     for allowed_pattern in allowed_parenthetical_tags:
         temp_title = re.sub(allowed_pattern, '', temp_title)
-    
+
     # Now check for non-canonical version markers in the modified title
     patterns = [
-        r'\bremix\b', r'\bremaster(ed)?\b', r'\bacoustic\b', r'\blive\b',
+        r'\bremix\b', r'\bacoustic\b', r'\blive\b',
         r'\bunplugged\b', r'\borchestral\b', r'\bsymphonic\b',
         r'\bdemo\b', r'\binstrumental\b', r'\bedit\b', r'\bextended\b',
         r'\bversion\b', r'\balt\b', r'\balternate\b', r'\bmix\b'
@@ -1113,7 +1196,8 @@ def determine_final_status(
     popularity: float = 0.0,
     album_mean: float = 0.0,
     has_metadata: bool = False,
-    radio_edit_found: bool = False
+    radio_edit_found: bool = False,
+    is_remastered_only: bool = False
 ) -> str:
     """
     Final single status based on source detection and z-score analysis.
@@ -1122,6 +1206,11 @@ def determine_final_status(
     - Z-score >= 1: Requires only 1 MEDIUM confidence OR 1 HIGH confidence source
     - Z-score 0-1: Requires 2 MEDIUM confidence sources OR 1 HIGH confidence source  
     - Z-score < 0: Single detection skipped (handled earlier in pipeline)
+    
+    REMASTER EXCEPTION:
+    - Remastered-only variants bypass the z<=0 gate and are evaluated as if z is in the
+      0-1 range (require 1 HIGH or 2 MEDIUM sources).  Their low popularity is expected
+      and reflects the streaming preference for the original, not the absence of single status.
     
     HIGH-CONFIDENCE SOURCES:
     - Discogs confirms exact track version as a single
@@ -1151,6 +1240,7 @@ def determine_final_status(
         album_mean: Album mean popularity
         has_metadata: Whether track has any metadata sources
         radio_edit_found: Whether a Radio Edit version was found in Spotify search results
+        is_remastered_only: Whether the track is a remastered-only variant (bypasses z<=0 gate)
         
     Returns:
         Confidence level: 'high', 'medium', 'low', or 'none'
@@ -1220,8 +1310,18 @@ def determine_final_status(
             log_debug(f"[CONFIDENCE] → RETURNING 'medium' (z 0-1: has {medium_confidence_count} medium sources)")
             return 'medium'
 
-    # z <= 0: never pass single confidence regardless of source counts
+    # z <= 0: normally reject, BUT remastered-only variants get a chance via the
+    # same "0-1" threshold (1 high OR 2 medium sources) because their low popularity
+    # is caused by listeners preferring the original release, not by the track not being
+    # a single.
     elif max_z <= 0.0:
+        if is_remastered_only:
+            if high_confidence_count >= 1:
+                log_debug(f"[CONFIDENCE] → RETURNING 'high' (remastered-only z<=0 bypass: has {high_confidence_count} high source)")
+                return 'high'
+            elif medium_confidence_count >= 2:
+                log_debug(f"[CONFIDENCE] → RETURNING 'medium' (remastered-only z<=0 bypass: has {medium_confidence_count} medium sources)")
+                return 'medium'
         log_debug(
             f"[CONFIDENCE] → RETURNING 'none' (z<=0 gate: max_z={max_z:.2f}, "
             f"requires z>0 before confidence sources can qualify)"
@@ -1560,15 +1660,26 @@ def detect_single_enhanced(
     # Z-Score Gate: Skip single detection if artist_z < 0
     # LOGIC:
     # - z < 0: Skip detection (always), EXCEPT for compilations (every track must be checked)
+    #          ALSO EXCEPT for remastered-only variants (see note below)
     # - z 0-1: Require 2 medium OR 1 high confidence sources
     # - z >= 1: Require 1 medium OR 1 high confidence source
     # - z > 2 with NO sources: Mark as "Popular" with 5★ rating (not as single)
-    if artist_z < 0.0 and not is_compilation:
+    #
+    # REMASTER BYPASS: Remastered tracks inherently have lower popularity than the original
+    # studio version because listeners stream the original.  Their negative z-score therefore
+    # does NOT indicate they are not singles — it just reflects the streaming preference for
+    # the original release.  We bypass the z-score gate for remastered-only variants so that
+    # e.g. "Higher (remastered 2024)" can still be detected as a single via API sources.
+    is_remastered_only = is_remastered_only_variant(title)
+    if artist_z < 0.0 and not is_compilation and not is_remastered_only:
         log_debug(f"[ZSCORE] ✗ Artist z-score below 0 (artist_z={artist_z:.2f}, album_z={album_z:.2f})")
         log_info(f"   ⓘ Skipping single detection for {title}: artist z-score below 0")
         if verbose:
             log_debug(f"Z-score filter: Skipping {title} (artist_z < 0)")
         return result
+    if artist_z < 0.0 and is_remastered_only:
+        log_debug(f"[ZSCORE] Bypassing z-score gate for remastered-only variant '{title}' (artist_z={artist_z:.2f})")
+
     
     log_debug(f"[ZSCORE] ✓ Track qualifies for metadata checks (album_z={album_z:.2f}, artist_z={artist_z:.2f})")
     if verbose:
@@ -1576,11 +1687,12 @@ def detect_single_enhanced(
     
     # STAGE 3: MusicBrainz (Secondary Source - checked before Spotify per new ordering)
     # STAGE 2a: Discogs Check (NOW GATED BY Z-SCORE)
-    # Only check Discogs if track shows standout characteristics OR is on a compilation.
-    # For compilations, every track must be checked regardless of z-score.
+    # Only check Discogs if track shows standout characteristics OR is on a compilation
+    # OR is a remastered-only variant (whose low popularity reflects the original's dominance,
+    # not the absence of single status).
     # This conserves API quota while still catching confirmed singles.
     discogs_confirmed = False
-    if artist_z > 0.0 or is_compilation:
+    if artist_z > 0.0 or is_compilation or is_remastered_only:
         if discogs_client and hasattr(discogs_client, 'enabled') and discogs_client.enabled:
             try:
                 log_debug(f"[DISCOGS] Querying Discogs API for single: {title} by {artist} (z-score gate passed: artist_z={artist_z:.2f})")
@@ -2407,7 +2519,8 @@ def detect_single_enhanced(
         popularity,
         album_mean,
         has_metadata,
-        radio_edit_found
+        radio_edit_found,
+        is_remastered_only
     )
     
     log_debug(f"[FINAL_DECISION] Final status determined: {final_status}")

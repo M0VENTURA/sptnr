@@ -56,8 +56,12 @@ except ImportError:
 
 # Version keywords to detect in track titles (immutable tuple for performance)
 # Includes 'version' to catch custom versions like "Swing Tomorrow version by Rocksin"
-VERSION_KEYWORDS = ('live', 'acoustic', 'unplugged', 'remix', 'edit', 'mix', 
-                    'remaster', 'remastered', 'demo', 'instrumental', 'orchestral', 'version')
+# NOTE: 'remaster'/'remastered' are intentionally excluded from this list.
+# Remastered versions are treated as the original release (same song, improved audio quality),
+# not as alternate versions like remixes or live recordings.  A track titled
+# "Higher (remastered 2024)" should still match the original "Higher" single release.
+VERSION_KEYWORDS = ('live', 'acoustic', 'unplugged', 'remix', 'edit', 'mix',
+                    'demo', 'instrumental', 'orchestral', 'version')
 
 def _extract_version_info(title: str) -> tuple[str, set[str]]:
     """
@@ -66,9 +70,13 @@ def _extract_version_info(title: str) -> tuple[str, set[str]]:
     IMPORTANT: Preserves title suffixes like "!", "+", "?", and Roman numerals (I, II, III, IV, etc.)
     to ensure different songs are not matched as the same track.
     
-    SPECIAL HANDLING: Year-based versions (e.g., "2016 version") are NOT flagged as alternate 
-    versions because they represent different release years/remasters, not alternate versions 
+    SPECIAL HANDLING: Year-based versions (e.g., "2016 version") are NOT flagged as alternate
+    versions because they represent different release years/remasters, not alternate versions
     like remixes or live performances. This prevents false negatives in single detection.
+
+    REMASTER HANDLING: Remastered versions (e.g., "remastered 2024") are also NOT flagged as
+    alternate versions — they are the same song with improved audio quality and should match
+    the original studio single release in MusicBrainz lookups.
     
     Args:
         title: Track title (e.g., "Song Title (Live)", "Song Title - Acoustic Version")
