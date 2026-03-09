@@ -65,7 +65,7 @@ def strip_parentheses(
         The cleaned string with the requested parenthetical groups removed.
     """
     if not s:
-        return s or ""
+        return ""
 
     if extra_patterns:
         result = s

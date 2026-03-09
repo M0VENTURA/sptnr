@@ -1419,8 +1419,17 @@ def _start_daily_scheduler():
     _daily_scheduler_stop = threading.Event()
 
     def _daily_worker():
-        INTERVAL_SECONDS = 24 * 60 * 60  # 24 hours
-        logging.info("[DAILY] Daily scheduler started")
+        # Interval is configurable via ``features.daily_scheduler_interval_hours`` in config.yaml.
+        # Defaults to 24 hours.
+        try:
+            cfg = get_config()
+            interval_hours = float(
+                cfg.get("features", {}).get("daily_scheduler_interval_hours", 24)
+            )
+        except Exception:
+            interval_hours = 24
+        INTERVAL_SECONDS = int(interval_hours * 3600)
+        logging.info(f"[DAILY] Daily scheduler started (interval: {interval_hours}h)")
 
         while not _daily_scheduler_stop.is_set():
             # Wait for the full interval (interruptible by stop event)
@@ -1516,6 +1525,10 @@ def _run_daily_new_artist_import():
         # Use existing boot import infrastructure – scan each new artist
         def run_new_artist_import():
             global scan_process_navidrome
+            # SPTNR_SKIP_SINGLES=1 prevents the popularity/single-detection pipeline
+            # from running during this metadata-only import pass.  Without this flag,
+            # scan_artist_to_db would also trigger expensive Last.fm/Spotify lookups
+            # for each track.  The daily scheduler handles popularity separately.
             os.environ["SPTNR_SKIP_SINGLES"] = "1"
             try:
                 artist_map = build_artist_index()
