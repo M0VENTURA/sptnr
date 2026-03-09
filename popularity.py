@@ -678,6 +678,136 @@ def detect_greatest_hits_album(album: str, artist: str, conn: sqlite3.Connection
     return False
 
 
+def detect_and_queue_missing_tracks(artist: str, album: str, album_tracks: list, release_group_mbid: str = None, conn: sqlite3.Connection = None):
+    """
+    Detect missing tracks from an album by comparing local tracks with MusicBrainz tracklist.
+    Automatically queue any missing tracks for download.
+    
+    Args:
+        artist: Artist name
+        album: Album name
+        album_tracks: List of track dicts from local database
+        release_group_mbid: MusicBrainz release group MBID (optional, faster lookup if provided)
+        conn: Database connection (optional, will create new connection if not provided)
+    
+    Returns:
+        Number of missing tracks queued (0 if none or error)
+    """
+    try:
+        from folder_matching_enhancements import get_musicbrainz_release_tracks
+        from download_queue_manager import add_to_queue
+        
+        # Get release ID if not provided
+        if not release_group_mbid:
+            # Try to get from database
+            if conn:
+                is_pg = is_postgres_connection(conn)
+                placeholder = "%s" if is_pg else "?"
+                cursor = conn.cursor()
+                cursor.execute(f"""
+                    SELECT musicbrainz_album_mbid FROM tracks
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                      AND album = {placeholder}
+                      AND musicbrainz_album_mbid IS NOT NULL
+                      AND musicbrainz_album_mbid != ''
+                    LIMIT 1
+                """, (artist, album))
+                mbid_row = cursor.fetchone()
+                if mbid_row:
+                    release_group_mbid = row_get(mbid_row, 'musicbrainz_album_mbid')
+        
+        if not release_group_mbid:
+            log_debug(f"No MusicBrainz release ID found for '{artist} - {album}', skipping missing track detection")
+            return 0
+        
+        # Fetch complete tracklist from MusicBrainz
+        log_debug(f"Fetching MusicBrainz tracklist for '{artist} - {album}' (MBID: {release_group_mbid})")
+        mb_tracks = get_musicbrainz_release_tracks(release_group_mbid, source='musicbrainz')
+        
+        if not mb_tracks:
+            log_debug(f"No tracklist returned from MusicBrainz for '{artist} - {album}'")
+            return 0
+        
+        log_info(f"MusicBrainz shows {len(mb_tracks)} track(s) for '{artist} - {album}', local library has {len(album_tracks)} track(s)")
+        
+        # Create normalized title map for local tracks
+        local_tracks_normalized = {}
+        for track in album_tracks:
+            track_title = track.get('title', '')
+            if track_title:
+                # Normalize: lowercase, remove special chars
+                normalized = unicodedata.normalize("NFKD", track_title)
+                normalized = "".join(c for c in normalized if not unicodedata.combining(c))
+                normalized = normalized.lower().strip()
+                normalized = re.sub(r'[^a-z0-9]+', ' ', normalized)
+                normalized = ' '.join(normalized.split())
+                local_tracks_normalized[normalized] = track_title
+        
+        # Find missing tracks
+        missing_tracks = []
+        for mb_track in mb_tracks:
+            mb_title = mb_track.get('title', '')
+            if not mb_title:
+                continue
+            
+            # Normalize MB track title
+            mb_normalized = unicodedata.normalize("NFKD", mb_title)
+            mb_normalized = "".join(c for c in mb_normalized if not unicodedata.combining(c))
+            mb_normalized = mb_normalized.lower().strip()
+            mb_normalized = re.sub(r'[^a-z0-9]+', ' ', mb_normalized)
+            mb_normalized = ' '.join(mb_normalized.split())
+            
+            # Check if track exists locally
+            if mb_normalized not in local_tracks_normalized:
+                missing_tracks.append(mb_track)
+        
+        if not missing_tracks:
+            log_debug(f"All tracks present for '{artist} - {album}'")
+            return 0
+        
+        # Queue missing tracks
+        log_info(f"🔍 Found {len(missing_tracks)} missing track(s) for '{artist} - {album}'")
+        
+        queued_count = 0
+        import_group = f"missing_{artist.replace(' ', '_')}_{album.replace(' ', '_')}"[:100]
+        
+        for mb_track in missing_tracks:
+            track_title = mb_track.get('title', '')
+            track_number = mb_track.get('number', '')
+            track_artist = mb_track.get('artist', '') or artist
+            
+            try:
+                log_info(f"  ➕ Queuing missing track: {track_artist} - {track_title}")
+                
+                add_to_queue(
+                    artist=track_artist,
+                    title=track_title,
+                    album=album,
+                    source='soulseek',
+                    priority=7,  # Medium-low priority
+                    import_group=import_group,
+                    import_type='album',
+                    track_number=track_number,
+                    album_artist=artist,
+                    release_id=release_group_mbid,
+                    release_source='musicbrainz'
+                )
+                queued_count += 1
+            except Exception as e:
+                log_debug(f"Failed to queue missing track '{track_title}': {e}")
+        
+        if queued_count > 0:
+            log_info(f"✅ Queued {queued_count} missing track(s) for download: '{artist} - {album}'")
+        
+        return queued_count
+        
+    except Exception as e:
+        log_debug(f"Error detecting missing tracks for '{artist} - {album}': {e}")
+        import traceback
+        log_debug(f"Traceback: {traceback.format_exc()}")
+        return 0
+
+
 def should_skip_spotify_lookup(track_id: str, conn: sqlite3.Connection) -> bool:
     """
     Check if Spotify lookup should be skipped based on 24-hour cache.
@@ -4091,6 +4221,25 @@ def popularity_scan(
                         else:
                             album_type_from_field = "album"
                         log_info(f'EP override: "{artist} - {album}" has {track_count} tracks (>6), reclassified from "{old_type}" to "{album_type_from_field}"')
+
+                # MISSING TRACK DETECTION AND QUEUEING
+                # After album type detection, check if any tracks are missing from MusicBrainz release
+                # and automatically queue them for download
+                try:
+                    if release_group_mbid:
+                        missing_count = detect_and_queue_missing_tracks(
+                            artist=artist,
+                            album=album,
+                            album_tracks=album_tracks,
+                            release_group_mbid=release_group_mbid,
+                            conn=conn
+                        )
+                        if missing_count > 0:
+                            log_info(f'📥 Queued {missing_count} missing track(s) for download')
+                    else:
+                        log_debug(f'No MusicBrainz release ID available for missing track detection: "{artist} - {album}"')
+                except Exception as e:
+                    log_debug(f'Error during missing track detection for "{artist} - {album}": {e}')
 
                 # ALBUM-LEVEL DISCOGS GENRE FETCH
                 # For homogeneous album types (Single, EP, Album), fetch Discogs genres once at album level
