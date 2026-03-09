@@ -558,6 +558,12 @@ async function searchMusicBrainzRelease(event, artist, album) {
   if (infoEl && infoArtistEl && infoAlbumEl) {
     infoArtistEl.textContent = artist;
     infoAlbumEl.textContent = album;
+    // Conditionally show hyphen separator only if album is provided
+    if (album && album.trim()) {
+      infoEl.innerHTML = `Searching <strong>${escapeHtml(artist)}</strong> - <strong>${escapeHtml(album)}</strong>`;
+    } else {
+      infoEl.innerHTML = `Searching <strong>${escapeHtml(artist)}</strong>`;
+    }
     infoEl.style.display = 'block';
   }
 
