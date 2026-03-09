@@ -236,7 +236,7 @@
             </div>
             <div class="modal-body">
                 <p class="text-muted">
-                    Enter an artist name to search MusicBrainz and add all their albums, EPs, and singles to the missing releases section.
+                    Enter an artist name to search releases and queue downloads from MusicBrainz/Discogs.
                 </p>
                 <div class="mb-3">
                     <label for="artistNameInput" class="form-label">Artist Name</label>
@@ -247,7 +247,7 @@
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                 <button type="button" class="btn btn-success" id="addArtistBtn" onclick="addArtist()">
-                    <i class="bi bi-search"></i> Search & Add
+                    <i class="bi bi-search"></i> Search Releases
                 </button>
             </div>
         </div>
@@ -282,7 +282,6 @@ document.addEventListener('DOMContentLoaded', function() {
 function addArtist() {
     const artistName = document.getElementById('artistNameInput').value.trim();
     const statusDiv = document.getElementById('addArtistStatus');
-    const btn = document.getElementById('addArtistBtn');
     
     if (!artistName) {
         statusDiv.className = 'alert alert-warning';
@@ -290,54 +289,21 @@ function addArtist() {
         statusDiv.style.display = 'block';
         return;
     }
-    
-    // Disable button and show loading
-    btn.disabled = true;
-    btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Searching...';
-    statusDiv.className = 'alert alert-info';
-    statusDiv.textContent = 'Searching MusicBrainz...';
-    statusDiv.style.display = 'block';
-    
-    fetch('/api/artist/add', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ artist: artistName })
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.error) {
-            statusDiv.className = 'alert alert-danger';
-            statusDiv.innerHTML = `<i class="bi bi-exclamation-triangle"></i> ${data.error}`;
-        } else {
-            statusDiv.className = 'alert alert-success';
-            const msg = data.artist_exists 
-                ? `Found ${data.releases_found} releases for <strong>${data.artist}</strong>. Added ${data.added_to_missing} to missing releases (${data.already_in_library} already in library).`
-                : `Added <strong>${data.artist}</strong> with ${data.added_to_missing} missing releases from ${data.releases_found} found on MusicBrainz.`;
-            statusDiv.innerHTML = `<i class="bi bi-check-circle"></i> ${msg}`;
-            
-            // Refresh page after 2 seconds if artist was newly added
-            if (!data.artist_exists && data.added_to_missing > 0) {
-                setTimeout(() => {
-                    window.location.reload();
-                }, 2000);
-            } else {
-                // Just provide link to artist page
-                setTimeout(() => {
-                    statusDiv.innerHTML += `<br><a href="/artist/${encodeURIComponent(data.artist)}" class="btn btn-sm btn-primary mt-2"><i class="bi bi-arrow-right"></i> View Artist Page</a>`;
-                }, 500);
-            }
-        }
-    })
-    .catch(error => {
-        statusDiv.className = 'alert alert-danger';
-        statusDiv.innerHTML = `<i class="bi bi-exclamation-triangle"></i> Error: ${error.message}`;
-    })
-    .finally(() => {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-search"></i> Search & Add';
-    });
+
+    statusDiv.style.display = 'none';
+
+    // Close Add Artist modal before opening the shared MusicBrainz release search modal.
+    const addArtistModalEl = document.getElementById('addArtistModal');
+    const addArtistModal = bootstrap.Modal.getInstance(addArtistModalEl);
+    if (addArtistModal) {
+        addArtistModal.hide();
+    }
+
+    if (typeof searchMusicBrainzRelease === 'function') {
+        searchMusicBrainzRelease(null, artistName, '');
+    } else {
+        alert('Release search is not available on this page. Please refresh and try again.');
+    }
 }
 
 // Letter navigation function
@@ -409,5 +375,8 @@ async function scanLetterArtists(letter, scanType) {
     }
 }
 </script>
+
+{% include '_musicbrainz_search_modal.html' %}
+{% include '_musicbrainz_search_functions.html' %}
 
 {% endblock %}

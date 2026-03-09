@@ -2042,8 +2042,10 @@ def detect_single_for_track(
     """
     # Use enhanced detection algorithm per problem statement if enabled
     # This implements the exact 8-stage algorithm with pre-filter, Discogs primary, etc.
+    log_info(f"🔎 [SINGLE DETECTION ENTRY] Checking detection options for: {title}")
     log_debug(f"Advanced detection check - use_advanced_detection={use_advanced_detection}, track_id={track_id}, album={album}, title={title}, artist={artist}")
     if use_advanced_detection and track_id and album:
+        log_info(f"✅ [SINGLE DETECTION] Using ADVANCED detection path for: {title}")
         conn = None
         try:
             from deprecated.single_detection_enhanced import detect_single_enhanced, store_single_detection_result
@@ -2074,6 +2076,10 @@ def detect_single_for_track(
             lastfm_client = get_lastfm_client()
             
             # Run enhanced detection
+            log_info(f"🔍 [SINGLE DETECTION] Starting enhanced detection for: {title}")
+            log_debug(f"[SINGLE DETECTION] Enhanced detection params: isrc={isrc}, duration={duration}, popularity={popularity}, album_type={album_type}")
+            log_debug(f"[SINGLE DETECTION] API clients available: discogs={'YES' if discogs_client else 'NO'}, musicbrainz={'YES' if musicbrainz_client else 'NO'}, lastfm={'YES' if lastfm_client else 'NO'}")
+            
             result = detect_single_enhanced(
                 conn=conn,
                 track_id=track_id,
@@ -2092,6 +2098,9 @@ def detect_single_for_track(
                 album_is_underperforming=album_is_underperforming,
                 artist_median_popularity=artist_median_popularity
             )
+            
+            log_info(f"✅ [SINGLE DETECTION] Enhanced detection complete for: {title}")
+            log_debug(f"[SINGLE DETECTION] Result: is_single={result.get('is_single')}, confidence={result.get('single_confidence')}, sources={result.get('single_sources')}")
             
             # CRITICAL: Close the read connection before storing results.
             # detect_single_enhanced() creates multiple cursors and may leave read locks open.
@@ -2141,6 +2150,7 @@ def detect_single_for_track(
             skip_reason.append(f"track_id={track_id}")
         if not album:
             skip_reason.append(f"album={album}")
+        log_info(f"⚠️ [SINGLE DETECTION] Using STANDARD detection path for: {title} (reasons: {', '.join(skip_reason)})")
         log_debug(f"Skipping advanced detection for {title}: {', '.join(skip_reason)}")
     
     # Ignore obvious non-singles by keywords
@@ -3857,6 +3867,12 @@ def popularity_scan(
                     log_info(f"Stop requested via progress file; exiting during artist '{artist}'")
                     return False
 
+                log_info(f"\n" + "="*80)
+                log_info(f"📂 ALBUM: {album} [{album_num + 1}/{total_albums}]")
+                log_info(f"🎵 ARTIST: {artist}")
+                log_info(f"📊 TRACKS: {len(album_tracks)}")
+                log_info(f"="*80)
+                
                 album_num += 1
                 album_scanned = 0  # Initialize before popularity section (may be skipped in singles_only)
                 skip_popularity_for_album = False
@@ -3909,20 +3925,22 @@ def popularity_scan(
                 # In singles_only mode, skip popularity scanning and go directly to singles detection
                 if singles_only:
                     log_unified(f'Singles Detection - Scanning Album {album} ({album_num}/{len(albums)})')
-                    log_info(f'Singles-only mode: Skipping popularity scan, going directly to singles detection for "{artist} - {album}"')
+                    log_info(f'⏭️ SINGLES-ONLY MODE: Skipping popularity scan for "{artist} - {album}"')
+                    log_info(f'🔍 Will proceed directly to singles detection')
                 else:
                     # Check if album was already scanned (unless force rescan is enabled)
                     if not (FORCE_RESCAN or force) and was_album_scanned(artist, album, 'popularity', album_skip_days):
                         log_unified(f'Popularity Scan - Skipping album "{album}" (scanned within last {album_skip_days} days)')
-                        log_info(f'Album "{artist} - {album}" was already scanned within {album_skip_days} days')
+                        log_info(f'⏱️ Album "{artist} - {album}" was already scanned within {album_skip_days} days - POPULARITY SKIP')
                         skipped_count += 1
                         skip_popularity_for_album = True
                     
                     log_unified(f'Popularity Scan - Scanning Album {album} ({album_num}/{len(albums)})')
-                    log_info(f'Starting popularity scan for album: "{artist} - {album}"')
+                    log_info(f'🔎 Starting POPULARITY SCAN for album: "{artist} - {album}"')
                 
                 # ALBUM TYPE DETECTION - Do this once per album at the start
                 # Detect album type from MusicBrainz/auto-detection and apply to all tracks
+                log_info(f'🏷️ Starting album type detection for "{artist} - {album}"')
                 log_debug(f'Starting album type detection for "{artist} - {album}"')
                 
                 # Get current album type from first track (if any)
@@ -3934,7 +3952,7 @@ def popularity_scan(
                 if artist.lower() == 'various artists':
                     detected_album_type = 'album+compilation'
                     type_detection_source = 'auto-detected (Various Artists)'
-                    log_info(f'Auto-detected compilation album: "{album}" (artist: Various Artists)')
+                    log_info(f'✅ AUTO-DETECTED: Compilation album - "{album}" (artist: Various Artists)')
                 
                 # Auto-detect Soundtrack in album name → Album (Soundtrack)
                 elif 'soundtrack' in album.lower():
@@ -4479,25 +4497,34 @@ def popularity_scan(
                 # This ensures writer data is always kept up to date from MusicBrainz.
                 writer_updates = []
                 if HAVE_MUSICBRAINZ:
+                    log_info(f'Starting MusicBrainz writer backfill for album "{album}" ({len(album_tracks)} tracks)')
                     for track in album_tracks:
                         track_id = track["id"]
                         title = track["title"]
                         track_artist = track["artist"]
 
                         if _writer_is_empty(row_get(track, 'writer')):
+                            log_debug(f'Writer field empty for "{title}" - querying MusicBrainz')
                             try:
                                 if mb_writer_client is None:
                                     mb_writer_client = MusicBrainzClient()
+                                    log_debug(f'Initialized MusicBrainz client for writer backfill')
 
+                                normalized_title = normalize_title_for_lookup(title)
+                                log_debug(f'MusicBrainz lookup: title="{normalized_title}", artist="{track_artist}"')
+                                
                                 mb_writer_names = _run_with_timeout(
                                     mb_writer_client.get_composers_for_track,
                                     API_CALL_TIMEOUT,
                                     f"MusicBrainz writer lookup timed out after {API_CALL_TIMEOUT}s",
-                                    normalize_title_for_lookup(title),
+                                    normalized_title,
                                     track_artist
                                 )
+                                
+                                log_debug(f'MusicBrainz returned {len(mb_writer_names) if mb_writer_names else 0} writer(s) for "{title}"')
 
                                 if mb_writer_names:
+                                    log_debug(f'Raw MusicBrainz writer names: {mb_writer_names}')
                                     deduped_writers = []
                                     for name in mb_writer_names:
                                         cleaned = str(name).strip()
@@ -4508,31 +4535,41 @@ def popularity_scan(
                                         writer_json = json.dumps(deduped_writers)
                                         writer_updates.append((writer_json, track_id))
                                         track['writer'] = writer_json
-                                        log_info(f'MusicBrainz writer backfill: "{title}" -> {len(deduped_writers)} credit(s)')
+                                        log_info(f'✅ MusicBrainz writer backfill: "{title}" -> {deduped_writers}')
                                     else:
                                         log_debug(f'MusicBrainz writer lookup returned only empty values for "{title}"')
                                 else:
-                                    log_debug(f'No MusicBrainz writer credits found for "{title}"')
+                                    log_info(f'❌ No MusicBrainz writer credits found for "{title}"')
                             except TimeoutError as e:
-                                log_debug(f'MusicBrainz writer lookup timed out for "{title}": {e}')
+                                log_info(f'⏱️ MusicBrainz writer lookup timed out for "{title}": {e}')
                             except Exception as e:
-                                log_debug(f'Failed MusicBrainz writer backfill for "{title}": {e}')
+                                log_info(f'❌ Failed MusicBrainz writer backfill for "{title}": {e}')
+                                import traceback
+                                log_debug(f'Writer backfill error traceback: {traceback.format_exc()}')
+                        else:
+                            current_writer = row_get(track, 'writer')
+                            log_debug(f'Writer field already populated for "{title}": {current_writer}')
 
                 # Commit writer updates immediately, independent of popularity scoring.
                 if writer_updates:
+                    log_info(f'💾 Committing {len(writer_updates)} writer credit update(s) for album "{album}"')
                     try:
                         cursor.executemany(
                             f"UPDATE tracks SET writer = {placeholder} WHERE id = {placeholder}",
                             writer_updates
                         )
                         conn.commit()
+                        log_info(f"✅ Successfully committed {len(writer_updates)} writer credit update(s) for album '{album}'")
                         log_debug(f"Committed {len(writer_updates)} writer credit update(s) for album '{album}'")
                     except Exception as e:
+                        log_info(f"❌ Failed to batch update writer credits: {e}")
                         log_debug(f"Warning: Failed to batch update writer credits: {e}")
                         try:
                             conn.rollback()
                         except Exception:
                             pass
+                else:
+                    log_info(f'ℹ️ No writer updates needed for album "{album}" (all tracks already have writer data or MusicBrainz unavailable)')
 
                 # In singles_only mode, skip all popularity scoring
                 if not singles_only and not skip_popularity_for_album:
@@ -4578,8 +4615,9 @@ def popularity_scan(
                         # Strip parentheses (featured artist, remix info, etc.) for better search accuracy
                         api_lookup_title = strip_search_parentheses(api_lookup_title)
 
-                        log_info(f'Processing track: "{title}" (Track ID: {track_id})')
+                        log_info(f'🎵 Processing track: "{title}" (Track ID: {track_id})')
                         log_debug(f'Track details - id: {track_id}, title: {title}, album: {album}, artist: {track_artist}')
+                        log_debug(f'Starting popularity scoring for: {title}')
 
                     # Check if we can use the complete cached popularity_score
                     # This avoids all API calls if the final score is still valid
@@ -4632,6 +4670,7 @@ def popularity_scan(
                             log_debug(f'Track "{title}" matched keyword filter for exclusion')
                     
                         # Try to get popularity from Spotify (using cached data or API)
+                        log_debug(f'Initiating Spotify lookup for: {title}')
                         spotify_score = 0
                         spotify_search_results = None
                         spotify_release_date = None
@@ -5701,19 +5740,22 @@ def popularity_scan(
                         log_debug(f"Could not fetch popularity for {track_id}: {e}")
                         track_popularity = 0.0
                     
+                    log_info(f"🔍 Running single detection for: {title}")
                     log_debug(f"Single detection params - track: {title}, isrc: {track_isrc}, duration: {track_duration}, popularity: {track_popularity}, album_type: {track_album_type}")
+                    log_debug(f"Single detection - is_greatest_hits_or_compilation: {is_greatest_hits_or_compilation}, force_full: {force_full_single_detection}")
                     
                     # Skip single detection for zero-popularity tracks (unless in compilation/greatest hits)
                     # Rationale: Tracks with 0 popularity are unlikely to be real singles, wastes API calls
                     # Exception: Always check compilations since featured tracks have different patterns
                     if track_popularity == 0 and not is_greatest_hits_or_compilation:
-                        log_debug(f"Skipping single detection for '{title}' (popularity: 0 - not a compilation/greatest hits)")
+                        log_info(f"⏭️ Skipping single detection for '{title}' (popularity: 0 - not a compilation/greatest hits)")
                         singles_processed += 1
                         continue
                     
                     # Use canonical album grouping artist for single-detection context.
                     # This prevents featured tracks from being treated as isolated 1-track artist catalogs.
                     track_artist = artist
+                    log_debug(f"Calling detect_single_for_track with artist='{track_artist}', album='{album}', track_count={album_track_count}")
                     detection_result = detect_single_for_track(
                         title=title,
                         artist=track_artist,
@@ -5739,6 +5781,10 @@ def popularity_scan(
                     single_confidence = detection_result["confidence"]
                     is_single = detection_result["is_single"]
                     
+                    if is_single:
+                        log_info(f"✅ SINGLE DETECTED: '{title}' - confidence: {single_confidence}, sources: {single_sources}")
+                    else:
+                        log_info(f"❌ Not a single: '{title}' - confidence: {single_confidence}, sources: {single_sources}")
                     log_debug(f"Single detection result - is_single: {is_single}, confidence: {single_confidence}, sources: {single_sources}")
                     
                     # Update single detection timestamp after running detection
@@ -6975,4 +7021,18 @@ if __name__ == "__main__":
     parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
     parser.add_argument("--force", action="store_true", help="Force re-scan of all albums")
     args = parser.parse_args()
+    
+    # Print startup banner with configuration
+    log_info("\n" + "="*80)
+    log_info("🎵 SPTNR POPULARITY SCANNER")
+    log_info("="*80)
+    log_info(f"📂 LOG FILES:")
+    log_info(f"   - Unified: {UNIFIED_LOG_PATH}")
+    log_info(f"   - Info: {INFO_LOG_PATH}")
+    log_info(f"   - Debug: {DEBUG_LOG_PATH}")
+    log_info(f"⚙️ SCAN PARAMETERS:")
+    log_info(f"   - Verbose: {args.verbose}")
+    log_info(f"   - Force rescan: {args.force}")
+    log_info("="*80 + "\n")
+    
     popularity_scan(verbose=args.verbose, force=args.force)

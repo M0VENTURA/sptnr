@@ -2758,12 +2758,14 @@ def artist_detail(name):
                 # Also check Spotify's designation as backup
                 compilation_albums.append(album_dict)
         
+        # Define placeholder here to ensure it's available for all subsequent queries
+        placeholder = "%s" if is_pg else "?"
+        
         # Get artist metadata (country, image, bio) from artists table if it exists
         artist_country = None
         artist_image_url = None
         artist_bio = None
         try:
-            placeholder = "%s" if is_pg else "?"
             cursor.execute(f"SELECT country, image_url, bio FROM artists WHERE name = {placeholder}", (name,))
             artist_row = cursor.fetchone()
             if artist_row:
@@ -3066,20 +3068,12 @@ def artist_detail(name):
             "listenbrainz": []
         }
         try:
-            if is_pg:
-                cursor.execute("""
-                    SELECT similar_artists_lastfm, similar_artists_listenbrainz
-                    FROM artists
-                    WHERE name = %s
-                    LIMIT 1
-                """, (name,))
-            else:
-                cursor.execute("""
-                    SELECT similar_artists_lastfm, similar_artists_listenbrainz
-                    FROM artists
-                    WHERE name = ?
-                    LIMIT 1
-                """, (name,))
+            cursor.execute(f"""
+                SELECT similar_artists_lastfm, similar_artists_listenbrainz
+                FROM artists
+                WHERE name = {placeholder}
+                LIMIT 1
+            """, (name,))
 
             similar_row = cursor.fetchone()
             if similar_row:
@@ -4438,15 +4432,17 @@ def api_artist_covered_by():
         for row in rows:
             # sqlite3.Row supports both name and index access; pg returns RealDictCursor dicts
             try:
+                row_dict = dict(row) if hasattr(row, 'keys') else row
                 covers.append({
-                    "id": row["id"],
-                    "title": row["title"],
-                    "artist": row["artist"],
-                    "album": row["album"],
-                    "year": row["year"],
-                    "original_cover_artist": row["original_cover_artist"],
+                    "id": row_dict.get("id") or row_dict[0],
+                    "title": row_dict.get("title") or row_dict[1],
+                    "artist": row_dict.get("artist") or row_dict[2],
+                    "album": row_dict.get("album") or row_dict[3],
+                    "year": row_dict.get("year") or row_dict[4],
+                    "original_cover_artist": row_dict.get("original_cover_artist") or row_dict[5],
                 })
-            except (KeyError, TypeError, IndexError):
+            except (KeyError, TypeError, IndexError) as e:
+                logging.debug(f"Error parsing cover row: {e}")
                 covers.append({
                     "id": row[0],
                     "title": row[1],
@@ -15983,12 +15979,13 @@ def api_queue_organize_group():
                 
                 logging.debug(f"[ORGANIZE_GROUP] Processing item {item['id']}: {file_path} (title: {item['title']})")
                 
+                # Resolve metadata with fallbacks - define these before any try/except blocks
+                resolved_album_artist = album_artist if album_artist else item['album_artist'] or item['artist']
+                resolved_album_name = album_name if album_name else item['album']
+                resolved_year = year if year else item['year']
+                
                 # Update track metadata in database
                 try:
-                    resolved_album_artist = album_artist if album_artist else item['album_artist'] or item['artist']
-                    resolved_album_name = album_name if album_name else item['album']
-                    resolved_year = year if year else item['year']
-
                     update_queue_item(
                         item['id'],
                         artist=item['artist'],  # Keep original artist

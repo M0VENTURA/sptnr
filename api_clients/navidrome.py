@@ -335,6 +335,9 @@ class NavidromeClient:
         writers_list = []
         _writer_roles = {"composer", "lyricist", "writer", "author", "textwriter", "lyricswriter", "lyrics_writer"}
         
+        # Log starting writer extraction
+        logger.debug(f"[WRITER] Starting writer extraction for '{track.get('title', 'Unknown')}'")
+        
         credit_candidates = [
             track.get("writer"),
             track.get("writers"),
@@ -345,16 +348,27 @@ class NavidromeClient:
             track.get("composer"),
             track.get("composers"),
         ]
+        
+        # Log what fields are available
+        available_fields = {k: v for k, v in [("writer", track.get("writer")), ("writers", track.get("writers")), 
+                                               ("lyricist", track.get("lyricist")), ("lyricists", track.get("lyricists")),
+                                               ("author", track.get("author")), ("authors", track.get("authors")),
+                                               ("composer", track.get("composer")), ("composers", track.get("composers"))] if v}
+        if available_fields:
+            logger.debug(f"[WRITER] Available credit fields for '{track.get('title')}': {list(available_fields.keys())}")
+        
         for candidate in credit_candidates:
             for name in _normalize_people(candidate):
                 if name not in writers_list:
                     writers_list.append(name)
+                    logger.debug(f"[WRITER] Extracted writer: {name}")
         
         # Extract from Navidrome native API tags field (custom/extended tags)
         # Navidrome exposes additional metadata through the tags object that may not
         # be available in standard Subsonic fields
         tags = track.get("tags")
         if isinstance(tags, dict):
+            logger.debug(f"[WRITER] Checking tags field for '{track.get('title')}'")
             tag_candidates = [
                 tags.get("lyricist"),
                 tags.get("writer"),
@@ -368,6 +382,9 @@ class NavidromeClient:
                 for name in _normalize_people(candidate):
                     if name and name not in writers_list:
                         writers_list.append(name)
+                        logger.debug(f"[WRITER] Extracted from tags: {name}")
+        else:
+            logger.debug(f"[WRITER] No tags dict found for '{track.get('title')}'")
 
         # OpenSubsonic extension: Navidrome exposes lyricist/composer/writer credits
         # via a ``contributors`` array where each entry has a ``role`` string and an
@@ -375,10 +392,12 @@ class NavidromeClient:
         # when the underlying tags use roles rather than dedicated tag fields.
         contributors = track.get("contributors")
         if isinstance(contributors, list):
+            logger.debug(f"[WRITER] Processing {len(contributors)} contributors for '{track.get('title')}'")
             for contributor in contributors:
                 if not isinstance(contributor, dict):
                     continue
                 role = str(contributor.get("role", "")).lower()
+                logger.debug(f"[WRITER] Contributor role: {role}")
                 if role in _writer_roles:
                     # Different payloads may store contributor names either at top-level
                     # ("name") or nested under "artist".
@@ -394,6 +413,9 @@ class NavidromeClient:
                     for name in names:
                         if name and name not in writers_list:
                             writers_list.append(name)
+                            logger.debug(f"[WRITER] Extracted from contributors: {name} (role: {role})")
+        else:
+            logger.debug(f"[WRITER] No contributors array found for '{track.get('title')}'")
 
         # Debug: Log available fields if no writer data found
         if not writers_list:
@@ -466,6 +488,12 @@ class NavidromeClient:
         
         import json
         writer_json = json.dumps(writers_list) if writers_list else json.dumps([])
+        
+        # Log final writer extraction result
+        if writers_list:
+            logger.debug(f"[WRITER] Final writer list for '{track.get('title')}': {writers_list}")
+        else:
+            logger.debug(f"[WRITER] No writers found for '{track.get('title')}' after all extraction attempts")
 
         return {
             "duration": track.get("duration"),  # seconds
