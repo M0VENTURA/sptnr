@@ -4199,7 +4199,7 @@ def popularity_scan(
                                     get_lastfm_track_info,
                                     API_CALL_TIMEOUT,
                                     f"Last.fm lookup timed out after {API_CALL_TIMEOUT}s",
-                                    track_artist, strip_cover_attribution(title)
+                                    track_artist, strip_remaster_suffix(strip_cover_attribution(title))
                                 )
                                 rate_limiter.record_lastfm_request()
                                 
@@ -4722,12 +4722,12 @@ def popularity_scan(
                                 # Perform lookup if we can proceed (either initially or after waiting)
                                 if can_proceed:
                                     log_info(f'Getting Last.fm info for: {title} by {track_artist}')
-                                    log_debug(f'Last.fm lookup params - artist: {track_artist}, title: {strip_cover_attribution(title)}')
+                                    log_debug(f'Last.fm lookup params - artist: {track_artist}, title: {strip_remaster_suffix(strip_cover_attribution(title))}')
                                     lastfm_info = _run_with_timeout(
                                         get_lastfm_track_info,
                                         API_CALL_TIMEOUT,
                                         f"Last.fm lookup timed out after {API_CALL_TIMEOUT}s",
-                                        track_artist, strip_cover_attribution(title)
+                                        track_artist, strip_remaster_suffix(strip_cover_attribution(title))
                                     )
                                     # Record API request for rate limiting
                                     rate_limiter.record_lastfm_request()
