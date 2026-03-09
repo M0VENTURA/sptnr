@@ -391,115 +391,148 @@ def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=30):
         logger.error(f"Error marking queue item as failed: {e}")
         return False
 
+def _execute_soulseek_search(queue_id, search_query, queue_item, client):
+    """
+    Start a Soulseek search and poll for the best-matching result.
+
+    Returns:
+        (best_result, best_score) where best_result is a dict with 'username',
+        'filename', 'size', 'score' keys, or None if nothing was found.
+    """
+    search_id = client.start_search(search_query)
+    if not search_id:
+        return None, 0.0
+
+    # Poll for results (up to MAX_POLL_ATTEMPTS seconds with 1 second intervals)
+    # Increased timeout to 45 seconds to handle slow Soulseek peer responses
+    MAX_POLL_ATTEMPTS = 45
+    best_result = None
+    best_score = 0.0
+
+    for poll_attempt in range(MAX_POLL_ATTEMPTS):
+        time.sleep(1)
+
+        try:
+            responses, state, is_complete = client.get_search_results(search_id)
+
+            logger.debug(f"Queue {queue_id}: Poll {poll_attempt+1}/{MAX_POLL_ATTEMPTS} - Got {len(responses)} responses, state={state}")
+
+            if responses:
+                # Score all available files and choose the strongest semantic match.
+                for resp_idx, resp in enumerate(responses):
+                    if not (hasattr(resp, 'files') and resp.files and len(resp.files) > 0):
+                        logger.debug(
+                            f"Queue {queue_id}: Response {resp_idx} from "
+                            f"{getattr(resp, 'username', 'unknown')} has no files or empty files list"
+                        )
+                        continue
+
+                    logger.debug(f"Queue {queue_id}: Response {resp_idx} from {resp.username} has {len(resp.files)} files")
+                    for file_info in resp.files:
+                        filename = (
+                            getattr(file_info, 'filename', file_info.get('filename', ''))
+                            if isinstance(file_info, dict)
+                            else getattr(file_info, 'filename', '')
+                        )
+                        size = (
+                            getattr(file_info, 'size', file_info.get('size', 0))
+                            if isinstance(file_info, dict)
+                            else getattr(file_info, 'size', 0)
+                        )
+
+                        candidate_score = _score_soulseek_candidate(filename, queue_item)
+                        if candidate_score > best_score:
+                            best_score = candidate_score
+                            best_result = {
+                                "username": resp.username,
+                                "filename": filename,
+                                "size": size,
+                                "score": candidate_score,
+                            }
+
+                # If we already have a strong candidate, no need to keep polling.
+                if best_result and best_score >= 0.72:
+                    logger.info(
+                        f"Queue {queue_id}: ✓ Found high-confidence match after {poll_attempt+1}s "
+                        f"(score={best_score:.2f})"
+                    )
+                    break
+
+            # Exit early if search is complete and we have results
+            if is_complete and best_result:
+                logger.info(f"Queue {queue_id}: Search complete with results, stopping polling")
+                break
+
+        except Exception as e:
+            logger.warning(f"Queue {queue_id}: Error polling results (attempt {poll_attempt+1}): {e}")
+            logger.debug(traceback.format_exc())
+
+    return best_result, best_score
+
+
 def search_and_download(queue_id, queue_item, client):
     """Search Soulseek for queue item and download top result"""
     try:
-        search_query = queue_item['search_query']
-        
-        logger.info(f"Queue {queue_id}: Searching for '{search_query}'...")
+        original_query = queue_item['search_query']
+
+        logger.info(f"Queue {queue_id}: Searching for '{original_query}'...")
         update_queue_status(queue_id, 'searching')
-        
-        # Start search
-        search_id = client.start_search(search_query)
-        if not search_id:
-            logger.warning(f"Queue {queue_id}: Failed to start search")
-            mark_failed(queue_id, "Failed to start Soulseek search", schedule_retry=True)
-            return False
-        
-        # Poll for results (up to MAX_POLL_ATTEMPTS seconds with 1 second intervals)
-        # Increased timeout to 45 seconds to handle slow Soulseek peer responses
-        MAX_POLL_ATTEMPTS = 45
-        best_result = None
-        best_score = 0.0
+
         poll_start_time = datetime.now()
-        
-        for poll_attempt in range(MAX_POLL_ATTEMPTS):
-            time.sleep(1)
-            
-            try:
-                responses, state, is_complete = client.get_search_results(search_id)
-                
-                logger.debug(f"Queue {queue_id}: Poll {poll_attempt+1}/{MAX_POLL_ATTEMPTS} - Got {len(responses)} responses, state={state}")
-                
-                if responses:
-                    # Score all available files and choose the strongest semantic match.
-                    for resp_idx, resp in enumerate(responses):
-                        if not (hasattr(resp, 'files') and resp.files and len(resp.files) > 0):
-                            logger.debug(
-                                f"Queue {queue_id}: Response {resp_idx} from "
-                                f"{getattr(resp, 'username', 'unknown')} has no files or empty files list"
-                            )
-                            continue
+        best_result, best_score = _execute_soulseek_search(queue_id, original_query, queue_item, client)
 
-                        logger.debug(f"Queue {queue_id}: Response {resp_idx} from {resp.username} has {len(resp.files)} files")
-                        for file_info in resp.files:
-                            filename = (
-                                getattr(file_info, 'filename', file_info.get('filename', ''))
-                                if isinstance(file_info, dict)
-                                else getattr(file_info, 'filename', '')
-                            )
-                            size = (
-                                getattr(file_info, 'size', file_info.get('size', 0))
-                                if isinstance(file_info, dict)
-                                else getattr(file_info, 'size', 0)
-                            )
+        if not best_result:
+            logger.warning(f"Queue {queue_id}: Initial search returned no usable results")
 
-                            candidate_score = _score_soulseek_candidate(filename, queue_item)
-                            if candidate_score > best_score:
-                                best_score = candidate_score
-                                best_result = {
-                                    "username": resp.username,
-                                    "filename": filename,
-                                    "size": size,
-                                    "score": candidate_score,
-                                }
+        # Fallback: if the initial search yielded no sufficient result and the query
+        # contains parenthetical suffixes (e.g., "(Radio Edit)", "(Album Version)"),
+        # retry with the parentheses stripped so more files can match.
+        if (not best_result or best_score < 0.45) and '(' in original_query:
+            stripped_query = re.sub(r'\s+', ' ', re.sub(r'\s*\([^)]*\)\s*', ' ', original_query)).strip()
+            if stripped_query != original_query:
+                logger.info(
+                    f"Queue {queue_id}: Retrying with parentheses stripped: '{stripped_query}'..."
+                )
+                fallback_result, fallback_score = _execute_soulseek_search(
+                    queue_id, stripped_query, queue_item, client
+                )
+                if fallback_score > best_score:
+                    logger.info(
+                        f"Queue {queue_id}: Stripped query '{stripped_query}' yielded better result "
+                        f"(score={fallback_score:.2f} vs {best_score:.2f})"
+                    )
+                    best_result = fallback_result
+                    best_score = fallback_score
 
-                    # If we already have a strong candidate, no need to keep polling.
-                    if best_result and best_score >= 0.72:
-                        logger.info(
-                            f"Queue {queue_id}: ✓ Found high-confidence match after {poll_attempt+1}s "
-                            f"(score={best_score:.2f})"
-                        )
-                        break
-                
-                # Exit early if search is complete and we have results
-                if is_complete and best_result:
-                    logger.info(f"Queue {queue_id}: Search complete with results, stopping polling")
-                    break
-                    
-            except Exception as e:
-                logger.warning(f"Queue {queue_id}: Error polling results (attempt {poll_attempt+1}): {e}")
-                logger.debug(traceback.format_exc())
-        
         if not best_result:
             elapsed = (datetime.now() - poll_start_time).total_seconds()
             logger.warning(f"Queue {queue_id}: ✗ No results found after {elapsed:.0f}s of polling")
-            mark_failed(queue_id, f"No results found for '{search_query}'", schedule_retry=True, retry_delay_minutes=60)
+            mark_failed(queue_id, f"No results found for '{original_query}'", schedule_retry=True, retry_delay_minutes=60)
             return False
 
         if best_score < 0.45:
             elapsed = (datetime.now() - poll_start_time).total_seconds()
             logger.warning(
-                f"Queue {queue_id}: ✗ Results found but no safe match for '{search_query}' "
+                f"Queue {queue_id}: ✗ Results found but no safe match for '{original_query}' "
                 f"(best_score={best_score:.2f}, elapsed={elapsed:.0f}s)"
             )
             mark_failed(
                 queue_id,
-                f"No safe Soulseek match for '{search_query}' (best_score={best_score:.2f})",
+                f"No safe Soulseek match for '{original_query}' (best_score={best_score:.2f})",
                 schedule_retry=True,
                 retry_delay_minutes=60,
             )
             return False
-        
+
         # Download the result
         logger.info(
             f"Queue {queue_id}: Downloading '{best_result['filename']}' from "
             f"{best_result['username']} (score={best_score:.2f})..."
         )
         update_queue_status(queue_id, 'downloading', found_filename=best_result['filename'])
-        
+
         success = client.download_file(best_result['username'], best_result['filename'], best_result['size'])
-        
+
         if success:
             logger.info(f"Queue {queue_id}: Download queued successfully in slskd")
             logger.info(f"Queue {queue_id}: File will appear in {DOWNLOADS_DIR} when download completes")
@@ -509,7 +542,7 @@ def search_and_download(queue_id, queue_item, client):
             logger.error(f"Queue {queue_id}: Failed to queue download in slskd")
             mark_failed(queue_id, "Failed to queue Soulseek download", schedule_retry=True, retry_delay_minutes=15)
             return False
-            
+
     except Exception as e:
         logger.error(f"Queue {queue_id}: Error in search_and_download: {e}")
         logger.debug(traceback.format_exc())
