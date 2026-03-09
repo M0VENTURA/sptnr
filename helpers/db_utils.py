@@ -307,3 +307,74 @@ def ensure_writer_column():
         # Don't fail app startup, but log the error
         return False
 
+
+def ensure_cover_columns():
+    """Ensure the cover-related columns exist in the tracks table.
+
+    Adds the following columns if missing:
+        - is_cover     BOOLEAN DEFAULT 0   – marks track as a cover
+        - is_cover_reason  TEXT            – human-readable detection reason
+        - original_cover_artist  TEXT      – name of the original/earliest artist
+
+    Supports both SQLite and PostgreSQL.
+    """
+    import logging
+
+    columns_to_add = [
+        ("is_cover", "BOOLEAN DEFAULT 0"),
+        ("is_cover_reason", "TEXT"),
+        ("original_cover_artist", "TEXT"),
+    ]
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+
+        # Check if tracks table exists
+        if is_pg:
+            cursor.execute(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'tracks'"
+            )
+        else:
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tracks'")
+        row = cursor.fetchone()
+        table_exists = (row[0] if row else 0) if is_pg else bool(row)
+        if not table_exists:
+            logging.warning("Tracks table does not exist yet, skipping cover columns migration")
+            conn.close()
+            return False
+
+        # Determine existing columns
+        if is_pg:
+            cursor.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'tracks'"
+            )
+            existing = {row[0] for row in cursor.fetchall()}
+        else:
+            cursor.execute("PRAGMA table_info(tracks)")
+            existing = {row[1] for row in cursor.fetchall()}
+
+        for col_name, col_def in columns_to_add:
+            if col_name not in existing:
+                logging.info(f"Adding '{col_name}' column to tracks table...")
+                try:
+                    cursor.execute(f"ALTER TABLE tracks ADD COLUMN {col_name} {col_def}")
+                    conn.commit()
+                    logging.info(f"✓ Added '{col_name}' column to tracks table")
+                except Exception as e:
+                    err_msg = str(e).lower()
+                    if "duplicate column" in err_msg or "already exists" in err_msg:
+                        logging.info(f"✓ Column '{col_name}' already exists")
+                    else:
+                        logging.error(f"✗ Failed to add '{col_name}' column: {e}")
+            else:
+                logging.debug(f"✓ Column '{col_name}' already exists in tracks table")
+
+        conn.close()
+        return True
+
+    except Exception as e:
+        logging.error(f"✗ Error ensuring cover columns exist: {e}", exc_info=True)
+        return False
+

@@ -90,40 +90,49 @@ class CoverDetector:
             logger.info(f"  → Writer field should contain the original songwriter/composer name")
             return []
         
-        # Step 2: Count how many tracks each writer appears on
-        writer_counts = {}
-        for track_id, info in track_writers.items():
-            for writer in info['writers']:
-                if writer not in writer_counts:
-                    writer_counts[writer] = []
-                writer_counts[writer].append(track_id)
-        
-        # Step 3: Identify tracks with unique writers (likely covers)
+        # Step 2: Identify tracks with writers different from album artist (likely covers)
+        # Any track whose writer/lyricist differs from the album artist is a candidate.
         cover_results = []
+        seen_track_ids = set()  # Avoid processing same track twice
         for track_id, info in track_writers.items():
+            if track_id in seen_track_ids:
+                continue
             for writer in info['writers']:
-                # Only proceed if this writer appears on exactly ONE track
-                if len(writer_counts[writer]) == 1:
-                    # Check if writer is different from album artist
-                    if not self._is_writer_same_as_artist(writer, artist):
-                        logger.info(f"Potential cover detected: '{info['title']}' - writer '{writer}' unique on album")
+                # Check if writer is different from album artist
+                if not self._is_writer_same_as_artist(writer, artist):
+                    logger.info(f"Potential cover: '{info['title']}' - lyricist/writer '{writer}' differs from artist '{artist}'")
+                    
+                    # Look up original recording by this writer
+                    original = self._find_original_recording(info['title'], writer)
+                    
+                    if original:
+                        result = {
+                            'track_id': track_id,
+                            'title': info['title'],
+                            'is_cover': True,
+                            'original_artist': original['artist'],
+                            'original_year': original.get('year'),
+                            'writer': writer,
+                            'confidence': original.get('confidence', 'medium')
+                        }
+                        cover_results.append(result)
+                        seen_track_ids.add(track_id)
+                        logger.info(f"✓ Cover confirmed: '{info['title']}' originally by '{original['artist']}' ({original.get('year', 'unknown year')})")
                         
-                        # Look up original recording
-                        original = self._find_original_recording(info['title'], writer)
+                        # Get file path from track info if available
+                        track_data = next((t for t in tracks if t.get('id') == track_id), {})
+                        file_path = track_data.get('file_path')
                         
-                        if original:
-                            cover_results.append({
-                                'track_id': track_id,
-                                'title': info['title'],
-                                'is_cover': True,
-                                'original_artist': original['artist'],
-                                'original_year': original.get('year'),
-                                'writer': writer,
-                                'confidence': original.get('confidence', 'medium')
-                            })
-                            logger.info(f"✓ Cover confirmed: '{info['title']}' originally by '{original['artist']}'")
-                        else:
-                            logger.debug(f"Could not find original recording for '{info['title']}' by writer '{writer}'")
+                        # Update database and file metadata
+                        self.update_cover_metadata(
+                            track_id=track_id,
+                            title=info['title'],
+                            original_artist=original['artist'],
+                            file_path=file_path
+                        )
+                        break  # Stop after first matching writer for this track
+                    else:
+                        logger.debug(f"No original recording found for '{info['title']}' by writer '{writer}'")
         
         logger.info(f"Cover detection complete: found {len(cover_results)} covers in '{album}'")
         return cover_results
@@ -301,9 +310,10 @@ class CoverDetector:
         Update track metadata to reflect cover attribution.
         
         Updates:
-        1. Database: title → "Title (Original Artist Cover)"
+        1. Database: title → "Title (Original Artist Cover)" (only if not already present)
         2. Database: Add "Cover" to genres
-        3. File tags: Same updates to MP3/FLAC file
+        3. Database: Set is_cover, is_cover_reason, original_cover_artist
+        4. File tags: Same updates to MP3/FLAC file
         
         Args:
             track_id: Track ID in database
@@ -314,18 +324,26 @@ class CoverDetector:
         Returns:
             True if successful
         """
+        import re
         try:
-            new_title = f"{title} ({original_artist} Cover)"
+            # Check if title already has a "(... Cover)" suffix to avoid duplication
+            cover_suffix_pattern = re.compile(r'\s*\([^)]+\s+Cover\)\s*$', re.IGNORECASE)
+            if cover_suffix_pattern.search(title):
+                new_title = title  # Already has cover attribution
+                logger.debug(f"Title '{title}' already has cover suffix, skipping title update")
+            else:
+                new_title = f"{title} ({original_artist} Cover)"
             
             # Update database
             if self.db_conn:
                 cursor = self.db_conn.cursor()
                 
-                # Update title
-                cursor.execute(
-                    f"UPDATE tracks SET title = {self.placeholder} WHERE id = {self.placeholder}",
-                    (new_title, track_id)
-                )
+                # Update title (only if changed)
+                if new_title != title:
+                    cursor.execute(
+                        f"UPDATE tracks SET title = {self.placeholder} WHERE id = {self.placeholder}",
+                        (new_title, track_id)
+                    )
                 
                 # Add "Cover" to genres
                 cursor.execute(
@@ -334,7 +352,7 @@ class CoverDetector:
                 )
                 result = cursor.fetchone()
                 if result:
-                    current_genres = result[0] or ""
+                    current_genres = (result['genres'] if self.is_pg else result[0]) or ""
                     genres_list = [g.strip() for g in current_genres.split(",")] if current_genres else []
                     if "Cover" not in genres_list:
                         genres_list.append("Cover")
@@ -345,14 +363,14 @@ class CoverDetector:
                         (new_genres, track_id)
                     )
                 
-                # Mark as cover
+                # Mark as cover and store original artist cleanly
                 cursor.execute(
-                    f"UPDATE tracks SET is_cover = 1, is_cover_reason = {self.placeholder} WHERE id = {self.placeholder}",
-                    (f"Writer-based detection: original by {original_artist}", track_id)
+                    f"UPDATE tracks SET is_cover = 1, is_cover_reason = {self.placeholder}, original_cover_artist = {self.placeholder} WHERE id = {self.placeholder}",
+                    (f"Writer-based detection: original by {original_artist}", original_artist, track_id)
                 )
                 
                 self.db_conn.commit()
-                logger.info(f"✓ Database updated: '{title}' → '{new_title}'")
+                logger.info(f"✓ Database updated: '{title}' → '{new_title}' (original: {original_artist})")
             
             # Update file metadata if path provided
             if file_path and Path(file_path).exists():

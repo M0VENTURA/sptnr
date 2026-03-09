@@ -47,6 +47,9 @@
         <i class="bi bi-download"></i> <span class="d-none d-sm-inline">Download</span>
       </button>
       {% endif %}
+      <button id="artistFavouriteBtn" class="btn btn-outline-danger" onclick='toggleArtistFavourite({{ artist_name|tojson }})' title="Favourite this artist — new albums will be auto-queued for download" aria-label="Favourite this artist to auto-queue new albums for download">
+        <i class="bi bi-heart" id="artistFavouriteIcon"></i> <span class="d-none d-sm-inline" id="artistFavouriteLabel">Favourite</span>
+      </button>
       <a class="btn btn-outline-secondary" href="{{ url_for('artists') }}">
         <i class="bi bi-arrow-left"></i> <span class="d-none d-sm-inline">Back</span>
       </a>
@@ -70,6 +73,7 @@
         <li class="nav-item"><a class="nav-link" href="#artist-top-tracks-section">Top Tracks</a></li>
         <li class="nav-item"><a class="nav-link" href="#artist-genres-section">Genres</a></li>
         <li class="nav-item"><a class="nav-link" href="#albums-section">Albums</a></li>
+        <li class="nav-item"><a class="nav-link" href="#artist-covers-section">Covers</a></li>
         <li class="nav-item"><a class="nav-link" href="#artist-appears-on-section">Appears On</a></li>
       </ul>
     </div>
@@ -804,6 +808,26 @@
           {% endif %}
         </tbody>
       </table>
+    </div>
+  </div>
+
+  <!-- Covered By Section -->
+  <div class="card mb-4" id="artist-covers-section">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <h5 class="card-title mb-0">
+        <i class="bi bi-music-note-list"></i> Covers of {{ artist_name }}'s Songs
+      </h5>
+      <small class="text-muted" id="artistCoveredByCount">Songs from other artists in your library that cover {{ artist_name }}'s work</small>
+    </div>
+    <div class="card-body p-0">
+      <div id="artistCoveredByContainer">
+        <div class="text-center py-3">
+          <div class="spinner-border spinner-border-sm" role="status">
+            <span class="visually-hidden">Loading...</span>
+          </div>
+          <small class="d-block mt-2 text-muted">Loading cover songs...</small>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -3541,42 +3565,110 @@ function performMusicBrainzSearchForArtist(artistName) {
 }
 
 function addMissingReleaseForDownload(releaseId, releaseTitle, artistName) {
-  // Open download modal with the release title pre-populated
-  const downloadModal = document.getElementById('downloadModal');
-  if (downloadModal) {
-    const modal = new bootstrap.Modal(downloadModal);
-    
-    // Pre-populate search fields with release info
-    const qbitInput = document.getElementById('qbitSearchInput');
-    const slskdInput = document.getElementById('slskdSearchInput');
-    const query = artistName + ' ' + releaseTitle;
-    
-    if (qbitInput) qbitInput.value = query;
-    if (slskdInput) slskdInput.value = query;
-    
-    // Clear previous results
-    document.getElementById('qbitResults').innerHTML = '';
-    document.getElementById('slskdResults').innerHTML = '';
-    document.getElementById('slskdTracksContainer').innerHTML = '';
-    
-    modal.show();
-    
-    // Auto-search on the active tab
-    setTimeout(() => {
-      const activeTab = document.querySelector('#downloadTabs .nav-link.active');
-      if (activeTab && activeTab.id === 'qbit-tab') {
-        performQbitSearch();
-      } else if (activeTab && activeTab.id === 'slskd-tab') {
-        performSlskdSearch();
-      }
-    }, 300);
-  } else {
-    alert('Download modal not found. Please ensure the download functionality is properly configured.');
+  // Use the MusicBrainz search flow (same as upcoming releases) to find and download the album.
+  // This will search MusicBrainz for the specific release and show all available versions
+  // with track listings, allowing the user to pick the right version to download.
+  searchMusicBrainzRelease(null, artistName, releaseTitle);
+}
+
+// ── Favourite Artist ────────────────────────────────────────────────────────
+
+async function loadArtistFavouriteState(artistName) {
+  try {
+    const resp = await fetch('/api/artist/favourite?artist=' + encodeURIComponent(artistName));
+    const data = await resp.json();
+    updateFavouriteButtonState(data.is_favourite);
+  } catch (e) {
+    console.warn('Could not load favourite state:', e);
   }
-  
-  // Close the MusicBrainz modal
-  const mbModal = bootstrap.Modal.getInstance(document.getElementById('musicBrainzModal'));
-  if (mbModal) mbModal.hide();
+}
+
+function updateFavouriteButtonState(isFavourite) {
+  const btn = document.getElementById('artistFavouriteBtn');
+  const icon = document.getElementById('artistFavouriteIcon');
+  const label = document.getElementById('artistFavouriteLabel');
+  if (!btn) return;
+  if (isFavourite) {
+    btn.classList.remove('btn-outline-danger');
+    btn.classList.add('btn-danger');
+    if (icon) { icon.classList.remove('bi-heart'); icon.classList.add('bi-heart-fill'); }
+    if (label) label.textContent = 'Favourited';
+  } else {
+    btn.classList.remove('btn-danger');
+    btn.classList.add('btn-outline-danger');
+    if (icon) { icon.classList.remove('bi-heart-fill'); icon.classList.add('bi-heart'); }
+    if (label) label.textContent = 'Favourite';
+  }
+}
+
+async function toggleArtistFavourite(artistName) {
+  try {
+    const btn = document.getElementById('artistFavouriteBtn');
+    const isFavourite = btn && btn.classList.contains('btn-danger');
+
+    if (isFavourite) {
+      await fetch('/api/artist/favourite?artist=' + encodeURIComponent(artistName), { method: 'DELETE' });
+      updateFavouriteButtonState(false);
+    } else {
+      await fetch('/api/artist/favourite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ artist: artistName })
+      });
+      updateFavouriteButtonState(true);
+    }
+  } catch (e) {
+    console.error('Error toggling favourite:', e);
+    alert('Error updating favourite status: ' + e.message);
+  }
+}
+
+// ── Covered By Section ───────────────────────────────────────────────────────
+
+async function loadArtistCoveredBy(artistName) {
+  const container = document.getElementById('artistCoveredByContainer');
+  const countEl = document.getElementById('artistCoveredByCount');
+  if (!container) return;
+
+  try {
+    const resp = await fetch('/api/artist/covered-by?artist=' + encodeURIComponent(artistName));
+    const data = await resp.json();
+
+    const covers = data.covers || [];
+
+    if (covers.length === 0) {
+      container.innerHTML = `
+        <div class="p-3 text-muted text-center">
+          <i class="bi bi-info-circle"></i> No covers of ${escapeHtml(artistName)}'s songs found in your library yet.
+          <br><small>Cover songs are detected automatically during popularity scans when lyricist/writer metadata is available.</small>
+        </div>`;
+      if (countEl) countEl.textContent = 'No covers found in library';
+      return;
+    }
+
+    if (countEl) countEl.textContent = `${covers.length} cover${covers.length !== 1 ? 's' : ''} found in library`;
+
+    let html = '<div class="table-responsive"><table class="table table-hover mb-0"><thead><tr>';
+    html += '<th>Covering Artist</th><th>Song Title</th><th>Album</th><th class="text-center">Year</th></tr></thead><tbody>';
+
+    covers.forEach(cover => {
+      const artistUrl = `/artist/${encodeURIComponent(cover.artist)}`;
+      const albumUrl = cover.album ? `/album/${encodeURIComponent(cover.artist)}/${encodeURIComponent(cover.album)}` : null;
+      html += `<tr>
+        <td><a href="${escapeHtml(artistUrl)}" class="text-decoration-none">${escapeHtml(cover.artist)}</a></td>
+        <td>${escapeHtml(cover.title)}</td>
+        <td>${albumUrl ? `<a href="${escapeHtml(albumUrl)}" class="text-decoration-none text-muted">${escapeHtml(cover.album)}</a>` : (cover.album ? escapeHtml(cover.album) : '—')}</td>
+        <td class="text-center">${cover.year || '—'}</td>
+      </tr>`;
+    });
+
+    html += '</tbody></table></div>';
+    container.innerHTML = html;
+
+  } catch (e) {
+    console.error('Error loading covered-by data:', e);
+    container.innerHTML = `<div class="p-3 text-danger text-center"><i class="bi bi-exclamation-triangle"></i> Error loading covers: ${escapeHtml(e.message)}</div>`;
+  }
 }
 </script>
 <script src="{{ url_for('static', filename='js/genre-utils.js') }}"></script>
@@ -3953,6 +4045,8 @@ function addMissingReleaseForDownload(releaseId, releaseTitle, artistName) {
     const artistName = {{ artist_name|tojson }};
     if (artistName && artistName.length > 0) {
       loadSimilarArtists(artistName);
+      loadArtistFavouriteState(artistName);
+      loadArtistCoveredBy(artistName);
     } else {
       const similarContainer = document.getElementById('artistSimilarArtistsContainer');
       if (similarContainer) {
