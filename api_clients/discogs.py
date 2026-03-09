@@ -15,6 +15,7 @@ if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
 from helpers.helpers import clean_discogs_biography
+from helpers.matching_utils import strip_search_parentheses
 from discogs_singles_cache import normalize_track_title, get_discogs_cache
 
 # Import centralized logging for visible operational messages
@@ -736,8 +737,18 @@ class DiscogsClient:
             normalized_title = normalize_track_title(title)
             log_debug(f"[DISCOGS_SINGLE] Normalized title: '{normalized_title}'")
             
+            # Strip version/edition suffixes (e.g. "remastered 2024", "single version") to
+            # get the base title used for Discogs API search and in-request cache keying.
+            # This ensures "Song (remastered 2024)" and "Song (single version)" both find
+            # the original "Song" single on Discogs, and share the same cache entry.
+            base_title = strip_search_parentheses(title)
+            normalized_base_title = normalize_track_title(base_title) if base_title else ""
+            # Fall back to normalized_title when stripping produces an empty or identical result
+            base_normalized_title = normalized_base_title if normalized_base_title and normalized_base_title != normalized_title else normalized_title
+            
             artist_lower = artist.lower()
-            cache_key = (artist_lower, normalized_title)
+            # Key on the base title so different versions of the same song share the cache
+            cache_key = (artist_lower, base_normalized_title)
             
             # Check in-request cache
             if cache_key in self._single_check_cache:
@@ -749,7 +760,7 @@ class DiscogsClient:
             log_debug(f"[DISCOGS_SINGLE] Cache MISS - Searching Discogs for single/EP...")
             
             # Search for artist + track as single/ep with optimized API calls
-            result = self._search_discogs_for_single(artist, title, normalized_title, timeout)
+            result = self._search_discogs_for_single(artist, title, base_normalized_title, timeout)
             
             # Cache the result
             self._single_check_cache[cache_key] = result
@@ -778,14 +789,14 @@ class DiscogsClient:
         1. format=Single search: artist + normalized_title (to handle punctuation)
         2. format=EP search: artist + normalized_title if Single not found
         
-        Note: We use normalized_title for the API search to handle punctuation issues.
-        For example, "Janie's Got A Gun" is normalized to "janies got a gun" which
-        matches better in Discogs regardless of how they store apostrophes.
+        Note: We use the base normalized_title (with version/edition info stripped) for the
+        API search to avoid Discogs returning 0 results for titles like
+        "janies got a gun remastered 2024" when only "janies got a gun" exists as a single.
         
         Args:
             artist: Artist name
             title: Track title (original, for logging)
-            normalized_title: Normalized track title for search and comparison
+            normalized_title: Base normalized track title (version info stripped) for search and comparison
             timeout: Request timeout
             
         Returns:
@@ -793,7 +804,8 @@ class DiscogsClient:
         """
         try:
             # Try searching with format=Single first (most common)
-            # Use normalized_title to avoid issues with punctuation like apostrophes
+            # Use base normalized_title (version info stripped) to find the original single,
+            # e.g. "with arms wide open" matches even when album track is "(remastered 2024)"
             log_debug(f"[DISCOGS_SINGLE] Searching: artist='{artist}' track='{title}' (normalized: '{normalized_title}') format=Single")
             
             results_single = self._discogs_search_with_format(artist, normalized_title, "Single", timeout)

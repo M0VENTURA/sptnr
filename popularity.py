@@ -1012,6 +1012,14 @@ def should_exclude_from_stats(tracks_with_scores, alternate_takes_map: dict = No
     if len(tracks_with_suffix) < 2:
         return excluded_indices
     
+    # Don't apply suffix-based exclusion when the majority of tracks have parenthetical
+    # suffixes - this indicates a fully-formatted album (e.g. deluxe with all tracks as
+    # "(remastered 2024)") rather than a few appended bonus tracks.  In those cases every
+    # track would be excluded, leaving no valid scores for statistics.
+    suffix_ratio_threshold = 0.5
+    if len(tracks_with_suffix) >= len(tracks_with_scores) * suffix_ratio_threshold:
+        return excluded_indices
+    
     # Find consecutive tracks with suffix at the END of the track list
     # Since tracks are sorted by popularity DESC, the last indices are the end of the album
     tracks_with_suffix_set = set(tracks_with_suffix)  # O(1) membership testing
@@ -5954,7 +5962,7 @@ def popularity_scan(
                         SELECT id, title, popularity_score, single_confidence, single_sources, is_single
                         FROM tracks 
                         WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
-                        ORDER BY popularity_score DESC
+                        ORDER BY COALESCE(popularity_score, 0) DESC
                     """, (artist, album))
                     
                     zscore_update_tracks = cursor.fetchall()
@@ -6057,8 +6065,9 @@ def popularity_scan(
                 
                 # Get all tracks for this album with their popularity scores and single detection
                 # Try matching on artist field first, then fall back to album_artist field
+                # Use COALESCE so NULL popularity scores sort last (same as 0), not first
                 cursor.execute(
-                    f"SELECT id, title, popularity_score, is_single, single_confidence, single_sources, lastfm_track_playcount, is_standout_track FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder} ORDER BY popularity_score DESC",
+                    f"SELECT id, title, popularity_score, is_single, single_confidence, single_sources, lastfm_track_playcount, is_standout_track FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder} ORDER BY COALESCE(popularity_score, 0) DESC",
                     (artist, album)
                 )
                 album_tracks_with_scores = [dict(row) for row in cursor.fetchall()]
