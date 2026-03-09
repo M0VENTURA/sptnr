@@ -213,7 +213,11 @@ class MusicBrainzClient:
         self.session = http_session or session
         self.enabled = enabled
         self.base_url = "https://musicbrainz.org/ws/2/"
-        self.headers = {"User-Agent": _USER_AGENT}
+        # Headers comply with MusicBrainz API requirements
+        self.headers = {
+            "User-Agent": _USER_AGENT,
+            "Accept": "application/json"
+        }
         # Only setup retry strategy if using default session (not a pre-configured one)
         if not custom_session_provided:
             self._setup_retry_strategy()

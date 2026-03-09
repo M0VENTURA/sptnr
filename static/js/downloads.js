@@ -534,8 +534,26 @@ async function searchMusicBrainzRelease(event, artist, album) {
     return;
   }
 
-  const modal = new bootstrap.Modal(modalEl);
-  modal.show();
+  // Check if Bootstrap JS is loaded and available
+  const hasBootstrapModal = !!(window.bootstrap && window.bootstrap.Modal);
+  
+  if (hasBootstrapModal) {
+    // Use Bootstrap modal
+    const modal = new bootstrap.Modal(modalEl);
+    modal.show();
+  } else {
+    // Fallback for environments where Bootstrap JS is not loaded
+    modalEl.style.display = 'block';
+    modalEl.classList.add('show');
+    // Add backdrop if it doesn't exist
+    let backdrop = document.querySelector('.modal-backdrop');
+    if (!backdrop) {
+      backdrop = document.createElement('div');
+      backdrop.className = 'modal-backdrop fade show';
+      document.body.appendChild(backdrop);
+    }
+    document.body.classList.add('modal-open');
+  }
 
   if (infoEl && infoArtistEl && infoAlbumEl) {
     infoArtistEl.textContent = artist;
