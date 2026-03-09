@@ -840,6 +840,26 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
             except Exception as mb_err:
                 logger.warning(f"[MOVE] Could not fetch MusicBrainz metadata for release {release_id}: {mb_err}")
         
+        # Fetch composer/writer/lyricist credits from MusicBrainz
+        try:
+            from post_download_processor import fetch_writer_credits
+            writer_credits = fetch_writer_credits(title, artist)
+            
+            if writer_credits:
+                if writer_credits.get('composers'):
+                    tag_metadata['composers'] = writer_credits['composers']
+                    logger.info(f"[MOVE] Queue {queue_item_dict.get('id', 'unknown')}: Added {len(writer_credits['composers'])} composer(s)")
+                
+                if writer_credits.get('writers'):
+                    tag_metadata['writers'] = writer_credits['writers']
+                    logger.info(f"[MOVE] Queue {queue_item_dict.get('id', 'unknown')}: Added {len(writer_credits['writers'])} writer(s)")
+                
+                if writer_credits.get('lyricists'):
+                    tag_metadata['lyricists'] = writer_credits['lyricists']
+                    logger.info(f"[MOVE] Queue {queue_item_dict.get('id', 'unknown')}: Added {len(writer_credits['lyricists'])} lyricist(s)")
+        except Exception as writer_err:
+            logger.debug(f"[MOVE] Could not fetch writer credits for '{title}' by '{artist}': {writer_err}")
+        
         # Format track number with disc prefix if needed
         try:
             track_num = int(str(track_num).split('/')[0]) if track_num else 0

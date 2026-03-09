@@ -64,6 +64,46 @@ def sanitize_filename(filename):
     return filename
 
 
+def fetch_writer_credits(title, artist):
+    """
+    Fetch composer/writer/lyricist credits from MusicBrainz API.
+    
+    Args:
+        title: Track title
+        artist: Track artist
+    
+    Returns:
+        dict with keys: 'composers', 'writers', 'lyricists' (each is a de-duplicated list)
+        or empty dict if fetch fails
+    """
+    try:
+        from api_clients.musicbrainz import MusicBrainzClient
+        
+        mb_client = MusicBrainzClient()
+        
+        # Fetch composer/writer/lyricist credits
+        credits = mb_client.get_composers_for_track(title, artist)
+        
+        if not credits:
+            return {}
+        
+        # MusicBrainz client returns combined list, but let's store it under 'composers'
+        # since that's the most common role. We could further categorize using relationship type
+        # but for now we'll treat all credits uniformly.
+        result = {
+            'composers': credits,
+            'writers': [],      # Could be populated from more detailed relationship parsing
+            'lyricists': []     # Could be populated from more detailed relationship parsing
+        }
+        
+        logger.debug(f"[WRITER_CREDITS] Fetched {len(credits)} composer(s) for '{title}' by '{artist}'")
+        return result
+        
+    except Exception as e:
+        logger.debug(f"Could not fetch writer credits for '{title}' by '{artist}': {e}")
+        return {}
+
+
 def fetch_musicbrainz_release_metadata(release_id):
     """
     Fetch complete release metadata from MusicBrainz including disc numbers and cover art.
@@ -159,21 +199,22 @@ def fetch_musicbrainz_release_metadata(release_id):
 
 def update_file_metadata_with_albumart(file_path, metadata, cover_art_data=None):
     """
-    Update file metadata tags using mutagen, including album art.
+    Update file metadata tags using mutagen, including album art and composer/writer/lyricist credits.
     
     For FLAC files: metadata is updated then file is converted to MP3 320kbps in rename_and_move_file()
     For MP3 files: metadata is updated and file is moved to destination
     
     Args:
         file_path: Path to audio file (MP3 or FLAC)
-        metadata: Dict with keys: track_number, artist, album_artist, album, year, title, disc_number
+        metadata: Dict with keys: track_number, artist, album_artist, album, year, title, disc_number,
+                                  composers (list), writers (list), lyricists (list)
         cover_art_data: Binary image data (JPG/PNG) to embed as album art
     
     Returns:
         bool: True if successful, False otherwise
     """
     try:
-        from mutagen.id3 import ID3, TIT2, TPE1, TPE2, TALB, TDRC, TRCK, TPOS, APIC
+        from mutagen.id3 import ID3, TIT2, TPE1, TPE2, TALB, TDRC, TRCK, TPOS, APIC, TXXX
         from mutagen.mp3 import MP3
         from mutagen.flac import FLAC
         from mutagen.flac import Picture
@@ -206,6 +247,26 @@ def update_file_metadata_with_albumart(file_path, metadata, cover_art_data=None)
             
             if metadata.get('disc_number'):
                 audio.tags['TPOS'] = TPOS(encoding=3, text=[str(metadata['disc_number'])])
+            
+            # Add composer/writer/lyricist credits as TXXX frames
+            composers = metadata.get('composers', [])
+            writers = metadata.get('writers', [])
+            lyricists = metadata.get('lyricists', [])
+            
+            if composers:
+                composer_str = '; '.join(composers) if isinstance(composers, list) else str(composers)
+                audio.tags['TXXX:Composer'] = TXXX(encoding=3, desc='Composer', text=[composer_str])
+                logger.debug(f"[METADATA] Embedded {len(composers)} composer(s) in MP3: {file_path}")
+            
+            if writers:
+                writer_str = '; '.join(writers) if isinstance(writers, list) else str(writers)
+                audio.tags['TXXX:Writer'] = TXXX(encoding=3, desc='Writer', text=[writer_str])
+                logger.debug(f"[METADATA] Embedded {len(writers)} writer(s) in MP3: {file_path}")
+            
+            if lyricists:
+                lyricist_str = '; '.join(lyricists) if isinstance(lyricists, list) else str(lyricists)
+                audio.tags['TXXX:Lyricist'] = TXXX(encoding=3, desc='Lyricist', text=[lyricist_str])
+                logger.debug(f"[METADATA] Embedded {len(lyricists)} lyricist(s) in MP3: {file_path}")
             
             # Add album art if provided
             if cover_art_data:
@@ -249,6 +310,30 @@ def update_file_metadata_with_albumart(file_path, metadata, cover_art_data=None)
             
             if metadata.get('disc_number'):
                 audio['discnumber'] = [str(metadata['disc_number'])]
+            
+            # Add composer/writer/lyricist credits as Vorbis comments
+            composers = metadata.get('composers', [])
+            writers = metadata.get('writers', [])
+            lyricists = metadata.get('lyricists', [])
+            
+            if composers:
+                # For FLAC, store as multi-value field
+                audio['composer'] = composers if isinstance(composers, list) else [str(composers)]
+                logger.debug(f"[METADATA] Embedded {len(composers)} composer(s) in FLAC: {file_path}")
+            
+            if writers:
+                audio['writer'] = writers if isinstance(writers, list) else [str(writers)]
+                logger.debug(f"[METADATA] Embedded {len(writers)} writer(s) in FLAC: {file_path}")
+            
+            if lyricists:
+                audio['lyricist'] = lyricists if isinstance(lyricists, list) else [str(lyricists)]
+                logger.debug(f"[METADATA] Embedded {len(lyricists)} lyricist(s) in FLAC: {file_path}")
+            
+            # Legacy: also store as single-value fields for compatibility with players
+            if composers:
+                audio['©cmp'] = ['; '.join(composers) if isinstance(composers, list) else str(composers)]
+            if writers:
+                audio['©wrt'] = ['; '.join(writers) if isinstance(writers, list) else str(writers)]
             
             # Add album art if provided
             if cover_art_data:
