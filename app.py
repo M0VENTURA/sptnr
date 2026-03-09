@@ -9616,7 +9616,11 @@ def downloads_discover(category):
     if not template:
         abort(404)
     
-    return render_template(template)
+    # Get qBittorrent and slskd configs (same as artist page)
+    qbit_config = cfg.get("qbittorrent", {"enabled": False, "web_url": "http://localhost:8080"})
+    slskd_config = cfg.get("slskd", {"enabled": False})
+    
+    return render_template(template, qbit_config=qbit_config, slskd_config=slskd_config)
 
 
 @app.route("/api/slskd/search", methods=["POST"])
