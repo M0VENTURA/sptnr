@@ -4540,15 +4540,46 @@ def popularity_scan(
                                     log_debug(f'Initialized MusicBrainz client for writer backfill')
 
                                 normalized_title = normalize_title_for_lookup(title)
-                                log_debug(f'MusicBrainz lookup: title="{normalized_title}", artist="{track_artist}"')
-                                
-                                mb_writer_names = _run_with_timeout(
-                                    mb_writer_client.get_composers_for_track,
-                                    API_CALL_TIMEOUT,
-                                    f"MusicBrainz writer lookup timed out after {API_CALL_TIMEOUT}s",
+
+                                # Retry with progressively simplified title variants because
+                                # MusicBrainz recording search often fails for live/remaster suffixes.
+                                title_candidates = []
+                                for candidate in (
                                     normalized_title,
-                                    track_artist
-                                )
+                                    strip_search_parentheses(normalized_title),
+                                    strip_parentheses(normalized_title),
+                                ):
+                                    cleaned_candidate = (candidate or "").strip()
+                                    if cleaned_candidate and cleaned_candidate not in title_candidates:
+                                        title_candidates.append(cleaned_candidate)
+
+                                if not title_candidates:
+                                    title_candidates = [title]
+
+                                artist_candidates = []
+                                for artist_candidate in (track_artist, artist):
+                                    cleaned_artist = (artist_candidate or "").strip()
+                                    if cleaned_artist and cleaned_artist not in artist_candidates:
+                                        artist_candidates.append(cleaned_artist)
+
+                                mb_writer_names = []
+                                for artist_candidate in artist_candidates:
+                                    if mb_writer_names:
+                                        break
+                                    for title_candidate in title_candidates:
+                                        log_debug(
+                                            f'MusicBrainz writer lookup attempt: title="{title_candidate}", '
+                                            f'artist="{artist_candidate}"'
+                                        )
+                                        mb_writer_names = _run_with_timeout(
+                                            mb_writer_client.get_composers_for_track,
+                                            API_CALL_TIMEOUT,
+                                            f"MusicBrainz writer lookup timed out after {API_CALL_TIMEOUT}s",
+                                            title_candidate,
+                                            artist_candidate
+                                        )
+                                        if mb_writer_names:
+                                            break
                                 
                                 log_debug(f'MusicBrainz returned {len(mb_writer_names) if mb_writer_names else 0} writer(s) for "{title}"')
 
