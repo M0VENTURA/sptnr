@@ -1578,12 +1578,14 @@ def get_completed_queue(limit=50):
 
 def cleanup_missing_files():
     """
-    Remove queue items where the file no longer exists in /downloads.
+    Soft-clean queue items where the source file no longer exists in /downloads.
     
-    This cleanup function:
-    - Checks all queue items with file_path set
-    - Removes items where file no longer exists (file was deleted/moved manually)
-    - Keeps items without file_path (still downloading or queued)
+        This cleanup function:
+        - Checks queue items with file_path set
+        - Never touches active/moving lifecycle states
+            (queued/searching/downloading/completed/imported)
+        - For safe stale states, marks item as 'unmatched' and clears file_path
+            instead of deleting rows, so items remain visible/recoverable
     
     Returns:
         Dict with statistics:
@@ -1619,7 +1621,7 @@ def cleanup_missing_files():
             
             # Get all queue items with file paths
             cursor.execute("""
-                SELECT id, file_path, artist, title, status
+                SELECT id, file_path, artist, title, status, music_file_path
                 FROM download_queue
                 WHERE file_path IS NOT NULL AND file_path != ''
             """)
@@ -1630,26 +1632,69 @@ def cleanup_missing_files():
             if not items:
                 return stats
 
-            removed_ids = []
+            # Only stale/non-active states are eligible for cleanup.
+            cleanup_allowed_statuses = {
+                'discovered',
+                'pending_match',
+                'unmatched',
+                'failed',
+                'cancelled',
+                'removed',
+            }
+            protected_statuses = {
+                'queued',
+                'searching',
+                'downloading',
+                'completed',
+                'imported',
+            }
+
+            unmatched_ids = []
 
             for item in items:
                 queue_id = item['id']
                 file_path = item['file_path']
                 status = item['status']
+                music_file_path = item['music_file_path']
+
+                if status in protected_statuses:
+                    continue
+
+                if status not in cleanup_allowed_statuses:
+                    continue
+
+                # Imported rows may point to music_file_path while file_path is stale.
+                if music_file_path and os.path.exists(music_file_path):
+                    continue
 
                 # Check if file exists
                 if not os.path.exists(file_path):
-                    logger.info(f"Removing queue item {queue_id} (status: {status}): File no longer exists: {file_path}")
-                    removed_ids.append(queue_id)
+                    logger.info(
+                        f"Queue item {queue_id} source missing (status: {status}): {file_path} | marking unmatched"
+                    )
+                    unmatched_ids.append(queue_id)
 
-            # Remove items in batch
-            if removed_ids:
+            # Soft-update stale missing-source items in batch (do not delete).
+            if unmatched_ids:
                 placeholder = "%s" if is_pg else "?"
-                placeholders = ','.join([placeholder] * len(removed_ids))
-                cursor.execute(f"DELETE FROM download_queue WHERE id IN ({placeholders})", removed_ids)
+                placeholders = ','.join([placeholder] * len(unmatched_ids))
+
+                cursor.execute(
+                    f"""
+                    UPDATE download_queue
+                    SET status = 'unmatched',
+                        failure_reason = COALESCE(failure_reason, 'Source file missing before organization'),
+                        file_path = NULL,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id IN ({placeholders})
+                    """,
+                    unmatched_ids,
+                )
                 conn.commit()
-                stats['removed'] = len(removed_ids)
-                logger.info(f"Cleaned up {len(removed_ids)} queue items with missing files")
+                stats['removed'] = len(unmatched_ids)
+                logger.info(
+                    f"Cleanup marked {len(unmatched_ids)} queue items as unmatched due to missing source files"
+                )
 
             return stats
 
