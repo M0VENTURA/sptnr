@@ -2283,11 +2283,11 @@ def detect_single_for_track(
     single_sources = []
     medium_confidence_sources = []  # Track medium confidence sources for 2 medium = 1 high rule
     
-    # Strip single-release version suffixes (e.g. "(Radio Edit)", "(Single Version)",
-    # "(Album Version)") from the title before querying external APIs.
-    # APIs index songs by their base title, so "Song (Radio Edit)" would return no
-    # results from MusicBrainz / Discogs unless we strip the suffix first.
-    lookup_title = strip_single_release_suffix(title)
+    # Normalize lookup title before external API searches.
+    # This removes parenthetical release qualifiers so variants like
+    # "Song (live at ...)", "Song (remastered 2024)", or "Song (radio edit)"
+    # can resolve against the canonical song entry.
+    lookup_title = normalize_title_for_lookup(title)
     
     # Load discogs token from config if not provided
     if discogs_token is None:
@@ -2319,7 +2319,7 @@ def detect_single_for_track(
                 search_spotify_track,
                 API_CALL_TIMEOUT,
                 f"Spotify single detection timed out after {API_CALL_TIMEOUT}s",
-                title, artist
+                lookup_title, artist
             )
         else:
             if verbose:
@@ -6328,9 +6328,21 @@ def popularity_scan(
                         # 2. z-score > 1: requires 1 medium confidence source OR 1 high confidence source
                         # 3. z-score > 2: may qualify as popularity-only 5★ based on CURRENT run z-score (not persisted status)
                         
-                        # Skip confidence-based upgrades for excluded tracks (e.g., bonus tracks with parentheses)
-                        # These tracks were excluded from statistics calculation, so their z-scores are not meaningful
-                        if not is_excluded_track:
+                        # Always preserve explicit single confidence for 5★ assignment, even when
+                        # a track is excluded from z-score stats (e.g., alternate takes/remasters).
+                        if single_confidence == "user":
+                            stars = 5
+                            log_info(f"5-star assignment: {title} (user-set single)")
+                            log_debug(f"User-set single - track_id: {track_id}")
+                        elif is_single and single_confidence == "high":
+                            stars = 5
+                            log_info(f"5-star assignment: {title} (high-confidence single - preserved from detection)")
+                            log_debug(f"High-confidence single - track_id: {track_id}, preserving 5★ rating")
+
+                        # Confidence-based star logic applies to all tracks, including
+                        # parenthesized/alternate variants. Exclusion is used only for
+                        # statistics baselining, not for confidence gating.
+                        else:
                             # Count evidence sources for star gating.
                             # Do not count internal markers (e.g. iterative_zscore/version_count).
                             medium_conf_eligible_sources = {
@@ -6364,19 +6376,7 @@ def popularity_scan(
                                 single_confidence = "low"
 
                             # Apply simplified z-score + confidence rules
-                            if single_confidence == "user":
-                                # User-set singles always get 5 stars
-                                stars = 5
-                                log_info(f"5-star assignment: {title} (user-set single)")
-                                log_debug(f"User-set single - track_id: {track_id}")
-                            elif is_single and single_confidence == "high":
-                                # High-confidence singles get 5★
-                                # Live albums: singles still get 5★ if they achieved high confidence through sources
-                                # (but popularity-based 5★ is blocked separately)
-                                stars = 5
-                                log_info(f"5-star assignment: {title} (high-confidence single - preserved from detection)")
-                                log_debug(f"High-confidence single - track_id: {track_id}, preserving 5★ rating")
-                            elif track_zscore > 1.0:
+                            if track_zscore > 1.0:
                                 # z-score > 1: requires at least one evidence source
                                 # (medium or true high-confidence metadata source).
                                 if medium_conf_count >= 1 or high_conf_source_count >= 1:
@@ -6484,9 +6484,7 @@ def popularity_scan(
                                     f"Popularity-only 5★ (recomputed) - track_id: {track_id}, "
                                     f"zscore: {track_zscore:.2f}, single_confidence: {single_confidence}"
                                 )
-                        else:
-                            # Track is excluded from statistics
-                            log_debug(f"Skipped confidence checks for excluded track: {title} (baseline stars={stars})")
+                        # Note: excluded tracks are still evaluated via confidence gates.
                         
                         # Ensure at least 1 star
                         stars = max(stars, 1)
