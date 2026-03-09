@@ -1872,6 +1872,7 @@ def download_and_save_album_art(artist: str, album: str, art_url: str, conn=None
     Returns:
         True if successfully saved, False otherwise
     """
+    own_connection = False
     try:
         import requests
         
@@ -1890,7 +1891,6 @@ def download_and_save_album_art(artist: str, album: str, art_url: str, conn=None
             return False
         
         # Save to database
-        own_connection = False
         if conn is None:
             conn = get_db_connection()
             own_connection = True
@@ -1931,9 +1931,21 @@ def download_and_save_album_art(artist: str, album: str, art_url: str, conn=None
         
     except requests.exceptions.Timeout:  # type: ignore
         log_debug(f"[ALBUM_ART] Timeout downloading image from {source} for {artist} - {album}")
+        if conn is not None and not own_connection:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         return False
     except Exception as e:
         log_debug(f"[ALBUM_ART] Failed to download/save album art for {artist} - {album}: {e}")
+        # In PostgreSQL, any statement error aborts the current transaction until rollback.
+        # Roll back shared scan transactions so subsequent writer/single updates can proceed.
+        if conn is not None and not own_connection:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         return False
 
 
@@ -4568,6 +4580,24 @@ def popularity_scan(
                             conn.rollback()
                         except Exception:
                             pass
+
+                        # Retry once after rollback in case a previous non-critical SQL error
+                        # (e.g. album art upsert) left the transaction in aborted state.
+                        try:
+                            cursor.executemany(
+                                f"UPDATE tracks SET writer = {placeholder} WHERE id = {placeholder}",
+                                writer_updates
+                            )
+                            conn.commit()
+                            log_info(f"✅ Writer credit retry succeeded for album '{album}' ({len(writer_updates)} updates)")
+                            log_debug(f"Writer retry committed {len(writer_updates)} updates for album '{album}'")
+                        except Exception as retry_error:
+                            log_info(f"❌ Writer credit retry failed for album '{album}': {retry_error}")
+                            log_debug(f"Writer retry failed for album '{album}': {retry_error}")
+                            try:
+                                conn.rollback()
+                            except Exception:
+                                pass
                 else:
                     log_info(f'ℹ️ No writer updates needed for album "{album}" (all tracks already have writer data or MusicBrainz unavailable)')
 
