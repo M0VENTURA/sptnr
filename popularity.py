@@ -5077,7 +5077,7 @@ def popularity_scan(
                         conn.commit()
                         
                         # Periodic WAL checkpoint every 10 albums to ensure data persists (especially important on Windows)
-                        if not _is_postgres_connection(conn) and (album_counter % 10 == 0):
+                        if not is_postgres_connection(conn) and (album_counter % 10 == 0):
                             try:
                                 conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
                                 log_debug(f"WAL checkpoint performed after {album_counter} albums")
@@ -6676,7 +6676,7 @@ def popularity_scan(
         # Force WAL checkpoint to ensure data is written to main database file
         # This is critical on Windows where WAL files may not auto-checkpoint properly
         try:
-            if not _is_postgres_connection(conn):
+            if not is_postgres_connection(conn):
                 conn.execute("PRAGMA wal_checkpoint(FULL)")
                 log_debug("WAL checkpoint completed - all changes persisted to main database file")
         except Exception as e:
