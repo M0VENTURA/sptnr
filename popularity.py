@@ -6374,20 +6374,24 @@ def popularity_scan(
                                 # EXCEPTION: Live albums use z-score gates instead of automatic 5★
                                 album_is_live = row_get(track, "album_context_live", 0)
                                 if album_is_live:
-                                    log_debug(f"Live album track '{title}' is HIGH-confidence single - using z-score gates instead of automatic 5★")
-                                    # Apply z-score gates for live albums
-                                    if track_zscore >= 2.0:
-                                        stars = 5
-                                        log_info(f"5-star assignment: {title} (live album, high-confidence single, z-score={track_zscore:.2f} >= 2.0)")
+                                    log_debug(f"Live album track '{title}' is HIGH-confidence single - using z-score distribution (can reach 5★ for top performers)")
+                                    # Apply z-score gates for live albums (1-5★ spread based on performance)
+                                    # High z-score singles on live albums CAN get 5★ if they earned high confidence
+                                    if track_zscore >= 1.5:
+                                        stars = 5  
+                                        log_info(f"5-star assignment: {title} (live album, high-confidence single, z-score={track_zscore:.2f} >= 1.5)")
                                     elif track_zscore >= 1.0:
                                         stars = 4  
                                         log_info(f"4-star assignment: {title} (live album, high-confidence single, z-score={track_zscore:.2f} >= 1.0)")
                                     elif track_zscore >= 0.0:
                                         stars = 3
                                         log_info(f"3-star assignment: {title} (live album, high-confidence single, z-score={track_zscore:.2f} >= 0.0)")
-                                    else:
+                                    elif track_zscore >= -1.0:
                                         stars = 2
-                                        log_info(f"2-star assignment: {title} (live album, high-confidence single, z-score={track_zscore:.2f} < 0.0)")
+                                        log_info(f"2-star assignment: {title} (live album, high-confidence single, z-score={track_zscore:.2f} >= -1.0)")
+                                    else:
+                                        stars = 1
+                                        log_info(f"1-star assignment: {title} (live album, high-confidence single, z-score={track_zscore:.2f} < -1.0)")
                                 else:
                                     # Regular albums: High-confidence singles always get 5★
                                     stars = 5
