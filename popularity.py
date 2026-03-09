@@ -6316,7 +6316,8 @@ def popularity_scan(
                         
                         # Calculate band-based star rating (baseline)
                         band_index = i // band_size
-                        stars = max(1, 4 - band_index)
+                        baseline_stars = max(1, 4 - band_index)
+                        stars = baseline_stars
                         
                         # Track whether 5★ assignment came from popularity logic vs single detection
                         # Used to determine if downgrade logic should apply
@@ -6397,8 +6398,11 @@ def popularity_scan(
                                         f"sources: {medium_conf_count}, high_sources: {high_conf_source_count}, zscore: {track_zscore:.2f}"
                                     )
                                 else:
-                                    stars = 3
-                                    log_info(f"3-star assignment: {title} (no qualifying evidence, zscore={track_zscore:.2f})")
+                                    stars = baseline_stars
+                                    log_info(
+                                        f"{stars}-star assignment: {title} "
+                                        f"(no qualifying evidence, zscore={track_zscore:.2f}, baseline spread preserved)"
+                                    )
                             elif track_zscore >= 0.0:
                                 # z-score 0-1: requires 2 medium sources OR 1 true high-confidence metadata source.
                                 if medium_conf_count >= 2 or high_conf_source_count >= 1:
@@ -6419,8 +6423,11 @@ def popularity_scan(
                                         f"sources: {medium_conf_count}, high_sources: {high_conf_source_count}, zscore: {track_zscore:.2f}"
                                     )
                                 else:
-                                    stars = 3
-                                    log_info(f"3-star assignment: {title} ({medium_conf_count} source(s), zscore={track_zscore:.2f} < 1.0)")
+                                    stars = baseline_stars
+                                    log_info(
+                                        f"{stars}-star assignment: {title} "
+                                        f"({medium_conf_count} source(s), zscore={track_zscore:.2f} < 1.0, baseline spread preserved)"
+                                    )
                                     log_debug(
                                         f"Evidence gate failed (0<=z<1) - track_id: {track_id}, "
                                         f"sources: {medium_conf_count}, high_sources: {high_conf_source_count}, zscore: {track_zscore:.2f}"
@@ -6456,8 +6463,11 @@ def popularity_scan(
                                         f"sources: {medium_conf_count}, high_sources: {high_conf_source_count}, zscore: {track_zscore:.2f}"
                                     )
                                 else:
-                                    stars = 3
-                                    log_info(f"3-star assignment: {title} (negative zscore={track_zscore:.2f})")
+                                    stars = baseline_stars
+                                    log_info(
+                                        f"{stars}-star assignment: {title} "
+                                        f"(negative zscore={track_zscore:.2f}, baseline spread preserved)"
+                                    )
 
                             # Popularity-only 5★ must be recomputed every scan from current z-score,
                             # never from persisted confidence flags.
