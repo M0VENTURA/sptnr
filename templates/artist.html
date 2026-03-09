@@ -239,86 +239,11 @@
     </div>
     <div class="card-body" style="background-color: var(--secondary-bg);">
       <div id="artistSimilarArtistsContainer">
-        {% set lastfm_artists = similar_artists_data.get('lastfm', []) %}
-        {% set listenbrainz_artists = similar_artists_data.get('listenbrainz', []) %}
-        {% set all_artists = lastfm_artists + listenbrainz_artists %}
-        
-        {% if all_artists %}
-          {% set unique_artists = {} %}
-          {% for artist in all_artists %}
-            {% set artist_name = artist.name if artist is mapping else artist %}
-            {% set artist_key = artist_name.lower() %}
-            {% if artist_key not in unique_artists or (artist is mapping and artist.get('in_collection')) %}
-              {% set _ = unique_artists.update({artist_key: artist}) %}
-            {% endif %}
-          {% endfor %}
-          
-          {% set in_collection = [] %}
-          {% set not_in_collection = [] %}
-          {% for artist_key, artist in unique_artists.items() %}
-            {% if artist is mapping and artist.get('in_collection') %}
-              {% set _ = in_collection.append(artist) %}
-            {% elif not (artist is mapping and artist.get('in_collection')) %}
-              {% set _ = not_in_collection.append(artist) %}
-            {% endif %}
-          {% endfor %}
-          
-          <!-- Similar Artists (In Collection) -->
-          {% if in_collection %}
-          <div class="mb-4">
-            <h6 class="mb-3"><i class="bi bi-collection-fill text-success"></i> In Your Collection <span class="badge bg-success">{{ in_collection|length }}</span></h6>
-            <div class="d-flex flex-wrap gap-2">
-              {% for artist in in_collection %}
-                {% set artist_name = artist.name if artist is mapping else artist %}
-                <a href="{{ url_for('artist_detail', name=artist_name) }}" class="badge bg-success text-decoration-none similar-artist-pill" style="font-size: 0.9rem; padding: 0.5rem 0.8rem;">
-                  {{ artist_name }}
-                </a>
-              {% endfor %}
-            </div>
+        <div class="d-flex justify-content-center py-3">
+          <div class="spinner-border spinner-border-sm" role="status">
+            <span class="visually-hidden">Loading similar artists...</span>
           </div>
-          {% endif %}
-          
-          <!-- Similar Artists (Not in Collection) -->
-          {% if not_in_collection %}
-          <div>
-            <h6 class="mb-3"><i class="bi bi-person-plus text-secondary"></i> Discover Similar Artists <span class="badge bg-secondary">{{ not_in_collection|length }}</span></h6>
-            <div class="row g-3">
-              {% for artist in not_in_collection %}
-                {% set artist_name = artist.name if artist is mapping else artist %}
-                {% set match_value = artist.match if artist is mapping else 0 %}
-                {% set match_percent = (match_value * 100)|round|int if match_value else 0 %}
-                <div class="col-6 col-md-4 col-lg-3">
-                  <div class="card h-100 overflow-hidden" style="position: relative;">
-                    {% if match_percent > 0 %}
-                    <span class="badge bg-success position-absolute" style="top: 8px; right: 8px; z-index: 10;">{{ match_percent }}%</span>
-                    {% endif %}
-                    <div style="aspect-ratio: 1; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); display: flex; align-items: center; justify-content: center; position: relative;">
-                      <img src="/api/artist/image?name={{ artist_name|urlencode }}" alt="{{ artist_name }}" style="width: 100%; height: 100%; object-fit: cover;" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
-                      <i class="bi bi-person-circle" style="font-size: 3rem; color: white; opacity: 0.8; display: none;"></i>
-                    </div>
-                    <div class="card-body d-flex flex-column">
-                      <h6 class="card-title mb-2 fw-bold text-truncate" title="{{ artist_name }}">{{ artist_name }}</h6>
-                      <div class="btn-group-vertical btn-group-sm mt-auto" role="group">
-                        <button class="btn btn-outline-secondary btn-sm" onclick="searchMusicBrainzForAllReleases('{{ artist_name|replace("'", "\\'") }}')" title="Search MusicBrainz for releases">
-                          <i class="bi bi-download"></i> Find Releases
-                        </button>
-                        <a href="https://www.last.fm/music/{{ artist_name|urlencode }}" target="_blank" class="btn btn-outline-info btn-sm" title="View on Last.fm">
-                          <i class="bi bi-box-arrow-up-right"></i> Last.fm
-                        </a>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              {% endfor %}
-            </div>
-          </div>
-          {% endif %}
-        {% else %}
-          <div class="alert alert-info mb-0">
-            <i class="bi bi-info-circle"></i> No similar artists available yet.
-            <br><small>Similar artists are collected during popularity scans from Last.fm and ListenBrainz.</small>
-          </div>
-        {% endif %}
+        </div>
       </div>
     </div>
   </div>
@@ -3513,8 +3438,18 @@ function searchMusicBrainzForAllReleases(artistName) {
   if (mbSearchStatus) mbSearchStatus.style.display = 'none';
   
   // Show the modal
-  const modal = new bootstrap.Modal(modalElement);
-  modal.show();
+  const hasBootstrapModal = !!(window.bootstrap && window.bootstrap.Modal);
+  if (hasBootstrapModal) {
+    const modal = new bootstrap.Modal(modalElement);
+    modal.show();
+  } else {
+    // Fallback for environments where Bootstrap JS is not loaded.
+    modalElement.style.display = 'block';
+    modalElement.classList.add('show');
+    modalElement.removeAttribute('aria-hidden');
+    modalElement.setAttribute('aria-modal', 'true');
+    document.body.classList.add('modal-open');
+  }
   
   // Trigger the search after modal is shown
   setTimeout(() => {
@@ -4112,13 +4047,10 @@ async function loadArtistCoveredBy(artistName) {
       });
   }
 
-  // Genre sources are now pre-rendered server-side from database data populated during scans.
-  // Similar artists are also pre-rendered server-side from database (no AJAX needed).
-
   document.addEventListener('DOMContentLoaded', function() {
     const artistName = {{ artist_name|tojson }};
     if (artistName && artistName.length > 0) {
-      // Similar artists are now server-side rendered - no need to load via AJAX
+      loadSimilarArtists(artistName);
       loadArtistFavouriteState(artistName);
       loadArtistCoveredBy(artistName);
     }
@@ -4210,7 +4142,7 @@ async function loadArtistCoveredBy(artistName) {
     const uniqueArtists = Array.from(seen.values());
     
     if (uniqueArtists.length === 0) {
-      container.innerHTML = '<div class="alert alert-info mb-0"><i class="bi bi-info-circle"></i> No similar artists available</div>';
+      container.innerHTML = '<div class="alert alert-info mb-0"><i class="bi bi-info-circle"></i> No similar artists available yet.<br><small>Similar artists are collected during popularity scans from Last.fm and ListenBrainz.</small></div>';
       return;
     }
 
@@ -4257,7 +4189,7 @@ async function loadArtistCoveredBy(artistName) {
               <div class="card-body d-flex flex-column">
                 <h6 class="card-title mb-2 fw-bold text-truncate" title="${escapeHtml(artist.name)}">${escapeHtml(artist.name)}</h6>
                 <div class="btn-group-vertical btn-group-sm mt-auto" role="group">
-                  <button class="btn btn-outline-secondary btn-sm" onclick="searchMusicBrainzForAllReleases('${escapeJsString(artist.name)}')" title="Search MusicBrainz for releases">
+                  <button class="btn btn-outline-secondary btn-sm" onclick="searchMusicBrainzReleaseFromEncoded(null, '${encodeURIComponent(artist.name)}', '')" title="Search MusicBrainz for releases">
                     <i class="bi bi-download"></i> Find Releases
                   </button>
                   <a href="https://www.last.fm/music/${encodeURIComponent(artist.name)}" target="_blank" class="btn btn-outline-info btn-sm" title="View on Last.fm">
