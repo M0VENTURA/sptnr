@@ -2641,7 +2641,8 @@ def detect_single_for_track(
             db_conn.close()
             if iterative_zscore_passed:
                 single_sources.append("iterative_zscore")
-                medium_confidence_sources.append("iterative_zscore")
+                # NOTE: Z-score is a popularity metric, NOT a confidence indicator
+                # It detects statistical outliers but doesn't confirm single release status
                 log_info(f"   Iterative z-score method: {title} passed album standout test")
             else:
                 log_debug(f"   Iterative z-score: {title} did not meet threshold")
@@ -2658,14 +2659,13 @@ def detect_single_for_track(
     # NEW RULE: 2 medium sources = high confidence
     if has_discogs_single or len(medium_confidence_sources) >= 2:
         single_confidence = "high"
-    elif has_iterative_zscore or has_other_sources or has_discogs_video:
+    elif has_other_sources or has_discogs_video:
         single_confidence = "medium"
     else:
         single_confidence = "low"
     
     # Album context rule: downgrade medium -> low if album has >3 tracks
-    # Skip downgrade when iterative z-score is present (required method)
-    if single_confidence == "medium" and album_track_count > 3 and not has_iterative_zscore:
+    if single_confidence == "medium" and album_track_count > 3:
         single_confidence = "low"
         if verbose:
             log_verbose(f"   Downgraded {title} confidence to low (album has {album_track_count} tracks)")
