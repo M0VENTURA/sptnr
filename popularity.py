@@ -2018,7 +2018,7 @@ def detect_single_for_track(
     
     NEW: Enhanced with advanced single detection logic including:
     - ISRC-based track version matching
-    - Title+duration matching (Â±2 seconds)
+    - Title+duration matching (⏱2 seconds)
     - Alternate version filtering
     - Live/unplugged context handling
     - Album release deduplication
@@ -2480,7 +2480,7 @@ def detect_single_for_track(
                 if result:
                     single_sources.append("discogs_video")
                     medium_confidence_sources.append("discogs_video")
-                    log_info(f"   âœ" Discogs confirms music video: {title}")
+                    log_info(f"   ✓ Discogs confirms music video: {title}")
                     log_debug(f"   Discogs result: Music video confirmed for '{lookup_title}'")
                 else:
                     log_info(f"   â“˜ Discogs does not confirm music video: {title}")
@@ -3077,7 +3077,7 @@ def popularity_scan(
             album_skip_days = features.get('album_skip_days', 7)
             log_debug(f"Configuration loaded - strict_spotify_matching: {strict_spotify_matching}, duration_tolerance: {duration_tolerance_sec}s, album_skip_days: {album_skip_days}")
             if strict_spotify_matching:
-                log_info(f"Strict Spotify matching enabled (duration tolerance: Â±{duration_tolerance_sec}s)")
+                log_info(f"Strict Spotify matching enabled (duration tolerance: ⏱{duration_tolerance_sec}s)")
             else:
                 log_info("Standard Spotify matching mode (highest popularity)")
             log_info(f"Album skip days: {album_skip_days} (albums scanned within {album_skip_days} days will be skipped)")
@@ -7073,7 +7073,7 @@ def refresh_all_playlists_from_db():
                 for r in rows
             ]
             create_or_update_playlist_for_artist(name, tracks)
-            log_basic(f"âœ… Playlist refreshed for '{name}' ({len(tracks)} tracks)")
+            log_basic(f"✅ Playlist refreshed for '{name}' ({len(tracks)} tracks)")
     except Exception as e:
         log_basic(f"âŒ Error refreshing playlists: {e}")
     finally:
