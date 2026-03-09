@@ -6519,6 +6519,16 @@ def popularity_scan(
                     f"scan_type: {scan_history_type}, tracks_scanned: {album_scanned}"
                 )
 
+                # When running a combined popularity + singles scan, also log a separate
+                # 'singles' entry so the dashboard shows a Singles badge alongside the
+                # Popularity badge once single detection has completed for this album.
+                if not singles_only and singles_processed > 0:
+                    log_album_scan(artist, album, 'singles', album_scanned, 'completed')
+                    log_debug(
+                        f"Logged additional singles scan to scan_history - album: {album}, "
+                        f"singles_processed: {singles_processed}"
+                    )
+
             # After all albums processed for this artist, show artist scan completion summary
             # (Individual album details were logged immediately after each album scan)
             try:

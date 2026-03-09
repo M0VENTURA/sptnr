@@ -246,3 +246,66 @@ def get_recent_album_scans(limit: int = 10):
         logging.error(f"Error getting recent scans: {e}")
         logging.error(f"DB_PATH={DB_PATH}")
         return []
+
+
+def clear_artist_scan_history(artist: str) -> int:
+    """
+    Delete all scan_history records for a given artist.
+
+    Called before starting a fresh navidrome rescan for an artist so that
+    stale badges from a prior scan are removed from the dashboard.
+
+    Args:
+        artist: Artist name whose records should be removed
+
+    Returns:
+        Number of rows deleted, or 0 on error / table missing
+    """
+    if not artist:
+        return 0
+
+    max_retries = 3
+    retry_delay = 0.5
+
+    for attempt in range(max_retries):
+        try:
+            conn = sqlite3.connect(DB_PATH, timeout=120.0)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")
+
+            cursor = conn.cursor()
+
+            # Check that the table exists before trying to delete
+            cursor.execute("""
+                SELECT name FROM sqlite_master
+                WHERE type='table' AND name='scan_history'
+            """)
+            if not cursor.fetchone():
+                conn.close()
+                return 0
+
+            cursor.execute("DELETE FROM scan_history WHERE artist = ?", (artist,))
+            deleted = cursor.rowcount
+            conn.commit()
+            conn.close()
+
+            logging.info(f"Cleared {deleted} scan_history record(s) for artist '{artist}'")
+            return deleted
+
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e) and attempt < max_retries - 1:
+                wait_time = retry_delay * (2 ** attempt)
+                logging.warning(
+                    f"Database locked when clearing scan history for '{artist}', "
+                    f"retrying in {wait_time}s (attempt {attempt + 1}/{max_retries}): {e}"
+                )
+                time.sleep(wait_time)
+                continue
+            else:
+                logging.error(
+                    f"Error clearing scan history for '{artist}' after {attempt + 1} attempts: {e}"
+                )
+                return 0
+        except Exception as e:
+            logging.error(f"Error clearing scan history for '{artist}': {e}")
+            return 0

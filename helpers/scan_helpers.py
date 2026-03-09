@@ -15,7 +15,7 @@ from .logging_config import log_debug, log_info, log_unified
 from api_clients.navidrome import NavidromeClient
 
 try:
-    from scan_history import log_album_scan
+    from scan_history import log_album_scan, clear_artist_scan_history
     _scan_history_available = True
 except ImportError as e:
     # Fallback if scan_history module not available
@@ -23,6 +23,8 @@ except ImportError as e:
     _scan_history_available = False
     def log_album_scan(*args, **kwargs):
         logging.debug(f"log_album_scan called but scan_history not available: {args}")
+    def clear_artist_scan_history(*args, **kwargs):
+        logging.debug(f"clear_artist_scan_history called but scan_history not available: {args}")
 
 
 # Color constants
@@ -323,6 +325,10 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
         if filter_missing and len(albums_needing_reimport) == 0 and len(existing_track_ids) > 0:
             logging.debug(f"Skipping artist '{artist_name}' - no albums with missing fields (filter_missing=True)")
             return
+
+        # Clear stale scan-history badges for this artist so the dashboard shows
+        # only freshly-acquired badges from the current rescan cycle.
+        clear_artist_scan_history(canonical_artist_name)
         
         if verbose:
             print(f"🎤 Scanning artist: {artist_name} ({len(albums)} albums)")
