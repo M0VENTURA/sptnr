@@ -101,6 +101,22 @@ def extract_mp3_metadata(file_path):
         if "USLT" in audio:  # Lyrics
             metadata["lyrics"] = str(audio["USLT"])
         
+        # Lyricist/writer: TEXT (Lyricist) and TOLY (Original Lyricist)
+        lyricists = []
+        seen_lyricists = set()
+        for frame_id in ("TEXT", "TOLY"):
+            if frame_id in audio:
+                frame = audio[frame_id]
+                if hasattr(frame, 'text') and frame.text:
+                    for entry in frame.text:
+                        for name in str(entry).replace(';', ',').split(','):
+                            name = name.strip()
+                            if name and name.lower() not in seen_lyricists:
+                                seen_lyricists.add(name.lower())
+                                lyricists.append(name)
+        if lyricists:
+            metadata["writer"] = json.dumps(lyricists)
+        
         return metadata
     except Exception as e:
         logging.debug(f"Error reading MP3 {file_path}: {e}")
@@ -161,6 +177,20 @@ def extract_flac_metadata(file_path):
         
         if "lyrics" in audio:
             metadata["lyrics"] = audio["lyrics"][0]
+        
+        # Lyricist/writer: standard Vorbis comment tags
+        lyricists = []
+        seen_lyricists = set()
+        for tag_key in ("lyricist", "writer", "textwriter"):
+            if tag_key in audio and audio[tag_key]:
+                for entry in audio[tag_key]:
+                    for name in str(entry).replace(';', ',').split(','):
+                        name = name.strip()
+                        if name and name.lower() not in seen_lyricists:
+                            seen_lyricists.add(name.lower())
+                            lyricists.append(name)
+        if lyricists:
+            metadata["writer"] = json.dumps(lyricists)
         
         return metadata
     except Exception as e:
@@ -363,7 +393,8 @@ def match_to_database(audio_files):
                     composer = ?,
                     comment = ?,
                     lyrics = ?,
-                    mbid = ?
+                    mbid = ?,
+                    writer = CASE WHEN writer IS NULL OR writer = '[]' THEN ? ELSE writer END
                 WHERE id = ?
             """, (
                 file_path,
@@ -380,6 +411,7 @@ def match_to_database(audio_files):
                 matched_metadata.get("comment"),
                 matched_metadata.get("lyrics"),
                 matched_metadata.get("mbid"),
+                matched_metadata.get("writer", "[]"),
                 track_id
             ))
             matched_count += 1
