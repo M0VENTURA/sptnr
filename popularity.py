@@ -296,14 +296,22 @@ def strip_remaster_suffix(title: str) -> str:
 
     Handles patterns such as:
       - "Higher (remastered 2024)"              → "Higher"
+      - "Higher (remastered)"                   → "Higher"
+      - "Higher (Remastered Version)"           → "Higher"
+      - "Higher (2024 Remastered Edition)"      → "Higher"
       - "Higher (radio edit / remastered 2024)" → "Higher (radio edit)"
       - "Song - Remastered 2024"                → "Song"
     """
     result = title
-    # Remove standalone "(remastered [year])" parenthetical
-    result = re.sub(r'\s*\(\s*remaster(?:ed)?(?:\s+\d{4})?\s*\)', '', result, flags=re.IGNORECASE)
-    # Remove "/ remastered [year]" or "- remastered [year]" inside parentheticals
+    # First, remove "/ remastered" or "- remastered" [year] inside parentheticals
+    # This preserves other keywords like "radio edit" that appear with remastered
     result = re.sub(r'\s*[/\-]\s*remaster(?:ed)?(?:\s+\d{4})?', '', result, flags=re.IGNORECASE)
+    
+    # Now remove standalone parenthetical containing "remaster" or "remastered"
+    # Use negative lookbehind/lookahead to avoid matching mixed cases already handled above
+    # This pattern removes parentheticals where remaster is the ONLY keyword (or with just a year/edition text)
+    result = re.sub(r'\s*\([^()]*remaster(?:ed)?[^()]*\)', '', result, flags=re.IGNORECASE)
+    
     # Remove trailing "- Remastered [year]" (dash-separated title suffix)
     result = re.sub(r'\s*-\s*remaster(?:ed)?(?:\s+\d{4})?\s*$', '', result, flags=re.IGNORECASE)
     # Clean up empty parentheses left over after stripping
