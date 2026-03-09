@@ -288,15 +288,17 @@ def trigger_navidrome_scan():
 
 
 def add_to_queue(artist, title, album=None, source='soulseek', priority=5, import_group=None, import_type='song',
-                 track_number=None, album_artist=None, year=None, release_id=None, release_source=None):
+                 track_number=None, album_artist=None, year=None, release_id=None, release_source=None,
+                 duration=None, disc_number=None, release_mbid=None, recording_mbid=None, status=None,
+                 matched_file_path=None):
     """
-    Add a song to the download queue
+    Add a song to the download queue with comprehensive metadata and duplicate detection
     
     Args:
         artist: Artist name
         title: Song title
         album: Album name (optional)
-        source: 'soulseek' or 'qbittorrent'
+        source: 'soulseek', 'qbittorrent', or 'local'
         priority: Priority level (1-10, lower = higher priority)
         import_group: Group ID for batch imports (optional, e.g., for albums/playlists)
         import_type: Type of import - 'song', 'album', or 'playlist' (defaults to 'song')
@@ -305,6 +307,12 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         year: Release year from MusicBrainz/Discogs (optional)
         release_id: MusicBrainz/Discogs release ID (optional)
         release_source: Source of metadata - 'musicbrainz' or 'discogs' (optional)
+        duration: Track duration in seconds (optional)
+        disc_number: Disc number for multi-disc albums (optional)
+        release_mbid: MusicBrainz release ID (optional)
+        recording_mbid: MusicBrainz recording ID (optional)
+        status: Initial status (optional, defaults to 'queued' or detected duplicate/collection status)
+        matched_file_path: File path if already matched (for unmatched files workflow)
     
     Returns:
         Queue item dict or None if failed
@@ -338,18 +346,103 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         # Search query for Soulseek: artist and title only (no album)
         search_query = f"{artist} - {title}"
         
+        # Duplicate detection: Check for existing entry with same artist + album + title
+        is_duplicate = False
+        duplicate_of_id = None
+        auto_delete_at = None
+        initial_status = status if status else 'queued'
+        
+        if album:  # Only check duplicates if album is provided
+            duplicate_check_query = """
+                SELECT id, status FROM download_queue
+                WHERE LOWER(artist) = LOWER(?) AND LOWER(album) = LOWER(?) AND LOWER(title) = LOWER(?)
+                AND status NOT IN ('completed', 'deleted')
+                ORDER BY created_at ASC
+                LIMIT 1
+            """ if not is_pg else """
+                SELECT id, status FROM download_queue
+                WHERE LOWER(artist) = LOWER(%s) AND LOWER(album) = LOWER(%s) AND LOWER(title) = LOWER(%s)
+                AND status NOT IN ('completed', 'deleted')
+                ORDER BY created_at ASC
+                LIMIT 1
+            """
+            
+            cursor.execute(duplicate_check_query, (artist, album, title))
+            existing = cursor.fetchone()
+            
+            if existing:
+                is_duplicate = True
+                duplicate_of_id = existing[0] if isinstance(existing, tuple) else existing.get('id')
+                # Set auto-delete for 24 hours from now
+                from datetime import datetime, timedelta
+                auto_delete_at = (datetime.now() + timedelta(hours=24)).isoformat()
+                initial_status = 'duplicate'
+                logger.info(f"Duplicate detected: {artist} - {title} (duplicate of ID {duplicate_of_id})")
+        
+        # Collection matching: Check if track already exists in Navidrome collection
+        in_collection = False
+        collection_track_id = None
+        
+        if release_mbid or release_id:  # Only check if we have MBID
+            mbid_to_check = release_mbid or release_id
+            collection_check_query = """
+                SELECT id, file_path FROM tracks
+                WHERE LOWER(artist) = LOWER(?) AND LOWER(title) = LOWER(?)
+                AND (release_group_mbid = ? OR suggested_mbid = ?)
+                LIMIT 1
+            """ if not is_pg else """
+                SELECT id, file_path FROM tracks
+                WHERE LOWER(artist) = LOWER(%s) AND LOWER(title) = LOWER(%s)
+                AND (release_group_mbid = %s OR suggested_mbid = %s)
+                LIMIT 1
+            """
+            
+            try:
+                cursor.execute(collection_check_query, (artist, title, mbid_to_check, mbid_to_check))
+                collection_track = cursor.fetchone()
+                
+                if collection_track:
+                    in_collection = True
+                    collection_track_id = collection_track[0] if isinstance(collection_track, tuple) else collection_track.get('id')
+                    initial_status = 'in_collection'
+                    logger.info(f"Track already in collection: {artist} - {title} (track ID {collection_track_id})")
+            except Exception as e_collection:
+                # tracks table might not exist, that's okay
+                logger.debug(f"Collection check error (table may not exist): {e_collection}")
+        
+        # Prepare release_year from year parameter (normalize to INTEGER)
+        release_year = None
+        if year:
+            try:
+                release_year = int(year) if str(year).isdigit() else None
+            except (ValueError, TypeError):
+                release_year = None
+        
         try:
             if is_pg:
                 cursor.execute(
                     """
                     INSERT INTO download_queue 
                     (artist, title, album, search_query, source, status, priority, file_path, import_group, import_type, 
-                     track_number, album_artist, year, release_id, release_source, created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, 'queued', %s, NULL, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                     track_number, album_artist, year, release_id, release_source,
+                     duration, disc_number, release_mbid, recording_mbid, release_year, matched_file_path,
+                     is_duplicate, duplicate_of_id, duplicate_detected_at, auto_delete_at,
+                     in_collection, collection_track_id, collection_matched_at,
+                     created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, %s, %s, %s, %s,
+                            %s, %s, %s, %s, %s, %s,
+                            %s, %s, %s, %s,
+                            %s, %s, %s,
+                            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     RETURNING id
                     """,
-                    (artist, title, album, search_query, source, priority, import_group, import_type,
-                     track_number, album_artist, year, release_id, release_source),
+                    (artist, title, album, search_query, source, initial_status, priority, import_group, import_type,
+                     track_number, album_artist, year, release_id, release_source,
+                     duration, disc_number, release_mbid, recording_mbid, release_year, matched_file_path,
+                     1 if is_duplicate else 0, duplicate_of_id, 
+                     datetime.now().isoformat() if is_duplicate else None, auto_delete_at,
+                     1 if in_collection else 0, collection_track_id,
+                     datetime.now().isoformat() if in_collection else None),
                 )
                 inserted = cursor.fetchone()
                 conn.commit()
@@ -364,11 +457,24 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                     f"""
                     INSERT INTO download_queue 
                     (artist, title, album, search_query, source, status, priority, file_path, import_group, import_type, 
-                     track_number, album_artist, year, release_id, release_source, created_at, updated_at)
-                    VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued', {placeholder}, NULL, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                     track_number, album_artist, year, release_id, release_source,
+                     duration, disc_number, release_mbid, recording_mbid, release_year, matched_file_path,
+                     is_duplicate, duplicate_of_id, duplicate_detected_at, auto_delete_at,
+                     in_collection, collection_track_id, collection_matched_at,
+                     created_at, updated_at)
+                    VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, NULL, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder},
+                            {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder},
+                            {placeholder}, {placeholder}, {placeholder}, {placeholder},
+                            {placeholder}, {placeholder}, {placeholder},
+                            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """,
-                    (artist, title, album, search_query, source, priority, import_group, import_type,
-                     track_number, album_artist, year, release_id, release_source),
+                    (artist, title, album, search_query, source, initial_status, priority, import_group, import_type,
+                     track_number, album_artist, year, release_id, release_source,
+                     duration, disc_number, release_mbid, recording_mbid, release_year, matched_file_path,
+                     1 if is_duplicate else 0, duplicate_of_id,
+                     datetime.now().isoformat() if is_duplicate else None, auto_delete_at,
+                     1 if in_collection else 0, collection_track_id,
+                     datetime.now().isoformat() if in_collection else None),
                     context="add_to_queue insert",
                     max_retries=8,
                     initial_delay=0.2,
@@ -376,7 +482,7 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
 
                 queue_id = cursor.lastrowid
             
-            logger.info(f"Added to queue: {search_query} (ID: {queue_id}, source: {source})")
+            logger.info(f"Added to queue: {search_query} (ID: {queue_id}, source: {source}, status: {initial_status})")
             
             # Return the item
             if is_pg:

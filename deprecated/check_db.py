@@ -547,7 +547,25 @@ def update_schema(db_path):
         "album_artist": "TEXT",
         "year": "TEXT",
         "release_id": "TEXT",
-        "release_source": "TEXT"
+        "release_source": "TEXT",
+        # New MusicBrainz and file matching columns
+        "duration": "INTEGER",
+        "disc_number": "INTEGER",
+        "release_mbid": "TEXT",
+        "recording_mbid": "TEXT",
+        "release_year": "INTEGER",
+        "matched_file_path": "TEXT",
+        "matched_at": "TIMESTAMP",
+        # Duplicate detection
+        "is_duplicate": "INTEGER DEFAULT 0",
+        "duplicate_of_id": "INTEGER",
+        "duplicate_detected_at": "TIMESTAMP",
+        # Collection matching
+        "in_collection": "INTEGER DEFAULT 0",
+        "collection_track_id": "INTEGER",
+        "collection_matched_at": "TIMESTAMP",
+        # Auto-cleanup
+        "auto_delete_at": "TIMESTAMP"
     }
     
     queue_columns_added = []
@@ -756,6 +774,11 @@ def update_schema(db_path):
         ("idx_download_queue_next_retry", "download_queue(next_retry_at)"),
         ("idx_download_queue_artist_album", "download_queue(artist, album)"),
         ("idx_download_queue_created", "download_queue(created_at DESC)"),
+        ("idx_download_queue_release_mbid", "download_queue(release_mbid)"),
+        ("idx_download_queue_is_duplicate", "download_queue(is_duplicate)"),
+        ("idx_download_queue_in_collection", "download_queue(in_collection)"),
+        ("idx_download_queue_auto_delete", "download_queue(auto_delete_at)"),
+        ("idx_download_queue_matched_path", "download_queue(matched_file_path)"),
         # Per-user love indexes
         ("idx_user_loved_tracks_user", "user_loved_tracks(user_id)"),
         ("idx_user_loved_tracks_track", "user_loved_tracks(track_id)"),
