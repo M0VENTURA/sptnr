@@ -273,9 +273,9 @@ def should_exclude_track_from_stats(title: str, album: str = "") -> bool:
     Returns:
         True if track should be excluded from statistics, False otherwise
     """
-    # Strip cover attributions first to get the base version of the track
-    # This way "(Live Cover)" becomes just the base title before checking filters
-    base_title = strip_cover_attribution(title)
+    # Strip cover attributions and single-release suffixes first so
+    # "Song (Radio Edit)" doesn't match "edit" and get excluded from statistics
+    base_title = strip_single_release_suffix(strip_cover_attribution(title))
     
     # Check base title and album name for keywords
     combined_text = f"{base_title} {album}".lower()
@@ -309,6 +309,67 @@ def strip_remaster_suffix(title: str) -> str:
     # Clean up empty parentheses left over after stripping
     result = re.sub(r'\(\s*\)', '', result)
     return result.strip()
+
+
+# Parenthetical version suffixes that identify a single/radio release cut.
+# These should be stripped before API lookups so that "Song (Radio Edit)"
+# is searched as "Song" – the title databases actually index.
+# Unlike live/remix/acoustic suffixes, these indicate the same performance
+# just packaged differently for radio or singles release.
+#
+# Regex structure:
+#   \s*\(\s*   – optional leading whitespace and opening parenthesis
+#   (?:…)      – non-capturing group of alternates for the version keyword
+#   \s*\)\s*$  – closing parenthesis followed by optional whitespace at end-of-string ($)
+#                The $ anchor ensures only trailing suffixes are removed; mid-title
+#                parentheses like "Song (Part 1) (Radio Edit)" are only stripped at the end.
+_SINGLE_RELEASE_SUFFIX_RE = re.compile(
+    r'\s*\(\s*(?:'
+    r'radio\s+(?:edit|mix|version)'    # (Radio Edit), (Radio Mix), (Radio Version)
+    r'|single\s+(?:version|edit|mix)'  # (Single Version), (Single Edit), (Single Mix)
+    r'|album\s+version'                # (Album Version)
+    r')\s*\)\s*$',
+    re.IGNORECASE,
+)
+
+
+def strip_single_release_suffix(title: str) -> str:
+    """Strip common single/radio-release version suffixes from a track title.
+
+    These parenthetical suffixes indicate a specific cut of the same song
+    (e.g. a radio-ready edit or the version released as a single) rather than
+    a substantially different arrangement (live, acoustic, remix).  Stripping
+    them before querying Last.fm, Spotify, MusicBrainz, or Discogs ensures
+    that the lookup targets the base song entry, which is what those services
+    index under.
+
+    Examples:
+      "Higher (Radio Edit)"       → "Higher"
+      "Song (Single Version)"     → "Song"
+      "Track (Album Version)"     → "Track"
+      "Live Song (Live)"          → "Live Song (Live)"   (unchanged)
+    """
+    return _SINGLE_RELEASE_SUFFIX_RE.sub('', title).strip()
+
+
+def normalize_title_for_lookup(title: str) -> str:
+    """Normalise a track title for external API lookups.
+
+    Applies all title-cleaning steps in sequence:
+    1. ``strip_cover_attribution`` – removes cover credits like "(cover)"
+    2. ``strip_remaster_suffix``   – removes remastered year markers
+    3. ``strip_single_release_suffix`` – removes radio-edit/single-version suffixes
+
+    The resulting title matches how Last.fm, MusicBrainz, Discogs, and Spotify
+    index tracks – without release-specific qualifiers that cause lookup misses.
+
+    Examples:
+      "Higher (Radio Edit)"                           → "Higher"
+      "Higher (remastered 2024)"                      → "Higher"
+      "Higher (radio edit / remastered 2024)"         → "Higher"
+      "With Arms Wide Open (single version / remastered 2024)" → "With Arms Wide Open"
+    """
+    return strip_single_release_suffix(strip_remaster_suffix(strip_cover_attribution(title)))
 
 
 def is_remastered_only_variant(title: str) -> bool:
@@ -2063,8 +2124,10 @@ def detect_single_for_track(
         log_debug(f"Skipping advanced detection for {title}: {', '.join(skip_reason)}")
     
     # Ignore obvious non-singles by keywords
-    # Strip cover attributions first so "Song (Live Cover)" becomes "Song (Live)" before checking
-    base_title = strip_cover_attribution(title)
+    # Strip cover attributions AND single-release version suffixes so that
+    # "(Radio Edit)" / "(Single Version)" / "(Album Version)" are not caught
+    # by the "edit" keyword and incorrectly excluded from single detection.
+    base_title = strip_single_release_suffix(strip_cover_attribution(title))
     if any(k in base_title.lower() for k in IGNORE_SINGLE_KEYWORDS):
         if verbose:
             log_verbose(f"   âŠ— Skipping non-single: {title} (keyword filter)")
@@ -2177,6 +2240,12 @@ def detect_single_for_track(
     
     single_sources = []
     
+    # Strip single-release version suffixes (e.g. "(Radio Edit)", "(Single Version)",
+    # "(Album Version)") from the title before querying external APIs.
+    # APIs index songs by their base title, so "Song (Radio Edit)" would return no
+    # results from MusicBrainz / Discogs unless we strip the suffix first.
+    lookup_title = strip_single_release_suffix(title)
+    
     # Load discogs token from config if not provided
     if discogs_token is None:
         discogs_token = ""
@@ -2262,7 +2331,7 @@ def detect_single_for_track(
                     mb_client.is_single,
                     API_CALL_TIMEOUT,
                     f"MusicBrainz single detection timed out after {API_CALL_TIMEOUT}s",
-                    title, artist
+                    lookup_title, artist
                 )
                 if result:
                     single_sources.append("musicbrainz")
@@ -2277,7 +2346,7 @@ def detect_single_for_track(
                         mb_client.has_video_relationship,
                         API_CALL_TIMEOUT,
                         f"MusicBrainz video check timed out after {API_CALL_TIMEOUT}s",
-                        title, artist
+                        lookup_title, artist
                     )
                     if has_video:
                         single_sources.append("musicbrainz_video")
@@ -2293,7 +2362,7 @@ def detect_single_for_track(
                         mb_client.appears_on_various_artists,
                         API_CALL_TIMEOUT,
                         f"MusicBrainz compilation check timed out after {API_CALL_TIMEOUT}s",
-                        title, artist
+                        lookup_title, artist
                     )
                     if on_compilations:
                         single_sources.append("musicbrainz_compilation")
@@ -2313,22 +2382,22 @@ def detect_single_for_track(
     if discogs_token:
         try:
             log_info(f"   Checking Discogs for single: {title}")
-            log_debug(f"   Discogs API: Searching for single '{title}' by '{artist}'")
+            log_debug(f"   Discogs API: Searching for single '{lookup_title}' by '{artist}'")
             # Use timeout-safe client to prevent retries from exceeding timeout
             discogs_client = _get_timeout_safe_discogs_client(discogs_token)
             if discogs_client:
                 result = _run_with_timeout(
-                    lambda: discogs_client.is_single(title, artist, album_context=None),
+                    lambda: discogs_client.is_single(lookup_title, artist, album_context=None),
                     API_CALL_TIMEOUT,
                     f"Discogs single detection timed out after {API_CALL_TIMEOUT}s"
                 )
                 if result:
                     single_sources.append("discogs")
                     log_info(f"   âœ“ Discogs confirms single: {title}")
-                    log_debug(f"   Discogs result: Single confirmed for '{title}'")
+                    log_debug(f"   Discogs result: Single confirmed for '{lookup_title}'")
                 else:
                     log_info(f"   â“˜ Discogs does not confirm single: {title}")
-                    log_debug(f"   Discogs result: No single found for '{title}'")
+                    log_debug(f"   Discogs result: No single found for '{lookup_title}'")
         except TimeoutError as e:
             log_info(f"   â± Discogs single check timed out for {title}: {e}")
             log_debug(f"   Discogs API: Timeout after {API_CALL_TIMEOUT}s for '{title}'")
@@ -2343,22 +2412,22 @@ def detect_single_for_track(
     if discogs_token:
         try:
             log_info(f"   Checking Discogs for music video: {title}")
-            log_debug(f"   Discogs API: Searching for music video '{title}' by '{artist}'")
+            log_debug(f"   Discogs API: Searching for music video '{lookup_title}' by '{artist}'")
             # Use timeout-safe client to prevent retries from exceeding timeout
             discogs_client = _get_timeout_safe_discogs_client(discogs_token)
             if discogs_client:
                 result = _run_with_timeout(
-                    lambda: discogs_client.has_official_video(title, artist),
+                    lambda: discogs_client.has_official_video(lookup_title, artist),
                     API_CALL_TIMEOUT,
                     f"Discogs video detection timed out after {API_CALL_TIMEOUT}s"
                 )
                 if result:
                     single_sources.append("discogs_video")
                     log_info(f"   âœ“ Discogs confirms music video: {title}")
-                    log_debug(f"   Discogs result: Music video confirmed for '{title}'")
+                    log_debug(f"   Discogs result: Music video confirmed for '{lookup_title}'")
                 else:
                     log_info(f"   â“˜ Discogs does not confirm music video: {title}")
-                    log_debug(f"   Discogs result: No music video found for '{title}'")
+                    log_debug(f"   Discogs result: No music video found for '{lookup_title}'")
         except TimeoutError as e:
             log_info(f"   â± Discogs video check timed out for {title}: {e}")
             log_debug(f"   Discogs API: Video search timeout after {API_CALL_TIMEOUT}s for '{title}'")
@@ -4199,7 +4268,7 @@ def popularity_scan(
                                     get_lastfm_track_info,
                                     API_CALL_TIMEOUT,
                                     f"Last.fm lookup timed out after {API_CALL_TIMEOUT}s",
-                                    track_artist, strip_cover_attribution(title)
+                                    track_artist, normalize_title_for_lookup(title)
                                 )
                                 rate_limiter.record_lastfm_request()
                                 
@@ -4404,7 +4473,7 @@ def popularity_scan(
                                     mb_writer_client.get_composers_for_track,
                                     API_CALL_TIMEOUT,
                                     f"MusicBrainz writer lookup timed out after {API_CALL_TIMEOUT}s",
-                                    strip_cover_attribution(title),
+                                    normalize_title_for_lookup(title),
                                     track_artist
                                 )
 
@@ -4532,8 +4601,9 @@ def popularity_scan(
 
                         # Skip Spotify lookup for obvious non-album tracks (live, remix, etc.)
                         # This prevents the scan from hanging on albums with many bonus/live tracks
-                        # Strip cover attributions first so "Song (Live Cover)" doesn't get "Cover" matched
-                        base_title = strip_cover_attribution(title)
+                        # Strip cover attributions and single-release suffixes so "Song (Radio Edit)"
+                        # isn't caught by the "edit" keyword and skipped from the Spotify lookup
+                        base_title = strip_single_release_suffix(strip_cover_attribution(title))
                         skip_spotify_lookup = any(k in base_title.lower() for k in IGNORE_SINGLE_KEYWORDS)
                         if skip_spotify_lookup:
                             log_info(f'Skipping Spotify lookup for: {title} (keyword filter: live/remix/etc.)')
@@ -4722,12 +4792,12 @@ def popularity_scan(
                                 # Perform lookup if we can proceed (either initially or after waiting)
                                 if can_proceed:
                                     log_info(f'Getting Last.fm info for: {title} by {track_artist}')
-                                    log_debug(f'Last.fm lookup params - artist: {track_artist}, title: {strip_cover_attribution(title)}')
+                                    log_debug(f'Last.fm lookup params - artist: {track_artist}, title: {normalize_title_for_lookup(title)}')
                                     lastfm_info = _run_with_timeout(
                                         get_lastfm_track_info,
                                         API_CALL_TIMEOUT,
                                         f"Last.fm lookup timed out after {API_CALL_TIMEOUT}s",
-                                        track_artist, strip_cover_attribution(title)
+                                        track_artist, normalize_title_for_lookup(title)
                                     )
                                     # Record API request for rate limiting
                                     rate_limiter.record_lastfm_request()
