@@ -4428,18 +4428,26 @@ def api_artist_covered_by():
         rows = cursor.fetchall() or []
         conn.close()
 
+        def _cover_field(row_obj, key, index):
+            """Safely read a field from dict-like rows (Postgres) or tuple-like rows (SQLite)."""
+            try:
+                if hasattr(row_obj, "keys"):
+                    return row_obj.get(key)
+                return row_obj[index]
+            except Exception:
+                return None
+
         covers = []
         for row in rows:
             # sqlite3.Row supports both name and index access; pg returns RealDictCursor dicts
             try:
-                row_dict = dict(row) if hasattr(row, 'keys') else row
                 covers.append({
-                    "id": row_dict.get("id") or row_dict[0],
-                    "title": row_dict.get("title") or row_dict[1],
-                    "artist": row_dict.get("artist") or row_dict[2],
-                    "album": row_dict.get("album") or row_dict[3],
-                    "year": row_dict.get("year") or row_dict[4],
-                    "original_cover_artist": row_dict.get("original_cover_artist") or row_dict[5],
+                    "id": _cover_field(row, "id", 0),
+                    "title": _cover_field(row, "title", 1),
+                    "artist": _cover_field(row, "artist", 2),
+                    "album": _cover_field(row, "album", 3),
+                    "year": _cover_field(row, "year", 4),
+                    "original_cover_artist": _cover_field(row, "original_cover_artist", 5),
                 })
             except (KeyError, TypeError, IndexError) as e:
                 logging.debug(f"Error parsing cover row: {e}")
@@ -20313,26 +20321,28 @@ def api_search_musicbrainz_release():
     """Search MusicBrainz for a release and return track listings"""
     try:
         data = request.get_json() or {}
-        artist = data.get("artist", "")
-        album = data.get("album", "")
+        artist = (data.get("artist", "") or "").strip()
+        album = (data.get("album", "") or "").strip()
         
-        if not artist or not album:
-            return jsonify({"error": "Artist and album name required"}), 400
+        if not artist:
+            return jsonify({"error": "Artist name required"}), 400
         
         # Search MusicBrainz for release groups
         headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
         search_url = "https://musicbrainz.org/ws/2/release-group"
         
-        # Build search query - use fuzzy matching instead of exact quotes for better results
-        # This allows partial matches and typos to still return results
-        query = f'artist:{artist} AND releasegroup:{album}'
+        # Build search query.
+        # Artist is required; album is optional so the same endpoint can power "artist-only" release browsing.
+        query = f'artist:{artist}'
+        if album:
+            query += f' AND releasegroup:{album}'
         params = {
             "fmt": "json",
             "query": query,
             "limit": 20  # Increased from 10 to show more potential matches
         }
         
-        logging.info(f"Searching MusicBrainz for: {artist} - {album}")
+        logging.info(f"Searching MusicBrainz for: {artist}" + (f" - {album}" if album else ""))
         
         response = requests.get(search_url, headers=headers, params=params, timeout=15)
         response.raise_for_status()
@@ -20344,7 +20354,7 @@ def api_search_musicbrainz_release():
             return jsonify({
                 "success": True,
                 "results": [],
-                "message": f"No releases found for {artist} - {album}"
+                "message": f"No releases found for {artist}" + (f" - {album}" if album else "")
             })
         
         # For each release group, fetch one representative release with tracks
@@ -20436,11 +20446,11 @@ def api_search_discogs_release():
     """Search Discogs for a release and return track listings as fallback"""
     try:
         data = request.get_json() or {}
-        artist = data.get("artist", "")
-        album = data.get("album", "")
+        artist = (data.get("artist", "") or "").strip()
+        album = (data.get("album", "") or "").strip()
         
-        if not artist or not album:
-            return jsonify({"error": "Artist and album name required"}), 400
+        if not artist:
+            return jsonify({"error": "Artist name required"}), 400
         
         # Get Discogs configuration
         cfg = get_config()
@@ -20460,13 +20470,14 @@ def api_search_discogs_release():
         
         # Search Discogs for releases
         search_url = f"{discogs_client.base_url}/database/search"
+        search_query = f"{artist} {album}".strip()
         search_params = {
-            "q": f"{artist} {album}",
+            "q": search_query,
             "type": "release",
             "per_page": 20
         }
         
-        logging.info(f"Searching Discogs for: {artist} - {album}")
+        logging.info(f"Searching Discogs for: {artist}" + (f" - {album}" if album else ""))
         
         time.sleep(DISCOGS_RATE_LIMIT_DELAY)  # Discogs rate limiting
         
@@ -20480,7 +20491,7 @@ def api_search_discogs_release():
             return jsonify({
                 "success": True,
                 "results": [],
-                "message": f"No releases found on Discogs for {artist} - {album}"
+                "message": f"No releases found on Discogs for {artist}" + (f" - {album}" if album else "")
             })
         
         # Fetch details for top matches

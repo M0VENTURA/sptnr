@@ -2941,9 +2941,9 @@
                             <div class="card-body d-flex flex-column">
                                 <h6 class="card-title mb-2 fw-bold text-truncate" title="${escapeHtml(artist.name)}">${escapeHtml(artist.name)}</h6>
                                 <div class="btn-group-vertical btn-group-sm mt-auto" role="group">
-                                    <a href="/artist/${encodeURIComponent(artist.name)}" class="btn btn-outline-primary btn-sm" title="View artist page">
-                                        <i class="bi bi-person-circle"></i> Artist Page
-                                    </a>
+                                    <button class="btn btn-outline-secondary btn-sm" onclick="searchMusicBrainzReleaseFromEncoded(null, '${encodeURIComponent(artist.name)}', '')" title="Search MusicBrainz for releases">
+                                        <i class="bi bi-download"></i> Find Releases
+                                    </button>
                                     <a href="https://www.last.fm/music/${encodeURIComponent(artist.name)}" target="_blank" class="btn btn-outline-info btn-sm" title="View on Last.fm">
                                         <i class="bi bi-box-arrow-up-right"></i> Last.fm
                                     </a>

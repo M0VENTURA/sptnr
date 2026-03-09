@@ -2105,7 +2105,12 @@ function importRelease(artist, releaseId, title) {
 
 function decodeInlineArtistArg(value, fallback = '') {
   try {
-    return JSON.parse(decodeURIComponent(value));
+    const decoded = decodeURIComponent(value);
+    try {
+      return JSON.parse(decoded);
+    } catch (_jsonErr) {
+      return decoded || fallback;
+    }
   } catch (error) {
     return fallback;
   }
