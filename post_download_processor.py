@@ -3,19 +3,22 @@
 Post-Download Processor
 Automatically processes completed downloads from MusicBrainz/Discogs:
 - Converts FLAC files to 320kbps MP3 (via ffmpeg)
-- Updates file metadata (track number, artist, album artist, year, disc number)
+- Updates file metadata (track number, artist, album artist, year, disc number, album art)
 - Renames file to proper format: [track_number]. [artist] - [title].[ext]
 - Moves file to proper folder: [album_artist]/[year] - [album]/
 - Handles duplicates by moving to Duplicates/ subfolder
 
 Requirements:
 - ffmpeg: Required for FLAC to MP3 conversion (optional if only processing MP3 files)
+- mutagen: Required for embedding album art and updating metadata
 """
 
 import os
 import shutil
 import sqlite3
 import logging
+import io
+import requests
 from pathlib import Path
 from datetime import datetime
 
@@ -61,9 +64,102 @@ def sanitize_filename(filename):
     return filename
 
 
-def update_file_metadata(file_path, metadata):
+def fetch_musicbrainz_release_metadata(release_id):
     """
-    Update file metadata tags using mutagen.
+    Fetch complete release metadata from MusicBrainz including disc numbers and cover art.
+    
+    Args:
+        release_id: MusicBrainz release ID (UUID format)
+    
+    Returns:
+        dict with keys:
+            - release_title: Album title
+            - release_year: Release year
+            - artist: Album artist
+            - disc_count: Total number of discs
+            - cover_art: Binary image data or None
+            - tracks: List of dicts with track info including disc/track numbers
+    """
+    try:
+        from api_clients.musicbrainz import _USER_AGENT
+        
+        # Fetch release details with recordings and artist-credits
+        mb_url = f"https://musicbrainz.org/ws/2/release/{release_id}?inc=recordings+artist-credits&fmt=json"
+        
+        headers = {
+            "User-Agent": _USER_AGENT,
+            "Accept": "application/json"
+        }
+        
+        response = requests.get(mb_url, headers=headers, timeout=10)
+        response.raise_for_status()
+        mb_data = response.json()
+        
+        release_info = {
+            'release_title': mb_data.get('title', 'Unknown Album'),
+            'release_year': str(mb_data.get('date', ''))[:4] if mb_data.get('date') else '',
+            'artist': '',
+            'disc_count': len(mb_data.get('media', [])),
+            'cover_art': None,
+            'tracks': []
+        }
+        
+        # Get album artist
+        if mb_data.get('artist-credit'):
+            artist_parts = []
+            for credit in mb_data['artist-credit']:
+                if isinstance(credit, dict):
+                    artist_parts.append(credit.get('name', ''))
+                else:
+                    artist_parts.append(str(credit))
+            release_info['artist'] = ' '.join(artist_parts).strip()
+        
+        # Extract track info from all media (discs)
+        for media_idx, media in enumerate(mb_data.get('media', []), 1):
+            disc_number = media_idx
+            for track in media.get('tracks', []):
+                recording = track.get('recording', {})
+                track_info = {
+                    'disc_number': disc_number,
+                    'track_number': track.get('position', 0),
+                    'title': recording.get('title', 'Unknown'),
+                    'artist': '',
+                }
+                
+                # Get track artist if different
+                if recording.get('artist-credit'):
+                    artist_parts = []
+                    for credit in recording['artist-credit']:
+                        if isinstance(credit, dict):
+                            artist_parts.append(credit.get('name', ''))
+                        else:
+                            artist_parts.append(str(credit))
+                    track_info['artist'] = ' '.join(artist_parts).strip()
+                
+                release_info['tracks'].append(track_info)
+        
+        # Try to fetch cover art from MusicBrainz
+        try:
+            cover_url = f"https://coverartarchive.org/release/{release_id}/front-500"
+            cover_response = requests.get(cover_url, timeout=5)
+            if cover_response.status_code == 200:
+                release_info['cover_art'] = cover_response.content
+                logger.debug(f"[MB_METADATA] Fetched cover art for release {release_id}")
+        except Exception as e:
+            logger.debug(f"Could not fetch cover art for release {release_id}: {e}")
+        
+        logger.info(f"[MB_METADATA] Fetched metadata for release {release_id}: "
+                   f"{release_info['release_title']} by {release_info['artist']}")
+        return release_info
+        
+    except Exception as e:
+        logger.error(f"Error fetching MusicBrainz metadata for release {release_id}: {e}")
+        return None
+
+
+def update_file_metadata_with_albumart(file_path, metadata, cover_art_data=None):
+    """
+    Update file metadata tags using mutagen, including album art.
     
     For FLAC files: metadata is updated then file is converted to MP3 320kbps in rename_and_move_file()
     For MP3 files: metadata is updated and file is moved to destination
@@ -71,14 +167,16 @@ def update_file_metadata(file_path, metadata):
     Args:
         file_path: Path to audio file (MP3 or FLAC)
         metadata: Dict with keys: track_number, artist, album_artist, album, year, title, disc_number
+        cover_art_data: Binary image data (JPG/PNG) to embed as album art
     
     Returns:
         bool: True if successful, False otherwise
     """
     try:
-        from mutagen.id3 import ID3, TIT2, TPE1, TPE2, TALB, TDRC, TRCK, TPOS
+        from mutagen.id3 import ID3, TIT2, TPE1, TPE2, TALB, TDRC, TRCK, TPOS, APIC
         from mutagen.mp3 import MP3
         from mutagen.flac import FLAC
+        from mutagen.flac import Picture
         
         ext = os.path.splitext(file_path)[1].lower()
         
@@ -109,6 +207,20 @@ def update_file_metadata(file_path, metadata):
             if metadata.get('disc_number'):
                 audio.tags['TPOS'] = TPOS(encoding=3, text=[str(metadata['disc_number'])])
             
+            # Add album art if provided
+            if cover_art_data:
+                try:
+                    audio.tags['APIC'] = APIC(
+                        encoding=3,
+                        mime='image/jpeg',
+                        type=3,  # 3 = Cover front
+                        desc=u'Cover',
+                        data=cover_art_data
+                    )
+                    logger.debug(f"[METADATA] Embedded album art in MP3: {file_path}")
+                except Exception as art_err:
+                    logger.warning(f"[METADATA] Could not embed album art in MP3: {art_err}")
+            
             audio.save()
             logger.info(f"Updated MP3 metadata: {file_path}")
             return True
@@ -138,6 +250,18 @@ def update_file_metadata(file_path, metadata):
             if metadata.get('disc_number'):
                 audio['discnumber'] = [str(metadata['disc_number'])]
             
+            # Add album art if provided
+            if cover_art_data:
+                try:
+                    picture = Picture()
+                    picture.data = cover_art_data
+                    picture.mime = 'image/jpeg'
+                    picture.type = 3  # 3 = Cover front
+                    audio.add_picture(picture)
+                    logger.debug(f"[METADATA] Embedded album art in FLAC: {file_path}")
+                except Exception as art_err:
+                    logger.warning(f"[METADATA] Could not embed album art in FLAC: {art_err}")
+            
             audio.save()
             logger.info(f"Updated FLAC metadata: {file_path}")
             return True
@@ -149,6 +273,23 @@ def update_file_metadata(file_path, metadata):
     except Exception as e:
         logger.error(f"Error updating file metadata for {file_path}: {e}")
         return False
+
+
+def update_file_metadata(file_path, metadata):
+    """
+    Update file metadata tags using mutagen (backward compatibility wrapper).
+    
+    This is a wrapper around update_file_metadata_with_albumart that maintains
+    backward compatibility for code that doesn't use album art.
+    
+    Args:
+        file_path: Path to audio file (MP3 or FLAC)
+        metadata: Dict with keys: track_number, artist, album_artist, album, year, title, disc_number
+    
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    return update_file_metadata_with_albumart(file_path, metadata, cover_art_data=None)
 
 
 def rename_and_move_file(file_path, metadata):

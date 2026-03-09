@@ -792,6 +792,54 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
         track_num = queue_item_dict.get('track_number', '00')
         disc_num = queue_item_dict.get('disc_number', 1)
         
+        # Get file extension
+        ext = os.path.splitext(file_path)[1].lower()
+        
+        # Initialize metadata for tagging
+        tag_metadata = {
+            'title': title,
+            'artist': artist,
+            'album_artist': queue_item_dict.get('album_artist') or artist,
+            'album': queue_item_dict.get('album') or 'Unknown Album',
+            'year': queue_item_dict.get('year') or '',
+            'track_number': queue_item_dict.get('track_number'),
+            'disc_number': disc_num,
+        }
+        
+        cover_art_data = None
+        
+        # If we have a MusicBrainz release ID, fetch authoritative metadata
+        release_id = queue_item_dict.get('release_id')
+        if release_id:
+            try:
+                from post_download_processor import fetch_musicbrainz_release_metadata
+                mb_release = fetch_musicbrainz_release_metadata(release_id)
+                
+                if mb_release:
+                    # Find matching track in release metadata to get correct disc number
+                    for track in mb_release.get('tracks', []):
+                        track_title = track.get('title', '').lower().strip()
+                        queue_title = title.lower().strip()
+                        
+                        # Simple matching on title
+                        if track_title and queue_title and track_title == queue_title:
+                            # Use authoritative disc and track number from MusicBrainz
+                            disc_num = track.get('disc_number', disc_num)
+                            tag_metadata['disc_number'] = disc_num
+                            logger.info(
+                                f"[MOVE] Queue {queue_item_dict.get('id', 'unknown')}: "
+                                f"Updated disc_number from MusicBrainz: {disc_num}"
+                            )
+                            break
+                    
+                    # Use MusicBrainz album art
+                    if mb_release.get('cover_art'):
+                        cover_art_data = mb_release['cover_art']
+                        logger.info(f"[MOVE] Queue {queue_item_dict.get('id', 'unknown')}: Using MusicBrainz album art")
+                    
+            except Exception as mb_err:
+                logger.warning(f"[MOVE] Could not fetch MusicBrainz metadata for release {release_id}: {mb_err}")
+        
         # Format track number with disc prefix if needed
         try:
             track_num = int(str(track_num).split('/')[0]) if track_num else 0
@@ -804,24 +852,12 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
         except:
             track_num = "00"
         
-        # Get file extension
-        ext = os.path.splitext(file_path)[1].lower()
-        
         # Update embedded file tags before moving so the library reflects the
         # album context (not whatever single/release the file was originally
         # tagged with on Soulseek).
         try:
-            from post_download_processor import update_file_metadata
-            tag_metadata = {
-                'title': title,
-                'artist': artist,
-                'album_artist': queue_item_dict.get('album_artist') or artist,
-                'album': queue_item_dict.get('album') or 'Unknown Album',
-                'year': queue_item_dict.get('year') or '',
-                'track_number': queue_item_dict.get('track_number'),
-                'disc_number': queue_item_dict.get('disc_number'),
-            }
-            update_file_metadata(file_path, tag_metadata)
+            from post_download_processor import update_file_metadata_with_albumart
+            update_file_metadata_with_albumart(file_path, tag_metadata, cover_art_data)
         except Exception as tag_err:
             logger.warning(f"[MOVE] Could not update file tags before move (non-fatal): {tag_err}")
 
