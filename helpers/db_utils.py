@@ -258,7 +258,7 @@ def ensure_writer_column():
         # Check if tracks table exists (database-agnostic)
         if is_pg:
             cursor.execute(
-                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'tracks'"
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'tracks' AND table_schema = current_schema()"
             )
         else:
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tracks'")
@@ -273,7 +273,7 @@ def ensure_writer_column():
         if is_pg:
             cursor.execute(
                 "SELECT COUNT(*) FROM information_schema.columns "
-                "WHERE table_name = 'tracks' AND column_name = 'writer'"
+                "WHERE table_name = 'tracks' AND column_name = 'writer' AND table_schema = current_schema()"
             )
             writer_exists = (cursor.fetchone()[0] or 0) > 0
         else:
@@ -334,7 +334,7 @@ def ensure_cover_columns():
         # Check if tracks table exists
         if is_pg:
             cursor.execute(
-                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'tracks'"
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'tracks' AND table_schema = current_schema()"
             )
         else:
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tracks'")
@@ -348,7 +348,7 @@ def ensure_cover_columns():
         # Determine existing columns
         if is_pg:
             cursor.execute(
-                "SELECT column_name FROM information_schema.columns WHERE table_name = 'tracks'"
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'tracks' AND table_schema = current_schema()"
             )
             existing = {row[0] for row in cursor.fetchall()}
         else:

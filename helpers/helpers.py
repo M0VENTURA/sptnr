@@ -6,9 +6,91 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.ssl_ import create_urllib3_context
 
 
-def strip_parentheses(s: str) -> str:
-    """Remove text inside parentheses from a string."""
-    return re.sub(r"\s*\(.*?\)\s*", " ", (s or "")).strip()
+# Default patterns inside parentheses that are stripped during popularity/single
+# detection lookups.  Users can extend or override this list via the
+# ``strip_parentheses_filters`` key in config.yaml.
+DEFAULT_STRIP_PARENTHESES_FILTERS: list[str] = [
+    "live",
+    "demo",
+    "acoustic",
+    "remix",
+    "radio edit",
+    "single version",
+    "album version",
+    "remaster",
+    "remastered",
+    "cover",
+    "instrumental",
+    "unplugged",
+    "edit",
+]
+
+
+def strip_parentheses(
+    s: str,
+    trailing_only: bool = False,
+    extra_patterns: list[str] | None = None,
+) -> str:
+    """Remove parenthesised text from a string.
+
+    This is the single, unified implementation used by both the helpers
+    layer and popularity/single-detection code.
+
+    Args:
+        s: Input string to clean.
+        trailing_only: When ``True`` only the *last* parenthetical group in
+            the string is removed, e.g.::
+
+                "Track (Live)" → "Track"
+                "Track (One) Two" → "Track (One) Two"  ← no change
+
+            When ``False`` (the default) *all* parenthetical groups are
+            removed::
+
+                "Song (Live) (Acoustic)" → "Song"
+
+        extra_patterns: Optional list of keyword patterns.  When provided,
+            only parenthetical groups whose content **contains** one of the
+            listed words are removed (case-insensitive).  Other parenthetical
+            groups are left unchanged.  This replaces the behaviour of the old
+            ``helpers.strip_parentheses()`` / ``popularity.strip_parentheses()``
+            pair by letting callers decide exactly which version tags to strip.
+
+            Example::
+
+                strip_parentheses("Song (Radio Edit) (Live)", extra_patterns=["radio edit"])
+                # → "Song (Live)"
+
+    Returns:
+        The cleaned string with the requested parenthetical groups removed.
+    """
+    if not s:
+        return s or ""
+
+    if extra_patterns:
+        result = s
+        for pattern in extra_patterns:
+            escaped = re.escape(pattern)
+            if trailing_only:
+                result = re.sub(
+                    rf'\s*\([^)]*{escaped}[^)]*\)\s*$',
+                    '',
+                    result,
+                    flags=re.IGNORECASE,
+                ).strip()
+            else:
+                result = re.sub(
+                    rf'\s*\([^)]*{escaped}[^)]*\)\s*',
+                    ' ',
+                    result,
+                    flags=re.IGNORECASE,
+                ).strip()
+        return result
+
+    if trailing_only:
+        return re.sub(r'\s*\([^)]*\)\s*$', '', s).strip()
+
+    return re.sub(r"\s*\(.*?\)\s*", " ", s).strip()
 
 
 def strip_cover_attribution(title: str) -> str:

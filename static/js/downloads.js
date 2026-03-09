@@ -464,8 +464,12 @@ async function refreshUpcomingReleases() {
       `;
       
       monthReleases.forEach(release => {
-        const albumStatus = release.album_in_collection ? 
-          ' <span class="badge bg-success ms-1">In Collection</span>' : '';
+        let albumStatus = '';
+        if (release.album_in_collection) {
+          albumStatus = ' <span class="badge bg-success ms-1">In Collection</span>';
+        } else if (release.in_queue) {
+          albumStatus = ' <span class="badge bg-warning text-dark ms-1">Downloading</span>';
+        }
 
         // Build JS-safe string literals for inline onclick arguments.
         const artistArg = JSON.stringify(String(release.artist_name || ''));
