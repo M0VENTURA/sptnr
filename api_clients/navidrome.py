@@ -143,6 +143,35 @@ class NavidromeClient:
             logger.error(f"❌ Failed to fetch tracks for album {album_id}: {e}")
             return {"tracks": [], "artist": "", "artistId": "", "name": "", "id": ""}
     
+    def get_song(self, song_id: str) -> dict:
+        """
+        Fetch detailed metadata for a single track via Subsonic API.
+        
+        This method requests extended metadata that may not be included in album listings,
+        such as detailed lyricist/composer/writer credits from contributors array.
+        
+        Args:
+            song_id: Navidrome track ID
+            
+        Returns:
+            Track object with extended metadata, or empty dict on failure
+        """
+        url = f"{self.base_url}/rest/getSong.view"
+        params = self._build_params(id=song_id)
+        try:
+            res = self.session.get(url, params=params, timeout=10)
+            res.raise_for_status()
+            song = res.json().get("subsonic-response", {}).get("song")
+            if song:
+                logger.debug(f"✅ Fetched extended metadata for song {song_id}")
+                return song
+            else:
+                logger.debug(f"⚠ No song metadata returned for {song_id}")
+                return {}
+        except Exception as e:
+            logger.debug(f"⚠ Failed to fetch extended metadata for song {song_id}: {e}")
+            return {}
+    
     def build_artist_index(self) -> dict:
         """
         Fetch all artists from Navidrome library.
@@ -304,6 +333,8 @@ class NavidromeClient:
             return names
 
         writers_list = []
+        _writer_roles = {"composer", "lyricist", "writer", "author"}
+        
         credit_candidates = [
             track.get("writer"),
             track.get("writers"),
@@ -325,7 +356,6 @@ class NavidromeClient:
         # when the underlying tags use roles rather than dedicated tag fields.
         contributors = track.get("contributors")
         if isinstance(contributors, list):
-            _writer_roles = {"composer", "lyricist", "writer", "author"}
             for contributor in contributors:
                 if not isinstance(contributor, dict):
                     continue
@@ -348,7 +378,56 @@ class NavidromeClient:
 
         # Debug: Log available fields if no writer data found
         if not writers_list:
-            logger.debug(f"[WRITER] No writer extracted for '{track.get('title', 'Unknown')}'. Track fields: {list(track.keys())}")
+            logger.debug(f"[WRITER] No writer extracted for '{track.get('title', 'Unknown')}'. "
+                        f"Track ID: {track.get('id')}. Available fields: {list(track.keys())}")
+            
+            # Attempt to fetch extended metadata via getSong if we have a track ID and no writer info yet
+            if track.get('id'):
+                try:
+                    extended_track = self.get_song(track.get('id'))
+                    if extended_track:
+                        # Try extracting writer info again from extended metadata
+                        extended_candidates = [
+                            extended_track.get("writer"),
+                            extended_track.get("writers"),
+                            extended_track.get("lyricist"),
+                            extended_track.get("lyricists"),
+                            extended_track.get("author"),
+                            extended_track.get("authors"),
+                            extended_track.get("composer"),
+                            extended_track.get("composers"),
+                            extended_track.get("albumArtist"),  # Sometimes lyricist is stored here
+                        ]
+                        for candidate in extended_candidates:
+                            for name in _normalize_people(candidate):
+                                if name not in writers_list:
+                                    writers_list.append(name)
+                        
+                        # Check extended metadata contributors
+                        extended_contributors = extended_track.get("contributors")
+                        if isinstance(extended_contributors, list):
+                            for contributor in extended_contributors:
+                                if not isinstance(contributor, dict):
+                                    continue
+                                role = str(contributor.get("role", "")).lower()
+                                if role in _writer_roles:
+                                    names = []
+                                    if contributor.get("name"):
+                                        names.extend(_normalize_people(contributor.get("name")))
+                                    artist_info = contributor.get("artist", {})
+                                    if isinstance(artist_info, dict):
+                                        names.extend(_normalize_people(artist_info.get("name")))
+                                    elif artist_info:
+                                        names.extend(_normalize_people(artist_info))
+                                    
+                                    for name in names:
+                                        if name and name not in writers_list:
+                                            writers_list.append(name)
+                        
+                        if writers_list:
+                            logger.debug(f"[WRITER] Found writer info via getSong for '{track.get('title')}': {writers_list}")
+                except Exception as e:
+                    logger.debug(f"[WRITER] Failed to fetch extended metadata for track {track.get('id')}: {e}")
         
         import json
         writer_json = json.dumps(writers_list) if writers_list else json.dumps([])
