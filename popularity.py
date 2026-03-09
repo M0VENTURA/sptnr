@@ -5075,6 +5075,14 @@ def popularity_scan(
                             updated_track_updates
                         )
                         conn.commit()
+                        
+                        # Periodic WAL checkpoint every 10 albums to ensure data persists (especially important on Windows)
+                        if not _is_postgres_connection(conn) and (album_counter % 10 == 0):
+                            try:
+                                conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                                log_debug(f"WAL checkpoint performed after {album_counter} albums")
+                            except Exception:
+                                pass  # Non-critical, full checkpoint will happen at end
                     except Exception as e:
                         # PostgreSQL may abort transaction if previous updates failed
                         log_debug(f"Error batch updating popularity scores: {e}")
@@ -6664,6 +6672,15 @@ def popularity_scan(
 
         log_debug("Committing final changes to database")
         conn.commit()
+        
+        # Force WAL checkpoint to ensure data is written to main database file
+        # This is critical on Windows where WAL files may not auto-checkpoint properly
+        try:
+            if not _is_postgres_connection(conn):
+                conn.execute("PRAGMA wal_checkpoint(FULL)")
+                log_debug("WAL checkpoint completed - all changes persisted to main database file")
+        except Exception as e:
+            log_debug(f"WAL checkpoint warning (non-critical): {e}")
 
         log_unified(f"Popularity Scan - Complete: {scanned_count} tracks updated, {skipped_count} albums skipped")
         log_info(f"Popularity scan completed: {scanned_count} tracks updated, {skipped_count} albums skipped (already scanned)")

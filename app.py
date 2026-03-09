@@ -3086,11 +3086,14 @@ def artist_detail(name):
                 similar_lastfm_raw = similar_row.get("similar_artists_lastfm") if isinstance(similar_row, dict) else similar_row[0]
                 similar_listenbrainz_raw = similar_row.get("similar_artists_listenbrainz") if isinstance(similar_row, dict) else similar_row[1]
 
+                similar_lastfm = []
+                similar_listenbrainz = []
+
                 try:
                     if similar_lastfm_raw:
                         parsed_lastfm = json.loads(similar_lastfm_raw) if isinstance(similar_lastfm_raw, str) else similar_lastfm_raw
                         if isinstance(parsed_lastfm, list):
-                            similar_artists_data["lastfm"] = parsed_lastfm[:10]
+                            similar_lastfm = parsed_lastfm[:10]
                 except Exception:
                     pass
 
@@ -3098,9 +3101,16 @@ def artist_detail(name):
                     if similar_listenbrainz_raw:
                         parsed_listenbrainz = json.loads(similar_listenbrainz_raw) if isinstance(similar_listenbrainz_raw, str) else similar_listenbrainz_raw
                         if isinstance(parsed_listenbrainz, list):
-                            similar_artists_data["listenbrainz"] = parsed_listenbrainz[:10]
+                            similar_listenbrainz = parsed_listenbrainz[:10]
                 except Exception:
                     pass
+
+                # Annotate with in_collection status
+                if similar_lastfm or similar_listenbrainz:
+                    all_similar_names = [_similar_artist_name(a) for a in similar_lastfm + similar_listenbrainz]
+                    in_collection = _get_artists_in_collection(cursor, all_similar_names, placeholder)
+                    similar_artists_data["lastfm"] = _annotate_in_collection(similar_lastfm, in_collection)
+                    similar_artists_data["listenbrainz"] = _annotate_in_collection(similar_listenbrainz, in_collection)
         except Exception as e:
             logging.debug(f"Error loading similar artists for artist page: {e}")
         
