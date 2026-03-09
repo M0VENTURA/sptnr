@@ -580,9 +580,18 @@ async function searchMusicBrainzRelease(event, artist, album) {
     });
     const data = await response.json();
 
+    const isArtistOnlySearch = !album || !String(album).trim();
+
     if (data.success && data.results && data.results.length >= 1) {
       statusEl.style.display = 'none';
       displayMusicBrainzResults(data.results);
+      return;
+    }
+
+    if (isArtistOnlySearch) {
+      statusEl.style.display = 'none';
+      errorEl.textContent = 'No releases found on MusicBrainz for this artist';
+      errorEl.style.display = 'block';
       return;
     }
 

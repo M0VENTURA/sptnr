@@ -735,6 +735,14 @@ def _sanitize_path_component(value):
     return value.strip('. ')
 
 
+def _build_release_import_group(artist, album):
+    """Create a stable import_group key for discovered release grouping."""
+    safe_artist = _sanitize_path_component((artist or 'Unknown Artist').strip())
+    safe_album = _sanitize_path_component((album or 'Unknown Album').strip())
+    group = f"discovered_{safe_artist}_{safe_album}"
+    return group.replace(' ', '_')[:100]
+
+
 def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
     """
     Move a single completed track from /downloads into the /music library tree.
@@ -1252,7 +1260,9 @@ def auto_discover_and_queue_files():
             'disc_number': "TEXT",
             'album_artist': "TEXT",
             'year': "TEXT",
-            'found_filename': "TEXT"
+            'found_filename': "TEXT",
+            'import_group': "TEXT",
+            'import_type': "TEXT DEFAULT 'song'"
         }
         
         for col, col_type in required_cols.items():
@@ -1328,6 +1338,7 @@ def auto_discover_and_queue_files():
                 track_number = metadata.get('track_number')
                 disc_number = metadata.get('disc_number')
                 year = metadata.get('date') or metadata.get('year')
+                release_group = _build_release_import_group(album_artist or artist, album)
                 
                 # Log metadata extraction status
                 if metadata and not had_metadata_error:
@@ -1376,17 +1387,17 @@ def auto_discover_and_queue_files():
                     stats['already_in_library'] += 1
                     logger.debug(f"Track already in library: {artist} - {title}")
                     
-                    # Still add to queue with status 'completed' so it appears in Completed & Ready to Organize
+                    # Still add to queue as possible duplicate so it remains visible and actionable.
                     execute_write_with_retry(
                         cursor,
                         conn,
                         f"""
                         INSERT INTO download_queue 
                         (artist, title, album, album_artist, track_number, disc_number, year, found_filename, file_path, 
-                         status, source, created_at, updated_at)
-                        VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'completed', 'discovered', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                         status, source, import_group, import_type, created_at, updated_at)
+                        VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'possible_duplicate', 'discovered', {placeholder}, 'album', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """,
-                        (artist, title, album, album_artist, track_number, disc_number, year, filename, full_path),
+                        (artist, title, album, album_artist, track_number, disc_number, year, filename, full_path, release_group),
                         context="auto_discover in-library insert"
                     )
 
@@ -1451,6 +1462,38 @@ def auto_discover_and_queue_files():
                     stats['queued'] += 1
                     continue
 
+                # Check whether this discovered file is a duplicate of an existing queue entry.
+                cursor.execute(f"""
+                    SELECT id
+                    FROM download_queue
+                    WHERE LOWER(artist) = LOWER({placeholder})
+                      AND LOWER(title) = LOWER({placeholder})
+                      AND LOWER(COALESCE(album, '')) = LOWER(COALESCE({placeholder}, ''))
+                      AND status NOT IN ('removed', 'cancelled')
+                      AND (file_path IS NULL OR file_path != {placeholder})
+                    LIMIT 1
+                """, (artist, title, album, full_path))
+                duplicate_existing = cursor.fetchone()
+
+                if duplicate_existing:
+                    execute_write_with_retry(
+                        cursor,
+                        conn,
+                        f"""
+                        INSERT INTO download_queue 
+                        (artist, title, album, album_artist, track_number, disc_number, year, found_filename, file_path,
+                         status, source, import_group, import_type, failure_reason, created_at, updated_at)
+                        VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder},
+                                'possible_duplicate', 'discovered', {placeholder}, 'album', 'Duplicate discovered during scan', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """,
+                        (artist, title, album, album_artist, track_number, disc_number, year, filename, full_path, release_group),
+                        context="auto_discover duplicate insert"
+                    )
+
+                    stats['queued'] += 1
+                    logger.info(f"⚠️  Duplicate [scan]: {artist} - {title} ({album})")
+                    continue
+
                 # No pending queue item matches → add as 'unmatched'
                 execute_write_with_retry(
                     cursor,
@@ -1458,10 +1501,10 @@ def auto_discover_and_queue_files():
                     f"""
                     INSERT INTO download_queue 
                     (artist, title, album, album_artist, track_number, disc_number, year, found_filename, file_path, 
-                     status, source, created_at, updated_at)
-                    VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'unmatched', 'discovered', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                     status, source, import_group, import_type, created_at, updated_at)
+                    VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'unmatched', 'discovered', {placeholder}, 'album', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """,
-                    (artist, title, album, album_artist, track_number, disc_number, year, filename, full_path),
+                    (artist, title, album, album_artist, track_number, disc_number, year, filename, full_path, release_group),
                     context="auto_discover unmatched insert"
                 )
 
@@ -1545,7 +1588,7 @@ def get_completed_queue(limit=50):
     """
     Get completed downloads (and unmatched files) waiting for organization.
 
-    Includes items with status 'completed' or 'unmatched' that have a file_path.
+    Includes items with status 'completed', 'unmatched', or 'possible_duplicate' that have a file_path.
 
     Returns:
         List of completed/unmatched queue items
@@ -1560,7 +1603,7 @@ def get_completed_queue(limit=50):
 
         cursor.execute(f"""
             SELECT * FROM download_queue 
-            WHERE status IN ('completed', 'unmatched')
+            WHERE status IN ('completed', 'unmatched', 'possible_duplicate')
             AND file_path IS NOT NULL
             ORDER BY updated_at DESC
             LIMIT {placeholder}

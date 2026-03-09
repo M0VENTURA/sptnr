@@ -98,10 +98,19 @@ async function searchMusicBrainzRelease(event, artist, album) {
     });
     const data = await response.json();
 
-    // Match Upcoming Releases behavior: try Discogs fallback when MusicBrainz has fewer than 3 results
-    if (data.success && data.results && data.results.length >= 3) {
+    const isArtistOnlySearch = !album || !String(album).trim();
+
+    // For artist-only browsing (similar artists buttons), stay artist-scoped in MusicBrainz only.
+    if (data.success && data.results && data.results.length >= (isArtistOnlySearch ? 1 : 3)) {
       statusEl.style.display = 'none';
       displayMusicBrainzResults(data.results);
+      return;
+    }
+
+    if (isArtistOnlySearch) {
+      statusEl.style.display = 'none';
+      errorEl.textContent = 'No releases found on MusicBrainz for this artist';
+      errorEl.style.display = 'block';
       return;
     }
 
