@@ -2154,6 +2154,13 @@ async function searchMusicBrainzRelease(event, artist, album) {
     event.stopPropagation();
   }
 
+  // Artist-only lookups must use the artist releases flow to avoid broad
+  // text-search results from similarly named artists.
+  if (!album || !String(album).trim()) {
+    searchMusicBrainzForAllReleases(artist);
+    return;
+  }
+
   const modalEl = document.getElementById('musicBrainzModal');
   const statusEl = document.getElementById('mbSearchStatus');
   const errorEl = document.getElementById('mbSearchError');
@@ -2198,10 +2205,18 @@ async function searchMusicBrainzRelease(event, artist, album) {
     });
     const data = await response.json();
 
-    // Match Upcoming Releases behavior: try Discogs fallback when MusicBrainz has fewer than 3 results.
-    if (data.success && data.results && data.results.length >= 3) {
+    const isArtistOnlySearch = !album || !String(album).trim();
+
+    if (data.success && data.results && data.results.length >= (isArtistOnlySearch ? 1 : 3)) {
       statusEl.style.display = 'none';
       displayMusicBrainzResults(data.results);
+      return;
+    }
+
+    if (isArtistOnlySearch) {
+      statusEl.style.display = 'none';
+      errorEl.textContent = 'No releases found on MusicBrainz for this artist';
+      errorEl.style.display = 'block';
       return;
     }
 
@@ -2253,7 +2268,7 @@ function displayMusicBrainzResults(results) {
       artist: release.artist,
       album: release.title,
       tracks: release.tracks,
-      year: release.date || release.year || null,
+      year: release.date || release.first_release_date || release.year || null,
       release_id: release.release_id || release.release_group_id || null,
       source: release.source || 'musicbrainz'
     };
@@ -2303,6 +2318,7 @@ function displayMusicBrainzResults(results) {
     }
     
     if (release.date) releaseInfo.push(release.date);
+    else if (release.first_release_date) releaseInfo.push(release.first_release_date);
     else if (release.year) releaseInfo.push(release.year);
     else releaseInfo.push('Unknown date');
     

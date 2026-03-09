@@ -14582,8 +14582,9 @@ def api_downloads_batch_group():
         data = request.get_json()
         item_ids = data.get('item_ids', [])
         group_type = data.get('group_type', 'album')
-        group_name = data.get('group_name', '')
-        group_artist = data.get('group_artist', '')
+        group_name = data.get('group_name', '').strip()
+        group_artist = data.get('group_artist', '').strip()
+        force_artist_override = bool(data.get('force_artist_override', False))
         
         if not item_ids or not group_name:
             return jsonify({"error": "item_ids and group_name are required"}), 400
@@ -14593,35 +14594,77 @@ def api_downloads_batch_group():
         
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+
+        def _normalize_artist_name(value):
+            if value is None:
+                return ''
+            return str(value).strip().lower()
+
+        def _is_empty_artist(value):
+            normalized = _normalize_artist_name(value)
+            return normalized in {'', 'unknown', 'various', 'various artists'}
         
         # Update all items in this batch to have the new group info
         updated_count = 0
+        artist_updated_count = 0
+        artist_skipped_count = 0
+        artist_conflicts = []
         for item_id in item_ids:
             try:
                 # Get current item
                 cursor.execute(
-                    "SELECT id, artist, title FROM download_queue WHERE id = ?",
+                    f"SELECT id, artist, title FROM download_queue WHERE id = {placeholder}",
                     (item_id,)
                 )
                 item = cursor.fetchone()
                 
                 if not item:
                     continue
+
+                item_artist = item['artist'] if isinstance(item, dict) else item[1]
+                item_title = item['title'] if isinstance(item, dict) else item[2]
                 
                 # Update with new group name
-                # If group_artist is provided, also update the artist for grouping consistency
                 if group_artist:
-                    cursor.execute(
-                        """UPDATE download_queue 
-                           SET album = ?, artist = ?
-                           WHERE id = ?""",
-                        (group_name, group_artist, item_id)
+                    current_artist_normalized = _normalize_artist_name(item_artist)
+                    new_artist_normalized = _normalize_artist_name(group_artist)
+
+                    # Prevent cross-artist corruption: only overwrite artist when empty/missing,
+                    # when it already matches, or when force override is explicitly requested.
+                    should_update_artist = (
+                        force_artist_override
+                        or _is_empty_artist(item_artist)
+                        or current_artist_normalized == new_artist_normalized
                     )
+
+                    if should_update_artist:
+                        cursor.execute(
+                            f"""UPDATE download_queue
+                               SET album = {placeholder}, artist = {placeholder}
+                               WHERE id = {placeholder}""",
+                            (group_name, group_artist, item_id)
+                        )
+                        artist_updated_count += 1
+                    else:
+                        cursor.execute(
+                            f"""UPDATE download_queue
+                               SET album = {placeholder}
+                               WHERE id = {placeholder}""",
+                            (group_name, item_id)
+                        )
+                        artist_skipped_count += 1
+                        artist_conflicts.append({
+                            "id": item_id,
+                            "title": item_title,
+                            "artist": item_artist,
+                        })
                 else:
                     cursor.execute(
-                        """UPDATE download_queue 
-                           SET album = ?
-                           WHERE id = ?""",
+                        f"""UPDATE download_queue
+                           SET album = {placeholder}
+                           WHERE id = {placeholder}""",
                         (group_name, item_id)
                     )
                 updated_count += 1
@@ -14636,6 +14679,9 @@ def api_downloads_batch_group():
             "success": True,
             "updated": updated_count,
             "total": len(item_ids),
+            "artist_updated": artist_updated_count,
+            "artist_skipped": artist_skipped_count,
+            "artist_conflicts": artist_conflicts[:10],
             "message": f"Grouped {updated_count} items into '{group_name}'"
         })
     
@@ -15256,6 +15302,27 @@ def api_queue_add():
         title = data.get('title', '').strip() if data.get('title') else ''
         album = data.get('album', '').strip() if data.get('album') else None
         source = data.get('source', 'soulseek')  # 'soulseek' or 'qbittorrent'
+
+        # Optional metadata used by file organization (year-based folder naming)
+        # and post-download enrichment.
+        track_number = data.get('track_number')
+        if track_number:
+            track_number = str(track_number).strip() if isinstance(track_number, str) else str(track_number)
+        else:
+            track_number = None
+
+        album_artist = data.get('album_artist', '').strip() if data.get('album_artist') else None
+
+        year = data.get('year')
+        if year:
+            year = str(year).strip() if isinstance(year, str) else str(year)
+            if len(year) >= 4:
+                year = year[:4]
+        else:
+            year = None
+
+        release_id = data.get('release_id', '').strip() if data.get('release_id') else None
+        release_source = data.get('release_source', '').strip() if data.get('release_source') else None
         
         # Handle priority parsing
         try:
@@ -15271,7 +15338,18 @@ def api_queue_add():
         
         # Add to queue
         try:
-            item = add_to_queue(artist, title, album, source, priority)
+            item = add_to_queue(
+                artist,
+                title,
+                album,
+                source,
+                priority,
+                track_number=track_number,
+                album_artist=album_artist,
+                year=year,
+                release_id=release_id,
+                release_source=release_source,
+            )
         except Exception as e:
             logging.error(f"Error in add_to_queue: {type(e).__name__}: {e}")
             import traceback
@@ -15514,6 +15592,59 @@ def api_queue_delete(queue_id):
         cursor = conn.cursor()
         is_pg = _is_postgres_connection(conn)
         placeholder = "%s" if is_pg else "?"
+
+        delete_download_file = request.args.get('delete_download_file', '0').lower() in {'1', 'true', 'yes'}
+        downloads_root = os.path.abspath(os.environ.get("DOWNLOADS_DIR", "/downloads"))
+
+        cursor.execute(
+            f"SELECT file_path, found_filename, title FROM download_queue WHERE id = {placeholder}",
+            (queue_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"error": "Queue item not found"}), 404
+
+        file_path = row['file_path'] if isinstance(row, dict) else row[0]
+        found_filename = row['found_filename'] if isinstance(row, dict) else row[1]
+        track_title = row['title'] if isinstance(row, dict) else row[2]
+
+        deleted_files = []
+
+        def _is_within_downloads(path_value):
+            if not path_value:
+                return False
+            try:
+                abs_path = os.path.abspath(path_value)
+                return os.path.commonpath([abs_path, downloads_root]) == downloads_root
+            except Exception:
+                return False
+
+        def _try_delete(path_value):
+            if not path_value or not os.path.exists(path_value):
+                return
+            if not _is_within_downloads(path_value):
+                logging.info(f"[QUEUE] Skip delete outside downloads root: {path_value}")
+                return
+            try:
+                os.remove(path_value)
+                if not os.path.exists(path_value):
+                    deleted_files.append(path_value)
+            except Exception as delete_err:
+                logging.warning(f"[QUEUE] Failed to delete download file '{path_value}': {delete_err}")
+
+        if delete_download_file:
+            # 1) Delete direct file_path only when it is actually inside DOWNLOADS_DIR.
+            _try_delete(file_path)
+
+            # 2) Fallback lookup by found filename inside DOWNLOADS_DIR.
+            if found_filename and os.path.isdir(downloads_root):
+                for root, _dirs, files in os.walk(downloads_root):
+                    if found_filename in files:
+                        _try_delete(os.path.join(root, found_filename))
+                        # Stop after first successful deletion to avoid deleting duplicates.
+                        if deleted_files:
+                            break
         
         cursor.execute(f"DELETE FROM download_queue WHERE id = {placeholder}", (queue_id,))
         conn.commit()
@@ -15522,7 +15653,18 @@ def api_queue_delete(queue_id):
         conn.close()
         
         if deleted:
-            return jsonify({"success": True, "message": "Queue item deleted"})
+            message = "Queue item deleted"
+            if delete_download_file:
+                if deleted_files:
+                    message = "Queue item and download file deleted"
+                else:
+                    message = "Queue item deleted (no matching file removed from downloads)"
+            return jsonify({
+                "success": True,
+                "message": message,
+                "deleted_download_files": deleted_files,
+                "title": track_title,
+            })
         else:
             return jsonify({"error": "Queue item not found"}), 404
             
@@ -15964,6 +16106,19 @@ def api_queue_organize_group():
         album_artist = metadata.get('album_artist') or metadata.get('artist', '')
         year = metadata.get('year', '')
         album_name = metadata.get('album', '')
+        artist_match_threshold = float(os.environ.get("QUEUE_ARTIST_MATCH_THRESHOLD", "0.78"))
+
+        def _artist_similarity_score(expected_artist, candidate_artist):
+            expected_norm = _normalize_artist_name(expected_artist)
+            candidate_norm = _normalize_artist_name(candidate_artist)
+            if not expected_norm or not candidate_norm:
+                return 0.0
+            if expected_norm == candidate_norm:
+                return 1.0
+            ratio = difflib.SequenceMatcher(None, expected_norm, candidate_norm).ratio()
+            if expected_norm in candidate_norm or candidate_norm in expected_norm:
+                ratio = max(ratio, 0.92)
+            return ratio
         
         updated_count = 0
         errors = []
@@ -15991,6 +16146,49 @@ def api_queue_organize_group():
                 resolved_album_artist = album_artist if album_artist else item['album_artist'] or item['artist']
                 resolved_album_name = album_name if album_name else item['album']
                 resolved_year = year if year else item['year']
+
+                # Verify downloaded metadata has a close artist match before any update or file copy.
+                try:
+                    embedded_metadata = read_mp3_metadata(file_path) or {}
+                except Exception as metadata_read_error:
+                    embedded_metadata = {}
+                    logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: Could not read embedded metadata for artist check: {metadata_read_error}")
+
+                expected_artist = item['artist'] or resolved_album_artist
+                artist_candidates = [
+                    embedded_metadata.get('artist'),
+                    embedded_metadata.get('album_artist'),
+                ]
+
+                scored_candidates = []
+                for candidate in artist_candidates:
+                    if candidate and str(candidate).strip():
+                        scored_candidates.append((str(candidate), _artist_similarity_score(expected_artist, candidate)))
+
+                if scored_candidates:
+                    best_candidate, best_score = max(scored_candidates, key=lambda x: x[1])
+                    if best_score < artist_match_threshold:
+                        error_msg = (
+                            f"Artist metadata mismatch (expected='{expected_artist}', "
+                            f"found='{best_candidate}', score={best_score:.2f}, threshold={artist_match_threshold:.2f})"
+                        )
+                        errors.append(f"{item['title']}: {error_msg}")
+                        update_queue_item(item['id'], status='failed', failure_reason=error_msg)
+                        logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
+                        log_debug(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
+                        continue
+
+                    logging.debug(
+                        f"[ORGANIZE_GROUP] Item {item['id']}: Artist metadata match accepted "
+                        f"(expected='{expected_artist}', found='{best_candidate}', score={best_score:.2f})"
+                    )
+                else:
+                    error_msg = "Artist metadata check failed (no embedded artist/album_artist tags found)"
+                    errors.append(f"{item['title']}: {error_msg}")
+                    update_queue_item(item['id'], status='failed', failure_reason=error_msg)
+                    logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
+                    log_debug(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
+                    continue
                 
                 # Update track metadata in database
                 try:
@@ -16040,19 +16238,89 @@ def api_queue_organize_group():
                         file_path,
                     )
                     
-                    logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Move - source={file_path}")
-                    logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Move - target={target_path}")
+                    logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Copy - source={file_path}")
+                    logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Copy - target={target_path}")
                     
-                    logging.info(f"[ORGANIZE_GROUP] Item {item['id']}: Moving file")
-                    shutil.move(file_path, target_path)
+                    logging.info(f"[ORGANIZE_GROUP] Item {item['id']}: Copying file")
+                    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+
+                    if not os.path.exists(target_path):
+                        shutil.copy2(file_path, target_path)
+                    else:
+                        logging.info(f"[ORGANIZE_GROUP] Item {item['id']}: Target already exists, skipping copy")
                     
-                    # Verify the move
-                    if os.path.exists(target_path) and not os.path.exists(file_path):
-                        logging.info(f"[ORGANIZE_GROUP] Item {item['id']}: ✅ Move successful")
+                    # Verify copy integrity before any source deletion
+                    copied_ok = (
+                        os.path.exists(target_path)
+                        and os.path.getsize(target_path) > 0
+                        and os.path.getsize(file_path) == os.path.getsize(target_path)
+                    )
+
+                    if copied_ok:
+                        logging.info(f"[ORGANIZE_GROUP] Item {item['id']}: ✅ Copy successful")
+
+                        # Mark queue item imported and point to the new location
                         update_queue_item(item['id'], status='imported', file_path=target_path)
+
+                        # Only delete source once destination is present and DB state confirms either:
+                        # 1) queue item points to new path with expected album, OR
+                        # 2) track exists in library DB under the expected album.
+                        delete_source = False
+                        try:
+                            verify_conn = get_db()
+                            verify_cursor = verify_conn.cursor()
+                            verify_is_pg = _is_postgres_connection(verify_conn)
+                            verify_placeholder = "%s" if verify_is_pg else "?"
+
+                            verify_cursor.execute(
+                                f"""
+                                SELECT 1
+                                FROM download_queue
+                                WHERE id = {verify_placeholder}
+                                  AND status = 'imported'
+                                  AND file_path = {verify_placeholder}
+                                  AND LOWER(COALESCE(album, '')) = LOWER({verify_placeholder})
+                                LIMIT 1
+                                """,
+                                (item['id'], target_path, str(resolved_album_name or '')),
+                            )
+                            in_queue_confirmed = verify_cursor.fetchone() is not None
+
+                            verify_cursor.execute(
+                                f"""
+                                SELECT 1
+                                FROM tracks
+                                WHERE LOWER(COALESCE(title, '')) = LOWER({verify_placeholder})
+                                  AND LOWER(COALESCE(artist, '')) = LOWER({verify_placeholder})
+                                  AND LOWER(COALESCE(album, '')) = LOWER({verify_placeholder})
+                                LIMIT 1
+                                """,
+                                (item['title'], item['artist'], str(resolved_album_name or '')),
+                            )
+                            in_library_confirmed = verify_cursor.fetchone() is not None
+
+                            verify_conn.close()
+                            delete_source = in_queue_confirmed or in_library_confirmed
+                        except Exception as verify_error:
+                            logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: Verification check failed: {verify_error}")
+                            log_debug(f"[ORGANIZE_GROUP] Item {item['id']}: Verification check failed: {verify_error}")
+
+                        if delete_source:
+                            try:
+                                os.remove(file_path)
+                                if os.path.exists(file_path):
+                                    logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: Source file still exists after delete attempt")
+                                else:
+                                    logging.info(f"[ORGANIZE_GROUP] Item {item['id']}: ✅ Source deleted after verification")
+                            except Exception as delete_error:
+                                logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: Source delete skipped/failed: {delete_error}")
+                                log_debug(f"[ORGANIZE_GROUP] Item {item['id']}: Source delete skipped/failed: {delete_error}")
+                        else:
+                            logging.info(f"[ORGANIZE_GROUP] Item {item['id']}: Source retained (awaiting DB/location confirmation)")
+
                         updated_count += 1
                     else:
-                        error_msg = f"Move verification failed"
+                        error_msg = f"Copy verification failed"
                         errors.append(f"{item['title']}: {error_msg}")
                         update_queue_item(item['id'], status='failed', failure_reason=error_msg)
                         logging.error(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
@@ -16062,8 +16330,8 @@ def api_queue_organize_group():
                     error_msg = str(move_error)
                     errors.append(f"{item['title']}: {error_msg}")
                     update_queue_item(item['id'], status='failed', failure_reason=error_msg)
-                    logging.error(f"[ORGANIZE_GROUP] Item {item['id']}: Move failed - {type(move_error).__name__}: {move_error}")
-                    log_debug(f"[ORGANIZE_GROUP] Item {item['id']}: Move failed - {type(move_error).__name__}: {move_error}")
+                    logging.error(f"[ORGANIZE_GROUP] Item {item['id']}: Copy failed - {type(move_error).__name__}: {move_error}")
+                    log_debug(f"[ORGANIZE_GROUP] Item {item['id']}: Copy failed - {type(move_error).__name__}: {move_error}")
                     
             except Exception as e:
                 errors.append(f"{item['title'] or 'Unknown'}: {str(e)}")
@@ -20323,31 +20591,88 @@ def api_search_musicbrainz_release():
         data = request.get_json() or {}
         artist = (data.get("artist", "") or "").strip()
         album = (data.get("album", "") or "").strip()
-        
+
         if not artist:
             return jsonify({"error": "Artist name required"}), 400
-        
-        # Search MusicBrainz for release groups
+
+        # Search MusicBrainz for release groups.
+        # For artist-only lookups, prefer artist MBID scoping (arid) to avoid title collisions.
         headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
         search_url = "https://musicbrainz.org/ws/2/release-group"
-        
-        # Build search query.
-        # Artist is required; album is optional so the same endpoint can power "artist-only" release browsing.
-        query = f'artist:{artist}'
+
+        requested_artist_norm = _normalize_artist_name(artist)
+        artist_mbid = None
+
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            placeholder = "%s" if _is_postgres_connection(conn) else "?"
+            cursor.execute(
+                f"""
+                SELECT MAX(musicbrainz_artist_id) AS mbid
+                FROM tracks
+                WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER({placeholder})
+                  AND musicbrainz_artist_id IS NOT NULL
+                """,
+                (artist,),
+            )
+            row = cursor.fetchone()
+            conn.close()
+            if row and row.get('mbid'):
+                artist_mbid = row.get('mbid')
+        except Exception as db_err:
+            logging.debug(f"[MB_SEARCH] Could not load artist MBID from DB for '{artist}': {db_err}")
+
+        # Fallback MBID lookup from MusicBrainz artist search if DB has no MBID.
+        if not artist_mbid:
+            try:
+                artist_search_params = {
+                    "fmt": "json",
+                    "query": f'artist:"{artist}"',
+                    "limit": 5,
+                }
+                artist_response = requests.get(
+                    "https://musicbrainz.org/ws/2/artist",
+                    headers=headers,
+                    params=artist_search_params,
+                    timeout=15,
+                )
+                artist_response.raise_for_status()
+                artist_data = artist_response.json() or {}
+                for candidate in artist_data.get("artists", []) or []:
+                    candidate_name = candidate.get("name", "")
+                    candidate_norm = _normalize_artist_name(candidate_name)
+                    if candidate_norm == requested_artist_norm:
+                        artist_mbid = candidate.get("id")
+                        break
+            except Exception as artist_lookup_err:
+                logging.debug(f"[MB_SEARCH] Artist MBID lookup failed for '{artist}': {artist_lookup_err}")
+
         if album:
-            query += f' AND releasegroup:{album}'
+            # Album-targeted search.
+            query = f'artist:"{artist}" AND releasegroup:"{album}"'
+        elif artist_mbid:
+            # Artist-scoped search (exact MBID) to return the artist's real catalog.
+            query = f'arid:"{artist_mbid}" AND (primarytype:album OR primarytype:ep OR primarytype:single)'
+        else:
+            # Fallback artist-only search if MBID unavailable.
+            query = f'artist:"{artist}" AND (primarytype:album OR primarytype:ep OR primarytype:single)'
+
         params = {
             "fmt": "json",
             "query": query,
-            "limit": 20  # Increased from 10 to show more potential matches
+            "limit": 20,
         }
-        
-        logging.info(f"Searching MusicBrainz for: {artist}" + (f" - {album}" if album else ""))
-        
+
+        logging.info(
+            f"Searching MusicBrainz for: {artist}" + (f" - {album}" if album else "")
+            + (f" [arid={artist_mbid}]" if artist_mbid and not album else "")
+        )
+
         response = requests.get(search_url, headers=headers, params=params, timeout=15)
         response.raise_for_status()
         data = response.json()
-        
+
         release_groups = data.get("release-groups", [])
         
         if not release_groups:
@@ -20359,11 +20684,25 @@ def api_search_musicbrainz_release():
         
         # For each release group, fetch one representative release with tracks
         results = []
-        for rg in release_groups[:10]:  # Increased from 5 to show more potential matches
+        for rg in release_groups[:10]:
             rg_id = rg.get("id", "")
             rg_title = rg.get("title", "")
             rg_type = rg.get("primary-type", "")
             first_release_date = rg.get("first-release-date", "")
+
+            # When browsing by artist only without MBID, enforce a strict artist-credit sanity check
+            # to reduce false positives where release titles happen to match the artist name.
+            if not album and not artist_mbid:
+                credits = rg.get("artist-credit", []) or []
+                credit_name = " ".join(c.get("name", "") for c in credits if isinstance(c, dict)).strip()
+                if credit_name:
+                    credit_norm = _normalize_artist_name(credit_name)
+                    if (
+                        credit_norm != requested_artist_norm
+                        and requested_artist_norm not in credit_norm
+                        and credit_norm not in requested_artist_norm
+                    ):
+                        continue
             
             # Fetch releases in this release group
             releases_url = f"https://musicbrainz.org/ws/2/release-group/{rg_id}"
@@ -20418,7 +20757,8 @@ def api_search_musicbrainz_release():
                     "title": rg_title,
                     "artist": artist,
                     "type": rg_type,
-                    "date": first_release_date,
+                    "date": first_release_date or release.get("date", "") or release_data.get("date", ""),
+                    "year": (first_release_date or release.get("date", "") or release_data.get("date", ""))[:4],
                     "track_count": len(tracks),
                     "tracks": tracks
                 })
