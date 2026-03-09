@@ -19,6 +19,7 @@ from pathlib import Path
 from helpers.metadata_reader import read_mp3_metadata
 from api_clients import session  # Use shared session with retry logic & connection pooling
 from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
+from download_file_verification import verify_file_in_music, mark_queue_item_moved
 
 logging.basicConfig(
     level=logging.INFO,
@@ -963,26 +964,54 @@ def check_downloads_folder():
                     item_for_move['file_path'] = match_path
                     move_result = move_single_track_to_music_dir(item_for_move)
                     if move_result['success']:
-                        # Update to 'imported' with the new /music path
-                        update_queue_item(
-                            queue_item['id'],
-                            status='imported',
-                            file_path=move_result['target_path'],
-                            copied_individually=1,
-                            copied_individually_at=datetime.now().isoformat()
-                        )
-                        logger.info(
-                            f"[MOVE] Queue {queue_item['id']}: moved to {move_result['target_path']}"
-                        )
-                        completed_items.append({
-                            'queue_id': queue_item['id'],
-                            'filename': match_found,
-                            'file_path': move_result['target_path'],
-                            'artist': queue_item['artist'],
-                            'title': queue_item['title'],
-                            'album': queue_item['album'],
-                            'moved': True
-                        })
+                        target_path = move_result['target_path']
+                        
+                        # Verify file exists at new location before marking as imported
+                        verify_result = verify_file_in_music(queue_item['id'], target_path)
+                        
+                        if verify_result['success']:
+                            # File verified - mark as moved and imported
+                            mark_queue_item_moved(queue_item['id'], target_path)
+                            update_queue_item(
+                                queue_item['id'],
+                                status='imported',
+                                file_path=target_path,
+                                copied_individually=1,
+                                copied_individually_at=datetime.now().isoformat()
+                            )
+                            logger.info(
+                                f"[MOVE] Queue {queue_item['id']}: verified and imported to {target_path}"
+                            )
+                            completed_items.append({
+                                'queue_id': queue_item['id'],
+                                'filename': match_found,
+                                'file_path': target_path,
+                                'artist': queue_item['artist'],
+                                'title': queue_item['title'],
+                                'album': queue_item['album'],
+                                'moved': True
+                            })
+                        else:
+                            # Verification failed - mark back to completed for retry
+                            logger.warning(
+                                f"[MOVE] Queue {queue_item['id']}: verification FAILED ({verify_result.get('error')}), "
+                                f"marking back to 'completed' for retry"
+                            )
+                            update_queue_item(
+                                queue_item['id'],
+                                status='completed',
+                                file_path=match_path  # Keep original path
+                            )
+                            completed_items.append({
+                                'queue_id': queue_item['id'],
+                                'filename': match_found,
+                                'file_path': match_path,
+                                'artist': queue_item['artist'],
+                                'title': queue_item['title'],
+                                'album': queue_item['album'],
+                                'moved': False,
+                                'verification_failed': True
+                            })
                     else:
                         logger.warning(
                             f"[MOVE] Queue {queue_item['id']}: could not move file "

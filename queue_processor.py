@@ -583,19 +583,40 @@ def check_completed_downloads():
                 # Immediately move the file to /music
                 try:
                     from download_queue_manager import move_single_track_to_music_dir, update_queue_item
+                    from download_file_verification import verify_file_in_music, mark_queue_item_moved
+                    
                     # Build a minimal item dict with the metadata needed for folder determination
                     item_for_move = dict(item)
                     item_for_move['file_path'] = file_path
                     move_result = move_single_track_to_music_dir(item_for_move)
                     if move_result['success']:
-                        update_queue_item(
-                            item['id'],
-                            status='imported',
-                            file_path=move_result['target_path'],
-                            copied_individually=1,
-                            copied_individually_at=datetime.now().isoformat()
-                        )
-                        logger.info(f"[AUTO_MOVE] Queue {item['id']}: moved to {move_result['target_path']}")
+                        target_path = move_result['target_path']
+                        
+                        # Verify file exists at new location before marking as imported
+                        verify_result = verify_file_in_music(item['id'], target_path)
+                        
+                        if verify_result['success']:
+                            # File verified - mark as moved and imported
+                            mark_queue_item_moved(item['id'], target_path)
+                            update_queue_item(
+                                item['id'],
+                                status='imported',
+                                file_path=target_path,
+                                copied_individually=1,
+                                copied_individually_at=datetime.now().isoformat()
+                            )
+                            logger.info(f"[AUTO_MOVE] Queue {item['id']}: verified and imported to {target_path}")
+                        else:
+                            # Verification failed - mark back to completed for retry
+                            logger.warning(
+                                f"[AUTO_MOVE] Queue {item['id']}: verification FAILED ({verify_result.get('error')}), "
+                                f"marking back to 'completed' for retry"
+                            )
+                            update_queue_item(
+                                item['id'],
+                                status='completed',
+                                file_path=file_path
+                            )
                     else:
                         logger.warning(
                             f"[AUTO_MOVE] Queue {item['id']}: could not move "
@@ -829,6 +850,44 @@ def maybe_finalize_musicbrainz_releases(now_ts, last_run_ts, interval_seconds=60
 
     return now_ts
 
+
+def maybe_check_missing_moved_files(now_ts, last_run_ts, interval_seconds=300):
+    """
+    Periodically check for files that were moved to /music but have since disappeared.
+    Requeues them for retry. Runs every 5 minutes by default.
+    
+    Args:
+        now_ts: Current timestamp
+        last_run_ts: Timestamp of last run
+        interval_seconds: Interval between checks (default 300 seconds = 5 minutes)
+    
+    Returns:
+        Updated last-run timestamp
+    """
+    if last_run_ts is not None and (now_ts - last_run_ts) < interval_seconds:
+        return last_run_ts
+
+    try:
+        from download_file_verification import check_missing_moved_files
+        
+        result = check_missing_moved_files(minutes_old=30)
+        checked = result.get('checked', 0)
+        found_missing = result.get('found_missing', 0)
+        requeued = result.get('requeued', 0)
+        
+        if found_missing > 0:
+            logger.warning(
+                f"[FILE_VERIFY] File verification: checked {checked}, "
+                f"found {found_missing} missing, requeued {requeued}"
+            )
+        else:
+            logger.debug(f"[FILE_VERIFY] File verification: checked {checked}, all present")
+            
+    except Exception as e:
+        logger.error(f"[FILE_VERIFY] Error during file verification check: {e}")
+
+    return now_ts
+
 def run_processor(interval=30):
     """Run queue processor loop"""
     logger.info("=== Queue Processor Started ===")
@@ -843,6 +902,7 @@ def run_processor(interval=30):
     last_auto_discover_ts = None
     last_mb_check_ts = None
     last_mb_finalize_ts = None
+    last_verify_ts = None
     
     try:
         while True:
@@ -854,6 +914,7 @@ def run_processor(interval=30):
                 last_auto_discover_ts = maybe_auto_discover_files(now_ts, last_auto_discover_ts)
                 last_mb_check_ts = maybe_check_musicbrainz_files(now_ts, last_mb_check_ts)
                 last_mb_finalize_ts = maybe_finalize_musicbrainz_releases(now_ts, last_mb_finalize_ts)
+                last_verify_ts = maybe_check_missing_moved_files(now_ts, last_verify_ts)
                 
                 processed = process_queue(client)
                 

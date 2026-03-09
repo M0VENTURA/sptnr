@@ -6,6 +6,7 @@ from helpers.db_utils import (
     ensure_cover_columns,
     verify_album_artist_column,
 )
+from download_file_verification import ensure_verification_columns
 import os
 # --- ENVIRONMENT VARIABLE EDITING SUPPORT ---
 # List of all environment variables used in the project (compiled from codebase)
@@ -426,6 +427,9 @@ ensure_writer_column()
 
 # Ensure cover detection columns exist in tracks table
 ensure_cover_columns()
+
+# Ensure download file verification columns exist
+ensure_verification_columns()
 
 # Verify the migration worked
 verification = verify_album_artist_column()
@@ -13642,6 +13646,38 @@ def api_downloads_scan_progress():
             "files_found": 0,
             "recent_files": []
         })
+
+
+@app.route("/api/downloads/verify-moved-files", methods=["GET"])
+def api_downloads_verify_moved():
+    """
+    Check for files that were moved to /music but have since disappeared.
+    Requeues them for retry. Can be triggered manually or runs periodically.
+    
+    Query params:
+        minutes_old: Check files moved at least this many minutes ago (default: 30)
+    
+    Returns:
+        JSON with verification results: checked, found_missing, requeued
+    """
+    try:
+        from download_file_verification import check_missing_moved_files
+        
+        minutes_old = int(request.args.get('minutes_old', 30))
+        result = check_missing_moved_files(minutes_old=minutes_old)
+        
+        return jsonify({
+            "success": True,
+            "checked": result.get('checked', 0),
+            "found_missing": result.get('found_missing', 0),
+            "requeued": result.get('requeued', 0),
+            "message": result.get('message', result.get('error', 'Check complete'))
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
 
 @app.route("/api/downloads/grouped-folders", methods=["GET"])
