@@ -1393,6 +1393,190 @@ def _start_boot_navidrome_import():
     scan_process_navidrome = {"thread": thread, "type": "navidrome_boot"}
     logging.info("Boot Navidrome import thread started")
 
+
+# --- Daily scheduled task globals ---
+_daily_scheduler_thread = None
+_daily_scheduler_stop = None
+
+
+def _start_daily_scheduler():
+    """Start a background thread that runs daily maintenance tasks once per day.
+
+    Tasks:
+    1. Scan Navidrome for new album artists not yet in the local database and import them.
+    2. Scan every album artist in the catalogue for missing releases and add them to the
+       missing_releases table.
+
+    The scheduler respects any in-progress scan by waiting rather than starting a
+    conflicting operation.
+    """
+    global _daily_scheduler_thread, _daily_scheduler_stop
+
+    if _daily_scheduler_thread and _daily_scheduler_thread.is_alive():
+        logging.debug("Daily scheduler already running; skipping duplicate start")
+        return
+
+    _daily_scheduler_stop = threading.Event()
+
+    def _daily_worker():
+        # Interval is configurable via ``features.daily_scheduler_interval_hours`` in config.yaml.
+        # Defaults to 24 hours.
+        try:
+            cfg = get_config()
+            interval_hours = float(
+                cfg.get("features", {}).get("daily_scheduler_interval_hours", 24)
+            )
+        except Exception:
+            interval_hours = 24
+        INTERVAL_SECONDS = int(interval_hours * 3600)
+        logging.info(f"[DAILY] Daily scheduler started (interval: {interval_hours}h)")
+
+        while not _daily_scheduler_stop.is_set():
+            # Wait for the full interval (interruptible by stop event)
+            if _daily_scheduler_stop.wait(timeout=INTERVAL_SECONDS):
+                break  # Stop requested
+
+            try:
+                _run_daily_new_artist_import()
+            except Exception as exc:
+                logging.error(f"[DAILY] Error in daily new-artist import: {exc}", exc_info=True)
+
+            try:
+                _run_daily_missing_releases_scan()
+            except Exception as exc:
+                logging.error(f"[DAILY] Error in daily missing-releases scan: {exc}", exc_info=True)
+
+        logging.info("[DAILY] Daily scheduler stopped")
+
+    _daily_scheduler_thread = threading.Thread(target=_daily_worker, daemon=True, name="daily-scheduler")
+    _daily_scheduler_thread.start()
+    logging.info("[DAILY] Daily scheduler thread started (tasks run every 24 hours)")
+
+
+def _run_daily_new_artist_import():
+    """Import new Navidrome album artists that are not yet in the local database.
+
+    Queries Navidrome for all artists, then checks the local tracks table for any
+    artist that hasn't been imported yet and triggers a metadata-only import for
+    each new artist found.
+    """
+    global scan_process_navidrome
+
+    logging.info("[DAILY] Checking Navidrome for new artists not yet in database...")
+
+    # Skip if a Navidrome scan is already running
+    if scan_process_navidrome and isinstance(scan_process_navidrome, dict):
+        t = scan_process_navidrome.get("thread")
+        if t and t.is_alive():
+            logging.info("[DAILY] Navidrome scan already running; skipping new-artist import")
+            return
+
+    try:
+        cfg = get_config()
+        nav_users = cfg.get("navidrome_users", []) or []
+        if not nav_users:
+            nav_cfg = cfg.get("navidrome", {}) or {}
+            if nav_cfg.get("base_url"):
+                nav_users = [nav_cfg]
+
+        if not nav_users:
+            logging.debug("[DAILY] No Navidrome configuration found; skipping new-artist import")
+            return
+
+        from api_clients.navidrome import NavidromeClient  # type: ignore
+
+        all_nav_artists: set = set()
+        for user_cfg in nav_users:
+            try:
+                client = NavidromeClient(
+                    base_url=user_cfg.get("base_url", ""),
+                    username=user_cfg.get("user", ""),
+                    password=user_cfg.get("pass", ""),
+                )
+                for artist in (client.get_artists() or []):
+                    name = (artist.get("name") or "").strip()
+                    if name:
+                        all_nav_artists.add(name)
+            except Exception as exc:
+                logging.warning(f"[DAILY] Failed to fetch artists from Navidrome: {exc}")
+
+        if not all_nav_artists:
+            logging.debug("[DAILY] No artists returned from Navidrome")
+            return
+
+        # Get existing album artists from local database
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT DISTINCT LOWER(COALESCE(NULLIF(album_artist, ''), artist)) FROM tracks "
+            "WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL"
+        )
+        local_artists = {row[0] for row in (cursor.fetchall() or []) if row and row[0]}
+        conn.close()
+
+        new_artists = [a for a in all_nav_artists if a.lower() not in local_artists]
+
+        if not new_artists:
+            logging.info("[DAILY] No new Navidrome artists found; database is up to date")
+            return
+
+        logging.info(f"[DAILY] Found {len(new_artists)} new artist(s) to import from Navidrome")
+
+        # Use existing boot import infrastructure – scan each new artist
+        def run_new_artist_import():
+            global scan_process_navidrome
+            # SPTNR_SKIP_SINGLES=1 prevents the popularity/single-detection pipeline
+            # from running during this metadata-only import pass.  Without this flag,
+            # scan_artist_to_db would also trigger expensive Last.fm/Spotify lookups
+            # for each track.  The daily scheduler handles popularity separately.
+            os.environ["SPTNR_SKIP_SINGLES"] = "1"
+            try:
+                artist_map = build_artist_index()
+                for artist_name in new_artists:
+                    info = artist_map.get(artist_name, {})
+                    artist_id = info.get("id") if isinstance(info, dict) else None
+                    logging.info(f"[DAILY] Importing new artist: {artist_name}")
+                    scan_artist_to_db(artist_name, artist_id, verbose=False, force=False)
+                logging.info(f"[DAILY] New artist import complete ({len(new_artists)} artist(s))")
+            except Exception as exc:
+                logging.error(f"[DAILY] Error importing new artists: {exc}", exc_info=True)
+            finally:
+                os.environ.pop("SPTNR_SKIP_SINGLES", None)
+                scan_process_navidrome = None
+
+        t = threading.Thread(target=run_new_artist_import, daemon=True, name="daily-new-artist-import")
+        t.start()
+        scan_process_navidrome = {"thread": t, "type": "daily_new_artist"}
+
+    except Exception as exc:
+        logging.error(f"[DAILY] _run_daily_new_artist_import error: {exc}", exc_info=True)
+
+
+def _run_daily_missing_releases_scan():
+    """Check every album artist in the catalogue for missing releases.
+
+    Delegates to the existing ``api_scan_all_missing_releases`` background
+    logic by calling it within a Flask application context so that it can
+    access ``request`` and other Flask globals safely.
+    """
+    global scan_process_missing_releases
+
+    logging.info("[DAILY] Starting daily missing-releases scan...")
+
+    # Skip if already running
+    if scan_process_missing_releases and isinstance(scan_process_missing_releases, dict):
+        t = scan_process_missing_releases.get("thread")
+        if t and t.is_alive():
+            logging.info("[DAILY] Missing-releases scan already running; skipping daily trigger")
+            return
+
+    try:
+        with app.test_request_context("/api/artist/scan-all-missing-releases"):
+            api_scan_all_missing_releases()
+    except Exception as exc:
+        logging.error(f"[DAILY] _run_daily_missing_releases_scan error: {exc}", exc_info=True)
+
+
 def _read_yaml(path):
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -1504,6 +1688,11 @@ if AUTO_BOOT_ND_IMPORT:
     except Exception as e:
         logging.error(f"Failed to start boot Navidrome import: {e}")
 
+# Start daily maintenance scheduler (new artist import + missing releases check)
+try:
+    _start_daily_scheduler()
+except Exception as e:
+    logging.error(f"Failed to start daily scheduler: {e}")
 
 def _needs_setup(cfg=None):
     cfg = cfg if cfg is not None else _read_yaml(CONFIG_PATH)[0]
@@ -9398,7 +9587,6 @@ def downloads_discover(category):
     
     # Route to appropriate template
     templates = {
-        'lastfm': 'downloads_discover_lastfm.html',
         'similar-artists': 'downloads_discover_similar_artists.html',
         'upcoming': 'downloads_discover_upcoming.html'
     }
@@ -19990,6 +20178,31 @@ def api_upcoming_releases():
         
         scraper = WikipediaReleaseScraper(db_path=DB_PATH)
         releases = scraper.get_upcoming_releases(artist_in_collection=filter_collection)
+
+        # Annotate each release with whether it is currently in the download queue
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            placeholder = "%s" if _is_postgres_connection(conn) else "?"
+            # Fetch all album-level queue entries that are not yet completed/failed
+            cursor.execute(
+                f"SELECT LOWER(COALESCE(album_artist, artist)), LOWER(album) "
+                f"FROM download_queue "
+                f"WHERE import_type = 'album' "
+                f"  AND status NOT IN ('completed', 'failed', 'cancelled') "
+                f"  AND album IS NOT NULL"
+            )
+            queue_albums = {(row[0], row[1]) for row in (cursor.fetchall() or []) if row and row[0] and row[1]}
+            conn.close()
+
+            for release in releases:
+                artist_key = (release.get("artist_name") or "").lower()
+                album_key = (release.get("album_name") or "").lower()
+                release["in_queue"] = (artist_key, album_key) in queue_albums
+        except Exception as queue_err:
+            logging.warning(f"Could not check download queue for upcoming releases: {queue_err}")
+            for release in releases:
+                release["in_queue"] = False
         
         # Group by month for UI display
         grouped = {}

@@ -30,7 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 import concurrent.futures
 from api_clients import session, timeout_safe_session
 from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
-from helpers.helpers import find_matching_spotify_single, strip_cover_attribution
+from helpers.helpers import find_matching_spotify_single, strip_cover_attribution, strip_parentheses as _strip_parentheses_unified
 from helpers.matching_utils import normalize_album
 from database_abstraction import DatabaseQuery, is_postgres_connection
 
@@ -212,15 +212,15 @@ def get_lastfm_config(config: dict) -> dict:
 def strip_parentheses(title: str) -> str:
     """
     Remove TRAILING parenthesized content from track title to get base version.
-    
-    This differs from helpers.strip_parentheses() which removes ALL parentheses.
-    For alternate take detection, we only want to remove trailing parentheses
-    (e.g., "Track (Live)" -> "Track") but keep middle ones (e.g., "Track (One) Two").
-    
+
+    Delegates to the unified ``helpers.helpers.strip_parentheses`` with
+    ``trailing_only=True``.  Only the last parenthetical group is removed so
+    that mid-title parentheses like "Track (One) Two" are left intact.
+
     Example: "Track (Live)" -> "Track"
     Example: "Track (One) Two" -> "Track (One) Two"  (no change)
     """
-    return re.sub(r'\s*\([^)]*\)\s*$', '', title).strip()
+    return _strip_parentheses_unified(title, trailing_only=True)
 
 
 def is_compilation_type(album_type: str) -> bool:
@@ -352,13 +352,14 @@ def strip_single_release_suffix(title: str) -> str:
     return _SINGLE_RELEASE_SUFFIX_RE.sub('', title).strip()
 
 
-def normalize_title_for_lookup(title: str) -> str:
+def normalize_title_for_lookup(title: str, extra_strip_patterns: list[str] | None = None) -> str:
     """Normalise a track title for external API lookups.
 
     Applies all title-cleaning steps in sequence:
     1. ``strip_cover_attribution`` – removes cover credits like "(cover)"
     2. ``strip_remaster_suffix``   – removes remastered year markers
     3. ``strip_single_release_suffix`` – removes radio-edit/single-version suffixes
+    4. Optional extra patterns from ``strip_parentheses_filters`` config key
 
     The resulting title matches how Last.fm, MusicBrainz, Discogs, and Spotify
     index tracks – without release-specific qualifiers that cause lookup misses.
@@ -369,7 +370,10 @@ def normalize_title_for_lookup(title: str) -> str:
       "Higher (radio edit / remastered 2024)"         → "Higher"
       "With Arms Wide Open (single version / remastered 2024)" → "With Arms Wide Open"
     """
-    return strip_single_release_suffix(strip_remaster_suffix(strip_cover_attribution(title)))
+    result = strip_single_release_suffix(strip_remaster_suffix(strip_cover_attribution(title)))
+    if extra_strip_patterns:
+        result = _strip_parentheses_unified(result, trailing_only=False, extra_patterns=extra_strip_patterns)
+    return result
 
 
 def is_remastered_only_variant(title: str) -> bool:
@@ -4458,7 +4462,7 @@ def popularity_scan(
                 # are populated even when the album's popularity was already scanned recently.
                 # This ensures writer data is always kept up to date from MusicBrainz.
                 writer_updates = []
-                if HAVE_MUSICBRAINZ and not singles_only:
+                if HAVE_MUSICBRAINZ:
                     for track in album_tracks:
                         track_id = track["id"]
                         title = track["title"]

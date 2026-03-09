@@ -807,12 +807,20 @@ class WikipediaReleaseScraper:
         albums_in_collection = set()
         
         try:
-            cursor.execute("SELECT DISTINCT LOWER(artist) FROM tracks WHERE artist IS NOT NULL")
+            # Include both track-level artist and album_artist so that all catalog artists
+            # are matched correctly (e.g. an artist who only appears as album_artist is still found)
+            cursor.execute(
+                "SELECT DISTINCT LOWER(COALESCE(NULLIF(album_artist, ''), artist)) FROM tracks "
+                "WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL"
+            )
             rows = cursor.fetchall() or []
             artists_in_collection = {row[0] for row in rows if row and row[0]}
             
-            # Get list of albums in collection
-            cursor.execute("SELECT DISTINCT LOWER(artist), LOWER(album) FROM tracks WHERE artist IS NOT NULL AND album IS NOT NULL")
+            # Get list of albums in collection (keyed by canonical album_artist or artist)
+            cursor.execute(
+                "SELECT DISTINCT LOWER(COALESCE(NULLIF(album_artist, ''), artist)), LOWER(album) "
+                "FROM tracks WHERE album IS NOT NULL AND album != ''"
+            )
             rows = cursor.fetchall() or []
             albums_in_collection = {(row[0], row[1]) for row in rows if row and row[0] and row[1]}
         except (sqlite3.OperationalError, TypeError) as e:
