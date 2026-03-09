@@ -2,6 +2,10 @@
 {% block title %}Config · Popularr{% endblock %}
 {% block content %}
 <div class="container-fluid py-3 py-md-4">
+  <script>
+    // Make config data available to JavaScript
+    window.pageConfig = {{ config | tojson }};
+  </script>
   <div class="row mb-3">
     <div class="col-12 col-md-auto">
       <h1 class="h3 mb-2">
@@ -39,6 +43,7 @@
         <a href="#watcher" class="btn btn-sm btn-outline-primary">Automation</a>
         <a href="#api-integrations" class="btn btn-sm btn-outline-primary">API Keys</a>        <a href="#sync-jobs" class="btn btn-sm btn-outline-primary">Sync Jobs</a>
         <a href="#database" class="btn btn-sm btn-outline-primary">Database</a>
+        <a href="#search-filters" class="btn btn-sm btn-outline-primary">Search Filters</a>
         <a href="#logging" class="btn btn-sm btn-outline-primary">Logging</a>
       </div>
     </div>
@@ -864,6 +869,64 @@
     </div>
   </div>
 
+  <!-- Search Strip Keywords Section -->
+  <div class="card shadow-sm mb-3" id="search-filters">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <div class="d-flex justify-content-between align-items-center">
+        <div>
+          <h5 class="mb-0"><i class="bi bi-funnel"></i> Search Filters</h5>
+          <small class="text-muted">Manage keywords that trigger removal of parenthetical content during API searches</small>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="alert alert-info mb-3">
+        <i class="bi bi-info-circle"></i>
+        <strong>What are search filters?</strong> When searching external APIs (Spotify, MusicBrainz, Last.fm, etc), 
+        track titles often contain edition markers like <code>(Remastered)</code>, <code>(Radio Edit)</code>, etc. 
+        These filters remove parenthetical content for <strong>the same song, different cut</strong> (remasters, edits, versions).
+        <br><br>
+        <strong>Note:</strong> Live versions, remixes, acoustic versions, etc. are <strong>different recordings</strong> 
+        and should be searched with their parentheses intact for accurate matching.
+        <br><br>
+        <strong>Examples:</strong>
+        <ul class="mb-0 mt-2">
+          <li>"Song (Remastered)" → "Song" <span class="text-muted">(same song)</span></li>
+          <li>"Song (Radio Edit)" → "Song" <span class="text-muted">(same song, radio cut)</span></li>
+          <li>"Song (Live)" → "Song (Live)" <span class="text-success">(different recording, keep parentheses)</span></li>
+          <li>"Song (Acoustic)" → "Song (Acoustic)" <span class="text-success">(different recording, keep parentheses)</span></li>
+        </ul>
+      </div>
+
+      <div class="row g-3 mb-3">
+        <div class="col-12">
+          <label class="form-label"><strong>Strip Keywords</strong></label>
+          <div class="border rounded p-3" style="background-color: #f8f9fa;">
+            <div id="stripKeywordsList" class="d-flex flex-wrap gap-2 mb-3">
+              <!-- Keywords will be populated by JavaScript -->
+            </div>
+            <div class="input-group" style="max-width: 400px;">
+              <input type="text" class="form-control" id="newKeywordInput" placeholder="e.g., remix, live, bonus" autocomplete="off">
+              <button class="btn btn-outline-primary" type="button" onclick="addStripKeyword()">
+                <i class="bi bi-plus-circle"></i> Add
+              </button>
+            </div>
+            <small class="d-block text-muted mt-2">Press Enter or click Add to add a new keyword</small>
+          </div>
+        </div>
+      </div>
+
+      <div class="row g-3">
+        <div class="col-12">
+          <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetStripKeywords()">
+            <i class="bi bi-arrow-counterclockwise"></i> Reset to Defaults
+          </button>
+          <small class="text-muted ms-2">Restores the system default keywords</small>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Features & Weights Section - Dynamically Rendered -->
   <div id="featuresWeightsContainer"></div>
 
@@ -911,7 +974,22 @@
 </div>
 
 <script>
+// Default search strip keywords
+// Only includes terms that indicate "same song, different cut" - not alternate versions
+const DEFAULT_STRIP_KEYWORDS = [
+  'remaster', 'remastered',
+  'radio edit', 'radio mix',
+  'single version', 'album version',
+  'deluxe', 'deluxe edition',
+  'extended', 'extended edition',
+  'expanded', 'expanded edition',
+  'edition'
+];
+
+// Initialize strip keywords UI on page load
 document.addEventListener('DOMContentLoaded', function() {
+  initializeStripKeywords();
+  
   var cancelBtn = document.getElementById('cancelBtn');
   if (cancelBtn) {
     cancelBtn.addEventListener('click', function(e) {
@@ -921,6 +999,110 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   }
 });
+
+// Initialize the keywords list from config
+function initializeStripKeywords() {
+  const config = window.pageConfig || {}; // Assuming page config is available globally
+  const keywords = config.strip_parentheses_filters || [];
+  const keywordsList = document.getElementById('stripKeywordsList');
+  
+  if (!keywordsList) return;
+  
+  // Use defaults if no keywords configured
+  const displayKeywords = keywords.length > 0 ? keywords : DEFAULT_STRIP_KEYWORDS;
+  
+  // Render keyword badges
+  displayKeywords.forEach(keyword => {
+    addKeywordBadge(keyword);
+  });
+}
+
+// Render a single keyword badge
+function addKeywordBadge(keyword) {
+  const list = document.getElementById('stripKeywordsList');
+  if (!list) return;
+  
+  const badge = document.createElement('span');
+  badge.className = 'badge bg-primary d-flex align-items-center gap-2';
+  badge.innerHTML = `
+    ${escapeHtml(keyword)}
+    <button type="button" class="btn-close btn-close-white" aria-label="Remove" onclick="removeKeywordBadge(this)"></button>
+  `;
+  list.appendChild(badge);
+}
+
+// Remove a keyword badge
+function removeKeywordBadge(btn) {
+  btn.closest('.badge').remove();
+}
+
+// Add a new keyword
+function addStripKeyword() {
+  const input = document.getElementById('newKeywordInput');
+  if (!input) return;
+  
+  const keyword = input.value.trim().toLowerCase();
+  
+  if (!keyword) {
+    showToast('Error', 'Please enter a keyword', 'warning');
+    return;
+  }
+  
+  // Check if keyword already exists
+  const existingKeywords = Array.from(
+    document.querySelectorAll('#stripKeywordsList .badge')
+  ).map(el => {
+    const text = el.textContent.trim();
+    return text.substring(0, text.length - 1).trim(); // Remove the × button text
+  });
+  
+  if (existingKeywords.map(k => k.toLowerCase()).includes(keyword.toLowerCase())) {
+    showToast('Warning', 'This keyword already exists', 'warning');
+    return;
+  }
+  
+  addKeywordBadge(keyword);
+  input.value = '';
+  input.focus();
+}
+
+// Allow Enter key to add keyword
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Enter' && document.activeElement && document.activeElement.id === 'newKeywordInput') {
+    e.preventDefault();
+    addStripKeyword();
+  }
+});
+
+// Reset keywords to defaults
+function resetStripKeywords() {
+  if (!confirm('Reset search filter keywords to system defaults?')) {
+    return;
+  }
+  
+  const list = document.getElementById('stripKeywordsList');
+  if (!list) return;
+  
+  list.innerHTML = '';
+  DEFAULT_STRIP_KEYWORDS.forEach(keyword => {
+    addKeywordBadge(keyword);
+  });
+  
+  showToast('Success', 'Keywords reset to defaults', 'success');
+}
+
+// Utility function to escape HTML
+function escapeHtml(text) {
+  const map = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#039;'
+  };
+  return text.replace(/[&<>"']/g, m => map[m]);
+}
+
 function showToast(title, message, type = 'info') {
   const toast = new bootstrap.Toast(document.getElementById('configToast'));
   document.getElementById('toastTitle').textContent = title;
@@ -1049,8 +1231,11 @@ function buildConfigObject() {
       console: getValue('log_console', 'true') === 'true'
     },
     strip_parentheses_filters: Array.from(
-      document.querySelectorAll('#stripParenthesesFilters .strip-filter-badge[data-value]')
-    ).map(el => el.getAttribute('data-value')).filter(Boolean)
+      document.querySelectorAll('#stripKeywordsList .badge')
+    ).map(badge => {
+      // Extract only the text content, excluding the button
+      return badge.childNodes[0].textContent.trim();
+    }).filter(Boolean)
   };
 }
 

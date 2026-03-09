@@ -8696,7 +8696,8 @@ def config_save_json():
             'enable_web_api_key': data.get('enable_web_api_key', True),
             'features': features,
             'weights': _as_dict(data.get('weights', {})),
-            'single_detection': _as_dict(data.get('single_detection', {}))
+            'single_detection': _as_dict(data.get('single_detection', {})),
+            'strip_parentheses_filters': data.get('strip_parentheses_filters', [])
         }
         # Always set main navidrome section to first user for compatibility
         if navidrome_users and len(navidrome_users) > 0:
@@ -8716,6 +8717,8 @@ def config_save_json():
                 config_dict['weights'] = existing_config['weights']
             if 'single_detection' not in data and 'single_detection' in existing_config:
                 config_dict['single_detection'] = existing_config['single_detection']
+            if 'strip_parentheses_filters' not in data and 'strip_parentheses_filters' in existing_config:
+                config_dict['strip_parentheses_filters'] = existing_config['strip_parentheses_filters']
             # Also preserve legacy navidrome config if it exists (for backward compatibility)
             if 'navidrome' in existing_config and not config_dict.get('navidrome_users'):
                 config_dict['navidrome'] = existing_config['navidrome']

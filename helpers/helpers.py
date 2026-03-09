@@ -7,22 +7,18 @@ from urllib3.util.ssl_ import create_urllib3_context
 
 
 # Default patterns inside parentheses that are stripped during popularity/single
-# detection lookups.  Users can extend or override this list via the
-# ``strip_parentheses_filters`` key in config.yaml.
+# detection lookups. Only includes terms for "same song, different cut" - not alternate versions.
+# Users can extend or override this list via the ``strip_parentheses_filters`` key in config.yaml.
 DEFAULT_STRIP_PARENTHESES_FILTERS: list[str] = [
-    "live",
-    "demo",
-    "acoustic",
-    "remix",
+    "remaster",
+    "remastered",
     "radio edit",
     "single version",
     "album version",
-    "remaster",
-    "remastered",
-    "cover",
-    "instrumental",
-    "unplugged",
-    "edit",
+    "deluxe",
+    "extended",
+    "expanded",
+    "edition",
 ]
 
 

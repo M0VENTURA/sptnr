@@ -23,6 +23,11 @@ import unicodedata
 import re
 import logging
 from typing import Optional, Dict, Tuple
+try:
+    from helpers.config_loader import load_config
+except ImportError:
+    def load_config():  # Fallback if config_loader not available
+        return {}
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +153,99 @@ def normalize_title(title: str) -> str:
         result = result + roman_suffix
     
     return result
+
+
+def strip_search_parentheses(title: str) -> str:
+    """
+    Strip parenthetical/bracketed suffixes for search queries.
+    
+    This function removes qualifiers from track titles that are search-interfering:
+    - Remastered versions: "(Remastered)", "(2024 Remaster)", "(Remastered 2020)"
+    - Radio edits: "(Radio Edit)", "(Radio Mix)"
+    - Single versions: "(Single Version)", "(Album Version)"
+    - Other edition markers: "(Deluxe)", "(Extended)", "(Live)"
+    
+    Purpose:
+    When searching for a track like "Song (Remastered)" on MusicBrainz/Spotify,
+    we want to find the original "Song" track, not duplicate/edit variants.
+    This ensures accurate metadata fetching for popularity  and writer credit lookups.
+    
+    IMPORTANT: This is specifically for SEARCH normalization, not for matching/comparison.
+    It returns the normalized search term that should be used when querying APIs.
+    
+    Examples:
+        "Love Song (Remastered)" -> "Love Song"
+        "Track (Radio Edit)" -> "Track"
+        "Song (2024 Remastered Edition)" -> "Song"
+        "Artist Name (Single Version)" -> "Artist Name"
+        "Album (Deluxe Edition)" -> "Album"
+        "Song - Remastered 2020" -> "Song"
+        "Song [Live]" -> "Song"
+        "Song" -> "Song"  # No change if no parentheses
+    
+    Args:
+        title: Track or album title that may contain parenthetical edition markers
+        
+    Returns:
+        Simplified title without parenthetical edition markers, ready for API searches
+    """
+    if not title:
+        return ""
+    
+    # Get custom keywords from config if available, otherwise use defaults
+    try:
+        config = load_config()
+        SEARCH_STRIP_KEYWORDS = tuple(config.get('strip_parentheses_filters', []))
+        if not SEARCH_STRIP_KEYWORDS:
+            # Fall back to defaults if config is empty
+            # Only includes terms for "same song, different cut" - not alternate versions
+            SEARCH_STRIP_KEYWORDS = (
+                'remaster', 'remastered',           # Remaster versions like (Remastered), (2024 Remaster)
+                'radio edit', 'radio mix',          # Radio edits like (Radio Edit), (Radio Mix)
+                'single version', 'album version',  # Version markers like (Single Version), (Album Version)
+                'deluxe', 'deluxe edition',         # Deluxe editions
+                'extended', 'extended edition',     # Extended editions
+                'expanded', 'expanded edition',     # Expanded editions
+                'edition',                          # Generic edition marker
+            )
+    except Exception:
+        # Fall back to defaults if config loading fails
+        # Only includes terms for "same song, different cut" - not alternate versions
+        SEARCH_STRIP_KEYWORDS = (
+            'remaster', 'remastered',           # Remaster versions like (Remastered), (2024 Remaster)
+            'radio edit', 'radio mix',          # Radio edits like (Radio Edit), (Radio Mix)
+            'single version', 'album version',  # Version markers like (Single Version), (Album Version)
+            'deluxe', 'deluxe edition',         # Deluxe editions
+            'extended', 'extended edition',     # Extended editions
+            'expanded', 'expanded edition',     # Expanded editions
+            'edition',                          # Generic edition marker
+        )
+    
+    # Remove content in parentheses/brackets if it contains any search-strip keyword
+    # Pattern: (anything with keyword) or [anything with keyword]
+    def should_remove_parens(match):
+        content = match.group(0)  # The entire matched parenthetical
+        content_lower = content.lower()
+        # Check if any keyword is in this parenthetical
+        for keyword in SEARCH_STRIP_KEYWORDS:
+            if keyword in content_lower:
+                return ""  # Remove this parenthetical
+        return content  # Keep it if no keywords match
+    
+    # Match parentheses/brackets and their contents, but keep some if no keywords detected
+    result = re.sub(r'\([^)]*\)|\[[^\]]*\]', should_remove_parens, title, flags=re.IGNORECASE)
+    
+    # Also handle dash-separated suffixes like "- Remastered 2020", "- Radio Edit"
+    # Pattern: dash + optional whitespace + keyword + anything until end
+    for keyword in SEARCH_STRIP_KEYWORDS:
+        result = re.sub(r'\s*-\s*' + re.escape(keyword) + r'.*$', '', result, flags=re.IGNORECASE)
+    
+    # Clean up any trailing/multiple spaces
+    result = re.sub(r'\s+', ' ', result).strip()
+    
+    return result
+
+
 
 
 def normalize_artist(artist: str) -> str:

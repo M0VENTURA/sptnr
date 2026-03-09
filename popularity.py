@@ -31,7 +31,7 @@ import concurrent.futures
 from api_clients import session, timeout_safe_session
 from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
 from helpers.helpers import find_matching_spotify_single, strip_cover_attribution, strip_parentheses as _strip_parentheses_unified
-from helpers.matching_utils import normalize_album
+from helpers.matching_utils import normalize_album, strip_search_parentheses
 from database_abstraction import DatabaseQuery, is_postgres_connection
 
 # Import centralized logging
@@ -4567,6 +4567,8 @@ def popularity_scan(
                         
                         # Use normalized title for API searches to improve match accuracy
                         api_lookup_title = normalized_title
+                        # Strip parentheses (featured artist, remix info, etc.) for better search accuracy
+                        api_lookup_title = strip_search_parentheses(api_lookup_title)
 
                         log_info(f'Processing track: "{title}" (Track ID: {track_id})')
                         log_debug(f'Track details - id: {track_id}, title: {title}, album: {album}, artist: {track_artist}')
