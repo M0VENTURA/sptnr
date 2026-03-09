@@ -15673,6 +15673,93 @@ def api_queue_delete(queue_id):
         return jsonify({"error": str(e)}), 400
 
 
+@app.route("/api/queue/cleanup-copied", methods=["POST"])
+def api_queue_cleanup_copied_sources():
+    """Delete copied source files from downloads without removing queue rows."""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+
+        downloads_root = os.path.abspath(os.environ.get("DOWNLOADS_DIR", "/downloads"))
+
+        cursor.execute("""
+            SELECT id, file_path, found_filename
+            FROM download_queue
+            WHERE copied_individually = 1 OR status = 'imported'
+        """)
+        items = cursor.fetchall()
+
+        def _is_within_downloads(path_value):
+            if not path_value:
+                return False
+            try:
+                abs_path = os.path.abspath(path_value)
+                return os.path.commonpath([abs_path, downloads_root]) == downloads_root
+            except Exception:
+                return False
+
+        def _delete_if_exists(path_value):
+            if not path_value or not os.path.isfile(path_value):
+                return False
+            if not _is_within_downloads(path_value):
+                return False
+            try:
+                os.remove(path_value)
+                return not os.path.exists(path_value)
+            except Exception as del_err:
+                logging.warning(f"[CLEANUP] Failed to delete '{path_value}': {del_err}")
+                return False
+
+        deleted_count = 0
+        scanned_count = 0
+        deleted_paths = []
+
+        for row in items:
+            queue_id = row['id'] if isinstance(row, dict) else row[0]
+            file_path = row['file_path'] if isinstance(row, dict) else row[1]
+            found_filename = row['found_filename'] if isinstance(row, dict) else row[2]
+
+            scanned_count += 1
+            deleted = False
+
+            if _delete_if_exists(file_path):
+                deleted = True
+                deleted_paths.append(file_path)
+
+            if not deleted and found_filename and os.path.isdir(downloads_root):
+                for root, _dirs, files in os.walk(downloads_root):
+                    if found_filename in files:
+                        candidate = os.path.join(root, found_filename)
+                        if _delete_if_exists(candidate):
+                            deleted = True
+                            deleted_paths.append(candidate)
+                            break
+
+            if deleted:
+                deleted_count += 1
+                cursor.execute(
+                    f"UPDATE download_queue SET updated_at = CURRENT_TIMESTAMP WHERE id = {placeholder}",
+                    (queue_id,),
+                )
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            "success": True,
+            "scanned": scanned_count,
+            "deleted": deleted_count,
+            "deleted_paths": deleted_paths,
+            "message": f"Cleanup complete: deleted {deleted_count} copied source file(s)"
+        })
+
+    except Exception as e:
+        logging.error(f"Error cleaning copied source files: {e}")
+        return jsonify({"error": str(e)}), 400
+
+
 @app.route("/api/queue/clear", methods=["POST"])
 def api_queue_clear():
     """Clear all items from download queue"""
@@ -15827,7 +15914,7 @@ def _build_queue_target_path(music_root_value, album_artist_value, year_value, a
 
 @app.route("/api/queue/<int:queue_id>/organize", methods=["POST"])
 def api_queue_organize(queue_id):
-    """Move a single file from /downloads to /music (individual copy).
+    """Copy a single file from /downloads to /music (individual copy).
 
     - Searches the downloads folder independently for the track when
       file_path is missing or the file no longer exists at that path.
@@ -16000,7 +16087,8 @@ def api_queue_organize(queue_id):
         except Exception as queue_meta_err:
             logging.debug(f"[ORGANIZE] Could not persist resolved metadata to queue item {queue_id}: {queue_meta_err}")
 
-        # Update file metadata from release info before copying
+        # Update file metadata from release info before copying.
+        # Existing tags are stripped first to avoid stale source metadata.
         try:
             from post_download_processor import update_file_metadata
             metadata = {
@@ -16013,7 +16101,7 @@ def api_queue_organize(queue_id):
                 'disc_number': disc_number,
             }
             if any(v for v in [title, artist, album, year, track_number, album_artist] if v):
-                success = update_file_metadata(file_path, metadata)
+                success = update_file_metadata(file_path, metadata, clear_existing_tags=True)
                 if success:
                     logging.info(f"[ORGANIZE] ✅ Metadata updated for: {file_path}")
                 else:
@@ -16034,13 +16122,20 @@ def api_queue_organize(queue_id):
             file_path,
         )
 
-        # Move file
-        logging.info(f"[ORGANIZE] Moving file from {file_path} to {target_path}")
-        shutil.move(file_path, target_path)
+        # Copy file and retain source until explicit cleanup.
+        logging.info(f"[ORGANIZE] Copying file from {file_path} to {target_path}")
+        shutil.copy2(file_path, target_path)
 
-        # Verify it moved
-        if os.path.exists(target_path) and not os.path.exists(file_path):
-            logging.info(f"[ORGANIZE] ✅ File moved successfully: {target_path}")
+        # Verify copy integrity while source remains in downloads.
+        copied_ok = (
+            os.path.exists(target_path)
+            and os.path.getsize(target_path) > 0
+            and os.path.exists(file_path)
+            and os.path.getsize(file_path) == os.path.getsize(target_path)
+        )
+
+        if copied_ok:
+            logging.info(f"[ORGANIZE] ✅ File copied successfully: {target_path}")
             # Mark as imported AND as individually copied so the album auto-move
             # knows this track is already done.
             update_queue_item(
@@ -16052,14 +16147,14 @@ def api_queue_organize(queue_id):
             )
             return jsonify({
                 "success": True,
-                "message": "File copied to library successfully",
+                "message": "File copied to library successfully (source retained for cleanup)",
                 "target_path": target_path,
                 "copied_individually": True
             })
         else:
-            logging.error(f"[ORGANIZE] Move verification failed: target_exists={os.path.exists(target_path)}, original_exists={os.path.exists(file_path)}")
-            update_queue_item(queue_id, status='failed', failure_reason='File move verification failed')
-            return jsonify({"error": "File move verification failed"}), 400
+            logging.error(f"[ORGANIZE] Copy verification failed: target_exists={os.path.exists(target_path)}, source_exists={os.path.exists(file_path)}")
+            update_queue_item(queue_id, status='failed', failure_reason='File copy verification failed')
+            return jsonify({"error": "File copy verification failed"}), 400
 
     except Exception as e:
         logging.error(f"[ORGANIZE] Error organizing file: {e}")
@@ -16132,6 +16227,10 @@ def api_queue_organize_group():
         for item in items:
             try:
                 file_path = item['file_path']
+                item_artist = item['artist']
+                item_title = item['title']
+                item_track_number = item['track_number']
+                item_disc_number = item['disc_number']
                 
                 if not os.path.exists(file_path):
                     error_msg = f"File not found at {file_path}"
@@ -16147,6 +16246,44 @@ def api_queue_organize_group():
                 resolved_album_name = album_name if album_name else item['album']
                 resolved_year = year if year else item['year']
 
+                # Pull canonical release metadata for this queue item from MusicBrainz tables when available.
+                try:
+                    mb_conn = get_db()
+                    mb_cursor = mb_conn.cursor()
+                    mb_is_pg = _is_postgres_connection(mb_conn)
+                    mb_placeholder = "%s" if mb_is_pg else "?"
+
+                    mb_cursor.execute(
+                        f"""
+                        SELECT r.release_title, r.artist, r.release_year,
+                               rt.track_number, rt.track_title, rt.track_artist
+                        FROM musicbrainz_release_tracks rt
+                        JOIN musicbrainz_releases r ON r.release_id = rt.release_id
+                        WHERE rt.queue_id = {mb_placeholder}
+                        LIMIT 1
+                        """,
+                        (item['id'],),
+                    )
+                    mb_row = mb_cursor.fetchone()
+                    mb_conn.close()
+
+                    if mb_row:
+                        resolved_album_name = _row_get(mb_row, 'release_title', 0) or resolved_album_name
+                        resolved_album_artist = _row_get(mb_row, 'artist', 1) or resolved_album_artist
+                        resolved_year = _row_get(mb_row, 'release_year', 2) or resolved_year
+                        item_track_number = _row_get(mb_row, 'track_number', 3)
+                        item_track_title = _row_get(mb_row, 'track_title', 4)
+                        item_track_artist = _row_get(mb_row, 'track_artist', 5)
+
+                        if item_track_number:
+                            item_track_number = item_track_number
+                        if item_track_title:
+                            item_title = item_track_title
+                        if item_track_artist:
+                            item_artist = item_track_artist
+                except Exception as mb_item_err:
+                    logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: MusicBrainz metadata enrichment skipped: {mb_item_err}")
+
                 # Verify downloaded metadata has a close artist match before any update or file copy.
                 try:
                     embedded_metadata = read_mp3_metadata(file_path) or {}
@@ -16154,7 +16291,7 @@ def api_queue_organize_group():
                     embedded_metadata = {}
                     logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: Could not read embedded metadata for artist check: {metadata_read_error}")
 
-                expected_artist = item['artist'] or resolved_album_artist
+                expected_artist = item_artist or resolved_album_artist
                 artist_candidates = [
                     embedded_metadata.get('artist'),
                     embedded_metadata.get('album_artist'),
@@ -16172,7 +16309,7 @@ def api_queue_organize_group():
                             f"Artist metadata mismatch (expected='{expected_artist}', "
                             f"found='{best_candidate}', score={best_score:.2f}, threshold={artist_match_threshold:.2f})"
                         )
-                        errors.append(f"{item['title']}: {error_msg}")
+                        errors.append(f"{item_title}: {error_msg}")
                         update_queue_item(item['id'], status='failed', failure_reason=error_msg)
                         logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
                         log_debug(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
@@ -16184,7 +16321,7 @@ def api_queue_organize_group():
                     )
                 else:
                     error_msg = "Artist metadata check failed (no embedded artist/album_artist tags found)"
-                    errors.append(f"{item['title']}: {error_msg}")
+                    errors.append(f"{item_title}: {error_msg}")
                     update_queue_item(item['id'], status='failed', failure_reason=error_msg)
                     logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
                     log_debug(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
@@ -16194,29 +16331,32 @@ def api_queue_organize_group():
                 try:
                     update_queue_item(
                         item['id'],
-                        artist=item['artist'],  # Keep original artist
+                        artist=item_artist,
+                        title=item_title,
                         album=resolved_album_name,
                         album_artist=resolved_album_artist,
-                        year=resolved_year
+                        year=resolved_year,
+                        track_number=item_track_number,
                     )
-                    logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Updated metadata - artist={item['artist']}, album={resolved_album_name}, album_artist={resolved_album_artist}, year={resolved_year}")
+                    logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Updated metadata - artist={item_artist}, album={resolved_album_name}, album_artist={resolved_album_artist}, year={resolved_year}")
                 except Exception as meta_error:
                     logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: Failed to update metadata: {meta_error}")
                     log_debug(f"[ORGANIZE_GROUP] Item {item['id']}: Failed to update metadata: {meta_error}")
 
                 # Update embedded file tags before moving so tracks attach to the target album correctly.
+                # Existing tags are stripped first to avoid carrying source metadata.
                 try:
                     from post_download_processor import update_file_metadata
                     file_metadata = {
-                        'title': item['title'],
-                        'artist': item['artist'],
+                        'title': item_title,
+                        'artist': item_artist,
                         'album_artist': resolved_album_artist,
                         'album': resolved_album_name,
                         'year': resolved_year,
-                        'track_number': item['track_number'],
-                        'disc_number': item['disc_number'],
+                        'track_number': item_track_number,
+                        'disc_number': item_disc_number,
                     }
-                    tag_success = update_file_metadata(file_path, file_metadata)
+                    tag_success = update_file_metadata(file_path, file_metadata, clear_existing_tags=True)
                     if tag_success:
                         logging.info(f"[ORGANIZE_GROUP] Item {item['id']}: ✅ Metadata tags updated")
                     else:
@@ -16232,9 +16372,9 @@ def api_queue_organize_group():
                         resolved_album_artist,
                         resolved_year,
                         resolved_album_name,
-                        item['artist'],
-                        item['title'],
-                        item['track_number'],
+                        item_artist,
+                        item_title,
+                        item_track_number,
                         file_path,
                     )
                     
@@ -16262,73 +16402,22 @@ def api_queue_organize_group():
                         # Mark queue item imported and point to the new location
                         update_queue_item(item['id'], status='imported', file_path=target_path)
 
-                        # Only delete source once destination is present and DB state confirms either:
-                        # 1) queue item points to new path with expected album, OR
-                        # 2) track exists in library DB under the expected album.
-                        delete_source = False
-                        try:
-                            verify_conn = get_db()
-                            verify_cursor = verify_conn.cursor()
-                            verify_is_pg = _is_postgres_connection(verify_conn)
-                            verify_placeholder = "%s" if verify_is_pg else "?"
-
-                            verify_cursor.execute(
-                                f"""
-                                SELECT 1
-                                FROM download_queue
-                                WHERE id = {verify_placeholder}
-                                  AND status = 'imported'
-                                  AND file_path = {verify_placeholder}
-                                  AND LOWER(COALESCE(album, '')) = LOWER({verify_placeholder})
-                                LIMIT 1
-                                """,
-                                (item['id'], target_path, str(resolved_album_name or '')),
-                            )
-                            in_queue_confirmed = verify_cursor.fetchone() is not None
-
-                            verify_cursor.execute(
-                                f"""
-                                SELECT 1
-                                FROM tracks
-                                WHERE LOWER(COALESCE(title, '')) = LOWER({verify_placeholder})
-                                  AND LOWER(COALESCE(artist, '')) = LOWER({verify_placeholder})
-                                  AND LOWER(COALESCE(album, '')) = LOWER({verify_placeholder})
-                                LIMIT 1
-                                """,
-                                (item['title'], item['artist'], str(resolved_album_name or '')),
-                            )
-                            in_library_confirmed = verify_cursor.fetchone() is not None
-
-                            verify_conn.close()
-                            delete_source = in_queue_confirmed or in_library_confirmed
-                        except Exception as verify_error:
-                            logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: Verification check failed: {verify_error}")
-                            log_debug(f"[ORGANIZE_GROUP] Item {item['id']}: Verification check failed: {verify_error}")
-
-                        if delete_source:
-                            try:
-                                os.remove(file_path)
-                                if os.path.exists(file_path):
-                                    logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: Source file still exists after delete attempt")
-                                else:
-                                    logging.info(f"[ORGANIZE_GROUP] Item {item['id']}: ✅ Source deleted after verification")
-                            except Exception as delete_error:
-                                logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: Source delete skipped/failed: {delete_error}")
-                                log_debug(f"[ORGANIZE_GROUP] Item {item['id']}: Source delete skipped/failed: {delete_error}")
-                        else:
-                            logging.info(f"[ORGANIZE_GROUP] Item {item['id']}: Source retained (awaiting DB/location confirmation)")
+                        logging.info(
+                            f"[ORGANIZE_GROUP] Item {item['id']}: Source retained in /downloads; "
+                            f"use cleanup action to remove copied files"
+                        )
 
                         updated_count += 1
                     else:
                         error_msg = f"Copy verification failed"
-                        errors.append(f"{item['title']}: {error_msg}")
+                        errors.append(f"{item_title}: {error_msg}")
                         update_queue_item(item['id'], status='failed', failure_reason=error_msg)
                         logging.error(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
                         log_debug(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
                         
                 except Exception as move_error:
                     error_msg = str(move_error)
-                    errors.append(f"{item['title']}: {error_msg}")
+                    errors.append(f"{item_title}: {error_msg}")
                     update_queue_item(item['id'], status='failed', failure_reason=error_msg)
                     logging.error(f"[ORGANIZE_GROUP] Item {item['id']}: Copy failed - {type(move_error).__name__}: {move_error}")
                     log_debug(f"[ORGANIZE_GROUP] Item {item['id']}: Copy failed - {type(move_error).__name__}: {move_error}")

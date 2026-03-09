@@ -845,6 +845,9 @@
             <span id="queueCompletedCount" style="display:none"></span>
           </h5>
           <div class="d-flex gap-2 align-items-center">
+            <button class="btn btn-sm btn-outline-danger" onclick="cleanupCopiedSources()" title="Delete copied source files from /downloads">
+              <i class="bi bi-trash3"></i> Cleanup Copied Sources
+            </button>
             <span class="badge bg-warning text-dark">
               <i class="bi bi-exclamation-triangle"></i> Unmatched files are shown with a warning badge
             </span>
@@ -4340,7 +4343,7 @@ async function loadQueueStatus() {
     
     // Separate items by status
     const active = data.active.filter(item => ['queued', 'searching', 'downloading'].includes(item.status));
-    const completed = data.completed.filter(item => ['completed', 'unmatched'].includes(item.status) && item.file_path);
+    const completed = data.completed.filter(item => ['completed', 'unmatched', 'possible_duplicate'].includes(item.status) && item.file_path);
     const failed = data.active.filter(item => item.status === 'failed');
 
     // Update counts (elements may not exist if queue tab is not shown)
@@ -4531,6 +4534,7 @@ function renderCompletedQueue(completed) {
                       <small class="text-muted">File: ${escapeHtml(item.found_filename || 'not yet detected')}</small>
                       ${alreadyCopied ? '<small class="badge bg-info text-dark ms-1">Already Copied</small>' : ''}
                       ${item.status === 'unmatched' ? '<small class="badge bg-warning text-dark ms-1"><i class="bi bi-exclamation-triangle"></i> Unmatched</small>' : ''}
+                      ${item.status === 'possible_duplicate' ? '<small class="badge bg-danger ms-1"><i class="bi bi-files"></i> Duplicate</small>' : ''}
                     </div>
                   </div>
                   <div class="d-flex gap-1 flex-wrap justify-content-end">
@@ -4587,6 +4591,7 @@ function renderCompletedQueue(completed) {
                   <small class="text-muted">File: ${escapeHtml(item.found_filename || 'not yet detected')}</small>
                   ${alreadyCopied ? '<br><span class="badge bg-info text-dark mt-1"><i class="bi bi-check-circle"></i> Already Copied</span>' : ''}
                   ${item.status === 'unmatched' ? '<br><span class="badge bg-warning text-dark mt-1"><i class="bi bi-exclamation-triangle"></i> Unmatched – no queue item found</span>' : ''}
+                  ${item.status === 'possible_duplicate' ? '<br><span class="badge bg-danger mt-1"><i class="bi bi-files"></i> Duplicate – already exists in queue/library</span>' : ''}
                 </div>
               </div>
               <div class="d-flex gap-2">
@@ -4929,13 +4934,18 @@ async function retryQueueItem(queueId) {
   }
 }
 
-async function deleteQueueItem(queueId) {
-  if (!confirm('Remove from queue?')) {
+async function deleteQueueItem(queueId, deleteDownloadsFile = false) {
+  const promptText = deleteDownloadsFile
+    ? 'Delete this item from queue AND remove its file from /downloads?'
+    : 'Remove from queue?';
+
+  if (!confirm(promptText)) {
     return;
   }
   
   try {
-    const response = await fetch(`/api/queue/${queueId}/delete`, {
+    const query = deleteDownloadsFile ? '?delete_download_file=1' : '';
+    const response = await fetch(`/api/queue/${queueId}/delete${query}`, {
       method: 'DELETE'
     });
     
@@ -4948,13 +4958,51 @@ async function deleteQueueItem(queueId) {
     const data = await response.json();
     
     if (data.success) {
-      alert('✅ Removed from queue');
+      if (deleteDownloadsFile) {
+        if (data.deleted_download_files && data.deleted_download_files.length > 0) {
+          alert(`✅ Removed from queue and deleted file from /downloads`);
+        } else {
+          alert(`✅ Removed from queue. No matching file was deleted from /downloads.`);
+        }
+      } else {
+        alert('✅ Removed from queue');
+      }
       await loadQueueStatus();
     } else {
       alert('❌ Error: ' + (data.error || 'Failed to delete'));
     }
   } catch (error) {
     console.error('Error deleting item:', error);
+    alert('❌ Network error: ' + error.message);
+  }
+}
+
+async function cleanupCopiedSources() {
+  if (!confirm('Delete copied source files from /downloads while keeping queue history?')) {
+    return;
+  }
+
+  try {
+    const response = await fetch('/api/queue/cleanup-copied', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+
+    if (!response.ok) {
+      console.error(`HTTP Error ${response.status}: ${response.statusText}`);
+      alert('❌ Server error: ' + response.statusText);
+      return;
+    }
+
+    const data = await response.json();
+    if (data.success) {
+      alert(`✅ ${data.message} (scanned ${data.scanned})`);
+      await loadQueueStatus();
+    } else {
+      alert('❌ Error: ' + (data.error || 'Cleanup failed'));
+    }
+  } catch (error) {
+    console.error('Error cleaning copied sources:', error);
     alert('❌ Network error: ' + error.message);
   }
 }
@@ -6091,7 +6139,11 @@ async function performBatchGrouping(groupType, groupName, groupArtist, itemIds) 
       }
     }
     if (data.success) {
-      alert(`✅ Grouped ${itemIds.length} items into "${groupName}"`);
+      let successMessage = `✅ Grouped ${itemIds.length} items into "${groupName}"`;
+      if (data.artist_skipped && data.artist_skipped > 0) {
+        successMessage += `\n\n⚠️ Kept original artist on ${data.artist_skipped} item${data.artist_skipped > 1 ? 's' : ''} to prevent cross-artist mismatch.`;
+      }
+      alert(successMessage);
       clearSelection();
       await loadQueueStatus();
       // Close modal

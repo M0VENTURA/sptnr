@@ -197,7 +197,7 @@ def fetch_musicbrainz_release_metadata(release_id):
         return None
 
 
-def update_file_metadata_with_albumart(file_path, metadata, cover_art_data=None):
+def update_file_metadata_with_albumart(file_path, metadata, cover_art_data=None, clear_existing_tags=True):
     """
     Update file metadata tags using mutagen, including album art and composer/writer/lyricist credits.
     
@@ -224,6 +224,14 @@ def update_file_metadata_with_albumart(file_path, metadata, cover_art_data=None)
         if ext == '.mp3':
             # Update MP3 tags
             audio = MP3(file_path, ID3=ID3)
+            # Start from a clean tag slate so stale source tags do not leak through.
+            if clear_existing_tags:
+                try:
+                    audio.delete(file_path)
+                except Exception:
+                    pass
+                audio = MP3(file_path, ID3=ID3)
+
             if audio.tags is None:
                 audio.add_tags()
             
@@ -289,6 +297,14 @@ def update_file_metadata_with_albumart(file_path, metadata, cover_art_data=None)
         elif ext == '.flac':
             # Update FLAC tags
             audio = FLAC(file_path)
+
+            # Remove existing Vorbis comments and embedded pictures first.
+            if clear_existing_tags:
+                try:
+                    audio.clear()
+                    audio.clear_pictures()
+                except Exception:
+                    pass
             
             if metadata.get('title'):
                 audio['title'] = [metadata['title']]
@@ -360,7 +376,7 @@ def update_file_metadata_with_albumart(file_path, metadata, cover_art_data=None)
         return False
 
 
-def update_file_metadata(file_path, metadata):
+def update_file_metadata(file_path, metadata, clear_existing_tags=True):
     """
     Update file metadata tags using mutagen (backward compatibility wrapper).
     
@@ -374,7 +390,12 @@ def update_file_metadata(file_path, metadata):
     Returns:
         bool: True if successful, False otherwise
     """
-    return update_file_metadata_with_albumart(file_path, metadata, cover_art_data=None)
+    return update_file_metadata_with_albumart(
+        file_path,
+        metadata,
+        cover_art_data=None,
+        clear_existing_tags=clear_existing_tags,
+    )
 
 
 def rename_and_move_file(file_path, metadata):
