@@ -333,7 +333,7 @@ class NavidromeClient:
             return names
 
         writers_list = []
-        _writer_roles = {"composer", "lyricist", "writer", "author"}
+        _writer_roles = {"composer", "lyricist", "writer", "author", "textwriter", "lyricswriter", "lyrics_writer"}
         
         credit_candidates = [
             track.get("writer"),
@@ -349,6 +349,25 @@ class NavidromeClient:
             for name in _normalize_people(candidate):
                 if name not in writers_list:
                     writers_list.append(name)
+        
+        # Extract from Navidrome native API tags field (custom/extended tags)
+        # Navidrome exposes additional metadata through the tags object that may not
+        # be available in standard Subsonic fields
+        tags = track.get("tags")
+        if isinstance(tags, dict):
+            tag_candidates = [
+                tags.get("lyricist"),
+                tags.get("writer"),
+                tags.get("textwriter"),
+                tags.get("lyricswriter"),
+                tags.get("lyrics_writer"),
+                tags.get("musicbrainz_lyricist"),
+                tags.get("tmcl:lyricist"),  # Role-based tags
+            ]
+            for candidate in tag_candidates:
+                for name in _normalize_people(candidate):
+                    if name and name not in writers_list:
+                        writers_list.append(name)
 
         # OpenSubsonic extension: Navidrome exposes lyricist/composer/writer credits
         # via a ``contributors`` array where each entry has a ``role`` string and an
@@ -396,12 +415,28 @@ class NavidromeClient:
                             extended_track.get("authors"),
                             extended_track.get("composer"),
                             extended_track.get("composers"),
-                            extended_track.get("albumArtist"),  # Sometimes lyricist is stored here
                         ]
                         for candidate in extended_candidates:
                             for name in _normalize_people(candidate):
                                 if name not in writers_list:
                                     writers_list.append(name)
+                        
+                        # Check extended metadata tags field
+                        extended_tags = extended_track.get("tags")
+                        if isinstance(extended_tags, dict):
+                            extended_tag_candidates = [
+                                extended_tags.get("lyricist"),
+                                extended_tags.get("writer"),
+                                extended_tags.get("textwriter"),
+                                extended_tags.get("lyricswriter"),
+                                extended_tags.get("lyrics_writer"),
+                                extended_tags.get("musicbrainz_lyricist"),
+                                extended_tags.get("tmcl:lyricist"),
+                            ]
+                            for candidate in extended_tag_candidates:
+                                for name in _normalize_people(candidate):
+                                    if name and name not in writers_list:
+                                        writers_list.append(name)
                         
                         # Check extended metadata contributors
                         extended_contributors = extended_track.get("contributors")
