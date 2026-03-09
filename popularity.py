@@ -2281,6 +2281,7 @@ def detect_single_for_track(
             # Continue with detection if we can't calculate album mean
     
     single_sources = []
+    medium_confidence_sources = []  # Track medium confidence sources for 2 medium = 1 high rule
     
     # Strip single-release version suffixes (e.g. "(Radio Edit)", "(Single Version)",
     # "(Album Version)") from the title before querying external APIs.
@@ -2347,6 +2348,7 @@ def detect_single_for_track(
             
             if matched_release:
                 single_sources.append("spotify")
+                medium_confidence_sources.append("spotify")
                 album_info = matched_release.get("album", {})
                 if verbose:
                     log_verbose(f"   âœ“ Spotify confirms single: {title}")
@@ -2377,6 +2379,7 @@ def detect_single_for_track(
                 )
                 if result:
                     single_sources.append("musicbrainz")
+                    medium_confidence_sources.append("musicbrainz")
                     log_info(f"   âœ“ MusicBrainz confirms single: {title}")
                 else:
                     log_info(f"   â“˜ MusicBrainz does not confirm single: {title}")
@@ -2392,6 +2395,7 @@ def detect_single_for_track(
                     )
                     if has_video:
                         single_sources.append("musicbrainz_video")
+                        medium_confidence_sources.append("musicbrainz_video")
                         log_info(f"   ✅ MusicBrainz: Track has music video relationship: {title}")
                 except TimeoutError:
                     log_debug(f"   ⏱ MusicBrainz video check timed out for {title}")
@@ -2408,11 +2412,21 @@ def detect_single_for_track(
                     )
                     if on_compilations:
                         single_sources.append("musicbrainz_compilation")
+                        medium_confidence_sources.append("musicbrainz_compilation")
                         log_info(f"   ✅ MusicBrainz: Track appears on multiple compilation albums: {title}")
                 except TimeoutError:
                     log_debug(f"   ⏱ MusicBrainz compilation check timed out for {title}")
                 except Exception as e:
                     log_debug(f"   MusicBrainz compilation check error for {title}: {e}")
+                    
+                # Check if 2 medium sources = high confidence (early exit)
+                if len(medium_confidence_sources) >= 2:
+                    log_info(f"   🎯 EARLY EXIT: 2 medium sources detected ({medium_confidence_sources}), promoting to HIGH")
+                    return {
+                        "sources": list(dict.fromkeys(single_sources)),
+                        "confidence": "high",
+                        "is_single": True
+                    }
         except TimeoutError as e:
             log_info(f"   â± MusicBrainz single check timed out for {title}: {e}")
         except Exception as e:
@@ -2465,7 +2479,8 @@ def detect_single_for_track(
                 )
                 if result:
                     single_sources.append("discogs_video")
-                    log_info(f"   âœ“ Discogs confirms music video: {title}")
+                    medium_confidence_sources.append("discogs_video")
+                    log_info(f"   âœ" Discogs confirms music video: {title}")
                     log_debug(f"   Discogs result: Music video confirmed for '{lookup_title}'")
                 else:
                     log_info(f"   â“˜ Discogs does not confirm music video: {title}")
@@ -2496,6 +2511,7 @@ def detect_single_for_track(
             db_conn.close()
             if iterative_zscore_passed:
                 single_sources.append("iterative_zscore")
+                medium_confidence_sources.append("iterative_zscore")
                 log_info(f"   Iterative z-score method: {title} passed album standout test")
             else:
                 log_debug(f"   Iterative z-score: {title} did not meet threshold")
@@ -2509,7 +2525,8 @@ def detect_single_for_track(
     has_discogs_video = "discogs_video" in single_sources
     has_other_sources = any(s in single_sources for s in ["spotify", "musicbrainz", "lastfm"])
     
-    if has_discogs_single:
+    # NEW RULE: 2 medium sources = high confidence
+    if has_discogs_single or len(medium_confidence_sources) >= 2:
         single_confidence = "high"
     elif has_iterative_zscore or has_other_sources or has_discogs_video:
         single_confidence = "medium"
@@ -5686,17 +5703,27 @@ def popularity_scan(
                         # Get pre-calculated z-score (already computed above at line 4595)
                         track_zscore = track_zscores.get(track_id, 0.0)
                         
+                        # Check if this is a live album (special rules apply)
+                        album_is_live = row_get(track, "album_context_live", 0)
+                        
                         # For regular albums, skip single detection if z-score is negative (below album average)
                         # Rationale: Below-average tracks are unlikely to be real singles
                         # Exception: For compilations/greatest hits, run detection on all tracks (different popularity patterns)
                         # Exception: Remastered-only variants — their lower popularity reflects listeners preferring
                         #            the original release, not that the song is not a single.
+                        # Exception: Live albums require tracks above median AND HIGH confidence to be considered singles
                         if track_zscore < 0.0:
                             if is_remastered_only_variant(title):
                                 log_debug(f"Not skipping '{title}' despite negative z-score ({track_zscore:.2f}): remastered-only variant, treating as original release")
                             else:
                                 skip_single_detection = True
-                                log_debug(f"Skipping single detection for '{title}' (z-score: {track_zscore:.2f} < 0.0 - below album average)")
+                                if album_is_live:
+                                    log_debug(f"Skipping single detection for '{title}' on LIVE album (z-score: {track_zscore:.2f} < 0.0 - below median)")
+                                else:
+                                    log_debug(f"Skipping single detection for '{title}' (z-score: {track_zscore:.2f} < 0.0 - below album average)")
+                        elif album_is_live:
+                            # Live album with z > 0: scan but will require HIGH confidence later
+                            log_debug(f"Scanning '{title}' on LIVE album (z-score: {track_zscore:.2f} >= 0.0, will require HIGH confidence)")
                     else:
                         # Greatest hits/compilation/various artists: Run detection on all tracks
                         # These collections have different popularity patterns, so average tracks can still be genuine singles
@@ -6342,6 +6369,30 @@ def popularity_scan(
                                 stars = 5
                                 log_info(f"5-star assignment: {title} (user-set single)")
                                 log_debug(f"User-set single - track_id: {track_id}")
+                            elif is_single and single_confidence == "high":
+                                # High-confidence singles already assigned 5★ during single detection - preserve it
+                                # EXCEPTION: Live albums use z-score gates instead of automatic 5★
+                                album_is_live = row_get(track, "album_context_live", 0)
+                                if album_is_live:
+                                    log_debug(f"Live album track '{title}' is HIGH-confidence single - using z-score gates instead of automatic 5★")
+                                    # Apply z-score gates for live albums
+                                    if track_zscore >= 2.0:
+                                        stars = 5
+                                        log_info(f"5-star assignment: {title} (live album, high-confidence single, z-score={track_zscore:.2f} >= 2.0)")
+                                    elif track_zscore >= 1.0:
+                                        stars = 4  
+                                        log_info(f"4-star assignment: {title} (live album, high-confidence single, z-score={track_zscore:.2f} >= 1.0)")
+                                    elif track_zscore >= 0.0:
+                                        stars = 3
+                                        log_info(f"3-star assignment: {title} (live album, high-confidence single, z-score={track_zscore:.2f} >= 0.0)")
+                                    else:
+                                        stars = 2
+                                        log_info(f"2-star assignment: {title} (live album, high-confidence single, z-score={track_zscore:.2f} < 0.0)")
+                                else:
+                                    # Regular albums: High-confidence singles always get 5★
+                                    stars = 5
+                                    log_info(f"5-star assignment: {title} (high-confidence single - preserved from detection)")
+                                    log_debug(f"High-confidence single - track_id: {track_id}, preserving 5★ rating")
                             elif track_zscore > 1.0:
                                 # z-score > 1: requires at least one evidence source
                                 # (medium or true high-confidence metadata source).
