@@ -18,6 +18,7 @@ import yaml
 from datetime import datetime, timedelta
 from pathlib import Path
 from difflib import SequenceMatcher
+from helpers.metadata_reader import read_mp3_metadata
 
 # Use unified logging system - all logs go to debug.log
 from helpers.logging_config import (
@@ -152,6 +153,49 @@ def _score_soulseek_candidate(filename, queue_item):
                     score -= 0.10
 
     return max(0.0, min(1.0, score))
+
+
+def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
+    """
+    Validate file tags against queue artist/title.
+
+    Returns:
+        True: metadata exists and is a strong match
+        False: metadata exists but mismatches queue item
+        None: metadata unavailable; caller may fallback to filename matching
+    """
+    try:
+        metadata = read_mp3_metadata(file_path) or {}
+    except Exception:
+        return None
+
+    file_artist = (metadata.get('artist') or '').strip()
+    file_title = (metadata.get('title') or '').strip()
+    if not file_artist or not file_title:
+        return None
+
+    queue_artist = (queue_item.get('artist') or '').strip()
+    queue_title = (queue_item.get('title') or '').strip()
+    if not queue_artist or not queue_title:
+        return None
+
+    artist_score = SequenceMatcher(
+        None,
+        _normalize_match_text(file_artist),
+        _normalize_match_text(queue_artist),
+    ).ratio()
+    title_score = SequenceMatcher(
+        None,
+        _normalize_match_text(file_title),
+        _normalize_match_text(queue_title),
+    ).ratio()
+
+    # Require both core fields to be reasonably close to avoid false-positive imports.
+    if artist_score < 0.55 or title_score < 0.55:
+        return False
+
+    combined = (artist_score + title_score) / 2
+    return combined >= threshold
 
 def get_db():
     """Get database connection using app backend (PostgreSQL or SQLite)."""
@@ -555,6 +599,7 @@ def check_completed_downloads():
         newly_completed = []
         for item in downloading:
             match_found = None
+            match_meta_state = None
             
             # Try exact filename match first
             if item['found_filename']:
@@ -562,7 +607,15 @@ def check_completed_downloads():
                     rel_file_norm = rel_file.replace('\\', '/')
                     found_norm = str(item['found_filename']).replace('\\', '/')
                     if rel_file_norm == found_norm or os.path.basename(rel_file_norm) == os.path.basename(found_norm):
+                        file_path = os.path.join(DOWNLOADS_DIR, rel_file)
+                        meta_state = _metadata_matches_queue_item(file_path, item)
+                        if meta_state is False:
+                            logger.info(
+                                f"Queue {item['id']}: rejecting exact filename match due to metadata mismatch: {rel_file}"
+                            )
+                            continue
                         match_found = rel_file
+                        match_meta_state = meta_state
                         break
 
             if match_found:
@@ -570,14 +623,30 @@ def check_completed_downloads():
             else:
                 # Try fuzzy matching
                 for filename in files:
-                    if matches_queue_item(filename, item):
+                    file_path = os.path.join(DOWNLOADS_DIR, filename)
+                    meta_state = _metadata_matches_queue_item(file_path, item)
+
+                    # If tags are present and disagree, do not allow filename/path fallback.
+                    if meta_state is False:
+                        continue
+
+                    # Prefer metadata-backed matches. Otherwise use stricter path scoring fallback.
+                    if meta_state is True or matches_queue_item(filename, item):
                         match_found = filename
+                        match_meta_state = meta_state
                         logger.debug(f"Queue {item['id']}: Fuzzy match found: {filename}")
                         break
             
             if match_found:
                 file_path = os.path.join(DOWNLOADS_DIR, match_found)
-                logger.info(f"Queue {item['id']}: Matched file '{match_found}' - marking as completed")
+                if match_meta_state is True:
+                    logger.info(
+                        f"Queue {item['id']}: Matched file '{match_found}' by metadata artist/title - marking as completed"
+                    )
+                else:
+                    logger.info(
+                        f"Queue {item['id']}: Matched file '{match_found}' by filename/path fallback - marking as completed"
+                    )
                 update_queue_status(item['id'], 'completed', file_path=file_path, found_filename=match_found)
 
                 # Immediately move the file to /music
@@ -652,35 +721,10 @@ def check_completed_downloads():
         logger.error(f"Error checking completed downloads: {e}")
 
 def matches_queue_item(filename, queue_item):
-    """Check if filename matches queue item (fuzzy matching)"""
+    """Conservative filename/path fallback matcher when metadata is unavailable."""
     try:
-        filename_lower = filename.lower()
-        artist = (queue_item['artist'] or '').lower()
-        title = (queue_item['title'] or '').lower()
-        album = (queue_item['album'] or '').lower()
-        
-        # Count matching terms
-        matches = 0
-        total = 0
-        
-        for term in [artist, title, album]:
-            if term:
-                total += 1
-                if term in filename_lower:
-                    matches += 1
-        
-        # Need at least 50% match
-        if total > 0 and matches / total >= 0.5:
-            return True
-        
-        # Also check search query
-        if queue_item['search_query']:
-            terms = queue_item['search_query'].lower().split()
-            term_matches = sum(1 for t in terms if t in filename_lower)
-            if term_matches >= 2:
-                return True
-        
-        return False
+        score = _score_soulseek_candidate(filename, queue_item)
+        return score >= 0.60
         
     except Exception as e:
         logger.error(f"Error matching filename: {e}")

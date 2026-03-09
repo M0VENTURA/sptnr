@@ -902,24 +902,36 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
         return {'success': False, 'target_path': None, 'error': str(e)}
 
 
-def _metadata_matches_queue_item(file_meta, queue_item, threshold=0.6):
+def _metadata_matches_queue_item(file_meta, queue_item, threshold=0.68):
     """
     Check if discovered file metadata is a good match for a pending queue item.
 
     Compares artist + title (required), with album as a bonus.
-    Returns True when the similarity exceeds `threshold`.
+
+    Returns:
+        True: metadata exists and strongly matches
+        False: metadata exists but mismatches
+        None: metadata missing/incomplete, caller can use filename fallback
     """
     def _sim(a, b):
         if not a or not b:
             return 0.0
         return SequenceMatcher(None, a.lower().strip(), b.lower().strip()).ratio()
 
-    artist_score = _sim(file_meta.get('artist'), queue_item.get('artist'))
-    title_score = _sim(file_meta.get('title'), queue_item.get('title'))
+    file_artist = (file_meta.get('artist') or '').strip()
+    file_title = (file_meta.get('title') or '').strip()
+    queue_artist = (queue_item.get('artist') or '').strip()
+    queue_title = (queue_item.get('title') or '').strip()
 
-    # Each individual field must clear a minimum similarity floor (0.5) before
+    if not file_artist or not file_title or not queue_artist or not queue_title:
+        return None
+
+    artist_score = _sim(file_artist, queue_artist)
+    title_score = _sim(file_title, queue_title)
+
+    # Each individual field must clear a minimum similarity floor before
     # the weighted average is tested against the overall threshold parameter.
-    _FIELD_MIN = 0.5
+    _FIELD_MIN = 0.55
     if artist_score < _FIELD_MIN or title_score < _FIELD_MIN:
         return False
 
@@ -983,12 +995,26 @@ def check_downloads_folder():
             match_found = None
             match_path = None
             
-            # Try exact filename match first
+            # Try exact filename match first (but still verify metadata when available)
             if queue_item['found_filename']:
                 for file_info in downloads_files:
                     if file_info['filename'] == queue_item['found_filename'] or \
                        file_info['rel_path'] == queue_item['found_filename'] or \
                        file_info['full_path'] == queue_item['found_filename']:
+                        metadata = None
+                        try:
+                            metadata = read_mp3_metadata(file_info['full_path'])
+                        except Exception:
+                            metadata = None
+
+                        meta_state = _metadata_matches_queue_item(metadata or {}, queue_item)
+                        if meta_state is False:
+                            logger.info(
+                                f"Queue {queue_item['id']}: rejecting exact filename match due to metadata mismatch: "
+                                f"{file_info['rel_path']}"
+                            )
+                            continue
+
                         match_found = file_info['filename']
                         match_path = file_info['full_path']
                         break
@@ -996,7 +1022,19 @@ def check_downloads_folder():
             # If not found by filename, try fuzzy matching based on artist/title
             if not match_found:
                 for file_info in downloads_files:
-                    if is_match(file_info['rel_path'], queue_item):
+                    metadata = None
+                    try:
+                        metadata = read_mp3_metadata(file_info['full_path'])
+                    except Exception:
+                        metadata = None
+
+                    meta_state = _metadata_matches_queue_item(metadata or {}, queue_item)
+
+                    # If tags exist and disagree, never allow filename fallback.
+                    if meta_state is False:
+                        continue
+
+                    if meta_state is True or is_match(file_info['rel_path'], queue_item):
                         match_found = file_info['filename']
                         match_path = file_info['full_path']
                         logger.debug(f"Fuzzy matched '{queue_item['search_query']}' to '{file_info['rel_path']}'")
@@ -1105,8 +1143,7 @@ def check_downloads_folder():
 
 def is_match(filename, queue_item):
     """
-    Check if a filename matches a queue item
-    Uses fuzzy matching on artist, album, and title
+    Conservative filename/path fallback when metadata is unavailable.
     
     Args:
         filename: Filename or relative path to check
@@ -1124,44 +1161,30 @@ def is_match(filename, queue_item):
         album = (queue_item['album'] or '').lower()
         search_query = (queue_item.get('search_query') or '').lower()
         
-        # Count how many search terms are in the filename/path
-        matches = 0
-        total_terms = 0
-        
-        # Check artist match (most important)
-        if artist:
-            total_terms += 1
-            if artist in filename_test:
-                matches += 1
-        
-        # Check title match
-        if title:
-            total_terms += 1
-            if title in filename_test:
-                matches += 1
-        
-        # Check album match (less important, but helpful for disambiguation)
-        if album:
-            total_terms += 1
-            # Remove spaces for more flexible album name matching
-            album_normalized = album.replace(' ', '')
-            if album_normalized and album_normalized in filename_test.replace(' ', ''):
-                matches += 1
-        
-        # Require at least majority of terms to match
-        if total_terms > 0 and matches >= (total_terms * 0.6):  # 60% match threshold
+        # Require artist/title presence first; this is a fallback only.
+        if not artist or not title:
+            return False
+
+        artist_in_path = artist in filename_test
+        title_in_path = title in filename_test
+        if artist_in_path and title_in_path:
             return True
-        
-        # Also try matching against search_query if set
+
+        # Use stricter sequence similarity fallback to avoid cross-track collisions.
+        combined_target = f"{artist} {title} {album}".strip()
+        score = SequenceMatcher(None, combined_target, filename_test).ratio()
+
+        if score >= 0.60 and (artist_in_path or title_in_path):
+            return True
+
+        # Last-resort search_query overlap with stronger threshold.
         if search_query:
-            # Split search query into individual terms and check for significant overlap
-            search_terms = [t for t in search_query.split() if len(t) > 2]  # Only meaningful terms
+            search_terms = [t for t in search_query.split() if len(t) > 2]
             if search_terms:
                 term_matches = sum(1 for term in search_terms if term in filename_test)
-                # Require at least 60% of significant terms to match
-                if term_matches / len(search_terms) >= 0.6:
+                if term_matches / len(search_terms) >= 0.75:
                     return True
-        
+
         return False
         
     except Exception as e:
