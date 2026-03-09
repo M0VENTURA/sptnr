@@ -6370,33 +6370,12 @@ def popularity_scan(
                                 log_info(f"5-star assignment: {title} (user-set single)")
                                 log_debug(f"User-set single - track_id: {track_id}")
                             elif is_single and single_confidence == "high":
-                                # High-confidence singles already assigned 5★ during single detection - preserve it
-                                # EXCEPTION: Live albums use z-score gates instead of automatic 5★
-                                album_is_live = row_get(track, "album_context_live", 0)
-                                if album_is_live:
-                                    log_debug(f"Live album track '{title}' is HIGH-confidence single - using z-score distribution (can reach 5★ for top performers)")
-                                    # Apply z-score gates for live albums (1-5★ spread based on performance)
-                                    # High z-score singles on live albums CAN get 5★ if they earned high confidence
-                                    if track_zscore >= 1.5:
-                                        stars = 5  
-                                        log_info(f"5-star assignment: {title} (live album, high-confidence single, z-score={track_zscore:.2f} >= 1.5)")
-                                    elif track_zscore >= 1.0:
-                                        stars = 4  
-                                        log_info(f"4-star assignment: {title} (live album, high-confidence single, z-score={track_zscore:.2f} >= 1.0)")
-                                    elif track_zscore >= 0.0:
-                                        stars = 3
-                                        log_info(f"3-star assignment: {title} (live album, high-confidence single, z-score={track_zscore:.2f} >= 0.0)")
-                                    elif track_zscore >= -1.0:
-                                        stars = 2
-                                        log_info(f"2-star assignment: {title} (live album, high-confidence single, z-score={track_zscore:.2f} >= -1.0)")
-                                    else:
-                                        stars = 1
-                                        log_info(f"1-star assignment: {title} (live album, high-confidence single, z-score={track_zscore:.2f} < -1.0)")
-                                else:
-                                    # Regular albums: High-confidence singles always get 5★
-                                    stars = 5
-                                    log_info(f"5-star assignment: {title} (high-confidence single - preserved from detection)")
-                                    log_debug(f"High-confidence single - track_id: {track_id}, preserving 5★ rating")
+                                # High-confidence singles get 5★
+                                # Live albums: singles still get 5★ if they achieved high confidence through sources
+                                # (but popularity-based 5★ is blocked separately)
+                                stars = 5
+                                log_info(f"5-star assignment: {title} (high-confidence single - preserved from detection)")
+                                log_debug(f"High-confidence single - track_id: {track_id}, preserving 5★ rating")
                             elif track_zscore > 1.0:
                                 # z-score > 1: requires at least one evidence source
                                 # (medium or true high-confidence metadata source).
@@ -6482,6 +6461,8 @@ def popularity_scan(
 
                             # Popularity-only 5★ must be recomputed every scan from current z-score,
                             # never from persisted confidence flags.
+                            # EXCEPTION: Live albums do NOT get popularity-based 5★
+                            album_is_live = row_get(track, "album_context_live", 0)
                             has_metadata_single_source = any(
                                 s in ["musicbrainz", "discogs", "discogs_video", "spotify", "lastfm"]
                                 for s in single_sources
@@ -6491,6 +6472,7 @@ def popularity_scan(
                                 and not has_high_confidence
                                 and not has_metadata_single_source
                                 and track_zscore >= popularity_5star_z_threshold
+                                and not album_is_live  # Block popularity 5★ for live albums
                             ):
                                 stars = 5
                                 is_popularity_based_5star = True
