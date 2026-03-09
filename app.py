@@ -3,6 +3,7 @@ from helpers.db_utils import (
     ensure_album_artist_column,
     ensure_musicbrainz_album_mbid_column,
     ensure_writer_column,
+    ensure_cover_columns,
     verify_album_artist_column,
 )
 import os
@@ -422,6 +423,9 @@ ensure_musicbrainz_album_mbid_column()
 
 # Ensure writer column exists for storing lyricist/songwriter information
 ensure_writer_column()
+
+# Ensure cover detection columns exist in tracks table
+ensure_cover_columns()
 
 # Verify the migration worked
 verification = verify_album_artist_column()
@@ -3349,6 +3353,14 @@ def api_artist_missing_releases():
     finally:
         conn.close()
 
+    # Auto-queue new releases for favourited artists (current year, straight albums only)
+    try:
+        auto_queued = _auto_queue_favourite_artist_releases(artist, missing)
+        if auto_queued:
+            logging.info(f"[AUTO-QUEUE] Auto-queued {auto_queued} release(s) for favourited artist '{artist}'")
+    except Exception as aq_err:
+        logging.debug(f"[AUTO-QUEUE] Error during auto-queue for '{artist}': {aq_err}")
+
     return jsonify({
         "artist": artist,
         "missing": missing,
@@ -4173,7 +4185,276 @@ def api_artist_singles_count():
         return jsonify({"count": 0, "error": str(e)}), 500
 
 
-@app.route("/api/artist/create-essential-playlist", methods=["POST"])
+@app.route("/api/artist/covered-by")
+def api_artist_covered_by():
+    """Get tracks from other artists that are covers of this artist's songs.
+
+    Returns a list of tracks in the user's library that have been detected
+    as covers of songs originally by the given artist.
+    """
+    artist_name = request.args.get("artist", "").strip()
+    if not artist_name:
+        return jsonify({"error": "Artist name required"}), 400
+
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+
+        # Find tracks where original_cover_artist matches AND the performing artist is different
+        if is_pg:
+            cursor.execute(
+                f"""
+                SELECT id, title, artist, album, year,
+                       original_cover_artist, is_cover_reason
+                FROM tracks
+                WHERE original_cover_artist ILIKE {placeholder}
+                  AND LOWER(COALESCE(album_artist, artist)) != LOWER({placeholder})
+                ORDER BY artist, title
+                """,
+                (artist_name, artist_name),
+            )
+        else:
+            cursor.execute(
+                f"""
+                SELECT id, title, artist, album, year,
+                       original_cover_artist, is_cover_reason
+                FROM tracks
+                WHERE LOWER(original_cover_artist) = LOWER({placeholder})
+                  AND LOWER(COALESCE(album_artist, artist)) != LOWER({placeholder})
+                ORDER BY artist, title
+                """,
+                (artist_name, artist_name),
+            )
+
+        rows = cursor.fetchall() or []
+        conn.close()
+
+        covers = []
+        for row in rows:
+            # sqlite3.Row supports both name and index access; pg returns RealDictCursor dicts
+            try:
+                covers.append({
+                    "id": row["id"],
+                    "title": row["title"],
+                    "artist": row["artist"],
+                    "album": row["album"],
+                    "year": row["year"],
+                    "original_cover_artist": row["original_cover_artist"],
+                })
+            except (KeyError, TypeError, IndexError):
+                covers.append({
+                    "id": row[0],
+                    "title": row[1],
+                    "artist": row[2],
+                    "album": row[3],
+                    "year": row[4],
+                    "original_cover_artist": row[5],
+                })
+
+        return jsonify({"success": True, "covers": covers, "total": len(covers)})
+
+    except Exception as e:
+        logging.error(f"Error fetching covered-by data for '{artist_name}': {e}")
+        return jsonify({"success": False, "error": str(e), "covers": []}), 500
+
+
+@app.route("/api/artist/favourite", methods=["GET", "POST", "DELETE"])
+def api_artist_favourite():
+    """Check, add, or remove an artist from favourites.
+
+    Favourites are stored in the bookmarks table with type='artist_favourite'.
+
+    GET  ?artist=<name>  → {"is_favourite": bool}
+    POST  {"artist": <name>}  → {"success": true, "is_favourite": true}
+    DELETE ?artist=<name>   → {"success": true, "is_favourite": false}
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    is_pg = _is_postgres_connection(conn)
+    placeholder = "%s" if is_pg else "?"
+
+    try:
+        if request.method == "GET":
+            artist_name = request.args.get("artist", "").strip()
+            if not artist_name:
+                conn.close()
+                return jsonify({"error": "Artist name required"}), 400
+            if is_pg:
+                cursor.execute(
+                    f"SELECT id FROM bookmarks WHERE type = {placeholder} AND LOWER(name) = LOWER({placeholder})",
+                    ("artist_favourite", artist_name),
+                )
+            else:
+                cursor.execute(
+                    f"SELECT id FROM bookmarks WHERE type = {placeholder} AND LOWER(name) = LOWER({placeholder})",
+                    ("artist_favourite", artist_name),
+                )
+            row = cursor.fetchone()
+            conn.close()
+            return jsonify({"is_favourite": row is not None})
+
+        elif request.method == "POST":
+            data = request.get_json() or {}
+            artist_name = data.get("artist", "").strip()
+            if not artist_name:
+                conn.close()
+                return jsonify({"error": "Artist name required"}), 400
+            if is_pg:
+                cursor.execute(
+                    f"""
+                    INSERT INTO bookmarks (type, name)
+                    VALUES ({placeholder}, {placeholder})
+                    ON CONFLICT DO NOTHING
+                    """,
+                    # ON CONFLICT DO NOTHING handles the UNIQUE(type, name, artist, album, track_id) constraint
+                    ("artist_favourite", artist_name),
+                )
+            else:
+                cursor.execute(
+                    "INSERT OR IGNORE INTO bookmarks (type, name) VALUES (?, ?)",
+                    ("artist_favourite", artist_name),
+                )
+            conn.commit()
+            conn.close()
+            return jsonify({"success": True, "is_favourite": True})
+
+        elif request.method == "DELETE":
+            artist_name = request.args.get("artist", "").strip()
+            if not artist_name:
+                conn.close()
+                return jsonify({"error": "Artist name required"}), 400
+            if is_pg:
+                cursor.execute(
+                    f"DELETE FROM bookmarks WHERE type = {placeholder} AND LOWER(name) = LOWER({placeholder})",
+                    ("artist_favourite", artist_name),
+                )
+            else:
+                cursor.execute(
+                    f"DELETE FROM bookmarks WHERE type = {placeholder} AND LOWER(name) = LOWER({placeholder})",
+                    ("artist_favourite", artist_name),
+                )
+            conn.commit()
+            conn.close()
+            return jsonify({"success": True, "is_favourite": False})
+
+    except Exception as e:
+        logging.error(f"Error managing artist favourite for '{request.args.get('artist', '')}': {e}")
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+def _is_artist_favourited(artist_name: str) -> bool:
+    """Return True if the given artist is marked as a favourite.
+
+    Checks both:
+    - bookmarks table (type='artist_favourite')
+    - user_loved_artists table (is_loved=1)
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+
+        # Check bookmarks
+        if is_pg:
+            cursor.execute(
+                f"SELECT 1 FROM bookmarks WHERE type = {placeholder} AND LOWER(name) = LOWER({placeholder}) LIMIT 1",
+                ("artist_favourite", artist_name),
+            )
+        else:
+            cursor.execute(
+                f"SELECT 1 FROM bookmarks WHERE type = {placeholder} AND LOWER(name) = LOWER({placeholder}) LIMIT 1",
+                ("artist_favourite", artist_name),
+            )
+        if cursor.fetchone():
+            conn.close()
+            return True
+
+        # Check user_loved_artists
+        if is_pg:
+            cursor.execute(
+                f"SELECT 1 FROM user_loved_artists WHERE LOWER(artist) = LOWER({placeholder}) AND is_loved = TRUE LIMIT 1",
+                (artist_name,),
+            )
+        else:
+            cursor.execute(
+                f"SELECT 1 FROM user_loved_artists WHERE LOWER(artist) = LOWER({placeholder}) AND is_loved = 1 LIMIT 1",
+                (artist_name,),
+            )
+        result = cursor.fetchone() is not None
+        conn.close()
+        return result
+    except Exception as e:
+        logging.debug(f"Error checking favourite status for '{artist_name}': {e}")
+        return False
+
+
+def _auto_queue_favourite_artist_releases(artist: str, new_releases: list) -> int:
+    """Auto-queue new releases for a favourited artist.
+
+    Only queues releases that:
+    - Are from the current year
+    - Have primary_type = 'Album' (straight album, no secondary category)
+    - Are not already in the download queue
+
+    Returns the count of releases added to the queue.
+    """
+    import datetime
+
+    current_year = str(datetime.datetime.now().year)
+    queued_count = 0
+
+    if not _is_artist_favourited(artist):
+        return 0
+
+    for release in new_releases:
+        first_release_date = release.get("first_release_date", "") or ""
+        release_year = first_release_date[:4] if first_release_date else ""
+        primary_type = (release.get("primary_type") or "").lower()
+        category = (release.get("category") or "").lower()
+        release_title = release.get("title", "")
+
+        # Only auto-queue straight albums from the current year
+        if release_year != current_year:
+            continue
+        if primary_type != "album":
+            continue
+        # 'Album' category means no secondary type (Live, Compilation, etc.).
+        # An empty category also indicates a plain album (no secondary classification).
+        if category not in ("album", ""):
+            continue
+
+        try:
+            from download_queue_manager import add_to_queue
+            result = add_to_queue(
+                artist=artist,
+                title=release_title,
+                album=release_title,
+                source="soulseek",
+                priority=5,
+                import_type="album",
+                year=release_year or None,
+                release_id=release.get("id") or release.get("release_id"),
+                release_source="musicbrainz",
+            )
+            if result:
+                queued_count += 1
+                logging.info(
+                    f"[AUTO-QUEUE] Added '{artist} - {release_title}' ({release_year}) "
+                    f"to download queue (favourited artist)"
+                )
+        except Exception as e:
+            logging.warning(f"[AUTO-QUEUE] Failed to queue '{artist} - {release_title}': {e}")
+
+    return queued_count
+
+
 def api_create_essential_playlist():
     """Create an Essential Playlist for an artist using single detection logic"""
     data = request.json or {}

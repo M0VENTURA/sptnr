@@ -950,6 +950,26 @@ async function loadUpcomingReleasesBanner() {
             return;
         }
         
+        // Filter to last 2 weeks and 1 week ahead
+        const now = new Date();
+        const twoWeeksAgo = new Date(now);
+        twoWeeksAgo.setDate(now.getDate() - 14);
+        const oneWeekAhead = new Date(now);
+        oneWeekAhead.setDate(now.getDate() + 7);
+        
+        releases = releases.filter(r => {
+            if (!r.release_date || r.release_date === 'Unknown') return false;
+            const d = new Date(r.release_date);
+            return d >= twoWeeksAgo && d <= oneWeekAhead;
+        });
+        
+        if (releases.length === 0) {
+            document.getElementById('upcomingBannerContent').innerHTML = `
+                <p class="text-muted text-center"><i class="bi bi-calendar-check"></i> No releases in the last 2 weeks or next week.</p>
+            `;
+            return;
+        }
+        
         // Sort releases by date
         releases = releases.sort((a, b) => {
             const dateA = new Date(a.release_date || '9999-12-31');
