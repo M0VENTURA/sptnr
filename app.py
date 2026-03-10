@@ -5523,15 +5523,17 @@ def api_album_bulk_delete():
         
         conn = get_db()
         cursor = conn.cursor()
+        placeholder = "%s" if _is_postgres_connection(conn) else "?"
         
         deleted_count = 0
         
         for track_id in track_ids:
             try:
                 # Get file path
-                cursor.execute("""
-                    SELECT file_path FROM tracks WHERE id = ?
-                """, (track_id,))
+                cursor.execute(
+                    f"SELECT file_path FROM tracks WHERE id = {placeholder}",
+                    (track_id,)
+                )
                 result = cursor.fetchone()
                 
                 if result:
@@ -5548,7 +5550,6 @@ def api_album_bulk_delete():
                                 logging.warning(f"[DELETE] Failed to delete MP3: {file_path} - {e}")
                     
                     # Delete from database
-                    placeholder = "%s" if _is_postgres_connection(conn) else "?"
                     cursor.execute(f"DELETE FROM tracks WHERE id = {placeholder}", (track_id,))
                     deleted_count += 1
                     action = "and file(s)" if delete_files else "from database"
