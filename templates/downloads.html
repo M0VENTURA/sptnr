@@ -888,6 +888,41 @@
           <div id="failedQueueList" style="display:none"></div>
         </div>
       </div>
+
+      <!-- Queue Events Log -->
+      <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-list-ul"></i> Download Queue Events Log
+            <small class="text-muted ms-2">(Last 50 events)</small>
+          </h5>
+          <div class="btn-group btn-group-sm" role="group">
+            <button class="btn btn-outline-primary" onclick="loadQueueEvents()">
+              <i class="bi bi-arrow-clockwise"></i> Refresh
+            </button>
+            <button class="btn btn-outline-secondary" onclick="clearQueueEventsLog()">
+              <i class="bi bi-trash3"></i> Clear
+            </button>
+          </div>
+        </div>
+        <div class="card-body p-0" style="max-height: 400px; overflow-y: auto;">
+          <div id="queueEventsEmpty" class="text-center py-4 text-muted">
+            <i class="bi bi-bell fs-3 d-block mb-2"></i>
+            No queue events yet. Events will appear as you interact with the download queue.
+          </div>
+          <table id="queueEventsTable" class="table table-sm table-hover m-0" style="display:none;">
+            <thead class="table-dark sticky-top">
+              <tr>
+                <th style="width: 160px;">Timestamp</th>
+                <th style="width: 120px;">Type</th>
+                <th>Message</th>
+              </tr>
+            </thead>
+            <tbody id="queueEventsBody">
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
     <!-- End Download Queue Tab -->
 
@@ -6468,6 +6503,151 @@ window.updateSelectedCount = function() {
   }
   return result;
 };
+
+// ===== Queue Events Log =====
+
+let queueEventsRefreshInterval = null;
+
+/**
+ * Load and display queue events
+ */
+async function loadQueueEvents() {
+  try {
+    const response = await fetch('/api/queue/events?limit=50');
+    
+    if (!response.ok) {
+      console.error(`HTTP Error ${response.status}: ${response.statusText}`);
+      return;
+    }
+    
+    const data = await response.json();
+    
+    if (!data.events) {
+      console.error('Invalid queue events response:', data);
+      return;
+    }
+    
+    const events = data.events || [];
+    
+    // Update UI
+    const emptyDiv = document.getElementById('queueEventsEmpty');
+    const table = document.getElementById('queueEventsTable');
+    const tbody = document.getElementById('queueEventsBody');
+    
+    if (!emptyDiv || !table || !tbody) return; // Elements don't exist on this tab
+    
+    if (events.length === 0) {
+      emptyDiv.style.display = 'block';
+      table.style.display = 'none';
+      tbody.innerHTML = '';
+      return;
+    }
+    
+    // Show table, hide empty message
+    emptyDiv.style.display = 'none';
+    table.style.display = 'table';
+    
+    // Render events
+    tbody.innerHTML = events.map(event => {
+      const timestamp = new Date(event.created_at);
+      const timeStr = timestamp.toLocaleTimeString('en-US', { 
+        hour: '2-digit', 
+        minute: '2-digit', 
+        second: '2-digit',
+        hour12: true 
+      });
+      const dateStr = timestamp.toLocaleDateString('en-US', { 
+        month: '2-digit', 
+        day: '2-digit' 
+      });
+      
+      // Event type badge styling
+      let badgeClass = 'bg-secondary';
+      if (event.event_type === 'file_found') {
+        badgeClass = 'bg-info';
+      } else if (event.event_type === 'status_change') {
+        badgeClass = 'bg-primary';
+      } else if (event.event_type === 'error') {
+        badgeClass = 'bg-danger';
+      } else if (event.event_type === 'info') {
+        badgeClass = 'bg-success';
+      }
+      
+      // Sanitize message
+      const safeMessage = escapeHtml(event.message);
+      
+      return `
+        <tr>
+          <td class="small text-muted">${dateStr} ${timeStr}</td>
+          <td><span class="badge ${badgeClass}">${escapeHtml(event.event_type.replace('_', ' ').toUpperCase())}</span></td>
+          <td>${safeMessage}</td>
+        </tr>
+      `;
+    }).join('');
+    
+  } catch (error) {
+    console.error('Error loading queue events:', error);
+  }
+}
+
+/**
+ * Clear the queue events log display
+ */
+function clearQueueEventsLog() {
+  const tbody = document.getElementById('queueEventsBody');
+  const emptyDiv = document.getElementById('queueEventsEmpty');
+  const table = document.getElementById('queueEventsTable');
+  
+  if (tbody) tbody.innerHTML = '';
+  if (table) table.style.display = 'none';
+  if (emptyDiv) emptyDiv.style.display = 'block';
+}
+
+/**
+ * Auto-refresh queue events on the downloads page
+ */
+function startQueueEventsAutoRefresh() {
+  // Load immediately
+  loadQueueEvents();
+  
+  // Set up auto-refresh every 10 seconds
+  if (queueEventsRefreshInterval) {
+    clearInterval(queueEventsRefreshInterval);
+  }
+  queueEventsRefreshInterval = setInterval(() => {
+    loadQueueEvents();
+  }, 10000);
+}
+
+/**
+ * Stop auto-refreshing queue events
+ */
+function stopQueueEventsAutoRefresh() {
+  if (queueEventsRefreshInterval) {
+    clearInterval(queueEventsRefreshInterval);
+    queueEventsRefreshInterval = null;
+  }
+}
+
+// Auto-refresh queue events when downloads tab is shown
+document.addEventListener('DOMContentLoaded', function() {
+  const downloadsTabs = document.querySelectorAll('[data-bs-toggle="tab"]');
+  downloadsTabs.forEach(tab => {
+    tab.addEventListener('shown.bs.tab', function(e) {
+      // Check if queue tab is being shown
+      if (e.target.getAttribute('data-bs-target') === '#queueContent') {
+        startQueueEventsAutoRefresh();
+      }
+    });
+    
+    tab.addEventListener('hidden.bs.tab', function(e) {
+      // Stop refresh when leaving queue tab
+      if (e.target.getAttribute('data-bs-target') === '#queueContent') {
+        stopQueueEventsAutoRefresh();
+      }
+    });
+  });
+});
 
 </script>
 

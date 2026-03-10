@@ -40,8 +40,8 @@
                         <small class="text-muted">Tracks</small>
                     </div>
                     <div class="col-md-4">
-                        <div class="h3 mb-0 text-primary">{{ total_stats.single_count or 0 }}</div>
-                        <small class="text-muted">Singles</small>
+                        <div class="h3 mb-0 text-warning">{{ total_stats.five_star_count or 0 }}</div>
+                        <small class="text-muted">5 Star Songs</small>
                     </div>
                 </div>
             </div>
@@ -83,7 +83,7 @@
                                 <i class="bi bi-music-note"></i> Tracks
                             </th>
                             <th class="d-none d-md-table-cell text-center">
-                                <i class="bi bi-star"></i> Singles
+                                <i class="bi bi-star-fill"></i> 5★ Songs
                             </th>
                             <th class="d-none d-lg-table-cell text-center">Last Updated</th>
                             <th class="text-center">Actions</th>
@@ -131,24 +131,24 @@
                                     <span class="d-inline d-md-none">{{ artist.album_count or 0 }} albums</span>
                                     <span class="d-inline d-md-none ms-1">•</span>
                                     <span class="d-inline d-md-none ms-1">{{ artist.track_count or 0 }} tracks</span>
-                                    {% if artist.single_count and artist.single_count > 0 %}
+                                    {% if artist.five_star_count and artist.five_star_count > 0 %}
                                         <span class="d-inline d-md-none ms-1">•</span>
-                                        <span class="d-inline d-md-none ms-1"><span class="badge bg-warning text-dark">{{ artist.single_count }} singles</span></span>
+                                        <span class="d-inline d-md-none ms-1"><span class="badge bg-warning text-dark">{{ artist.five_star_count }} ★★★★★</span></span>
                                     {% endif %}
                                 </div>
                             </td>
                             <td class="d-none d-md-table-cell text-center">{{ artist.album_count or 0 }}</td>
                             <td class="d-none d-md-table-cell text-center">{{ artist.track_count or 0 }}</td>
                             <td class="d-none d-md-table-cell text-center">
-                                {% if artist.single_count and artist.single_count > 0 %}
-                                    <span class="badge bg-warning text-dark" title="Singles">{{ artist.single_count }}</span>
+                                {% if artist.five_star_count and artist.five_star_count > 0 %}
+                                    <span class="badge bg-warning text-dark" title="5 Star Songs">{{ artist.five_star_count }}</span>
                                 {% else %}
                                     <span class="text-muted">0</span>
                                 {% endif %}
                             </td>
                             <td class="d-none d-lg-table-cell text-center text-muted" style="font-size: 0.85rem;">
                                 {% if artist.last_updated %}
-                                    {{ artist.last_updated }}
+                                    {{ artist.last_updated|format_datetime }}
                                 {% else %}
                                     <span>Never</span>
                                 {% endif %}

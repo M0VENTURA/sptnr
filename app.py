@@ -404,6 +404,30 @@ def escapejs(value):
     
     return value
 
+@app.template_filter('format_datetime')
+def format_datetime(value):
+    """Format ISO datetime string to DD-MM-YY at HH:MM AM/PM"""
+    if not value:
+        return ''
+    
+    try:
+        # Parse ISO format datetime (e.g., "2026-03-04T17:27:52.671524" or "2026-03-04T17:27:52")
+        if 'T' in value:
+            # Handle both with and without microseconds
+            if '.' in value:
+                dt = datetime.strptime(value.split('.')[0], '%Y-%m-%dT%H:%M:%S')
+            else:
+                dt = datetime.strptime(value, '%Y-%m-%dT%H:%M:%S')
+        else:
+            # Handle other datetime formats that might exist
+            dt = datetime.strptime(value, '%Y-%m-%d %H:%M:%S')
+        
+        # Format as DD-MM-YY at HH:MM AM/PM
+        return dt.strftime('%d-%m-%y at %I:%M %p')
+    except (ValueError, AttributeError):
+        # If parsing fails, return original value
+        return value
+
 # Add cache-control headers to prevent browser caching of HTML templates
 @app.after_request
 def set_cache_headers(response):
@@ -1088,8 +1112,8 @@ scan_process_popularity = None  # Popularity scan process
 scan_process_singles = None  # Singles detection process
 scan_process_combined = None  # Combined scan process (Navidrome + Popularity + Singles per artist)
 scan_process_missing_releases = None  # Missing releases scan process
+scan_process_mp3_import = None  # MP3 metadata import scan process
 scan_lock = threading.Lock()
-
 # Retry scheduler management
 retry_scheduler = {
     "thread": None,
@@ -1993,6 +2017,9 @@ if pg_configured:
 else:
     print(f"  Backend: SQLite (no PostgreSQL configured)")
     print(f"  Database Path: {DB_PATH}")
+    print(f"  ⚠️  WARNING: SQLite backend is NOT recommended for production.")
+    print(f"     SQLite has database locking issues with concurrent access.")
+    print(f"     Please configure PostgreSQL for reliable concurrent operations.")
     # Try to verify connection
     try:
         test_conn = get_db()
@@ -2237,24 +2264,14 @@ def artists():
     cursor = conn.cursor()
     
     # Get total counts for all tracks (including those without artist info)
-    # Handle boolean type in PostgreSQL vs integer in SQLite for is_single
     is_pg = _is_postgres_connection(conn)
-    if is_pg:
-        cursor.execute("""
-            SELECT 
-                COUNT(DISTINCT album) as album_count,
-                COUNT(*) as track_count,
-                COALESCE(SUM(CASE WHEN is_single THEN 1 ELSE 0 END), 0) as single_count
-            FROM tracks
-        """)
-    else:
-        cursor.execute("""
-            SELECT 
-                COUNT(DISTINCT album) as album_count,
-                COUNT(*) as track_count,
-                COALESCE(SUM(CASE WHEN is_single THEN 1 ELSE 0 END), 0) as single_count
-            FROM tracks
-        """)
+    cursor.execute("""
+        SELECT 
+            COUNT(DISTINCT album) as album_count,
+            COUNT(*) as track_count,
+            COALESCE(SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END), 0) as five_star_count
+        FROM tracks
+    """)
     total_stats = cursor.fetchone()
     
     # Filter artists to show only those with at least one album or EP
@@ -2268,7 +2285,7 @@ def artists():
                     COALESCE(NULLIF(album_artist, ''), artist) as link_artist,
                     COUNT(DISTINCT album) as album_count,
                     COUNT(*) as track_count,
-                    COALESCE(SUM(CASE WHEN is_single THEN 1 ELSE 0 END), 0) as single_count,
+                    COALESCE(SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END), 0) as five_star_count,
                     MAX(last_scanned) as last_updated
                 FROM tracks
                 WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL 
@@ -2284,7 +2301,7 @@ def artists():
                     COALESCE(NULLIF(album_artist, ''), artist) as link_artist,
                     COUNT(DISTINCT album) as album_count,
                     COUNT(*) as track_count,
-                    COALESCE(SUM(CASE WHEN is_single THEN 1 ELSE 0 END), 0) as single_count,
+                    COALESCE(SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END), 0) as five_star_count,
                     MAX(last_scanned) as last_updated
                 FROM tracks
                 WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL 
@@ -2303,7 +2320,7 @@ def artists():
                 artist as link_artist,
                 COUNT(DISTINCT album) as album_count,
                 COUNT(*) as track_count,
-                COALESCE(SUM(CASE WHEN is_single THEN 1 ELSE 0 END), 0) as single_count,
+                COALESCE(SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END), 0) as five_star_count,
                 MAX(last_scanned) as last_updated
             FROM tracks
             WHERE artist IS NOT NULL AND artist != ''
@@ -7898,8 +7915,9 @@ def scan_popularity_route():
                 flash("Popularity scan is already running", "warning")
                 return redirect(url_for("dashboard"))
 
-        # Don't start popularity until Navidrome scan finishes (unless singles-only mode)
-        if mode != 'singles':
+        # Keep legacy sequencing for SQLite to avoid lock contention.
+        # PostgreSQL supports concurrent scans safely, so skip this blocker there.
+        if mode != 'singles' and not pg_configured:
             nav_running = False
             if scan_process_navidrome is not None:
                 if isinstance(scan_process_navidrome, dict):
@@ -7923,8 +7941,7 @@ def scan_popularity_route():
 
             if nav_running:
                 flash("Please wait for Navidrome scan to finish before starting popularity scan", "warning")
-                return redirect(url_for("dashboard"))
-        
+                return redirect(url_for("dashboard"))        
         try:
             db_dir = os.path.dirname(DB_PATH)
             
@@ -8019,32 +8036,32 @@ def scan_singles():
     global scan_process_singles
     
     with scan_lock:
-        # Block singles until Navidrome sync finishes
+        # Keep legacy sequencing for SQLite only. PostgreSQL can run this concurrently.
         nav_running = False
-        if scan_process_navidrome is not None:
-            if isinstance(scan_process_navidrome, dict):
-                nav_thread = scan_process_navidrome.get('thread')
-                nav_running = nav_thread is not None and nav_thread.is_alive()
-            elif hasattr(scan_process_navidrome, 'is_alive'):
-                nav_running = scan_process_navidrome.is_alive()
-            elif hasattr(scan_process_navidrome, 'poll'):
-                nav_running = scan_process_navidrome.poll() is None
+        if not pg_configured:
+            if scan_process_navidrome is not None:
+                if isinstance(scan_process_navidrome, dict):
+                    nav_thread = scan_process_navidrome.get('thread')
+                    nav_running = nav_thread is not None and nav_thread.is_alive()
+                elif hasattr(scan_process_navidrome, 'is_alive'):
+                    nav_running = scan_process_navidrome.is_alive()
+                elif hasattr(scan_process_navidrome, 'poll'):
+                    nav_running = scan_process_navidrome.poll() is None
 
-        if not nav_running:
-            nav_progress_file = os.path.join(os.path.dirname(DB_PATH), "navidrome_scan_progress.json")
-            try:
-                with open(nav_progress_file, "r", encoding="utf-8") as f:
-                    nav_state = json.load(f)
-                    nav_running = bool(nav_state.get("is_running"))
-            except FileNotFoundError:
-                nav_running = False
-            except Exception:
-                nav_running = False
+            if not nav_running:
+                nav_progress_file = os.path.join(os.path.dirname(DB_PATH), "navidrome_scan_progress.json")
+                try:
+                    with open(nav_progress_file, "r", encoding="utf-8") as f:
+                        nav_state = json.load(f)
+                        nav_running = bool(nav_state.get("is_running"))
+                except FileNotFoundError:
+                    nav_running = False
+                except Exception:
+                    nav_running = False
 
-        if nav_running:
-            flash("Please wait for Navidrome scan to finish before starting singles detection", "warning")
-            return redirect(url_for("dashboard"))
-
+            if nav_running:
+                flash("Please wait for Navidrome scan to finish before starting singles detection", "warning")
+                return redirect(url_for("dashboard"))
         if scan_process_singles and scan_process_singles.poll() is None:
             flash("Single detection scan is already running", "warning")
             return redirect(url_for("dashboard"))
@@ -9653,6 +9670,180 @@ def downloads_monitor():
                          qbit_config=qbit_config,
                          slskd_config=slskd_config,
                          downloads_dir=downloads_dir)
+
+
+@app.route("/api/queue/events", methods=["GET"])
+def api_queue_events():
+    """Get recent download queue events for UI display.
+    
+    Query params:
+    - limit: Number of events to return (default 50, max 200)
+    - type: Filter by event type (file_found, status_change, error, info)
+    """
+    try:
+        from download_queue_manager import get_queue_events
+        
+        limit = request.args.get("limit", 50, type=int)
+        limit = min(max(limit, 1), 200)  # Clamp between 1-200
+        event_type = request.args.get("type", None)
+        
+        events = get_queue_events(limit=limit, event_type=event_type)
+        
+        return jsonify({
+            'success': True,
+            'count': len(events),
+            'events': events
+        })
+    except Exception as e:
+        logging.error(f"Error retrieving queue events: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route("/api/track/favourite", methods=["GET", "POST", "DELETE"])
+def api_track_favourite():
+    """Check, add, or remove a track from favourites.
+    
+    GET  ?track_id=<id>  → {"is_favourite": bool}
+    POST  {"track_id": <id>}  → {"success": true, "is_favourite": true}
+    DELETE ?track_id=<id>   → {"success": true, "is_favourite": false}
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    is_pg = _is_postgres_connection(conn)
+    placeholder = "%s" if is_pg else "?"
+    
+    try:
+        if request.method == "GET":
+            track_id = request.args.get("track_id", "").strip()
+            if not track_id:
+                conn.close()
+                return jsonify({"error": "Track ID required"}), 400
+            
+            cursor.execute(
+                f"SELECT id FROM bookmarks WHERE type = {placeholder} AND track_id = {placeholder}",
+                ("track_favourite", track_id),
+            )
+            row = cursor.fetchone()
+            conn.close()
+            return jsonify({"is_favourite": row is not None})
+        
+        elif request.method == "POST":
+            data = request.get_json() or {}
+            track_id = data.get("track_id", "").strip()
+            if not track_id:
+                conn.close()
+                return jsonify({"error": "Track ID required"}), 400
+            
+            if is_pg:
+                cursor.execute(
+                    f"INSERT INTO bookmarks (type, track_id) VALUES ({placeholder}, {placeholder}) ON CONFLICT DO NOTHING",
+                    ("track_favourite", track_id),
+                )
+            else:
+                cursor.execute(
+                    "INSERT OR IGNORE INTO bookmarks (type, track_id) VALUES (?, ?)",
+                    ("track_favourite", track_id),
+                )
+            conn.commit()
+            conn.close()
+            return jsonify({"success": True, "is_favourite": True})
+        
+        elif request.method == "DELETE":
+            track_id = request.args.get("track_id", "").strip()
+            if not track_id:
+                conn.close()
+                return jsonify({"error": "Track ID required"}), 400
+            
+            cursor.execute(
+                f"DELETE FROM bookmarks WHERE type = {placeholder} AND track_id = {placeholder}",
+                ("track_favourite", track_id),
+            )
+            conn.commit()
+            conn.close()
+            return jsonify({"success": True, "is_favourite": False})
+    
+    except Exception as e:
+        logging.error(f"Error managing track favourite for '{request.args.get('track_id', '')}': {e}")
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/album/favourite", methods=["GET", "POST", "DELETE"])
+def api_album_favourite():
+    """Check, add, or remove an album from favourites.
+    
+    GET  ?artist=<artist>&album=<album>  → {"is_favourite": bool}
+    POST  {"artist": <artist>, "album": <album>}  → {"success": true, "is_favourite": true}
+    DELETE ?artist=<artist>&album=<album>   → {"success": true, "is_favourite": false}
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    is_pg = _is_postgres_connection(conn)
+    placeholder = "%s" if is_pg else "?"
+    
+    try:
+        if request.method == "GET":
+            artist = request.args.get("artist", "").strip()
+            album = request.args.get("album", "").strip()
+            if not artist or not album:
+                conn.close()
+                return jsonify({"error": "Artist and album required"}), 400
+            
+            cursor.execute(
+                f"SELECT id FROM bookmarks WHERE type = {placeholder} AND LOWER(artist) = LOWER({placeholder}) AND LOWER(album) = LOWER({placeholder})",
+                ("album_favourite", artist, album),
+            )
+            row = cursor.fetchone()
+            conn.close()
+            return jsonify({"is_favourite": row is not None})
+        
+        elif request.method == "POST":
+            data = request.get_json() or {}
+            artist = data.get("artist", "").strip()
+            album = data.get("album", "").strip()
+            if not artist or not album:
+                conn.close()
+                return jsonify({"error": "Artist and album required"}), 400
+            
+            if is_pg:
+                cursor.execute(
+                    f"INSERT INTO bookmarks (type, artist, album) VALUES ({placeholder}, {placeholder}, {placeholder}) ON CONFLICT DO NOTHING",
+                    ("album_favourite", artist, album),
+                )
+            else:
+                cursor.execute(
+                    "INSERT OR IGNORE INTO bookmarks (type, artist, album) VALUES (?, ?, ?)",
+                    ("album_favourite", artist, album),
+                )
+            conn.commit()
+            conn.close()
+            return jsonify({"success": True, "is_favourite": True})
+        
+        elif request.method == "DELETE":
+            artist = request.args.get("artist", "").strip()
+            album = request.args.get("album", "").strip()
+            if not artist or not album:
+                conn.close()
+                return jsonify({"error": "Artist and album required"}), 400
+            
+            cursor.execute(
+                f"DELETE FROM bookmarks WHERE type = {placeholder} AND LOWER(artist) = LOWER({placeholder}) AND LOWER(album) = LOWER({placeholder})",
+                ("album_favourite", artist, album),
+            )
+            conn.commit()
+            conn.close()
+            return jsonify({"success": True, "is_favourite": False})
+    
+    except Exception as e:
+        logging.error(f"Error managing album favourite: {e}")
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/downloads/search/<source>")

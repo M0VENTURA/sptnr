@@ -3,10 +3,15 @@
 Download Queue Manager
 Manages download queue and file completion tracking for Soulseek downloads.
 Monitors /downloads folder for completed files and matches them to queue items.
+
+NOTE: PostgreSQL-only implementation to avoid SQLite database locking issues.
+SQLite has limited concurrent access handling, causing 'database is locked' errors
+during parallel scan operations. PostgreSQL provides reliable concurrent access.
 """
 
 import os
-import sqlite3
+import psycopg2
+import psycopg2.extras
 import json
 import logging
 import time
@@ -31,7 +36,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
+# PostgreSQL configuration (required - SQLite not supported)
+PG_HOST = os.environ.get("PG_HOST")
+PG_USER = os.environ.get("PG_USER") 
+PG_PASSWORD = os.environ.get("PG_PASSWORD")
+PG_DATABASE = os.environ.get("PG_DATABASE", "sptnr")
+PG_PORT = os.environ.get("PG_PORT", "5432")
+DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")  # Kept for backward compatibility logging
 
 # Global state for tracking scan progress (used by /api/downloads/scan-progress)
 _scan_progress = {
@@ -42,12 +53,89 @@ _scan_progress = {
     'current_path': '',
 }
 
+# Validate PostgreSQL configuration at module load time
+def _validate_postgres_config():
+    """Ensure PostgreSQL is configured - SQLite is no longer supported due to locking issues"""
+    if not all([PG_HOST, PG_USER, PG_DATABASE]):
+        error_msg = (
+            "❌ PostgreSQL configuration is REQUIRED but not fully configured.\n"
+            "   SQLite is no longer supported due to 'database is locked' errors with concurrent access.\n"
+            "   Please set these environment variables:\n"
+            "   - PG_HOST (e.g., 'db.example.com')\n"
+            "   - PG_USER (e.g., 'sptnr')\n"
+            "   - PG_DATABASE (e.g., 'sptnr', default if not set)\n"
+            "   - PG_PASSWORD (optional)\n"
+            "   - PG_PORT (optional, default: 5432)"
+        )
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
+    
+    logger.info(f"✓ PostgreSQL configured: {PG_USER}@{PG_HOST}:{PG_PORT}/{PG_DATABASE}")
+
+# Validate config on module import
+try:
+    _validate_postgres_config()
+except RuntimeError as e:
+    logger.error(f"FATAL: {e}")
+    # Don't re-raise to allow module to load, but database operations will fail with clear error
+
 # Throttle repetitive empty-scan logs to avoid warning spam when downloads folder is idle.
 _last_no_audio_log_at = 0.0
 _NO_AUDIO_LOG_INTERVAL_SECONDS = 600
 
 _queue_schema_checked = False
 _queue_schema_lock = threading.Lock()
+
+# In-memory event queue for displaying logs on UI (keep last 200 events)
+_queue_events = []
+_queue_events_lock = threading.Lock()
+_MAX_QUEUE_EVENTS = 200
+
+def log_queue_event(event_type, message, item_id=None, details=None):
+    """Log a download queue event for UI display.
+    
+    Args:
+        event_type: 'file_found', 'status_change', 'error', 'info'
+        message: Human-readable event message
+        item_id: Optional queue item ID
+        details: Optional dict with additional context
+    """
+    global _queue_events
+    
+    event = {
+        'timestamp': datetime.now().isoformat(),
+        'type': event_type,
+        'message': message,
+        'item_id': item_id,
+        'details': details or {}
+    }
+    
+    with _queue_events_lock:
+        _queue_events.append(event)
+        # Keep only last 200 events
+        if len(_queue_events) > _MAX_QUEUE_EVENTS:
+            _queue_events = _queue_events[-_MAX_QUEUE_EVENTS:]
+    
+    # Also log to file
+    logger.info(f"[QUEUE_EVENT] {event_type}: {message}" + (f" (item_id={item_id})" if item_id else ""))
+
+def get_queue_events(limit=50, event_type=None):
+    """Get recent queue events for UI display.
+    
+    Args:
+        limit: Max number of events to return
+        event_type: Filter by event type (optional)
+    
+    Returns:
+        List of events in reverse chronological order (newest first)
+    """
+    with _queue_events_lock:
+        events = list(reversed(_queue_events))
+        
+        if event_type:
+            events = [e for e in events if e['type'] == event_type]
+        
+        return events[:limit]
 
 def get_scan_progress():
     """Get current scan progress state."""
@@ -108,8 +196,8 @@ def get_downloads_dir():
 MUSIC_DIR = os.environ.get("MUSIC_ROOT", "/music")
 
 
-def retry_on_db_lock(max_retries=5, initial_delay=0.1):
-    """Decorator to retry database operations on locked database error"""
+def retry_on_db_lock(max_retries=3, initial_delay=0.5):
+    """Decorator to retry database operations on transient PostgreSQL errors"""
     def decorator(func):
         def wrapper(*args, **kwargs):
             delay = initial_delay
@@ -118,14 +206,13 @@ def retry_on_db_lock(max_retries=5, initial_delay=0.1):
             for attempt in range(max_retries):
                 try:
                     return func(*args, **kwargs)
-                except sqlite3.OperationalError as e:
-                    if 'database is locked' in str(e):
-                        last_error = e
-                        if attempt < max_retries - 1:
-                            time.sleep(delay)
-                            delay = min(delay * 2, 5.0)  # Exponential backoff, max 5 seconds
-                            logger.warning(f"Database locked, retrying (attempt {attempt + 1}/{max_retries})...")
-                            continue
+                except (psycopg2.DatabaseError, psycopg2.OperationalError) as e:
+                    last_error = e
+                    if attempt < max_retries - 1:
+                        time.sleep(delay)
+                        delay = min(delay * 2, 5.0)  # Exponential backoff, max 5 seconds
+                        logger.warning(f"Database error, retrying (attempt {attempt + 1}/{max_retries})...")
+                        continue
                     raise
             
             if last_error:
@@ -135,24 +222,33 @@ def retry_on_db_lock(max_retries=5, initial_delay=0.1):
 
 
 def get_db():
-    """Get database connection with proper timeout and locking"""
-    conn = sqlite3.connect(DB_PATH, timeout=30.0)  # Increased timeout to 30 seconds
-    conn.row_factory = sqlite3.Row
-    # Enable WAL mode for better concurrent access
+    """Get PostgreSQL database connection (SQLite no longer supported due to locking issues)"""
+    if not all([PG_HOST, PG_USER, PG_DATABASE]):
+        raise RuntimeError(
+            "PostgreSQL configuration is required but not found. "
+            "Please set PG_HOST, PG_USER, and PG_DATABASE environment variables. "
+            "SQLite is no longer supported due to database locking issues with concurrent access."
+        )
+    
     try:
-        conn.execute("PRAGMA journal_mode=WAL")
-    except Exception as e:
-        logger.warning(f"Could not enable WAL mode: {e}")
-    # Ask SQLite to wait for lock release before raising OperationalError.
-    try:
-        conn.execute("PRAGMA busy_timeout=5000")
-    except Exception as e:
-        logger.warning(f"Could not set busy_timeout: {e}")
-    return conn
+        conn = psycopg2.connect(
+            host=PG_HOST,
+            user=PG_USER,
+            password=PG_PASSWORD,
+            database=PG_DATABASE,
+            port=int(PG_PORT),
+            connect_timeout=10
+        )
+        conn.set_session(autocommit=False)
+        # Use RealDictCursor for dict-like row access (compatible with sqlite3.Row behavior)
+        return conn
+    except psycopg2.Error as e:
+        logger.error(f"Failed to connect to PostgreSQL: {e}")
+        raise
 
 
-def _ensure_download_queue_columns(conn, cursor, is_pg=False):
-    """Ensure expected queue columns exist (run once per process)."""
+def _ensure_download_queue_columns(conn, cursor, is_pg=True):
+    """Ensure expected queue columns exist (PostgreSQL only)"""
     global _queue_schema_checked
     if _queue_schema_checked:
         return
@@ -161,43 +257,53 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=False):
         if _queue_schema_checked:
             return
 
-        if is_pg:
+        try:
+            # PostgreSQL-only column checking
             cursor.execute("""
                 SELECT column_name FROM information_schema.columns
                 WHERE table_name = 'download_queue'
-                  AND table_schema = current_schema()
+                  AND table_schema = 'public'
+                ORDER BY column_name
             """)
-            columns = [row['column_name'] for row in cursor.fetchall()]
-        else:
-            cursor.execute("PRAGMA table_info(download_queue);")
-            columns = [row[1] for row in cursor.fetchall()]
+            columns = [row[0] for row in cursor.fetchall()]
 
-        required_cols = {
-            'search_query': "TEXT",
-            'source': "TEXT DEFAULT 'soulseek'",
-            'priority': "INTEGER DEFAULT 5",
-            'import_group': "TEXT",
-            'import_type': "TEXT DEFAULT 'song'",
-            'track_number': "TEXT",
-            'disc_number': "TEXT",
-            'album_artist': "TEXT",
-            'year': "TEXT",
-            'release_id': "TEXT",
-            'release_source': "TEXT",
-            'copied_individually': "INTEGER DEFAULT 0",
-            'copied_individually_at': "TEXT",
-        }
+            required_cols = {
+                'search_query': "TEXT",
+                'source': "TEXT DEFAULT 'soulseek'",
+                'priority': "INTEGER DEFAULT 5",
+                'import_group': "TEXT",
+                'import_type': "TEXT DEFAULT 'song'",
+                'track_number': "TEXT",
+                'disc_number': "TEXT",
+                'album_artist': "TEXT",
+                'year': "TEXT",
+                'release_id': "TEXT",
+                'release_source': "TEXT",
+                'copied_individually': "INTEGER DEFAULT 0",
+                'copied_individually_at': "TEXT",
+            }
 
-        for col, col_type in required_cols.items():
-            if col not in columns:
-                logger.info(f"Adding missing column '{col}' to download_queue")
-                try:
-                    cursor.execute(f"ALTER TABLE download_queue ADD COLUMN {col} {col_type};")
-                    conn.commit()
-                except Exception as e:
-                    logger.warning(f"Could not add {col} column: {e}")
+            for col, col_type in required_cols.items():
+                if col not in columns:
+                    logger.info(f"Adding missing column '{col}' to download_queue")
+                    try:
+                        cursor.execute(f"ALTER TABLE download_queue ADD COLUMN {col} {col_type};")
+                        conn.commit()
+                    except Exception as e:
+                        # Rollback failed ALTER on error to recover transaction
+                        try:
+                            conn.rollback()
+                        except:
+                            pass
+                        logger.warning(f"Could not add {col} column: {e}")
 
-        _queue_schema_checked = True
+            _queue_schema_checked = True
+        except Exception as e:
+            logger.warning(f"Schema check failed: {e}")
+            try:
+                conn.rollback()
+            except:
+                pass
 
 
 def execute_write_with_retry(cursor, conn, query, params=(), context="database write", max_retries=5, initial_delay=0.1):
@@ -407,8 +513,14 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                     initial_status = 'in_collection'
                     logger.info(f"Track already in collection: {artist} - {title} (track ID {collection_track_id})")
             except Exception as e_collection:
-                # tracks table might not exist, that's okay
+                # tracks table might not exist or columns missing, that's okay
+                # CRITICAL: Must rollback transaction to recover from failed query
+                try:
+                    conn.rollback()
+                except:
+                    pass
                 logger.debug(f"Collection check error (table may not exist): {e_collection}")
+
         
         # Prepare release_year from year parameter (normalize to INTEGER)
         release_year = None
@@ -498,18 +610,37 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                 return None
                 
         finally:
-            conn.close()
+            try:
+                conn.rollback()
+            except:
+                pass
+            try:
+                conn.close()
+            except:
+                pass
         
     except sqlite3.IntegrityError as e:
         logger.error(f"Database integrity error adding to queue: {e}")
+        try:
+            conn.rollback()
+        except:
+            pass
         return None
     except sqlite3.DatabaseError as e:
         logger.error(f"Database error adding to queue: {e}")
+        try:
+            conn.rollback()
+        except:
+            pass
         return None
     except Exception as e:
         logger.error(f"Error adding to queue: {type(e).__name__}: {e}")
         import traceback
         logger.error(traceback.format_exc())
+        try:
+            conn.rollback()
+        except:
+            pass
         return None
 
 
@@ -529,11 +660,14 @@ def get_queue(status=None, source=None, limit=50):
     """
     try:
         conn = get_db()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-        # First ensure required columns exist
-        cursor.execute("PRAGMA table_info(download_queue);")
-        columns = [row[1] for row in cursor.fetchall()]
+        # First ensure required columns exist (PostgreSQL information_schema)
+        cursor.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'download_queue' AND table_schema = 'public'
+        """)
+        columns = [row[0] for row in cursor.fetchall()]
 
         # Add missing columns if needed
         missing_cols = {
@@ -554,9 +688,8 @@ def get_queue(status=None, source=None, limit=50):
                 except Exception as e:
                     logger.warning(f"Could not add {col} column: {e}")
 
-        from app import _is_postgres_connection as app_is_postgres_connection
-        is_pg = bool(app_is_postgres_connection(conn))
-        placeholder = "%s" if is_pg else "?"
+        is_pg = True  # PostgreSQL is now required
+        placeholder = "%s"
 
         conditions = []
         params = []
@@ -572,10 +705,7 @@ def get_queue(status=None, source=None, limit=50):
             params.append(status)
         else:
             # Default: return all non-archived statuses
-            if is_pg:
-                conditions.append("status NOT IN ('imported', 'removed', 'cancelled')")
-            else:
-                conditions.append("status NOT IN ('imported', 'removed', 'cancelled')")
+            conditions.append("status NOT IN ('imported', 'removed', 'cancelled')")
 
         query = "SELECT * FROM download_queue"
         if conditions:
