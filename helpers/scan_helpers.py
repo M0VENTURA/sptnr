@@ -502,6 +502,29 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     log_unified(f"Navidrome Import - {artist_name} - Removed {len(stale_ids)} stale track(s) no longer in library")
                 except Exception as e:
                     logging.error(f"Failed to remove stale tracks for artist '{artist_name}': {e}")
+
+        # Remove empty subdirectories under the artist's music folder.
+        # Files deleted from disk leave behind empty album directories; clean
+        # those up so the filesystem stays tidy.
+        if can_cleanup:
+            try:
+                music_root = os.environ.get("MUSIC_FOLDER") or os.environ.get("MUSIC_ROOT", "/music")
+                artist_dir = os.path.join(music_root, canonical_artist_name)
+                if os.path.isdir(artist_dir):
+                    for dirpath, dirnames, filenames in os.walk(artist_dir, topdown=False):
+                        # Only remove immediate subdirectories (album-level), not the
+                        # artist root itself, and only if truly empty (no files).
+                        if dirpath == artist_dir:
+                            continue
+                        if not os.listdir(dirpath):
+                            try:
+                                os.rmdir(dirpath)
+                                logging.info(f"Removed empty directory: {dirpath}")
+                                log_unified(f"Navidrome Import - {artist_name} - Removed empty directory: {os.path.basename(dirpath)}")
+                            except OSError as rmdir_err:
+                                logging.debug(f"Could not remove directory '{dirpath}': {rmdir_err}")
+            except Exception as e:
+                logging.debug(f"Empty-folder cleanup skipped for artist '{artist_name}': {e}")
     except Exception as e:
         logging.error(f"scan_artist_to_db failed for {artist_name}: {e}")
         raise
