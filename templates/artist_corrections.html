@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+
+{% block title %}Corrections - {{ artist_name }} - Popularr{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="{{ url_for('dashboard') }}">Dashboard</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('artists') }}">Artists</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('artist_detail', name=artist_name) }}">{{ artist_name }}</a></li>
+            <li class="breadcrumb-item active" aria-current="page">Corrections</li>
+        </ol>
+    </nav>
+
+    <div class="d-flex flex-column flex-md-row justify-content-between align-items-start align-items-md-center mb-3 gap-2">
+        <h1 class="h3 mb-0">
+            <i class="bi bi-tools"></i> Corrections for {{ artist_name }}
+        </h1>
+        <div class="d-flex gap-2">
+            <span class="badge bg-danger">{{ duplicate_count }} duplicate rows</span>
+            <span class="badge bg-warning text-dark">{{ missing_count }} missing metadata</span>
+        </div>
+    </div>
+
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5 class="mb-0"><i class="bi bi-files"></i> Duplicate Tracks</h5>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead>
+                        <tr>
+                            <th>Album</th>
+                            <th>Title</th>
+                            <th class="text-center">Count</th>
+                            <th>Track IDs</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% if duplicates %}
+                            {% for row in duplicates %}
+                            <tr>
+                                <td>{{ row.album or '—' }}</td>
+                                <td>{{ row.title or '—' }}</td>
+                                <td class="text-center"><span class="badge bg-danger">{{ row.duplicate_count }}</span></td>
+                                <td class="small text-muted">{{ row.track_ids or '—' }}</td>
+                            </tr>
+                            {% endfor %}
+                        {% else %}
+                            <tr>
+                                <td colspan="4" class="text-center text-muted py-4">No duplicate tracks found.</td>
+                            </tr>
+                        {% endif %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <h5 class="mb-0"><i class="bi bi-exclamation-triangle"></i> Tracks Missing Core Metadata</h5>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead>
+                        <tr>
+                            <th>Track ID</th>
+                            <th>Title</th>
+                            <th>Album</th>
+                            <th class="text-center">Track #</th>
+                            <th class="text-center">Disc #</th>
+                            <th>File</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% if missing_tracks %}
+                            {% for row in missing_tracks %}
+                            <tr>
+                                <td class="small text-muted">{{ row.id }}</td>
+                                <td>{{ row.title or '—' }}</td>
+                                <td>{{ row.album or '—' }}</td>
+                                <td class="text-center">{{ row.track_number or '—' }}</td>
+                                <td class="text-center">{{ row.disc_number or '—' }}</td>
+                                <td class="small text-muted">{{ row.file_path or '—' }}</td>
+                            </tr>
+                            {% endfor %}
+                        {% else %}
+                            <tr>
+                                <td colspan="6" class="text-center text-muted py-4">No missing core metadata found.</td>
+                            </tr>
+                        {% endif %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

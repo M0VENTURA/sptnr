@@ -120,12 +120,22 @@
                                 <a href="{{ url_for('artist_detail', name=artist.link_artist) }}" class="text-decoration-none">
                                     {{ artist.display_name }}
                                 </a>
+                                {% if artist.needs_correction %}
+                                    <a href="{{ url_for('artist_corrections', name=artist.link_artist) }}" class="ms-2 text-decoration-none" title="{{ artist.duplicate_track_count or 0 }} duplicate rows, {{ artist.missing_track_count or 0 }} missing metadata rows">
+                                        <span class="badge bg-danger">Correcting Needed</span>
+                                    </a>
+                                {% endif %}
                             </td>
                             <td class="d-sm-none">
                                 <div class="text-truncate">
                                     <a href="{{ url_for('artist_detail', name=artist.link_artist) }}" class="text-decoration-none">
                                         <strong>{{ artist.display_name }}</strong>
                                     </a>
+                                    {% if artist.needs_correction %}
+                                        <a href="{{ url_for('artist_corrections', name=artist.link_artist) }}" class="ms-1 text-decoration-none">
+                                            <span class="badge bg-danger">Correcting Needed</span>
+                                        </a>
+                                    {% endif %}
                                 </div>
                                 <div class="small text-muted">
                                     <span class="d-inline d-md-none">{{ artist.album_count or 0 }} albums</span>
@@ -155,6 +165,11 @@
                             </td>
                             <td class="text-center">
                                 <div class="btn-group btn-group-sm" role="group">
+                                    {% if artist.needs_correction %}
+                                    <a href="{{ url_for('artist_corrections', name=artist.link_artist) }}" class="btn btn-outline-danger" title="Review duplicate/missing track issues">
+                                        <i class="bi bi-tools"></i>
+                                    </a>
+                                    {% endif %}
                                     <button class="btn btn-outline-primary" type="button" onclick="lookupMetadata('artist', '{{ artist.link_artist }}')" title="Get artist metadata">
                                         <i class="bi bi-search"></i>
                                     </button>

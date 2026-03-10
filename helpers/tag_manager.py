@@ -456,6 +456,11 @@ def _write_id3_tags(file_path: str, tags: Dict[str, Any]) -> bool:
                 _set_text_frame("TPE2", TPE2, value)
             elif field == "composer":
                 _set_text_frame("TCOM", TCOM, value)
+            elif field == "writer":
+                frame_key = "TXXX:WRITER"
+                audio.tags.delall(frame_key)
+                if value is not None and str(value).strip():
+                    audio.tags.add(TXXX(encoding=3, desc="WRITER", text=[str(value)]))
             elif field == "track_number":
                 _set_text_frame("TRCK", TRCK, value)
             elif field == "disc_number":
@@ -510,6 +515,7 @@ def _write_flac_tags(file_path: str, tags: Dict[str, Any]) -> bool:
             "album": "album",
             "album_artist": "albumartist",
             "composer": "composer",
+            "writer": "lyricist",
             "track_number": "tracknumber",
             "disc_number": "discnumber",
             "year": "date",

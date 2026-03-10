@@ -2343,10 +2343,166 @@ def artists():
             return ('#', name.lower())
     
     artists_data = sorted(artists_data, key=get_sort_key)
+
+    # Build per-artist correction indicators (duplicates and missing core metadata)
+    duplicate_counts_by_artist = {}
+    missing_counts_by_artist = {}
+    try:
+        if is_pg:
+            cursor.execute("""
+                WITH dup_groups AS (
+                    SELECT
+                        COALESCE(NULLIF(album_artist, ''), artist) AS display_name,
+                        album,
+                        LOWER(TRIM(title)) AS norm_title,
+                        COUNT(*) AS grp_count
+                    FROM tracks
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
+                      AND COALESCE(NULLIF(album_artist, ''), artist) != ''
+                      AND title IS NOT NULL
+                      AND TRIM(title) != ''
+                    GROUP BY COALESCE(NULLIF(album_artist, ''), artist), album, LOWER(TRIM(title))
+                    HAVING COUNT(*) > 1
+                )
+                SELECT display_name, COALESCE(SUM(grp_count - 1), 0) AS duplicate_count
+                FROM dup_groups
+                GROUP BY display_name
+            """)
+        else:
+            cursor.execute("""
+                WITH dup_groups AS (
+                    SELECT
+                        COALESCE(NULLIF(album_artist, ''), artist) AS display_name,
+                        album,
+                        LOWER(TRIM(title)) AS norm_title,
+                        COUNT(*) AS grp_count
+                    FROM tracks
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
+                      AND COALESCE(NULLIF(album_artist, ''), artist) != ''
+                      AND title IS NOT NULL
+                      AND TRIM(title) != ''
+                    GROUP BY COALESCE(NULLIF(album_artist, ''), artist), album, LOWER(TRIM(title))
+                    HAVING COUNT(*) > 1
+                )
+                SELECT display_name, IFNULL(SUM(grp_count - 1), 0) AS duplicate_count
+                FROM dup_groups
+                GROUP BY display_name
+            """)
+
+        for row in cursor.fetchall():
+            row_dict = dict(row)
+            duplicate_counts_by_artist[row_dict.get("display_name", "")] = int(row_dict.get("duplicate_count") or 0)
+
+        cursor.execute("""
+            SELECT
+                COALESCE(NULLIF(album_artist, ''), artist) AS display_name,
+                COUNT(*) AS missing_count
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
+              AND COALESCE(NULLIF(album_artist, ''), artist) != ''
+              AND (
+                    title IS NULL OR TRIM(title) = '' OR
+                    album IS NULL OR TRIM(album) = '' OR
+                    track_number IS NULL OR TRIM(CAST(track_number AS TEXT)) = ''
+                  )
+            GROUP BY COALESCE(NULLIF(album_artist, ''), artist)
+        """)
+
+        for row in cursor.fetchall():
+            row_dict = dict(row)
+            missing_counts_by_artist[row_dict.get("display_name", "")] = int(row_dict.get("missing_count") or 0)
+    except Exception as correction_err:
+        logging.debug(f"Could not compute artist correction indicators: {correction_err}")
+
+    for artist_row in artists_data:
+        display_name = artist_row.get("display_name", "")
+        duplicate_count = duplicate_counts_by_artist.get(display_name, 0)
+        missing_count = missing_counts_by_artist.get(display_name, 0)
+        artist_row["duplicate_track_count"] = duplicate_count
+        artist_row["missing_track_count"] = missing_count
+        artist_row["needs_correction"] = (duplicate_count + missing_count) > 0
     
     conn.close()
     
     return render_template("artists.html", artists=artists_data, total_stats=total_stats, DB_PATH=DB_PATH)
+
+
+@app.route("/artist/<path:name>/corrections")
+def artist_corrections(name):
+    """Show duplicate-track groups and missing-core-metadata tracks for one artist."""
+    from urllib.parse import unquote
+
+    artist_name = unquote(name)
+    conn = get_db()
+    cursor = conn.cursor()
+    is_pg = _is_postgres_connection(conn)
+    placeholder = "%s" if is_pg else "?"
+
+    duplicates = []
+    missing_tracks = []
+
+    try:
+        if is_pg:
+            cursor.execute(f"""
+                SELECT
+                    album,
+                    title,
+                    COUNT(*) AS duplicate_count,
+                    STRING_AGG(CAST(id AS TEXT), ', ' ORDER BY id) AS track_ids
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                  AND title IS NOT NULL
+                  AND TRIM(title) != ''
+                GROUP BY album, title
+                HAVING COUNT(*) > 1
+                ORDER BY duplicate_count DESC, album, title
+            """, (artist_name,))
+        else:
+            cursor.execute(f"""
+                SELECT
+                    album,
+                    title,
+                    COUNT(*) AS duplicate_count,
+                    GROUP_CONCAT(id, ', ') AS track_ids
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                  AND title IS NOT NULL
+                  AND TRIM(title) != ''
+                GROUP BY album, title
+                HAVING COUNT(*) > 1
+                ORDER BY duplicate_count DESC, album, title
+            """, (artist_name,))
+        duplicates = [dict(r) for r in cursor.fetchall()]
+
+        cursor.execute(f"""
+            SELECT
+                id,
+                title,
+                album,
+                track_number,
+                disc_number,
+                file_path
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+              AND (
+                    title IS NULL OR TRIM(title) = '' OR
+                    album IS NULL OR TRIM(album) = '' OR
+                    track_number IS NULL OR TRIM(CAST(track_number AS TEXT)) = ''
+                  )
+            ORDER BY album, track_number, title
+        """, (artist_name,))
+        missing_tracks = [dict(r) for r in cursor.fetchall()]
+    finally:
+        conn.close()
+
+    return render_template(
+        "artist_corrections.html",
+        artist_name=artist_name,
+        duplicates=duplicates,
+        missing_tracks=missing_tracks,
+        duplicate_count=sum(int(d.get("duplicate_count") or 0) - 1 for d in duplicates),
+        missing_count=len(missing_tracks),
+    )
 
 
 @app.route("/search")
@@ -2944,7 +3100,7 @@ def artist_detail(name):
                     AND LOWER(album) = LOWER({queue_placeholder})
                     AND status IN ('queued', 'searching', 'downloading')
                     GROUP BY status
-                """, (artist_name, album_name))
+                """, (name, album_name))
                 
                 queue_results = queue_cursor.fetchall()
                 queue_conn.close()
@@ -7503,7 +7659,9 @@ def album_edit(artist, album):
     # Get form data
     album_title = request.form.get("album_title", "").strip()
     album_artist = request.form.get("album_artist", "").strip()
-    track_artist = request.form.get("track_artist", "").strip()  # New: Track artist to apply to all tracks
+    track_artist = request.form.get("track_artist", "").strip()
+    track_composer = request.form.get("track_composer", "").strip()
+    track_comment = request.form.get("track_comment", "").strip()
     release_year = request.form.get("release_year", "").strip() or None
     album_type = request.form.get("album_type", "").strip() or None
     
@@ -7518,6 +7676,8 @@ def album_edit(artist, album):
     logging.debug(f"Album edit - URL artist: {repr(artist)}, form album_artist: {repr(album_artist)}")
     logging.debug(f"Album edit - URL album: {repr(album)}, form album_title: {repr(album_title)}")
     logging.debug(f"Album edit - track_artist: {repr(track_artist)}")
+    logging.debug(f"Album edit - track_composer: {repr(track_composer)}")
+    logging.debug(f"Album edit - track_comment: {repr(track_comment)}")
     
     if not album_title or not album_artist:
         flash("Album title and artist are required", "danger")
@@ -7545,6 +7705,17 @@ def album_edit(artist, album):
         if release_year:
             update_fields.append(f"year = {placeholder}")
             update_values.append(int(release_year))
+
+        # Optional per-track fields applied to all tracks in this album
+        if track_artist:
+            update_fields.append(f"artist = {placeholder}")
+            update_values.append(track_artist)
+        if track_composer:
+            update_fields.append(f"composer = {placeholder}")
+            update_values.append(track_composer)
+        if track_comment:
+            update_fields.append(f"comment = {placeholder}")
+            update_values.append(track_comment)
         
         # Update album type if provided
         if album_type:
@@ -7568,7 +7739,7 @@ def album_edit(artist, album):
         if update_fields:
             # Validate that update_fields only contains safe column assignments
             # All field assignments should be in the format "column_name = <placeholder>"
-            allowed_columns = {'album', 'artist', 'year', 'spotify_album_type', 'musicbrainz_album_mbid', 'genres'}
+            allowed_columns = {'album', 'artist', 'year', 'spotify_album_type', 'musicbrainz_album_mbid', 'genres', 'composer', 'comment'}
             for field in update_fields:
                 column_name = field.split('=')[0].strip()
                 if column_name not in allowed_columns:
@@ -7773,6 +7944,7 @@ def track_edit(track_id):
     year = request.form.get("year", "").strip() or None
     album_artist = request.form.get("album_artist", "").strip() or None
     composer = request.form.get("composer", "").strip() or None
+    writer = request.form.get("writer", "").strip() or None
     track_number = request.form.get("track_number", "").strip() or None
     disc_number = request.form.get("disc_number", type=int) or None
     comment = request.form.get("comment", "").strip() or None
@@ -7789,11 +7961,11 @@ def track_edit(track_id):
             UPDATE tracks
             SET title = {placeholder}, artist = {placeholder}, album = {placeholder}, stars = {placeholder}, is_single = {placeholder}, single_confidence = {placeholder},
                 mbid = {placeholder}, suggested_mbid = {placeholder}, suggested_mbid_confidence = {placeholder},
-                genres = {placeholder}, year = {placeholder}, album_artist = {placeholder}, composer = {placeholder}, 
-                track_number = {placeholder}, disc_number = {placeholder}, comment = {placeholder}, single_manual_override = 1
+                                genres = {placeholder}, year = {placeholder}, album_artist = {placeholder}, composer = {placeholder}, writer = {placeholder},
+                                track_number = {placeholder}, disc_number = {placeholder}, comment = {placeholder}, single_manual_override = 1
             WHERE id = {placeholder}
         """, (title, artist, album, stars, is_single, single_confidence, mbid, suggested_mbid, 
-              suggested_mbid_confidence, genres, year, album_artist, composer, 
+                            suggested_mbid_confidence, genres, year, album_artist, composer, writer,
               track_number, disc_number, comment, track_id))
         
         conn.commit()
@@ -7819,6 +7991,8 @@ def track_edit(track_id):
                     tags_to_write["year"] = year
                 if composer:
                     tags_to_write["composer"] = composer
+                if writer:
+                    tags_to_write["writer"] = writer
                 if track_number:
                     tags_to_write["track_number"] = int(track_number) if track_number.isdigit() else track_number
                 if disc_number:
@@ -8176,9 +8350,9 @@ def scan_mp3_import():
             def run_scan():
                 try:
                     results = scanner.scan()
-                    logger.info(f"MP3 import scan completed: {results}")
+                    logging.info(f"MP3 import scan completed: {results}")
                 except Exception as e:
-                    logger.error(f"MP3 import scan failed: {e}", exc_info=True)
+                    logging.error(f"MP3 import scan failed: {e}", exc_info=True)
             
             import threading
             scan_thread = threading.Thread(target=run_scan, daemon=True)
@@ -8188,10 +8362,10 @@ def scan_mp3_import():
             flash("MP3 metadata import scan started. Check progress below.", "success")
             
         except ImportError as e:
-            logger.error(f"Failed to import MP3ImportScanner: {e}")
+            logging.error(f"Failed to import MP3ImportScanner: {e}")
             flash(f"❌ Failed to start MP3 import scan: {str(e)}", "error")
         except Exception as e:
-            logger.error(f"Error starting MP3 import scan: {e}", exc_info=True)
+            logging.error(f"Error starting MP3 import scan: {e}", exc_info=True)
             flash(f"❌ Error starting MP3 import scan: {str(e)}", "error")
     
     return redirect(url_for("dashboard"))
