@@ -198,6 +198,19 @@ def read_musicbrainz_tags_from_mp3(file_path):
     return result
 
 
+def _parse_number_tag(value):
+    """
+    Parse a track/disc number tag that may be in "X/Y" format (e.g. "7/11").
+    Returns the integer track number (X), or None if value is empty or invalid.
+    """
+    if value is None or str(value).strip() == '':
+        return None
+    try:
+        return int(str(value).split('/')[0].strip())
+    except (ValueError, IndexError):
+        return None
+
+
 def read_mp3_metadata(file_path):
     """
     Read MP3 metadata from file using mutagen.
@@ -232,10 +245,12 @@ def read_mp3_metadata(file_path):
                 metadata['composer'] = str(audio['TCOM'].text[0]) if audio['TCOM'].text else ''
             if 'TDRC' in audio:  # Date/Year
                 metadata['date'] = str(audio['TDRC'].text[0]) if audio['TDRC'].text else ''
-            if 'TRCK' in audio:  # Track Number
-                metadata['track_number'] = str(audio['TRCK'].text[0]) if audio['TRCK'].text else ''
-            if 'TPOS' in audio:  # Disc Number
-                metadata['disc_number'] = str(audio['TPOS'].text[0]) if audio['TPOS'].text else ''
+            if 'TRCK' in audio:  # Track Number (may be "7/11" format)
+                raw = str(audio['TRCK'].text[0]) if audio['TRCK'].text else ''
+                metadata['track_number'] = _parse_number_tag(raw)
+            if 'TPOS' in audio:  # Disc Number (may be "1/2" format)
+                raw = str(audio['TPOS'].text[0]) if audio['TPOS'].text else ''
+                metadata['disc_number'] = _parse_number_tag(raw)
             if 'TCON' in audio:  # Genre - can have multiple values
                 # Handle both single TCON frame with multiple values and multiple TCON frames
                 genre_list = []
@@ -296,7 +311,11 @@ def read_mp3_metadata(file_path):
                 for field, id3_key in MP3_FIELDS.items():
                     if field in audio:
                         values = audio[field]
-                        metadata[field] = values[0] if isinstance(values, list) and values else str(values)
+                        raw = values[0] if isinstance(values, list) and values else ''
+                        if field in ('track_number', 'disc_number'):
+                            metadata[field] = _parse_number_tag(raw)
+                        else:
+                            metadata[field] = raw
             except:
                 pass
         
