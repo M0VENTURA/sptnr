@@ -332,7 +332,7 @@ class MP3ImportScanner:
             
         except Exception as e:
             logger.error(f"Database scan failed: {e}", exc_info=True)
-            elapsed = (datetime.now() - self.start_time).total_seconds()
+            elapsed = (datetime.now() - self.start_time).total_seconds() if self.start_time else 0
             return self._get_results(f"Scan failed: {str(e)}", elapsed, error=True)
     
     def _scan_directory(self) -> Dict:
