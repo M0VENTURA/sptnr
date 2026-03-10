@@ -19,6 +19,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from difflib import SequenceMatcher
 from helpers.metadata_reader import read_mp3_metadata
+try:
+    from mutagen import File as MutagenFile
+except ImportError:
+    MutagenFile = None
 
 # Use unified logging system - all logs go to debug.log
 from helpers.logging_config import (
@@ -104,6 +108,27 @@ def _tokenize_meaningful(value):
     return [t for t in normalized.split() if len(t) >= 3 and t not in stop_words]
 
 
+def _extract_tag_value(tags, keys):
+    """
+    Extract the first non-empty string value from a mutagen tags dict.
+
+    Handles Vorbis comments (list values), ID3 frames (.text attribute),
+    and plain string values. Returns an empty string if nothing is found.
+    """
+    for key in keys:
+        raw = tags.get(key)
+        if not raw:
+            continue
+        if isinstance(raw, list):
+            raw = raw[0] if raw else ''
+        if hasattr(raw, 'text'):
+            raw = raw.text[0] if raw.text else ''
+        value = str(raw).strip()
+        if value:
+            return value
+    return ''
+
+
 def _score_soulseek_candidate(filename, queue_item):
     """
     Score a Soulseek candidate path/name against queue metadata.
@@ -171,6 +196,24 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
 
     file_artist = (metadata.get('artist') or '').strip()
     file_title = (metadata.get('title') or '').strip()
+
+    # read_mp3_metadata only handles MP3 ID3 tags. For FLAC, OGG, M4A and other
+    # formats it returns an empty dict. Fall back to mutagen.File which supports
+    # all common audio containers before giving up.
+    if (not file_artist or not file_title) and MutagenFile is not None:
+        try:
+            audio = MutagenFile(file_path)
+            if audio is not None and audio.tags:
+                tags = audio.tags
+                file_artist = file_artist or _extract_tag_value(
+                    tags, ('artist', 'ARTIST', 'TPE1', '\xa9ART')
+                )
+                file_title = file_title or _extract_tag_value(
+                    tags, ('title', 'TITLE', 'TIT2', '\xa9nam')
+                )
+        except Exception:
+            pass
+
     if not file_artist or not file_title:
         return None
 
