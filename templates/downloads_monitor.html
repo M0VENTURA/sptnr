@@ -1742,12 +1742,25 @@ async function loadFolderGroups(options = {}) {
                   const queueStatusRow = String(track.status || group.queue_item_status || '').toLowerCase();
                   const artistEnc = encodeInlineArg(track.artist || group.artist || '');
                   const titleEnc = encodeInlineArg(track.title || group.album || '');
+                  const currentMbidEnc = encodeInlineArg(track.release_mbid || group.release_id || '');
+                  const inferredArtist = (track.artist && String(track.artist).toLowerCase() !== 'unknown artist')
+                    ? track.artist
+                    : ((group.artist && String(group.artist).toLowerCase() !== 'unknown artist') ? group.artist : '');
+                  const inferredAlbum = (group.album && String(group.album).toLowerCase() !== 'unknown album')
+                    ? group.album
+                    : (group.folder_name || track.album || track.title || '');
+                  const inferredArtistEnc = encodeInlineArg(inferredArtist || '');
+                  const inferredAlbumEnc = encodeInlineArg(inferredAlbum || '');
                   const showRetry = queueStatusRow === 'failed';
                   const canMoveToMusic = queueStatusRow === 'matched' && queueId > 0;
                   const canSendQueried = queueStatusRow === 'queried' && queueId > 0;
+                  const canChangeMatch = queueId > 0;
+                  const canResetMatch = ['matched', 'completed', 'possible_duplicate', 'unmatched'].includes(queueStatusRow) && queueId > 0;
                   moveButtonHtml = `<div class="d-flex flex-column gap-1 align-items-center">
                     ${canMoveToMusic ? `<button class="btn btn-sm btn-outline-success" onclick="moveMatchedToMusic(${queueId})" title="Move matched track to Music and retag from MusicBrainz"><i class="bi bi-box-arrow-right"></i></button>` : ''}
                     ${canSendQueried ? `<button class="btn btn-sm btn-outline-primary" onclick="sendQueriedTrack(${queueId})" title="Send queried track to queue for Soulseek search"><i class="bi bi-send"></i></button>` : ''}
+                    ${canChangeMatch ? `<button class="btn btn-sm btn-outline-info" onclick="openQueueItemMatchModal(${queueId}, '${inferredArtistEnc}', '${inferredAlbumEnc}', '${currentMbidEnc}')" title="Change or set MusicBrainz match for this queue item"><i class="bi bi-arrow-left-right"></i></button>` : ''}
+                    ${canResetMatch ? `<button class="btn btn-sm btn-outline-warning" onclick="resetQueueMatch(${queueId})" title="Reset current match and mark as unmatched"><i class="bi bi-x-circle"></i></button>` : ''}
                     <button class="btn btn-sm btn-outline-info" onclick="searchOtherSourcesFromEncoded('${artistEnc}','${titleEnc}', true)" title="Search manually in Soulseek">
                       <i class="bi bi-search"></i>
                     </button>
@@ -2917,6 +2930,181 @@ async function applyBetterMusicBrainzMatch(oldArtistEnc, oldAlbumEnc, newArtistE
     }
   } catch (error) {
     console.error('Error applying better MBID match:', error);
+    alert('❌ Network error: ' + error.message);
+  }
+}
+
+function openQueueItemMatchModal(queueId, artistEnc, albumEnc, currentMbidEnc) {
+  const artist = decodeInlineArg(artistEnc, '');
+  const album = decodeInlineArg(albumEnc, '');
+  const currentMbid = decodeInlineArg(currentMbidEnc, '');
+
+  const existing = document.getElementById('queueItemMatchModal');
+  if (existing) existing.remove();
+
+  const modalHtml = `
+    <div class="modal fade" id="queueItemMatchModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content bg-dark text-light">
+          <div class="modal-header border-secondary">
+            <h5 class="modal-title">Change Queue Item Match</h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div class="mb-2 small text-muted">Current MBID: ${escapeHtml(currentMbid || 'None')}</div>
+            <div class="row g-2">
+              <div class="col-md-6">
+                <label class="form-label">Artist</label>
+                <input type="text" id="queueMatchArtist" class="form-control" value="${escapeHtml(artist)}" placeholder="Artist name">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">Album</label>
+                <input type="text" id="queueMatchAlbum" class="form-control" value="${escapeHtml(album)}" placeholder="Album or folder name">
+              </div>
+            </div>
+            <div class="mt-3">
+              <button class="btn btn-primary" onclick="searchQueueItemMusicBrainzMatch(${queueId})">
+                <i class="bi bi-search"></i> Search MusicBrainz
+              </button>
+            </div>
+            <div id="queueItemMatchResults" class="mt-3"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+  const modal = new bootstrap.Modal(document.getElementById('queueItemMatchModal'));
+  modal.show();
+}
+
+async function searchQueueItemMusicBrainzMatch(queueId) {
+  const artistInput = document.getElementById('queueMatchArtist');
+  const albumInput = document.getElementById('queueMatchAlbum');
+  const results = document.getElementById('queueItemMatchResults');
+
+  if (!artistInput || !albumInput || !results) return;
+
+  const artist = (artistInput.value || '').trim();
+  const album = (albumInput.value || '').trim();
+
+  if (!artist || !album) {
+    alert('Artist and album are required');
+    return;
+  }
+
+  results.innerHTML = '<div class="text-muted">Searching...</div>';
+
+  try {
+    const url = `/api/musicbrainz/search/releases?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`;
+    const data = await fetchJsonOrThrow(url);
+    const releases = data.releases || [];
+
+    if (!releases.length) {
+      results.innerHTML = '<div class="alert alert-warning mb-0">No matches found.</div>';
+      return;
+    }
+
+    const rows = releases.map(rel => {
+      const relArtist = rel.artist || artist;
+      const relTitle = rel.title || album;
+      const relMbid = rel.id || '';
+      const relYear = rel.year || '';
+      const relTracks = rel.tracks || 0;
+
+      return `
+        <tr>
+          <td>${escapeHtml(relArtist)}</td>
+          <td>${escapeHtml(relTitle)}</td>
+          <td>${escapeHtml(relYear)}</td>
+          <td>${escapeHtml(relTracks)}</td>
+          <td><small class="text-info">${escapeHtml(relMbid)}</small></td>
+          <td>
+            <button class="btn btn-sm btn-success" onclick="applyQueueItemMusicBrainzMatch(${queueId}, '${encodeInlineArg(relArtist)}', '${encodeInlineArg(relTitle)}', '${encodeInlineArg(relMbid)}')">
+              Select
+            </button>
+          </td>
+        </tr>
+      `;
+    }).join('');
+
+    results.innerHTML = `
+      <div class="table-responsive">
+        <table class="table table-sm table-dark table-striped mb-0">
+          <thead>
+            <tr>
+              <th>Artist</th>
+              <th>Album</th>
+              <th>Year</th>
+              <th>Tracks</th>
+              <th>MBID</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    `;
+  } catch (error) {
+    console.error('Error searching queue item MusicBrainz match:', error);
+    results.innerHTML = `<div class="alert alert-danger mb-0">${escapeHtml(error.message)}</div>`;
+  }
+}
+
+async function applyQueueItemMusicBrainzMatch(queueId, newArtistEnc, newAlbumEnc, mbidEnc) {
+  const newArtist = decodeInlineArg(newArtistEnc, '');
+  const newAlbum = decodeInlineArg(newAlbumEnc, '');
+  const newMbid = decodeInlineArg(mbidEnc, '');
+
+  try {
+    const data = await fetchJsonOrThrow(`/api/queue/${queueId}/apply-mbid-match`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        new_mbid: newMbid,
+        new_artist: newArtist,
+        new_album: newAlbum,
+      })
+    });
+
+    if (data.success) {
+      alert('✅ Queue match updated');
+      const modalEl = document.getElementById('queueItemMatchModal');
+      if (modalEl) {
+        const modal = bootstrap.Modal.getInstance(modalEl);
+        if (modal) modal.hide();
+      }
+      await loadQueueStatus();
+      await loadFolderGroups({ forceRender: true });
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to apply match'));
+    }
+  } catch (error) {
+    console.error('Error applying queue item match:', error);
+    alert('❌ Network error: ' + error.message);
+  }
+}
+
+async function resetQueueMatch(queueId) {
+  if (!confirm('Reset this match and mark the queue item as unmatched?')) {
+    return;
+  }
+
+  try {
+    const data = await fetchJsonOrThrow(`/api/queue/${queueId}/reset-match`, {
+      method: 'POST'
+    });
+
+    if (data.success) {
+      alert('✅ Match reset');
+      await loadQueueStatus();
+      await loadFolderGroups({ forceRender: true });
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to reset match'));
+    }
+  } catch (error) {
+    console.error('Error resetting queue match:', error);
     alert('❌ Network error: ' + error.message);
   }
 }

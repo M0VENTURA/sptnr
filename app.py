@@ -17831,6 +17831,114 @@ def api_queue_send_to_download(queue_id):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route("/api/queue/<int:queue_id>/apply-mbid-match", methods=["POST"])
+def api_queue_apply_mbid_match(queue_id):
+    """Apply a MusicBrainz release match to a single queue item."""
+    try:
+        data = request.get_json() or {}
+        new_mbid = (data.get('new_mbid') or '').strip()
+        new_artist = (data.get('new_artist') or '').strip()
+        new_album = (data.get('new_album') or '').strip()
+
+        if not new_mbid:
+            return jsonify({"error": "new_mbid is required"}), 400
+
+        release_year = None
+        try:
+            from folder_matching_enhancements import get_musicbrainz_release_tracks
+            tracks = get_musicbrainz_release_tracks(new_mbid)
+            if tracks and tracks[0].get('release_date'):
+                release_year = tracks[0]['release_date'][:4]
+        except Exception as mb_err:
+            logging.warning(f"[QUEUE_MATCH] Could not resolve release year for MBID {new_mbid}: {mb_err}")
+
+        conn = get_db()
+        cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+
+        cursor.execute(
+            f"SELECT artist, album FROM download_queue WHERE id = {placeholder}",
+            (queue_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"error": "Queue item not found"}), 404
+
+        current_artist = row.get('artist') if isinstance(row, dict) else row[0]
+        current_album = row.get('album') if isinstance(row, dict) else row[1]
+
+        target_artist = new_artist or current_artist
+        target_album = new_album or current_album
+
+        cursor.execute(
+            f"""
+            UPDATE download_queue
+            SET release_mbid = {placeholder},
+                artist = {placeholder},
+                album = {placeholder},
+                release_year = {placeholder},
+                status = 'matched',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = {placeholder}
+            """,
+            (new_mbid, target_artist, target_album, release_year, queue_id)
+        )
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            "success": True,
+            "message": "Queue item match updated",
+            "queue_id": queue_id,
+            "release_mbid": new_mbid,
+            "artist": target_artist,
+            "album": target_album,
+        })
+    except Exception as e:
+        logging.error(f"Error applying queue MBID match: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/queue/<int:queue_id>/reset-match", methods=["POST"])
+def api_queue_reset_match(queue_id):
+    """Reset a queue item's current match so it can be rematched manually."""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+
+        cursor.execute(
+            f"""
+            UPDATE download_queue
+            SET release_mbid = NULL,
+                status = 'unmatched',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = {placeholder}
+            """,
+            (queue_id,)
+        )
+
+        updated = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+
+        if not updated:
+            return jsonify({"error": "Queue item not found"}), 404
+
+        return jsonify({
+            "success": True,
+            "message": "Queue item match reset",
+            "queue_id": queue_id,
+        })
+    except Exception as e:
+        logging.error(f"Error resetting queue match: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 def api_lastfm_sync_status():
     """Get Last.fm sync status and next scheduled sync"""
     try:
