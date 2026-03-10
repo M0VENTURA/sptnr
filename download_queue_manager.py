@@ -544,6 +544,19 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         
         # Search query for Soulseek: artist and title only (no album)
         search_query = f"{artist} - {title}"
+
+        # Normalize duration to seconds. Some MusicBrainz paths supply milliseconds.
+        if duration not in (None, ""):
+            try:
+                duration = float(duration)
+                if duration <= 0:
+                    duration = None
+                else:
+                    if duration > 10000:
+                        duration = duration / 1000.0
+                    duration = int(round(duration))
+            except (TypeError, ValueError):
+                duration = None
         
         # Duplicate detection: Check for existing entry with same artist + album + title
         # If duplicate exists, return the existing entry instead of inserting
@@ -2144,9 +2157,43 @@ def auto_discover_and_queue_files():
                 
                 existing = cursor.fetchone()
                 if existing:
-                    stats['already_in_queue'] += 1
                     existing_id = _row_get(existing, 'id', 0, None)
                     existing_status = _row_get(existing, 'status', 1, None)
+                    collection_track_id = None
+                    cursor.execute(f"""
+                        SELECT id FROM tracks
+                        WHERE LOWER(artist) = LOWER({placeholder}) 
+                        AND LOWER(album) = LOWER({placeholder}) 
+                        AND LOWER(title) = LOWER({placeholder})
+                    """, (artist, album, title))
+                    in_library = cursor.fetchone()
+                    if in_library:
+                        stats['already_in_library'] += 1
+                        collection_track_id = _row_get(in_library, 'id', 0, None)
+                        execute_write_with_retry(
+                            cursor,
+                            conn,
+                            f"""
+                            UPDATE download_queue
+                            SET status = 'in_collection',
+                                in_collection = {placeholder},
+                                collection_track_id = {placeholder},
+                                collection_matched_at = CURRENT_TIMESTAMP,
+                                found_filename = COALESCE(found_filename, {placeholder}),
+                                file_path = COALESCE(file_path, {placeholder}),
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = {placeholder}
+                        """,
+                            (1, collection_track_id, filename, full_path, existing_id),
+                            context="auto_discover existing queue in-library update"
+                        )
+                        logger.info(
+                            f"[AUTO-DISCOVER] Cleared existing queue item {existing_id} as in_collection: "
+                            f"{artist} - {title}"
+                        )
+                        continue
+
+                    stats['already_in_queue'] += 1
                     logger.debug(f"File already in queue (ID {existing_id}, status {existing_status}): {filename}")
                     continue
                 
@@ -2160,23 +2207,34 @@ def auto_discover_and_queue_files():
                 in_library = cursor.fetchone()
                 if in_library:
                     stats['already_in_library'] += 1
+                    collection_track_id = _row_get(in_library, 'id', 0, None)
                     logger.debug(f"Track already in library: {artist} - {title}")
-                    
-                    # Still add to queue as possible duplicate so it remains visible and actionable.
+
                     execute_write_with_retry(
                         cursor,
                         conn,
                         f"""
-                        INSERT INTO download_queue 
-                        (artist, title, album, album_artist, track_number, disc_number, year, found_filename, file_path, 
-                         status, source, import_group, import_type, created_at, updated_at)
-                        VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'possible_duplicate', 'discovered', {placeholder}, 'album', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        UPDATE download_queue
+                        SET status = 'in_collection',
+                            in_collection = {placeholder},
+                            collection_track_id = {placeholder},
+                            collection_matched_at = CURRENT_TIMESTAMP,
+                            found_filename = COALESCE(found_filename, {placeholder}),
+                            file_path = COALESCE(file_path, {placeholder}),
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE LOWER(artist) = LOWER({placeholder})
+                          AND LOWER(album) = LOWER({placeholder})
+                          AND LOWER(title) = LOWER({placeholder})
+                          AND status NOT IN ('completed', 'removed', 'cancelled', 'deleted', 'in_collection')
                     """,
-                        (artist, title, album, album_artist, track_number, disc_number, year, filename, full_path, release_group),
-                        context="auto_discover in-library insert"
+                        (1, collection_track_id, filename, full_path, artist, album, title),
+                        context="auto_discover in-library update"
                     )
 
-                    stats['queued'] += 1
+                    logger.info(
+                        f"[AUTO-DISCOVER] Skipped queueing library track and cleared matching queue rows: "
+                        f"{artist} - {title}"
+                    )
                     continue
 
                 # Check if this file matches a pending queue item (queued/searching/downloading)

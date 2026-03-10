@@ -108,6 +108,30 @@ def _tokenize_meaningful(value):
     return [t for t in normalized.split() if len(t) >= 3 and t not in stop_words]
 
 
+def _normalize_duration_seconds(value):
+    """Normalize duration values to whole seconds."""
+    if value in (None, "", 0, "0"):
+        return None
+    try:
+        duration_value = float(value)
+    except (TypeError, ValueError):
+        return None
+    if duration_value <= 0:
+        return None
+    if duration_value > 10000:
+        duration_value = duration_value / 1000.0
+    return int(round(duration_value))
+
+
+def _extract_candidate_length_seconds(file_info):
+    """Return a Soulseek candidate duration in seconds when available."""
+    if isinstance(file_info, dict):
+        return _normalize_duration_seconds(file_info.get('length') or file_info.get('length_seconds'))
+    return _normalize_duration_seconds(
+        getattr(file_info, 'length', None) or getattr(file_info, 'length_seconds', None)
+    )
+
+
 def _extract_tag_value(tags, keys):
     """
     Extract the first non-empty string value from a mutagen tags dict.
@@ -129,7 +153,7 @@ def _extract_tag_value(tags, keys):
     return ''
 
 
-def _score_soulseek_candidate(filename, queue_item):
+def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     """
     Score a Soulseek candidate path/name against queue metadata.
 
@@ -139,9 +163,31 @@ def _score_soulseek_candidate(filename, queue_item):
     artist_norm = _normalize_match_text(queue_item.get('artist'))
     title_norm = _normalize_match_text(queue_item.get('title'))
     album_norm = _normalize_match_text(queue_item.get('album'))
+    title_tokens = _tokenize_meaningful(title_norm)
+    filename_tokens = set(_tokenize_meaningful(filename_norm))
 
     if not artist_norm or not title_norm or not filename_norm:
         return 0.0
+
+    if title_tokens:
+        shared_title_tokens = sum(1 for tok in title_tokens if tok in filename_tokens)
+        title_token_ratio = shared_title_tokens / len(title_tokens)
+        title_variant_tokens = {"acoustic", "demo", "edit", "instrumental", "intro", "live", "mix", "radio", "remaster", "remastered", "remix", "version"}
+        requested_variants = set(title_tokens) & title_variant_tokens
+        candidate_variants = filename_tokens & title_variant_tokens
+
+        if requested_variants or candidate_variants:
+            if not requested_variants or not candidate_variants:
+                return 0.0
+            if requested_variants.isdisjoint(candidate_variants):
+                return 0.0
+
+        if len(title_tokens) <= 2 and shared_title_tokens < len(title_tokens):
+            return 0.0
+        if len(title_tokens) >= 3 and title_token_ratio < 0.67:
+            return 0.0
+    else:
+        title_token_ratio = 0.0
 
     # Require both core fields to be reasonably represented in filename/path.
     artist_sim = SequenceMatcher(None, artist_norm, filename_norm).ratio()
@@ -150,6 +196,7 @@ def _score_soulseek_candidate(filename, queue_item):
         return 0.0
 
     score = (artist_sim * 0.45) + (title_sim * 0.55)
+    score += (0.22 * title_token_ratio)
 
     # Strongly prefer explicit artist/title phrases when present.
     if artist_norm in filename_norm:
@@ -176,6 +223,19 @@ def _score_soulseek_candidate(filename, queue_item):
                 score += (0.20 * token_ratio)
                 if token_ratio < 0.5:
                     score -= 0.10
+
+    expected_duration = _normalize_duration_seconds(queue_item.get('duration'))
+    candidate_duration = _normalize_duration_seconds(candidate_duration)
+    if expected_duration and candidate_duration:
+        duration_diff = abs(expected_duration - candidate_duration)
+        if duration_diff <= 4:
+            score += 0.22
+        elif duration_diff <= 8:
+            score += 0.12
+        elif duration_diff > 15:
+            return 0.0
+        else:
+            score -= 0.05
 
     return max(0.0, min(1.0, score))
 
@@ -530,14 +590,16 @@ def search_and_download(queue_id, queue_item, client):
                                 if isinstance(file_info, dict)
                                 else getattr(file_info, 'size', 0)
                             )
+                            candidate_length = _extract_candidate_length_seconds(file_info)
 
-                            candidate_score = _score_soulseek_candidate(filename, queue_item)
+                            candidate_score = _score_soulseek_candidate(filename, queue_item, candidate_length)
                             if candidate_score > best_score:
                                 best_score = candidate_score
                                 best_result = {
                                     "username": resp.username,
                                     "filename": filename,
                                     "size": size,
+                                    "length": candidate_length,
                                     "score": candidate_score,
                                 }
 

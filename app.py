@@ -17788,7 +17788,7 @@ def api_musicbrainz_search_releases():
                 'artist': rel.get('artist', artist),
                 'year': rel.get('date', '')[:4] if rel.get('date') else None,
                 'country': rel.get('country'),
-                'tracks': rel.get('track-count', 0),
+                'tracks': rel.get('track_count', rel.get('track-count', 0)),
                 'format': rel.get('format'),
                 'barcode': rel.get('barcode')
             })
