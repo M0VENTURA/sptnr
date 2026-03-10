@@ -6217,7 +6217,7 @@ def popularity_scan(
                             cover_detector = CoverDetector(db_connection=conn, musicbrainz_client=_get_timeout_safe_musicbrainz_client())
                             
                             # Run cover detection for this album
-                            covers_detected = cover_detector.detect_covers_for_album(artist, album, album_tracks_for_cover)
+                            covers_detected = cover_detector.detect_covers_for_album(album, artist, album_tracks_for_cover)
                             
                             if covers_detected:
                                 log_info(f'Cover detection complete: {len(covers_detected)} cover(s) detected for "{artist} - {album}"')

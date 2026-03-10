@@ -3138,6 +3138,21 @@ def artist_detail(name):
         except Exception as e:
             logging.debug(f"Error fetching genre data for artist page: {e}")
 
+        artist_members = []
+        try:
+            from api_clients.musicbrainz import MusicBrainzClient
+
+            mb_client = MusicBrainzClient()
+            artist_mbid = None
+            if isinstance(artist_stats, dict):
+                artist_mbid = artist_stats.get('musicbrainz_artist_id') or artist_stats.get('lastfm_artist_mbid')
+            elif artist_stats:
+                artist_mbid = dict(artist_stats).get('musicbrainz_artist_id') or dict(artist_stats).get('lastfm_artist_mbid')
+
+            artist_members = mb_client.get_artist_members(artist=name, artist_mbid=artist_mbid)
+        except Exception as e:
+            logging.debug(f"Error fetching band members for artist page: {e}")
+
         # Convert all Row objects to dicts BEFORE closing connection
         # This is critical because Row objects become invalid after connection closes
         albums_data_dicts = [dict(album) for album in albums_data]
@@ -3493,6 +3508,7 @@ def artist_detail(name):
         genres = convert_row_to_json_serializable(genres)
         genre_sources = convert_row_to_json_serializable(genre_sources)
         similar_artists_data = convert_row_to_json_serializable(similar_artists_data)
+        artist_members = convert_row_to_json_serializable(artist_members)
         
         return render_template("artist.html", 
                              artist_name=name,
@@ -3505,6 +3521,7 @@ def artist_detail(name):
                              genres=genres,
                              genre_sources=genre_sources,
                              similar_artists_data=similar_artists_data,
+                             artist_members=artist_members,
                              artist_country=artist_country,
                              artist_image_url=artist_image_url,
                              artist_bio=artist_bio,

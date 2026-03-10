@@ -133,6 +133,23 @@
               </div>
             </div>
 
+            <div class="mt-4 pt-3" style="border-top: 1px solid var(--border-color);">
+              <h6 class="mb-3"><i class="bi bi-people"></i> Band Members</h6>
+              <div id="artistMembersDisplay">
+                {% if artist_members %}
+                  <div class="d-flex flex-wrap gap-2">
+                    {% for member in artist_members %}
+                      <span class="badge bg-secondary text-light" title="{{ member.relation_type or 'member' }}{% if member.begin %} · since {{ member.begin }}{% endif %}{% if member.end %} · until {{ member.end }}{% endif %}{% if member.attributes %} · {{ member.attributes|join(', ') }}{% endif %}">
+                        {{ member.name }}{% if member.ended %} · former{% endif %}
+                      </span>
+                    {% endfor %}
+                  </div>
+                {% else %}
+                  <span class="text-muted small">No MusicBrainz band members available.</span>
+                {% endif %}
+              </div>
+            </div>
+
             <!-- Artist IDs below Biography -->
             <div class="mt-4 pt-3" style="border-top: 1px solid var(--border-color);">
               <div class="d-flex justify-content-between align-items-center mb-3">

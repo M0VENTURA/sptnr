@@ -761,6 +761,129 @@ class MusicBrainzClient:
                 return ""
         
         return ""
+
+    def get_artist_members(self, artist: str = None, artist_mbid: str = None) -> list[dict]:
+        """
+        Fetch band members for a MusicBrainz artist.
+
+        Args:
+            artist: Artist name to search when MBID is not available
+            artist_mbid: Optional MusicBrainz artist MBID
+
+        Returns:
+            List of member dicts with name and relation metadata.
+        """
+        if not self.enabled:
+            return []
+
+        if not artist_mbid and not artist:
+            return []
+
+        max_retries = 3
+        retry_delay = 1.0
+
+        for attempt in range(max_retries):
+            try:
+                if _rate_limiter:
+                    _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
+                    _rate_limiter.record_musicbrainz_request()
+                else:
+                    time.sleep(1.0)
+
+                resolved_artist_mbid = artist_mbid
+                if not resolved_artist_mbid:
+                    escaped_artist = _escape_lucene_special_chars(artist)
+                    search_params = {
+                        "query": f'artist:"{escaped_artist}"',
+                        "fmt": "json",
+                        "limit": 10,
+                    }
+                    search_response = self.session.get(
+                        f"{self.base_url}artist/",
+                        params=search_params,
+                        headers=self.headers,
+                        timeout=(5, 10)
+                    )
+                    search_response.raise_for_status()
+                    artists = search_response.json().get("artists", [])
+                    if not artists:
+                        return []
+
+                    preferred = next(
+                        (candidate for candidate in artists if (candidate.get("type") or "").lower() in {"group", "orchestra", "choir"}),
+                        artists[0]
+                    )
+                    resolved_artist_mbid = preferred.get("id")
+                    if not resolved_artist_mbid:
+                        return []
+
+                artist_response = self.session.get(
+                    f"{self.base_url}artist/{resolved_artist_mbid}",
+                    params={"fmt": "json", "inc": "artist-rels"},
+                    headers=self.headers,
+                    timeout=(5, 10)
+                )
+                artist_response.raise_for_status()
+                artist_data = artist_response.json() or {}
+                relations = artist_data.get("relations", []) or artist_data.get("artist-relation-list", []) or []
+
+                members = []
+                seen_names = set()
+                allowed_relation_types = {
+                    "member of band",
+                    "member",
+                    "founder",
+                    "instrumental supporting musician",
+                    "vocal supporting musician",
+                }
+
+                for relation in relations:
+                    relation_type = (relation.get("type") or "").lower()
+                    related_artist = relation.get("artist") or {}
+                    member_name = (related_artist.get("name") or "").strip()
+                    if not member_name:
+                        continue
+                    if relation_type and relation_type not in allowed_relation_types:
+                        continue
+                    if member_name.lower() in seen_names:
+                        continue
+                    seen_names.add(member_name.lower())
+                    members.append({
+                        "name": member_name,
+                        "relation_type": relation.get("type") or "member",
+                        "begin": relation.get("begin") or "",
+                        "end": relation.get("end") or "",
+                        "ended": bool(relation.get("ended")),
+                        "attributes": relation.get("attributes") or relation.get("attribute-list") or [],
+                    })
+
+                members.sort(key=lambda member: (member.get("ended", False), member.get("name", "").lower()))
+                return members
+
+            except (requests.exceptions.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
+                if attempt < max_retries - 1:
+                    logger.debug(f"MusicBrainz artist members attempt {attempt + 1} failed for '{artist or artist_mbid}': {e}, retrying...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    logger.info(f"MusicBrainz artist members unavailable for '{artist or artist_mbid}' after {max_retries} attempts: {type(e).__name__}")
+                    return []
+            except requests.exceptions.HTTPError as e:
+                status_code = getattr(getattr(e, 'response', None), 'status_code', None)
+                if status_code == 503:
+                    logger.info(f"MusicBrainz artist members temporarily unavailable for '{artist or artist_mbid}' (503)")
+                    return []
+                logger.warning(f"MusicBrainz artist members HTTP error for '{artist or artist_mbid}': {e}")
+                return []
+            except Exception as e:
+                logger.warning(f"MusicBrainz artist members lookup failed for '{artist or artist_mbid}': {e}")
+                return []
+
+        return []
+
+    def get_artist_member_names(self, artist: str = None, artist_mbid: str = None) -> list[str]:
+        """Convenience wrapper returning only member names."""
+        return [member.get("name", "") for member in self.get_artist_members(artist=artist, artist_mbid=artist_mbid) if member.get("name")]
     
     def has_video_relationship(self, title: str, artist: str) -> bool:
         """

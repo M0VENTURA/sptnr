@@ -12,6 +12,8 @@ import sqlite3
 from typing import Optional, Dict, List, Tuple
 from pathlib import Path
 
+from api_clients.musicbrainz import _VERSION as MUSICBRAINZ_VERSION
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,6 +42,16 @@ class CoverDetector:
         self.is_pg = self._is_postgres(db_connection) if db_connection else False
         self.placeholder = "%s" if self.is_pg else "?"
         self._band_members_cache = {}  # Cache to avoid repeated API calls
+
+    def _configure_musicbrainzngs(self):
+        """Ensure musicbrainzngs identifies itself with the app user agent."""
+        try:
+            import musicbrainzngs as mb
+            mb.set_useragent("sptnr", MUSICBRAINZ_VERSION, "https://github.com/M0VENTURA/sptnr")
+            return mb
+        except Exception as e:
+            logger.debug(f"Failed to configure musicbrainzngs user agent: {e}")
+            return None
     
     def detect_covers_for_album(self, album: str, artist: str, tracks: List[Dict]) -> List[Dict]:
         """
@@ -181,7 +193,9 @@ class CoverDetector:
             List of writer names
         """
         try:
-            import musicbrainzngs as mb
+            mb = self._configure_musicbrainzngs()
+            if mb is None:
+                return []
             
             result = mb.get_recording_by_id(
                 mbid,
@@ -225,64 +239,22 @@ class CoverDetector:
         # Check cache first
         if artist in self._band_members_cache:
             return self._band_members_cache[artist]
-        
-        members = []
-        
+
         try:
-            import musicbrainzngs as mb
-            
-            # Search for the artist to get their MBID
-            search_result = mb.search_artists(artist=artist, limit=1)
-            artists = search_result.get('artist-list', [])
-            
-            if not artists:
-                logger.debug(f"No MusicBrainz artist found for '{artist}'")
-                self._band_members_cache[artist] = []
-                return []
-            
-            # Get the artist with member relationships
-            artist_mbid = artists[0]['id']
-            artist_type = artists[0].get('type', '').lower()
-            
-            # Only fetch members for groups/bands, not individuals
-            if artist_type not in ['group', 'orchestra', 'choir']:
-                logger.debug(f"Artist '{artist}' is type '{artist_type}', not a group - skipping member lookup")
-                self._band_members_cache[artist] = []
-                return []
-            
-            # Fetch artist with member relationships
-            artist_data = mb.get_artist_by_id(
-                artist_mbid,
-                includes=['artist-rels']
-            )
-            
-            # Extract band members from relationships
-            relations = artist_data.get('artist', {}).get('artist-relation-list', [])
-            
-            for relation in relations:
-                rel_type = relation.get('type', '')
-                # MusicBrainz uses 'member of band' relationship type
-                # Also check for 'member' and other variant relationship types
-                if rel_type in ['member of band', 'member', 'founder', 'lead vocals', 
-                               'lead performer', 'conductor', 'performing orchestra']:
-                    member_name = relation.get('artist', {}).get('name')
-                    if member_name and member_name not in members:
-                        members.append(member_name)
-                        logger.debug(f"Found band member '{member_name}' for '{artist}'")
-            
-            # Cache the result
-            self._band_members_cache[artist] = members
-            
+            members = []
+            if self.mb_client and hasattr(self.mb_client, 'get_artist_member_names'):
+                members = self.mb_client.get_artist_member_names(artist=artist)
+
+            self._band_members_cache[artist] = members or []
+
             if members:
                 logger.info(f"MusicBrainz found {len(members)} members for '{artist}': {', '.join(members)}")
             else:
                 logger.debug(f"No band members found for '{artist}' in MusicBrainz")
-            
-            return members
-            
+
+            return self._band_members_cache[artist]
         except Exception as e:
             logger.debug(f"Failed to fetch band members for '{artist}' from MusicBrainz: {e}")
-            # Cache empty result to avoid repeated failed lookups
             self._band_members_cache[artist] = []
             return []
     
@@ -343,7 +315,9 @@ class CoverDetector:
             Dict with {'artist': str, 'year': int, 'confidence': str} or None
         """
         try:
-            import musicbrainzngs as mb
+            mb = self._configure_musicbrainzngs()
+            if mb is None:
+                return None
             
             # Search for recordings by this artist with this title
             result = mb.search_recordings(
