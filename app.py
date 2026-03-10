@@ -7842,6 +7842,59 @@ def album_edit(artist, album):
         return redirect(url_for("album_detail", artist=artist, album=album))
 
 
+@app.route("/api/album/<path:artist>/<path:album>/rename-files", methods=["POST"])
+def api_album_rename_files(artist, album):
+    """
+    Rename all files in an album based on current metadata.
+    
+    This endpoint:
+    1. Fetches all tracks for the album
+    2. Calculates new file paths based on current metadata
+    3. Moves files to new paths maintaining disc/track numbering
+    4. Updates database file_path columns
+    5. Returns status and details of renamed files
+    
+    URL Parameters:
+        artist: Artist name (URL decoded)
+        album: Album name (URL decoded)
+    
+    Returns:
+        JSON with:
+        - success: bool
+        - renamed_count: Number of files successfully renamed
+        - updated_db_count: Number of database records updated
+        - errors: List of error messages
+        - details: List of {track_id, track, old_path, new_path}
+    """
+    from urllib.parse import unquote
+    artist = unquote(artist)
+    album = unquote(album)
+    
+    try:
+        from download_queue_manager import rename_album_files
+        
+        conn = get_db()
+        
+        # Call the rename function
+        result = rename_album_files(artist, album, conn)
+        
+        conn.close()
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        logging.error(f"Error renaming album files: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
+        return jsonify({
+            "success": False,
+            "renamed_count": 0,
+            "updated_db_count": 0,
+            "errors": [str(e)],
+            "details": []
+        }), 500
+
+
 @app.route("/album/<path:artist>/<path:album>/rescan", methods=["POST"])
 def album_rescan(artist, album):
     """Trigger per-album pipeline: Navidrome fetch -> popularity -> single detection."""

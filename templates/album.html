@@ -113,6 +113,9 @@
                     <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Rescan</span>
                 </button>
             </form>
+            <button class="btn btn-secondary btn-sm" onclick="renameAlbumFiles('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')" title="Rename all album files based on current metadata">
+                <i class="bi bi-files"></i> <span class="d-none d-sm-inline">Rename Files</span>
+            </button>
         </div>
     </div>
 
@@ -3007,6 +3010,86 @@
         })
         .catch(err => {
             alert('❌ Network error: ' + err.message);
+        });
+    }
+
+    function renameAlbumFiles(artist, album) {
+        /**
+         * Rename all files in an album based on current metadata.
+         * Calls the /api/album/rename-files endpoint to:
+         * 1. Calculate new file paths from current metadata
+         * 2. Move files to new locations
+         * 3. Update database entries
+         */
+        if (!confirm(`Are you sure you want to rename all files in "${album}" by ${artist}?\n\nFiles will be renamed based on current metadata and organized into:\n/music/<album_artist>/<year> - <album>/\n\nThis operation cannot be undone.`)) {
+            return;
+        }
+
+        const button = event.target;
+        button.disabled = true;
+        button.textContent = '🔄 Renaming...';
+
+        const progressContainer = document.createElement('div');
+        progressContainer.className = 'alert alert-info mt-3';
+        progressContainer.innerHTML = '<div class="spinner-border spinner-border-sm me-2" role="status"><span class="visually-hidden">Loading...</span></div> Renaming album files...';
+        
+        const detailsButton = document.querySelector('.card-header');
+        if (detailsButton) {
+            detailsButton.parentElement.insertBefore(progressContainer, detailsButton.nextSibling);
+        }
+
+        fetch(`/api/album/${encodeURIComponent(artist)}/${encodeURIComponent(album)}/rename-files`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            return response.json();
+        })
+        .then(data => {
+            button.disabled = false;
+            button.textContent = '📁 Rename Files';
+
+            progressContainer.className = data.success ? 'alert alert-success mt-3' : 'alert alert-danger mt-3';
+            
+            let html = `<strong>${data.success ? '✅ Rename Complete!' : '❌ Rename Failed!'}</strong><br>`;
+            html += `Files renamed: ${data.renamed_count}<br>`;
+            html += `Database updated: ${data.updated_db_count}<br>`;
+            
+            if (data.errors && data.errors.length > 0) {
+                html += `<br><strong>Errors:</strong><ul class="mb-0">`;
+                data.errors.forEach(err => {
+                    html += `<li>${err}</li>`;
+                });
+                html += `</ul>`;
+            }
+            
+            if (data.details && data.details.length > 0) {
+                html += `<br><strong>Files Renamed (${data.details.length}):</strong><ul class="small mb-0" style="max-height: 300px; overflow-y: auto;">`;
+                data.details.forEach(detail => {
+                    html += `<li><strong>${detail.track}:</strong><br>`;
+                    html += `  <code style="font-size: 0.85rem; color: #666;">${detail.old_path}</code><br>`;
+                    html += `  <code style="font-size: 0.85rem; color: #0d6efd;">→ ${detail.new_path}</code></li>`;
+                });
+                html += `</ul>`;
+            }
+            
+            progressContainer.innerHTML = html;
+            
+            // Auto-reload after 3 seconds if successful
+            if (data.success) {
+                setTimeout(() => {
+                    window.location.reload();
+                }, 3000);
+            }
+        })
+        .catch(error => {
+            button.disabled = false;
+            button.textContent = '📁 Rename Files';
+            progressContainer.className = 'alert alert-danger mt-3';
+            progressContainer.innerHTML = `<strong>❌ Error:</strong> ${error.message}`;
         });
     }
 

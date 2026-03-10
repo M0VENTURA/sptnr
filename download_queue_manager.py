@@ -1236,6 +1236,215 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
         return {'success': False, 'target_path': None, 'error': str(e)}
 
 
+def rename_album_files(artist, album, db_conn, music_dir=None):
+    """
+    Rename all files in an album based on current metadata.
+    
+    This function:
+    1. Fetches all tracks for the album from the database
+    2. Calculates new file paths based on current album_artist/artist/album metadata
+    3. Moves files to new paths maintaining disc/track numbering
+    4. Updates database file_path columns with new locations
+    5. Handles naming conflicts using suffix counters
+    
+    Args:
+        artist: Current artist name (from URL/database query)
+        album: Current album name (from URL/database query)
+        db_conn: Database connection
+        music_dir: Base music directory (defaults to MUSIC_DIR env var)
+    
+    Returns:
+        Dict with:
+        - success: bool
+        - renamed_count: Number of files successfully renamed
+        - updated_db_count: Number of database records updated
+        - errors: List of error messages
+        - details: List of renamed files with old/new paths
+    """
+    import re
+    import shutil
+    from pathlib import Path
+    
+    result = {
+        'success': False,
+        'renamed_count': 0,
+        'updated_db_count': 0,
+        'errors': [],
+        'details': []
+    }
+    
+    try:
+        cursor = db_conn.cursor()
+        is_pg = False
+        
+        # Try to detect if this is PostgreSQL
+        try:
+            from app import _is_postgres_connection
+            is_pg = bool(_is_postgres_connection(db_conn))
+        except Exception:
+            pass
+        
+        placeholder = "%s" if is_pg else "?"
+        
+        # Query all tracks for this album
+        # Use COALESCE logic like album_detail to match albums by album_artist
+        cursor.execute(f"""
+            SELECT id, artist, album, album_artist, title, track_number, disc_number, 
+                   file_path, beets_path, year, release_year
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} 
+              AND album = {placeholder}
+            ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 999), title
+        """, (artist, album))
+        
+        tracks = cursor.fetchall()
+        
+        if not tracks:
+            result['errors'].append(f"No tracks found for album: {artist} - {album}")
+            return result
+        
+        logger.info(f"[RENAME] Starting rename for album: {artist} - {album} ({len(tracks)} tracks)")
+        
+        music_root = music_dir or MUSIC_DIR
+        
+        # Process each track
+        for track_row in tracks:
+            try:
+                # Extract track data (handle both dict-like and tuple returns)
+                if isinstance(track_row, dict):
+                    track_id = track_row.get('id')
+                    track_artist = track_row.get('artist', 'Unknown Artist')
+                    track_album = track_row.get('album', 'Unknown Album')
+                    track_album_artist = track_row.get('album_artist') or track_artist
+                    track_title = track_row.get('title', 'Unknown Title')
+                    track_number = track_row.get('track_number', '00')
+                    disc_number = track_row.get('disc_number', 1)
+                    file_path = track_row.get('file_path')
+                    year = track_row.get('year') or track_row.get('release_year')
+                else:
+                    # Tuple format (fallback for SQLite)
+                    track_id, track_artist, track_album, track_album_artist, track_title, \
+                    track_number, disc_number, file_path, beets_path, year, release_year = track_row
+                    year = year or release_year
+                    track_album_artist = track_album_artist or track_artist
+                
+                # Skip tracks without file paths
+                if not file_path or file_path.startswith('__queued_'):
+                    logger.debug(f"[RENAME] Skipping track {track_id} - no file path or queued")
+                    continue
+                
+                # Check file exists
+                if not os.path.exists(file_path):
+                    error_msg = f"File not found: {file_path} (track: {track_artist} - {track_title})"
+                    logger.warning(f"[RENAME] {error_msg}")
+                    result['errors'].append(error_msg)
+                    continue
+                
+                # Extract year
+                def _extract_year(value):
+                    if value is None:
+                        return None
+                    m = re.search(r"(19|20)\d{2}", str(value))
+                    return m.group(0) if m else None
+                
+                year_fmt = _extract_year(year)
+                if not year_fmt:
+                    year_fmt = 'Unknown'
+                
+                # Build new path: <music_root>/<album_artist>/<year> - <album>/
+                album_artist_safe = _sanitize_path_component(track_album_artist or track_artist or 'Unknown Artist')
+                album_safe = _sanitize_path_component(track_album or 'Unknown Album')
+                
+                dest_folder = os.path.join(music_root, album_artist_safe, f"{year_fmt} - {album_safe}")
+                os.makedirs(dest_folder, exist_ok=True)
+                
+                # Format track number
+                try:
+                    track_num_int = int(str(track_number).split('/')[0]) if track_number else 0
+                    disc_num_int = int(str(disc_number).split('/')[0]) if disc_number else 1
+                    if disc_num_int > 1:
+                        track_num_fmt = f"{disc_num_int}{track_num_int:02d}"
+                    else:
+                        track_num_fmt = f"{track_num_int:02d}"
+                except Exception:
+                    track_num_fmt = "00"
+                
+                # Build new filename
+                ext = os.path.splitext(file_path)[1].lower()
+                filename = _sanitize_path_component(f"{track_num_fmt}. {track_artist} - {track_title}{ext}")
+                new_path = os.path.join(dest_folder, filename)
+                
+                # Handle conflicts with counter
+                if os.path.exists(new_path) and new_path != file_path:
+                    base, ext_only = os.path.splitext(filename)
+                    counter = 1
+                    while os.path.exists(os.path.join(dest_folder, f"{base}_{counter}{ext_only}")):
+                        counter += 1
+                    new_path = os.path.join(dest_folder, f"{base}_{counter}{ext_only}")
+                
+                # Only move if path changed
+                if new_path != file_path:
+                    # Move the file
+                    shutil.move(file_path, new_path)
+                    logger.info(f"[RENAME] {os.path.basename(file_path)} → {os.path.basename(new_path)}")
+                    result['renamed_count'] += 1
+                    
+                    # Update database
+                    try:
+                        cursor.execute(f"""
+                            UPDATE tracks
+                            SET file_path = {placeholder},
+                                beets_path = {placeholder},
+                                updated_at = {'CURRENT_TIMESTAMP' if is_pg else "datetime('now')"}
+                            WHERE id = {placeholder}
+                        """, (new_path, new_path, track_id))
+                        
+                        result['updated_db_count'] += 1
+                        result['details'].append({
+                            'track_id': track_id,
+                            'track': f"{track_artist} - {track_title}",
+                            'old_path': file_path,
+                            'new_path': new_path
+                        })
+                    except Exception as db_err:
+                        logger.error(f"[RENAME] Failed to update database for {track_id}: {db_err}")
+                        result['errors'].append(f"Database update failed for {track_artist} - {track_title}: {db_err}")
+                        # Note: file was moved but DB not updated - consider this a partial success
+                else:
+                    logger.debug(f"[RENAME] Path unchanged for {track_artist} - {track_title}")
+                    
+            except Exception as track_err:
+                error_msg = f"Error renaming track {track_id}: {track_err}"
+                logger.error(f"[RENAME] {error_msg}")
+                result['errors'].append(error_msg)
+        
+        # Commit database changes
+        try:
+            db_conn.commit()
+        except Exception as commit_err:
+            logger.error(f"[RENAME] Error committing database changes: {commit_err}")
+            result['errors'].append(f"Database commit failed: {commit_err}")
+            try:
+                db_conn.rollback()
+            except:
+                pass
+        
+        # Set success flag
+        result['success'] = result['renamed_count'] > 0 or len(result['errors']) == 0
+        
+        logger.info(f"[RENAME] Album rename complete: {result['renamed_count']} renamed, "
+                   f"{result['updated_db_count']} DB updated, {len(result['errors'])} errors")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"[RENAME] Fatal error renaming album: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        result['errors'].append(f"Fatal error: {str(e)}")
+        return result
+
+
 def _load_format_bitrate_config():
     """
     Load format/bitrate priority configuration from /config/config.yaml
