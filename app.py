@@ -2931,11 +2931,31 @@ def artist_detail(name):
             album_dict['is_missing'] = False  # Mark as discovered
             album_name = album_dict.get("album", "")
             
-            # Note: downloading status tracking requires a new connection
-            # Skip this check to avoid closed connection errors
-            # Users can refresh the page to see updated download status
-            album_dict['is_downloading'] = False
-            album_dict['downloading_count'] = 0
+            # Check download queue status for this album
+            try:
+                queue_conn = get_db()
+                queue_cursor = queue_conn.cursor()
+                queue_placeholder = "%s" if is_pg else "?"
+                
+                queue_cursor.execute(f"""
+                    SELECT COUNT(*) as cnt, status 
+                    FROM download_queue 
+                    WHERE LOWER(artist) = LOWER({queue_placeholder}) 
+                    AND LOWER(album) = LOWER({queue_placeholder})
+                    AND status IN ('queued', 'searching', 'downloading')
+                    GROUP BY status
+                """, (artist_name, album_name))
+                
+                queue_results = queue_cursor.fetchall()
+                queue_conn.close()
+                
+                total_downloading = sum(row['cnt'] for row in queue_results)
+                album_dict['is_downloading'] = total_downloading > 0
+                album_dict['downloading_count'] = total_downloading
+            except Exception as e:
+                logging.debug(f"Could not check download status for {album_name}: {e}")
+                album_dict['is_downloading'] = False
+                album_dict['downloading_count'] = 0
             
             album_type = (album_dict.get("album_type") or "").lower()
             track_count = album_dict.get("track_count", 0)
@@ -3435,7 +3455,14 @@ def _fetch_musicbrainz_releases(artist_name: str, limit: int = 100, artist_mbid:
 
 
 def _search_musicbrainz_releasegroup_matches(artist_name: str, album_name: str, limit: int = 10) -> list[dict]:
-    """Search MusicBrainz release-groups using the same artist+releasegroup query style as Upcoming Releases."""
+    """
+    Search MusicBrainz release-groups with fuzzy match scoring.
+    
+    Returns matches sorted by similarity score (highest first), with confidence tiers:
+    - high: score >= 0.90 (very likely match)
+    - medium: 0.75 <= score < 0.90 (probable match)
+    - low: score < 0.75 (weak match)
+    """
     if not artist_name or not album_name:
         return []
 
@@ -3456,15 +3483,65 @@ def _search_musicbrainz_releasegroup_matches(artist_name: str, album_name: str, 
         logging.debug(f"MusicBrainz release-group match search failed for {artist_name} - {album_name}: {e}")
         return []
 
+    from difflib import SequenceMatcher
+    
+    def normalize(s):
+        """Normalize string for comparison (lowercase, strip punctuation)"""
+        import re
+        s = s.lower().strip()
+        s = re.sub(r'[^\w\s]', '', s)  # Remove punctuation
+        s = re.sub(r'\s+', ' ', s)  # Normalize whitespace
+        return s
+    
+    def calculate_match_score(mb_title, mb_artist_credit, local_album, local_artist):
+        """
+        Calculate fuzzy match score using weighted formula:
+        - Title similarity: 60%
+        - Artist similarity: 40%
+        """
+        title_sim = SequenceMatcher(None, normalize(local_album), normalize(mb_title)).ratio()
+        
+        # Extract artist name from artist-credit (can be list of dicts)
+        artist_name_from_credit = ""
+        if isinstance(mb_artist_credit, list) and len(mb_artist_credit) > 0:
+            artist_name_from_credit = mb_artist_credit[0].get("name", "")
+        elif isinstance(mb_artist_credit, str):
+            artist_name_from_credit = mb_artist_credit
+        
+        artist_sim = SequenceMatcher(None, normalize(local_artist), normalize(artist_name_from_credit)).ratio()
+        
+        # Weighted score: title is more important than artist
+        score = (title_sim * 0.6) + (artist_sim * 0.4)
+        return score
+
     matches = []
     for rg in data.get("release-groups", []) or []:
+        mb_title = rg.get("title", "")
+        mb_artist_credit = rg.get("artist-credit", [])
+        
+        # Calculate similarity score
+        score = calculate_match_score(mb_title, mb_artist_credit, album_name, artist_name)
+        
+        # Determine confidence tier
+        if score >= 0.90:
+            confidence = "high"
+        elif score >= 0.75:
+            confidence = "medium"
+        else:
+            confidence = "low"
+        
         matches.append({
             "id": rg.get("id", ""),
-            "title": rg.get("title", ""),
+            "title": mb_title,
             "primary_type": rg.get("primary-type", ""),
             "first_release_date": rg.get("first-release-date", ""),
             "secondary_types": rg.get("secondary-types", []),
+            "match_score": round(score, 3),
+            "confidence": confidence,
         })
+
+    # Sort by score descending (best matches first)
+    matches.sort(key=lambda x: x["match_score"], reverse=True)
 
     return matches
 
