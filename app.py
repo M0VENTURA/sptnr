@@ -17837,7 +17837,7 @@ def api_queue_send_to_download(queue_id):
 
 @app.route("/api/queue/<int:queue_id>/apply-mbid-match", methods=["POST"])
 def api_queue_apply_mbid_match(queue_id):
-    """Apply a MusicBrainz release match to a single queue item."""
+    """Apply a MusicBrainz release match to a single queue item and queue all release tracks."""
     try:
         data = request.get_json() or {}
         new_mbid = (data.get('new_mbid') or '').strip()
@@ -17848,13 +17848,14 @@ def api_queue_apply_mbid_match(queue_id):
             return jsonify({"error": "new_mbid is required"}), 400
 
         release_year = None
+        release_tracks = []
         try:
             from folder_matching_enhancements import get_musicbrainz_release_tracks
-            tracks = get_musicbrainz_release_tracks(new_mbid)
-            if tracks and tracks[0].get('release_date'):
-                release_year = tracks[0]['release_date'][:4]
+            release_tracks = get_musicbrainz_release_tracks(new_mbid)
+            if release_tracks and release_tracks[0].get('release_date'):
+                release_year = release_tracks[0]['release_date'][:4]
         except Exception as mb_err:
-            logging.warning(f"[QUEUE_MATCH] Could not resolve release year for MBID {new_mbid}: {mb_err}")
+            logging.warning(f"[QUEUE_MATCH] Could not resolve release tracks for MBID {new_mbid}: {mb_err}")
 
         conn = get_db()
         cursor = conn.cursor()
@@ -17893,6 +17894,40 @@ def api_queue_apply_mbid_match(queue_id):
         conn.commit()
         conn.close()
 
+        # Add all tracks from the MusicBrainz release to the queue so the complete
+        # release appears in the folder list (not just the single matched file).
+        # add_to_queue's duplicate detection ensures already-present tracks are skipped.
+        added_tracks = 0
+        if release_tracks:
+            try:
+                from download_queue_manager import add_to_queue
+                for track in release_tracks:
+                    track_title = track.get('title', '')
+                    if not track_title:
+                        continue
+                    track_number = track.get('number')
+                    track_duration = track.get('duration', 0)
+                    if track_duration:
+                        track_duration = track_duration // 1000  # Convert ms to seconds
+                    queue_item = add_to_queue(
+                        artist=target_artist,
+                        title=track_title,
+                        album=target_album,
+                        source='soulseek',
+                        release_mbid=new_mbid,
+                        release_id=new_mbid,
+                        release_source='musicbrainz',
+                        track_number=track_number,
+                        year=release_year,
+                        duration=track_duration,
+                    )
+                    if queue_item:
+                        added_tracks += 1
+            except Exception as tracks_err:
+                logging.warning(
+                    f"[QUEUE_MATCH] Could not add release tracks to queue for MBID {new_mbid}: {tracks_err}"
+                )
+
         return jsonify({
             "success": True,
             "message": "Queue item match updated",
@@ -17900,6 +17935,7 @@ def api_queue_apply_mbid_match(queue_id):
             "release_mbid": new_mbid,
             "artist": target_artist,
             "album": target_album,
+            "tracks_added": added_tracks,
         })
     except Exception as e:
         logging.error(f"Error applying queue MBID match: {e}")
