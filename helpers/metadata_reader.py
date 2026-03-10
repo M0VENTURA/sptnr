@@ -211,13 +211,73 @@ def _parse_number_tag(value):
         return None
 
 
+def _read_flac_metadata(file_path):
+    """
+    Read Vorbis comment metadata from a FLAC file.
+    Returns a dict with common fields, or an empty dict on failure.
+    """
+    metadata = {}
+    try:
+        from mutagen.flac import FLAC
+        audio = FLAC(file_path)
+
+        def _get(key):
+            vals = audio.get(key.upper()) or audio.get(key.lower()) or []
+            return str(vals[0]).strip() if vals else ''
+
+        title = _get('TITLE')
+        if title:
+            metadata['title'] = title
+        artist = _get('ARTIST')
+        if artist:
+            metadata['artist'] = artist
+        album = _get('ALBUM')
+        if album:
+            metadata['album'] = album
+        album_artist = _get('ALBUMARTIST')
+        if album_artist:
+            metadata['album_artist'] = album_artist
+        composer = _get('COMPOSER')
+        if composer:
+            metadata['composer'] = composer
+        date = _get('DATE') or _get('YEAR')
+        if date:
+            metadata['date'] = date
+        track_number = _get('TRACKNUMBER')
+        if track_number:
+            metadata['track_number'] = _parse_number_tag(track_number)
+        disc_number = _get('DISCNUMBER')
+        if disc_number:
+            metadata['disc_number'] = _parse_number_tag(disc_number)
+        genre = _get('GENRE')
+        if genre:
+            metadata['genre'] = genre
+        bpm = _get('BPM')
+        if bpm:
+            metadata['bpm'] = bpm
+
+        # Audio properties
+        try:
+            metadata['duration_ms'] = audio.info.length * 1000 if hasattr(audio.info, 'length') else None
+            metadata['sample_rate'] = audio.info.sample_rate if hasattr(audio.info, 'sample_rate') else None
+            metadata['channels'] = audio.info.channels if hasattr(audio.info, 'channels') else None
+        except Exception:
+            pass
+
+    except Exception:
+        pass
+
+    return metadata
+
+
 def read_mp3_metadata(file_path):
     """
-    Read MP3 metadata from file using mutagen.
+    Read audio metadata from file using mutagen.
+    Supports MP3 (ID3 tags) and FLAC (Vorbis comments).
     Returns a dict with common fields.
     
     Args:
-        file_path: Path to MP3 file
+        file_path: Path to audio file (MP3 or FLAC)
         
     Returns:
         dict: Metadata fields or empty dict if file not found/readable
@@ -225,6 +285,17 @@ def read_mp3_metadata(file_path):
     metadata = {}
     
     if not file_path or not os.path.exists(file_path):
+        return metadata
+
+    # Route FLAC files to the dedicated Vorbis-comment reader
+    if file_path.lower().endswith('.flac'):
+        metadata = _read_flac_metadata(file_path)
+        try:
+            stat = os.stat(file_path)
+            metadata['file_size'] = stat.st_size
+            metadata['file_path'] = file_path
+        except Exception:
+            pass
         return metadata
     
     try:

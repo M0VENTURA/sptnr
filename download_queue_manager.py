@@ -10,6 +10,7 @@ during parallel scan operations. PostgreSQL provides reliable concurrent access.
 """
 
 import os
+import re
 import psycopg2
 import psycopg2.extras
 import json
@@ -1911,6 +1912,21 @@ def is_match(filename, queue_item):
         return False
 
 
+def _strip_track_number_prefix(title):
+    """
+    Remove a leading track-number prefix from a title string.
+
+    Handles common filename conventions such as:
+        "05 - CINEMA"  →  "CINEMA"
+        "05. CINEMA"   →  "CINEMA"
+        "5 - CINEMA"   →  "CINEMA"
+        "05 CINEMA"    →  unchanged  (no separator, avoid stripping real words)
+    """
+    # Match 1-3 leading digits followed by optional spaces + '-' or '.' + optional spaces
+    cleaned = re.sub(r'^\d{1,3}\s*[-\.]\s*', '', title).strip()
+    return cleaned if cleaned else title
+
+
 def auto_discover_and_queue_files():
     """
     Scan /downloads folder for audio files and add them to download_queue with status 'discovered'.
@@ -2085,7 +2101,9 @@ def auto_discover_and_queue_files():
                 # Extract fields with fallbacks to filename
                 artist = metadata.get('artist', 'Unknown Artist')
                 album = metadata.get('album', 'Unknown Album')
-                title = metadata.get('title', os.path.splitext(filename)[0])
+                # When no title tag is present, derive it from the filename stem and strip
+                # any leading track-number prefix (e.g. "05 - CINEMA" → "CINEMA").
+                title = metadata.get('title') or _strip_track_number_prefix(os.path.splitext(filename)[0])
                 album_artist = metadata.get('album_artist') or artist
                 track_number = metadata.get('track_number')
                 disc_number = metadata.get('disc_number')
@@ -2773,6 +2791,10 @@ def _normalize_match_text(value):
     if not value:
         return ""
     normalized = value.lower().strip()
+    # Strip a leading track-number prefix (e.g. "05 - cinema" -> "cinema",
+    # "05. cinema" -> "cinema") so filenames with embedded track numbers can
+    # still be matched against plain track titles.
+    normalized = _strip_track_number_prefix(normalized)
     replacements = {
         "&": "and",
         "’": "'",
