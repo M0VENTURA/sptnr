@@ -235,6 +235,25 @@
                 </div>
             </div>
             
+            <!-- MP3 Metadata Import Button -->
+            <div class="row g-3 mt-1">
+                <div class="col-12 col-md-4">
+                    <div class="card h-100 scan-operation-card">
+                        <div class="card-body p-3">
+                            <h6 class="mb-2">
+                                <i class="bi bi-music-note"></i> MP3 Import
+                            </h6>
+                            <p class="small text-muted mb-3">Scan and import MP3 metadata from local music directory</p>
+                            <form method="POST" action="{{ url_for('scan_mp3_import') }}" class="d-inline w-100">
+                                <button type="submit" class="btn btn-primary btn-sm w-100">
+                                    <i class="bi bi-play-fill"></i> Start Scan
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
             <!-- Unified Stop and Clear Buttons -->
             <div class="mt-3 pt-3 border-top d-flex gap-2 align-items-center">
                 <form method="POST" action="{{ url_for('scan_stop_all') }}" class="d-flex gap-1 flex-grow-1">
