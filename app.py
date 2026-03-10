@@ -7084,6 +7084,21 @@ def album_detail(artist, album):
                                  slskd_config={"enabled": False},
                                  error="Album not found")
         
+        # Check favourite status for this album
+        is_album_favourite = False
+        try:
+            cursor.execute(f"""
+                SELECT 1
+                FROM bookmarks
+                WHERE type = {placeholder}
+                  AND LOWER(COALESCE(artist, '')) = LOWER({placeholder})
+                  AND LOWER(COALESCE(album, '')) = LOWER({placeholder})
+                LIMIT 1
+            """, ("album", artist, album))
+            is_album_favourite = cursor.fetchone() is not None
+        except Exception as fav_err:
+            logging.debug(f"Album favourite check failed for {artist} - {album}: {fav_err}")
+
         # Get album metadata from first track
         try:
             cursor.execute(f"""
@@ -7270,6 +7285,7 @@ def album_detail(artist, album):
                              album_data=album_data,
                              album_genres=sorted(list(album_genres)),
                              genre_sources=genre_sources,
+                             is_album_favourite=is_album_favourite,
                              qbit_config=qbit_config,
                              slskd_config=slskd_config)
     except Exception as e:
@@ -7293,6 +7309,7 @@ def album_detail(artist, album):
                              tracks_by_disc={},
                              album_data=None,
                              album_genres=[],
+                             is_album_favourite=False,
                              qbit_config=qbit_config,
                              slskd_config=slskd_config,
                              error=f"Error loading album: {str(e)}")
@@ -7893,6 +7910,20 @@ def track_detail(track_id):
                     genres = [g.strip() for g in row['genres'].split(',') if g.strip()]
                     genre_set.update(genres)
             recommended_genres = sorted(list(genre_set))
+
+        # Check favourite status for this track
+        is_track_favourite = False
+        try:
+            cursor.execute(f"""
+                SELECT 1
+                FROM bookmarks
+                WHERE type = {placeholder}
+                  AND track_id = {placeholder}
+                LIMIT 1
+            """, ("track", track_id))
+            is_track_favourite = cursor.fetchone() is not None
+        except Exception as fav_err:
+            logging.debug(f"Track favourite check failed for {track_id}: {fav_err}")
         
         conn.close()
         
@@ -7907,6 +7938,7 @@ def track_detail(track_id):
             slskd_config = {"enabled": False}
         
         return render_template("track.html", track=track, recommended_genres=recommended_genres, track_id=track_id,
+                     is_track_favourite=is_track_favourite,
                              qbit_config=qbit_config, slskd_config=slskd_config)
     
     except Exception as e:
