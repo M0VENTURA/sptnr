@@ -1207,7 +1207,7 @@ def check_downloads_folder():
         
         completed_items = []
         conn = get_db()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         
         # Get all active queue items (not yet completed or imported)
         cursor.execute("""
@@ -1215,7 +1215,7 @@ def check_downloads_folder():
             WHERE status IN ('queued', 'searching', 'downloading')
             ORDER BY created_at ASC
         """)
-        queue_items = [dict(row) for row in cursor.fetchall()]
+        queue_items = list(cursor.fetchall())  # RealDictCursor already returns dict-like rows
         
         # Recursively get all audio files in downloads folder and subdirectories
         downloads_files = []
@@ -1925,7 +1925,7 @@ def cleanup_missing_files():
             
             # Get all queue items with file paths
             cursor.execute("""
-                SELECT id, file_path, artist, title, status, music_file_path
+                SELECT id, file_path, artist, title, status
                 FROM download_queue
                 WHERE file_path IS NOT NULL AND file_path != ''
             """)
@@ -2002,17 +2002,18 @@ def cleanup_missing_files():
 
             return stats
 
-        except (sqlite3.OperationalError, Exception) as e:
-            if 'database is locked' in str(e).lower():
+        except Exception as e:
+            # PostgreSQL doesn't have 'database is locked' - handle connection errors instead
+            if 'deadlock' in str(e).lower() or 'concurrent' in str(e).lower():
                 if attempt < max_retries - 1:
                     delay = initial_delay * (2 ** attempt)
                     logger.warning(
-                        f"Database locked during cleanup_missing_files(), retrying in {delay:.2f}s "
+                        f"Database conflict during cleanup_missing_files(), retrying in {delay:.2f}s "
                         f"(attempt {attempt + 1}/{max_retries})"
                     )
                     time.sleep(delay)
                     continue
-                error_msg = f"Error during cleanup: database is locked after {max_retries} retries"
+                error_msg = f"Error during cleanup: database conflict after {max_retries} retries"
                 logger.error(error_msg)
                 stats['errors'].append(error_msg)
                 return stats

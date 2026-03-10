@@ -18966,6 +18966,7 @@ def api_playlist_import():
         spotify_url = data.get("spotify_url", "").strip()
         playlist_name = data.get("playlist_name", "").strip()
         playlist_description = data.get("playlist_description", "").strip()
+        target_user = (data.get("target_user") or data.get("user") or "").strip()
         
         if not spotify_url or not playlist_name:
             return jsonify({"error": "Missing required fields"}), 400
@@ -19047,6 +19048,7 @@ def api_playlist_import():
             "success": True,
             "playlist_name": playlist_name,
             "playlist_description": playlist_description,
+            "target_user": target_user,
             "matched_tracks": matched_tracks,
             "missing_tracks": missing_tracks,
             "slskd_enabled": slskd_enabled,
@@ -21218,7 +21220,7 @@ def api_playlist_create_custom():
         data = request.get_json()
         name = data.get("name", "").strip()
         description = data.get("description", "").strip()
-        user_name = data.get("user", "admin")
+        user_name = (data.get("user") or session.get("username") or "").strip()
         is_public = data.get("is_public", False)
         songs = data.get("songs", [])
         
@@ -21230,9 +21232,23 @@ def api_playlist_create_custom():
         
         cfg = get_config()
         navidrome_config = cfg.get("navidrome", {})
-        base_url = navidrome_config.get("base_url", "http://localhost:4533")
-        user = navidrome_config.get("user", "admin")
-        password = navidrome_config.get("pass", "")
+        navidrome_users = cfg.get("navidrome_users", [])
+
+        selected_user_cfg = None
+        if user_name and navidrome_users:
+            selected_user_cfg = next((u for u in navidrome_users if u.get("user") == user_name), None)
+
+        if selected_user_cfg:
+            base_url = selected_user_cfg.get("base_url") or navidrome_config.get("base_url", "http://localhost:4533")
+            user = selected_user_cfg.get("user", user_name)
+            password = selected_user_cfg.get("pass", "")
+        else:
+            base_url = navidrome_config.get("base_url", "http://localhost:4533")
+            user = navidrome_config.get("user", "admin")
+            password = navidrome_config.get("pass", "")
+
+        if not base_url or not user or not password:
+            return jsonify({"error": "Navidrome credentials are not configured for the selected user"}), 400
         
         import requests as req
         
@@ -21272,11 +21288,12 @@ def api_playlist_create_custom():
                 timeout=10
             )
         
-        logging.info(f"Created playlist '{name}' with {len(songs)} songs")
+        logging.info(f"Created playlist '{name}' for user '{user}' with {len(songs)} songs")
         response = jsonify({
             "success": True,
             "playlist_id": playlist_id,
-            "message": f"Playlist created with {len(songs)} songs"
+            "target_user": user,
+            "message": f"Playlist created with {len(songs)} songs for {user}"
         })
         response.status_code = 201
         return response

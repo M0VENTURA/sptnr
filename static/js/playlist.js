@@ -872,6 +872,7 @@ async function importPlaylist(event) {
   const spotifyUrl = document.getElementById('spotifyUrl')?.value.trim() || '';
   const playlistName = document.getElementById('playlistName')?.value.trim() || '';
   const playlistDescription = document.getElementById('playlistDescription')?.value.trim() || '';
+  const targetUser = document.getElementById('playlistTargetUser')?.value?.trim() || '';
   const statusEl = document.getElementById('importStatus');
   
   if (!spotifyUrl || !playlistName) {
@@ -894,7 +895,8 @@ async function importPlaylist(event) {
       body: JSON.stringify({
         spotify_url: spotifyUrl,
         playlist_name: playlistName,
-        playlist_description: playlistDescription
+        playlist_description: playlistDescription,
+        target_user: targetUser
       })
     });
     
@@ -1007,16 +1009,20 @@ async function createPlaylist() {
   createBtn.disabled = true;
   createBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Creating...';
   
+  const targetUser = (currentImportData.target_user || document.getElementById('playlistTargetUser')?.value || '').trim();
+
   try {
-    const response = await fetch('/api/playlist/create', {
+    const response = await fetch('/api/playlist/create-custom', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        playlist_name: currentImportData.playlist_name,
-        playlist_description: currentImportData.playlist_description,
-        matched_tracks: currentImportData.matched_tracks
+        name: currentImportData.playlist_name,
+        description: currentImportData.playlist_description,
+        user: targetUser,
+        is_public: false,
+        songs: currentImportData.matched_tracks
       })
     });
     
@@ -1026,7 +1032,8 @@ async function createPlaylist() {
       throw new Error(data.error || 'Playlist creation failed');
     }
     
-    alert(`✓ Playlist "${currentImportData.playlist_name}" created successfully!`);
+    const ownerText = data.target_user ? ` for ${data.target_user}` : '';
+    alert(`✓ Playlist "${currentImportData.playlist_name}" created successfully${ownerText}!`);
     createBtn.innerHTML = '<i class="bi bi-check-circle"></i> Playlist Created!';
     createBtn.classList.remove('btn-primary');
     createBtn.classList.add('btn-success');

@@ -59,6 +59,22 @@
                   placeholder="e.g., Imported from Spotify"
                 />
               </div>
+              <div class="col-12 col-md-6">
+                <label for="playlistTargetUser" class="form-label">Assign to User</label>
+                <select id="playlistTargetUser" class="form-select">
+                  {% if navidrome_users %}
+                    {% for user in navidrome_users %}
+                    <option value="{{ user.user }}">{{ user.user }}</option>
+                    {% endfor %}
+                  {% else %}
+                    <option value="">Default Navidrome User</option>
+                  {% endif %}
+                </select>
+                <small class="text-secondary">
+                  <i class="bi bi-info-circle"></i>
+                  Choose the Navidrome user who should own the imported playlist.
+                </small>
+              </div>
               <div class="col-12">
                 <button type="submit" class="btn btn-primary">
                   <i class="bi bi-download"></i> Import Playlist

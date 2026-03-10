@@ -342,6 +342,26 @@
           Smart playlists automatically update based on rules. Select an existing smart playlist to view or manage it.
         </p>
 
+        <div class="card mb-4 border-warning">
+          <div class="card-header">
+            <h6 class="mb-0"><i class="bi bi-star-fill text-warning"></i> Favourites Presets</h6>
+          </div>
+          <div class="card-body">
+            <p class="text-muted small mb-3">Create common favourites-based smart playlists in one click.</p>
+            <div class="d-flex flex-wrap gap-2">
+              <button class="btn btn-sm btn-outline-warning" type="button" onclick="createFavouriteSmartPlaylist('loved_tracks')">
+                <i class="bi bi-heart-fill"></i> Loved Tracks
+              </button>
+              <button class="btn btn-sm btn-outline-warning" type="button" onclick="createFavouriteSmartPlaylist('five_star_tracks')">
+                <i class="bi bi-stars"></i> 5-Star Tracks
+              </button>
+              <button class="btn btn-sm btn-outline-warning" type="button" onclick="createFavouriteSmartPlaylist('recent_loved')">
+                <i class="bi bi-clock-history"></i> Recently Loved
+              </button>
+            </div>
+          </div>
+        </div>
+
         <!-- Smart Playlist Selection -->
         <div class="row g-3 mb-4">
           <div class="col-md-6">
@@ -1295,6 +1315,71 @@ function escapeHtml(text) {
 
 let currentSmartPlaylistId = null;
 let currentSmartPlaylistData = null;
+
+const favouriteSmartPlaylistPresets = {
+  loved_tracks: {
+    fileName: 'favourites_loved_tracks',
+    playlist: {
+      name: 'Favourites - Loved Tracks',
+      comment: 'Auto-updating loved tracks',
+      all: [{ is: { loved: true } }],
+      sort: 'dateloved',
+      order: 'desc'
+    }
+  },
+  five_star_tracks: {
+    fileName: 'favourites_five_star_tracks',
+    playlist: {
+      name: 'Favourites - 5 Star Tracks',
+      comment: 'Auto-updating 5-star tracks',
+      all: [{ is: { rating: 5 } }],
+      sort: 'daterated',
+      order: 'desc'
+    }
+  },
+  recent_loved: {
+    fileName: 'favourites_recent_loved',
+    playlist: {
+      name: 'Favourites - Recently Loved',
+      comment: 'Loved tracks in the last 30 days',
+      all: [
+        { is: { loved: true } },
+        { inTheLast: { dateloved: 30 } }
+      ],
+      sort: 'dateloved',
+      order: 'desc'
+    }
+  }
+};
+
+async function createFavouriteSmartPlaylist(presetKey) {
+  const preset = favouriteSmartPlaylistPresets[presetKey];
+  if (!preset) {
+    alert('Unknown favourites preset');
+    return;
+  }
+
+  try {
+    const response = await fetch('/api/smartplaylist/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fileName: preset.fileName,
+        playlist: preset.playlist
+      })
+    });
+
+    const data = await response.json();
+    if (!response.ok || !data.success) {
+      throw new Error(data.error || 'Failed to create smart playlist');
+    }
+
+    alert(`✅ ${preset.playlist.name} created`);
+    await loadSmartPlaylists();
+  } catch (error) {
+    alert('❌ ' + error.message);
+  }
+}
 
 async function loadSmartPlaylists() {
   try {
