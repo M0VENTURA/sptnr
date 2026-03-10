@@ -860,21 +860,48 @@ def save_to_db(track_data):
     if artist and album and title:
         # First check for pending queue entries (from download queue)
         # These have file_path like "__queued_for_download__queue_id_123"
-        _run_with_db_lock_retry(
-            lambda: cursor.execute(
-                """
-                SELECT id, beets_mbid, mbid, file_path, last_scanned 
-                FROM tracks 
-                WHERE artist = ? AND album = ? AND title = ? 
-                    AND file_path LIKE '__queued_for_download__queue_id_%'
-                    AND id != ?
-                LIMIT 1
-                """,
-                (artist, album, title, track_id)
-            ),
-            "save_to_db queue entry lookup"
-        )
-        queue_entry = cursor.fetchone()
+        # Try matching by MBID first (most reliable), then by metadata
+        queue_entry = None
+        
+        # If incoming track has MBID, try to match queue entry by MBID
+        incoming_mbid = sanitized_data.get('mbid')
+        if incoming_mbid:
+            _run_with_db_lock_retry(
+                lambda: cursor.execute(
+                    """
+                    SELECT id, beets_mbid, mbid, file_path, last_scanned 
+                    FROM tracks 
+                    WHERE (mbid = ? OR suggested_mbid = ?)
+                        AND file_path LIKE '__queued_for_download__queue_id_%'
+                        AND id != ?
+                    LIMIT 1
+                    """,
+                    (incoming_mbid, incoming_mbid, track_id)
+                ),
+                "save_to_db queue entry MBID lookup"
+            )
+            queue_entry = cursor.fetchone()
+            
+            if queue_entry:
+                logging.info(f"Matched queue entry by MBID {incoming_mbid}: {artist} - {title}")
+        
+        # If no MBID match, try artist+album+title
+        if not queue_entry:
+            _run_with_db_lock_retry(
+                lambda: cursor.execute(
+                    """
+                    SELECT id, beets_mbid, mbid, file_path, last_scanned 
+                    FROM tracks 
+                    WHERE artist = ? AND album = ? AND title = ? 
+                        AND file_path LIKE '__queued_for_download__queue_id_%'
+                        AND id != ?
+                    LIMIT 1
+                    """,
+                    (artist, album, title, track_id)
+                ),
+                "save_to_db queue entry metadata lookup"
+            )
+            queue_entry = cursor.fetchone()
         
         if queue_entry:
             # Found a pending queue entry - update it with the Navidrome track ID and real file_path
