@@ -814,7 +814,6 @@ def save_to_db(track_data):
     cursor = conn.cursor()
     is_pg = bool(_is_postgres_connection(cursor.connection if hasattr(cursor, 'connection') else conn))
     placeholder = "%s" if is_pg else "?"
-    like_wildcard = "%%" if is_pg else "%"
     
     # Log the genres being saved for debugging
     if track_data.get('genres'):
@@ -863,7 +862,11 @@ def save_to_db(track_data):
         # These have file_path like "__queued_for_download__queue_id_123"
         # Try matching by MBID first (most reliable), then by metadata
         queue_entry = None
-        queue_like_pattern = f"__queued_for_download__queue_id_{like_wildcard}"
+        # The LIKE pattern is passed as a query parameter, so the % wildcard must
+        # NOT be doubled (no %% escaping). Parameterised values bypass psycopg2's
+        # format-string parser, which would otherwise misinterpret a literal %
+        # embedded in the SQL string.
+        queue_like_pattern = "__queued_for_download__queue_id_%"
         
         # If incoming track has MBID, try to match queue entry by MBID
         incoming_mbid = sanitized_data.get('mbid')
@@ -874,11 +877,11 @@ def save_to_db(track_data):
                     SELECT id, beets_mbid, mbid, file_path, last_scanned 
                     FROM tracks 
                     WHERE (mbid = {placeholder} OR suggested_mbid = {placeholder})
-                        AND file_path LIKE '{queue_like_pattern}'
+                        AND file_path LIKE {placeholder}
                         AND id != {placeholder}
                     LIMIT 1
                     """,
-                    (incoming_mbid, incoming_mbid, track_id)
+                    (incoming_mbid, incoming_mbid, queue_like_pattern, track_id)
                 ),
                 "save_to_db queue entry MBID lookup"
             )
@@ -895,11 +898,11 @@ def save_to_db(track_data):
                     SELECT id, beets_mbid, mbid, file_path, last_scanned 
                     FROM tracks 
                     WHERE artist = {placeholder} AND album = {placeholder} AND title = {placeholder} 
-                        AND file_path LIKE '{queue_like_pattern}'
+                        AND file_path LIKE {placeholder}
                         AND id != {placeholder}
                     LIMIT 1
                     """,
-                    (artist, album, title, track_id)
+                    (artist, album, title, queue_like_pattern, track_id)
                 ),
                 "save_to_db queue entry metadata lookup"
             )
@@ -907,7 +910,7 @@ def save_to_db(track_data):
         
         if queue_entry:
             # Found a pending queue entry - update it with the Navidrome track ID and real file_path
-            queue_id = queue_entry['id']
+            queue_id = queue_entry['id'] if hasattr(queue_entry, 'keys') else queue_entry[0]
             logging.info(f"Found queue entry {queue_id} for {artist} - {title}, updating to Navidrome ID {track_id}")
             
             # Delete the queue placeholder entry
