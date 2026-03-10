@@ -164,6 +164,9 @@
       </h5>
       <div class="d-flex align-items-center gap-2 flex-wrap">
         <span class="badge bg-info" id="folderGroupsBadge">0 items</span>
+        <button class="btn btn-sm btn-outline-warning" onclick="runQueueCleanup()" title="Remove expired duplicates and fully completed albums from queue">
+          <i class="bi bi-broom"></i> Cleanup
+        </button>
       </div>
     </div>
     <div class="card-body p-0">
@@ -1328,7 +1331,9 @@ async function loadFolderGroups(options = {}) {
     // These show as pseudo-groups with queue_item=true to distinguish them
     const queueStatusesToShowInline = [
       'queued', 'searching', 'downloading',
-      'completed', 'discovered', 'pending_match', 'possible_duplicate',
+      'matched', 'completed', 'duplicate', 'possible_duplicate',
+      'unmatched', 'queried', 'in_collection',
+      'discovered', 'pending_match',
       'failed'
     ];
     const queueItemsToShow = queue.filter(item => queueStatusesToShowInline.includes(item.status));
@@ -1338,18 +1343,19 @@ async function loadFolderGroups(options = {}) {
     const individualItems = [];
     
     queueItemsToShow.forEach(item => {
-      if (item.release_id) {
+      const itemReleaseId = item.release_mbid || item.release_id;
+      if (itemReleaseId) {
         // Group by release_id for album releases
-        if (!releaseGroups[item.release_id]) {
-          releaseGroups[item.release_id] = {
-            release_id: item.release_id,
+        if (!releaseGroups[itemReleaseId]) {
+          releaseGroups[itemReleaseId] = {
+            release_id: itemReleaseId,
             release_source: item.release_source,
             artist: item.artist || '',
             album: item.album || '',
             tracks: []
           };
         }
-        releaseGroups[item.release_id].tracks.push({
+        releaseGroups[itemReleaseId].tracks.push({
           id: item.id,
           status: item.status,
           source: item.source || 'soulseek',
@@ -1357,8 +1363,12 @@ async function loadFolderGroups(options = {}) {
           artist: item.artist || '',
           album: item.album || '',
           filename: item.found_filename || item.title || '',
-          file_path: item.file_path || '',
-          track_number: item.track_number
+          file_path: item.file_path || item.matched_file_path || '',
+          matched_file_path: item.matched_file_path || '',
+          track_number: item.track_number,
+          duration: item.duration || 0,
+          release_mbid: item.release_mbid || item.release_id || '',
+          release_year: item.release_year || item.year || ''
         });
       } else {
         // Individual queue items without release_id
@@ -1400,8 +1410,15 @@ async function loadFolderGroups(options = {}) {
         artist: item.artist || '',
         album: item.album || '',
         filename: item.found_filename || item.title || '',
-        file_path: item.file_path || ''
+        file_path: item.file_path || item.matched_file_path || '',
+        matched_file_path: item.matched_file_path || '',
+        track_number: item.track_number,
+        duration: item.duration || 0,
+        release_mbid: item.release_mbid || item.release_id || '',
+        release_year: item.release_year || item.year || ''
       }],
+      release_id: item.release_mbid || item.release_id || null,
+      release_source: item.release_source || null,
       is_musicbrainz_release: false
     }));
     
@@ -1574,7 +1591,12 @@ async function loadFolderGroups(options = {}) {
           queued: ['secondary', 'Queued'],
           searching: ['info', 'Searching'],
           downloading: ['primary', 'Downloading'],
+          matched: ['success', 'Matched'],
           completed: ['success', 'Completed'],
+          duplicate: ['warning', 'Duplicate'],
+          unmatched: ['dark', 'Unmatched'],
+          queried: ['info', 'Queried'],
+          in_collection: ['secondary', 'In Collection'],
           discovered: ['warning', 'Discovered'],
           pending_match: ['warning', 'Pending Match'],
           possible_duplicate: ['danger', 'Possible Duplicate'],
@@ -1590,6 +1612,13 @@ async function loadFolderGroups(options = {}) {
       const matchedDetails = matchedSelection
         ? `<div class="small text-success mt-1"><strong>Selected:</strong> ${escapeHtml(matchedSelection.candidate.title || 'Unknown release')} (${escapeHtml(matchedSelection.candidate.source || 'musicbrainz')})</div>
            <div class="small text-info"><strong>Mapped:</strong> ${mappedCount}/${group.tracks.length} folder tracks aligned to release tracklist</div>`
+        : '';
+      const groupMbid = group.release_id || '';
+      const mbidBadge = groupMbid
+        ? `<span class="badge bg-dark text-info ms-2" title="MusicBrainz Release ID">MBID: ${escapeHtml(groupMbid)}</span>
+           <button class="btn btn-sm btn-outline-info ms-1" onclick="openBetterMatchModal('${artistEnc}','${albumEnc}','${encodeInlineArg(groupMbid)}')" title="Search for a better MusicBrainz match">
+             <i class="bi bi-search"></i> Better Match
+           </button>`
         : '';
       
       // Get folder status from database (if it exists)
@@ -1629,6 +1658,7 @@ async function loadFolderGroups(options = {}) {
                 <h6 class="card-title mb-1">
                   <i class="bi bi-list-task"></i> ${escapeHtml(group.artist || '')} – ${escapeHtml(group.album || '')}
                   ${queueStatusBadge}
+                  ${mbidBadge}
                 </h6>
                 <div class="text-muted small">
                   <span class="badge bg-light text-dark">${group.track_count} tracks</span>
@@ -1713,9 +1743,11 @@ async function loadFolderGroups(options = {}) {
                   const artistEnc = encodeInlineArg(track.artist || group.artist || '');
                   const titleEnc = encodeInlineArg(track.title || group.album || '');
                   const showRetry = queueStatusRow === 'failed';
-                  const canMoveToMusic = ['completed', 'discovered', 'pending_match', 'possible_duplicate'].includes(queueStatusRow) && queueId > 0;
+                  const canMoveToMusic = queueStatusRow === 'matched' && queueId > 0;
+                  const canSendQueried = queueStatusRow === 'queried' && queueId > 0;
                   moveButtonHtml = `<div class="d-flex flex-column gap-1 align-items-center">
-                    ${canMoveToMusic ? `<button class="btn btn-sm btn-outline-success" onclick="organizeFile(${queueId})" title="Move this detected file to your configured music folder"><i class="bi bi-arrow-right-circle"></i></button>` : ''}
+                    ${canMoveToMusic ? `<button class="btn btn-sm btn-outline-success" onclick="moveMatchedToMusic(${queueId})" title="Move matched track to Music and retag from MusicBrainz"><i class="bi bi-box-arrow-right"></i></button>` : ''}
+                    ${canSendQueried ? `<button class="btn btn-sm btn-outline-primary" onclick="sendQueriedTrack(${queueId})" title="Send queried track to queue for Soulseek search"><i class="bi bi-send"></i></button>` : ''}
                     <button class="btn btn-sm btn-outline-info" onclick="searchOtherSourcesFromEncoded('${artistEnc}','${titleEnc}', true)" title="Search manually in Soulseek">
                       <i class="bi bi-search"></i>
                     </button>
@@ -1766,7 +1798,11 @@ async function loadFolderGroups(options = {}) {
                 html += `
                       <tr class="${trackClass}">
                         <td><span style="font-size: 14px; font-weight: 500;">${trackIcon}${track.track_number || '-'}</span></td>
-                        <td><span style="font-size: 14px;">${escapeHtml(track.title || 'Unknown')}</span>${mappingHint}</td>
+                        <td>
+                          <span style="font-size: 14px;">${escapeHtml(track.title || 'Unknown')}</span>
+                          ${mappingHint}
+                          ${(track.file_path || track.matched_file_path) ? `<div class="small text-muted mt-1"><i class="bi bi-file-earmark"></i> ${escapeHtml(track.file_path || track.matched_file_path)}</div>` : ''}
+                        </td>
                         <td><span style="font-size: 14px;">${duration}</span></td>
                         ${isQueueItem ? (() => {
                           const trackStatus = String(track.status || group.queue_item_status || 'queued').toLowerCase();
@@ -1774,8 +1810,15 @@ async function loadFolderGroups(options = {}) {
                             queued: ['secondary', 'Queued'],
                             searching: ['info', 'Searching'],
                             downloading: ['primary', 'Downloading'],
+                            matched: ['success', 'Matched'],
                             completed: ['success', 'Completed'],
+                            duplicate: ['warning', 'Duplicate'],
+                            unmatched: ['dark', 'Unmatched'],
+                            queried: ['info', 'Queried'],
+                            in_collection: ['secondary', 'In Collection'],
                             discovered: ['warning', 'Discovered'],
+                            possible_duplicate: ['warning', 'Duplicate'],
+                            pending_match: ['warning', 'Pending Match'],
                             failed: ['danger', 'Failed']
                           };
                           const statusPair = statusMap[trackStatus] || ['secondary', trackStatus || 'Unknown'];
@@ -2507,7 +2550,7 @@ async function loadQueueStatus() {
     // Possible duplicates are flagged but not active downloads
     // Discovered and pending_match are found files ready for review, not active
     const active = queue.filter(item => ['queued', 'searching', 'downloading'].includes(item.status));
-    const completed = queue.filter(item => ['completed', 'discovered', 'pending_match', 'possible_duplicate'].includes(item.status));
+    const completed = queue.filter(item => ['matched', 'completed', 'in_collection', 'duplicate', 'possible_duplicate'].includes(item.status));
     const failed = queue.filter(item => item.status === 'failed');
     
     // Update counts
@@ -2642,6 +2685,238 @@ async function retryQueueItem(queueId) {
     }
   } catch (error) {
     console.error('Error retrying item:', error);
+    alert('❌ Network error: ' + error.message);
+  }
+}
+
+async function moveMatchedToMusic(queueId) {
+  if (!confirm('Move matched track to /Music and rewrite tags from MusicBrainz metadata?')) {
+    return;
+  }
+
+  try {
+    const data = await fetchJsonOrThrow(`/api/queue/move-to-music/${queueId}`, {
+      method: 'POST'
+    });
+
+    if (data.success) {
+      alert('✅ Track moved to Music successfully');
+      await loadQueueStatus();
+      await loadFolderGroups({ forceRender: true });
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to move track'));
+    }
+  } catch (error) {
+    console.error('Error moving matched track to music:', error);
+    alert('❌ Network error: ' + error.message);
+  }
+}
+
+async function sendQueriedTrack(queueId) {
+  try {
+    const data = await fetchJsonOrThrow(`/api/queue/${queueId}/send`, {
+      method: 'POST'
+    });
+
+    if (data.success) {
+      alert('✅ Track sent to queue');
+      await loadQueueStatus();
+      await loadFolderGroups({ forceRender: true });
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to send track'));
+    }
+  } catch (error) {
+    console.error('Error sending queried track:', error);
+    alert('❌ Network error: ' + error.message);
+  }
+}
+
+async function runQueueCleanup() {
+  if (!confirm('Run queue cleanup now? This removes expired duplicates and fully completed albums.')) {
+    return;
+  }
+
+  try {
+    const data = await fetchJsonOrThrow('/api/queue/cleanup', {
+      method: 'POST'
+    });
+
+    if (data.success) {
+      const stats = data.stats || {};
+      alert(
+        '✅ Cleanup complete\n\n' +
+        `Duplicates removed: ${stats.deleted_duplicates || 0}\n` +
+        `Completed albums removed: ${stats.completed_albums || 0}\n` +
+        `Album tracks removed: ${stats.deleted_album_tracks || 0}`
+      );
+      await loadQueueStatus();
+      await loadFolderGroups({ forceRender: true });
+    } else {
+      alert('❌ Error: ' + (data.error || 'Cleanup failed'));
+    }
+  } catch (error) {
+    console.error('Error running queue cleanup:', error);
+    alert('❌ Network error: ' + error.message);
+  }
+}
+
+function openBetterMatchModal(artistEnc, albumEnc, currentMbidEnc) {
+  const artist = decodeInlineArg(artistEnc, '');
+  const album = decodeInlineArg(albumEnc, '');
+  const currentMbid = decodeInlineArg(currentMbidEnc, '');
+
+  const existing = document.getElementById('betterMatchModal');
+  if (existing) existing.remove();
+
+  const modalHtml = `
+    <div class="modal fade" id="betterMatchModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content bg-dark text-light">
+          <div class="modal-header border-secondary">
+            <h5 class="modal-title">Find Better MusicBrainz Match</h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div class="mb-2 small text-muted">Current MBID: ${escapeHtml(currentMbid || 'None')}</div>
+            <div class="row g-2">
+              <div class="col-md-6">
+                <label class="form-label">Artist</label>
+                <input type="text" id="betterMatchArtist" class="form-control" value="${escapeHtml(artist)}">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">Album</label>
+                <input type="text" id="betterMatchAlbum" class="form-control" value="${escapeHtml(album)}">
+              </div>
+            </div>
+            <div class="mt-3">
+              <button class="btn btn-primary" onclick="searchBetterMusicBrainzMatch('${artistEnc}', '${albumEnc}')">
+                <i class="bi bi-search"></i> Search MusicBrainz
+              </button>
+            </div>
+            <div id="betterMatchResults" class="mt-3"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+  const modal = new bootstrap.Modal(document.getElementById('betterMatchModal'));
+  modal.show();
+}
+
+async function searchBetterMusicBrainzMatch(oldArtistEnc, oldAlbumEnc) {
+  const artistInput = document.getElementById('betterMatchArtist');
+  const albumInput = document.getElementById('betterMatchAlbum');
+  const results = document.getElementById('betterMatchResults');
+
+  if (!artistInput || !albumInput || !results) {
+    return;
+  }
+
+  const artist = (artistInput.value || '').trim();
+  const album = (albumInput.value || '').trim();
+
+  if (!artist || !album) {
+    alert('Artist and album are required');
+    return;
+  }
+
+  results.innerHTML = '<div class="text-muted">Searching...</div>';
+
+  try {
+    const url = `/api/musicbrainz/search/releases?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`;
+    const data = await fetchJsonOrThrow(url);
+    const releases = data.releases || [];
+
+    if (!releases.length) {
+      results.innerHTML = '<div class="alert alert-warning mb-0">No matches found.</div>';
+      return;
+    }
+
+    const oldArtist = decodeInlineArg(oldArtistEnc, '');
+    const oldAlbum = decodeInlineArg(oldAlbumEnc, '');
+
+    const rows = releases.map(rel => {
+      const relArtist = rel.artist || artist;
+      const relTitle = rel.title || album;
+      const relMbid = rel.id || '';
+      const relYear = rel.year || '';
+      const relTracks = rel.tracks || 0;
+
+      return `
+        <tr>
+          <td>${escapeHtml(relArtist)}</td>
+          <td>${escapeHtml(relTitle)}</td>
+          <td>${escapeHtml(relYear)}</td>
+          <td>${escapeHtml(relTracks)}</td>
+          <td><small class="text-info">${escapeHtml(relMbid)}</small></td>
+          <td>
+            <button class="btn btn-sm btn-success" onclick="applyBetterMusicBrainzMatch('${encodeInlineArg(oldArtist)}','${encodeInlineArg(oldAlbum)}','${encodeInlineArg(relArtist)}','${encodeInlineArg(relTitle)}','${encodeInlineArg(relMbid)}')">
+              Select
+            </button>
+          </td>
+        </tr>
+      `;
+    }).join('');
+
+    results.innerHTML = `
+      <div class="table-responsive">
+        <table class="table table-sm table-dark table-striped mb-0">
+          <thead>
+            <tr>
+              <th>Artist</th>
+              <th>Album</th>
+              <th>Year</th>
+              <th>Tracks</th>
+              <th>MBID</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    `;
+  } catch (error) {
+    console.error('Error searching better MusicBrainz match:', error);
+    results.innerHTML = `<div class="alert alert-danger mb-0">${escapeHtml(error.message)}</div>`;
+  }
+}
+
+async function applyBetterMusicBrainzMatch(oldArtistEnc, oldAlbumEnc, newArtistEnc, newAlbumEnc, mbidEnc) {
+  const oldArtist = decodeInlineArg(oldArtistEnc, '');
+  const oldAlbum = decodeInlineArg(oldAlbumEnc, '');
+  const newArtist = decodeInlineArg(newArtistEnc, '');
+  const newAlbum = decodeInlineArg(newAlbumEnc, '');
+  const newMbid = decodeInlineArg(mbidEnc, '');
+
+  try {
+    const data = await fetchJsonOrThrow('/api/queue/update-album-mbid', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        old_artist: oldArtist,
+        old_album: oldAlbum,
+        new_mbid: newMbid,
+        new_artist: newArtist,
+        new_album: newAlbum
+      })
+    });
+
+    if (data.success) {
+      alert(`✅ Updated ${data.updated_count || 0} queue items`);
+      const modalEl = document.getElementById('betterMatchModal');
+      if (modalEl) {
+        const modal = bootstrap.Modal.getInstance(modalEl);
+        if (modal) modal.hide();
+      }
+      await loadQueueStatus();
+      await loadFolderGroups({ forceRender: true });
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to apply match'));
+    }
+  } catch (error) {
+    console.error('Error applying better MBID match:', error);
     alert('❌ Network error: ' + error.message);
   }
 }

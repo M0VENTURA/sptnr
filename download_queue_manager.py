@@ -1614,6 +1614,30 @@ def auto_discover_and_queue_files():
                     context="auto_discover unmatched insert"
                 )
 
+                # Immediately attempt MusicBrainz enrichment for unmatched discoveries.
+                # This can populate release MBID metadata and add sibling album tracks as 'queried'.
+                try:
+                    inserted_queue_id = None
+                    cursor.execute(
+                        f"""
+                        SELECT id
+                        FROM download_queue
+                        WHERE file_path = {placeholder}
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                        """,
+                        (full_path,)
+                    )
+                    inserted_row = cursor.fetchone()
+                    if inserted_row:
+                        inserted_queue_id = inserted_row['id'] if isinstance(inserted_row, dict) else inserted_row[0]
+
+                    if inserted_queue_id and album and album.strip() and album.strip().lower() != 'unknown':
+                        from download_monitor_enhancements import search_and_update_musicbrainz
+                        search_and_update_musicbrainz(inserted_queue_id, artist, title, album)
+                except Exception as mb_err:
+                    logger.debug(f"MusicBrainz auto-enrichment skipped for unmatched track: {mb_err}")
+
                 stats['queued'] += 1
 
                 # Log discovery with metadata and format info

@@ -16663,7 +16663,7 @@ def api_musicbrainz_search_releases():
     Used for manual MBID selection in download monitor
     """
     try:
-        from folder_matching_enhancements import search_musicbrainz_releases
+        from download_folder_grouping import match_folder_group_with_musicbrainz
         
         artist = request.args.get('artist', '').strip()
         album = request.args.get('album', '').strip()
@@ -16671,7 +16671,8 @@ def api_musicbrainz_search_releases():
         if not artist or not album:
             return jsonify({"error": "Artist and album are required"}), 400
         
-        releases = search_musicbrainz_releases(artist, album)
+        match_result = match_folder_group_with_musicbrainz('', artist, album)
+        releases = match_result.get('candidates', []) if isinstance(match_result, dict) else []
         
         # Format for UI
         formatted_releases = []
@@ -16679,7 +16680,7 @@ def api_musicbrainz_search_releases():
             formatted_releases.append({
                 'id': rel.get('id'),
                 'title': rel.get('title'),
-                'artist': rel.get('artist-credit-phrase', artist),
+                'artist': rel.get('artist', artist),
                 'year': rel.get('date', '')[:4] if rel.get('date') else None,
                 'country': rel.get('country'),
                 'tracks': rel.get('track-count', 0),

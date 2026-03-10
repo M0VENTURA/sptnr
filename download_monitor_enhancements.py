@@ -80,9 +80,10 @@ def search_and_update_musicbrainz(queue_id, artist, title, album):
         album: Album name
     """
     try:
-        from folder_matching_enhancements import search_musicbrainz_releases, get_musicbrainz_release_tracks
+        from download_folder_grouping import match_folder_group_with_musicbrainz
+        from folder_matching_enhancements import get_musicbrainz_release_tracks
     except ImportError:
-        logger.error("folder_matching_enhancements not available for MusicBrainz search")
+        logger.error("MusicBrainz matching helpers not available")
         return
     
     if not album:
@@ -90,9 +91,10 @@ def search_and_update_musicbrainz(queue_id, artist, title, album):
         return
     
     try:
-        # Search for releases
-        releases = search_musicbrainz_releases(artist, album)
-        
+        # Search for release candidates
+        match_result = match_folder_group_with_musicbrainz('', artist, album)
+        releases = match_result.get('candidates', []) if isinstance(match_result, dict) else []
+
         if not releases:
             logger.info(f"No MusicBrainz match for unmatched file (queue_id={queue_id}): {artist} - {album}")
             return
@@ -115,7 +117,7 @@ def search_and_update_musicbrainz(queue_id, artist, title, album):
                 album_artist = ?,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
-        """, (release_mbid, release_year, release.get('artist-credit-phrase', artist), queue_id))
+        """, (release_mbid, release_year, release.get('artist', artist), queue_id))
         
         conn.commit()
         
@@ -148,14 +150,14 @@ def search_and_update_musicbrainz(queue_id, artist, title, album):
             
             # Add as 'queried' status
             add_to_queue(
-                artist=track['artist'],
-                title=track['title'],
+                artist=track.get('artist') or artist,
+                title=track.get('title', ''),
                 album=album,
                 status='queried',
-                track_number=track.get('position'),
+                track_number=track.get('number'),
                 release_mbid=release_mbid,
-                recording_mbid=track.get('recording_id'),
-                duration=track.get('length')  # MusicBrainz returns milliseconds
+                recording_mbid=None,
+                duration=track.get('duration')
             )
             added_count += 1
         
