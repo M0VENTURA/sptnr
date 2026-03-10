@@ -190,7 +190,7 @@ def update_artist_name(old_artist, new_artist, mbid, dry_run=False):
     try:
         # Get all tracks with old artist name
         cursor.execute("""
-            SELECT id, artist, album, album_artist, file_path, beets_path, track_number, disc_number, year
+            SELECT id, artist, album, album_artist, file_path, beets_path, track_number, disc_number, year, title
             FROM tracks
             WHERE artist = %s AND musicbrainz_artist_id = %s
             ORDER BY file_path
