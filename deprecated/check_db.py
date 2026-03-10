@@ -1113,6 +1113,30 @@ def update_schema(db_path):
         );
     """)
 
+    # ✅ Ensure album_file_renames table exists for tracking file reorganization
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS album_file_renames (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            artist TEXT NOT NULL,
+            album TEXT NOT NULL,
+            
+            old_file_path TEXT NOT NULL,
+            new_file_path TEXT NOT NULL,
+            
+            file_size INTEGER,
+            track_title TEXT,
+            track_number INTEGER,
+            
+            status TEXT DEFAULT 'pending',
+            error_message TEXT,
+            
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            executed_at TIMESTAMP,
+            
+            UNIQUE(old_file_path)
+        );
+    """)
+
     # ✅ Add missing columns to download_queue for release tracking
     cursor.execute("PRAGMA table_info(download_queue);")
     existing_queue_columns = [row[1] for row in cursor.fetchall()]
@@ -1161,6 +1185,20 @@ def update_schema(db_path):
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_download_queue_release_id 
         ON download_queue(release_id)
+    """)
+
+    # ✅ Create indexes for album_file_renames
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_album_file_renames_status 
+        ON album_file_renames(status)
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_album_file_renames_artist_album 
+        ON album_file_renames(artist, album)
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_album_file_renames_created 
+        ON album_file_renames(created_at DESC)
     """)
 
     conn.commit()

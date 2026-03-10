@@ -393,6 +393,87 @@ def trigger_navidrome_scan():
         return False
 
 
+def _add_queue_item_to_tracks_table(conn, cursor, is_pg, artist, title, album, album_artist,
+                                     track_number, year, duration, disc_number, release_mbid,
+                                     recording_mbid, queue_id, status):
+    """
+    Sync queue item to tracks table for consistent tracking across pages.
+    Similar to how Navidrome imports work - adds tracks immediately to main database.
+    
+    Uses a special file_path marker to indicate this is a queued download, not a completed track.
+    When the download completes, this record will be updated with the actual file_path.
+    """
+    try:
+        # Generate a unique track ID for this queue item
+        track_id = f"queue_{queue_id}"
+        
+        # Special marker for queued downloads
+        file_path_marker = f"__queued_for_download__queue_id_{queue_id}"
+        
+        placeholder = "%s" if is_pg else "?"
+        
+        # Use UPSERT pattern to avoid duplicates
+        if is_pg:
+            cursor.execute(f"""
+                INSERT INTO tracks (
+                    id, artist, album, title, album_artist, track_number, year,
+                    duration, disc_number, mbid, suggested_mbid, file_path,
+                    score, spotify_score, lastfm_score, listenbrainz_score, age_score,
+                    stars, is_single, single_confidence, last_scanned
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s,
+                    0, 0, 0, 0, 0,
+                    0, FALSE, 'unknown', CURRENT_TIMESTAMP
+                )
+                ON CONFLICT (id) DO UPDATE SET
+                    artist = EXCLUDED.artist,
+                    album = EXCLUDED.album,
+                    title = EXCLUDED.title,
+                    album_artist = EXCLUDED.album_artist,
+                    track_number = EXCLUDED.track_number,
+                    year = EXCLUDED.year,
+                    duration = EXCLUDED.duration,
+                    disc_number = EXCLUDED.disc_number,
+                    mbid = EXCLUDED.mbid,
+                    suggested_mbid = EXCLUDED.suggested_mbid,
+                    file_path = EXCLUDED.file_path,
+                    last_scanned = CURRENT_TIMESTAMP
+            """, (
+                track_id, artist, album, title, album_artist or artist, track_number, year,
+                duration, disc_number, recording_mbid, release_mbid, file_path_marker
+            ))
+        else:
+            cursor.execute(f"""
+                INSERT OR REPLACE INTO tracks (
+                    id, artist, album, title, album_artist, track_number, year,
+                    duration, disc_number, mbid, suggested_mbid, file_path,
+                    score, spotify_score, lastfm_score, listenbrainz_score, age_score,
+                    stars, is_single, single_confidence, last_scanned
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?,
+                    0, 0, 0, 0, 0,
+                    0, 0, 'unknown', datetime('now')
+                )
+            """, (
+                track_id, artist, album, title, album_artist or artist, track_number, year,
+                duration, disc_number, recording_mbid, release_mbid, file_path_marker
+            ))
+        
+        conn.commit()
+        logger.debug(f"Synced queue item {queue_id} to tracks table as {track_id}")
+        
+    except Exception as e:
+        # Import might not exist yet, or tracks table might be missing columns
+        # Non-fatal error - queue still works without this
+        logger.debug(f"Could not sync queue item to tracks table: {e}")
+        try:
+            conn.rollback()
+        except:
+            pass
+
+
 def add_to_queue(artist, title, album=None, source='soulseek', priority=5, import_group=None, import_type='song',
                  track_number=None, album_artist=None, year=None, release_id=None, release_source=None,
                  duration=None, disc_number=None, release_mbid=None, recording_mbid=None, status=None,
@@ -453,20 +534,17 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         search_query = f"{artist} - {title}"
         
         # Duplicate detection: Check for existing entry with same artist + album + title
-        is_duplicate = False
-        duplicate_of_id = None
-        auto_delete_at = None
-        initial_status = status if status else 'queued'
+        # If duplicate exists, return the existing entry instead of inserting
         
         if album:  # Only check duplicates if album is provided
             duplicate_check_query = """
-                SELECT id, status FROM download_queue
+                SELECT * FROM download_queue
                 WHERE LOWER(artist) = LOWER(?) AND LOWER(album) = LOWER(?) AND LOWER(title) = LOWER(?)
                 AND status NOT IN ('completed', 'deleted')
                 ORDER BY created_at ASC
                 LIMIT 1
             """ if not is_pg else """
-                SELECT id, status FROM download_queue
+                SELECT * FROM download_queue
                 WHERE LOWER(artist) = LOWER(%s) AND LOWER(album) = LOWER(%s) AND LOWER(title) = LOWER(%s)
                 AND status NOT IN ('completed', 'deleted')
                 ORDER BY created_at ASC
@@ -477,13 +555,43 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
             existing = cursor.fetchone()
             
             if existing:
-                is_duplicate = True
-                duplicate_of_id = existing[0] if isinstance(existing, tuple) else existing.get('id')
-                # Set auto-delete for 24 hours from now
-                from datetime import datetime, timedelta
-                auto_delete_at = (datetime.now() + timedelta(hours=24)).isoformat()
-                initial_status = 'duplicate'
-                logger.info(f"Duplicate detected: {artist} - {title} (duplicate of ID {duplicate_of_id})")
+                existing_id = existing[0] if isinstance(existing, tuple) else existing.get('id')
+                logger.info(f"Duplicate skipped: {artist} - {title} already in queue (ID {existing_id})")
+                conn.close()
+                return dict(existing) if hasattr(existing, 'keys') else None
+        
+        # If no album provided, check by artist + title only
+        elif not album:
+            duplicate_check_query = """
+                SELECT * FROM download_queue
+                WHERE LOWER(artist) = LOWER(?) AND LOWER(title) = LOWER(?)
+                AND album IS NULL
+                AND status NOT IN ('completed', 'deleted')
+                ORDER BY created_at ASC
+                LIMIT 1
+            """ if not is_pg else """
+                SELECT * FROM download_queue
+                WHERE LOWER(artist) = LOWER(%s) AND LOWER(title) = LOWER(%s)
+                AND album IS NULL
+                AND status NOT IN ('completed', 'deleted')
+                ORDER BY created_at ASC
+                LIMIT 1
+            """
+            
+            cursor.execute(duplicate_check_query, (artist, title))
+            existing = cursor.fetchone()
+            
+            if existing:
+                existing_id = existing[0] if isinstance(existing, tuple) else existing.get('id')
+                logger.info(f"Duplicate skipped: {artist} - {title} already in queue (ID {existing_id})")
+                conn.close()
+                return dict(existing) if hasattr(existing, 'keys') else None
+        
+        # No duplicate found, proceed with insertion
+        is_duplicate = False
+        duplicate_of_id = None
+        auto_delete_at = None
+        initial_status = status if status else 'queued'
         
         # Collection matching: Check if track already exists in Navidrome collection
         in_collection = False
@@ -538,12 +646,10 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                     (artist, title, album, search_query, source, status, priority, file_path, import_group, import_type, 
                      track_number, album_artist, year, release_id, release_source,
                      duration, disc_number, release_mbid, recording_mbid, release_year, matched_file_path,
-                     is_duplicate, duplicate_of_id, duplicate_detected_at, auto_delete_at,
                      in_collection, collection_track_id, collection_matched_at,
                      created_at, updated_at)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, %s, %s, %s, %s,
                             %s, %s, %s, %s, %s, %s,
-                            %s, %s, %s, %s,
                             %s, %s, %s,
                             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     RETURNING id
@@ -551,8 +657,6 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                     (artist, title, album, search_query, source, initial_status, priority, import_group, import_type,
                      track_number, album_artist, year, release_id, release_source,
                      duration, disc_number, release_mbid, recording_mbid, release_year, matched_file_path,
-                     1 if is_duplicate else 0, duplicate_of_id, 
-                     datetime.now().isoformat() if is_duplicate else None, auto_delete_at,
                      1 if in_collection else 0, collection_track_id,
                      datetime.now().isoformat() if in_collection else None),
                 )
@@ -571,20 +675,16 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                     (artist, title, album, search_query, source, status, priority, file_path, import_group, import_type, 
                      track_number, album_artist, year, release_id, release_source,
                      duration, disc_number, release_mbid, recording_mbid, release_year, matched_file_path,
-                     is_duplicate, duplicate_of_id, duplicate_detected_at, auto_delete_at,
                      in_collection, collection_track_id, collection_matched_at,
                      created_at, updated_at)
                     VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, NULL, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder},
                             {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder},
-                            {placeholder}, {placeholder}, {placeholder}, {placeholder},
                             {placeholder}, {placeholder}, {placeholder},
                             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """,
                     (artist, title, album, search_query, source, initial_status, priority, import_group, import_type,
                      track_number, album_artist, year, release_id, release_source,
                      duration, disc_number, release_mbid, recording_mbid, release_year, matched_file_path,
-                     1 if is_duplicate else 0, duplicate_of_id,
-                     datetime.now().isoformat() if is_duplicate else None, auto_delete_at,
                      1 if in_collection else 0, collection_track_id,
                      datetime.now().isoformat() if in_collection else None),
                     context="add_to_queue insert",
@@ -595,6 +695,28 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                 queue_id = cursor.lastrowid
             
             logger.info(f"Added to queue: {search_query} (ID: {queue_id}, source: {source}, status: {initial_status})")
+            
+            # Also add/update in tracks table for consistent tracking across pages
+            # Similar to how Navidrome imports work
+            try:
+                _add_queue_item_to_tracks_table(
+                    conn, cursor, is_pg,
+                    artist=artist,
+                    title=title,
+                    album=album,
+                    album_artist=album_artist,
+                    track_number=track_number,
+                    year=year,
+                    duration=duration,
+                    disc_number=disc_number,
+                    release_mbid=release_mbid,
+                    recording_mbid=recording_mbid,
+                    queue_id=queue_id,
+                    status=initial_status
+                )
+            except Exception as e_tracks:
+                # Non-fatal - queue still created successfully
+                logger.warning(f"Failed to sync queue item to tracks table: {e_tracks}")
             
             # Return the item
             if is_pg:

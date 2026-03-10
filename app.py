@@ -18909,7 +18909,7 @@ def accept_navidrome_data():
 
 @app.route("/api/metadata-compare/apply-musicbrainz", methods=["POST"])
 def apply_musicbrainz_data():
-    """Apply MusicBrainz data to an album"""
+    """Apply MusicBrainz data to an album - both DB and files"""
     try:
         data = request.json or {}
         album = data.get("album", "")
@@ -18921,27 +18921,76 @@ def apply_musicbrainz_data():
         
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         
         # Update tracks with MusicBrainz data
-        cursor.execute("""
-            UPDATE tracks 
-            SET 
-                year = ?,
-                musicbrainz_genres = ?
-            WHERE artist = ? AND album = ?
-        """, (
-            mb_data.get("year"),
-            ",".join(mb_data.get("genres", [])),
-            artist,
-            album
-        ))
+        if is_pg:
+            cursor.execute("""
+                UPDATE tracks 
+                SET 
+                    year = %s,
+                    musicbrainz_genres = %s
+                WHERE artist = %s AND album = %s
+                RETURNING id
+            """, (
+                mb_data.get("year"),
+                ",".join(mb_data.get("genres", [])),
+                artist,
+                album
+            ))
+        else:
+            cursor.execute("""
+                UPDATE tracks 
+                SET 
+                    year = ?,
+                    musicbrainz_genres = ?
+                WHERE artist = ? AND album = ?
+            """, (
+                mb_data.get("year"),
+                ",".join(mb_data.get("genres", [])),
+                artist,
+                album
+            ))
+        
+        # Get IDs of updated tracks for file sync
+        if is_pg:
+            updated_ids = [row[0] for row in cursor.fetchall()]
+        else:
+            cursor.execute("SELECT id FROM tracks WHERE artist = ? AND album = ?", (artist, album))
+            updated_ids = [row[0] for row in cursor.fetchall()]
         
         conn.commit()
+        
+        # Sync tags to files
+        synced_count = 0
+        failed_count = 0
+        if updated_ids:
+            from helpers.tag_manager import sync_track_tags_to_file
+            for track_id in updated_ids:
+                try:
+                    if sync_track_tags_to_file(track_id):
+                        synced_count += 1
+                    else:
+                        failed_count += 1
+                except Exception as e:
+                    logging.warning(f"Failed to sync tags for track {track_id}: {e}")
+                    failed_count += 1
+        
         conn.close()
+        
+        message = f"Applied MusicBrainz data to {artist} - {album} ({len(updated_ids)} tracks)"
+        if synced_count > 0:
+            message += f". Synced {synced_count} files"
+        if failed_count > 0:
+            message += f", {failed_count} sync failures"
         
         return jsonify({
             "success": True,
-            "message": f"Applied MusicBrainz data to {artist} - {album}"
+            "message": message,
+            "tracks_updated": len(updated_ids),
+            "files_synced": synced_count,
+            "sync_failures": failed_count
         })
     except Exception as e:
         logging.error(f"Error applying MusicBrainz data: {str(e)}")
