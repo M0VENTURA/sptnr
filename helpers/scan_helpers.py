@@ -434,7 +434,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "spotify_album_type": "",
                     "spotify_total_tracks": 0,
                     "spotify_id": None,
-                    "is_spotify_single": False,
+                    "is_spotify_single": 0,
                     "is_single": False,
                     "single_confidence": "low",
                     "single_sources": json.dumps([]),  # Serialize as JSON string

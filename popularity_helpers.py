@@ -804,6 +804,10 @@ def fetch_album_tracks(album_id):
         raise RuntimeError("NavidromeClient not available - check your configuration")
     return nav_client.fetch_album_tracks(album_id)
 
+# Columns stored as PostgreSQL BOOLEAN type (accept Python True/False directly).
+# All other boolean-like fields use INTEGER/BIGINT and require int conversion.
+_PG_BOOLEAN_COLUMNS = {'is_single'}
+
 def save_to_db(track_data):
     """
     Save or update a track in the database.
@@ -827,12 +831,17 @@ def save_to_db(track_data):
     if track_data.get('genres'):
         logging.debug(f"[GENRE] Saving track '{track_data.get('title')}' with genres: '{track_data.get('genres')}'")
     
-    # Convert any list values to comma-separated strings for SQLite compatibility
+    # Convert any list values to comma-separated strings for SQLite compatibility.
+    # For PostgreSQL, also convert Python booleans to integers for non-BOOLEAN columns
+    # to avoid "column is of type bigint but expression is of type boolean" errors.
     sanitized_data = {}
     for key, value in track_data.items():
         if isinstance(value, list):
             # Convert list to comma-separated string
             sanitized_data[key] = ', '.join(str(v) for v in value) if value else ''
+        elif is_pg and isinstance(value, bool) and key not in _PG_BOOLEAN_COLUMNS:
+            # PostgreSQL INTEGER/BIGINT columns reject Python bool; convert to int
+            sanitized_data[key] = int(value)
         else:
             sanitized_data[key] = value
 
