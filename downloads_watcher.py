@@ -58,19 +58,25 @@ def resolve_downloads_dir():
 
 DOWNLOADS_DIR = resolve_downloads_dir()
 MUSIC_DIR = os.environ.get("MUSIC_ROOT", "/music")
-DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
+
 
 def get_db():
-    """Get database connection (PostgreSQL if configured, else SQLite).
-    Uses app's get_db() if available for consistency across the application."""
+    """Get PostgreSQL database connection."""
     try:
         from app import get_db as app_get_db
         return app_get_db()
     except ImportError:
-        # Fallback if app module not available
-        conn = sqlite3.connect(DB_PATH, timeout=30.0)
-        conn.row_factory = sqlite3.Row
+        # Direct PostgreSQL connection if app not available
+        conn = psycopg2.connect(
+            host=os.environ.get("PG_HOST", "sptnr-postgres"),
+            user=os.environ.get("PG_USER", "sptnr"),
+            password=os.environ.get("PG_PASSWORD", ""),
+            dbname=os.environ.get("PG_DATABASE", "sptnr"),
+            port=int(os.environ.get("PG_PORT", "5432")),
+            connect_timeout=10,
+        )
         return conn
+
 
 def _is_postgres_connection(conn):
     """Check if connection is PostgreSQL."""
@@ -78,7 +84,7 @@ def _is_postgres_connection(conn):
         from app import _is_postgres_connection as app_is_postgres_connection
         return app_is_postgres_connection(conn)
     except ImportError:
-        return False
+        return True  # Default to PostgreSQL since this is now PostgreSQL-only
 
 def sanitize_filename(filename):
     """Remove/replace invalid filename characters"""
@@ -177,24 +183,14 @@ def track_exists_in_library(artist, album, title):
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
         
-        if is_pg:
-            cursor.execute("""
-                SELECT id FROM tracks 
-                WHERE LOWER(COALESCE(album_artist, artist)) = LOWER(%s) 
-                AND LOWER(album) = LOWER(%s)
-                AND LOWER(title) = LOWER(%s)
-                LIMIT 1
-            """, (artist.strip(), album.strip(), title.strip()))
-        else:
-            cursor.execute("""
-                SELECT id FROM tracks 
-                WHERE LOWER(COALESCE(album_artist, artist)) = LOWER(?) 
-                AND LOWER(album) = LOWER(?)
-                AND LOWER(title) = LOWER(?)
-                LIMIT 1
-            """, (artist.strip(), album.strip(), title.strip()))
+        cursor.execute("""
+            SELECT id FROM tracks 
+            WHERE LOWER(COALESCE(album_artist, artist)) = LOWER(%s) 
+            AND LOWER(album) = LOWER(%s)
+            AND LOWER(title) = LOWER(%s)
+            LIMIT 1
+        """, (artist.strip(), album.strip(), title.strip()))
         
         exists = cursor.fetchone() is not None
         conn.close()
@@ -208,7 +204,6 @@ def queue_incomplete_download(file_path, metadata):
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
         
         artist = metadata.get('artist', 'Unknown')
         album = metadata.get('album', 'Unknown')
@@ -217,49 +212,30 @@ def queue_incomplete_download(file_path, metadata):
         # Check if already exists in library
         exists_in_library = 1 if track_exists_in_library(artist, album, title) else 0
         
-        # Use database-agnostic INSERT OR REPLACE approach
-        if is_pg:
-            cursor.execute("""
-                INSERT INTO download_queue (
-                    file_path, found_filename, artist, album, title, duration,
-                    status, created_at, updated_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                ON CONFLICT(file_path) DO UPDATE SET
-                    found_filename = EXCLUDED.found_filename,
-                    artist = EXCLUDED.artist,
-                    album = EXCLUDED.album,
-                    title = EXCLUDED.title,
-                    duration = EXCLUDED.duration,
-                    status = EXCLUDED.status,
-                    updated_at = CURRENT_TIMESTAMP
-            """, (
-                file_path,
-                os.path.basename(file_path),
-                artist,
-                album,
-                title,
-                metadata.get('duration', 0),
-                'discovered' if exists_in_library else 'discovered'
-            ))
-            conn.commit()
-        else:
-            cursor.execute("""
-                INSERT OR REPLACE INTO download_queue (
-                    file_path, found_filename, artist, album, title, duration,
-                    status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                file_path,
-                os.path.basename(file_path),
-                artist,
-                album,
-                title,
-                metadata.get('duration', 0),
-                'discovered' if exists_in_library else 'discovered',
-                datetime.now().isoformat(),
-                datetime.now().isoformat()
-            ))
-            conn.commit()
+        # Use PostgreSQL upsert
+        cursor.execute("""
+            INSERT INTO download_queue (
+                file_path, found_filename, artist, album, title, duration,
+                status, created_at, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT(file_path) DO UPDATE SET
+                found_filename = EXCLUDED.found_filename,
+                artist = EXCLUDED.artist,
+                album = EXCLUDED.album,
+                title = EXCLUDED.title,
+                duration = EXCLUDED.duration,
+                status = EXCLUDED.status,
+                updated_at = CURRENT_TIMESTAMP
+        """, (
+            file_path,
+            os.path.basename(file_path),
+            artist,
+            album,
+            title,
+            metadata.get('duration', 0),
+            'discovered' if exists_in_library else 'discovered'
+        ))
+        conn.commit()
         
         conn.close()
         logger.info(f"Queued incomplete download: {artist} - {title} (exists_in_library: {exists_in_library})")
@@ -276,46 +252,25 @@ def get_download_queue(status=None, limit=50):
     try:
         conn = get_db()
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        is_pg = _is_postgres_connection(conn)
         
         if status:
-            if is_pg:
-                cursor.execute("""
-                    SELECT * FROM download_queue 
-                    WHERE status = %s
-                    ORDER BY created_at DESC
-                    LIMIT %s
-                """, (status, limit))
-            else:
-                cursor.execute("""
-                    SELECT * FROM download_queue 
-                    WHERE status = ?
-                    ORDER BY created_at DESC
-                    LIMIT ?
-                """, (status, limit))
+            cursor.execute("""
+                SELECT * FROM download_queue 
+                WHERE status = %s
+                ORDER BY created_at DESC
+                LIMIT %s
+            """, (status, limit))
         else:
-            if is_pg:
-                cursor.execute("""
-                    SELECT * FROM download_queue 
-                    ORDER BY
-                        CASE
-                            WHEN status IN ('queued', 'searching', 'downloading') THEN 0
-                            ELSE 1
-                        END,
-                        created_at DESC
-                    LIMIT %s
-                """, (limit,))
-            else:
-                cursor.execute("""
-                    SELECT * FROM download_queue 
-                    ORDER BY
-                        CASE
-                            WHEN status IN ('queued', 'searching', 'downloading') THEN 0
-                            ELSE 1
-                        END,
-                        created_at DESC
-                    LIMIT ?
-                """, (limit,))
+            cursor.execute("""
+                SELECT * FROM download_queue 
+                ORDER BY
+                    CASE
+                        WHEN status IN ('queued', 'searching', 'downloading') THEN 0
+                        ELSE 1
+                    END,
+                    created_at DESC
+                LIMIT %s
+            """, (limit,))
         
         rows = cursor.fetchall()
         conn.close()
@@ -332,28 +287,17 @@ def get_retry_queue(limit=50):
         from datetime import datetime as dt, timedelta
         conn = get_db()
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        is_pg = _is_postgres_connection(conn)
         
         now = dt.now().isoformat()
         
-        if is_pg:
-            cursor.execute("""
-                SELECT * FROM download_queue 
-                WHERE status = 'incomplete'
-                AND (next_retry_at IS NULL OR next_retry_at <= %s)
-                AND retry_count < max_retries
-                ORDER BY next_retry_at ASC, created_at ASC
-                LIMIT %s
-            """, (now, limit))
-        else:
-            cursor.execute("""
-                SELECT * FROM download_queue 
-                WHERE status = 'incomplete'
-                AND (next_retry_at IS NULL OR next_retry_at <= ?)
-                AND retry_count < max_retries
-                ORDER BY next_retry_at ASC, created_at ASC
-                LIMIT ?
-            """, (now, limit))
+        cursor.execute("""
+            SELECT * FROM download_queue 
+            WHERE status = 'incomplete'
+            AND (next_retry_at IS NULL OR next_retry_at <= %s)
+            AND retry_count < max_retries
+            ORDER BY next_retry_at ASC, created_at ASC
+            LIMIT %s
+        """, (now, limit))
         
         rows = cursor.fetchall()
         conn.close()
@@ -457,44 +401,25 @@ def mark_download_as_failed(file_path, failure_reason):
         from datetime import datetime as dt, timedelta
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
         
         next_retry = (dt.now() + timedelta(minutes=10)).isoformat()  # Retry in 10 minutes
         
-        if is_pg:
-            cursor.execute("""
-                UPDATE download_queue 
-                SET status = 'incomplete',
-                    retry_count = retry_count + 1,
-                    failure_reason = %s,
-                    last_retry_at = %s,
-                    next_retry_at = %s,
-                    updated_at = %s
-                WHERE file_path = %s
-            """, (
-                failure_reason,
-                dt.now().isoformat(),
-                next_retry,
-                dt.now().isoformat(),
-                file_path
-            ))
-        else:
-            cursor.execute("""
-                UPDATE download_queue 
-                SET status = 'incomplete',
-                    retry_count = retry_count + 1,
-                    failure_reason = ?,
-                    last_retry_at = ?,
-                    next_retry_at = ?,
-                    updated_at = ?
-                WHERE file_path = ?
-            """, (
-                failure_reason,
-                dt.now().isoformat(),
-                next_retry,
-                dt.now().isoformat(),
-                file_path
-            ))
+        cursor.execute("""
+            UPDATE download_queue 
+            SET status = 'incomplete',
+                retry_count = retry_count + 1,
+                failure_reason = %s,
+                last_retry_at = %s,
+                next_retry_at = %s,
+                updated_at = %s
+            WHERE file_path = %s
+        """, (
+            failure_reason,
+            dt.now().isoformat(),
+            next_retry,
+            dt.now().isoformat(),
+            file_path
+        ))
         
         conn.commit()
         conn.close()
@@ -509,16 +434,10 @@ def mark_download_as_successful(file_path):
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
         
-        if is_pg:
-            cursor.execute("""
-                DELETE FROM download_queue WHERE file_path = %s
-            """, (file_path,))
-        else:
-            cursor.execute("""
-                DELETE FROM download_queue WHERE file_path = ?
-            """, (file_path,))
+        cursor.execute("""
+            DELETE FROM download_queue WHERE file_path = %s
+        """, (file_path,))
         
         conn.commit()
         conn.close()
@@ -533,22 +452,13 @@ def mark_download_exists_in_library(file_path):
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
         
-        if is_pg:
-            cursor.execute("""
-                UPDATE download_queue 
-                SET status = 'discovered',
-                    updated_at = %s
-                WHERE file_path = %s
-            """, (datetime.now().isoformat(), file_path))
-        else:
-            cursor.execute("""
-                UPDATE download_queue 
-                SET status = 'discovered',
-                    updated_at = ?
-                WHERE file_path = ?
-            """, (datetime.now().isoformat(), file_path))
+        cursor.execute("""
+            UPDATE download_queue 
+            SET status = 'discovered',
+                updated_at = %s
+            WHERE file_path = %s
+        """, (datetime.now().isoformat(), file_path))
         
         conn.commit()
         conn.close()
@@ -566,7 +476,6 @@ def add_to_database(file_info, metadata, source_file_path=None):
         
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
         
         # Generate track ID from path
         track_id = os.path.basename(file_info['target_path']).replace('.mp3', '')
@@ -576,66 +485,40 @@ def add_to_database(file_info, metadata, source_file_path=None):
         if isinstance(genres, list):
             genres = ', '.join(genres)
         
-        # Insert/update track with database-agnostic approach
-        if is_pg:
-            cursor.execute("""
-                INSERT INTO tracks (
-                    id, artist, album, title, genres, file_path, last_scanned
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT(id) DO UPDATE SET
-                    artist = EXCLUDED.artist,
-                    album = EXCLUDED.album,
-                    title = EXCLUDED.title,
-                    genres = EXCLUDED.genres,
-                    file_path = EXCLUDED.file_path,
-                    last_scanned = EXCLUDED.last_scanned
-            """, (
-                track_id,
-                file_info['artist'],
-                file_info['album'],
-                file_info['title'],
-                genres,
-                file_info['target_path'],
-                datetime.now().isoformat()
-            ))
-        else:
-            cursor.execute("""
-                INSERT OR REPLACE INTO tracks (
-                    id, artist, album, title, genres, file_path, last_scanned
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                track_id,
-                file_info['artist'],
-                file_info['album'],
-                file_info['title'],
-                genres,
-                file_info['target_path'],
-                datetime.now().isoformat()
-            ))
+        # Insert/update track using PostgreSQL upsert
+        cursor.execute("""
+            INSERT INTO tracks (
+                id, artist, album, title, genres, file_path, last_scanned
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT(id) DO UPDATE SET
+                artist = EXCLUDED.artist,
+                album = EXCLUDED.album,
+                title = EXCLUDED.title,
+                genres = EXCLUDED.genres,
+                file_path = EXCLUDED.file_path,
+                last_scanned = EXCLUDED.last_scanned
+        """, (
+            track_id,
+            file_info['artist'],
+            file_info['album'],
+            file_info['title'],
+            genres,
+            file_info['target_path'],
+            datetime.now().isoformat()
+        ))
         
         # If we know the original queue file path, bring over MBIDs from queue metadata.
         if source_file_path:
             try:
-                if is_pg:
-                    cursor.execute(
-                        """
-                        SELECT release_mbid, recording_mbid
-                        FROM download_queue
-                        WHERE file_path = %s
-                        LIMIT 1
-                        """,
-                        (source_file_path,),
-                    )
-                else:
-                    cursor.execute(
-                        """
-                        SELECT release_mbid, recording_mbid
-                        FROM download_queue
-                        WHERE file_path = ?
-                        LIMIT 1
-                        """,
-                        (source_file_path,),
-                    )
+                cursor.execute(
+                    """
+                    SELECT release_mbid, recording_mbid
+                    FROM download_queue
+                    WHERE file_path = %s
+                    LIMIT 1
+                    """,
+                    (source_file_path,),
+                )
 
                 queue_row = cursor.fetchone()
                 if queue_row:
@@ -643,42 +526,23 @@ def add_to_database(file_info, metadata, source_file_path=None):
                     recording_mbid = queue_row['recording_mbid'] if isinstance(queue_row, dict) else queue_row[1]
 
                     # Store recording MBID and album MBID on the track row so tag sync can write them.
-                    if is_pg:
-                        cursor.execute(
-                            """
-                            UPDATE tracks
-                            SET mbid = %s,
-                                suggested_mbid = %s,
-                                musicbrainz_album_mbid = %s,
-                                last_scanned = %s
-                            WHERE id = %s
-                            """,
-                            (
-                                recording_mbid or None,
-                                release_mbid or None,
-                                release_mbid or None,
-                                datetime.now().isoformat(),
-                                track_id,
-                            ),
-                        )
-                    else:
-                        cursor.execute(
-                            """
-                            UPDATE tracks
-                            SET mbid = ?,
-                                suggested_mbid = ?,
-                                musicbrainz_album_mbid = ?,
-                                last_scanned = ?
-                            WHERE id = ?
-                            """,
-                            (
-                                recording_mbid or None,
-                                release_mbid or None,
-                                release_mbid or None,
-                                datetime.now().isoformat(),
-                                track_id,
-                            ),
-                        )
+                    cursor.execute(
+                        """
+                        UPDATE tracks
+                        SET mbid = %s,
+                            suggested_mbid = %s,
+                            musicbrainz_album_mbid = %s,
+                            last_scanned = %s
+                        WHERE id = %s
+                        """,
+                        (
+                            recording_mbid or None,
+                            release_mbid or None,
+                            release_mbid or None,
+                            datetime.now().isoformat(),
+                            track_id,
+                        ),
+                    )
             except Exception as e:
                 logger.warning(f"Could not transfer queue MBIDs for {track_id}: {e}")
 
