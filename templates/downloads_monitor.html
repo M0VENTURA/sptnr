@@ -1392,35 +1392,60 @@ async function loadFolderGroups(options = {}) {
       is_musicbrainz_release: release.release_source === 'musicbrainz'
     }));
     
-    // Create pseudo-groups from individual queue items
-    const individualQueueGroups = individualItems.map((item, idx) => ({
-      folder_path: `__queue_item_${item.id}__`,
-      folder_name: `[Queue] ${item.artist || 'Unknown'} - ${(item.album || item.title || 'Unknown')}`,
-      artist: item.artist || '',
-      album: item.album || '',
-      track_count: 1,
-      is_queue_item: true,
-      queue_item_id: item.id,
-      queue_item_status: item.status,
-      tracks: [{
-        id: item.id,
-        status: item.status,
-        source: item.source || 'soulseek',
-        title: item.title || '',
-        artist: item.artist || '',
-        album: item.album || '',
-        filename: item.found_filename || item.title || '',
-        file_path: item.file_path || item.matched_file_path || '',
-        matched_file_path: item.matched_file_path || '',
-        track_number: item.track_number,
-        duration: item.duration || 0,
-        release_mbid: item.release_mbid || item.release_id || '',
-        release_year: item.release_year || item.year || ''
-      }],
-      release_id: item.release_mbid || item.release_id || null,
-      release_source: item.release_source || null,
-      is_musicbrainz_release: false
-    }));
+    // Group individual queue items by artist+album so tracks from the same album
+    // are combined into one entry instead of showing as separate "Possible Duplicate" rows.
+    const individualAlbumGroups = {};
+    individualItems.forEach(item => {
+      const artist = (item.artist || '').trim();
+      const album = (item.album || '').trim();
+      // Only merge items that share both an artist and an album; otherwise keep solo
+      const groupKey = (artist && album)
+        ? `${artist.toLowerCase()}|||${album.toLowerCase()}`
+        : `__solo_${item.id}`;
+      if (!individualAlbumGroups[groupKey]) {
+        individualAlbumGroups[groupKey] = { artist: item.artist || '', album: item.album || '', items: [] };
+      }
+      individualAlbumGroups[groupKey].items.push(item);
+    });
+
+    // Create pseudo-groups from grouped individual queue items
+    const individualQueueGroups = Object.entries(individualAlbumGroups).map(([, albumGroup]) => {
+      const firstItem = albumGroup.items[0];
+      const isMulti = albumGroup.items.length > 1;
+      // For multi-track groups use the minimum item ID as a stable, unique key
+      const minId = isMulti ? Math.min(...albumGroup.items.map(i => i.id)) : firstItem.id;
+      const groupPath = isMulti
+        ? `__album_group_${minId}__`
+        : `__queue_item_${firstItem.id}__`;
+      return {
+        folder_path: groupPath,
+        folder_name: `[Queue] ${albumGroup.artist || 'Unknown'} - ${(albumGroup.album || firstItem.title || 'Unknown')}`,
+        artist: albumGroup.artist,
+        album: albumGroup.album,
+        track_count: albumGroup.items.length,
+        is_queue_item: true,
+        queue_item_id: isMulti ? null : firstItem.id,
+        queue_item_status: firstItem.status,
+        tracks: albumGroup.items.map(item => ({
+          id: item.id,
+          status: item.status,
+          source: item.source || 'soulseek',
+          title: item.title || '',
+          artist: item.artist || '',
+          album: item.album || '',
+          filename: item.found_filename || item.title || '',
+          file_path: item.file_path || item.matched_file_path || '',
+          matched_file_path: item.matched_file_path || '',
+          track_number: item.track_number,
+          duration: item.duration || 0,
+          release_mbid: item.release_mbid || item.release_id || '',
+          release_year: item.release_year || item.year || ''
+        })),
+        release_id: isMulti ? null : (firstItem.release_mbid || firstItem.release_id || null),
+        release_source: isMulti ? null : (firstItem.release_source || null),
+        is_musicbrainz_release: false
+      };
+    });
     
     // Combine release groups and individual queue items into a single list.
     const queueGroups = [...releaseQueueGroups, ...individualQueueGroups];
