@@ -287,13 +287,13 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
             # Get existing tracks and check for missing fields
             cursor.execute(f"SELECT album, id, {', '.join(critical_fields)} FROM tracks WHERE artist = {placeholder}", (canonical_artist_name,))
             for row in cursor.fetchall():
-                alb_name = row[0]
-                tid = row[1]
+                alb_name = row['album']
+                tid = row['id']
                 existing_track_ids.add(tid)
                 existing_album_tracks.setdefault(alb_name, set()).add(tid)
 
                 # Check if any critical field is missing (NULL or empty)
-                field_values = row[2:]
+                field_values = [row[f] for f in critical_fields]
                 if any(val is None or val == '' or val == 0 for val in field_values):
                     albums_needing_reimport.add(alb_name)
                     # Only log once per album to avoid duplicate messages
@@ -665,6 +665,8 @@ def fetch_artist_metadata(artist_name: str, verbose: bool = False):
         
         # Check if artist metadata already exists
         conn = get_db_connection()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         cursor = conn.cursor()
         
         # Create artist_metadata table if it doesn't exist
@@ -679,10 +681,10 @@ def fetch_artist_metadata(artist_name: str, verbose: bool = False):
         logging.debug(f"DB: Ensured artist_metadata table exists")
         
         # Check for existing metadata
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT biography, image_url 
             FROM artist_metadata 
-            WHERE artist_name = ?
+            WHERE artist_name = {placeholder}
         """, (artist_name,))
         logging.debug(f"DB Query: SELECT biography, image_url FROM artist_metadata WHERE artist_name = '{artist_name}'")
         existing_row = cursor.fetchone()
@@ -696,19 +698,19 @@ def fetch_artist_metadata(artist_name: str, verbose: bool = False):
         existing_image = ""
         
         if existing_row and not force:
-            existing_bio = existing_row[0] or ""
-            existing_image = existing_row[1] or ""
+            existing_bio = existing_row['biography'] or ""
+            existing_image = existing_row['image_url'] or ""
             
             # Only fetch if missing
             fetch_bio = not existing_bio
             fetch_image = not existing_image
         
         # Check if country needs to be fetched (from artists table, not artist_metadata)
-        cursor.execute("""
-            SELECT country FROM artists WHERE name = ?
+        cursor.execute(f"""
+            SELECT country FROM artists WHERE name = {placeholder}
         """, (artist_name,))
         country_row = cursor.fetchone()
-        existing_country = (country_row[0] if country_row else None) or ""
+        existing_country = (country_row['country'] if country_row else None) or ""
         
         if not force:
             fetch_country = not existing_country
@@ -947,12 +949,14 @@ def get_database_library_stats() -> dict:
         cursor = conn.cursor()
         
         # Count distinct albums
-        cursor.execute("SELECT COUNT(DISTINCT album) FROM tracks WHERE album IS NOT NULL AND album != ''")
-        total_albums = cursor.fetchone()[0] or 0
+        cursor.execute("SELECT COUNT(DISTINCT album) AS cnt FROM tracks WHERE album IS NOT NULL AND album != ''")
+        row = cursor.fetchone()
+        total_albums = (row['cnt'] if row else 0) or 0
         
         # Count total songs/tracks
-        cursor.execute("SELECT COUNT(*) FROM tracks")
-        total_tracks = cursor.fetchone()[0] or 0
+        cursor.execute("SELECT COUNT(*) AS cnt FROM tracks")
+        row = cursor.fetchone()
+        total_tracks = (row['cnt'] if row else 0) or 0
         
         conn.close()
         
@@ -1070,7 +1074,7 @@ def scan_library_to_db(verbose: bool = False, force: bool = False, pre_sync_arti
         cursor = conn.cursor()
         cursor.execute("SELECT id FROM tracks")
         log_debug("DB Query: SELECT id FROM tracks")
-        existing_track_ids = {row[0] for row in cursor.fetchall()}
+        existing_track_ids = {row['id'] for row in cursor.fetchall()}
         log_debug(f"Found {len(existing_track_ids)} existing tracks in database")
         conn.close()
     except Exception as e:
@@ -1083,7 +1087,7 @@ def scan_library_to_db(verbose: bool = False, force: bool = False, pre_sync_arti
         cursor = conn.cursor()
         cursor.execute("SELECT artist, COUNT(*) as track_count FROM tracks GROUP BY artist")
         log_debug("DB Query: SELECT artist, COUNT(*) as track_count FROM tracks GROUP BY artist")
-        db_artists = {row[0]: row[1] for row in cursor.fetchall() if row[0]}
+        db_artists = {row['artist']: row['track_count'] for row in cursor.fetchall() if row['artist']}
         log_debug(f"Found {len(db_artists)} artists in database with track counts")
         conn.close()
     except Exception as e:
