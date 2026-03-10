@@ -7,7 +7,7 @@ them into /Music with proper directory structure.
 
 import os
 import shutil
-import sqlite3
+import psycopg2.extras
 import json
 import time
 import yaml
@@ -275,7 +275,7 @@ def get_download_queue(status=None, limit=50):
     """Get files from download queue"""
     try:
         conn = get_db()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         is_pg = _is_postgres_connection(conn)
         
         if status:
@@ -320,7 +320,8 @@ def get_download_queue(status=None, limit=50):
         rows = cursor.fetchall()
         conn.close()
         
-        return [dict(row) for row in rows]
+        # RealDictCursor already returns dict-like rows
+        return list(rows)
     except Exception as e:
         logger.error(f"Error getting download queue: {e}")
         return []
@@ -330,7 +331,7 @@ def get_retry_queue(limit=50):
     try:
         from datetime import datetime as dt, timedelta
         conn = get_db()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         is_pg = _is_postgres_connection(conn)
         
         now = dt.now().isoformat()
@@ -357,7 +358,8 @@ def get_retry_queue(limit=50):
         rows = cursor.fetchall()
         conn.close()
         
-        return [dict(row) for row in rows]
+        # RealDictCursor already returns dict-like rows
+        return list(rows)
     except Exception as e:
         logger.error(f"Error getting retry queue: {e}")
         return []
