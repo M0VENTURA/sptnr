@@ -313,7 +313,7 @@ class CoverDetector:
         
         # Check if writer is a band member
         band_members = self._get_band_members(artist)
-            if band_members:
+        if band_members:
             for member in band_members:
                 member_norm = member.lower().strip()
                 if member_norm == writer_norm:
