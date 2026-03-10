@@ -1681,6 +1681,7 @@ def check_downloads_folder():
             WHERE status IN ('queued', 'searching', 'downloading')
             ORDER BY created_at ASC
         """)
+        queue_items = cursor.fetchall()
         
         # Recursively get all audio files in downloads folder and subdirectories
         downloads_files = []
@@ -1920,7 +1921,7 @@ def auto_discover_and_queue_files():
     stats = {
         'scanned': 0,
         'queued': 0,
-            'year': year,
+        'already_in_queue': 0,
         'already_in_library': 0,
         'errors': []
     }
