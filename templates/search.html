@@ -322,7 +322,7 @@
                   <div class="result-subtitle"><i class="bi bi-person"></i> ${escapeHtml(album.artist)}</div>
                   <div class="result-meta">
                     <i class="bi bi-music-note"></i> ${album.track_count} track${album.track_count !== 1 ? 's' : ''}
-                    ${album.avg_stars ? `<br><span class="result-rating">★ ${album.avg_stars.toFixed(1)}</span>` : ''}
+                    ${album.avg_stars && !isNaN(parseFloat(album.avg_stars)) ? `<br><span class="result-rating">★ ${parseFloat(album.avg_stars).toFixed(1)}</span>` : ''}
                   </div>
                 </div>
               </div>
