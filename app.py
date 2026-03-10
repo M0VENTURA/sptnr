@@ -1098,8 +1098,84 @@ retry_scheduler = {
 }
 retry_scheduler_lock = threading.Lock()
 
+# Download queue cleanup scheduler management
+download_queue_cleanup_scheduler = {
+    "thread": None,
+    "running": False,
+    "stop_event": None
+}
+download_queue_cleanup_scheduler_lock = threading.Lock()
+
 # Optional auto-import toggle placeholder (will be set after config functions are defined)
 AUTO_BOOT_ND_IMPORT = None
+
+
+def _start_download_queue_cleanup_scheduler():
+    """Start background scheduler for download queue cleanup based on config settings."""
+    global download_queue_cleanup_scheduler
+
+    with download_queue_cleanup_scheduler_lock:
+        existing_thread = download_queue_cleanup_scheduler.get("thread")
+        if existing_thread and hasattr(existing_thread, "is_alive") and existing_thread.is_alive():
+            download_queue_cleanup_scheduler["running"] = True
+            return
+
+        stop_event = threading.Event()
+        download_queue_cleanup_scheduler["stop_event"] = stop_event
+
+        def cleanup_worker():
+            try:
+                import time as time_module
+                from download_monitor_enhancements import cleanup_download_queue
+
+                # Let app startup settle before first cleanup cycle.
+                time_module.sleep(10)
+
+                while not stop_event.is_set():
+                    try:
+                        cfg = get_config() or {}
+                        features_cfg = cfg.get("features", {}) if isinstance(cfg, dict) else {}
+                        cleanup_cfg = features_cfg.get("download_queue_cleanup_scheduler", {}) if isinstance(features_cfg, dict) else {}
+
+                        enabled = bool(cleanup_cfg.get("enabled", True))
+                        interval_minutes = int(cleanup_cfg.get("interval_minutes", 60))
+                        if interval_minutes < 5:
+                            interval_minutes = 5
+
+                        interval_seconds = interval_minutes * 60
+
+                        if enabled:
+                            stats = cleanup_download_queue()
+                            if isinstance(stats, dict) and not stats.get("error"):
+                                removed = int(stats.get("deleted_duplicates", 0)) + int(stats.get("deleted_album_tracks", 0))
+                                if removed > 0:
+                                    logging.info(
+                                        "[QUEUE_CLEANUP_SCHEDULER] Removed %s duplicate/finished queue items (albums=%s)",
+                                        removed,
+                                        stats.get("completed_albums", 0),
+                                    )
+                        else:
+                            logging.debug("[QUEUE_CLEANUP_SCHEDULER] Disabled via config")
+
+                        if stop_event.wait(timeout=interval_seconds):
+                            break
+                    except Exception as loop_err:
+                        logging.error(f"[QUEUE_CLEANUP_SCHEDULER] Worker loop error: {loop_err}")
+                        if stop_event.wait(timeout=60):
+                            break
+
+                logging.info("[QUEUE_CLEANUP_SCHEDULER] Stopped")
+            except Exception as worker_err:
+                logging.error(f"[QUEUE_CLEANUP_SCHEDULER] Fatal worker error: {worker_err}")
+            finally:
+                with download_queue_cleanup_scheduler_lock:
+                    download_queue_cleanup_scheduler["running"] = False
+
+        thread = threading.Thread(target=cleanup_worker, daemon=True, name="queue-cleanup-scheduler")
+        thread.start()
+        download_queue_cleanup_scheduler["thread"] = thread
+        download_queue_cleanup_scheduler["running"] = True
+        logging.info("[QUEUE_CLEANUP_SCHEDULER] Started")
 
 
 def _write_progress_file(path: str, scan_type: str, is_running: bool, extra: dict | None = None):
@@ -8619,6 +8695,7 @@ def config_editor():
 
     # Ensure nested structures used by config.html are also dicts.
     config['features']['retry_scheduler'] = _as_dict(config['features'].get('retry_scheduler'))
+    config['features']['download_queue_cleanup_scheduler'] = _as_dict(config['features'].get('download_queue_cleanup_scheduler'))
 
     # Keep navidrome_users predictable for setup checks and template iteration.
     config['navidrome_users'] = _as_list_of_dicts(config.get('navidrome_users'))
@@ -8695,6 +8772,7 @@ def config_save_json():
 
         features = _as_dict(data.get('features', {}))
         features['retry_scheduler'] = _as_dict(features.get('retry_scheduler'))
+        features['download_queue_cleanup_scheduler'] = _as_dict(features.get('download_queue_cleanup_scheduler'))
 
         config_dict = {
             'navidrome_users': navidrome_users,
@@ -21335,6 +21413,12 @@ if __name__ == "__main__":
             retry_scheduler["running"] = True
     except Exception as e:
         logging.warning(f"Could not start Download Retry Manager: {e}")
+
+    # Start automatic queue cleanup scheduler (duplicates + fully completed album groups)
+    try:
+        _start_download_queue_cleanup_scheduler()
+    except Exception as e:
+        logging.warning(f"Could not start Download Queue Cleanup Scheduler: {e}")
 
     # Start persistent auto-discovery watcher so queue updates even when UI is closed.
     try:

@@ -311,6 +311,24 @@
           </div>
         </div>
       </div>
+
+      <hr class="my-4">
+      <h6 class="mb-3"><i class="bi bi-broom"></i> Queue Cleanup Scheduler</h6>
+      <p class="text-muted small">Automatically removes duplicate queue rows older than 24 hours and clears album groups once all tracks are Completed or In Collection.</p>
+      <div class="row g-3">
+        <div class="col-12 col-md-6">
+          <label class="form-label">Cleanup Interval (minutes)</label>
+          <input type="number" class="form-control" id="queue_cleanup_scheduler_interval_minutes" placeholder="60" value="{{ config.get('features', {}).get('download_queue_cleanup_scheduler', {}).get('interval_minutes', 60) }}" min="5" max="10080">
+          <div class="form-text">How often automatic cleanup runs (5 to 10080 minutes)</div>
+        </div>
+        <div class="col-12 col-md-6 d-flex align-items-end">
+          <div class="form-check form-switch mb-2">
+            <input class="form-check-input" type="checkbox" id="queue_cleanup_scheduler_enabled" {% if config.get('features', {}).get('download_queue_cleanup_scheduler', {}).get('enabled', True) %}checked{% endif %}>
+            <label class="form-check-label" for="queue_cleanup_scheduler_enabled"><strong>Enable Auto Queue Cleanup</strong></label>
+            <small class="d-block text-muted">Starts automatically with the app and follows the configured interval</small>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -546,42 +564,6 @@
               </select>
               <small class="form-text text-muted">Spotify radio edit indicator</small>
             </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Strip Parentheses Filters Section -->
-  <div class="card shadow-sm mb-3" id="strip-parentheses">
-    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
-      <h5 class="mb-0"><i class="bi bi-funnel"></i> Strip Parentheses Filters</h5>
-      <small class="text-muted">Keywords inside parentheses that are stripped from track titles before popularity and single-detection API lookups. Add or remove entries to control which version tags are ignored.</small>
-    </div>
-    <div class="card-body">
-      <div class="row g-3">
-        <div class="col-12">
-          <small class="text-muted d-block mb-2">
-            Each entry is a keyword or phrase. When a track title contains a parenthetical
-            group that includes one of these keywords (e.g. <code>(Live)</code>, <code>(Radio Edit)</code>),
-            that group is removed before the title is sent to Last.fm, Spotify, MusicBrainz,
-            or Discogs. Removing a filter from this list means that version tag will
-            <em>not</em> be stripped.
-          </small>
-          <div id="stripParenthesesFilters" class="mb-2">
-            {% set current_filters = config.get('strip_parentheses_filters', ['live','demo','acoustic','remix','radio edit','single version','album version','remaster','remastered','cover','instrumental','unplugged','edit']) %}
-            {% for f in current_filters %}
-            <span class="badge bg-secondary me-1 mb-1 strip-filter-badge" data-value="{{ f }}">
-              {{ f }}
-              <button type="button" class="btn-close btn-close-white btn-sm ms-1" aria-label="Remove" onclick="removeStripFilter(this)" style="font-size:0.6em;vertical-align:middle;"></button>
-            </span>
-            {% endfor %}
-          </div>
-          <div class="input-group input-group-sm" style="max-width:320px;">
-            <input type="text" id="newStripFilter" class="form-control form-control-sm" placeholder="e.g. bonus track" aria-label="New filter">
-            <button class="btn btn-outline-primary btn-sm" type="button" onclick="addStripFilter()">
-              <i class="bi bi-plus"></i> Add
-            </button>
           </div>
         </div>
       </div>
@@ -1018,6 +1000,10 @@ function buildConfigObject() {
         interval_seconds: parseInt(getValue('retry_scheduler_interval', '60')) || 60,
         auto_start: getChecked('retry_scheduler_enabled', true)
       },
+      download_queue_cleanup_scheduler: {
+        enabled: getChecked('queue_cleanup_scheduler_enabled', true),
+        interval_minutes: parseInt(getValue('queue_cleanup_scheduler_interval_minutes', '60')) || 60
+      },
       source_discogs_confidence: getValue('source_discogs_confidence', 'high'),
       source_spotify_confidence: getValue('source_spotify_confidence', 'medium'),
       source_musicbrainz_confidence: getValue('source_musicbrainz_confidence', 'medium'),
@@ -1273,47 +1259,6 @@ function updateUserTitle(displayNameInput) {
   const displayName = displayNameInput.value.trim() || 'New User';
   displayValue.textContent = displayName;
 }
-
-// --- Strip Parentheses Filters ---
-function addStripFilter() {
-  const input = document.getElementById('newStripFilter');
-  const value = (input.value || '').trim().toLowerCase();
-  if (!value) return;
-
-  // Check for duplicates
-  const existing = Array.from(
-    document.querySelectorAll('#stripParenthesesFilters .strip-filter-badge[data-value]')
-  ).map(el => el.getAttribute('data-value'));
-  if (existing.includes(value)) {
-    input.value = '';
-    return;
-  }
-
-  const container = document.getElementById('stripParenthesesFilters');
-  const badge = document.createElement('span');
-  badge.className = 'badge bg-secondary me-1 mb-1 strip-filter-badge';
-  badge.setAttribute('data-value', value);
-  badge.innerHTML = `${value} <button type="button" class="btn-close btn-close-white btn-sm ms-1" aria-label="Remove" onclick="removeStripFilter(this)" style="font-size:0.6em;vertical-align:middle;"></button>`;
-  container.appendChild(badge);
-  input.value = '';
-}
-
-function removeStripFilter(btn) {
-  btn.closest('.strip-filter-badge').remove();
-}
-
-// Allow pressing Enter to add a strip filter
-document.addEventListener('DOMContentLoaded', function () {
-  const input = document.getElementById('newStripFilter');
-  if (input) {
-    input.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        addStripFilter();
-      }
-    });
-  }
-});
 
 // --- Features & Weights Editing ---
 function renderFeaturesWeights(features, weights) {
