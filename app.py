@@ -8900,18 +8900,28 @@ def logs_view():
 def bookmarks():
     """View all bookmarks (favourites)"""
     try:
-        filter_type = request.args.get('filter', None)
+        filter_type = (request.args.get('filter', '') or '').strip().lower() or None
         
         conn = get_db()
         cursor = conn.cursor()
         
-        if filter_type:
-            cursor.execute("""
-                SELECT id, type, name, artist, album, track_id, created_at
-                FROM bookmarks
-                WHERE type = ?
-                ORDER BY created_at DESC
-            """, (filter_type,))
+        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+
+        if filter_type in ("artist", "album", "track"):
+            if filter_type == "artist":
+                cursor.execute(f"""
+                    SELECT id, type, name, artist, album, track_id, created_at
+                    FROM bookmarks
+                    WHERE type IN ({placeholder}, {placeholder})
+                    ORDER BY created_at DESC
+                """, ("artist", "artist_favourite"))
+            else:
+                cursor.execute(f"""
+                    SELECT id, type, name, artist, album, track_id, created_at
+                    FROM bookmarks
+                    WHERE type = {placeholder}
+                    ORDER BY created_at DESC
+                """, (filter_type,))
         else:
             cursor.execute("""
                 SELECT id, type, name, artist, album, track_id, created_at
@@ -8921,9 +8931,11 @@ def bookmarks():
         
         bookmarks_data = []
         for row in cursor.fetchall():
+            raw_type = row[1]
+            normalized_type = "artist" if raw_type == "artist_favourite" else raw_type
             bookmarks_data.append({
                 'id': row[0],
-                'type': row[1],
+                'type': normalized_type,
                 'name': row[2],
                 'artist': row[3],
                 'album': row[4],

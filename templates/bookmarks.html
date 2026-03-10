@@ -27,6 +27,18 @@
     {% endif %}
   </div>
 
+  <div class="card mb-3">
+    <div class="card-body py-2">
+      <div class="d-flex flex-wrap gap-2 align-items-center">
+        <span class="text-muted small">Filter:</span>
+        <a href="{{ url_for('bookmarks') }}" class="btn btn-sm {% if not filter_type %}btn-primary{% else %}btn-outline-primary{% endif %}">All</a>
+        <a href="{{ url_for('bookmarks', filter='artist') }}" class="btn btn-sm {% if filter_type == 'artist' %}btn-primary{% else %}btn-outline-primary{% endif %}">Artists</a>
+        <a href="{{ url_for('bookmarks', filter='album') }}" class="btn btn-sm {% if filter_type == 'album' %}btn-primary{% else %}btn-outline-primary{% endif %}">Albums</a>
+        <a href="{{ url_for('bookmarks', filter='track') }}" class="btn btn-sm {% if filter_type == 'track' %}btn-primary{% else %}btn-outline-primary{% endif %}">Tracks</a>
+      </div>
+    </div>
+  </div>
+
   {% if bookmarks and bookmarks|length > 0 %}
     <!-- Artists Bookmarks -->
     {% set artist_bookmarks = bookmarks | selectattr('type', 'equalto', 'artist') | list %}
