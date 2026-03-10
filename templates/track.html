@@ -161,8 +161,34 @@
                         </div>
 
                         <div class="mb-3">
+                            <label for="composer" class="form-label">Composer</label>
+                            <input type="text" class="form-control" id="composer" name="composer" value="{{ track.composer or '' }}" placeholder="e.g., Ludwig van Beethoven">
+                        </div>
+
+                        <div class="mb-3">
                             <label for="writer" class="form-label">Writer/Lyricist</label>
                             <input type="text" class="form-control" id="writer" name="writer" value="{{ track.writer or '' }}" placeholder="e.g., John Lennon, Paul McCartney">
+                        </div>
+
+                        <div class="row g-2">
+                            <div class="col-6">
+                                <label for="arranger" class="form-label">Arranger</label>
+                                <input type="text" class="form-control" id="arranger" name="arranger" value="{{ track.arranger or '' }}" placeholder="Arranger name">
+                            </div>
+                            <div class="col-6">
+                                <label for="mixer" class="form-label">Mixer</label>
+                                <input type="text" class="form-control" id="mixer" name="mixer" value="{{ track.mixer or '' }}" placeholder="Engineer/Mixer">
+                            </div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="producer" class="form-label">Producer</label>
+                            <input type="text" class="form-control" id="producer" name="producer" value="{{ track.producer or '' }}" placeholder="e.g., Rick Rubin">
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="work" class="form-label">Work/Composition</label>
+                            <input type="text" class="form-control" id="work" name="work" value="{{ track.work or '' }}" placeholder="e.g., Symphony No. 5">
                         </div>
 
                         <div class="row g-2">
@@ -210,7 +236,42 @@
                             </select>
                         </div>
 
-                        <div class="mb-3">
+                        <div class="mb-3 form-check">
+                            <input type="checkbox" class="form-check-input" id="is_cover" name="is_cover" {% if track.is_cover == 1 %}checked{% endif %}>
+                            <label class="form-check-label" for="is_cover">
+                                <i class="bi bi-shuffle"></i> Is Cover Version
+                            </label>
+                        </div>
+
+                        <div class="mb-3 form-check">
+                            <input type="checkbox" class="form-check-input" id="alternate_take" name="alternate_take" {% if track.alternate_take == 1 %}checked{% endif %}>
+                            <label class="form-check-label" for="alternate_take">
+                                <i class="bi bi-arrow-repeat"></i> Alternate Take/Version
+                            </label>
+                        </div>
+
+                        <div class="mb-3 form-check">
+                            <input type="checkbox" class="form-check-input" id="is_compilation" name="is_compilation" {% if track.is_compilation == 1 %}checked{% endif %}>
+                            <label class="form-check-label" for="is_compilation">
+                                <i class="bi bi-collection"></i> From Compilation
+                            </label>
+                        </div>
+
+                        <hr class="my-4">
+
+                        <h6 class="text-muted mb-3">Technical Details</h6>
+                        <div class="row">
+                            <div class="col-6">
+                                <label for="bpm" class="form-label">BPM</label>
+                                <input type="number" class="form-control" id="bpm" name="bpm" value="{{ track.bpm or '' }}" placeholder="120" min="0" max="300">
+                            </div>
+                            <div class="col-6">
+                                <label for="isrc" class="form-label">ISRC</label>
+                                <input type="text" class="form-control" id="isrc" name="isrc" value="{{ track.isrc or '' }}" placeholder="USRC17607839" maxlength="12">
+                            </div>
+                        </div>
+
+                        <div class="mb-3 mt-3">
                             <label for="comment" class="form-label">Comment</label>
                             <textarea class="form-control" id="comment" name="comment" rows="2" placeholder="Add notes or comments">{{ track.comment or '' }}</textarea>
                         </div>
@@ -469,6 +530,153 @@
                             <div class="metadata-value monospace" style="font-size: 0.7rem;">{{ track.isrc }}</div>
                         </div>
                         {% endif %}
+                    </div>
+                </div>
+
+                <!-- Credits & Additional Metadata -->
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-people-fill"></i> Credits & Metadata
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-2">
+                            {% if track.composer %}
+                            <div class="col-6">
+                                <div class="metadata-row">
+                                    <div class="metadata-label small">Composer</div>
+                                    <div class="metadata-value small">{{ track.composer }}</div>
+                                </div>
+                            </div>
+                            {% endif %}
+                            {% if track.writer %}
+                            <div class="col-6">
+                                <div class="metadata-row">
+                                    <div class="metadata-label small">Writer</div>
+                                    <div class="metadata-value small">{{ track.writer }}</div>
+                                </div>
+                            </div>
+                            {% endif %}
+                            {% if track.arranger %}
+                            <div class="col-6">
+                                <div class="metadata-row">
+                                    <div class="metadata-label small">Arranger</div>
+                                    <div class="metadata-value small">{{ track.arranger }}</div>
+                                </div>
+                            </div>
+                            {% endif %}
+                            {% if track.mixer %}
+                            <div class="col-6">
+                                <div class="metadata-row">
+                                    <div class="metadata-label small">Mixer</div>
+                                    <div class="metadata-value small">{{ track.mixer }}</div>
+                                </div>
+                            </div>
+                            {% endif %}
+                            {% if track.producer %}
+                            <div class="col-6">
+                                <div class="metadata-row">
+                                    <div class="metadata-label small">Producer</div>
+                                    <div class="metadata-value small">{{ track.producer }}</div>
+                                </div>
+                            </div>
+                            {% endif %}
+                            {% if track.work %}
+                            <div class="col-6">
+                                <div class="metadata-row">
+                                    <div class="metadata-label small">Work</div>
+                                    <div class="metadata-value small">{{ track.work }}</div>
+                                </div>
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+
+                <!-- External Identifiers -->
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-link-45deg"></i> External Identifiers
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-2" style="font-size: 0.85rem;">
+                            {% if track.spotify_id %}
+                            <div class="col-6">
+                                <div class="metadata-row">
+                                    <div class="metadata-label small">Spotify ID</div>
+                                    <div class="metadata-value monospace" style="font-size: 0.7rem; word-break: break-all;">{{ track.spotify_id[:16] }}...</div>
+                                </div>
+                            </div>
+                            {% endif %}
+                            {% if track.spotify_album_id %}
+                            <div class="col-6">
+                                <div class="metadata-row">
+                                    <div class="metadata-label small">Spotify Album</div>
+                                    <div class="metadata-value monospace" style="font-size: 0.7rem; word-break: break-all;">{{ track.spotify_album_id[:16] }}...</div>
+                                </div>
+                            </div>
+                            {% endif %}
+                            {% if track.discogs_artist_id %}
+                            <div class="col-6">
+                                <div class="metadata-row">
+                                    <div class="metadata-label small">Discogs Artist</div>
+                                    <div class="metadata-value small">{{ track.discogs_artist_id }}</div>
+                                </div>
+                            </div>
+                            {% endif %}
+                            {% if track.discogs_release_id %}
+                            <div class="col-6">
+                                <div class="metadata-row">
+                                    <div class="metadata-label small">Discogs Release</div>
+                                    <div class="metadata-value small">{{ track.discogs_release_id }}</div>
+                                </div>
+                            </div>
+                            {% endif %}
+                            {% if track.lastfm_artist_mbid %}
+                            <div class="col-6">
+                                <div class="metadata-row">
+                                    <div class="metadata-label small">Last.fm MBID</div>
+                                    <div class="metadata-value monospace" style="font-size: 0.7rem; word-break: break-all;">{{ track.lastfm_artist_mbid[:16] }}...</div>
+                                </div>
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Additional Tags & Info -->
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-tag-fill"></i> Flags & Context
+                        </h5>
+                    </div>
+                    <div class="card-body" style="font-size: 0.85rem;">
+                        <div class="row g-2">
+                            {% if track.is_cover == 1 %}
+                            <div class="col-6">
+                                <span class="badge bg-info"><i class="bi bi-file-earmark-music"></i> Is Cover</span>
+                            </div>
+                            {% endif %}
+                            {% if track.alternate_take == 1 %}
+                            <div class="col-6">
+                                <span class="badge bg-secondary"><i class="bi bi-diagram-2"></i> Alternate Take</span>
+                            </div>
+                            {% endif %}
+                            {% if track.is_compilation == 1 %}
+                            <div class="col-6">
+                                <span class="badge bg-warning text-dark"><i class="bi bi-collection"></i> Compilation Track</span>
+                            </div>
+                            {% endif %}
+                            {% if track.is_standout_track == 1 %}
+                            <div class="col-6">
+                                <span class="badge bg-success"><i class="bi bi-star-fill"></i> Standout</span>
+                            </div>
+                            {% endif %}
+                        </div>
                     </div>
                 </div>
 

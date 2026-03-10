@@ -8234,51 +8234,70 @@ def track_edit(track_id):
     """Update track metadata and write to audio file"""
     conn = get_db()
     cursor = conn.cursor()
-    is_pg = _is_postgres_connection(conn)
-    placeholder = "%s" if is_pg else "?"
     
     # Get form data - ensure all string fields have defaults to avoid None when calling .strip()
     title = request.form.get("title", "").strip() or None
     artist = request.form.get("artist", "").strip() or None
     album = request.form.get("album", "").strip() or None
+    album_artist = request.form.get("album_artist", "").strip() or None
     stars = request.form.get("stars", type=int)
-    if request.form.get("is_single") == "on":
-        is_single = True if is_pg else 1
-    else:
-        is_single = False if is_pg else 0
+    is_single = 1 if request.form.get("is_single") == "on" else 0
     single_confidence = request.form.get("single_confidence", "low")
     mbid = request.form.get("mbid", "").strip() or None
     suggested_mbid = request.form.get("suggested_mbid", "").strip() or None
     suggested_mbid_confidence = request.form.get("suggested_mbid_confidence", type=float)
     
-    # New MP3 metadata fields
+    # All MP3 metadata fields
     genres = request.form.get("genres", "").strip() or None
     year = request.form.get("year", "").strip() or None
-    album_artist = request.form.get("album_artist", "").strip() or None
     composer = request.form.get("composer", "").strip() or None
     writer = request.form.get("writer", "").strip() or None
+    arranger = request.form.get("arranger", "").strip() or None
+    mixer = request.form.get("mixer", "").strip() or None
+    producer = request.form.get("producer", "").strip() or None
+    work = request.form.get("work", "").strip() or None
     track_number = request.form.get("track_number", "").strip() or None
     disc_number = request.form.get("disc_number", type=int) or None
     comment = request.form.get("comment", "").strip() or None
+    isrc = request.form.get("isrc", "").strip() or None
+    bpm = request.form.get("bpm", type=int) or None
+    bitrate = request.form.get("bitrate", type=int) or None
+    sample_rate = request.form.get("sample_rate", type=int) or None
+    
+    # Flags
+    is_cover = 1 if request.form.get("is_cover") == "on" else 0
+    alternate_take = 1 if request.form.get("alternate_take") == "on" else 0
+    is_compilation = 1 if request.form.get("is_compilation") == "on" else 0
     
     # First, get the file path from database
-    cursor.execute(f"SELECT file_path FROM tracks WHERE id = {placeholder}", (track_id,))
+    cursor.execute("SELECT file_path FROM tracks WHERE id = %s", (track_id,))
     file_result = cursor.fetchone()
     file_path = file_result["file_path"] if file_result else None
     
-    # Update database
+    # Update database with PostgreSQL syntax
     file_write_success = False
     try:
-        cursor.execute(f"""
+        cursor.execute("""
             UPDATE tracks
-            SET title = {placeholder}, artist = {placeholder}, album = {placeholder}, stars = {placeholder}, is_single = {placeholder}, single_confidence = {placeholder},
-                mbid = {placeholder}, suggested_mbid = {placeholder}, suggested_mbid_confidence = {placeholder},
-                                genres = {placeholder}, year = {placeholder}, album_artist = {placeholder}, composer = {placeholder}, writer = {placeholder},
-                                track_number = {placeholder}, disc_number = {placeholder}, comment = {placeholder}, single_manual_override = 1
-            WHERE id = {placeholder}
-        """, (title, artist, album, stars, is_single, single_confidence, mbid, suggested_mbid, 
-                            suggested_mbid_confidence, genres, year, album_artist, composer, writer,
-              track_number, disc_number, comment, track_id))
+            SET title = %s, artist = %s, album = %s, album_artist = %s, stars = %s, 
+                is_single = %s, single_confidence = %s,
+                mbid = %s, suggested_mbid = %s, suggested_mbid_confidence = %s,
+                genres = %s, year = %s, composer = %s, writer = %s, 
+                arranger = %s, mixer = %s, producer = %s, work = %s,
+                track_number = %s, disc_number = %s, comment = %s, isrc = %s,
+                bpm = %s, bitrate = %s, sample_rate = %s,
+                is_cover = %s, alternate_take = %s, is_compilation = %s,
+                single_manual_override = 1
+            WHERE id = %s
+        """, (title, artist, album, album_artist, stars, 
+              is_single, single_confidence,
+              mbid, suggested_mbid, suggested_mbid_confidence,
+              genres, year, composer, writer, 
+              arranger, mixer, producer, work,
+              track_number, disc_number, comment, isrc,
+              bpm, bitrate, sample_rate,
+              is_cover, alternate_take, is_compilation,
+              track_id))
         
         conn.commit()
         
@@ -8305,14 +8324,26 @@ def track_edit(track_id):
                     tags_to_write["composer"] = composer
                 if writer:
                     tags_to_write["writer"] = writer
+                if arranger:
+                    tags_to_write["arranger"] = arranger
+                if mixer:
+                    tags_to_write["mixer"] = mixer
+                if producer:
+                    tags_to_write["producer"] = producer
+                if work:
+                    tags_to_write["work"] = work
                 if track_number:
-                    tags_to_write["track_number"] = int(track_number) if track_number.isdigit() else track_number
+                    tags_to_write["track_number"] = int(track_number.split("/")[0]) if "/" in str(track_number) else (int(track_number) if str(track_number).isdigit() else track_number)
                 if disc_number:
                     tags_to_write["disc_number"] = disc_number
                 if comment:
                     tags_to_write["comment"] = comment
                 if mbid:
                     tags_to_write["mbid"] = mbid
+                if isrc:
+                    tags_to_write["isrc"] = isrc
+                if bpm:
+                    tags_to_write["bpm"] = bpm
                 
                 # Write to file
                 file_write_success = write_tags_to_file(file_path, tags_to_write)
@@ -20880,17 +20911,29 @@ def api_track_update_metadata():
         "title": "new title (optional)",
         "artist": "new artist (optional)",
         "album": "new album (optional)",
+        "album_artist": "(optional)",
+        "composer": "(optional)",
+        "writer": "(optional)",
+        "arranger": "(optional)",
+        "mixer": "(optional)",
+        "producer": "(optional)",
+        "work": "(optional)",
         "genres": "new genres separated by backslash (optional)",
         "stars": 0-5 (optional),
         "is_single": 0 or 1 (optional),
-        "single_confidence": "low|medium|high" (optional),
+        "single_confidence": "low|medium|high" (optional)",
         "year": "YYYY (optional)",
-        "album_artist": "(optional)",
-        "composer": "(optional)",
         "track_number": "(optional)",
         "disc_number": "(optional)",
         "comment": "(optional)",
-        "mbid": "(optional)"
+        "mbid": "(optional)",
+        "isrc": "(optional)",
+        "bpm": (optional)",
+        "bitrate": (optional)",
+        "sample_rate": (optional)",
+        "is_cover": 0 or 1 (optional)",
+        "alternate_take": 0 or 1 (optional)",
+        "is_compilation": 0 or 1 (optional)"
     }
     """
     conn = None
@@ -20905,46 +20948,33 @@ def api_track_update_metadata():
         conn = get_db()
         cursor = conn.cursor()
         
-        # Build database update with provided fields
+        # Build database update with provided fields - use PostgreSQL format
         db_updates = {}
-        if 'title' in data and data['title'] is not None:
-            db_updates['title'] = data['title'].strip()
-        if 'artist' in data and data['artist'] is not None:
-            db_updates['artist'] = data['artist'].strip()
-        if 'album' in data and data['album'] is not None:
-            db_updates['album'] = data['album'].strip()
-        if 'genres' in data and data['genres'] is not None:
-            db_updates['genres'] = data['genres'].strip()
-        if 'stars' in data:
-            db_updates['stars'] = int(data['stars']) if data['stars'] else 0
-        if 'is_single' in data:
-            db_updates['is_single'] = bool(data['is_single'])
-        if 'single_confidence' in data and data['single_confidence'] is not None:
-            db_updates['single_confidence'] = data['single_confidence'].strip()
-        if 'year' in data and data['year'] is not None:
-            db_updates['year'] = data['year'].strip() or None
-        if 'album_artist' in data and data['album_artist'] is not None:
-            db_updates['album_artist'] = data['album_artist'].strip() or None
-        if 'composer' in data and data['composer'] is not None:
-            db_updates['composer'] = data['composer'].strip() or None
-        if 'track_number' in data and data['track_number'] is not None:
-            db_updates['track_number'] = data['track_number'].strip() or None
-        if 'disc_number' in data:
-            db_updates['disc_number'] = int(data['disc_number']) if data['disc_number'] else None
-        if 'comment' in data and data['comment'] is not None:
-            db_updates['comment'] = data['comment'].strip() or None
-        if 'mbid' in data and data['mbid'] is not None:
-            db_updates['mbid'] = data['mbid'].strip() or None
+        optional_string_fields = ['title', 'artist', 'album', 'album_artist', 'genres', 'year', 
+                                   'composer', 'writer', 'arranger', 'mixer', 'producer', 'work',
+                                   'track_number', 'comment', 'mbid', 'isrc', 'single_confidence']
+        optional_int_fields = ['stars', 'disc_number', 'bpm', 'bitrate', 'sample_rate', 'is_single',
+                                'is_cover', 'alternate_take', 'is_compilation']
+        
+        for field in optional_string_fields:
+            if field in data and data[field] is not None:
+                db_updates[field] = data[field].strip() if isinstance(data[field], str) else data[field]
+        
+        for field in optional_int_fields:
+            if field in data and data[field] is not None:
+                try:
+                    db_updates[field] = int(data[field]) if data[field] else (1 if field.startswith('is_') else None)
+                except (ValueError, TypeError):
+                    pass
         
         if not db_updates:
             conn.close()
             return jsonify({"error": "At least one field required"}), 400
         
-        # Update database
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
-        set_clause = ", ".join([f"{k} = {placeholder}" for k in db_updates.keys()])
+        # Update database using PostgreSQL syntax
+        set_clause = ", ".join([f"{k} = %s" for k in db_updates.keys()])
         values = list(db_updates.values()) + [track_id]
-        cursor.execute(f"UPDATE tracks SET {set_clause} WHERE id = {placeholder}", values)
+        cursor.execute(f"UPDATE tracks SET {set_clause} WHERE id = %s", values)
         conn.commit()
         
         conn.close()
