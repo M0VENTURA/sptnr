@@ -411,68 +411,102 @@ class SlskdClient:
         
         return qualified
     
-    def get_active_downloads(self, timeout: Optional[int] = None) -> list[dict]:
+    # slskd transfer state constants (from slskd/src/web/src/lib/transfers.js)
+    # Active states
+    STATE_REQUESTED = "Requested"
+    STATE_QUEUED_REMOTELY = "Queued, Remotely"
+    STATE_QUEUED_LOCALLY = "Queued, Locally"
+    STATE_INITIALIZING = "Initializing"
+    STATE_IN_PROGRESS = "InProgress"
+    # Terminal states
+    STATE_SUCCEEDED = "Completed, Succeeded"
+    STATE_CANCELLED = "Completed, Cancelled"
+    STATE_TIMED_OUT = "Completed, TimedOut"
+    STATE_ERRORED = "Completed, Errored"
+    STATE_REJECTED = "Completed, Rejected"
+
+    # Sets for quick membership tests
+    ACTIVE_STATES = frozenset([STATE_REQUESTED, STATE_QUEUED_REMOTELY, STATE_QUEUED_LOCALLY, STATE_INITIALIZING, STATE_IN_PROGRESS])
+    FAILED_STATES = frozenset([STATE_CANCELLED, STATE_TIMED_OUT, STATE_ERRORED, STATE_REJECTED])
+
+    def _parse_transfers_response(self, raw: list) -> list[dict]:
         """
-        Get list of active downloads from slskd.
-        
-        Args:
-            timeout: Request timeout (uses default_timeout if not specified)
-            
-        Returns:
-            List of download dicts with progress information
+        Parse slskd GET /transfers/downloads response into a flat list of file dicts.
+
+        The API returns a nested structure:
+          [ { username, directories: [ { directory, files: [ { id, state, filename,
+              size, bytesTransferred, averageSpeed, localFilePath, ... } ] } ] } ]
+
+        Each returned dict includes a top-level 'username' and 'id' so callers can
+        use the correct cancel endpoint (DELETE /transfers/downloads/{username}/{id}).
         """
-        if not self.enabled:
-            return []
-        
-        timeout = timeout or self.default_timeout
-        
-        try:
-            # Query the transfers/downloads endpoint
-            url = f"{self.base_url}/transfers/downloads"
-            resp = self.session.get(url, headers=self.headers, timeout=timeout)
-            
-            if resp.status_code != 200:
-                logger.warning(f"Slskd downloads endpoint failed: {resp.status_code}")
-                return []
-            
-            raw_downloads = resp.json() or []
-            downloads = []
-            
-            for download in raw_downloads:
-                try:
-                    # Extract key fields from slskd response
-                    username = download.get("username", "Unknown")
-                    filename = download.get("filename", "Unknown")
-                    size = int(download.get("size", 0))
-                    bytes_transferred = int(download.get("bytesTransferred", 0))
-                    state = download.get("state", "Unknown")
-                    
-                    # Calculate progress percentage (0-100)
-                    progress = 0
-                    if size > 0:
-                        progress = min(100, round((bytes_transferred / size) * 100, 2))
-                    
-                    # Calculate average speed (bytes/sec)
-                    # slskd may provide averageSpeed or we can estimate it
-                    average_speed = int(download.get("averageSpeed", 0))
-                    
-                    downloads.append({
+        flat = []
+        for user_entry in (raw or []):
+            if not isinstance(user_entry, dict):
+                continue
+            username = user_entry.get("username", "Unknown")
+            for directory in user_entry.get("directories", []):
+                if not isinstance(directory, dict):
+                    continue
+                for f in directory.get("files", []):
+                    if not isinstance(f, dict):
+                        continue
+                    size = int(f.get("size", 0) or 0)
+                    bytes_transferred = int(f.get("bytesTransferred", 0) or 0)
+                    progress = min(100, round((bytes_transferred / size) * 100, 2)) if size else 0
+                    flat.append({
+                        "id": f.get("id", ""),
                         "username": username,
-                        "filename": filename,
+                        "filename": f.get("filename", ""),
                         "size": size,
                         "bytesTransferred": bytes_transferred,
                         "progress": progress,
-                        "state": state,
-                        "averageSpeed": average_speed,
+                        "state": f.get("state", ""),
+                        "averageSpeed": int(f.get("averageSpeed", 0) or 0),
+                        "localFilePath": f.get("localFilePath") or f.get("localPath") or "",
                     })
-                except Exception as e:
-                    logger.warning(f"Failed to parse slskd download entry: {e}")
-            
-            logger.debug(f"Slskd found {len(downloads)} active downloads")
+        return flat
+
+    def get_active_downloads(self, timeout: Optional[int] = None) -> list[dict]:
+        """
+        Get list of all downloads (active and completed) from slskd.
+
+        Returns a flat list of file dicts. Each dict includes 'id', 'username',
+        'filename', 'state', 'progress', 'localFilePath', etc. so callers can
+        distinguish active vs. completed transfers and cancel by the correct ID.
+        """
+        if not self.enabled:
+            return []
+
+        timeout = timeout or self.default_timeout
+
+        try:
+            url = f"{self.base_url}/transfers/downloads"
+            resp = self.session.get(url, headers=self.headers, timeout=timeout)
+
+            if resp.status_code != 200:
+                logger.warning(f"Slskd downloads endpoint failed: {resp.status_code}")
+                return []
+
+            downloads = self._parse_transfers_response(resp.json())
+            logger.debug(f"Slskd: {len(downloads)} download entries parsed")
             return downloads
         except Exception as e:
             logger.error(f"Slskd get active downloads failed: {e}")
             return []
+
+    def get_completed_transfers(self, timeout: Optional[int] = None) -> list[dict]:
+        """
+        Return only transfers in state 'Completed, Succeeded', each including
+        'localFilePath' — the on-disk path where slskd saved the file.
+
+        This is the preferred way to detect completed downloads without a
+        filesystem walk.
+        """
+        return [
+            t for t in self.get_active_downloads(timeout=timeout)
+            if t.get("state") == self.STATE_SUCCEEDED
+        ]
     
     def cancel_search(self, search_id: str, timeout: Optional[int] = None) -> bool:
         """
@@ -504,64 +538,101 @@ class SlskdClient:
             logger.error(f"Slskd cancel search failed for {search_id}: {e}")
             return False
     
-    def cancel_download(self, transfer_id: str, timeout: Optional[int] = None) -> bool:
+    def cancel_download(self, username: str, transfer_id: str, remove: bool = True, timeout: Optional[int] = None) -> bool:
         """
-        Cancel a specific download by transfer ID.
-        
+        Cancel (and optionally remove) a specific download.
+
         Args:
-            transfer_id: Transfer/download ID
+            username: Peer username the transfer belongs to
+            transfer_id: Transfer ID returned by the transfers API
+            remove: If True, also remove the transfer record from slskd's list
             timeout: Request timeout (uses default_timeout if not specified)
-            
+
         Returns:
             True if cancelled successfully
         """
         if not self.enabled:
             return False
-        
+
         timeout = timeout or self.default_timeout
-        
+
         try:
-            url = f"{self.base_url}/transfers/{transfer_id}"
+            url = (
+                f"{self.base_url}/transfers/downloads"
+                f"/{username}/{transfer_id}?remove={str(remove).lower()}"
+            )
             resp = self.session.delete(url, headers=self.headers, timeout=timeout)
-            
+
             if resp.status_code in [200, 204]:
-                logger.info(f"Slskd download {transfer_id} cancelled successfully")
+                logger.info(f"Slskd download {transfer_id} (user={username}) cancelled successfully")
                 return True
             else:
                 logger.warning(f"Slskd download cancel failed: {resp.status_code} - {resp.text[:200]}")
                 return False
         except Exception as e:
-            logger.error(f"Slskd cancel download failed for {transfer_id}: {e}")
+            logger.error(f"Slskd cancel download failed for {username}/{transfer_id}: {e}")
             return False
     
-    def get_transfer(self, transfer_id: str, timeout: Optional[int] = None) -> Optional[dict]:
+    def get_transfer(self, username: str, transfer_id: str, timeout: Optional[int] = None) -> Optional[dict]:
         """
-        Get details of a specific transfer by ID.
-        
+        Get details of a specific download transfer.
+
         Args:
-            transfer_id: Transfer/download ID
+            username: Peer username the transfer belongs to
+            transfer_id: Transfer ID returned by the transfers API
             timeout: Request timeout (uses default_timeout if not specified)
-            
+
         Returns:
-            Transfer details dict or None if not found
+            Transfer details dict (flat, with 'username' injected) or None
         """
         if not self.enabled:
             return None
-        
+
         timeout = timeout or self.default_timeout
-        
+
         try:
-            url = f"{self.base_url}/transfers/{transfer_id}"
+            url = f"{self.base_url}/transfers/downloads/{username}/{transfer_id}"
             resp = self.session.get(url, headers=self.headers, timeout=timeout)
-            
+
             if resp.status_code == 200:
-                return resp.json()
+                data = resp.json()
+                if isinstance(data, dict):
+                    data.setdefault("username", username)
+                return data
             else:
                 logger.debug(f"Slskd get transfer {transfer_id} failed: {resp.status_code}")
                 return None
         except Exception as e:
-            logger.error(f"Slskd get transfer failed for {transfer_id}: {e}")
+            logger.error(f"Slskd get transfer failed for {username}/{transfer_id}: {e}")
             return None
+
+    def clear_completed_downloads(self, timeout: Optional[int] = None) -> bool:
+        """
+        Remove all completed (terminal-state) download entries from slskd's list.
+
+        Uses: DELETE /transfers/downloads/all/completed
+
+        Returns:
+            True if the request succeeded
+        """
+        if not self.enabled:
+            return False
+
+        timeout = timeout or self.default_timeout
+
+        try:
+            url = f"{self.base_url}/transfers/downloads/all/completed"
+            resp = self.session.delete(url, headers=self.headers, timeout=timeout)
+
+            if resp.status_code in [200, 204]:
+                logger.info("Slskd: cleared all completed download entries")
+                return True
+            else:
+                logger.warning(f"Slskd clear completed failed: {resp.status_code} - {resp.text[:200]}")
+                return False
+        except Exception as e:
+            logger.error(f"Slskd clear completed downloads failed: {e}")
+            return False
 
 
 # Backward-compatible module functions
