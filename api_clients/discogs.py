@@ -1319,6 +1319,54 @@ class DiscogsClient:
             logger.error(f"Discogs artist biography lookup failed for '{artist}': {e}")
             return {}
 
+    def get_artist_biography_by_id(self, artist_id: str, timeout: tuple[int, int] | int = (5, 10)) -> dict:
+        """
+        Fetch artist biography/profile from Discogs API using a known artist ID.
+
+        Args:
+            artist_id: Discogs artist ID
+            timeout: Request timeout
+
+        Returns:
+            Dictionary with biography info including 'profile', 'real_name', 'urls', 'images'
+        """
+        if not self.enabled or not self.token or not artist_id:
+            logger.debug("Discogs artist biography by ID lookup skipped (disabled, token missing, or no artist_id).")
+            return {}
+
+        try:
+            _throttle_discogs()
+            artist_url = f"{self.base_url}/artists/{artist_id}"
+            artist_res = self.session.get(artist_url, headers=self.headers, timeout=timeout)
+            if artist_res.status_code == 429:
+                retry_after = int(artist_res.headers.get("Retry-After", 60))
+                time.sleep(retry_after)
+                _throttle_discogs()
+                artist_res = self.session.get(artist_url, headers=self.headers, timeout=timeout)
+            artist_res.raise_for_status()
+
+            artist_data = artist_res.json()
+            raw_profile = artist_data.get("profile", "")
+            cleaned_profile = clean_discogs_biography(raw_profile)
+
+            bio_info = {
+                "profile": cleaned_profile,
+                "real_name": artist_data.get("realname", ""),
+                "urls": artist_data.get("urls", []),
+                "images": artist_data.get("images", []),
+                "members": artist_data.get("members", []),
+                "name_variations": artist_data.get("namevariations", []),
+                "discogs_id": artist_data.get("id"),
+                "discogs_url": artist_data.get("uri", "")
+            }
+
+            logger.debug(f"Found Discogs biography for artist_id '{artist_id}': {len(bio_info.get('profile', ''))} chars")
+            return bio_info
+
+        except Exception as e:
+            logger.error(f"Discogs artist biography by ID lookup failed for '{artist_id}': {e}")
+            return {}
+
 
 # Backward-compatible module functions
 _discogs_client = None

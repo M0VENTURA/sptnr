@@ -3494,6 +3494,45 @@ def popularity_scan(
             
             # Fetch and update artist metadata (country, bio, image) for ALL artists
             # This is independent of Spotify lookup success and applies to all artists
+            def _get_discogs_bio_from_saved_artist_id() -> str:
+                """Fetch artist bio from Discogs using the saved discogs_artist_id when available."""
+                try:
+                    discogs_cfg = config.get("api_integrations", {}).get("discogs", {})
+                    discogs_token_local = discogs_cfg.get("token", "")
+                    if not (discogs_cfg.get("enabled") and discogs_token_local):
+                        return ""
+
+                    cursor.execute(
+                        f"""
+                            SELECT MAX(NULLIF(TRIM(CAST(discogs_artist_id AS TEXT)), ''))
+                            FROM tracks
+                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                        """,
+                        (artist,)
+                    )
+                    discogs_id_row = cursor.fetchone()
+                    saved_discogs_id = str(discogs_id_row[0]).strip() if discogs_id_row and discogs_id_row[0] else ""
+                    if not saved_discogs_id:
+                        return ""
+
+                    discogs_client = _get_timeout_safe_discogs_client(discogs_token_local)
+                    if not discogs_client:
+                        return ""
+
+                    discogs_bio_data = _run_with_timeout(
+                        discogs_client.get_artist_biography_by_id,
+                        8,
+                        "Discogs artist bio lookup by ID timed out after 8s",
+                        saved_discogs_id
+                    )
+                    discogs_bio = (discogs_bio_data or {}).get("profile", "")
+                    if discogs_bio:
+                        log_info(f"Saved artist bio from Discogs for {artist} using artist_id {saved_discogs_id} ({len(discogs_bio)} chars)")
+                    return discogs_bio or ""
+                except Exception as discogs_bio_err:
+                    log_debug(f"Discogs bio lookup by saved ID failed for {artist}: {discogs_bio_err}")
+                    return ""
+
             try:
                 if HAVE_MUSICBRAINZ:
                     log_debug(f'Fetching artist country from MusicBrainz for: {artist}')
@@ -3562,66 +3601,70 @@ def popularity_scan(
                                     log_info(f'Saved artist image URL for {artist}: {artist_image[:60]}...')
                             else:
                                 log_debug(f'No bio or image found from AudioDB for artist: {artist}')
-                                # Fall back to Last.fm for bio and CoverArtArchive for image
+                                # Prefer Discogs biography by saved artist ID, then fall back to Last.fm.
                                 try:
+                                    discogs_bio = _get_discogs_bio_from_saved_artist_id()
+                                    lastfm_bio = ""
+                                    final_image = ""
+
                                     lastfm_config = get_lastfm_config(config)
-                                    if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
+                                    if (not discogs_bio) and lastfm_config.get("enabled") and lastfm_config.get("api_key"):
                                         from api_clients.lastfm import LastFmClient
-                                        from api_clients.coverartarchive import get_artist_image_from_caa
-                                        
                                         lastfm_client = LastFmClient(lastfm_config.get("api_key"))
-                                        
-                                        # Fetch artist info from Last.fm
+
                                         artist_info = _run_with_timeout(
                                             lastfm_client.get_artist_info,
                                             8,
                                             "Last.fm artist info lookup timed out after 8s",
                                             artist
                                         )
-                                        
                                         lastfm_bio = artist_info.get("bio", "") or artist_info.get("bio_text", "")
-                                        lastfm_image = artist_info.get("image", "")
-                                        
-                                        # Prefer Last.fm image
-                                        final_image = lastfm_image
-                                        
-                                        if lastfm_bio or final_image:
-                                            cursor.execute(f"""
-                                                INSERT INTO artists (id, name, bio, image_url) 
-                                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder})
-                                                ON CONFLICT(id) DO UPDATE SET 
-                                                    bio = excluded.bio,
-                                                    image_url = excluded.image_url
-                                            """, (artist, artist, lastfm_bio or "", final_image or ""))
-                                            conn.commit()
-                                            
-                                            if lastfm_bio:
-                                                log_info(f'Saved artist bio from Last.fm for {artist} ({len(lastfm_bio)} chars)')
-                                            if final_image:
-                                                source = "CoverArtArchive" if caa_image else "Last.fm"
-                                                log_info(f'Saved artist image URL from {source} for {artist}: {final_image[:60]}...')
-                                        else:
-                                            log_debug(f'No bio or image found from Last.fm for artist: {artist}')
+                                        final_image = artist_info.get("image", "") or ""
+
+                                    selected_bio = discogs_bio or lastfm_bio
+                                    if selected_bio or final_image:
+                                        cursor.execute(f"""
+                                            INSERT INTO artists (id, name, bio, image_url)
+                                            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder})
+                                            ON CONFLICT(id) DO UPDATE SET
+                                                bio = excluded.bio,
+                                                image_url = excluded.image_url
+                                        """, (artist, artist, selected_bio or "", final_image or ""))
+                                        conn.commit()
+
+                                        if selected_bio:
+                                            source = "Discogs" if discogs_bio else "Last.fm"
+                                            log_info(f"Saved artist bio from {source} for {artist} ({len(selected_bio)} chars)")
+                                        if final_image:
+                                            log_info(f"Saved artist image URL from Last.fm for {artist}: {final_image[:60]}...")
+                                    else:
+                                        log_debug(f'No bio or image found from Discogs/Last.fm for artist: {artist}')
                                 except Exception as e:
-                                    log_debug(f"Last.fm/CoverArtArchive fallback failed for {artist}: {e}")
+                                    log_debug(f"Discogs/Last.fm fallback failed for {artist}: {e}")
                         except TimeoutError as e:
                             log_debug(f"Artist bio/image lookup timed out for {artist}: {e}")
-                            # Still try Last.fm as fallback on timeout
+                            # Still try Discogs first, then Last.fm as fallback on timeout.
                             try:
-                                lastfm_config = get_lastfm_config(config)
-                                if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
-                                    from api_clients.lastfm import LastFmClient
-                                    lastfm_client = LastFmClient(lastfm_config.get("api_key"))
-                                    artist_info = lastfm_client.get_artist_info(artist)
-                                    lastfm_bio = artist_info.get("bio", "") or artist_info.get("bio_text", "")
-                                    if lastfm_bio:
-                                        cursor.execute(f"""
-                                            INSERT INTO artists (id, name, bio) 
-                                            VALUES ({placeholder}, {placeholder}, {placeholder})
-                                            ON CONFLICT(id) DO UPDATE SET bio = excluded.bio
-                                        """, (artist, artist, lastfm_bio))
-                                        conn.commit()
-                                        log_info(f'Saved artist bio from Last.fm for {artist} (AudioDB timed out)')
+                                discogs_timeout_bio = _get_discogs_bio_from_saved_artist_id()
+                                selected_bio = discogs_timeout_bio
+                                source = "Discogs"
+                                if not selected_bio:
+                                    lastfm_config = get_lastfm_config(config)
+                                    if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
+                                        from api_clients.lastfm import LastFmClient
+                                        lastfm_client = LastFmClient(lastfm_config.get("api_key"))
+                                        artist_info = lastfm_client.get_artist_info(artist)
+                                        selected_bio = artist_info.get("bio", "") or artist_info.get("bio_text", "")
+                                        source = "Last.fm"
+
+                                if selected_bio:
+                                    cursor.execute(f"""
+                                        INSERT INTO artists (id, name, bio) 
+                                        VALUES ({placeholder}, {placeholder}, {placeholder})
+                                        ON CONFLICT(id) DO UPDATE SET bio = excluded.bio
+                                    """, (artist, artist, selected_bio))
+                                    conn.commit()
+                                    log_info(f'Saved artist bio from {source} for {artist} (AudioDB timed out)')
                             except:
                                 pass
                         except Exception as e:
@@ -3660,24 +3703,26 @@ def popularity_scan(
                         except Exception as e:
                             log_debug(f"AudioDB bio/image lookup failed for {artist} (MusicBrainz unavailable): {e}")
 
-                    # If AudioDB has no metadata (or is unavailable), try Last.fm bio/image.
+                    # If AudioDB has no metadata (or is unavailable), prefer Discogs bio by saved ID, then Last.fm.
                     if not artist_bio and not artist_image:
                         try:
-                            lastfm_config = get_lastfm_config(config)
-                            if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
-                                from api_clients.lastfm import LastFmClient
-                                lastfm_client = LastFmClient(lastfm_config.get("api_key"))
-                                artist_info = _run_with_timeout(
-                                    lastfm_client.get_artist_info,
-                                    8,
-                                    "Last.fm artist info lookup timed out after 8s",
-                                    artist
-                                )
+                            artist_bio = _get_discogs_bio_from_saved_artist_id() or ""
+                            if not artist_bio:
+                                lastfm_config = get_lastfm_config(config)
+                                if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
+                                    from api_clients.lastfm import LastFmClient
+                                    lastfm_client = LastFmClient(lastfm_config.get("api_key"))
+                                    artist_info = _run_with_timeout(
+                                        lastfm_client.get_artist_info,
+                                        8,
+                                        "Last.fm artist info lookup timed out after 8s",
+                                        artist
+                                    )
 
-                                artist_bio = artist_info.get("bio", "") or artist_info.get("bio_text", "") or ""
-                                artist_image = artist_info.get("image", "") or ""
+                                    artist_bio = artist_info.get("bio", "") or artist_info.get("bio_text", "") or ""
+                                    artist_image = artist_info.get("image", "") or ""
                         except Exception as e:
-                            log_debug(f"Last.fm bio/image fallback failed for {artist} (MusicBrainz unavailable): {e}")
+                            log_debug(f"Discogs/Last.fm bio/image fallback failed for {artist} (MusicBrainz unavailable): {e}")
 
                     if artist_bio or artist_image:
                         cursor.execute(f"""

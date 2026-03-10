@@ -558,7 +558,7 @@ def mark_download_exists_in_library(file_path):
         logger.error(f"Error marking as exists in library: {e}")
         return False
 
-def add_to_database(file_info, metadata):
+def add_to_database(file_info, metadata, source_file_path=None):
     """Add organized file to database"""
     try:
         if not file_info.get('success'):
@@ -613,8 +613,86 @@ def add_to_database(file_info, metadata):
                 datetime.now().isoformat()
             ))
         
+        # If we know the original queue file path, bring over MBIDs from queue metadata.
+        if source_file_path:
+            try:
+                if is_pg:
+                    cursor.execute(
+                        """
+                        SELECT release_mbid, recording_mbid
+                        FROM download_queue
+                        WHERE file_path = %s
+                        LIMIT 1
+                        """,
+                        (source_file_path,),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        SELECT release_mbid, recording_mbid
+                        FROM download_queue
+                        WHERE file_path = ?
+                        LIMIT 1
+                        """,
+                        (source_file_path,),
+                    )
+
+                queue_row = cursor.fetchone()
+                if queue_row:
+                    release_mbid = queue_row['release_mbid'] if isinstance(queue_row, dict) else queue_row[0]
+                    recording_mbid = queue_row['recording_mbid'] if isinstance(queue_row, dict) else queue_row[1]
+
+                    # Store recording MBID and album MBID on the track row so tag sync can write them.
+                    if is_pg:
+                        cursor.execute(
+                            """
+                            UPDATE tracks
+                            SET mbid = %s,
+                                suggested_mbid = %s,
+                                musicbrainz_album_mbid = %s,
+                                last_scanned = %s
+                            WHERE id = %s
+                            """,
+                            (
+                                recording_mbid or None,
+                                release_mbid or None,
+                                release_mbid or None,
+                                datetime.now().isoformat(),
+                                track_id,
+                            ),
+                        )
+                    else:
+                        cursor.execute(
+                            """
+                            UPDATE tracks
+                            SET mbid = ?,
+                                suggested_mbid = ?,
+                                musicbrainz_album_mbid = ?,
+                                last_scanned = ?
+                            WHERE id = ?
+                            """,
+                            (
+                                recording_mbid or None,
+                                release_mbid or None,
+                                release_mbid or None,
+                                datetime.now().isoformat(),
+                                track_id,
+                            ),
+                        )
+            except Exception as e:
+                logger.warning(f"Could not transfer queue MBIDs for {track_id}: {e}")
+
         conn.commit()
         conn.close()
+
+        # Sync tags to file after DB write so MBIDs and album metadata are embedded in the file.
+        try:
+            from helpers.tag_manager import sync_track_tags_to_file
+
+            sync_track_tags_to_file(track_id)
+        except Exception as e:
+            logger.warning(f"Tag sync skipped for {track_id}: {e}")
+
         logger.info(f"Added to database: {track_id}")
         return True
     except Exception as e:
@@ -652,7 +730,7 @@ def scan_downloads_folder():
 
                 if file_info.get('success'):
                     # Add to database
-                    add_to_database(file_info, metadata)
+                    add_to_database(file_info, metadata, source_file_path=file_path)
 
                     results.append({
                         'status': 'success',

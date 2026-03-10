@@ -2355,13 +2355,20 @@ def artists():
                         COALESCE(NULLIF(album_artist, ''), artist) AS display_name,
                         album,
                         LOWER(TRIM(title)) AS norm_title,
+                        LOWER(TRIM(COALESCE(artist, ''))) AS norm_artist,
+                        TRIM(COALESCE(CAST(track_number AS TEXT), '')) AS norm_track_number,
                         COUNT(*) AS grp_count
                     FROM tracks
                     WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
                       AND COALESCE(NULLIF(album_artist, ''), artist) != ''
                       AND title IS NOT NULL
                       AND TRIM(title) != ''
-                    GROUP BY COALESCE(NULLIF(album_artist, ''), artist), album, LOWER(TRIM(title))
+                    GROUP BY
+                        COALESCE(NULLIF(album_artist, ''), artist),
+                        album,
+                        LOWER(TRIM(title)),
+                        LOWER(TRIM(COALESCE(artist, ''))),
+                        TRIM(COALESCE(CAST(track_number AS TEXT), ''))
                     HAVING COUNT(*) > 1
                 )
                 SELECT display_name, COALESCE(SUM(grp_count - 1), 0) AS duplicate_count
@@ -2375,13 +2382,20 @@ def artists():
                         COALESCE(NULLIF(album_artist, ''), artist) AS display_name,
                         album,
                         LOWER(TRIM(title)) AS norm_title,
+                        LOWER(TRIM(COALESCE(artist, ''))) AS norm_artist,
+                        TRIM(COALESCE(CAST(track_number AS TEXT), '')) AS norm_track_number,
                         COUNT(*) AS grp_count
                     FROM tracks
                     WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
                       AND COALESCE(NULLIF(album_artist, ''), artist) != ''
                       AND title IS NOT NULL
                       AND TRIM(title) != ''
-                    GROUP BY COALESCE(NULLIF(album_artist, ''), artist), album, LOWER(TRIM(title))
+                    GROUP BY
+                        COALESCE(NULLIF(album_artist, ''), artist),
+                        album,
+                        LOWER(TRIM(title)),
+                        LOWER(TRIM(COALESCE(artist, ''))),
+                        TRIM(COALESCE(CAST(track_number AS TEXT), ''))
                     HAVING COUNT(*) > 1
                 )
                 SELECT display_name, IFNULL(SUM(grp_count - 1), 0) AS duplicate_count
@@ -2447,30 +2461,42 @@ def artist_corrections(name):
                 SELECT
                     album,
                     title,
+                    COALESCE(NULLIF(artist, ''), '—') AS track_artist,
+                    TRIM(COALESCE(CAST(track_number AS TEXT), '')) AS track_number,
                     COUNT(*) AS duplicate_count,
                     STRING_AGG(CAST(id AS TEXT), ', ' ORDER BY id) AS track_ids
                 FROM tracks
                 WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
                   AND title IS NOT NULL
                   AND TRIM(title) != ''
-                GROUP BY album, title
+                GROUP BY
+                    album,
+                    title,
+                    COALESCE(NULLIF(artist, ''), '—'),
+                    TRIM(COALESCE(CAST(track_number AS TEXT), ''))
                 HAVING COUNT(*) > 1
-                ORDER BY duplicate_count DESC, album, title
+                ORDER BY duplicate_count DESC, album, title, track_artist, track_number
             """, (artist_name,))
         else:
             cursor.execute(f"""
                 SELECT
                     album,
                     title,
+                    COALESCE(NULLIF(artist, ''), '—') AS track_artist,
+                    TRIM(COALESCE(CAST(track_number AS TEXT), '')) AS track_number,
                     COUNT(*) AS duplicate_count,
                     GROUP_CONCAT(id, ', ') AS track_ids
                 FROM tracks
                 WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
                   AND title IS NOT NULL
                   AND TRIM(title) != ''
-                GROUP BY album, title
+                GROUP BY
+                    album,
+                    title,
+                    COALESCE(NULLIF(artist, ''), '—'),
+                    TRIM(COALESCE(CAST(track_number AS TEXT), ''))
                 HAVING COUNT(*) > 1
-                ORDER BY duplicate_count DESC, album, title
+                ORDER BY duplicate_count DESC, album, title, track_artist, track_number
             """, (artist_name,))
         duplicates = [dict(r) for r in cursor.fetchall()]
 
@@ -10096,7 +10122,17 @@ def api_queue_events():
         limit = min(max(limit, 1), 200)  # Clamp between 1-200
         event_type = request.args.get("type", None)
         
-        events = get_queue_events(limit=limit, event_type=event_type)
+        raw_events = get_queue_events(limit=limit, event_type=event_type)
+        events = [
+            {
+                'created_at': e.get('timestamp'),
+                'event_type': e.get('type'),
+                'message': e.get('message', ''),
+                'item_id': e.get('item_id'),
+                'details': e.get('details') or {},
+            }
+            for e in raw_events
+        ]
         
         return jsonify({
             'success': True,
@@ -15083,7 +15119,7 @@ def api_downloads_process_one():
         
         if file_info.get('success'):
             # Add to database
-            add_to_database(file_info, metadata)
+            add_to_database(file_info, metadata, source_file_path=file_path)
             return jsonify({
                 "success": True,
                 "artist": file_info.get('artist'),
@@ -15458,7 +15494,7 @@ def api_downloads_process_retry():
                 file_info = organize_file(file_path, metadata)
                 
                 if file_info.get('success'):
-                    add_to_database(file_info, metadata)
+                    add_to_database(file_info, metadata, source_file_path=file_path)
                     mark_download_as_successful(file_path)
                     results["successful"] += 1
                     results["results"].append({

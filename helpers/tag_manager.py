@@ -488,6 +488,11 @@ def _write_id3_tags(file_path: str, tags: Dict[str, Any]) -> bool:
                 audio.tags.delall(frame_key)
                 if value is not None and str(value).strip():
                     audio.tags.add(TXXX(encoding=3, desc="MUSICBRAINZ TRACK ID", text=[str(value)]))
+            elif field == "musicbrainz_album_mbid":
+                frame_key = "TXXX:MUSICBRAINZ ALBUM ID"
+                audio.tags.delall(frame_key)
+                if value is not None and str(value).strip():
+                    audio.tags.add(TXXX(encoding=3, desc="MUSICBRAINZ ALBUM ID", text=[str(value)]))
             else:
                 logger.debug(f"Skipping unmapped field for ID3: {field}")
 
@@ -524,6 +529,7 @@ def _write_flac_tags(file_path: str, tags: Dict[str, Any]) -> bool:
             "genres": "genre",
             "comment": "comment",
             "mbid": "musicbrainz_trackid",
+            "musicbrainz_album_mbid": "musicbrainz_albumid",
         }
 
         for field, value in tags.items():
@@ -579,7 +585,7 @@ def sync_track_tags_to_file(track_id: str) -> bool:
         cursor.execute("""
             SELECT id, title, album, artist, album_artist, albumartist, composer, 
                    year, originalyear, track_number, disc_number, genres, 
-                   comment, mbid, file_path
+                   comment, mbid, musicbrainz_album_mbid, file_path
             FROM tracks 
             WHERE id = ?
         """, (track_id,))
@@ -625,13 +631,14 @@ def sync_track_tags_to_file(track_id: str) -> bool:
             'disc_number': 'disc_number',
             'genres': 'genres',
             'comment': 'comment',
-            'mbid': 'mbid'
+            'mbid': 'mbid',
+            'musicbrainz_album_mbid': 'musicbrainz_album_mbid'
         }
         
         # Extract values from result
         for idx, field in enumerate(['id', 'title', 'album', 'artist', 'album_artist', 'albumartist', 
                                       'composer', 'year', 'originalyear', 'track_number', 'disc_number', 
-                                      'genres', 'comment', 'mbid', 'file_path']):
+                                      'genres', 'comment', 'mbid', 'musicbrainz_album_mbid', 'file_path']):
             if field in field_mapping and idx < len(result):
                 value = result[idx] if not isinstance(result, dict) else result[field]
                 if value is not None and str(value).strip():

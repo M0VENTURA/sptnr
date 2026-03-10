@@ -1104,29 +1104,19 @@ def _build_release_import_group(artist, album):
 
 def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
     """
-    Move a single completed track from /downloads into the /music library tree.
+    Copy a single completed track from /downloads into the /music library tree.
 
     Folder structure: <music_root>/<album_artist>/<year> - <album>/
     (year defaults to 'Unknown' when not available)
-    
-    File naming: [track_number]. [artist] - [title].[ext]
-    
-    Examples:
-        - 01. Tool - Fear Inoculum.mp3
-        - 103. Pink Floyd - Shine On You Crazy Diamond.flac (disc 1, track 3)
-
-    Args:
-        queue_item_dict: dict from download_queue row with at least file_path,
-                         artist, album, album_artist, year, title, track_number.
-        music_dir:       Optional override for MUSIC_ROOT (defaults to env var).
-
-    Returns:
-        dict with keys:
-            success  (bool)
-            target_path (str | None)
-            error (str | None)
     """
+    import re
     import shutil
+
+    def _extract_year(value):
+        if value is None:
+            return None
+        m = re.search(r"(19|20)\d{2}", str(value))
+        return m.group(0) if m else None
 
     try:
         file_path = queue_item_dict.get('file_path')
@@ -1141,118 +1131,95 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
             queue_item_dict.get('album_artist') or queue_item_dict.get('artist') or 'Unknown Artist'
         )
         album = _sanitize_path_component(queue_item_dict.get('album') or 'Unknown Album')
-        year = queue_item_dict.get('year') or ''
-        
-        # Clean up year (extract just the year if it's a full date)
-        if year and len(str(year)) >= 4:
-            year = str(year)[:4]
-        elif not year:
-            year = 'Unknown'
-        
-        dest_folder = os.path.join(music_root, album_artist, f"{year} - {album}")
-
-        os.makedirs(dest_folder, exist_ok=True)
-
-        # Build proper filename: [track_number]. [artist] - [title].[ext]
         artist = queue_item_dict.get('artist', 'Unknown Artist')
         title = queue_item_dict.get('title', 'Unknown Title')
         track_num = queue_item_dict.get('track_number', '00')
         disc_num = queue_item_dict.get('disc_number', 1)
-        
-        # Get file extension
         ext = os.path.splitext(file_path)[1].lower()
-        
-        # Initialize metadata for tagging
+
+        # Resolve year with priority:
+        # 1) queue year, 2) embedded file tags, 3) MusicBrainz release metadata
+        year = _extract_year(
+            queue_item_dict.get('year')
+            or queue_item_dict.get('release_year')
+            or queue_item_dict.get('mb_matched_year')
+        )
+        if not year:
+            try:
+                embedded = read_mp3_metadata(file_path)
+                year = _extract_year(embedded.get('year') or embedded.get('date'))
+            except Exception:
+                year = None
+
         tag_metadata = {
             'title': title,
             'artist': artist,
             'album_artist': queue_item_dict.get('album_artist') or artist,
             'album': queue_item_dict.get('album') or 'Unknown Album',
-            'year': queue_item_dict.get('year') or '',
+            'year': year or '',
             'track_number': queue_item_dict.get('track_number'),
             'disc_number': disc_num,
         }
-        
+
         cover_art_data = None
-        
-        # If we have a MusicBrainz release ID, fetch authoritative metadata
         release_id = queue_item_dict.get('release_id')
         if release_id:
             try:
                 from post_download_processor import fetch_musicbrainz_release_metadata
                 mb_release = fetch_musicbrainz_release_metadata(release_id)
-                
+
                 if mb_release:
-                    # Find matching track in release metadata to get correct disc number
+                    if not year:
+                        year = _extract_year(
+                            mb_release.get('first_release_date')
+                            or mb_release.get('date')
+                            or mb_release.get('year')
+                        )
+
                     for track in mb_release.get('tracks', []):
                         track_title = track.get('title', '').lower().strip()
                         queue_title = title.lower().strip()
-                        
-                        # Simple matching on title
                         if track_title and queue_title and track_title == queue_title:
-                            # Use authoritative disc and track number from MusicBrainz
                             disc_num = track.get('disc_number', disc_num)
                             tag_metadata['disc_number'] = disc_num
                             logger.info(
-                                f"[MOVE] Queue {queue_item_dict.get('id', 'unknown')}: "
+                                f"[COPY] Queue {queue_item_dict.get('id', 'unknown')}: "
                                 f"Updated disc_number from MusicBrainz: {disc_num}"
                             )
                             break
-                    
-                    # Use MusicBrainz album art
+
                     if mb_release.get('cover_art'):
                         cover_art_data = mb_release['cover_art']
-                        logger.info(f"[MOVE] Queue {queue_item_dict.get('id', 'unknown')}: Using MusicBrainz album art")
-                    
+                        logger.info(f"[COPY] Queue {queue_item_dict.get('id', 'unknown')}: Using MusicBrainz album art")
             except Exception as mb_err:
-                logger.warning(f"[MOVE] Could not fetch MusicBrainz metadata for release {release_id}: {mb_err}")
-        
-        # Fetch composer/writer/lyricist credits from MusicBrainz
+                logger.warning(f"[COPY] Could not fetch MusicBrainz metadata for release {release_id}: {mb_err}")
+
+        if not year:
+            year = 'Unknown'
+        tag_metadata['year'] = year
+
+        dest_folder = os.path.join(music_root, album_artist, f"{year} - {album}")
+        os.makedirs(dest_folder, exist_ok=True)
+
         try:
-            from post_download_processor import fetch_writer_credits
-            writer_credits = fetch_writer_credits(title, artist)
-            
-            if writer_credits:
-                if writer_credits.get('composers'):
-                    tag_metadata['composers'] = writer_credits['composers']
-                    logger.info(f"[MOVE] Queue {queue_item_dict.get('id', 'unknown')}: Added {len(writer_credits['composers'])} composer(s)")
-                
-                if writer_credits.get('writers'):
-                    tag_metadata['writers'] = writer_credits['writers']
-                    logger.info(f"[MOVE] Queue {queue_item_dict.get('id', 'unknown')}: Added {len(writer_credits['writers'])} writer(s)")
-                
-                if writer_credits.get('lyricists'):
-                    tag_metadata['lyricists'] = writer_credits['lyricists']
-                    logger.info(f"[MOVE] Queue {queue_item_dict.get('id', 'unknown')}: Added {len(writer_credits['lyricists'])} lyricist(s)")
-        except Exception as writer_err:
-            logger.debug(f"[MOVE] Could not fetch writer credits for '{title}' by '{artist}': {writer_err}")
-        
-        # Format track number with disc prefix if needed
-        try:
-            track_num = int(str(track_num).split('/')[0]) if track_num else 0
-            disc_num = int(str(disc_num).split('/')[0]) if disc_num else 1
-            
-            if disc_num > 1:
-                track_num = f"{disc_num}{track_num:02d}"
+            track_num_int = int(str(track_num).split('/')[0]) if track_num else 0
+            disc_num_int = int(str(disc_num).split('/')[0]) if disc_num else 1
+            if disc_num_int > 1:
+                track_num_fmt = f"{disc_num_int}{track_num_int:02d}"
             else:
-                track_num = f"{track_num:02d}"
-        except:
-            track_num = "00"
-        
-        # Update embedded file tags before moving so the library reflects the
-        # album context (not whatever single/release the file was originally
-        # tagged with on Soulseek).
+                track_num_fmt = f"{track_num_int:02d}"
+        except Exception:
+            track_num_fmt = "00"
+
         try:
             from post_download_processor import update_file_metadata_with_albumart
             update_file_metadata_with_albumart(file_path, tag_metadata, cover_art_data)
         except Exception as tag_err:
-            logger.warning(f"[MOVE] Could not update file tags before move (non-fatal): {tag_err}")
+            logger.warning(f"[COPY] Could not update file tags before copy (non-fatal): {tag_err}")
 
-        # Build filename with proper format
-        filename = _sanitize_path_component(f"{track_num}. {artist} - {title}{ext}")
+        filename = _sanitize_path_component(f"{track_num_fmt}. {artist} - {title}{ext}")
         dest_path = os.path.join(dest_folder, filename)
 
-        # Avoid overwriting
         if os.path.exists(dest_path):
             base, ext_only = os.path.splitext(filename)
             counter = 1
@@ -1260,12 +1227,12 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
                 counter += 1
             dest_path = os.path.join(dest_folder, f"{base}_{counter}{ext_only}")
 
-        shutil.move(file_path, dest_path)
-        logger.info(f"[MOVE] {filename} → {dest_path}")
+        shutil.copy2(file_path, dest_path)
+        logger.info(f"[COPY] {filename} → {dest_path}")
         return {'success': True, 'target_path': dest_path, 'error': None}
 
     except Exception as e:
-        logger.error(f"[MOVE] Failed to move file: {e}")
+        logger.error(f"[COPY] Failed to copy file: {e}")
         return {'success': False, 'target_path': None, 'error': str(e)}
 
 
@@ -1337,7 +1304,7 @@ def check_downloads_folder():
             WHERE status IN ('queued', 'searching', 'downloading')
             ORDER BY created_at ASC
         """)
-        queue_items = list(cursor.fetchall())  # RealDictCursor already returns dict-like rows
+            Copy a single completed track from /downloads into the /music library tree.
         
         # Recursively get all audio files in downloads folder and subdirectories
         downloads_files = []
@@ -1359,7 +1326,8 @@ def check_downloads_folder():
         
         # Try to match files to queue items
         for queue_item in queue_items:
-            match_found = None
+            import shutil
+            import re
             match_path = None
             
             # Try exact filename match first (but still verify metadata when available)
@@ -1377,10 +1345,21 @@ def check_downloads_folder():
                         meta_state = _metadata_matches_queue_item(metadata or {}, queue_item)
                         if meta_state is False:
                             logger.info(
-                                f"Queue {queue_item['id']}: rejecting exact filename match due to metadata mismatch: "
-                                f"{file_info['rel_path']}"
-                            )
-                            continue
+                def _extract_year(value):
+                    if value is None:
+                        return None
+                    match = re.search(r"(19|20)\d{2}", str(value))
+                    return match.group(0) if match else None
+
+                # Resolve year with priority:
+                # 1) queue metadata, 2) embedded file tags, 3) MusicBrainz release year
+                year = _extract_year(queue_item_dict.get('year'))
+                if not year:
+                    try:
+                        embedded = read_mp3_metadata(file_path)
+                        year = _extract_year(embedded.get('year') or embedded.get('date'))
+                    except Exception:
+                        year = None
 
                         match_found = file_info['filename']
                         match_path = file_info['full_path']
@@ -1401,7 +1380,7 @@ def check_downloads_folder():
                     if meta_state is False:
                         continue
 
-                    if meta_state is True or is_match(file_info['rel_path'], queue_item):
+                    'year': year,
                         match_found = file_info['filename']
                         match_path = file_info['full_path']
                         logger.debug(f"Fuzzy matched '{queue_item['search_query']}' to '{file_info['rel_path']}'")
@@ -1526,7 +1505,10 @@ def is_match(filename, queue_item):
         artist = (queue_item['artist'] or '').lower()
         title = (queue_item['title'] or '').lower()
         album = (queue_item['album'] or '').lower()
-        search_query = (queue_item.get('search_query') or '').lower()
+                                if not year:
+                                    year = 'Unknown'
+
+                                # Format track number with disc prefix if needed
         
         # Require artist/title presence first; this is a fallback only.
         if not artist or not title:
@@ -1580,7 +1562,7 @@ def auto_discover_and_queue_files():
     stats = {
         'scanned': 0,
         'queued': 0,
-        'already_in_queue': 0,
+            'year': year,
         'already_in_library': 0,
         'errors': []
     }
@@ -1611,8 +1593,12 @@ def auto_discover_and_queue_files():
         cursor = conn.cursor()
         
         # Ensure required columns exist for auto-discovery inserts
-        cursor.execute("PRAGMA table_info(download_queue);")
-        columns = [row[1] for row in cursor.fetchall()]
+        cursor.execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'download_queue' AND table_schema = 'public'
+        """)
+        columns = [row[0] for row in cursor.fetchall()]
         
         required_cols = {
             'track_number': "TEXT",
@@ -1735,12 +1721,12 @@ def auto_discover_and_queue_files():
                 
                 # Check if track exists in library (case-insensitive)
                 cursor.execute(f"""
-                    SELECT id FROM tracks 
-                    WHERE LOWER(artist) = LOWER({placeholder}) 
+        shutil.copy2(file_path, dest_path)
+        logger.info(f"[COPY] {filename} → {dest_path}")
                     AND LOWER(album) = LOWER({placeholder}) 
                     AND LOWER(title) = LOWER({placeholder})
                 """, (artist, album, title))
-                
+        logger.error(f"[COPY] Failed to copy file: {e}")
                 in_library = cursor.fetchone()
                 if in_library:
                     stats['already_in_library'] += 1
@@ -1810,7 +1796,7 @@ def auto_discover_and_queue_files():
                                 copied_individually_at=datetime.now().isoformat()
                             )
                             logger.info(
-                                f"[AUTO-DISCOVER] Matched & moved: {artist} - {title} "
+                                f"[AUTO-DISCOVER] Matched & copied: {artist} - {title} "
                                 f"→ {move_result['target_path']}"
                             )
                         else:
@@ -2081,16 +2067,10 @@ def cleanup_missing_files():
                 queue_id = item['id']
                 file_path = item['file_path']
                 status = item['status']
-                music_file_path = item['music_file_path']
-
                 if status in protected_statuses:
                     continue
 
                 if status not in cleanup_allowed_statuses:
-                    continue
-
-                # Imported rows may point to music_file_path while file_path is stale.
-                if music_file_path and os.path.exists(music_file_path):
                     continue
 
                 # Check if file exists
@@ -2594,8 +2574,12 @@ def _score_album_candidates(artist, album, discovered_tracks, candidates):
 
 def _ensure_matching_columns(cursor):
     """Ensure download_queue has columns required for manual matching workflow."""
-    cursor.execute("PRAGMA table_info(download_queue);")
-    columns = [row[1] for row in cursor.fetchall()]
+    cursor.execute("""
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_name = 'download_queue' AND table_schema = 'public'
+    """)
+    columns = [row[0] for row in cursor.fetchall()]
 
     required = {
         "mb_match_status": "TEXT",

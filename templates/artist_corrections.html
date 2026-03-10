@@ -3,6 +3,28 @@
 {% block title %}Corrections - {{ artist_name }} - Popularr{% endblock %}
 
 {% block content %}
+<style>
+    .artist-corrections-table {
+        --bs-table-bg: var(--secondary-bg);
+        --bs-table-color: var(--text-primary);
+        --bs-table-border-color: var(--border-color);
+        --bs-table-hover-bg: var(--tertiary-bg);
+        --bs-table-striped-bg: var(--secondary-bg);
+    }
+
+    .artist-corrections-table > :not(caption) > * > * {
+        background-color: var(--secondary-bg) !important;
+        color: var(--text-primary) !important;
+    }
+
+    .artist-corrections-table thead th {
+        background-color: var(--tertiary-bg) !important;
+    }
+
+    .artist-corrections-table tbody tr:hover > * {
+        background-color: var(--tertiary-bg) !important;
+    }
+</style>
 <div class="container-fluid mt-4">
     <nav aria-label="breadcrumb">
         <ol class="breadcrumb">
@@ -29,11 +51,13 @@
         </div>
         <div class="card-body p-0">
             <div class="table-responsive">
-                <table class="table table-hover mb-0">
+                <table class="table table-hover mb-0 artist-corrections-table">
                     <thead>
                         <tr>
                             <th>Album</th>
                             <th>Title</th>
+                            <th>Track Artist</th>
+                            <th class="text-center">Track #</th>
                             <th class="text-center">Count</th>
                             <th>Track IDs</th>
                         </tr>
@@ -44,13 +68,15 @@
                             <tr>
                                 <td>{{ row.album or '—' }}</td>
                                 <td>{{ row.title or '—' }}</td>
+                                <td>{{ row.track_artist or '—' }}</td>
+                                <td class="text-center">{{ row.track_number or '—' }}</td>
                                 <td class="text-center"><span class="badge bg-danger">{{ row.duplicate_count }}</span></td>
                                 <td class="small text-muted">{{ row.track_ids or '—' }}</td>
                             </tr>
                             {% endfor %}
                         {% else %}
                             <tr>
-                                <td colspan="4" class="text-center text-muted py-4">No duplicate tracks found.</td>
+                                <td colspan="6" class="text-center text-muted py-4">No duplicate tracks found.</td>
                             </tr>
                         {% endif %}
                     </tbody>
@@ -65,7 +91,7 @@
         </div>
         <div class="card-body p-0">
             <div class="table-responsive">
-                <table class="table table-hover mb-0">
+                <table class="table table-hover mb-0 artist-corrections-table">
                     <thead>
                         <tr>
                             <th>Track ID</th>
