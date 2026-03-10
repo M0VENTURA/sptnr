@@ -6,7 +6,7 @@ from helpers.db_utils import (
     ensure_cover_columns,
     verify_album_artist_column,
 )
-from download_file_verification import ensure_verification_columns
+from download_file_verification import ensure_verification_columns, ensure_queue_mbid_columns
 import os
 # --- ENVIRONMENT VARIABLE EDITING SUPPORT ---
 # List of all environment variables used in the project (compiled from codebase)
@@ -455,6 +455,10 @@ ensure_cover_columns()
 
 # Ensure download file verification columns exist
 ensure_verification_columns()
+
+# Ensure MusicBrainz MBID and extended metadata columns exist in download_queue.
+# Required by download_monitor_enhancements.py and /api/queue/<id>/apply-mbid-match.
+ensure_queue_mbid_columns()
 
 # Verify the migration worked
 verification = verify_album_artist_column()
