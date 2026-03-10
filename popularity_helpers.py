@@ -858,23 +858,59 @@ def save_to_db(track_data):
     file_path = sanitized_data.get('file_path')
     
     if artist and album and title:
-        # First try to match by file_path if available (most reliable)
-        if file_path:
+        # First check for pending queue entries (from download queue)
+        # These have file_path like "__queued_for_download__queue_id_123"
+        _run_with_db_lock_retry(
+            lambda: cursor.execute(
+                """
+                SELECT id, beets_mbid, mbid, file_path, last_scanned 
+                FROM tracks 
+                WHERE artist = ? AND album = ? AND title = ? 
+                    AND file_path LIKE '__queued_for_download__queue_id_%'
+                    AND id != ?
+                LIMIT 1
+                """,
+                (artist, album, title, track_id)
+            ),
+            "save_to_db queue entry lookup"
+        )
+        queue_entry = cursor.fetchone()
+        
+        if queue_entry:
+            # Found a pending queue entry - update it with the Navidrome track ID and real file_path
+            queue_id = queue_entry['id']
+            logging.info(f"Found queue entry {queue_id} for {artist} - {title}, updating to Navidrome ID {track_id}")
+            
+            # Delete the queue placeholder entry
+            is_pg = bool(_is_postgres_connection(cursor.connection if hasattr(cursor, 'connection') else conn))
+            placeholder = "%s" if is_pg else "?"
             _run_with_db_lock_retry(
-                lambda: cursor.execute(
-                    """
-                    SELECT id, beets_mbid, mbid, file_path, last_scanned 
-                    FROM tracks 
-                    WHERE file_path = ? AND id != ?
-                    LIMIT 1
-                    """,
-                    (file_path, track_id)
-                ),
-                "save_to_db duplicate file_path lookup"
+                lambda: cursor.execute(f"DELETE FROM tracks WHERE id = {placeholder}", (queue_id,)),
+                "save_to_db delete queue entry"
             )
-            existing = cursor.fetchone()
-        else:
+            
+            # Continue with normal insert using the Navidrome track ID
+            # (will insert below with the actual file_path and Navidrome ID)
             existing = None
+        else:
+            # No queue entry, do regular duplicate detection
+            # First try to match by file_path if available (most reliable)
+            if file_path:
+                _run_with_db_lock_retry(
+                    lambda: cursor.execute(
+                        """
+                        SELECT id, beets_mbid, mbid, file_path, last_scanned 
+                        FROM tracks 
+                        WHERE file_path = ? AND id != ?
+                        LIMIT 1
+                        """,
+                        (file_path, track_id)
+                    ),
+                    "save_to_db duplicate file_path lookup"
+                )
+                existing = cursor.fetchone()
+            else:
+                existing = None
         
         # If no match by file_path, try content matching
         if not existing:
