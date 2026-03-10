@@ -52,14 +52,15 @@ def _get_db_connection():
         raise
 
 
-def ensure_verification_columns():
+def _ensure_columns_in_table(columns_to_add):
     """
-    Ensure the verification columns exist in download_queue table.
-    
-    Adds:
-        - moved_at TIMESTAMP: When file was moved to /music
-        - verified_in_music_at TIMESTAMP: When move was verified successful
-        - music_file_path TEXT: Final path in /music after verification
+    Internal helper: add missing columns to download_queue.
+
+    Args:
+        columns_to_add: list of (column_name, column_type) tuples
+
+    Returns:
+        True on success, False on failure.
     """
     try:
         conn = _get_db_connection()
@@ -77,26 +78,22 @@ def ensure_verification_columns():
 
         # Determine existing columns
         cursor.execute(
-            """SELECT column_name FROM information_schema.columns 
+            """SELECT column_name FROM information_schema.columns
                WHERE table_name = 'download_queue'"""
         )
         existing = [row[0] for row in cursor.fetchall()]
 
-        columns_to_add = [
-            ("moved_at", "TIMESTAMP"),
-            ("verified_in_music_at", "TIMESTAMP"),
-            ("music_file_path", "TEXT"),
-        ]
-
-        added_any = False
         for col_name, col_type in columns_to_add:
             if col_name not in existing:
                 try:
                     cursor.execute(f"ALTER TABLE download_queue ADD COLUMN {col_name} {col_type};")
                     conn.commit()
                     logger.info(f"✓ Added column '{col_name}' to download_queue")
-                    added_any = True
                 except Exception as col_err:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
                     if "already exists" not in str(col_err).lower():
                         logger.warning(f"Could not add column {col_name}: {col_err}")
 
@@ -104,8 +101,53 @@ def ensure_verification_columns():
         return True
 
     except Exception as e:
-        logger.error(f"Error ensuring verification columns: {e}", exc_info=True)
+        logger.error(f"Error ensuring download_queue columns: {e}", exc_info=True)
         return False
+
+
+def ensure_verification_columns():
+    """
+    Ensure the verification columns exist in download_queue table.
+
+    Adds:
+        - moved_at TIMESTAMP: When file was moved to /music
+        - verified_in_music_at TIMESTAMP: When move was verified successful
+        - music_file_path TEXT: Final path in /music after verification
+    """
+    return _ensure_columns_in_table([
+        ("moved_at", "TIMESTAMP"),
+        ("verified_in_music_at", "TIMESTAMP"),
+        ("music_file_path", "TEXT"),
+    ])
+
+
+def ensure_queue_mbid_columns():
+    """
+    Ensure MusicBrainz MBID and extended metadata columns exist in download_queue.
+
+    These columns are required by download_monitor_enhancements.py and the
+    /api/queue/<id>/apply-mbid-match endpoint in app.py.
+
+    Adds:
+        - release_mbid TEXT: MusicBrainz release ID
+        - recording_mbid TEXT: MusicBrainz recording ID
+        - release_year INTEGER: Parsed release year
+        - duration INTEGER: Track duration in seconds
+        - matched_file_path TEXT: File path if already matched
+        - in_collection INTEGER: Whether track exists in local library
+        - collection_track_id TEXT: ID of matching track in collection
+        - collection_matched_at TEXT: Timestamp of collection match
+    """
+    return _ensure_columns_in_table([
+        ("release_mbid", "TEXT"),
+        ("recording_mbid", "TEXT"),
+        ("release_year", "INTEGER"),
+        ("duration", "INTEGER"),
+        ("matched_file_path", "TEXT"),
+        ("in_collection", "INTEGER DEFAULT 0"),
+        ("collection_track_id", "TEXT"),
+        ("collection_matched_at", "TEXT"),
+    ])
 
 
 def verify_file_in_music(queue_id, target_path):
