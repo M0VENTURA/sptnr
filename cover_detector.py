@@ -39,6 +39,7 @@ class CoverDetector:
         self.db_conn = db_connection
         self.is_pg = self._is_postgres(db_connection) if db_connection else False
         self.placeholder = "%s" if self.is_pg else "?"
+        self._band_members_cache = {}  # Cache to avoid repeated API calls
     
     def detect_covers_for_album(self, album: str, artist: str, tracks: List[Dict]) -> List[Dict]:
         """
@@ -209,16 +210,94 @@ class CoverDetector:
             logger.debug(f"Failed to fetch writers from MusicBrainz for {mbid}: {e}")
             return []
     
+    def _get_band_members(self, artist: str) -> List[str]:
+        """
+        Fetch band members for an artist from MusicBrainz.
+        
+        Caches results to avoid repeated API calls.
+        
+        Args:
+            artist: Artist/band name
+            
+        Returns:
+            List of band member names
+        """
+        # Check cache first
+        if artist in self._band_members_cache:
+            return self._band_members_cache[artist]
+        
+        members = []
+        
+        try:
+            import musicbrainzngs as mb
+            
+            # Search for the artist to get their MBID
+            search_result = mb.search_artists(artist=artist, limit=1)
+            artists = search_result.get('artist-list', [])
+            
+            if not artists:
+                logger.debug(f"No MusicBrainz artist found for '{artist}'")
+                self._band_members_cache[artist] = []
+                return []
+            
+            # Get the artist with member relationships
+            artist_mbid = artists[0]['id']
+            artist_type = artists[0].get('type', '').lower()
+            
+            # Only fetch members for groups/bands, not individuals
+            if artist_type not in ['group', 'orchestra', 'choir']:
+                logger.debug(f"Artist '{artist}' is type '{artist_type}', not a group - skipping member lookup")
+                self._band_members_cache[artist] = []
+                return []
+            
+            # Fetch artist with member relationships
+            artist_data = mb.get_artist_by_id(
+                artist_mbid,
+                includes=['artist-rels']
+            )
+            
+            # Extract band members from relationships
+            relations = artist_data.get('artist', {}).get('artist-relation-list', [])
+            
+            for relation in relations:
+                rel_type = relation.get('type', '')
+                # MusicBrainz uses 'member of band' relationship type
+                # Also check for 'member' and other variant relationship types
+                if rel_type in ['member of band', 'member', 'founder', 'lead vocals', 
+                               'lead performer', 'conductor', 'performing orchestra']:
+                    member_name = relation.get('artist', {}).get('name')
+                    if member_name and member_name not in members:
+                        members.append(member_name)
+                        logger.debug(f"Found band member '{member_name}' for '{artist}'")
+            
+            # Cache the result
+            self._band_members_cache[artist] = members
+            
+            if members:
+                logger.info(f"MusicBrainz found {len(members)} members for '{artist}': {', '.join(members)}")
+            else:
+                logger.debug(f"No band members found for '{artist}' in MusicBrainz")
+            
+            return members
+            
+        except Exception as e:
+            logger.debug(f"Failed to fetch band members for '{artist}' from MusicBrainz: {e}")
+            # Cache empty result to avoid repeated failed lookups
+            self._band_members_cache[artist] = []
+            return []
+    
     def _is_writer_same_as_artist(self, writer: str, artist: str) -> bool:
         """
         Check if writer name matches the album artist (fuzzy matching).
+        
+        Also checks if the writer is a band member of the artist group.
         
         Args:
             writer: Writer/composer name
             artist: Album artist name
             
         Returns:
-            True if they appear to be the same person/group
+            True if they appear to be the same person/group or if writer is a band member
         """
         # Normalize both names
         writer_norm = writer.lower().strip()
@@ -232,8 +311,18 @@ class CoverDetector:
         if writer_norm in artist_norm or artist_norm in writer_norm:
             return True
         
-        # Check if writer is a known member of the band
-        # (Could be expanded with a band member database)
+        # Check if writer is a band member
+        band_members = self._get_band_members(artist)
+            if band_members:
+            for member in band_members:
+                member_norm = member.lower().strip()
+                if member_norm == writer_norm:
+                    logger.debug(f"Writer '{writer}' identified as band member of '{artist}'")
+                    return True
+                # Also check partial matches (e.g., "Maynard Keenan" vs "Maynard James Keenan")
+                if (member_norm in writer_norm or writer_norm in member_norm) and len(writer_norm) > 5:
+                    logger.debug(f"Writer '{writer}' fuzzy-matched as band member '{member}' of '{artist}'")
+                    return True
         
         return False
     
