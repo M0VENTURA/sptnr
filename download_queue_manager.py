@@ -1681,7 +1681,6 @@ def check_downloads_folder():
             WHERE status IN ('queued', 'searching', 'downloading')
             ORDER BY created_at ASC
         """)
-            Copy a single completed track from /downloads into the /music library tree.
         
         # Recursively get all audio files in downloads folder and subdirectories
         downloads_files = []
@@ -1705,6 +1704,7 @@ def check_downloads_folder():
         for queue_item in queue_items:
             import shutil
             import re
+            match_found = None
             match_path = None
             
             # Try exact filename match first (but still verify metadata when available)
@@ -1721,26 +1721,12 @@ def check_downloads_folder():
 
                         meta_state = _metadata_matches_queue_item(metadata or {}, queue_item, file_path=file_info['full_path'])
                         if meta_state is False:
-                            logger.info(
-                def _extract_year(value):
-                    if value is None:
-                        return None
-                    match = re.search(r"(19|20)\d{2}", str(value))
-                    return match.group(0) if match else None
-
-                # Resolve year with priority:
-                # 1) queue metadata, 2) embedded file tags, 3) MusicBrainz release year
-                year = _extract_year(queue_item_dict.get('year'))
-                if not year:
-                    try:
-                        embedded = read_mp3_metadata(file_path)
-                        year = _extract_year(embedded.get('year') or embedded.get('date'))
-                    except Exception:
-                        year = None
-
-                        match_found = file_info['filename']
-                        match_path = file_info['full_path']
-                        break
+                            # File metadata doesn't match queue item, skip this file
+                            continue
+                        else:
+                            match_found = file_info['filename']
+                            match_path = file_info['full_path']
+                            break
             
             # If not found by filename, try fuzzy matching based on artist/title
             if not match_found:
@@ -1757,11 +1743,10 @@ def check_downloads_folder():
                     if meta_state is False:
                         continue
 
-                    'year': year,
-                        match_found = file_info['filename']
-                        match_path = file_info['full_path']
-                        logger.debug(f"Fuzzy matched '{queue_item['search_query']}' to '{file_info['rel_path']}'")
-                        break
+                    match_found = file_info['filename']
+                    match_path = file_info['full_path']
+                    logger.debug(f"Fuzzy matched '{queue_item['search_query']}' to '{file_info['rel_path']}'")
+                    break
             
             if match_found and match_path:
                 logger.info(f"Matched queue {queue_item['id']} ({queue_item['search_query']}) to file: {match_found}")
@@ -1882,10 +1867,6 @@ def is_match(filename, queue_item):
         artist = (queue_item['artist'] or '').lower()
         title = (queue_item['title'] or '').lower()
         album = (queue_item['album'] or '').lower()
-                                if not year:
-                                    year = 'Unknown'
-
-                                # Format track number with disc prefix if needed
         
         # Require artist/title presence first; this is a fallback only.
         if not artist or not title:
@@ -2098,12 +2079,11 @@ def auto_discover_and_queue_files():
                 
                 # Check if track exists in library (case-insensitive)
                 cursor.execute(f"""
-        shutil.copy2(file_path, dest_path)
-        logger.info(f"[COPY] {filename} → {dest_path}")
+                    SELECT id, status FROM tracks
+                    WHERE LOWER(artist) = LOWER({placeholder}) 
                     AND LOWER(album) = LOWER({placeholder}) 
                     AND LOWER(title) = LOWER({placeholder})
                 """, (artist, album, title))
-        logger.error(f"[COPY] Failed to copy file: {e}")
                 in_library = cursor.fetchone()
                 if in_library:
                     stats['already_in_library'] += 1

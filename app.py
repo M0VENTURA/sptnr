@@ -70,6 +70,7 @@ from helpers.config_helpers import get_config, get_navidrome_config, clear_confi
 from popularity import popularity_scan, row_get, download_and_save_album_art
 from popularity_helpers import build_artist_index
 from unified_scan import unified_scan_pipeline
+from merge_duplicate_artists import find_duplicate_artists, fetch_musicbrainz_artist_name, update_artist_name
 # --- Utility: Aggregate genres from tracks in DB ---
 def aggregate_genres_from_tracks(artist_name, db_path="/database/sptnr.db"):
     """
@@ -2344,10 +2345,12 @@ def artists():
     
     artists_data = sorted(artists_data, key=get_sort_key)
 
-    # Build per-artist correction indicators (duplicates and missing core metadata)
+    # Build per-artist correction indicators (duplicates, missing core metadata, and duplicate artists)
     duplicate_counts_by_artist = {}
     missing_counts_by_artist = {}
+    duplicate_artist_counts_by_artist = {}  # Track artists with same MBID but different names
     try:
+        # Query 1: Find duplicate tracks
         if is_pg:
             cursor.execute("""
                 WITH dup_groups AS (
@@ -2425,6 +2428,65 @@ def artists():
         for row in cursor.fetchall():
             row_dict = dict(row)
             missing_counts_by_artist[row_dict.get("display_name", "")] = int(row_dict.get("missing_count") or 0)
+        
+        # Query 3: Find duplicate artists (same MBID, different names)
+        cursor.execute("""
+            SELECT 
+                artist,
+                COUNT(DISTINCT musicbrainz_artist_id) as mbid_count,
+                COUNT(*) as track_count
+            FROM tracks
+            WHERE musicbrainz_artist_id IS NOT NULL 
+              AND musicbrainz_artist_id != ''
+              AND artist IS NOT NULL
+              AND TRIM(artist) != ''
+            GROUP BY artist
+        """)
+        
+        artist_mbid_map = {}  # Map artist name to their MBID(s)
+        for row in cursor.fetchall():
+            row_dict = dict(row)
+            artist_name = row_dict.get("artist", "")
+            if artist_name:
+                artist_mbid_map[artist_name] = row_dict
+        
+        # Now find which artists share the same MBID
+        cursor.execute("""
+            SELECT 
+                musicbrainz_artist_id,
+                COUNT(DISTINCT artist) as distinct_artist_names,
+                COUNT(*) as total_tracks
+            FROM tracks
+            WHERE musicbrainz_artist_id IS NOT NULL 
+              AND musicbrainz_artist_id != ''
+            GROUP BY musicbrainz_artist_id
+            HAVING COUNT(DISTINCT artist) > 1
+        """)
+        
+        # Build map of MBID -> list of artist names
+        mbid_to_artists_map = {}
+        for row in cursor.fetchall():
+            row_dict = dict(row)
+            mbid = row_dict.get("musicbrainz_artist_id", "")
+            if mbid:
+                mbid_to_artists_map[mbid] = row_dict.get("distinct_artist_names", 0)
+        
+        # Get list of artists by MBID to populate duplicate_artist_counts_by_artist
+        cursor.execute("""
+            SELECT DISTINCT
+                artist,
+                musicbrainz_artist_id
+            FROM tracks
+            WHERE musicbrainz_artist_id IS NOT NULL 
+              AND musicbrainz_artist_id != ''
+        """)
+        
+        for row in cursor.fetchall():
+            row_dict = dict(row)
+            artist_name = row_dict.get("artist", "")
+            mbid = row_dict.get("musicbrainz_artist_id", "")
+            if artist_name and mbid in mbid_to_artists_map:
+                duplicate_artist_counts_by_artist[artist_name] = mbid_to_artists_map[mbid]
     except Exception as correction_err:
         logging.debug(f"Could not compute artist correction indicators: {correction_err}")
 
@@ -2432,9 +2494,11 @@ def artists():
         display_name = artist_row.get("display_name", "")
         duplicate_count = duplicate_counts_by_artist.get(display_name, 0)
         missing_count = missing_counts_by_artist.get(display_name, 0)
+        duplicate_artist_count = duplicate_artist_counts_by_artist.get(display_name, 0)
         artist_row["duplicate_track_count"] = duplicate_count
         artist_row["missing_track_count"] = missing_count
-        artist_row["needs_correction"] = (duplicate_count + missing_count) > 0
+        artist_row["duplicate_artist_count"] = duplicate_artist_count
+        artist_row["needs_correction"] = (duplicate_count + missing_count + (1 if duplicate_artist_count > 0 else 0)) > 0
     
     conn.close()
     
@@ -7895,6 +7959,143 @@ def api_album_rename_files(artist, album):
         }), 500
 
 
+@app.route("/api/duplicate-artists/<path:artist>", methods=["GET"])
+def api_get_duplicate_artists(artist):
+    """
+    Get duplicate artists for a specific artist (same MBID, different names).
+    
+    URL Parameters:
+        artist: Artist name (URL decoded)
+    
+    Returns:
+        JSON with:
+        - duplicates: List of {mbid, canonical_mb, variations[], track_counts{}}
+        - artist_info: Current artist's MBID if available
+    """
+    from urllib.parse import unquote
+    artist = unquote(artist)
+    
+    try:
+        conn = get_db()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
+        # Get the MBID for the current artist
+        cursor.execute("""
+            SELECT DISTINCT musicbrainz_artist_id
+            FROM tracks
+            WHERE artist = %s AND musicbrainz_artist_id IS NOT NULL
+            LIMIT 1
+        """, (artist,))
+        
+        artist_mbid_row = cursor.fetchone()
+        artist_mbid = artist_mbid_row['musicbrainz_artist_id'] if artist_mbid_row else None
+        
+        duplicates = []
+        
+        if artist_mbid:
+            # Get all artist name variations for this MBID
+            cursor.execute("""
+                SELECT 
+                    artist,
+                    COUNT(*) as track_count
+                FROM tracks
+                WHERE musicbrainz_artist_id = %s
+                GROUP BY artist
+                ORDER BY track_count DESC
+            """, (artist_mbid,))
+            
+            variations_data = cursor.fetchall()
+            
+            if len(variations_data) > 1:
+                # Multiple variations found - this is a duplicate artist scenario
+                canonical_mb = fetch_musicbrainz_artist_name(artist_mbid) or variations_data[0]['artist']
+                variations = [v['artist'] for v in variations_data]
+                track_counts = {v['artist']: v['track_count'] for v in variations_data}
+                
+                duplicates.append({
+                    'mbid': artist_mbid,
+                    'canonical_mb': canonical_mb,
+                    'variations': variations,
+                    'track_counts': track_counts,
+                    'current_artist': artist
+                })
+        
+        conn.close()
+        
+        return jsonify({
+            "duplicates": duplicates,
+            "artist_info": {
+                "name": artist,
+                "mbid": artist_mbid
+            }
+        })
+        
+    except Exception as e:
+        logging.error(f"Error getting duplicate artists: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
+        return jsonify({
+            "duplicates": [],
+            "error": str(e)
+        }), 500
+
+
+@app.route("/api/duplicate-artists/merge", methods=["POST"])
+def api_merge_duplicate_artists():
+    """
+    Merge duplicate artists by updating all tracks to use canonical name.
+    
+    Request JSON:
+        - old_artist: Current artist name (str)
+        - new_artist: Canonical artist name to merge into (str)
+        - mbid: MusicBrainz artist ID (str)
+        - dry_run: Preview changes without executing (bool, optional)
+    
+    Returns:
+        JSON with:
+        - success: bool
+        - updated_db: Number of database records updated
+        - updated_files: Number of MP3 tags updated
+        - moved_files: Number of files reorganized
+        - errors: List of error messages
+        - message: Summary message
+    """
+    try:
+        data = request.get_json()
+        old_artist = data.get('old_artist', '').strip()
+        new_artist = data.get('new_artist', '').strip()
+        mbid = data.get('mbid', '').strip()
+        dry_run = data.get('dry_run', False)
+        
+        if not old_artist or not new_artist or not mbid:
+            return jsonify({
+                "success": False,
+                "error": "old_artist, new_artist, and mbid are required"
+            }), 400
+        
+        # Call the merge function from merge_duplicate_artists module
+        result = update_artist_name(old_artist, new_artist, mbid, dry_run=dry_run)
+        
+        return jsonify({
+            "success": True,
+            "dry_run": dry_run,
+            "updated_db": result.get('updated_db', 0),
+            "updated_files": result.get('updated_files', 0),
+            "moved_files": result.get('moved_files', 0),
+            "errors": result.get('errors', []),
+            "message": f"{'[DRY RUN] ' if dry_run else ''}Merged '{old_artist}' → '{new_artist}': {result.get('updated_db', 0)} tracks updated"
+        })
+        
+    except Exception as e:
+        logging.error(f"Error merging duplicate artists: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
 @app.route("/album/<path:artist>/<path:album>/rescan", methods=["POST"])
 def album_rescan(artist, album):
     """Trigger per-album pipeline: Navidrome fetch -> popularity -> single detection."""
@@ -8464,8 +8665,12 @@ def scan_mp3_import():
             directory = request.form.get('directory', None)
             dry_run = request.form.get('dry_run', '').lower() == 'on'
             
+            # Use database mode by default (reads from tracks table)
+            # If directory is specified, use directory mode instead
+            mode = 'directory' if directory else 'database'
+            
             # Create scanner instance
-            scanner = MP3ImportScanner(directory=directory, dry_run=dry_run, verbose=True)
+            scanner = MP3ImportScanner(directory=directory, dry_run=dry_run, verbose=True, mode=mode)
             
             # Start scanner in a background thread
             def run_scan():

@@ -9,7 +9,8 @@ Advanced features for download queue management including:
 """
 
 import os
-import sqlite3
+import psycopg2
+import psycopg2.extras
 import logging
 import shutil
 from datetime import datetime, timedelta
@@ -17,13 +18,19 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 MUSIC_DIR = os.environ.get("MUSIC_DIR", "/music")
 
 
 def get_db():
-    """Get database connection"""
-    return sqlite3.connect(DB_PATH, timeout=30)
+    """Get PostgreSQL database connection"""
+    return psycopg2.connect(
+        host=os.environ.get("PG_HOST", "sptnr-postgres"),
+        user=os.environ.get("PG_USER", "sptnr"),
+        password=os.environ.get("PG_PASSWORD", ""),
+        dbname=os.environ.get("PG_DATABASE", "sptnr"),
+        port=int(os.environ.get("PG_PORT", "5432")),
+        connect_timeout=10,
+    )
 
 
 def handle_unmatched_file(file_path, file_metadata):
@@ -112,11 +119,11 @@ def search_and_update_musicbrainz(queue_id, artist, title, album):
         
         cursor.execute("""
             UPDATE download_queue
-            SET release_mbid = ?,
-                release_year = ?,
-                album_artist = ?,
+            SET release_mbid = %s,
+                release_year = %s,
+                album_artist = %s,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
+            WHERE id = %s
         """, (release_mbid, release_year, release.get('artist', artist), queue_id))
         
         conn.commit()
@@ -141,7 +148,7 @@ def search_and_update_musicbrainz(queue_id, artist, title, album):
             # Check if track already exists in queue for this album
             cursor.execute("""
                 SELECT id FROM download_queue
-                WHERE LOWER(artist) = LOWER(?) AND LOWER(album) = LOWER(?) AND LOWER(title) = LOWER(?)
+                WHERE LOWER(artist) = LOWER(%s) AND LOWER(album) = LOWER(%s) AND LOWER(title) = LOWER(%s)
                 LIMIT 1
             """, (track['artist'], album, track['title']))
             
@@ -185,18 +192,14 @@ def move_to_music_collection(queue_id):
     """
     try:
         conn = get_db()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         
         # Get queue item
-        cursor.execute("SELECT * FROM download_queue WHERE id = ?", (queue_id,))
+        cursor.execute("SELECT * FROM download_queue WHERE id = %s", (queue_id,))
         queue_item = cursor.fetchone()
         
         if not queue_item:
             return {'error': 'Queue item not found'}
-        
-        # Convert to dict
-        columns = [desc[0] for desc in cursor.description]
-        queue_item = dict(zip(columns, queue_item))
         
         if queue_item['status'] != 'matched':
             return {'error': f"Track must be matched first (current status: {queue_item['status']})"}
@@ -238,9 +241,9 @@ def move_to_music_collection(queue_id):
         cursor.execute("""
             UPDATE download_queue
             SET status = 'completed',
-                file_path = ?,
+                file_path = %s,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
+            WHERE id = %s
         """, (dest_path, queue_id))
         
         conn.commit()
@@ -401,7 +404,7 @@ def cleanup_download_queue():
             DELETE FROM download_queue
             WHERE status = 'duplicate'
             AND auto_delete_at IS NOT NULL
-            AND auto_delete_at < datetime('now')
+            AND auto_delete_at < CURRENT_TIMESTAMP
         """)
         deleted_duplicates = cursor.rowcount
         
@@ -412,7 +415,7 @@ def cleanup_download_queue():
             FROM download_queue
             WHERE album IS NOT NULL AND album != ''
             GROUP BY album, artist
-            HAVING total = done
+            HAVING COUNT(*) = CAST(SUM(CASE WHEN status IN ('completed', 'in_collection') THEN 1 ELSE 0 END) AS INT)
         """)
         
         completed_albums = cursor.fetchall()
@@ -423,7 +426,7 @@ def cleanup_download_queue():
             
             cursor.execute("""
                 DELETE FROM download_queue
-                WHERE album = ? AND artist = ?
+                WHERE album = %s AND artist = %s
                 AND status IN ('completed', 'in_collection', 'duplicate')
             """, (album, artist))
             

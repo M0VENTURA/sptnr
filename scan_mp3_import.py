@@ -57,12 +57,20 @@ PROGRESS_FILE = os.path.join(os.path.dirname(__file__), 'mp3_import_progress.jso
 class MP3ImportScanner:
     """Scans and imports MP3 metadata into database."""
     
-    def __init__(self, directory: str = None, dry_run: bool = False, verbose: bool = False):
-        """Initialize scanner."""
+    def __init__(self, directory: str = None, dry_run: bool = False, verbose: bool = False, mode: str = "database"):
+        """Initialize scanner.
+        
+        Args:
+            directory: Directory to scan (for directory mode only)
+            dry_run: If True, don't modify database
+            verbose: If True, log detailed information
+            mode: "database" (read from DB tracks) or "directory" (scan directory)
+        """
         self.config = load_config()
-        self.directory = directory or self.config.get('music_library_path', os.path.expanduser('~/Music'))
+        self.directory = directory or self.config.get('music_library_path', '/Music')
         self.dry_run = dry_run
         self.verbose = verbose
+        self.mode = mode
         self.db_conn = None
         
         # Scan statistics
@@ -264,18 +272,72 @@ class MP3ImportScanner:
     
     def scan(self) -> Dict:
         """
-        Scan directory and import metadata.
+        Scan and import metadata.
+        
+        Mode can be:
+        - "database": Read file paths from tracks table and update metadata from files
+        - "directory": Scan directory for audio files and import
         
         Returns:
             Dictionary with scan results
         """
-        logger.info(f"Starting MP3 import scan: {self.directory}")
         self.start_time = datetime.now()
         try:
             self.db_conn = get_db()
         except Exception as e:
             logger.error(f"Failed to connect to database: {e}")
             return self._get_results(f"Database connection failed: {str(e)}", error=True)
+        
+        if self.mode == "database":
+            return self._scan_from_database()
+        else:
+            return self._scan_directory()
+    
+    def _scan_from_database(self) -> Dict:
+        """Scan by reading file paths from database tracks table."""
+        logger.info("Starting MP3 metadata import from database tracks")
+        
+        try:
+            cursor = self.db_conn.cursor()
+            
+            # Get all tracks with file paths from database
+            cursor.execute("""
+                SELECT id, file_path, artist, title, album
+                FROM tracks
+                WHERE file_path IS NOT NULL
+                  AND file_path != ''
+                  AND (file_path LIKE '%.mp3' OR file_path LIKE '%.flac' OR file_path LIKE '%.m4a' OR file_path LIKE '%.wav' OR file_path LIKE '%.ogg')
+                ORDER BY artist, album
+            """)
+            
+            tracks = cursor.fetchall()
+            self.total_files = len(tracks)
+            
+            logger.info(f"Found {self.total_files} tracks in database with file paths")
+            
+            if self.total_files == 0:
+                return self._get_results("No tracks with file paths found in database")
+            
+            # Process each track
+            for i, (track_id, file_path, db_artist, db_title, db_album) in enumerate(tracks, 1):
+                if self._update_track_from_file(track_id, file_path, db_artist, db_title, db_album):
+                    pass
+                
+                if i % 50 == 0:
+                    logger.info(f"Progress: {i}/{self.total_files}")
+            
+            elapsed = (datetime.now() - self.start_time).total_seconds() if self.start_time else 0
+            summary = f"Scan completed: {self.matched} matched, {self.imported} updated, {self.errors} errors"
+            return self._get_results(summary, elapsed)
+            
+        except Exception as e:
+            logger.error(f"Database scan failed: {e}", exc_info=True)
+            elapsed = (datetime.now() - self.start_time).total_seconds()
+            return self._get_results(f"Scan failed: {str(e)}", elapsed, error=True)
+    
+    def _scan_directory(self) -> Dict:
+        """Scan directory for audio files."""
+        logger.info(f"Starting MP3 import scan: {self.directory}")
         
         try:
             # Count total files
@@ -299,18 +361,96 @@ class MP3ImportScanner:
                 if i % 10 == 0:
                     logger.info(f"Progress: {i}/{self.total_files}")
             
-            elapsed = (datetime.now() - self.start_time).total_seconds()
+            elapsed = (datetime.now() - self.start_time).total_seconds() if self.start_time else 0
             return self._get_results(f"Scan completed in {elapsed:.1f}s", elapsed)
             
         except Exception as e:
             logger.error(f"Scan failed: {e}", exc_info=True)
-            return self._get_results(f"Scan failed: {str(e)}", error=True)
+            elapsed = (datetime.now() - self.start_time).total_seconds() if self.start_time else 0
+            return self._get_results(f"Scan failed: {str(e)}", elapsed, error=True)
         finally:
             if self.db_conn:
                 try:
                     self.db_conn.close()
                 except:
                     pass
+    
+    def _update_track_from_file(self, track_id: int, file_path: str, db_artist: str, db_title: str, db_album: str) -> bool:
+        """Read metadata from file and update database track."""
+        try:
+            self.current_file = os.path.basename(file_path)
+            
+            if not os.path.exists(file_path):
+                if self.verbose:
+                    logger.warning(f"File not found: {file_path}")
+                self.skipped += 1
+                self.processed += 1
+                self._write_progress()
+                return True
+            
+            # Extract metadata from file
+            file_ext = os.path.splitext(file_path)[1].lower()
+            metadata = {}
+            
+            if file_ext == '.mp3':
+                metadata = read_mp3_metadata(file_path)
+            else:
+                self.skipped += 1
+                self.processed += 1
+                self._write_progress()
+                return True
+            
+            if not metadata:
+                metadata = {}
+            
+            # Update database with metadata from file
+            if not self.dry_run:
+                cursor = self.db_conn.cursor()
+                
+                update_query = """
+                    UPDATE tracks 
+                    SET 
+                        artist = COALESCE(%s, artist),
+                        album_artist = COALESCE(%s, album_artist),
+                        title = COALESCE(%s, title),
+                        album = COALESCE(%s, album),
+                        year = COALESCE(%s, year),
+                        track_number = COALESCE(%s, track_number),
+                        disc_number = COALESCE(%s, disc_number),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                """
+                
+                cursor.execute(update_query, (
+                    metadata.get('artist') or db_artist,
+                    metadata.get('album_artist'),
+                    metadata.get('title') or db_title,
+                    metadata.get('album') or db_album,
+                    metadata.get('year'),
+                    metadata.get('track_number'),
+                    metadata.get('disc_number'),
+                    track_id
+                ))
+                self.db_conn.commit()
+            
+            self.matched += 1
+            if self.verbose:
+                logger.info(f"Updated: {db_artist} - {db_title}")
+            
+            self.processed += 1
+            self._write_progress()
+            return True
+            
+        except Exception as e:
+            self.errors += 1
+            if self.verbose:
+                logger.error(f"Error processing {file_path}: {e}")
+            self.processed += 1
+            try:
+                self.db_conn.rollback()
+            except:
+                pass
+            return False
     
     def _get_results(self, message: str = "", elapsed: float = 0, error: bool = False) -> Dict:
         """Format scan results."""

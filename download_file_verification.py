@@ -9,7 +9,8 @@ Verifies that files successfully moved from /downloads to /music remain accessib
 """
 
 import os
-import sqlite3
+import psycopg2
+import psycopg2.extras
 import logging
 from datetime import datetime, timedelta
 from contextlib import closing
@@ -24,14 +25,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
-
 
 def _is_postgres_connection(conn):
     """Check if connection is PostgreSQL."""
     try:
-        conn.execute("SELECT version();")
-        return True
+        return hasattr(conn, 'get_dsn_parameters')
     except:
         return False
 
@@ -39,18 +37,18 @@ def _is_postgres_connection(conn):
 def _get_db_connection():
     """Get database connection with proper row factory."""
     try:
-        if "postgresql" in os.environ.get("DATABASE_URL", "").lower():
-            import psycopg2
-            from psycopg2.extras import RealDictCursor
-            conn = psycopg2.connect(os.environ.get("DATABASE_URL"))
-            conn.row_factory = RealDictCursor
-            return conn
-        else:
-            conn = sqlite3.connect(DB_PATH, timeout=120.0)
-            conn.row_factory = sqlite3.Row
-            return conn
+        conn = psycopg2.connect(
+            host=os.environ.get("PG_HOST", "sptnr-postgres"),
+            user=os.environ.get("PG_USER", "sptnr"),
+            password=os.environ.get("PG_PASSWORD", ""),
+            dbname=os.environ.get("PG_DATABASE", "sptnr"),
+            port=int(os.environ.get("PG_PORT", "5432")),
+            connect_timeout=10,
+        )
+        return conn
     except Exception as e:
         logger.error(f"Failed to connect to database: {e}")
+        logger.error(f"PG_HOST={os.environ.get('PG_HOST')}, PG_DATABASE={os.environ.get('PG_DATABASE')}")
         raise
 
 
@@ -66,31 +64,23 @@ def ensure_verification_columns():
     try:
         conn = _get_db_connection()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
 
         # Check if download_queue table exists
-        if is_pg:
-            cursor.execute(
-                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'download_queue'"
-            )
-        else:
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='download_queue'")
+        cursor.execute(
+            "SELECT EXISTS(SELECT FROM information_schema.tables WHERE table_name = 'download_queue')"
+        )
 
-        if not cursor.fetchone():
+        if not cursor.fetchone()[0]:
             logger.warning("download_queue table does not exist yet")
             conn.close()
             return False
 
         # Determine existing columns
-        if is_pg:
-            cursor.execute(
-                """SELECT column_name FROM information_schema.columns 
-                   WHERE table_name = 'download_queue'"""
-            )
-            existing = [row[0] for row in cursor.fetchall()]
-        else:
-            cursor.execute("PRAGMA table_info(download_queue)")
-            existing = [row[1] for row in cursor.fetchall()]
+        cursor.execute(
+            """SELECT column_name FROM information_schema.columns 
+               WHERE table_name = 'download_queue'"""
+        )
+        existing = [row[0] for row in cursor.fetchall()]
 
         columns_to_add = [
             ("moved_at", "TIMESTAMP"),
@@ -102,10 +92,7 @@ def ensure_verification_columns():
         for col_name, col_type in columns_to_add:
             if col_name not in existing:
                 try:
-                    if is_pg:
-                        cursor.execute(f"ALTER TABLE download_queue ADD COLUMN {col_name} {col_type};")
-                    else:
-                        cursor.execute(f"ALTER TABLE download_queue ADD COLUMN {col_name} {col_type};")
+                    cursor.execute(f"ALTER TABLE download_queue ADD COLUMN {col_name} {col_type};")
                     conn.commit()
                     logger.info(f"✓ Added column '{col_name}' to download_queue")
                     added_any = True
@@ -189,14 +176,12 @@ def verify_file_in_music(queue_id, target_path):
         # Update queue item with verification timestamp
         conn = _get_db_connection()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
 
-        update_sql = f"""
+        update_sql = """
             UPDATE download_queue 
-            SET verified_in_music_at = {placeholder},
-                music_file_path = {placeholder}
-            WHERE id = {placeholder}
+            SET verified_in_music_at = %s,
+                music_file_path = %s
+            WHERE id = %s
         """
 
         try:
@@ -232,16 +217,14 @@ def mark_queue_item_moved(queue_id, target_path):
     try:
         conn = _get_db_connection()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
 
         moved_at = datetime.now().isoformat()
 
-        update_sql = f"""
+        update_sql = """
             UPDATE download_queue 
-            SET moved_at = {placeholder},
-                music_file_path = {placeholder}
-            WHERE id = {placeholder}
+            SET moved_at = %s,
+                music_file_path = %s
+            WHERE id = %s
         """
 
         cursor.execute(update_sql, (moved_at, target_path, queue_id))
@@ -267,12 +250,10 @@ def requeue_missing_file(queue_id):
     """
     try:
         conn = _get_db_connection()
-        cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
         # Get the queue item first
-        select_sql = "SELECT * FROM download_queue WHERE id = ?"
+        select_sql = "SELECT * FROM download_queue WHERE id = %s"
         cursor.execute(select_sql, (queue_id,))
         item = cursor.fetchone()
 
@@ -281,18 +262,13 @@ def requeue_missing_file(queue_id):
             conn.close()
             return False
 
-        if isinstance(item, dict):
-            original_file_path = item.get('file_path')
-        else:
-            original_file_path = item['file_path'] if hasattr(item, 'keys') else item[11]
-
         # Mark as completed so it can be retried
-        update_sql = f"""
+        update_sql = """
             UPDATE download_queue 
             SET status = 'completed',
                 verified_in_music_at = NULL,
                 moved_at = NULL
-            WHERE id = {placeholder}
+            WHERE id = %s
         """
 
         cursor.execute(update_sql, (queue_id,))
@@ -347,7 +323,7 @@ def check_missing_moved_files(minutes_old=30):
         """
 
         cursor.execute(select_sql, (cutoff_time,))
-        old_files = [dict(row) if isinstance(row, dict) else row for row in cursor.fetchall()]
+        old_files = cursor.fetchall()
         conn.close()
 
         if not old_files:
@@ -366,16 +342,10 @@ def check_missing_moved_files(minutes_old=30):
         requeued = 0
 
         for item in old_files:
-            if isinstance(item, dict):
-                queue_id = item.get('id')
-                music_file_path = item.get('music_file_path')
-                artist = item.get('artist', 'Unknown')
-                title = item.get('title', 'Unknown')
-            else:
-                queue_id = item[0]
-                music_file_path = item[2]
-                artist = item[3]
-                title = item[5]
+            queue_id = item.get('id')
+            music_file_path = item.get('music_file_path')
+            artist = item.get('artist', 'Unknown')
+            title = item.get('title', 'Unknown')
 
             if not music_file_path:
                 continue

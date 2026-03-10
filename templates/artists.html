@@ -121,7 +121,7 @@
                                     {{ artist.display_name }}
                                 </a>
                                 {% if artist.needs_correction %}
-                                    <a href="{{ url_for('artist_corrections', name=artist.link_artist) }}" class="ms-2 text-decoration-none" title="{{ artist.duplicate_track_count or 0 }} duplicate rows, {{ artist.missing_track_count or 0 }} missing metadata rows">
+                                    <a href="{{ url_for('artist_corrections', name=artist.link_artist) }}" class="ms-2 text-decoration-none" title="{{ artist.duplicate_track_count or 0 }} duplicate rows, {{ artist.missing_track_count or 0 }} missing metadata{% if artist.duplicate_artist_count and artist.duplicate_artist_count > 0 %}, {{ artist.duplicate_artist_count }} duplicate artist names{% endif %}">
                                         <span class="badge bg-danger">Correcting Needed</span>
                                     </a>
                                 {% endif %}
@@ -132,7 +132,7 @@
                                         <strong>{{ artist.display_name }}</strong>
                                     </a>
                                     {% if artist.needs_correction %}
-                                        <a href="{{ url_for('artist_corrections', name=artist.link_artist) }}" class="ms-1 text-decoration-none">
+                                        <a href="{{ url_for('artist_corrections', name=artist.link_artist) }}" class="ms-1 text-decoration-none" title="{{ artist.duplicate_track_count or 0 }} duplicate rows, {{ artist.missing_track_count or 0 }} missing metadata{% if artist.duplicate_artist_count and artist.duplicate_artist_count > 0 %}, {{ artist.duplicate_artist_count }} duplicate artist names{% endif %}">
                                             <span class="badge bg-danger">Correcting Needed</span>
                                         </a>
                                     {% endif %}

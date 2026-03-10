@@ -40,8 +40,33 @@
             <i class="bi bi-tools"></i> Corrections for {{ artist_name }}
         </h1>
         <div class="d-flex gap-2">
+            <span class="badge bg-info" id="duplicate-artists-badge" style="display: none;">0 duplicate artists</span>
             <span class="badge bg-danger">{{ duplicate_count }} duplicate rows</span>
             <span class="badge bg-warning text-dark">{{ missing_count }} missing metadata</span>
+        </div>
+    </div>
+
+    <!-- Duplicate Artists by MBID Section -->
+    <div class="card mb-4" id="duplicate-artists-section" style="display: none;">
+        <div class="card-header">
+            <h5 class="mb-0"><i class="bi bi-people"></i> Duplicate Artists (Same MBID, Different Names)</h5>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover mb-0 artist-corrections-table">
+                    <thead>
+                        <tr>
+                            <th>MusicBrainz ID</th>
+                            <th>Current Variations</th>
+                            <th>Recommended Name</th>
+                            <th class="text-center">Total Tracks</th>
+                            <th class="text-center">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="duplicate-artists-tbody">
+                    </tbody>
+                </table>
+            </div>
         </div>
     </div>
 
@@ -125,4 +150,167 @@
         </div>
     </div>
 </div>
+
+<!-- Merge Modal -->
+<div class="modal fade" id="mergeModal" tabindex="-1" aria-labelledby="mergeModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="mergeModalLabel">Confirm Artist Merge</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p>This will merge duplicate artist entries by updating:</p>
+                <ul>
+                    <li>ALL track records in the database</li>
+                    <li>ALL MP3 file metadata tags</li>
+                    <li>File organization in the music directory</li>
+                </ul>
+                <div class="alert alert-info">
+                    <strong id="mergeOldArtist"></strong> → <strong id="mergeNewArtist"></strong>
+                </div>
+                <p class="mb-0"><strong id="mergeTotalTracks"></strong> tracks will be updated.</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="confirmMergeBtn">Proceed with Merge</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Merge Progress Modal -->
+<div class="modal fade" id="mergeProgressModal" tabindex="-1" aria-labelledby="mergeProgressLabel" aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="mergeProgressLabel">Merging Artists...</h5>
+            </div>
+            <div class="modal-body">
+                <div class="progress mb-3">
+                    <div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 100%"></div>
+                </div>
+                <p id="mergeProgressText">Processing... Please wait.</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const artistName = "{{ artist_name }}";
+
+// Load duplicate artists on page load
+document.addEventListener('DOMContentLoaded', function() {
+    loadDuplicateArtists();
+});
+
+async function loadDuplicateArtists() {
+    try {
+        const response = await fetch(`/api/duplicate-artists/${encodeURIComponent(artistName)}`);
+        const data = await response.json();
+        
+        if (data.duplicates && data.duplicates.length > 0) {
+            displayDuplicateArtists(data.duplicates);
+        }
+    } catch (error) {
+        console.error('Error loading duplicate artists:', error);
+    }
+}
+
+function displayDuplicateArtists(duplicates) {
+    const section = document.getElementById('duplicate-artists-section');
+    const tbody = document.getElementById('duplicate-artists-tbody');
+    const badge = document.getElementById('duplicate-artists-badge');
+    
+    if (duplicates.length === 0) {
+        section.style.display = 'none';
+        return;
+    }
+    
+    tbody.innerHTML = '';
+    
+    duplicates.forEach(dup => {
+        const totalTracks = Object.values(dup.track_counts).reduce((a, b) => a + b, 0);
+        const variationsHtml = dup.variations.map(v => 
+            `<span class="badge bg-secondary me-1">${v} (${dup.track_counts[v]})</span>`
+        ).join('');
+        
+        const row = document.createElement('tr');
+        row.innerHTML = `
+            <td class="small text-muted">${dup.mbid.substring(0, 8)}...</td>
+            <td>${variationsHtml}</td>
+            <td><strong>${dup.canonical_mb}</strong></td>
+            <td class="text-center"><span class="badge bg-info">${totalTracks}</span></td>
+            <td class="text-center">
+                <button class="btn btn-sm btn-primary" onclick="showMergeDialog('${dup.mbid}', '${dup.variations[0]}', '${dup.canonical_mb}', ${totalTracks})">
+                    <i class="bi bi-merge"></i> Merge
+                </button>
+            </td>
+        `;
+        tbody.appendChild(row);
+    });
+    
+    section.style.display = 'block';
+    badge.textContent = `${duplicates.length} duplicate artist${duplicates.length !== 1 ? 's' : ''}`;
+    badge.style.display = 'inline-block';
+}
+
+function showMergeDialog(mbid, oldArtist, newArtist, totalTracks) {
+    document.getElementById('mergeOldArtist').textContent = oldArtist;
+    document.getElementById('mergeNewArtist').textContent = newArtist;
+    document.getElementById('mergeTotalTracks').textContent = `${totalTracks} tracks will be updated`;
+    
+    // Store merge data in button
+    document.getElementById('confirmMergeBtn').dataset.mbid = mbid;
+    document.getElementById('confirmMergeBtn').dataset.oldArtist = oldArtist;
+    document.getElementById('confirmMergeBtn').dataset.newArtist = newArtist;
+    
+    const mergeModal = new bootstrap.Modal(document.getElementById('mergeModal'));
+    mergeModal.show();
+}
+
+document.getElementById('confirmMergeBtn').addEventListener('click', async function() {
+    const mbid = this.dataset.mbid;
+    const oldArtist = this.dataset.oldArtist;
+    const newArtist = this.dataset.newArtist;
+    
+    // Close merge dialog
+    bootstrap.Modal.getInstance(document.getElementById('mergeModal')).hide();
+    
+    // Show progress dialog
+    const progressModal = new bootstrap.Modal(document.getElementById('mergeProgressModal'));
+    progressModal.show();
+    
+    try {
+        const response = await fetch('/api/duplicate-artists/merge', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                old_artist: oldArtist,
+                new_artist: newArtist,
+                mbid: mbid,
+                dry_run: false
+            })
+        });
+        
+        const result = await response.json();
+        
+        progressModal.hide();
+        
+        if (result.success) {
+            alert(`✓ Merge Complete!\n\n${result.message}\n\nDatabase: ${result.updated_db}\nMP3 Tags: ${result.updated_files}\nFiles Moved: ${result.moved_files}`);
+            // Reload the page to refresh data
+            location.reload();
+        } else {
+            alert(`✗ Merge Failed\n\n${result.error}\n\nErrors: ${result.errors.join('\n')}`);
+        }
+    } catch (error) {
+        progressModal.hide();
+        alert(`✗ Error: ${error.message}`);
+    }
+}
+);
+</script>
 {% endblock %}
