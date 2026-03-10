@@ -217,8 +217,7 @@ def update_artist_name(old_artist, new_artist, mbid, dry_run=False):
                     cursor.execute("""
                         UPDATE tracks
                         SET artist = %s,
-                            album_artist = %s,
-                            updated_at = CURRENT_TIMESTAMP
+                            album_artist = %s
                         WHERE id = %s
                     """, (new_artist, new_album_artist, track_id))
                     stats['updated_db'] += 1
