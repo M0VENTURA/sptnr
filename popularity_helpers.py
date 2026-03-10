@@ -812,6 +812,9 @@ def save_to_db(track_data):
     """
     conn = get_db_connection()
     cursor = conn.cursor()
+    is_pg = bool(_is_postgres_connection(cursor.connection if hasattr(cursor, 'connection') else conn))
+    placeholder = "%s" if is_pg else "?"
+    like_wildcard = "%%" if is_pg else "%"
     
     # Log the genres being saved for debugging
     if track_data.get('genres'):
@@ -834,8 +837,6 @@ def save_to_db(track_data):
         track_id_for_writer = sanitized_data.get('id')
         if track_id_for_writer:
             try:
-                is_pg = bool(_is_postgres_connection(cursor.connection if hasattr(cursor, 'connection') else conn))
-                placeholder = "%s" if is_pg else "?"
                 _run_with_db_lock_retry(
                     lambda: cursor.execute(f"SELECT writer FROM tracks WHERE id = {placeholder}", (track_id_for_writer,)),
                     "save_to_db writer lookup"
@@ -862,18 +863,19 @@ def save_to_db(track_data):
         # These have file_path like "__queued_for_download__queue_id_123"
         # Try matching by MBID first (most reliable), then by metadata
         queue_entry = None
+        queue_like_pattern = f"__queued_for_download__queue_id_{like_wildcard}"
         
         # If incoming track has MBID, try to match queue entry by MBID
         incoming_mbid = sanitized_data.get('mbid')
         if incoming_mbid:
             _run_with_db_lock_retry(
                 lambda: cursor.execute(
-                    """
+                    f"""
                     SELECT id, beets_mbid, mbid, file_path, last_scanned 
                     FROM tracks 
-                    WHERE (mbid = ? OR suggested_mbid = ?)
-                        AND file_path LIKE '__queued_for_download__queue_id_%'
-                        AND id != ?
+                    WHERE (mbid = {placeholder} OR suggested_mbid = {placeholder})
+                        AND file_path LIKE '{queue_like_pattern}'
+                        AND id != {placeholder}
                     LIMIT 1
                     """,
                     (incoming_mbid, incoming_mbid, track_id)
@@ -889,12 +891,12 @@ def save_to_db(track_data):
         if not queue_entry:
             _run_with_db_lock_retry(
                 lambda: cursor.execute(
-                    """
+                    f"""
                     SELECT id, beets_mbid, mbid, file_path, last_scanned 
                     FROM tracks 
-                    WHERE artist = ? AND album = ? AND title = ? 
-                        AND file_path LIKE '__queued_for_download__queue_id_%'
-                        AND id != ?
+                    WHERE artist = {placeholder} AND album = {placeholder} AND title = {placeholder} 
+                        AND file_path LIKE '{queue_like_pattern}'
+                        AND id != {placeholder}
                     LIMIT 1
                     """,
                     (artist, album, title, track_id)
@@ -909,8 +911,6 @@ def save_to_db(track_data):
             logging.info(f"Found queue entry {queue_id} for {artist} - {title}, updating to Navidrome ID {track_id}")
             
             # Delete the queue placeholder entry
-            is_pg = bool(_is_postgres_connection(cursor.connection if hasattr(cursor, 'connection') else conn))
-            placeholder = "%s" if is_pg else "?"
             _run_with_db_lock_retry(
                 lambda: cursor.execute(f"DELETE FROM tracks WHERE id = {placeholder}", (queue_id,)),
                 "save_to_db delete queue entry"
@@ -925,10 +925,10 @@ def save_to_db(track_data):
             if file_path:
                 _run_with_db_lock_retry(
                     lambda: cursor.execute(
-                        """
+                        f"""
                         SELECT id, beets_mbid, mbid, file_path, last_scanned 
                         FROM tracks 
-                        WHERE file_path = ? AND id != ?
+                        WHERE file_path = {placeholder} AND id != {placeholder}
                         LIMIT 1
                         """,
                         (file_path, track_id)
@@ -946,12 +946,12 @@ def save_to_db(track_data):
                 # Match by artist, album, title, and duration (within 2 seconds tolerance)
                                 _run_with_db_lock_retry(
                                         lambda: cursor.execute(
-                                                """
+                                                f"""
                                                 SELECT id, beets_mbid, mbid, file_path, last_scanned 
                                                 FROM tracks 
-                                                WHERE artist = ? AND album = ? AND title = ? 
-                                                    AND ABS(COALESCE(duration, 0) - ?) <= 2
-                                                    AND id != ?
+                                                WHERE artist = {placeholder} AND album = {placeholder} AND title = {placeholder} 
+                                                    AND ABS(COALESCE(duration, 0) - {placeholder}) <= 2
+                                                    AND id != {placeholder}
                                                 LIMIT 1
                                                 """,
                                                 (artist, album, title, duration, track_id)
@@ -962,11 +962,11 @@ def save_to_db(track_data):
                 # Match by artist, album, title only
                                 _run_with_db_lock_retry(
                                         lambda: cursor.execute(
-                                                """
+                                                f"""
                                                 SELECT id, beets_mbid, mbid, file_path, last_scanned 
                                                 FROM tracks 
-                                                WHERE artist = ? AND album = ? AND title = ? 
-                                                    AND id != ?
+                                                WHERE artist = {placeholder} AND album = {placeholder} AND title = {placeholder} 
+                                                    AND id != {placeholder}
                                                 LIMIT 1
                                                 """,
                                                 (artist, album, title, track_id)
@@ -1009,8 +1009,6 @@ def save_to_db(track_data):
             if new_score > existing_score:
                 # Keep new ID, delete old duplicate
                 logging.debug(f"Duplicate found: Keeping new track ID {track_id}, deleting {existing_id} (artist={artist}, title={title})")
-                is_pg = bool(_is_postgres_connection(cursor.connection if hasattr(cursor, 'connection') else conn))
-                placeholder = "%s" if is_pg else "?"
                 _run_with_db_lock_retry(
                     lambda: cursor.execute(f"DELETE FROM tracks WHERE id = {placeholder}", (existing_id,)),
                     "save_to_db delete older duplicate"
@@ -1022,9 +1020,9 @@ def save_to_db(track_data):
     
     # Perform insert or update
     columns = ', '.join(sanitized_data.keys())
-    placeholders = ', '.join(['?'] * len(sanitized_data))
+    placeholders_str = ', '.join([placeholder] * len(sanitized_data))
     update_clause = ', '.join([f"{k}=excluded.{k}" for k in sanitized_data.keys()])
-    sql = f"INSERT INTO tracks ({columns}) VALUES ({placeholders}) ON CONFLICT(id) DO UPDATE SET {update_clause}"
+    sql = f"INSERT INTO tracks ({columns}) VALUES ({placeholders_str}) ON CONFLICT(id) DO UPDATE SET {update_clause}"
     
     # Log if genres are being inserted/updated
     if 'genres' in sanitized_data:
