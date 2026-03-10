@@ -17,9 +17,9 @@ Usage:
 import os
 import sys
 import json
-import sqlite3
 import argparse
 import logging
+import psycopg2
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
@@ -27,8 +27,8 @@ from typing import Dict, List, Optional, Tuple
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(__file__))
 
-from helpers.metadata_reader import extract_metadata_from_mp3, extract_metadata_from_flac
-from database_abstraction import get_db, close_db
+from helpers.metadata_reader import read_mp3_metadata, read_genres_from_mp3
+from database_abstraction import get_db
 from helpers.config_loader import load_config
 
 # Configure logging
@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 # Constants
 SUPPORTED_FORMATS = {'.mp3', '.flac', '.m4a', '.wav', '.ogg'}
-PROGRESS_FILE = os.path.join(os.path.dirname(__file__), '..' if os.name == 'nt' else '.', 'mp3_import_progress.json')
+PROGRESS_FILE = os.path.join(os.path.dirname(__file__), 'mp3_import_progress.json')
 
 class MP3ImportScanner:
     """Scans and imports MP3 metadata into database."""
@@ -100,32 +100,38 @@ class MP3ImportScanner:
         Returns:
             Track ID if found, None otherwise
         """
-        cursor = self.db_conn.cursor()
-        
-        # Try exact match first
-        query = """
-            SELECT track_id, artist, title, album 
-            FROM tracks 
-            WHERE LOWER(title) = ? AND LOWER(artist) = ? AND LOWER(album) = ?
-            LIMIT 1
-        """
-        cursor.execute(query, (self._normalize_string(title), self._normalize_string(artist), self._normalize_string(album)))
-        result = cursor.fetchone()
-        
-        if result:
-            return result[0]
-        
-        # Try fuzzy match (title + artist)
-        query = """
-            SELECT track_id, artist, title, album 
-            FROM tracks 
-            WHERE LOWER(title) = ? AND LOWER(artist) = ?
-            LIMIT 1
-        """
-        cursor.execute(query, (self._normalize_string(title), self._normalize_string(artist)))
-        result = cursor.fetchone()
-        
-        return result[0] if result else None
+        try:
+            cursor = self.db_conn.cursor()
+            
+            # Try exact match first
+            query = """
+                SELECT track_id FROM tracks 
+                WHERE LOWER(title) = LOWER(%s) AND LOWER(artist) = LOWER(%s) AND LOWER(album) = LOWER(%s)
+                LIMIT 1
+            """
+            cursor.execute(query, (title, artist, album))
+            result = cursor.fetchone()
+            
+            if result:
+                return result[0]
+            
+            # Try fuzzy match (title + artist)
+            query = """
+                SELECT track_id FROM tracks 
+                WHERE LOWER(title) = LOWER(%s) AND LOWER(artist) = LOWER(%s)
+                LIMIT 1
+            """
+            cursor.execute(query, (title, artist))
+            result = cursor.fetchone()
+            
+            return result[0] if result else None
+        except Exception as e:
+            logger.debug(f"Error matching track: {e}")
+            try:
+                self.db_conn.rollback()
+            except:
+                pass
+            return None
     
     def _import_track(self, file_path: str, metadata: Dict) -> Tuple[bool, str]:
         """
@@ -140,8 +146,6 @@ class MP3ImportScanner:
         
         try:
             cursor = self.db_conn.cursor()
-            
-            # Check if track already exists
             existing_id = self._match_track_in_db(title, artist, album)
             
             if existing_id:
@@ -150,53 +154,54 @@ class MP3ImportScanner:
                     update_query = """
                         UPDATE tracks 
                         SET 
-                            path = ?,
-                            year = ?,
-                            genres = ?,
-                            mbid = ?,
-                            comment = ?,
-                            imp_from_file = 1,
-                            file_metadata_updated = datetime('now')
-                        WHERE track_id = ?
+                            path = %s,
+                            year = %s,
+                            genres = %s,
+                            comment = %s,
+                            last_metadata_update = now()
+                        WHERE track_id = %s
                     """
                     cursor.execute(update_query, (
                         file_path,
-                        metadata.get('year'),
-                        metadata.get('genres_str', ''),
-                        metadata.get('mbid'),
-                        metadata.get('comment'),
+                        metadata.get('date'),
+                        metadata.get('genre', ''),
+                        metadata.get('comment', ''),
                         existing_id
                     ))
                     self.db_conn.commit()
                 
                 self.matched += 1
-                return True, f"Matched existing track: {artist} - {title}"
+                return True, f"Matched existing: {artist} - {title}"
             else:
                 # Create new track
                 if not self.dry_run:
                     insert_query = """
                         INSERT INTO tracks 
-                        (artist, title, album, path, year, genres, mbid, comment, imp_from_file)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+                        (artist, title, album, path, year, genres, comment)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """
                     cursor.execute(insert_query, (
                         artist,
                         title,
                         album,
                         file_path,
-                        metadata.get('year'),
-                        metadata.get('genres_str', ''),
-                        metadata.get('mbid'),
-                        metadata.get('comment')
+                        metadata.get('date'),
+                        metadata.get('genre', ''),
+                        metadata.get('comment', '')
                     ))
                     self.db_conn.commit()
                 
                 self.imported += 1
-                return True, f"Imported new track: {artist} - {title}"
+                return True, f"Imported: {artist} - {title}"
                 
         except Exception as e:
             self.errors += 1
-            return False, f"Error importing {title}: {str(e)}"
+            if not self.dry_run:
+                try:
+                    self.db_conn.rollback()
+                except:
+                    pass
+            return False, f"Error: {str(e)}"
     
     def _scan_file(self, file_path: str) -> bool:
         """
@@ -216,9 +221,7 @@ class MP3ImportScanner:
             metadata = {}
             
             if file_ext == '.mp3':
-                metadata = extract_metadata_from_mp3(file_path)
-            elif file_ext == '.flac':
-                metadata = extract_metadata_from_flac(file_path)
+                metadata = read_mp3_metadata(file_path)
             else:
                 self.skipped += 1
                 return True
@@ -256,10 +259,17 @@ class MP3ImportScanner:
         """
         logger.info(f"Starting MP3 import scan: {self.directory}")
         self.start_time = datetime.now()
-        self.db_conn = get_db()
+        try:
+            self.db_conn = get_db()
+        except Exception as e:
+            logger.error(f"Failed to connect to database: {e}")
+            return self._get_results(f"Database connection failed: {str(e)}", error=True)
         
         try:
             # Count total files
+            if not os.path.exists(self.directory):
+                return self._get_results(f"Directory not found: {self.directory}", error=True)
+                
             all_files = list(Path(self.directory).rglob('*'))
             audio_files = [f for f in all_files if f.suffix.lower() in SUPPORTED_FORMATS]
             self.total_files = len(audio_files)
@@ -271,7 +281,8 @@ class MP3ImportScanner:
             
             # Process each file
             for i, file_path in enumerate(audio_files, 1):
-                self._scan_file(str(file_path))
+                if self._scan_file(str(file_path)):
+                    pass
                 
                 if i % 10 == 0:
                     logger.info(f"Progress: {i}/{self.total_files}")
@@ -284,7 +295,10 @@ class MP3ImportScanner:
             return self._get_results(f"Scan failed: {str(e)}", error=True)
         finally:
             if self.db_conn:
-                close_db(self.db_conn)
+                try:
+                    self.db_conn.close()
+                except:
+                    pass
     
     def _get_results(self, message: str = "", elapsed: float = 0, error: bool = False) -> Dict:
         """Format scan results."""

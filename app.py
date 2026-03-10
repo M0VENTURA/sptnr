@@ -8073,6 +8073,53 @@ def scan_singles():
     return redirect(url_for("dashboard"))
 
 
+@app.route("/scan/mp3-import", methods=["POST"])
+def scan_mp3_import():
+    """Run MP3 metadata import scan"""
+    global scan_process_mp3_import
+    
+    with scan_lock:
+        # Check if scan is already running
+        if scan_process_mp3_import and scan_process_mp3_import.poll() is None:
+            flash("MP3 metadata import scan is already running", "warning")
+            return redirect(url_for("dashboard"))
+        
+        try:
+            # Import MP3ImportScanner here to avoid issues if file isn't ready
+            from scan_mp3_import import MP3ImportScanner
+            
+            # Get parameters from request
+            directory = request.form.get('directory', None)
+            dry_run = request.form.get('dry_run', '').lower() == 'on'
+            
+            # Create scanner instance
+            scanner = MP3ImportScanner(directory=directory, dry_run=dry_run, verbose=True)
+            
+            # Start scanner in a background thread
+            def run_scan():
+                try:
+                    results = scanner.scan()
+                    logger.info(f"MP3 import scan completed: {results}")
+                except Exception as e:
+                    logger.error(f"MP3 import scan failed: {e}", exc_info=True)
+            
+            import threading
+            scan_thread = threading.Thread(target=run_scan, daemon=True)
+            scan_thread.start()
+            scan_process_mp3_import = scan_thread
+            
+            flash("MP3 metadata import scan started. Check progress below.", "success")
+            
+        except ImportError as e:
+            logger.error(f"Failed to import MP3ImportScanner: {e}")
+            flash(f"❌ Failed to start MP3 import scan: {str(e)}", "error")
+        except Exception as e:
+            logger.error(f"Error starting MP3 import scan: {e}", exc_info=True)
+            flash(f"❌ Error starting MP3 import scan: {str(e)}", "error")
+    
+    return redirect(url_for("dashboard"))
+
+
 @app.route("/scan/stop", methods=["POST"])
 def scan_stop():
     """Stop the running scan (main scan process)"""
@@ -8162,6 +8209,34 @@ def scan_stop_singles():
     return redirect(url_for("dashboard"))
 
 
+@app.route("/scan/stop-mp3-import", methods=["POST"])
+def scan_stop_mp3_import():
+    """Stop the MP3 metadata import scan"""
+    global scan_process_mp3_import
+    
+    with scan_lock:
+        if scan_process_mp3_import is not None:
+            if hasattr(scan_process_mp3_import, 'is_alive') and scan_process_mp3_import.is_alive():
+                mp3_progress_file = os.path.join(os.path.dirname(DB_PATH), "mp3_import_progress.json")
+                # Request scan stop by writing is_running=False to progress file
+                try:
+                    with open(mp3_progress_file, 'r', encoding='utf-8') as f:
+                        progress = json.load(f)
+                    progress['is_running'] = False
+                    with open(mp3_progress_file, 'w', encoding='utf-8') as f:
+                        json.dump(progress, f, indent=2)
+                except Exception:
+                    pass
+                scan_process_mp3_import = None
+                flash("MP3 import scan stop requested (may take a moment to finish)", "info")
+            else:
+                flash("No MP3 import scan is currently running", "warning")
+        else:
+            flash("No MP3 import scan is currently running", "warning")
+    
+    return redirect(url_for("dashboard"))
+
+
 @app.route("/scan/stop-combined", methods=["POST"])
 def scan_stop_combined():
     """Stop the combined scan"""
@@ -8189,7 +8264,7 @@ def scan_stop_combined():
 @app.route("/scan/stop-all", methods=["POST"])
 def scan_stop_all():
     """Stop all running scans"""
-    global scan_process, scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_combined, scan_process_missing_releases
+    global scan_process, scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_combined, scan_process_missing_releases, scan_process_mp3_import
     
     stopped_scans = []
     db_dir = os.path.dirname(DB_PATH)
@@ -8304,6 +8379,35 @@ def scan_stop_all():
                         if progress.get('is_running'):
                             _request_scan_stop(missing_progress_file, "missing_releases_scan")
                             stopped_scans.append("Missing releases")
+                except Exception:
+                    pass
+        
+        # Stop MP3 Import scan
+        if scan_process_mp3_import is not None:
+            if hasattr(scan_process_mp3_import, 'is_alive') and scan_process_mp3_import.is_alive():
+                mp3_progress_file = os.path.join(db_dir, "mp3_import_progress.json")
+                try:
+                    with open(mp3_progress_file, 'r', encoding='utf-8') as f:
+                        progress = json.load(f)
+                    progress['is_running'] = False
+                    with open(mp3_progress_file, 'w', encoding='utf-8') as f:
+                        json.dump(progress, f, indent=2)
+                except Exception:
+                    pass
+                scan_process_mp3_import = None
+                stopped_scans.append("MP3 import")
+        else:
+            # Check progress file
+            mp3_progress_file = os.path.join(db_dir, "mp3_import_progress.json")
+            if os.path.exists(mp3_progress_file):
+                try:
+                    with open(mp3_progress_file, 'r', encoding='utf-8') as f:
+                        progress = json.load(f)
+                        if progress.get('is_running'):
+                            progress['is_running'] = False
+                            with open(mp3_progress_file, 'w', encoding='utf-8') as f:
+                                json.dump(progress, f, indent=2)
+                            stopped_scans.append("MP3 import")
                 except Exception:
                     pass
     
