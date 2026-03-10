@@ -1991,7 +1991,10 @@ def auto_discover_and_queue_files():
                 FROM information_schema.columns
                 WHERE table_name = 'download_queue' AND table_schema = 'public'
             """)
-            columns = [row[0] for row in cursor.fetchall()]
+            columns = [
+                (row.get('column_name') if hasattr(row, 'get') else row[0])
+                for row in cursor.fetchall()
+            ]
         else:
             cursor.execute("PRAGMA table_info(download_queue)")
             columns = [row[1] for row in cursor.fetchall()]
@@ -2332,18 +2335,26 @@ def get_retry_queue(limit=50):
     """
     try:
         conn = get_db()
-        cursor = conn.cursor()
+        from app import _is_postgres_connection as app_is_postgres_connection
+        is_pg = bool(app_is_postgres_connection(conn))
+        placeholder = "%s" if is_pg else "?"
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) if is_pg else conn.cursor()
         
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT * FROM download_queue 
             WHERE status = 'queued' 
             AND (next_retry_at IS NULL OR next_retry_at <= CURRENT_TIMESTAMP)
             AND retry_count < max_retries
             ORDER BY priority ASC, next_retry_at ASC
-            LIMIT ?
+            LIMIT {placeholder}
         """, (limit,))
         
-        items = [dict(row) for row in cursor.fetchall()]
+        rows = cursor.fetchall()
+        if rows and not isinstance(rows[0], dict):
+            col_names = [d[0] for d in cursor.description]
+            items = [dict(zip(col_names, r)) for r in rows]
+        else:
+            items = [dict(row) for row in rows]
         conn.close()
         
         return items
@@ -2364,11 +2375,11 @@ def get_completed_queue(limit=50):
     """
     try:
         conn = get_db()
-        cursor = conn.cursor()
 
         from app import _is_postgres_connection as app_is_postgres_connection
         is_pg = bool(app_is_postgres_connection(conn))
         placeholder = "%s" if is_pg else "?"
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) if is_pg else conn.cursor()
 
         cursor.execute(f"""
             SELECT * FROM download_queue 
@@ -2378,7 +2389,12 @@ def get_completed_queue(limit=50):
             LIMIT {placeholder}
         """, (limit,))
 
-        items = [dict(row) for row in cursor.fetchall()]
+        rows = cursor.fetchall()
+        if rows and not isinstance(rows[0], dict):
+            col_names = [d[0] for d in cursor.description]
+            items = [dict(zip(col_names, r)) for r in rows]
+        else:
+            items = [dict(row) for row in rows]
         conn.close()
 
         return items
