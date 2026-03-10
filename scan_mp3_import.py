@@ -416,8 +416,7 @@ class MP3ImportScanner:
                         album = COALESCE(%s, album),
                         year = COALESCE(%s, year),
                         track_number = COALESCE(%s, track_number),
-                        disc_number = COALESCE(%s, disc_number),
-                        updated_at = CURRENT_TIMESTAMP
+                        disc_number = COALESCE(%s, disc_number)
                     WHERE id = %s
                 """
                 
