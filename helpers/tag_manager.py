@@ -565,6 +565,29 @@ def _write_flac_tags(file_path: str, tags: Dict[str, Any]) -> bool:
         return False
 
 
+def update_file_tags(file_path: str, tag_updates: Dict[str, Any]) -> bool:
+    """
+    Update a subset of metadata tags in an audio file.
+
+    Validates inputs and delegates to write_tags_to_file.
+
+    Args:
+        file_path: Path to audio file
+        tag_updates: Dictionary of tag names and updated values
+
+    Returns:
+        True if successful, False otherwise
+    """
+    if not file_path:
+        logger.error("update_file_tags called with empty file_path")
+        return False
+    if not tag_updates:
+        logger.warning(f"No tag updates provided for {file_path}")
+        return False
+    logger.debug(f"Updating tags for {file_path}: {list(tag_updates.keys())}")
+    return write_tags_to_file(file_path, tag_updates)
+
+
 def sync_track_tags_to_file(track_id: str) -> bool:
     """
     Sync database tags back to the audio file.
