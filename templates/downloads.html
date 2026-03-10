@@ -778,6 +778,40 @@
 
     <!-- Download Queue Tab -->
     <div class="tab-pane fade" id="queueContent" role="tabpanel">
+
+      <!-- ── Queue Stats Bar ── -->
+      <div class="card mb-3 border-0 bg-body-tertiary" id="queueStatsBar">
+        <div class="card-body py-2">
+          <div class="d-flex flex-wrap align-items-center gap-3">
+            <span class="text-muted small fw-semibold me-1"><i class="bi bi-speedometer2"></i> Queue</span>
+            <span class="badge bg-primary px-3 py-2" id="statQueued" title="Waiting to be searched/downloaded">
+              <i class="bi bi-hourglass-split me-1"></i><span id="statQueuedNum">0</span> Queued
+            </span>
+            <span class="badge bg-warning text-dark px-3 py-2" id="statDownloading" title="Currently searching or downloading">
+              <i class="bi bi-arrow-down-circle me-1"></i><span id="statDownloadingNum">0</span> Active
+            </span>
+            <span class="badge bg-success px-3 py-2" id="statCompleted" title="Downloaded – ready to organise">
+              <i class="bi bi-check-circle me-1"></i><span id="statCompletedNum">0</span> Ready
+            </span>
+            <span class="badge bg-danger px-3 py-2" id="statFailed" title="Failed downloads">
+              <i class="bi bi-x-circle me-1"></i><span id="statFailedNum">0</span> Failed
+            </span>
+            <span class="badge bg-info text-dark px-3 py-2" id="statImported" title="Moved to library">
+              <i class="bi bi-music-note-list me-1"></i><span id="statImportedNum">0</span> Imported
+            </span>
+            <div class="ms-auto d-flex align-items-center gap-2">
+              <span id="processorStatusBadge" class="badge bg-secondary" title="Queue processor status">
+                <i class="bi bi-circle-fill me-1" style="font-size:0.6em"></i> Processor
+              </span>
+              <span id="queueLastRefreshed" class="text-muted" style="font-size:0.75rem"></span>
+              <button class="btn btn-sm btn-outline-secondary" onclick="loadQueueStatus()" title="Refresh now">
+                <i class="bi bi-arrow-clockwise" id="queueRefreshIcon"></i>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Add to Queue Form -->
       <div class="card mb-4">
         <div class="card-header d-flex justify-content-between align-items-center">
@@ -816,16 +850,48 @@
         </div>
       </div>
 
+      <!-- ── Filter Bar ── -->
+      <div class="card mb-3 border-0">
+        <div class="card-body py-2 px-3">
+          <div class="d-flex flex-wrap align-items-center gap-2">
+            <span class="text-muted small fw-semibold"><i class="bi bi-funnel"></i> Filter:</span>
+            <div class="btn-group btn-group-sm" role="group" aria-label="Filter by status" id="queueStatusFilter">
+              <input type="radio" class="btn-check" name="queueFilter" id="filterAll" value="all" checked>
+              <label class="btn btn-outline-secondary" for="filterAll">All</label>
+              <input type="radio" class="btn-check" name="queueFilter" id="filterActive" value="active">
+              <label class="btn btn-outline-primary" for="filterActive">Active</label>
+              <input type="radio" class="btn-check" name="queueFilter" id="filterCompleted" value="completed">
+              <label class="btn btn-outline-success" for="filterCompleted">Ready</label>
+              <input type="radio" class="btn-check" name="queueFilter" id="filterFailed" value="failed">
+              <label class="btn btn-outline-danger" for="filterFailed">Failed</label>
+            </div>
+            <div class="btn-group btn-group-sm ms-2" role="group" aria-label="Filter by source" id="queueSourceFilter">
+              <input type="radio" class="btn-check" name="queueSourceF" id="srcAll" value="" checked>
+              <label class="btn btn-outline-secondary" for="srcAll">All Sources</label>
+              <input type="radio" class="btn-check" name="queueSourceF" id="srcSlskd" value="soulseek">
+              <label class="btn btn-outline-secondary" for="srcSlskd">Soulseek</label>
+              <input type="radio" class="btn-check" name="queueSourceF" id="srcQbit" value="qbittorrent">
+              <label class="btn btn-outline-secondary" for="srcQbit">qBittorrent</label>
+            </div>
+            <div class="ms-auto d-flex gap-2">
+              <button class="btn btn-sm btn-outline-warning" onclick="retryAllFailed()" id="retryAllBtn" title="Re-queue all failed items" style="display:none">
+                <i class="bi bi-arrow-counterclockwise"></i> Retry All Failed
+              </button>
+              <button class="btn btn-sm btn-outline-danger" onclick="clearEntireQueue()" title="Clear entire queue (keep imported)">
+                <i class="bi bi-trash3"></i> Clear Queue
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Active Queue -->
-      <div class="card mb-4">
+      <div class="card mb-4" id="activeQueueCard">
         <div class="card-header d-flex justify-content-between align-items-center">
           <h5 class="card-title mb-0">
             <i class="bi bi-arrow-down-circle"></i> Active Queue
             <span id="queueActiveCount" class="badge bg-primary ms-2" style="display:none"></span>
           </h5>
-          <button class="btn btn-sm btn-outline-primary" onclick="loadQueueStatus()">
-            <i class="bi bi-arrow-clockwise"></i> Refresh
-          </button>
         </div>
         <div class="card-body p-0">
           <div id="activeQueueEmpty" class="text-center py-4 text-muted">
@@ -837,7 +903,7 @@
       </div>
 
       <!-- Completed & Ready to Organize (includes unmatched) -->
-      <div class="card mb-4">
+      <div class="card mb-4" id="completedQueueCard">
         <div class="card-header d-flex justify-content-between align-items-center">
           <h5 class="card-title mb-0">
             <i class="bi bi-check-circle"></i> Completed &amp; Ready to Organize
@@ -872,13 +938,16 @@
       </div>
 
       <!-- Failed Queue -->
-      <div class="card mb-4">
+      <div class="card mb-4" id="failedQueueCard">
         <div class="card-header d-flex justify-content-between align-items-center">
           <h5 class="card-title mb-0">
             <i class="bi bi-x-circle"></i> Failed Downloads
             <span id="failedBadge" class="badge bg-danger ms-2" style="display:none"></span>
             <span id="queueFailedCount" style="display:none"></span>
           </h5>
+          <button class="btn btn-sm btn-outline-warning" onclick="retryAllFailed()" id="retryAllFailedBtn" style="display:none">
+            <i class="bi bi-arrow-counterclockwise"></i> Retry All
+          </button>
         </div>
         <div class="card-body p-0">
           <div id="failedQueueEmpty" class="text-center py-4 text-muted">
@@ -2048,6 +2117,16 @@ window.addEventListener('beforeunload', () => {
     background-color: var(--secondary-bg) !important;
     color: var(--text-primary) !important;
 }
+
+/* Refresh icon spin animation */
+@keyframes spin-once {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+.spin-once {
+  animation: spin-once 0.5s linear;
+}
+
 
 .table-responsive {
     background-color: var(--secondary-bg) !important;
@@ -4348,40 +4427,70 @@ async function addToQueue(event) {
 }
 
 async function loadQueueStatus() {
+  // Animate refresh icon
+  const icon = document.getElementById('queueRefreshIcon');
+  if (icon) icon.classList.add('spin-once');
+
   try {
-    const response = await fetch('/api/queue/status?limit=100');
-    
-    // Check HTTP status before parsing JSON
-    if (!response.ok) {
-      console.error(`HTTP Error ${response.status}: ${response.statusText}`);
+    const [statusResp, importedResp, processorResp] = await Promise.all([
+      fetch('/api/queue/status?limit=200'),
+      fetch('/api/queue/imported?limit=50'),
+      fetch('/api/queue-processor/status').catch(() => null)
+    ]);
+
+    if (!statusResp.ok) {
+      console.error(`HTTP Error ${statusResp.status}: ${statusResp.statusText}`);
       return;
     }
-    
-    const data = await response.json();
-    
+
+    const data = await statusResp.json();
     if (!data.success) {
       console.error('Queue status error:', data.error);
       return;
     }
-    
-    // Also fetch recently imported tracks
-    const importedResponse = await fetch('/api/queue/imported?limit=50');
-    
-    // Check HTTP status before parsing JSON
-    if (!importedResponse.ok) {
-      console.error(`HTTP Error ${importedResponse.status}: ${importedResponse.statusText}`);
-      return;
-    }
-    
-    const importedData = await importedResponse.json();
-    const imported = importedData.success ? importedData.imported : [];
-    
+
+    const importedData = importedResp && importedResp.ok ? await importedResp.json() : { success: false };
+    const imported = importedData.success ? (importedData.imported || []) : [];
+
     // Separate items by status
     const active = data.active.filter(item => ['queued', 'searching', 'downloading'].includes(item.status));
     const completed = data.completed.filter(item => ['completed', 'unmatched', 'possible_duplicate'].includes(item.status) && item.file_path);
     const failed = data.active.filter(item => item.status === 'failed');
 
-    // Update counts (elements may not exist if queue tab is not shown)
+    // ── Update stats bar ──
+    const countQueued = active.filter(i => i.status === 'queued').length;
+    const countActive = active.filter(i => ['searching','downloading'].includes(i.status)).length;
+    const setNum = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+    setNum('statQueuedNum', countQueued);
+    setNum('statDownloadingNum', countActive + data.newly_completed.length);
+    setNum('statCompletedNum', completed.length);
+    setNum('statFailedNum', failed.length);
+    setNum('statImportedNum', imported.length);
+
+    // Show/hide Retry All button
+    ['retryAllBtn','retryAllFailedBtn'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = failed.length > 0 ? 'inline-flex' : 'none';
+    });
+
+    // ── Processor status ──
+    if (processorResp && processorResp.ok) {
+      const pData = await processorResp.json();
+      const badge = document.getElementById('processorStatusBadge');
+      if (badge) {
+        const running = pData.running || pData.status === 'running';
+        badge.className = `badge ${running ? 'bg-success' : 'bg-secondary'}`;
+        badge.innerHTML = `<i class="bi bi-circle-fill me-1" style="font-size:0.6em"></i> Processor ${running ? 'Running' : 'Stopped'}`;
+      }
+    }
+
+    // ── Last refreshed ──
+    const refreshEl = document.getElementById('queueLastRefreshed');
+    if (refreshEl) {
+      refreshEl.textContent = 'Updated ' + new Date().toLocaleTimeString();
+    }
+
+    // ── Count badges (old elements kept for compat) ──
     const activeCountEl = document.getElementById('queueActiveCount');
     const completedCountEl = document.getElementById('queueCompletedCount');
     const failedCountEl = document.getElementById('queueFailedCount');
@@ -4396,18 +4505,37 @@ async function loadQueueStatus() {
       navBadge.textContent = totalActive;
       navBadge.style.display = totalActive > 0 ? 'inline-block' : 'none';
     }
-    
-    // Render active queue
-    renderActiveQueue(active, data.newly_completed);
-    
-    // Render completed queue (combine completed + imported)
-    renderCompletedQueue(completed.concat(imported));
-    
-    // Render failed queue
-    renderFailedQueue(failed);
-    
+
+    // ── Apply source filter ──
+    const srcFilter = document.querySelector('input[name="queueSourceF"]:checked');
+    const srcVal = srcFilter ? srcFilter.value : '';
+    const filterBySource = items => srcVal ? items.filter(i => i.source === srcVal) : items;
+
+    // ── Apply status filter ──
+    const statusFilter = document.querySelector('input[name="queueFilter"]:checked');
+    const filterVal = statusFilter ? statusFilter.value : 'all';
+
+    const activeCard = document.getElementById('activeQueueCard');
+    const completedCard = document.getElementById('completedQueueCard');
+    const failedCard = document.getElementById('failedQueueCard');
+
+    const showActive    = filterVal === 'all' || filterVal === 'active';
+    const showCompleted = filterVal === 'all' || filterVal === 'completed';
+    const showFailed    = filterVal === 'all' || filterVal === 'failed';
+
+    if (activeCard)    activeCard.style.display    = showActive    ? '' : 'none';
+    if (completedCard) completedCard.style.display = showCompleted ? '' : 'none';
+    if (failedCard)    failedCard.style.display    = showFailed    ? '' : 'none';
+
+    // Render sections
+    if (showActive)    renderActiveQueue(filterBySource(active), data.newly_completed);
+    if (showCompleted) renderCompletedQueue(filterBySource(completed).concat(filterBySource(imported)));
+    if (showFailed)    renderFailedQueue(filterBySource(failed));
+
   } catch (error) {
     console.error('Error loading queue status:', error);
+  } finally {
+    if (icon) setTimeout(() => icon.classList.remove('spin-once'), 600);
   }
 }
 
@@ -4560,6 +4688,7 @@ function renderCompletedQueue(completed) {
         for (const item of group.items) {
           const alreadyCopied = item.copied_individually;
           const hasFile = item.file_path || item.found_filename;
+          const isDuplicate = item.status === 'possible_duplicate';
           html += `
                 <div class="d-flex justify-content-between align-items-start py-2 border-bottom">
                   <div class="d-flex gap-2 flex-grow-1">
@@ -4569,7 +4698,7 @@ function renderCompletedQueue(completed) {
                       <small class="text-muted">File: ${escapeHtml(item.found_filename || 'not yet detected')}</small>
                       ${alreadyCopied ? '<small class="badge bg-info text-dark ms-1">Already Copied</small>' : ''}
                       ${item.status === 'unmatched' ? '<small class="badge bg-warning text-dark ms-1"><i class="bi bi-exclamation-triangle"></i> Unmatched</small>' : ''}
-                      ${item.status === 'possible_duplicate' ? '<small class="badge bg-danger ms-1"><i class="bi bi-files"></i> Duplicate</small>' : ''}
+                      ${isDuplicate ? '<small class="badge bg-danger ms-1"><i class="bi bi-files"></i> Duplicate</small>' : ''}
                     </div>
                   </div>
                   <div class="d-flex gap-1 flex-wrap justify-content-end">
@@ -4583,9 +4712,13 @@ function renderCompletedQueue(completed) {
                            <i class="bi bi-${hasFile ? 'folder-check' : 'search'}"></i> Transfer
                          </button>`
                     }
-                    <button class="btn btn-sm btn-outline-danger" onclick="deleteQueueItem(${item.id})">
-                      <i class="bi bi-trash"></i>
-                    </button>
+                    <div class="dropdown">
+                      <button class="btn btn-sm btn-outline-danger dropdown-toggle" data-bs-toggle="dropdown"><i class="bi bi-trash"></i></button>
+                      <ul class="dropdown-menu dropdown-menu-end">
+                        <li><a class="dropdown-item" href="#" onclick="deleteQueueItem(${item.id}); return false;"><i class="bi bi-x-circle me-1"></i> Remove from queue</a></li>
+                        ${isDuplicate || hasFile ? `<li><a class="dropdown-item text-danger" href="#" onclick="deleteQueueItem(${item.id}, true); return false;"><i class="bi bi-file-earmark-x me-1"></i> Remove + delete file</a></li>` : ''}
+                      </ul>
+                    </div>
                   </div>
                 </div>`;
         }
@@ -4615,6 +4748,7 @@ function renderCompletedQueue(completed) {
         for (const item of group.items) {
           const alreadyCopied = item.copied_individually;
           const hasFile = item.file_path || item.found_filename;
+          const isDuplicate = item.status === 'possible_duplicate';
           html += `
           <div class="list-group-item">
             <div class="d-flex justify-content-between align-items-start">
@@ -4622,16 +4756,16 @@ function renderCompletedQueue(completed) {
                 <input type="checkbox" class="form-check-input queue-item-checkbox" value="${item.id}" onchange="updateSelectedCount()" style="margin-top: 0.5rem;">
                 <div class="flex-grow-1">
                   <h6 class="mb-1">${escapeHtml(item.title)}</h6>
-                  <p class="text-muted small mb-2">${escapeHtml(item.artist)}${item.album ? ' · ' + escapeHtml(item.album) : ''}</p>
-                  <small class="text-muted">File: ${escapeHtml(item.found_filename || 'not yet detected')}</small>
-                  ${alreadyCopied ? '<br><span class="badge bg-info text-dark mt-1"><i class="bi bi-check-circle"></i> Already Copied</span>' : ''}
-                  ${item.status === 'unmatched' ? '<br><span class="badge bg-warning text-dark mt-1"><i class="bi bi-exclamation-triangle"></i> Unmatched – no queue item found</span>' : ''}
-                  ${item.status === 'possible_duplicate' ? '<br><span class="badge bg-danger mt-1"><i class="bi bi-files"></i> Duplicate – already exists in queue/library</span>' : ''}
+                  <p class="text-muted small mb-1">${escapeHtml(item.artist)}${item.album ? ' · ' + escapeHtml(item.album) : ''}</p>
+                  <small class="text-muted text-truncate d-block" style="max-width:380px" title="${escapeHtml(item.found_filename || '')}">File: ${escapeHtml(item.found_filename || 'not yet detected')}</small>
+                  ${alreadyCopied ? '<span class="badge bg-info text-dark mt-1"><i class="bi bi-check-circle"></i> Already Copied</span>' : ''}
+                  ${item.status === 'unmatched' ? '<span class="badge bg-warning text-dark mt-1"><i class="bi bi-exclamation-triangle"></i> Unmatched – no queue item found</span>' : ''}
+                  ${isDuplicate ? '<span class="badge bg-danger mt-1"><i class="bi bi-files"></i> Duplicate – already exists in queue/library</span>' : ''}
                 </div>
               </div>
-              <div class="d-flex gap-2">
+              <div class="d-flex gap-1 align-items-start">
                 <button class="btn btn-sm btn-outline-primary" onclick="openEditTrackFromDownloads(${item.id})" title="Edit track metadata">
-                  <i class="bi bi-pencil"></i> Edit
+                  <i class="bi bi-pencil"></i>
                 </button>
                 ${alreadyCopied
                   ? '<span class="badge bg-info text-dark align-self-center"><i class="bi bi-check-circle"></i> Copied</span>'
@@ -4640,9 +4774,13 @@ function renderCompletedQueue(completed) {
                        <i class="bi bi-${hasFile ? 'folder-check' : 'search'}"></i> Transfer
                      </button>`
                 }
-                <button class="btn btn-sm btn-outline-danger" onclick="deleteQueueItem(${item.id})">
-                  <i class="bi bi-trash"></i>
-                </button>
+                <div class="dropdown">
+                  <button class="btn btn-sm btn-outline-danger dropdown-toggle" data-bs-toggle="dropdown"><i class="bi bi-trash"></i></button>
+                  <ul class="dropdown-menu dropdown-menu-end">
+                    <li><a class="dropdown-item" href="#" onclick="deleteQueueItem(${item.id}); return false;"><i class="bi bi-x-circle me-1"></i> Remove from queue</a></li>
+                    ${isDuplicate || hasFile ? `<li><a class="dropdown-item text-danger" href="#" onclick="deleteQueueItem(${item.id}, true); return false;"><i class="bi bi-file-earmark-x me-1"></i> Remove + delete file</a></li>` : ''}
+                  </ul>
+                </div>
               </div>
             </div>
           </div>`;
@@ -4671,11 +4809,12 @@ function renderFailedQueue(failed) {
   const container = document.getElementById('failedQueueList');
   const empty = document.getElementById('failedQueueEmpty');
 
-  if (!container || !empty) return;  // Queue section not visible on current tab
+  if (!container || !empty) return;
 
   if (failed.length === 0) {
     container.style.display = 'none';
     empty.style.display = 'block';
+    document.getElementById('failedBadge').style.display = 'none';
     return;
   }
 
@@ -4683,34 +4822,57 @@ function renderFailedQueue(failed) {
   empty.style.display = 'none';
   document.getElementById('failedBadge').textContent = failed.length;
   document.getElementById('failedBadge').style.display = 'inline-block';
-  
+
   let html = '<div class="list-group list-group-flush">';
-  
+
   for (const item of failed) {
     const nextRetry = item.next_retry_at ? new Date(item.next_retry_at).toLocaleString() : 'Manual retry';
+    const retryCount = item.retry_count || 0;
+    const maxRetries = item.max_retries || 3;
+    const retryPct = Math.min(100, Math.round((retryCount / maxRetries) * 100));
+    const retryColor = retryPct >= 100 ? 'bg-danger' : retryPct >= 66 ? 'bg-warning' : 'bg-info';
+
     html += `
       <div class="list-group-item">
         <div class="d-flex justify-content-between align-items-start">
-          <div class="flex-grow-1">
-            <h6 class="mb-1">${escapeHtml(item.title)}</h6>
-            <p class="text-muted small mb-2">${escapeHtml(item.artist)}${item.album ? ' · ' + escapeHtml(item.album) : ''}</p>
-            <small class="text-danger">❌ ${escapeHtml(item.failure_reason || 'Unknown error')}</small>
-            <br>
-            <small class="text-muted">Attempts: ${item.retry_count}/${item.max_retries} · Next: ${nextRetry}</small>
+          <div class="flex-grow-1 me-2">
+            <div class="d-flex align-items-center gap-2 mb-1">
+              <h6 class="mb-0">${escapeHtml(item.title)}</h6>
+              <span class="badge bg-secondary">${escapeHtml(item.source || '')}</span>
+            </div>
+            <p class="text-muted small mb-1">${escapeHtml(item.artist)}${item.album ? ' · ' + escapeHtml(item.album) : ''}</p>
+            <small class="text-danger d-block">❌ ${escapeHtml(item.failure_reason || 'Unknown error')}</small>
+            <div class="d-flex align-items-center gap-2 mt-1">
+              <small class="text-muted">Attempts: ${retryCount}/${maxRetries}</small>
+              <div class="progress flex-grow-1" style="height:4px;max-width:100px">
+                <div class="progress-bar ${retryColor}" style="width:${retryPct}%"></div>
+              </div>
+              <small class="text-muted">Next: ${nextRetry}</small>
+            </div>
           </div>
-          <div class="d-flex gap-2 flex-wrap">
-            <button class="btn btn-sm btn-outline-warning" onclick="retryQueueItem(${item.id})" title="Retry now">
+          <div class="d-flex gap-1 flex-wrap align-items-start">
+            <button class="btn btn-sm btn-outline-warning" onclick="retryQueueItem(${item.id})" title="Re-queue now">
               <i class="bi bi-arrow-counterclockwise"></i> Retry
             </button>
-            <button class="btn btn-sm btn-outline-danger" onclick="deleteQueueItem(${item.id})">
-              <i class="bi bi-trash"></i>
-            </button>
+            <div class="dropdown">
+              <button class="btn btn-sm btn-outline-danger dropdown-toggle" data-bs-toggle="dropdown" title="Delete options">
+                <i class="bi bi-trash"></i>
+              </button>
+              <ul class="dropdown-menu dropdown-menu-end">
+                <li><a class="dropdown-item" href="#" onclick="deleteQueueItem(${item.id}); return false;">
+                  <i class="bi bi-x-circle me-1"></i> Remove from queue
+                </a></li>
+                <li><a class="dropdown-item text-danger" href="#" onclick="deleteQueueItem(${item.id}, true); return false;">
+                  <i class="bi bi-file-earmark-x me-1"></i> Remove + delete file
+                </a></li>
+              </ul>
+            </div>
           </div>
         </div>
       </div>
     `;
   }
-  
+
   html += '</div>';
   container.innerHTML = html;
 }
@@ -4729,20 +4891,32 @@ function renderQueueItem(item, statusColor) {
   const statusBg = {
     'primary': 'bg-primary',
     'warning': 'bg-warning text-dark',
-    'info': 'bg-info',
+    'info': 'bg-info text-dark',
     'success': 'bg-success',
     'danger': 'bg-danger',
     'secondary': 'bg-secondary'
   }[statusColor] || 'bg-primary';
 
-  // Show a file hint when the file has been matched
+  // File hint when matched
   const fileHint = item.found_filename
-    ? `<small class="text-muted d-block">📎 ${escapeHtml(item.found_filename)}</small>`
+    ? `<small class="text-muted d-block text-truncate" style="max-width:340px" title="${escapeHtml(item.found_filename)}">📎 ${escapeHtml(item.found_filename)}</small>`
     : '';
 
-  // Show "Transfer" button for all items not yet individually copied.
-  // If the file hasn't been matched yet the backend will search the downloads
-  // folder independently when the button is clicked.
+  // Progress bar for downloading items
+  const progressBar = item.status === 'downloading' && item.progress != null
+    ? `<div class="progress mt-1" style="height:4px;max-width:220px">
+         <div class="progress-bar bg-warning" role="progressbar" style="width:${Math.min(100, item.progress || 0)}%"></div>
+       </div>`
+    : '';
+
+  // Meta chips: source, priority, year/track#
+  const sourceBadge = `<span class="badge bg-secondary">${escapeHtml(item.source || '')}</span>`;
+  const priBadge = item.priority && item.priority !== 5
+    ? `<span class="badge bg-light text-dark border" title="Priority"><i class="bi bi-lightning-charge"></i>${item.priority}</span>`
+    : '';
+  const yearBadge = item.year ? `<span class="badge bg-light text-dark border">${escapeHtml(String(item.year))}</span>` : '';
+  const tnBadge = item.track_number ? `<span class="badge bg-light text-dark border" title="Track #">T${escapeHtml(String(item.track_number))}</span>` : '';
+
   const hasFile = item.file_path || item.found_filename;
   const copyBtn = !item.copied_individually
     ? `<button class="btn btn-sm btn-outline-success" onclick="organizeFile(${item.id})"
@@ -4754,19 +4928,24 @@ function renderQueueItem(item, statusColor) {
   return `
     <div class="list-group-item">
       <div class="d-flex justify-content-between align-items-start">
-        <div class="flex-grow-1">
+        <div class="flex-grow-1 me-2">
           <h6 class="mb-1">${escapeHtml(item.title)}</h6>
-          <p class="text-muted small mb-2">${escapeHtml(item.artist)}${item.album ? ' · ' + escapeHtml(item.album) : ''}</p>
-          ${item.search_query ? `<small class="text-muted">Search: ${escapeHtml(item.search_query)}</small>` : ''}
+          <p class="text-muted small mb-1">${escapeHtml(item.artist)}${item.album ? ' · ' + escapeHtml(item.album) : ''}</p>
+          ${item.search_query ? `<small class="text-muted d-block">Search: ${escapeHtml(item.search_query)}</small>` : ''}
           ${fileHint}
+          ${progressBar}
         </div>
-        <div class="d-flex gap-2 align-items-center">
-          <span class="badge ${statusBg}">${statusLabel}</span>
-          <span class="badge bg-secondary">${item.source}</span>
-          ${copyBtn}
-          <button class="btn btn-sm btn-outline-danger" onclick="deleteQueueItem(${item.id})" title="Remove from queue">
-            <i class="bi bi-x"></i>
-          </button>
+        <div class="d-flex flex-column align-items-end gap-1">
+          <div class="d-flex gap-1 align-items-center flex-wrap justify-content-end">
+            <span class="badge ${statusBg}">${statusLabel}</span>
+            ${sourceBadge}${priBadge}${yearBadge}${tnBadge}
+          </div>
+          <div class="d-flex gap-1 mt-1">
+            ${copyBtn}
+            <button class="btn btn-sm btn-outline-danger" onclick="deleteQueueItem(${item.id})" title="Remove from queue">
+              <i class="bi bi-x"></i>
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -6196,21 +6375,23 @@ async function performBatchGrouping(groupType, groupName, groupArtist, itemIds) 
 // ===== Auto-Refresh Management =====
 
 /**
- * Set up auto-refresh interval
+ * Set up auto-refresh interval — fast (15 s) when items are active, slow (2 min) otherwise
  */
 function setupAutoRefresh() {
-  // Cancel any existing timer
   if (autoRefreshTimer) {
     clearInterval(autoRefreshTimer);
   }
-  
-  // Set up new interval (5 minutes)
+
+  // Fast refresh when queue tab is active
   autoRefreshTimer = setInterval(() => {
-    console.debug('Auto-refreshing queue status');
-    loadQueueStatus();
-  }, AUTO_REFRESH_INTERVAL_MS);
-  
-  console.debug('Auto-refresh enabled: every', AUTO_REFRESH_INTERVAL_MS / 1000, 'seconds');
+    // Only refresh automatically when the queue tab is visible
+    const queuePane = document.getElementById('queueContent');
+    if (queuePane && queuePane.classList.contains('active')) {
+      loadQueueStatus();
+    }
+  }, 15000); // 15 seconds
+
+  console.debug('Auto-refresh enabled: every 15 seconds');
 }
 
 /**
@@ -6240,6 +6421,49 @@ function resumeAutoRefresh() {
 async function forceRefreshQueue() {
   console.debug('Force refreshing queue');
   await loadQueueStatus();
+}
+
+// ── Filter listeners — re-render without fetching ──
+document.addEventListener('DOMContentLoaded', function() {
+  document.querySelectorAll('input[name="queueFilter"], input[name="queueSourceF"]').forEach(radio => {
+    radio.addEventListener('change', () => loadQueueStatus());
+  });
+});
+
+// ── Retry All Failed ──
+async function retryAllFailed() {
+  if (!confirm('Re-queue all failed downloads?')) return;
+  try {
+    const resp = await fetch('/api/queue/retry-all-failed', { method: 'POST' });
+    if (!resp.ok) { alert('❌ Server error: ' + resp.statusText); return; }
+    const data = await resp.json();
+    if (data.success) {
+      alert(`✅ Re-queued ${data.retried || 0} failed item(s)`);
+      await loadQueueStatus();
+    } else {
+      alert('❌ ' + (data.error || 'Failed to retry'));
+    }
+  } catch (e) {
+    alert('❌ Network error: ' + e.message);
+  }
+}
+
+// ── Clear Entire Queue ──
+async function clearEntireQueue() {
+  if (!confirm('Clear the entire queue? This removes queued, failed and completed items but keeps imported records.')) return;
+  try {
+    const resp = await fetch('/api/queue/clear', { method: 'DELETE' });
+    if (!resp.ok) { alert('❌ Server error: ' + resp.statusText); return; }
+    const data = await resp.json();
+    if (data.success) {
+      alert(`✅ Cleared ${data.deleted || 0} item(s) from queue`);
+      await loadQueueStatus();
+    } else {
+      alert('❌ ' + (data.error || 'Failed to clear queue'));
+    }
+  } catch (e) {
+    alert('❌ Network error: ' + e.message);
+  }
 }
 
 // ===== Batch Group Modal HTML (injected if not present) =====
