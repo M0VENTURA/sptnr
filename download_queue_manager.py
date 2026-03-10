@@ -1744,10 +1744,13 @@ def check_downloads_folder():
                     if meta_state is False:
                         continue
 
-                    match_found = file_info['filename']
-                    match_path = file_info['full_path']
-                    logger.debug(f"Fuzzy matched '{queue_item['search_query']}' to '{file_info['rel_path']}'")
-                    break
+                    # Only accept a fuzzy match when metadata strongly matches.
+                    # Avoid "first file wins" behavior when metadata is missing.
+                    if meta_state is True:
+                        match_found = file_info['filename']
+                        match_path = file_info['full_path']
+                        logger.debug(f"Fuzzy matched '{queue_item['search_query']}' to '{file_info['rel_path']}'")
+                        break
             
             if match_found and match_path:
                 logger.info(f"Matched queue {queue_item['id']} ({queue_item['search_query']}) to file: {match_found}")
@@ -1949,15 +1952,49 @@ def auto_discover_and_queue_files():
         stats['cleanup_removed'] = cleanup_stats['removed']
         
         conn = get_db()
-        cursor = conn.cursor()
+        from app import _is_postgres_connection as app_is_postgres_connection
+        is_pg = bool(app_is_postgres_connection(conn))
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) if is_pg else conn.cursor()
+
+        def _row_get(row, key, index=None, default=None):
+            if row is None:
+                return default
+            try:
+                return row[key]
+            except Exception:
+                pass
+            if hasattr(row, 'get'):
+                try:
+                    return row.get(key, default)
+                except Exception:
+                    pass
+            if index is not None:
+                try:
+                    return row[index]
+                except Exception:
+                    pass
+            return default
+
+        def _rows_to_dicts(rows, description):
+            if not rows:
+                return []
+            first = rows[0]
+            if isinstance(first, dict):
+                return rows
+            col_names = [d[0] for d in description]
+            return [dict(zip(col_names, r)) for r in rows]
         
         # Ensure required columns exist for auto-discovery inserts
-        cursor.execute("""
-            SELECT column_name
-            FROM information_schema.columns
-            WHERE table_name = 'download_queue' AND table_schema = 'public'
-        """)
-        columns = [row[0] for row in cursor.fetchall()]
+        if is_pg:
+            cursor.execute("""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = 'download_queue' AND table_schema = 'public'
+            """)
+            columns = [row[0] for row in cursor.fetchall()]
+        else:
+            cursor.execute("PRAGMA table_info(download_queue)")
+            columns = [row[1] for row in cursor.fetchall()]
         
         required_cols = {
             'track_number': "TEXT",
@@ -2064,8 +2101,6 @@ def auto_discover_and_queue_files():
                 )
                 
                 # Check if already in download_queue
-                from app import _is_postgres_connection as app_is_postgres_connection
-                is_pg = bool(app_is_postgres_connection(conn))
                 placeholder = "%s" if is_pg else "?"
                 cursor.execute(f"""
                     SELECT id, status FROM download_queue 
@@ -2075,12 +2110,14 @@ def auto_discover_and_queue_files():
                 existing = cursor.fetchone()
                 if existing:
                     stats['already_in_queue'] += 1
-                    logger.debug(f"File already in queue (ID {existing['id']}, status {existing['status']}): {filename}")
+                    existing_id = _row_get(existing, 'id', 0, None)
+                    existing_status = _row_get(existing, 'status', 1, None)
+                    logger.debug(f"File already in queue (ID {existing_id}, status {existing_status}): {filename}")
                     continue
                 
                 # Check if track exists in library (case-insensitive)
                 cursor.execute(f"""
-                    SELECT id, status FROM tracks
+                    SELECT id FROM tracks
                     WHERE LOWER(artist) = LOWER({placeholder}) 
                     AND LOWER(album) = LOWER({placeholder}) 
                     AND LOWER(title) = LOWER({placeholder})
@@ -2118,7 +2155,8 @@ def auto_discover_and_queue_files():
                     FROM download_queue
                     WHERE status IN ('queued', 'searching', 'downloading')
                 """)
-                pending_items = [dict(row) for row in cursor.fetchall()]
+                pending_rows = cursor.fetchall()
+                pending_items = _rows_to_dicts(pending_rows, cursor.description)
 
                 matched_pending = None
                 for pending in pending_items:
@@ -2227,7 +2265,7 @@ def auto_discover_and_queue_files():
                     )
                     inserted_row = cursor.fetchone()
                     if inserted_row:
-                        inserted_queue_id = inserted_row['id'] if isinstance(inserted_row, dict) else inserted_row[0]
+                        inserted_queue_id = _row_get(inserted_row, 'id', 0, None)
 
                     if inserted_queue_id and album and album.strip() and album.strip().lower() != 'unknown':
                         from download_monitor_enhancements import search_and_update_musicbrainz
@@ -2245,6 +2283,10 @@ def auto_discover_and_queue_files():
                     logger.info(f"⚠️  Unmatched [{metadata_status}]: {artist} - {title} from {os.path.basename(os.path.dirname(full_path))}/{filename}")
                 
             except Exception as e:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
                 error_msg = f"Error processing {file_info['filename']}: {str(e)}"
                 logger.error(error_msg)
                 stats['errors'].append(error_msg)
