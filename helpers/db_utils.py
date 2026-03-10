@@ -17,13 +17,27 @@ def get_db_connection():
     Get database connection.
     Supports both PostgreSQL (if configured) and SQLite fallback.
     """
-    # Try PostgreSQL first if configured
+    # Try PostgreSQL if configured via DSN or individual PG_* vars (same as app.py get_db())
     pg_dsn = os.environ.get("DATABASE_URL") or os.environ.get("PG_DSN")
-    if pg_dsn:
+    pg_host = os.environ.get("PG_HOST", "")
+    pg_user = os.environ.get("PG_USER", "")
+    pg_database = os.environ.get("PG_DATABASE", "sptnr")
+
+    if pg_dsn or (pg_host and pg_user):
         try:
             import psycopg2
-            conn = psycopg2.connect(pg_dsn)
-            logging.debug(f"Connected to PostgreSQL: {pg_dsn.split('@')[1] if '@' in pg_dsn else 'configured'}")
+            if pg_dsn:
+                conn = psycopg2.connect(pg_dsn)
+                logging.debug(f"Connected to PostgreSQL: {pg_dsn.split('@')[1] if '@' in pg_dsn else 'configured'}")
+            else:
+                conn = psycopg2.connect(
+                    host=pg_host,
+                    port=int(os.environ.get("PG_PORT", "5432")),
+                    user=pg_user,
+                    password=os.environ.get("PG_PASSWORD", ""),
+                    dbname=pg_database,
+                )
+                logging.debug(f"Connected to PostgreSQL: {pg_host}/{pg_database}")
             return conn
         except ImportError:
             logging.warning("PostgreSQL configured but psycopg2 not installed, falling back to SQLite")
