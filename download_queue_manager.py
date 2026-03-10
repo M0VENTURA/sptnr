@@ -238,10 +238,10 @@ def get_db():
             password=PG_PASSWORD,
             database=PG_DATABASE,
             port=int(PG_PORT),
-            connect_timeout=10
+            connect_timeout=10,
+            cursor_factory=psycopg2.extras.RealDictCursor,
         )
         conn.set_session(autocommit=False)
-        # Use RealDictCursor for dict-like row access (compatible with sqlite3.Row behavior)
         return conn
     except psycopg2.Error as e:
         logger.error(f"Failed to connect to PostgreSQL: {e}")
