@@ -238,10 +238,10 @@ def get_db():
             password=PG_PASSWORD,
             database=PG_DATABASE,
             port=int(PG_PORT),
-            connect_timeout=10
+            connect_timeout=10,
+            cursor_factory=psycopg2.extras.RealDictCursor,
         )
         conn.set_session(autocommit=False)
-        # Use RealDictCursor for dict-like row access (compatible with sqlite3.Row behavior)
         return conn
     except psycopg2.Error as e:
         logger.error(f"Failed to connect to PostgreSQL: {e}")
@@ -266,7 +266,7 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                   AND table_schema = 'public'
                 ORDER BY column_name
             """)
-            columns = [row[0] for row in cursor.fetchall()]
+            columns = [row['column_name'] for row in cursor.fetchall()]
 
             required_cols = {
                 'search_query': "TEXT",
@@ -316,17 +316,20 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
 
 
 def execute_write_with_retry(cursor, conn, query, params=(), context="database write", max_retries=5, initial_delay=0.1):
-    """Execute a write query with commit retry on SQLite lock contention."""
+    """Execute a write query with commit retry on transient errors (SQLite lock or psycopg2 serialization)."""
+    import sqlite3 as _sqlite3
     delay = initial_delay
     for attempt in range(max_retries):
         try:
             cursor.execute(query, params)
             conn.commit()
             return True
-        except sqlite3.OperationalError as e:
-            if 'database is locked' in str(e).lower() and attempt < max_retries - 1:
+        except (_sqlite3.OperationalError, psycopg2.OperationalError) as e:
+            if attempt < max_retries - 1 and any(
+                kw in str(e).lower() for kw in ('database is locked', 'deadlock', 'could not serialize')
+            ):
                 logger.warning(
-                    f"Database locked during {context}, retrying in {delay:.2f}s "
+                    f"Database contention during {context}, retrying in {delay:.2f}s "
                     f"(attempt {attempt + 1}/{max_retries})"
                 )
                 time.sleep(delay)
@@ -647,6 +650,7 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
             except (ValueError, TypeError):
                 release_year = None
         
+        committed = False
         try:
             if is_pg:
                 cursor.execute(
@@ -671,11 +675,10 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                 )
                 inserted = cursor.fetchone()
                 conn.commit()
-                queue_id = inserted.get('id') if isinstance(inserted, dict) else inserted[0]
+                committed = True
+                queue_id = inserted['id'] if hasattr(inserted, 'keys') else inserted[0]
             else:
-                from app import _is_postgres_connection as app_is_postgres_connection
-                is_pg = bool(app_is_postgres_connection(conn))
-                placeholder = "%s" if is_pg else "?"
+                placeholder = "?"
                 execute_write_with_retry(
                     cursor,
                     conn,
@@ -700,7 +703,7 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                     max_retries=8,
                     initial_delay=0.2,
                 )
-
+                committed = True
                 queue_id = cursor.lastrowid
             
             logger.info(f"Added to queue: {search_query} (ID: {queue_id}, source: {source}, status: {initial_status})")
@@ -741,23 +744,24 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                 return None
                 
         finally:
-            try:
-                conn.rollback()
-            except:
-                pass
+            if not committed:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
             try:
                 conn.close()
-            except:
+            except Exception:
                 pass
         
-    except sqlite3.IntegrityError as e:
+    except psycopg2.IntegrityError as e:
         logger.error(f"Database integrity error adding to queue: {e}")
         try:
             conn.rollback()
-        except:
+        except Exception:
             pass
         return None
-    except sqlite3.DatabaseError as e:
+    except psycopg2.DatabaseError as e:
         logger.error(f"Database error adding to queue: {e}")
         try:
             conn.rollback()
@@ -888,6 +892,7 @@ def update_queue_item(queue_id, **kwargs):
                 is_pg = bool(app_is_postgres_connection(conn))
             except Exception:
                 conn = get_db()
+                is_pg = isinstance(conn, psycopg2.extensions.connection)
             
             cursor = conn.cursor()
             placeholder = "%s" if is_pg else "?"
@@ -906,7 +911,8 @@ def update_queue_item(queue_id, **kwargs):
                         cursor.execute(f"SELECT COUNT(*) as cnt FROM download_queue WHERE file_path = {placeholder} AND id != {placeholder}", 
                                      (value, queue_id))
                         result = cursor.fetchone()
-                        if result and result['cnt'] > 0:
+                        cnt = result['cnt'] if hasattr(result, 'keys') else (result[0] if result else 0)
+                        if cnt > 0:
                             logger.debug(f"File path {value} already in use by another queue item, skipping update")
                             continue
                     
@@ -944,17 +950,16 @@ def update_queue_item(queue_id, **kwargs):
                 logger.error(f"Failed to retrieve updated queue item {queue_id}")
                 return None
         
-        except sqlite3.OperationalError as e:
-            if 'database is locked' in str(e):
-                last_error = e
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
-                    retry_delay = min(retry_delay * 2, 5.0)  # Exponential backoff
-                    logger.warning(f"Database locked updating queue item {queue_id}, retrying (attempt {attempt + 1}/{max_retries})...")
-                    continue
+        except psycopg2.OperationalError as e:
+            last_error = e
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 5.0)
+                logger.warning(f"DB operational error updating queue item {queue_id}, retrying (attempt {attempt + 1}/{max_retries})...")
+                continue
             logger.error(f"OperationalError updating queue item {queue_id}: {e}")
             return None
-        except sqlite3.IntegrityError as e:
+        except psycopg2.IntegrityError as e:
             logger.error(f"Database integrity error updating queue item {queue_id}: {e}")
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
@@ -998,6 +1003,7 @@ def mark_as_failed(queue_id, reason, retry_delay_minutes=30):
                 is_pg = bool(app_is_postgres_connection(conn))
             except Exception:
                 conn = get_db()
+                is_pg = isinstance(conn, psycopg2.extensions.connection)
             
             cursor = conn.cursor()
             placeholder = "%s" if is_pg else "?"
@@ -1010,16 +1016,17 @@ def mark_as_failed(queue_id, reason, retry_delay_minutes=30):
                 conn.close()
                 return None
             
-            retry_count = (row['retry_count'] or 0) + 1
+            retry_count = (row['retry_count'] if hasattr(row, 'keys') else row[0] or 0) + 1
+            max_r = row['max_retries'] if hasattr(row, 'keys') else row[1]
             next_retry = datetime.now() + timedelta(minutes=retry_delay_minutes)
             
             # Check if we've exceeded max retries
-            if retry_count >= row['max_retries']:
+            if max_r and retry_count >= max_r:
                 new_status = 'failed'
-                logger.warning(f"Queue item {queue_id} exceeded max retries ({retry_count}/{row['max_retries']}): {reason}")
+                logger.warning(f"Queue item {queue_id} exceeded max retries ({retry_count}/{max_r}): {reason}")
             else:
                 new_status = 'queued'
-                logger.info(f"Queue item {queue_id} scheduled for retry (attempt {retry_count}/{row['max_retries']}) at {next_retry}: {reason}")
+                logger.info(f"Queue item {queue_id} scheduled for retry (attempt {retry_count}/{max_r}) at {next_retry}: {reason}")
             
             cursor.execute(f"""
                 UPDATE download_queue 
@@ -1036,13 +1043,12 @@ def mark_as_failed(queue_id, reason, retry_delay_minutes=30):
             
             return dict(item) if item else None
         
-        except sqlite3.OperationalError as e:
-            if 'database is locked' in str(e):
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
-                    retry_delay = min(retry_delay * 2, 5.0)
-                    logger.warning(f"Database locked marking failed, retrying (attempt {attempt + 1}/{max_retries})...")
-                    continue
+        except psycopg2.OperationalError as e:
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 5.0)
+                logger.warning(f"DB operational error marking failed, retrying (attempt {attempt + 1}/{max_retries})...")
+                continue
             logger.error(f"OperationalError marking failed: {e}")
             return None
         except Exception as e:
@@ -2630,66 +2636,75 @@ def check_and_remove_failed_downloads():
         
         client = SlskdClient(web_url, api_key, enabled=True)
         
-        # Get active downloads
+        # Get all downloads from slskd (flat list with correct nested parsing)
         downloads = client.get_active_downloads()
         stats["total_active"] = len(downloads)
         
-        logger.info(f"Checking {len(downloads)} active downloads for failures")
+        logger.info(f"Checking {len(downloads)} download entries for failures")
         
         conn = get_db()
         cursor = conn.cursor()
+        placeholder = "%s" if isinstance(conn, psycopg2.extensions.connection) else "?"
         
         for download in downloads:
             try:
+                transfer_id = download.get("id", "")
                 username = download.get("username", "")
                 filename = download.get("filename", "")
-                size = download.get("size", 0)
-                bytes_transferred = download.get("bytesTransferred", 0)
                 state = download.get("state", "")
+                bytes_transferred = download.get("bytesTransferred", 0)
+                size = download.get("size", 0)
                 progress = download.get("progress", 0)
                 
-                # Check for failure conditions
-                is_timed_out = "TimedOut" in state or "Timeout" in state or "timeout" in state
-                is_failed = "Failed" in state or "Error" in state
-                is_no_progress = bytes_transferred == 0 and state != "Initializing"
+                # Use exact slskd terminal-failure states
+                is_failed_state = state in client.FAILED_STATES
+                # Also catch zero-progress transfers stuck in a non-active state
+                is_stalled = (
+                    bytes_transferred == 0
+                    and state not in client.ACTIVE_STATES
+                    and state != client.STATE_SUCCEEDED
+                    and state != ""
+                )
                 
-                if is_timed_out or (is_failed and is_no_progress) or (is_timed_out and is_no_progress):
-                    logger.warning(f"Failed download detected: {filename} from {username} (state={state}, progress={progress}%, bytes={bytes_transferred}/{size})")
-                    
-                    # Try to cancel the download in slskd
-                    try:
-                        response = client.session.delete(
-                            f"{client.base_url}/transfers/downloads/{username}/{filename.replace('/', '%2F')}",
-                            headers=client.headers,
-                            timeout=10
-                        )
-                        logger.info(f"Cancelled failed download: {filename} (response: {response.status_code})")
-                    except Exception as cancel_error:
-                        logger.warning(f"Could not cancel download {filename}: {cancel_error}")
-                    
-                    # Find matching queue item and mark for retry
-                    cursor.execute("""
-                        SELECT id FROM download_queue 
-                        WHERE source = 'soulseek' 
-                        AND status IN ('downloading', 'searching')
-                        AND (found_filename = ? OR search_query LIKE ?)
-                        LIMIT 1
-                    """, (filename, f"%{filename.rsplit('/', 1)[-1]}%"))
-                    
-                    queue_item = cursor.fetchone()
-                    if queue_item:
-                        queue_id = queue_item['id']
-                        logger.info(f"Marking queue item {queue_id} for retry (failed download)")
-                        
-                        # Mark as failed to trigger retry
-                        mark_as_failed(
-                            queue_id, 
-                            f"Download failed: {state} (0 progress)", 
-                            retry_delay_minutes=5
-                        )
-                        stats["retry_scheduled"] += 1
-                    
-                    stats["failed_detected"] += 1
+                if not (is_failed_state or is_stalled):
+                    continue
+
+                logger.warning(
+                    f"Failed download detected: {filename!r} from {username} "
+                    f"(state={state!r}, bytes={bytes_transferred}/{size})"
+                )
+                
+                # Cancel and remove the transfer in slskd using the correct endpoint
+                if transfer_id and username:
+                    client.cancel_download(username, transfer_id, remove=True)
+                else:
+                    logger.debug(f"No transfer_id/username — cannot cancel slskd entry for {filename!r}")
+                
+                # Find matching queue item by found_filename or search_query
+                basename = filename.rsplit('/', 1)[-1].rsplit('\\', 1)[-1]
+                cursor.execute(
+                    f"""
+                    SELECT id FROM download_queue
+                    WHERE source = 'soulseek'
+                    AND status IN ('downloading', 'searching')
+                    AND (found_filename = {placeholder} OR search_query LIKE {placeholder})
+                    LIMIT 1
+                    """,
+                    (filename, f"%{basename}%"),
+                )
+                
+                queue_item = cursor.fetchone()
+                if queue_item:
+                    queue_id = queue_item['id'] if hasattr(queue_item, 'keys') else queue_item[0]
+                    logger.info(f"Marking queue item {queue_id} for retry (failed download: {state!r})")
+                    mark_as_failed(
+                        queue_id,
+                        f"Download failed: {state}",
+                        retry_delay_minutes=5,
+                    )
+                    stats["retry_scheduled"] += 1
+                
+                stats["failed_detected"] += 1
                     
             except Exception as e:
                 error_msg = f"Error processing download result: {e}"
@@ -3028,7 +3043,7 @@ def _ensure_matching_columns(cursor):
         FROM information_schema.columns
         WHERE table_name = 'download_queue' AND table_schema = 'public'
     """)
-    columns = [row[0] for row in cursor.fetchall()]
+    columns = [row['column_name'] if hasattr(row, 'keys') else row[0] for row in cursor.fetchall()]
 
     required = {
         "mb_match_status": "TEXT",

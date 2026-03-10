@@ -1295,11 +1295,17 @@ def determine_final_status(
     
     # DETERMINE FINAL STATUS BASED ON Z-SCORE:
     
-    # Z-score >= 1: Only need 1 high OR 1 medium source
+    # Z-score >= 1: Still requires 2 medium sources OR 1 high source.
+    # Z-score is a popularity metric, NOT a confidence indicator — it must not
+    # substitute for metadata evidence.  A high z-score with only 1 medium source
+    # (e.g. just MusicBrainz or just Last.fm) is 'medium' at best, not 'high'.
     if max_z >= 1.0:
-        if high_confidence_count >= 1 or medium_confidence_count >= 1:
-            log_debug(f"[CONFIDENCE] → RETURNING 'high' (z>= 1.0: needs 1 source, has high={high_confidence_count}, medium={medium_confidence_count})")
+        if high_confidence_count >= 1 or medium_confidence_count >= 2:
+            log_debug(f"[CONFIDENCE] → RETURNING 'high' (z>=1.0: has high={high_confidence_count}, medium={medium_confidence_count})")
             return 'high'
+        elif medium_confidence_count >= 1:
+            log_debug(f"[CONFIDENCE] → RETURNING 'medium' (z>=1.0: only {medium_confidence_count} medium source, 2 required for high)")
+            return 'medium'
     
     # Z-score 0-1 (strictly greater than 0): Need 1 high OR 2 medium sources
     elif 0.0 < max_z < 1.0:

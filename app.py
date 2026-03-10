@@ -16772,57 +16772,84 @@ def api_queue_cleanup_copied_sources():
         return jsonify({"error": str(e)}), 400
 
 
-@app.route("/api/queue/clear", methods=["POST"])
+@app.route("/api/queue/clear", methods=["POST", "DELETE"])
 def api_queue_clear():
-    """Clear all items from download queue"""
+    """Clear non-imported items from the download queue."""
     try:
-        data = request.get_json() or {}
+        data = request.get_json(silent=True) or {}
         filters = data.get('filters', {})  # Optional filters: status, artist, album
-        
+
         conn = get_db()
         cursor = conn.cursor()
         is_pg = _is_postgres_connection(conn)
         placeholder = "%s" if is_pg else "?"
-        
-        # Build query with optional filters
-        query = "DELETE FROM download_queue WHERE 1=1"
-        params = []
-        
+
+        # By default keep 'imported' records so history is preserved
+        query = f"DELETE FROM download_queue WHERE status != {placeholder}"
+        params = ['imported']
+
         if filters.get('status'):
-            query += f" AND status = {placeholder}"
-            params.append(filters['status'])
-        
+            query = f"DELETE FROM download_queue WHERE status = {placeholder}"
+            params = [filters['status']]
+
         if filters.get('artist'):
             query += f" AND artist = {placeholder}"
             params.append(filters['artist'])
-        
+
         if filters.get('album'):
             query += f" AND album = {placeholder}"
             params.append(filters['album'])
-        
-        # Execute deletion
+
         cursor.execute(query, params)
         deleted_count = cursor.rowcount
         conn.commit()
         conn.close()
-        
-        if filters:
-            filter_desc = ", ".join([f"{k}='{v}'" for k, v in filters.items()])
-            message = f"Cleared {deleted_count} queue item(s) with filters: {filter_desc}"
-        else:
-            message = f"Cleared {deleted_count} item(s) from download queue"
-        
+
+        message = f"Cleared {deleted_count} item(s) from download queue"
         logging.info(f"[QUEUE] {message}")
-        
+
         return jsonify({
             "success": True,
             "message": message,
-            "deleted_count": deleted_count
+            "deleted": deleted_count,
+            "deleted_count": deleted_count,
         })
-        
+
     except Exception as e:
         logging.error(f"Error clearing download queue: {e}")
         return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/queue/retry-all-failed", methods=["POST"])
+def api_queue_retry_all_failed():
+    """Re-queue all items with status='failed' back to 'queued'."""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+
+        cursor.execute(
+            f"""UPDATE download_queue
+                SET status = {placeholder},
+                    failure_reason = NULL,
+                    retry_count = 0,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE status = {placeholder}""",
+            ('queued', 'failed'),
+        )
+        retried = cursor.rowcount
+        conn.commit()
+        conn.close()
+
+        logging.info(f"[QUEUE] Retried {retried} failed item(s)")
+        return jsonify({"success": True, "retried": retried})
+
+    except Exception as e:
+        logging.error(f"Error retrying all failed: {e}")
+        return jsonify({"error": str(e)}), 400
+
+
 
 
 def _queue_sanitize_component(value):

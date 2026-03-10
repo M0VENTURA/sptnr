@@ -655,8 +655,8 @@ def detect_greatest_hits_album(album: str, artist: str, conn: sqlite3.Connection
                     """, (artist,))
                     row = cursor.fetchone()
                     
-                    if row and row[0] and row[1] > 10:  # Need at least 10 tracks for meaningful comparison
-                        artist_avg_pop = row[0]
+                    if row and row_get(row, 'avg_pop') and row_get(row, 'track_count', 0) > 10:  # Need at least 10 tracks for meaningful comparison
+                        artist_avg_pop = row_get(row, 'avg_pop')
                         
                         # Calculate this album's average popularity
                         album_pops = [t.get('popularity_score', 0) for t in album_tracks if t.get('popularity_score')]
@@ -835,12 +835,12 @@ def should_skip_spotify_lookup(track_id: str, conn: sqlite3.Connection) -> bool:
         """, (track_id,))
         row = cursor.fetchone()
         
-        if not row or not row[0]:
+        if not row or not row_get(row, 'last_spotify_lookup'):
             # No cached lookup timestamp
             return False
         
-        last_lookup_str = row[0]
-        popularity_score = row[1]
+        last_lookup_str = row_get(row, 'last_spotify_lookup')
+        popularity_score = row_get(row, 'popularity_score')
         
         # Check if we have a valid popularity score (None or 0 means no valid data)
         if popularity_score is None or popularity_score <= 0:
@@ -1022,9 +1022,9 @@ def calculate_artist_popularity_stats(artist_name: str, conn: sqlite3.Connection
         # Filter out live/remix/alternate tracks before calculating statistics
         scores = []
         for row in rows:
-            popularity_score = row[0]
-            title = row[1] if row[1] else ""
-            album = row[2] if (has_album_column and row[2]) else ""
+            popularity_score = row_get(row, 'popularity_score', 0)
+            title = row_get(row, 'title', '')
+            album = row_get(row, 'album', '') if has_album_column else ""
             
             # Exclude live/remix/alternate versions from artist statistics
             if not should_exclude_track_from_stats(title, album):
@@ -1599,7 +1599,7 @@ def calculate_album_stats(conn, artist: str, album: str) -> tuple:
         WHERE artist = {placeholder} AND album = {placeholder} AND popularity_score > 0
     """, (artist, album))
     
-    popularities = [row[0] for row in cursor.fetchall()]
+    popularities = [row_get(row, 'popularity_score', 0) for row in cursor.fetchall()]
     
     if len(popularities) < 2:
         return 0.0, 0.0, 0.0, len(popularities)
@@ -1626,7 +1626,7 @@ def calculate_artist_stats(conn, artist: str) -> tuple:
         WHERE artist = {placeholder} AND popularity_score > 0
     """, (artist,))
     
-    popularities = [row[0] for row in cursor.fetchall()]
+    popularities = [row_get(row, 'popularity_score', 0) for row in cursor.fetchall()]
     
     if len(popularities) < 2:
         return 0.0, 0.0, len(popularities)
@@ -1931,7 +1931,7 @@ def fetch_album_art_url_from_musicbrainz(artist: str, album: str) -> str | None:
                 SELECT column_name FROM information_schema.columns 
                 WHERE table_schema = 'public' AND table_name = 'tracks'
             """)
-            track_columns = {row[0] for row in cursor.fetchall()}
+            track_columns = {row['column_name'] for row in cursor.fetchall()}
 
         mb_album_column = "musicbrainz_album_mbid" if "musicbrainz_album_mbid" in track_columns else None
 
@@ -2827,12 +2827,12 @@ def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection, artist
                     SELECT DISTINCT album FROM tracks WHERE artist = {placeholder} AND album_context_live = 1
                 )
                 AND album NOT IN (
-                    SELECT DISTINCT album FROM tracks WHERE artist = {placeholder} AND discogs_format_descriptions LIKE '%live%'
+                    SELECT DISTINCT album FROM tracks WHERE artist = {placeholder} AND discogs_format_descriptions LIKE {placeholder}
                 )
-        """, (artist_name, artist_name, artist_name))
+        """, (artist_name, artist_name, artist_name, '%live%'))
         
         tracks = cursor.fetchall()
-        listeners_list = [row[3] for row in tracks if row[3] > 0]
+        listeners_list = [row_get(row, 'lastfm_track_playcount', 0) for row in tracks if row_get(row, 'lastfm_track_playcount', 0) > 0]
         
         # Fetch artist info to get total track count and top 10% threshold
         total_tracks = 0
@@ -2939,9 +2939,9 @@ def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection, artist
         # Calculate z-score for each database track
         track_zscores = {}
         for track_row in tracks:
-            track_id = track_row[0]
-            title = track_row[1]
-            listeners = track_row[3]
+            track_id = row_get(track_row, 'id')
+            title = row_get(track_row, 'title', '')
+            listeners = row_get(track_row, 'lastfm_track_playcount', 0)
             
             if artist_stdev > 0:
                 z = (listeners - artist_mean) / artist_stdev
@@ -3383,8 +3383,8 @@ def popularity_scan(
                     LIMIT 1
                 """, (artist,))
                 row = cursor.fetchone()
-                if row and row[0]:
-                    artist_mbid = row[0]
+                if row and row_get(row, 'musicbrainz_artist_id'):
+                    artist_mbid = row_get(row, 'musicbrainz_artist_id')
                     log_debug(f"Using cached MusicBrainz artist ID for {artist}: {artist_mbid}")
             except Exception as e:
                 log_debug(f"Failed to get cached MusicBrainz artist ID for {artist}: {e}")
@@ -3416,8 +3416,8 @@ def popularity_scan(
                     """, (artist,))
                     row = cursor.fetchone()
                     
-                    if row and row[0]:
-                        spotify_artist_id = row[0]
+                    if row and row_get(row, 'spotify_artist_id'):
+                        spotify_artist_id = row_get(row, 'spotify_artist_id')
                         log_info(f'Using cached Spotify artist ID for {artist}: {spotify_artist_id}')
                         log_debug(f'Cached Spotify artist ID: {spotify_artist_id}')
                     else:
@@ -3504,14 +3504,14 @@ def popularity_scan(
 
                     cursor.execute(
                         f"""
-                            SELECT MAX(NULLIF(TRIM(CAST(discogs_artist_id AS TEXT)), ''))
+                            SELECT MAX(NULLIF(TRIM(CAST(discogs_artist_id AS TEXT)), '')) AS discogs_id
                             FROM tracks
                             WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
                         """,
                         (artist,)
                     )
                     discogs_id_row = cursor.fetchone()
-                    saved_discogs_id = str(discogs_id_row[0]).strip() if discogs_id_row and discogs_id_row[0] else ""
+                    saved_discogs_id = str(row_get(discogs_id_row, 'discogs_id', '')).strip() if discogs_id_row else ""
                     if not saved_discogs_id:
                         return ""
 
@@ -3955,7 +3955,7 @@ def popularity_scan(
                     
                     # Get existing albums for this artist
                     cursor.execute(f"SELECT DISTINCT album FROM tracks WHERE artist = {placeholder}", (artist,))
-                    existing_albums = [row[0] for row in cursor.fetchall()]
+                    existing_albums = [row_get(row, 'album') for row in cursor.fetchall()]
                     existing_norm = set()
                     for a in existing_albums:
                         if a:
@@ -5451,9 +5451,9 @@ def popularity_scan(
                             WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND {is_single_false_expr} AND album NOT IN (
                                 SELECT DISTINCT album FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album_context_live = 1
                             ) AND album NOT IN (
-                                SELECT DISTINCT album FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND discogs_format_descriptions LIKE '%live%'
+                                SELECT DISTINCT album FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND discogs_format_descriptions LIKE {placeholder}
                             )
-                        """, (artist, artist, artist))
+                        """, (artist, artist, artist, '%live%'))
                         artist_tracks = cursor.fetchall()
                         if not artist_tracks:
                             log_debug(f'No non-single tracks found for {artist}, skipping standout analysis')
@@ -5499,7 +5499,7 @@ def popularity_scan(
                                     cursor.execute(f"""
                                         SELECT popularity_score FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder} AND popularity_score > 0
                                     """, (artist, track_album))
-                                    track_album_scores = [row[0] for row in cursor.fetchall()]
+                                    track_album_scores = [row_get(row, 'popularity_score', 0) for row in cursor.fetchall()]
                                     track_album_median = stat_median_standout(track_album_scores) if track_album_scores else 0
                                     track_album_abs_devs = [abs(s - track_album_median) for s in track_album_scores]
                                     track_album_mad = stat_median_standout(track_album_abs_devs) if len(track_album_scores) > 1 else 0
@@ -6549,9 +6549,11 @@ def popularity_scan(
                         is_popularity_based_5star = False
                         
                         # SIMPLIFIED 5-STAR LOGIC BASED ON Z-SCORE AND CONFIDENCE
-                        # Rules:
+                        # Rules (unified — z-score is a gate, not a confidence substitute):
                         # 1. z-score 0-1: requires 2 medium confidence sources OR 1 high confidence source
-                        # 2. z-score > 1: requires 1 medium confidence source OR 1 high confidence source
+                        # 2. z-score > 1: same evidence requirement as z 0-1 (z-score alone does not
+                        #    lower the metadata bar — a high z-score with only 1 medium source
+                        #    such as MusicBrainz or Last.fm is NOT enough for 5 stars)
                         # 3. z-score > 2: may qualify as popularity-only 5★ based on CURRENT run z-score (not persisted status)
                         
                         # Always preserve explicit single confidence for 5★ assignment, even when
@@ -6601,11 +6603,15 @@ def popularity_scan(
                                 )
                                 single_confidence = "low"
 
-                            # Apply simplified z-score + confidence rules
+                            # Apply unified z-score + confidence rules.
+                            # Z-score is used only as a gate; both z > 1 and z 0-1
+                            # require the same metadata evidence threshold.
                             if track_zscore > 1.0:
-                                # z-score > 1: requires at least one evidence source
-                                # (medium or true high-confidence metadata source).
-                                if medium_conf_count >= 1 or high_conf_source_count >= 1:
+                                # z-score > 1: still requires 2 medium OR 1 true high-confidence
+                                # metadata source.  A single medium source (e.g. only MusicBrainz
+                                # or only Last.fm) is insufficient — z-score must NOT substitute
+                                # for the missing metadata evidence.
+                                if medium_conf_count >= 2 or high_conf_source_count >= 1:
                                     stars = 5
                                     if not is_single:
                                         single_upgrades.append(track_id)
@@ -6626,7 +6632,11 @@ def popularity_scan(
                                     stars = baseline_stars
                                     log_info(
                                         f"{stars}-star assignment: {title} "
-                                        f"(no qualifying evidence, zscore={track_zscore:.2f}, baseline spread preserved)"
+                                        f"(insufficient metadata evidence for z>1: {medium_conf_count} source(s), zscore={track_zscore:.2f}, baseline spread preserved)"
+                                    )
+                                    log_debug(
+                                        f"Evidence gate failed (z>1, only {medium_conf_count} medium source) - track_id: {track_id}, "
+                                        f"sources: {medium_conf_count}, high_sources: {high_conf_source_count}, zscore: {track_zscore:.2f}"
                                     )
                             elif track_zscore >= 0.0:
                                 # z-score 0-1: requires 2 medium sources OR 1 true high-confidence metadata source.
@@ -7283,7 +7293,7 @@ def refresh_all_playlists_from_db():
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT DISTINCT COALESCE(NULLIF(album_artist, ''), artist) AS artist_name FROM tracks")
-        artists = [row[0] for row in cursor.fetchall()]
+        artists = [row['artist_name'] for row in cursor.fetchall()]
         
         if not artists:
             log_basic("âš ï¸ No cached tracks in DB. Skipping playlist refresh.")

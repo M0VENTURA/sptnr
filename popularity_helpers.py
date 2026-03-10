@@ -223,17 +223,20 @@ def get_spotify_artist_id(artist_name: str) -> str | None:
     # First, try to get from database cache
     try:
         conn = get_db_connection()
+        is_pg = bool(_is_postgres_connection(conn))
+        placeholder = "%s" if is_pg else "?"
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT spotify_artist_id FROM tracks WHERE artist = ? AND spotify_artist_id IS NOT NULL LIMIT 1",
+            f"SELECT spotify_artist_id FROM tracks WHERE artist = {placeholder} AND spotify_artist_id IS NOT NULL LIMIT 1",
             (artist_name,)
         )
         row = cursor.fetchone()
         conn.close()
         
-        if row and row[0]:
-            logging.info(f"✓ Using cached Spotify artist ID for '{artist_name}': {row[0]}")
-            return row[0]
+        cached_id = row['spotify_artist_id'] if row else None
+        if cached_id:
+            logging.info(f"✓ Using cached Spotify artist ID for '{artist_name}': {cached_id}")
+            return cached_id
     except Exception as e:
         logging.debug(f"Failed to lookup cached Spotify artist ID for '{artist_name}': {e}")
     
@@ -555,13 +558,15 @@ def apply_mean_popularity_adjustment(
     
     with get_db_connection_context(conn) as db_conn:
         try:
+            is_pg = bool(_is_postgres_connection(db_conn))
+            placeholder = "%s" if is_pg else "?"
             cursor = db_conn.cursor()
             
             # Fetch artist statistics (median, MAD)
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT median_popularity, popularity_mad
                 FROM artist_stats
-                WHERE artist_name = ?
+                WHERE artist_name = {placeholder}
             """, (artist_name,))
             
             row = cursor.fetchone()
@@ -569,7 +574,8 @@ def apply_mean_popularity_adjustment(
                 # Artist stats not yet computed, return original score
                 return track_popularity
             
-            artist_median, artist_mad = row[0], row[1]
+            artist_median = row['median_popularity']
+            artist_mad = row['popularity_mad']
             
             if artist_median is None or artist_median <= 0:
                 # No valid median, return original score
@@ -658,13 +664,15 @@ def apply_album_deviation_adjustment(
     
     with get_db_connection_context(conn) as db_conn:
         try:
+            is_pg = bool(_is_postgres_connection(db_conn))
+            placeholder = "%s" if is_pg else "?"
             cursor = db_conn.cursor()
             
             # Fetch all track popularities in this album
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT popularity
                 FROM tracks
-                WHERE artist = ? AND album = ? AND popularity > 0
+                WHERE artist = {placeholder} AND album = {placeholder} AND popularity > 0
                 ORDER BY popularity
             """, (artist_name, album_name))
             
@@ -673,7 +681,7 @@ def apply_album_deviation_adjustment(
                 # Skip adjustment if album has fewer than 2 tracks with popularity data
                 return track_popularity
             
-            album_popularities = [row[0] for row in rows]
+            album_popularities = [row['popularity'] for row in rows]
             
             # Calculate album statistics
             try:
@@ -814,7 +822,6 @@ def save_to_db(track_data):
     cursor = conn.cursor()
     is_pg = bool(_is_postgres_connection(cursor.connection if hasattr(cursor, 'connection') else conn))
     placeholder = "%s" if is_pg else "?"
-    like_wildcard = "%%" if is_pg else "%"
     
     # Log the genres being saved for debugging
     if track_data.get('genres'):
@@ -863,7 +870,11 @@ def save_to_db(track_data):
         # These have file_path like "__queued_for_download__queue_id_123"
         # Try matching by MBID first (most reliable), then by metadata
         queue_entry = None
-        queue_like_pattern = f"__queued_for_download__queue_id_{like_wildcard}"
+        # The LIKE pattern is passed as a query parameter, so the % wildcard must
+        # NOT be doubled (no %% escaping). Parameterised values bypass psycopg2's
+        # format-string parser, which would otherwise misinterpret a literal %
+        # embedded in the SQL string.
+        queue_like_pattern = "__queued_for_download__queue_id_%"
         
         # If incoming track has MBID, try to match queue entry by MBID
         incoming_mbid = sanitized_data.get('mbid')
@@ -874,11 +885,11 @@ def save_to_db(track_data):
                     SELECT id, beets_mbid, mbid, file_path, last_scanned 
                     FROM tracks 
                     WHERE (mbid = {placeholder} OR suggested_mbid = {placeholder})
-                        AND file_path LIKE '{queue_like_pattern}'
+                        AND file_path LIKE {placeholder}
                         AND id != {placeholder}
                     LIMIT 1
                     """,
-                    (incoming_mbid, incoming_mbid, track_id)
+                    (incoming_mbid, incoming_mbid, queue_like_pattern, track_id)
                 ),
                 "save_to_db queue entry MBID lookup"
             )
@@ -895,11 +906,11 @@ def save_to_db(track_data):
                     SELECT id, beets_mbid, mbid, file_path, last_scanned 
                     FROM tracks 
                     WHERE artist = {placeholder} AND album = {placeholder} AND title = {placeholder} 
-                        AND file_path LIKE '{queue_like_pattern}'
+                        AND file_path LIKE {placeholder}
                         AND id != {placeholder}
                     LIMIT 1
                     """,
-                    (artist, album, title, track_id)
+                    (artist, album, title, queue_like_pattern, track_id)
                 ),
                 "save_to_db queue entry metadata lookup"
             )
@@ -907,7 +918,7 @@ def save_to_db(track_data):
         
         if queue_entry:
             # Found a pending queue entry - update it with the Navidrome track ID and real file_path
-            queue_id = queue_entry['id']
+            queue_id = queue_entry['id'] if hasattr(queue_entry, 'keys') else queue_entry[0]
             logging.info(f"Found queue entry {queue_id} for {artist} - {title}, updating to Navidrome ID {track_id}")
             
             # Delete the queue placeholder entry
@@ -1098,19 +1109,30 @@ def load_artist_map():
     cursor.execute("SELECT artist_id, artist_name, album_count, track_count, last_updated FROM artist_stats")
     rows = cursor.fetchall()
     conn.close()
-    return {row[1]: {"id": row[0], "album_count": row[2], "track_count": row[3], "last_updated": row[4]} for row in rows}
+    return {
+        row['artist_name']: {
+            "id": row['artist_id'],
+            "album_count": row['album_count'],
+            "track_count": row['track_count'],
+            "last_updated": row['last_updated'],
+        }
+        for row in rows
+    }
 
 def get_album_last_scanned_from_db(artist_name: str, album_name: str) -> str | None:
     try:
         conn = get_db_connection()
+        is_pg = bool(_is_postgres_connection(conn))
+        placeholder = "%s" if is_pg else "?"
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT MAX(last_scanned) FROM tracks WHERE artist = ? AND album = ?",
+            f"SELECT MAX(last_scanned) AS max_last_scanned FROM tracks WHERE artist = {placeholder} AND album = {placeholder}",
             (artist_name, album_name),
         )
         row = cursor.fetchone()
         conn.close()
-        return (row[0] if row and row[0] else None)
+        val = row['max_last_scanned'] if row else None
+        return val if val else None
     except Exception as e:
         logging.debug(f"get_album_last_scanned_from_db failed for '{artist_name} / {album_name}': {e}")
         return None
@@ -1118,14 +1140,16 @@ def get_album_last_scanned_from_db(artist_name: str, album_name: str) -> str | N
 def get_album_track_count_in_db(artist_name: str, album_name: str) -> int:
     try:
         conn = get_db_connection()
+        is_pg = bool(_is_postgres_connection(conn))
+        placeholder = "%s" if is_pg else "?"
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT COUNT(*) FROM tracks WHERE artist = ? AND album = ?",
+            f"SELECT COUNT(*) AS track_count FROM tracks WHERE artist = {placeholder} AND album = {placeholder}",
             (artist_name, album_name),
         )
-        count = cursor.fetchone()[0] or 0
+        row = cursor.fetchone()
         conn.close()
-        return count
+        return (row['track_count'] if row else 0) or 0
     except Exception as e:
         logging.debug(f"get_album_track_count_in_db failed for '{artist_name} / {album_name}': {e}")
         return 0
@@ -1144,9 +1168,11 @@ def update_artist_id_for_artist(artist_name: str, artist_id: str) -> int:
     """
     try:
         conn = get_db_connection()
+        is_pg = bool(_is_postgres_connection(conn))
+        placeholder = "%s" if is_pg else "?"
         cursor = conn.cursor()
         cursor.execute(
-            "UPDATE tracks SET spotify_artist_id = ? WHERE artist = ? AND spotify_artist_id IS NULL",
+            f"UPDATE tracks SET spotify_artist_id = {placeholder} WHERE artist = {placeholder} AND spotify_artist_id IS NULL",
             (artist_id, artist_name)
         )
         updated = cursor.rowcount
@@ -1173,9 +1199,11 @@ def update_discogs_artist_id_for_artist(artist_name: str, discogs_artist_id: str
     """
     try:
         conn = get_db_connection()
+        is_pg = bool(_is_postgres_connection(conn))
+        placeholder = "%s" if is_pg else "?"
         cursor = conn.cursor()
         cursor.execute(
-            "UPDATE tracks SET discogs_artist_id = ? WHERE artist = ? AND discogs_artist_id IS NULL",
+            f"UPDATE tracks SET discogs_artist_id = {placeholder} WHERE artist = {placeholder} AND discogs_artist_id IS NULL",
             (discogs_artist_id, artist_name)
         )
         updated = cursor.rowcount

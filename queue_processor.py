@@ -604,145 +604,160 @@ def search_and_download(queue_id, queue_item, client):
         return False
 
 def check_completed_downloads():
-    """Check /downloads folder for completed files and match to queue items"""
+    """Check for completed downloads and match them to queue items.
+
+    Primary:  Query slskd's transfers API for entries in state 'Completed,
+              Succeeded' — each carries a localFilePath that gives the exact
+              on-disk location without a filesystem walk.
+    Fallback: Walk DOWNLOADS_DIR for audio files when slskd is unavailable or
+              returns no localFilePath.
+    """
     try:
         conn = get_db()
         cursor = conn.cursor()
-        
-        if not os.path.isdir(DOWNLOADS_DIR):
+
+        # ------------------------------------------------------------------
+        # Build a lookup of slskd-completed files: filename → localFilePath
+        # ------------------------------------------------------------------
+        slskd_completed: dict[str, str] = {}
+        try:
+            slskd_client = get_slskd_client()
+            if slskd_client:
+                for transfer in slskd_client.get_completed_transfers():
+                    local = transfer.get("localFilePath", "")
+                    remote = transfer.get("filename", "")
+                    if local and os.path.isfile(local):
+                        slskd_completed[remote] = local
+                        # Also index by basename for fuzzy matching
+                        slskd_completed[os.path.basename(local)] = local
+                logger.debug(f"slskd API: {len(slskd_completed)} completed transfer paths")
+        except Exception as slskd_err:
+            logger.debug(f"Could not query slskd completed transfers: {slskd_err}")
+
+        # ------------------------------------------------------------------
+        # Filesystem walk (fallback / supplement)
+        # ------------------------------------------------------------------
+        fs_files: list[str] = []
+        if os.path.isdir(DOWNLOADS_DIR):
+            try:
+                for root, _, root_files in os.walk(DOWNLOADS_DIR):
+                    for f in root_files:
+                        if f.lower().endswith(('.mp3', '.flac', '.m4a')):
+                            fs_files.append(os.path.relpath(os.path.join(root, f), DOWNLOADS_DIR))
+                if fs_files:
+                    logger.debug(f"Filesystem walk: {len(fs_files)} audio files in {DOWNLOADS_DIR}")
+            except Exception as e:
+                logger.error(f"Error scanning downloads folder: {e}")
+        else:
             logger.warning(f"Downloads directory does not exist: {DOWNLOADS_DIR}")
-            return
-        
-        # Get all downloading queue items (select all columns for metadata needed to move)
+
+        # ------------------------------------------------------------------
+        # Fetch all items currently in 'downloading' status
+        # ------------------------------------------------------------------
         cursor.execute("""
             SELECT * FROM download_queue
             WHERE status = 'downloading'
         """)
-        
         downloading = [dict(row) for row in cursor.fetchall()]
-        
         if downloading:
             logger.debug(f"Checking {len(downloading)} items in 'downloading' status")
-        
-        # Get audio files in downloads folder recursively
-        try:
-            files = []
-            for root, _, root_files in os.walk(DOWNLOADS_DIR):
-                for f in root_files:
-                    if f.lower().endswith(('.mp3', '.flac', '.m4a')):
-                        files.append(os.path.relpath(os.path.join(root, f), DOWNLOADS_DIR))
-            if files:
-                logger.debug(f"Found {len(files)} audio files in {DOWNLOADS_DIR}")
-        except Exception as e:
-            logger.error(f"Error scanning downloads folder: {e}")
-            conn.close()
-            return
-        
-        # Try to match files to queue items
+
         newly_completed = []
         for item in downloading:
             match_found = None
             match_meta_state = None
-            
-            # Try exact filename match first
-            if item['found_filename']:
-                for rel_file in files:
-                    rel_file_norm = rel_file.replace('\\', '/')
-                    found_norm = str(item['found_filename']).replace('\\', '/')
-                    if rel_file_norm == found_norm or os.path.basename(rel_file_norm) == os.path.basename(found_norm):
+
+            found_fn = item.get("found_filename") or ""
+            item_id = item["id"]
+
+            # 1. Exact match via slskd localFilePath (most reliable)
+            if found_fn and found_fn in slskd_completed:
+                abs_path = slskd_completed[found_fn]
+                match_found = os.path.relpath(abs_path, DOWNLOADS_DIR)
+                match_meta_state = None  # path is authoritative
+                logger.debug(f"Queue {item_id}: matched via slskd localFilePath: {abs_path}")
+
+            # 2. Exact filename match against filesystem files
+            if match_found is None and found_fn:
+                for rel_file in fs_files:
+                    rel_norm = rel_file.replace('\\', '/')
+                    found_norm = found_fn.replace('\\', '/')
+                    if rel_norm == found_norm or os.path.basename(rel_norm) == os.path.basename(found_norm):
                         file_path = os.path.join(DOWNLOADS_DIR, rel_file)
                         meta_state = _metadata_matches_queue_item(file_path, item)
                         if meta_state is False:
                             logger.info(
-                                f"Queue {item['id']}: rejecting exact filename match due to metadata mismatch: {rel_file}"
+                                f"Queue {item_id}: rejecting exact filename match due to metadata mismatch: {rel_file}"
                             )
                             continue
                         match_found = rel_file
                         match_meta_state = meta_state
                         break
 
-            if match_found:
-                logger.debug(f"Queue {item['id']}: Exact filename match found")
-            else:
-                # Try fuzzy matching
-                for filename in files:
+            # 3. Fuzzy match against filesystem files
+            if match_found is None:
+                for filename in fs_files:
                     file_path = os.path.join(DOWNLOADS_DIR, filename)
                     meta_state = _metadata_matches_queue_item(file_path, item)
-
-                    # If tags are present and disagree, do not allow filename/path fallback.
                     if meta_state is False:
                         continue
-
-                    # Prefer metadata-backed matches. Otherwise use stricter path scoring fallback.
                     if meta_state is True or matches_queue_item(filename, item):
                         match_found = filename
                         match_meta_state = meta_state
-                        logger.debug(f"Queue {item['id']}: Fuzzy match found: {filename}")
+                        logger.debug(f"Queue {item_id}: fuzzy match found: {filename}")
                         break
-            
+
             if match_found:
                 file_path = os.path.join(DOWNLOADS_DIR, match_found)
                 if match_meta_state is True:
                     logger.info(
-                        f"Queue {item['id']}: Matched file '{match_found}' by metadata artist/title - marking as completed"
+                        f"Queue {item_id}: matched file '{match_found}' by metadata — marking as completed"
                     )
                 else:
                     logger.info(
-                        f"Queue {item['id']}: Matched file '{match_found}' by filename/path fallback - marking as completed"
+                        f"Queue {item_id}: matched file '{match_found}' by filename/path — marking as completed"
                     )
-                update_queue_status(item['id'], 'completed', file_path=file_path, found_filename=match_found)
+                update_queue_status(item_id, 'completed', file_path=file_path, found_filename=match_found)
 
                 # Immediately move the file to /music
                 try:
                     from download_queue_manager import move_single_track_to_music_dir, update_queue_item
                     from download_file_verification import verify_file_in_music, mark_queue_item_moved
-                    
-                    # Build a minimal item dict with the metadata needed for folder determination
+
                     item_for_move = dict(item)
                     item_for_move['file_path'] = file_path
                     move_result = move_single_track_to_music_dir(item_for_move)
                     if move_result['success']:
                         target_path = move_result['target_path']
-                        
-                        # Verify file exists at new location before marking as imported
-                        verify_result = verify_file_in_music(item['id'], target_path)
-                        
+                        verify_result = verify_file_in_music(item_id, target_path)
                         if verify_result['success']:
-                            # File verified - mark as moved and imported
-                            mark_queue_item_moved(item['id'], target_path)
+                            mark_queue_item_moved(item_id, target_path)
                             update_queue_item(
-                                item['id'],
+                                item_id,
                                 status='imported',
                                 file_path=target_path,
                                 copied_individually=1,
                                 copied_individually_at=datetime.now().isoformat()
                             )
-                            logger.info(f"[AUTO_MOVE] Queue {item['id']}: verified and imported to {target_path}")
+                            logger.info(f"[AUTO_MOVE] Queue {item_id}: verified and imported to {target_path}")
                         else:
-                            # Verification failed - mark back to completed for retry
                             logger.warning(
-                                f"[AUTO_MOVE] Queue {item['id']}: verification FAILED ({verify_result.get('error')}), "
-                                f"marking back to 'completed' for retry"
+                                f"[AUTO_MOVE] Queue {item_id}: verification FAILED "
+                                f"({verify_result.get('error')}), marking back to 'completed'"
                             )
-                            update_queue_item(
-                                item['id'],
-                                status='completed',
-                                file_path=file_path
-                            )
+                            update_queue_item(item_id, status='completed', file_path=file_path)
                     else:
                         logger.warning(
-                            f"[AUTO_MOVE] Queue {item['id']}: could not move "
+                            f"[AUTO_MOVE] Queue {item_id}: could not move "
                             f"({move_result.get('error')}), keeping as 'completed'"
                         )
                 except Exception as move_err:
-                    logger.warning(f"[AUTO_MOVE] Queue {item['id']}: move error: {move_err}")
+                    logger.warning(f"[AUTO_MOVE] Queue {item_id}: move error: {move_err}")
 
                 newly_completed.append(item)
 
         conn.close()
 
-        # After matching files, check whether any album is now fully complete
-        # and auto-move all its remaining tracks to the music library.
         for item in newly_completed:
             try:
                 from download_queue_manager import auto_move_completed_album
