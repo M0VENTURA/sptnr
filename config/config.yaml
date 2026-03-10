@@ -29,6 +29,25 @@ slskd:
 # Downloads Folder Configuration
 downloads:
   folder: "/downloads/Music"  # Path to watch for downloaded music files
+  
+  # Quality Filter - Enforce format/bitrate requirements for downloads
+  # Reject files that don't match your preferred formats and bitrates
+  # Set enabled: false to disable filtering and accept all files
+  quality_filter:
+    enabled: true  # Enable format/bitrate filtering
+    reject_others: true  # Reject files not matching any priority (or accept all if false)
+    bitrate_tolerance: 5  # Allow ±5 kbps variance from specified bitrate
+    priorities:
+      - format: "mp3"
+        bitrate_kbps: 320  # Priority 1: 320 kbps MP3 (highest quality lossy)
+      - format: "flac"
+        bitrate_kbps: null  # Priority 2: FLAC (lossless, no bitrate requirement)
+    # Examples of other formats you could add:
+    # - format: "m4a"  
+    #   bitrate_kbps: 256  # AAC 256 kbps
+    # - format: "ogg"
+    #   bitrate_kbps: 192  # OGG Vorbis 192 kbps
+    # If a file doesn't match any priority and reject_others is true, it will be skipped
 
 # Watcher Service Configuration
 watcher:

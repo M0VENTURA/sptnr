@@ -1236,17 +1236,185 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
         return {'success': False, 'target_path': None, 'error': str(e)}
 
 
-def _metadata_matches_queue_item(file_meta, queue_item, threshold=0.68):
+def _load_format_bitrate_config():
+    """
+    Load format/bitrate priority configuration from /config/config.yaml
+    
+    Returns:
+        dict with 'enabled', 'priorities', 'bitrate_tolerance', 'reject_others'
+    """
+    config = {
+        'enabled': False,
+        'priorities': [],  # List of {'format': 'mp3', 'bitrate_kbps': 320}, {'format': 'flac', 'bitrate_kbps': None}
+        'bitrate_tolerance': 5,  # ±5 kbps tolerance
+        'reject_others': False  # Reject files not matching any priority
+    }
+    
+    try:
+        config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+        if not os.path.exists(config_path):
+            return config
+        
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        
+        # Look for download quality settings
+        downloads_cfg = cfg.get("downloads") or {}
+        quality_cfg = downloads_cfg.get("quality_filter") or {}
+        
+        if quality_cfg.get("enabled"):
+            config['enabled'] = True
+            
+            # Parse priorities: [{'format': 'mp3', 'bitrate_kbps': 320}, {'format': 'flac'}]
+            priorities = quality_cfg.get("priorities", [])
+            if isinstance(priorities, list):
+                config['priorities'] = priorities
+            
+            config['bitrate_tolerance'] = quality_cfg.get("bitrate_tolerance", 5)
+            config['reject_others'] = quality_cfg.get("reject_others", False)
+            
+            logger.info(f"[FORMAT-FILTER] Enabled with {len(config['priorities'])} priority rule(s): "
+                       f"{config['priorities']}")
+    except Exception as e:
+        logger.warning(f"[FORMAT-FILTER] Error reading config: {e}")
+    
+    return config
+
+
+def _get_file_format_and_bitrate(file_path, file_meta=None):
+    """
+    Extract format and bitrate from file.
+    
+    Args:
+        file_path: Path to audio file
+        file_meta: Optional pre-read metadata dict
+    
+    Returns:
+        dict with 'format' and 'bitrate_kbps' (bitrate in kbps or None for lossless)
+    """
+    result = {'format': None, 'bitrate_kbps': None}
+    
+    try:
+        # Get format from extension
+        ext = os.path.splitext(file_path)[1].lower().lstrip('.')
+        if ext in ['mp3', 'flac', 'm4a', 'ogg', 'wav', 'aac']:
+            result['format'] = ext
+        
+        # Get bitrate from metadata if available
+        if file_meta and file_meta.get('bitrate'):
+            kbps = file_meta['bitrate'] / 1000  # Convert from bps to kbps
+            result['bitrate_kbps'] = int(round(kbps))
+        elif not file_meta:
+            # Try to read metadata
+            try:
+                file_meta = read_mp3_metadata(file_path)
+                if file_meta and file_meta.get('bitrate'):
+                    kbps = file_meta['bitrate'] / 1000
+                    result['bitrate_kbps'] = int(round(kbps))
+            except:
+                pass
+    except Exception as e:
+        logger.warning(f"Failed to extract format/bitrate from {file_path}: {e}")
+    
+    return result
+
+
+def _matches_format_bitrate_priority(file_path, file_meta=None):
+    """
+    Check if file matches configured format/bitrate priorities.
+    
+    Args:
+        file_path: Path to audio file
+        file_meta: Optional pre-read metadata dict
+    
+    Returns:
+        dict with 'matches' (bool), 'reason' (str), 'format' (str), 'bitrate_kbps' (int)
+    """
+    result = {
+        'matches': True,
+        'reason': 'Format filter disabled or no rules configured',
+        'format': None,
+        'bitrate_kbps': None
+    }
+    
+    config = _load_format_bitrate_config()
+    if not config['enabled'] or not config['priorities']:
+        return result
+    
+    file_info = _get_file_format_and_bitrate(file_path, file_meta)
+    result['format'] = file_info['format']
+    result['bitrate_kbps'] = file_info['bitrate_kbps']
+    
+    if not file_info['format']:
+        result['matches'] = False
+        result['reason'] = 'Could not determine file format'
+        return result
+    
+    tolerance = config['bitrate_tolerance']
+    
+    # Check if file matches any priority rule
+    for priority in config['priorities']:
+        priority_format = priority.get('format', '').lower()
+        priority_bitrate = priority.get('bitrate_kbps')
+        
+        if file_info['format'].lower() != priority_format:
+            continue  # Format doesn't match this rule
+        
+        # Format matches - check bitrate if specified
+        if priority_bitrate is None:
+            # No bitrate requirement (lossless formats)
+            result['matches'] = True
+            result['reason'] = f'Matches priority: {priority_format}'
+            return result
+        
+        if file_info['bitrate_kbps'] is None:
+            # File has no bitrate metadata (might be lossless), skip bitrate check
+            result['matches'] = True
+            result['reason'] = f'Matches priority: {priority_format} (no bitrate info)'
+            return result
+        
+        # Check if bitrate is within tolerance
+        diff = abs(file_info['bitrate_kbps'] - priority_bitrate)
+        if diff <= tolerance:
+            result['matches'] = True
+            result['reason'] = f'Matches priority: {priority_format} {file_info["bitrate_kbps"]} kbps'
+            return result
+        else:
+            logger.debug(f"[FORMAT-FILTER] Bitrate mismatch: {file_path} has "
+                        f"{file_info['bitrate_kbps']} kbps, expected {priority_bitrate} ±{tolerance}")
+    
+    # No priority rules matched
+    if config['reject_others']:
+        result['matches'] = False
+        result['reason'] = f'No matching priority: {file_info["format"]} {file_info["bitrate_kbps"]} kbps'
+        log_queue_event('quality_filter_reject', f"Rejected {os.path.basename(file_path)}: {result['reason']}")
+        return result
+    
+    # Accept by default if reject_others is False
+    result['matches'] = True
+    result['reason'] = f'Accepted (no reject_others): {file_info["format"]} {file_info["bitrate_kbps"]} kbps'
+    return result
+
+
+def _metadata_matches_queue_item(file_meta, queue_item, threshold=0.68, file_path=None):
     """
     Check if discovered file metadata is a good match for a pending queue item.
 
     Compares artist + title (required), with album as a bonus.
+    Also validates format/bitrate against configured priorities if enabled.
 
     Returns:
         True: metadata exists and strongly matches
-        False: metadata exists but mismatches
+        False: metadata exists but mismatches (including format/bitrate rejection)
         None: metadata missing/incomplete, caller can use filename fallback
     """
+    # First check format/bitrate priority if file_path provided
+    if file_path:
+        quality_check = _matches_format_bitrate_priority(file_path, file_meta)
+        if not quality_check['matches']:
+            logger.info(f"[QUALITY-FILTER] Rejected: {file_path} - {quality_check['reason']}")
+            return False
+    
     def _sim(a, b):
         if not a or not b:
             return 0.0
@@ -1342,7 +1510,7 @@ def check_downloads_folder():
                         except Exception:
                             metadata = None
 
-                        meta_state = _metadata_matches_queue_item(metadata or {}, queue_item)
+                        meta_state = _metadata_matches_queue_item(metadata or {}, queue_item, file_path=file_info['full_path'])
                         if meta_state is False:
                             logger.info(
                 def _extract_year(value):
@@ -1374,7 +1542,7 @@ def check_downloads_folder():
                     except Exception:
                         metadata = None
 
-                    meta_state = _metadata_matches_queue_item(metadata or {}, queue_item)
+                    meta_state = _metadata_matches_queue_item(metadata or {}, queue_item, file_path=file_info['full_path'])
 
                     # If tags exist and disagree, never allow filename fallback.
                     if meta_state is False:
@@ -1764,7 +1932,7 @@ def auto_discover_and_queue_files():
 
                 matched_pending = None
                 for pending in pending_items:
-                    if _metadata_matches_queue_item(file_meta, pending):
+                    if _metadata_matches_queue_item(file_meta, pending, file_path=full_path):
                         matched_pending = pending
                         break
 
