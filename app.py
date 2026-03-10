@@ -8363,9 +8363,19 @@ def scan_mp3_import():
     
     with scan_lock:
         # Check if scan is already running
-        if scan_process_mp3_import and scan_process_mp3_import.poll() is None:
-            flash("MP3 metadata import scan is already running", "warning")
-            return redirect(url_for("dashboard"))
+        if scan_process_mp3_import is not None:
+            is_running = False
+            try:
+                if hasattr(scan_process_mp3_import, "is_alive"):
+                    is_running = scan_process_mp3_import.is_alive()
+                elif hasattr(scan_process_mp3_import, "poll"):
+                    is_running = scan_process_mp3_import.poll() is None
+            except Exception:
+                is_running = False
+
+            if is_running:
+                flash("MP3 metadata import scan is already running", "warning")
+                return redirect(url_for("dashboard"))
         
         try:
             # Import MP3ImportScanner here to avoid issues if file isn't ready

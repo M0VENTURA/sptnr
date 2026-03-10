@@ -667,7 +667,8 @@ def get_queue(status=None, source=None, limit=50):
             SELECT column_name FROM information_schema.columns
             WHERE table_name = 'download_queue' AND table_schema = 'public'
         """)
-        columns = [row[0] for row in cursor.fetchall()]
+        # RealDictCursor returns dict-like rows, so use key lookup.
+        columns = [row.get('column_name') for row in cursor.fetchall() if row.get('column_name')]
 
         # Add missing columns if needed
         missing_cols = {

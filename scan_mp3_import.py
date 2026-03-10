@@ -20,6 +20,7 @@ import json
 import argparse
 import logging
 import psycopg2
+import psycopg2.extras
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
@@ -28,7 +29,6 @@ from typing import Dict, List, Optional, Tuple
 sys.path.insert(0, os.path.dirname(__file__))
 
 from helpers.metadata_reader import read_mp3_metadata, read_genres_from_mp3
-from database_abstraction import get_db
 from helpers.config_loader import load_config
 
 # Configure logging
@@ -37,6 +37,18 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def get_db():
+    """Create a PostgreSQL connection for MP3 import tasks."""
+    return psycopg2.connect(
+        host=os.environ.get("PG_HOST", "sptnr-postgres"),
+        user=os.environ.get("PG_USER", "sptnr"),
+        password=os.environ.get("PG_PASSWORD", ""),
+        dbname=os.environ.get("PG_DATABASE", "sptnr"),
+        port=int(os.environ.get("PG_PORT", "5432")),
+        connect_timeout=10,
+    )
 
 # Constants
 SUPPORTED_FORMATS = {'.mp3', '.flac', '.m4a', '.wav', '.ogg'}
