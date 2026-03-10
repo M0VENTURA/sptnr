@@ -162,6 +162,7 @@ def search_and_update_musicbrainz(queue_id, artist, title, album):
                 album=album,
                 status='queried',
                 track_number=track.get('number'),
+                year=release_year,
                 release_mbid=release_mbid,
                 recording_mbid=None,
                 duration=track.get('duration')
@@ -212,14 +213,30 @@ def move_to_music_collection(queue_id):
         if not os.path.exists(source_path):
             return {'error': f'Source file not found: {source_path}'}
         
+        def _extract_year(value):
+            if value is None:
+                return None
+            value_str = str(value).strip()
+            if len(value_str) >= 4:
+                import re
+                match = re.search(r"(19|20)\d{2}", value_str)
+                if match:
+                    return match.group(0)
+            return None
+
         # Build destination path using album structure
         album_artist = queue_item.get('album_artist') or queue_item['artist']
         album = queue_item.get('album') or 'Unknown Album'
+        year = _extract_year(
+            queue_item.get('year')
+            or queue_item.get('release_year')
+            or queue_item.get('mb_matched_year')
+        ) or 'Unknown'
         
         dest_dir = os.path.join(
             MUSIC_DIR,
             sanitize_filename(album_artist),
-            sanitize_filename(album)
+            sanitize_filename(f"{year} - {album}")
         )
         os.makedirs(dest_dir, exist_ok=True)
         
