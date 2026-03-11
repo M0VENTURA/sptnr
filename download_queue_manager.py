@@ -1285,11 +1285,8 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
         dest_path = os.path.join(dest_folder, filename)
 
         if os.path.exists(dest_path):
-            base, ext_only = os.path.splitext(filename)
-            counter = 1
-            while os.path.exists(os.path.join(dest_folder, f"{base}_{counter}{ext_only}")):
-                counter += 1
-            dest_path = os.path.join(dest_folder, f"{base}_{counter}{ext_only}")
+            logger.info(f"[COPY] Destination already exists, skipping copy: {dest_path}")
+            return {'success': True, 'target_path': dest_path, 'error': None, 'skipped': True}
 
         shutil.copy2(file_path, dest_path)
         logger.info(f"[COPY] {filename} → {dest_path}")
