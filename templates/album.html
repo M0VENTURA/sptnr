@@ -596,9 +596,14 @@
                                 </td>
                                 <td class="d-flex justify-content-between d-md-table-cell align-items-center">
                                     <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Track</span>
-                                    <a href="{{ url_for('track_detail', track_id=track.id) }}" class="d-none d-md-inline">
-                                        {{ track.title }}
-                                    </a>
+                                    <div class="d-none d-md-block">
+                                        <a href="{{ url_for('track_detail', track_id=track.id) }}">
+                                            {{ track.title }}
+                                        </a>
+                                        {% if track.file_path %}
+                                        <div class="text-muted" style="font-size: 0.7rem; word-break: break-all;">{{ track.file_path }}</div>
+                                        {% endif %}
+                                    </div>
                                 </td>
                                 <td class="d-none d-lg-table-cell">
                                     {% if track.artist and track.artist != artist_name %}
@@ -704,6 +709,9 @@
                                     <a href="{{ url_for('track_detail', track_id=track.id) }}" class="d-none d-md-inline track-title-display-{{ track.id }}">
                                         {{ track.title }}
                                     </a>
+                                    {% if track.file_path %}
+                                    <div class="d-none d-md-block text-muted" style="font-size: 0.7rem; word-break: break-all;">{{ track.file_path }}</div>
+                                    {% endif %}
                                     <span class="d-md-none track-title-display-{{ track.id }}">{{ track.title }}</span>
                                 </span>
                             </td>
