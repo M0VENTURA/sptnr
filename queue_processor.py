@@ -1063,6 +1063,22 @@ def check_completed_downloads():
                     from download_queue_manager import move_single_track_to_music_dir, update_queue_item
                     from download_file_verification import verify_file_in_music, mark_queue_item_moved
 
+                    # Extract duration from the downloaded file and persist it when the
+                    # queue item has no duration yet (e.g. it was added without MusicBrainz
+                    # metadata). MutagenFile may be None when mutagen is not installed.
+                    if not item.get('duration') and MutagenFile is not None:
+                        try:
+                            audio = MutagenFile(file_path)
+                            if audio is not None and audio.info and hasattr(audio.info, 'length'):
+                                file_duration = _normalize_duration_seconds(audio.info.length)
+                                if file_duration:
+                                    update_queue_item(item_id, duration=file_duration)
+                                    logger.debug(
+                                        f"Queue {item_id}: updated duration from file to {file_duration}s"
+                                    )
+                        except Exception as dur_err:
+                            logger.debug(f"Queue {item_id}: could not extract duration from file: {dur_err}")
+
                     item_for_move = dict(item)
                     item_for_move['file_path'] = file_path
                     move_result = move_single_track_to_music_dir(item_for_move)

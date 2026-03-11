@@ -16713,6 +16713,17 @@ def api_queue_add():
 
         release_id = data.get('release_id', '').strip() if data.get('release_id') else None
         release_source = data.get('release_source', '').strip() if data.get('release_source') else None
+
+        duration = data.get('duration')
+        if duration not in (None, ''):
+            try:
+                duration = float(duration)
+                if duration <= 0:
+                    duration = None
+            except (TypeError, ValueError):
+                duration = None
+        else:
+            duration = None
         
         # Handle priority parsing
         try:
@@ -16739,6 +16750,7 @@ def api_queue_add():
                 year=year,
                 release_id=release_id,
                 release_source=release_source,
+                duration=duration,
             )
         except Exception as e:
             logging.error(f"Error in add_to_queue: {type(e).__name__}: {e}")
@@ -16831,6 +16843,17 @@ def api_queue_add_batch():
             
             release_id = item_data.get('release_id', '').strip() if item_data.get('release_id') else None
             release_source = item_data.get('release_source', '').strip() if item_data.get('release_source') else None
+
+            duration = item_data.get('duration')
+            if duration not in (None, ''):
+                try:
+                    duration = float(duration)
+                    if duration <= 0:
+                        duration = None
+                except (TypeError, ValueError):
+                    duration = None
+            else:
+                duration = None
             
             try:
                 priority = int(item_data.get('priority', 5))
@@ -16847,7 +16870,8 @@ def api_queue_add_batch():
                 item = add_to_queue(artist, title, album, source, priority, 
                                    import_group=import_group_id, import_type=import_type,
                                    track_number=track_number, album_artist=album_artist, 
-                                   year=year, release_id=release_id, release_source=release_source)
+                                   year=year, release_id=release_id, release_source=release_source,
+                                   duration=duration)
                 if item:
                     added_count += 1
                 else:
