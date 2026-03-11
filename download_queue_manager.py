@@ -2596,7 +2596,7 @@ def get_completed_queue(limit=50):
     """
     Get completed downloads (and unmatched files) waiting for organization.
 
-    Includes items with status 'completed', 'unmatched', or 'possible_duplicate' that have a file_path.
+    Includes items with status 'completed', 'unmatched', or 'possible_duplicate'.
 
     Returns:
         List of completed/unmatched queue items
@@ -2612,7 +2612,6 @@ def get_completed_queue(limit=50):
         cursor.execute(f"""
             SELECT * FROM download_queue 
             WHERE status IN ('completed', 'unmatched', 'possible_duplicate')
-            AND file_path IS NOT NULL
             ORDER BY updated_at DESC
             LIMIT {placeholder}
         """, (limit,))

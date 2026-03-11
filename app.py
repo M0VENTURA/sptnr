@@ -1554,6 +1554,94 @@ def _start_daily_scheduler():
 
             try:
                 _run_daily_missing_releases_scan()
+        @app.route("/api/queue/<queue_id>/requeue", methods=["POST"])
+        def api_queue_requeue_item(queue_id):
+            """Re-queue a single unmatched or failed item back to queued status."""
+            try:
+                conn = get_db()
+                cursor = conn.cursor()
+                is_pg = _is_postgres_connection(conn)
+                placeholder = "%s" if is_pg else "?"
+
+                cursor.execute(
+                    f"SELECT id, status, artist, title, file_path FROM download_queue WHERE id = {placeholder}",
+                    (queue_id,)
+                )
+                item = cursor.fetchone()
+
+                if not item:
+                    conn.close()
+                    return jsonify({"error": "Queue item not found"}), 404
+
+                current_status = item['status'] if hasattr(item, 'keys') else item[1]
+                if current_status not in ['unmatched', 'failed', 'completed']:
+                    conn.close()
+                    return jsonify({"error": f"Cannot re-queue item with status '{current_status}'"}), 400
+
+                update_sql = f"""
+                    UPDATE download_queue
+                    SET status = {placeholder},
+                        failure_reason = NULL,
+                        retry_count = 0,
+                        updated_at = CURRENT_TIMESTAMP
+                """
+                update_params = ['queued']
+
+                if current_status == 'unmatched':
+                    update_sql += ", file_path = NULL"
+
+                update_sql += f" WHERE id = {placeholder}"
+                update_params.append(queue_id)
+                cursor.execute(update_sql, tuple(update_params))
+
+                if cursor.rowcount == 0:
+                    conn.close()
+                    return jsonify({"error": "Failed to re-queue item"}), 500
+
+                conn.commit()
+                item_artist = item['artist'] if hasattr(item, 'keys') else item[2]
+                item_title = item['title'] if hasattr(item, 'keys') else item[3]
+                conn.close()
+
+                logging.info(f"[QUEUE] Re-queued item {queue_id} ({item_artist} - {item_title}) from '{current_status}' back to 'queued'")
+                return jsonify({"success": True, "queue_id": queue_id, "message": f"Item re-queued: {item_artist} - {item_title}"})
+
+            except Exception as e:
+                logging.error(f"Error re-queuing item {queue_id}: {e}")
+                return jsonify({"error": str(e)}), 400
+
+
+        @app.route("/api/queue/requeue-all-unmatched", methods=["POST"])
+        def api_queue_requeue_all_unmatched():
+            """Re-queue all unmatched items back to queued status."""
+            try:
+                conn = get_db()
+                cursor = conn.cursor()
+                is_pg = _is_postgres_connection(conn)
+                placeholder = "%s" if is_pg else "?"
+
+                cursor.execute(
+                    f"""UPDATE download_queue
+                        SET status = {placeholder},
+                            failure_reason = NULL,
+                            retry_count = 0,
+                            file_path = NULL,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE status = {placeholder}""",
+                    ('queued', 'unmatched'),
+                )
+                requeued = cursor.rowcount
+                conn.commit()
+                conn.close()
+
+                logging.info(f"[QUEUE] Re-queued {requeued} unmatched item(s) back to 'queued' status")
+                return jsonify({"success": True, "requeued": requeued, "message": f"Re-queued {requeued} unmatched item(s) for retry"})
+
+            except Exception as e:
+                logging.error(f"Error re-queuing all unmatched: {e}")
+                return jsonify({"error": str(e)}), 400
+
+
             except Exception as exc:
                 logging.error(f"[DAILY] Error in daily missing-releases scan: {exc}", exc_info=True)
 
@@ -8029,8 +8117,62 @@ def album_edit(artist, album):
             cursor.execute(sql, update_values)
             rows_updated = cursor.rowcount
             conn.commit()
-            
-            flash(f"Updated {rows_updated} tracks in database", "success")
+
+            try:
+                cursor.execute(f"""
+                    SELECT id, file_path, title, artist, album, album_artist, genres, year, composer, comment
+                    FROM tracks
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
+                """, (album_artist, album_title))
+                tracks = cursor.fetchall()
+
+                files_updated = 0
+                files_failed = 0
+
+                if tracks:
+                    try:
+                        from helpers.tag_manager import write_tags_to_file
+
+                        for track in tracks:
+                            file_path = track.get('file_path') if hasattr(track, 'get') else track[1]
+                            if file_path and os.path.exists(str(file_path)):
+                                try:
+                                    tags_to_write = {}
+
+                                    if track_artist:
+                                        tags_to_write["artist"] = track_artist
+                                    if album_genres:
+                                        tags_to_write["genre"] = album_genres
+                                    if release_year:
+                                        tags_to_write["year"] = release_year
+                                    if track_composer:
+                                        tags_to_write["composer"] = track_composer
+                                    if track_comment:
+                                        tags_to_write["comment"] = track_comment
+                                    if names_changed:
+                                        tags_to_write["album"] = album_title
+                                        tags_to_write["album_artist"] = album_artist
+
+                                    if tags_to_write:
+                                        if write_tags_to_file(str(file_path), tags_to_write):
+                                            files_updated += 1
+                                        else:
+                                            files_failed += 1
+                                except Exception as file_err:
+                                    logging.warning(f"Failed to write tags to {file_path}: {file_err}")
+                                    files_failed += 1
+                    except ImportError:
+                        logging.warning("Tag manager not available for file writing")
+
+                if files_updated > 0:
+                    flash(f"Updated {rows_updated} tracks in database and wrote tags to {files_updated} audio files", "success")
+                elif files_failed > 0:
+                    flash(f"Updated {rows_updated} tracks in database, but failed to write tags to {files_failed} audio files", "warning")
+                else:
+                    flash(f"Updated {rows_updated} tracks in database", "success")
+            except Exception as file_update_err:
+                logging.warning(f"Error updating audio files: {file_update_err}")
+                flash(f"Updated {rows_updated} tracks in database", "success")
         else:
             flash("No changes to save", "info")
         
