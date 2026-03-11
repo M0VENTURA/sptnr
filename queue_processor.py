@@ -682,6 +682,34 @@ def check_completed_downloads():
         # Build a lookup of slskd-completed files: filename → localFilePath
         # ------------------------------------------------------------------
         slskd_completed: dict[str, str] = {}
+        slskd_active: dict[str, dict] = {}
+        slskd_status_available = False
+
+        def _normalize_transfer_key(value):
+            if not value:
+                return ""
+            return str(value).replace('\\', '/').strip().lower()
+
+        def _get_transfer_entry(found_filename):
+            if not found_filename:
+                return None
+            key = _normalize_transfer_key(found_filename)
+            if not key:
+                return None
+            basename = os.path.basename(key)
+            return slskd_active.get(key) or slskd_active.get(basename)
+
+        def _is_stale_queue_item(item, stale_minutes=10):
+            updated_at = item.get('updated_at')
+            if not updated_at:
+                return False
+            try:
+                updated_text = str(updated_at).replace('Z', '+00:00')
+                updated_dt = datetime.fromisoformat(updated_text)
+                return (datetime.now() - updated_dt.replace(tzinfo=None)).total_seconds() >= (stale_minutes * 60)
+            except Exception:
+                return False
+
         try:
             slskd_client = get_slskd_client()
             if slskd_client:
@@ -693,6 +721,36 @@ def check_completed_downloads():
                         # Also index by basename for fuzzy matching
                         slskd_completed[os.path.basename(local)] = local
                 logger.debug(f"slskd API: {len(slskd_completed)} completed transfer paths")
+
+                # Fetch active transfers with an explicit status check so we can
+                # distinguish a true empty queue from an API failure.
+                try:
+                    status_url = f"{slskd_client.base_url}/transfers/downloads"
+                    status_resp = slskd_client.session.get(
+                        status_url,
+                        headers=slskd_client.headers,
+                        timeout=slskd_client.default_timeout,
+                    )
+                    if status_resp.status_code == 200:
+                        raw_active = status_resp.json()
+                        active_list = slskd_client._parse_transfers_response(raw_active)
+                        for transfer in active_list:
+                            filename = transfer.get("filename", "")
+                            norm = _normalize_transfer_key(filename)
+                            if norm:
+                                slskd_active[norm] = transfer
+                                slskd_active[os.path.basename(norm)] = transfer
+                        slskd_status_available = True
+                        logger.debug(f"slskd API: {len(active_list)} active transfer entries")
+                    else:
+                        logger.warning(
+                            f"slskd downloads status endpoint returned {status_resp.status_code}; "
+                            "skipping stale-download reconciliation this cycle"
+                        )
+                except Exception as status_err:
+                    logger.warning(
+                        f"Could not fetch active slskd transfers for reconciliation: {status_err}"
+                    )
         except Exception as slskd_err:
             logger.debug(f"Could not query slskd completed transfers: {slskd_err}")
 
@@ -768,6 +826,41 @@ def check_completed_downloads():
                         match_meta_state = meta_state
                         logger.debug(f"Queue {item_id}: fuzzy match found: {filename}")
                         break
+
+            # 4. No file match found. Reconcile against live slskd transfers so
+            # stale 'downloading' rows do not remain stuck forever.
+            if match_found is None and slskd_status_available:
+                found_fn = item.get("found_filename") or ""
+                transfer = _get_transfer_entry(found_fn)
+
+                if transfer:
+                    transfer_state = transfer.get("state", "")
+                    if transfer_state in getattr(slskd_client, "FAILED_STATES", set()):
+                        logger.warning(
+                            f"Queue {item_id}: slskd reports terminal failed state {transfer_state!r}, scheduling retry"
+                        )
+                        mark_failed(
+                            item_id,
+                            f"slskd transfer failed: {transfer_state}",
+                            schedule_retry=True,
+                            retry_delay_minutes=10,
+                        )
+                    # Active/unknown transfer states are left untouched.
+                    continue
+
+                # Transfer no longer exists in slskd. If the item has been
+                # stale for a while and no file is present, queue it for retry.
+                if _is_stale_queue_item(item, stale_minutes=10):
+                    logger.warning(
+                        f"Queue {item_id}: missing from slskd transfers and stale in downloading state; scheduling retry"
+                    )
+                    mark_failed(
+                        item_id,
+                        "Transfer missing from slskd API while marked downloading",
+                        schedule_retry=True,
+                        retry_delay_minutes=10,
+                    )
+                    continue
 
             if match_found:
                 file_path = os.path.join(DOWNLOADS_DIR, match_found)

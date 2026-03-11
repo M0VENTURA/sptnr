@@ -8224,13 +8224,17 @@ def api_merge_duplicate_artists():
         merge_sources = []
         seen = set()
         for name in candidates:
-            key = name.lower()
-            if key == new_artist.lower():
+            normalized_name = str(name).strip()
+            if not normalized_name:
                 continue
-            if key in seen:
+            # Only skip the exact canonical spelling. Case-only variants like
+            # "Babymetal" -> "BABYMETAL" should still be merged.
+            if normalized_name == new_artist:
                 continue
-            seen.add(key)
-            merge_sources.append(name)
+            if normalized_name in seen:
+                continue
+            seen.add(normalized_name)
+            merge_sources.append(normalized_name)
 
         if not merge_sources:
             return jsonify({
@@ -16769,12 +16773,23 @@ def api_queue_add_batch():
 def api_queue_status():
     """Get queue status and items"""
     try:
-        from download_queue_manager import get_queue, get_completed_queue, check_downloads_folder
+        from download_queue_manager import (
+            get_queue,
+            get_completed_queue,
+            check_downloads_folder,
+            check_and_remove_failed_downloads,
+        )
 
         status = request.args.get('status')
         # source=None returns all sources (soulseek, qbittorrent, discovered/unmatched)
         source = request.args.get('source') or None
         limit = int(request.args.get('limit', 50))
+
+        # Reconcile stale/failed slskd transfers so queue state reflects current API state.
+        try:
+            check_and_remove_failed_downloads()
+        except Exception as reconcile_err:
+            logging.debug(f"Queue status reconcile skipped: {reconcile_err}")
 
         # Get queue items (all sources by default)
         active_queue = get_queue(status=status, source=source, limit=limit)
