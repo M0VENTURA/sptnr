@@ -1013,36 +1013,66 @@ def check_completed_downloads():
 
             # 4. No file match found. Reconcile against live slskd transfers so
             # stale 'downloading' rows do not remain stuck forever.
-            if match_found is None and slskd_status_available:
-                found_fn = item.get("found_filename") or ""
-                transfer = _get_transfer_entry(found_fn)
+            if match_found is None:
+                if slskd_status_available:
+                    found_fn = item.get("found_filename") or ""
+                    transfer = _get_transfer_entry(found_fn)
 
-                if transfer:
-                    transfer_state = transfer.get("state", "")
-                    if transfer_state in getattr(slskd_client, "FAILED_STATES", set()):
+                    if transfer:
+                        transfer_state = transfer.get("state", "")
+                        if transfer_state in getattr(slskd_client, "FAILED_STATES", set()):
+                            logger.warning(
+                                f"Queue {item_id}: slskd reports terminal failed state {transfer_state!r}, scheduling retry"
+                            )
+                            mark_failed(
+                                item_id,
+                                f"slskd transfer failed: {transfer_state}",
+                                schedule_retry=True,
+                                retry_delay_minutes=10,
+                            )
+                        elif transfer_state == getattr(slskd_client, "STATE_SUCCEEDED", None):
+                            # slskd reports success but no local file was found — the file
+                            # likely disappeared before matching completed.  Re-queue so it
+                            # can be downloaded again.
+                            logger.warning(
+                                f"Queue {item_id}: slskd reports succeeded but no file found, scheduling retry"
+                            )
+                            mark_failed(
+                                item_id,
+                                "slskd transfer succeeded but local file not found",
+                                schedule_retry=True,
+                                retry_delay_minutes=10,
+                            )
+                        # Active/unknown transfer states are left untouched —
+                        # the download may still be in progress.  Skip to the
+                        # next item and let it be re-evaluated next cycle.
+                        continue
+
+                    # Transfer no longer exists in slskd. If the item has been
+                    # stale for a while and no file is present, queue it for retry.
+                    if _is_stale_queue_item(item, stale_minutes=10):
                         logger.warning(
-                            f"Queue {item_id}: slskd reports terminal failed state {transfer_state!r}, scheduling retry"
+                            f"Queue {item_id}: missing from slskd transfers and stale in downloading state; scheduling retry"
                         )
                         mark_failed(
                             item_id,
-                            f"slskd transfer failed: {transfer_state}",
+                            "Transfer missing from slskd API while marked downloading",
                             schedule_retry=True,
                             retry_delay_minutes=10,
                         )
-                    # Active/unknown transfer states are left untouched.
-                    continue
 
-                # Transfer no longer exists in slskd. If the item has been
-                # stale for a while and no file is present, queue it for retry.
-                if _is_stale_queue_item(item, stale_minutes=10):
+                elif _is_stale_queue_item(item, stale_minutes=10):
+                    # slskd API was unavailable but the item has been stuck in
+                    # 'downloading' for too long with no file present.  Re-queue
+                    # so it can be retried once slskd becomes reachable again.
                     logger.warning(
-                        f"Queue {item_id}: missing from slskd transfers and stale in downloading state; scheduling retry"
+                        f"Queue {item_id}: no file found and slskd unavailable; item stale in downloading state, scheduling retry"
                     )
                     mark_failed(
                         item_id,
-                        "Transfer missing from slskd API while marked downloading",
+                        "No file found and slskd unavailable while marked downloading",
                         schedule_retry=True,
-                        retry_delay_minutes=10,
+                        retry_delay_minutes=15,
                     )
                     continue
 
