@@ -153,13 +153,63 @@ def ensure_album_artist_column():
                     conn.close()
                     raise
         
-        # Populate album_artist with artist data where it's NULL
+        # Populate album_artist with artist data where it's NULL.
+        # For PostgreSQL, guard with an advisory lock so only one worker
+        # performs the migration at a time and use small SKIP LOCKED batches
+        # to avoid long-running row lock chains.
         logging.info("Populating album_artist column from artist data...")
         try:
-            cursor.execute("UPDATE tracks SET album_artist = artist WHERE album_artist IS NULL")
-            rows_updated = cursor.rowcount
-            conn.commit()
-            logging.info(f"✓ Populated album_artist for {rows_updated} rows")
+            if is_pg:
+                lock_key = 915317411  # Stable app-specific advisory lock key
+                cursor.execute("SELECT pg_try_advisory_lock(%s) AS acquired", (lock_key,))
+                lock_row = cursor.fetchone()
+                lock_acquired = bool(lock_row.get("acquired")) if isinstance(lock_row, dict) else bool(lock_row[0])
+
+                if not lock_acquired:
+                    logging.info("Another worker is already running album_artist migration; skipping this run")
+                    conn.close()
+                    return True
+
+                total_rows_updated = 0
+                batch_size = 500
+                try:
+                    while True:
+                        cursor.execute(
+                            """
+                            WITH to_update AS (
+                                SELECT id
+                                FROM tracks
+                                WHERE album_artist IS NULL
+                                ORDER BY id
+                                FOR UPDATE SKIP LOCKED
+                                LIMIT %s
+                            )
+                            UPDATE tracks t
+                            SET album_artist = t.artist
+                            FROM to_update u
+                            WHERE t.id = u.id
+                            """,
+                            (batch_size,)
+                        )
+                        batch_updated = cursor.rowcount or 0
+                        conn.commit()
+                        total_rows_updated += batch_updated
+
+                        if batch_updated == 0:
+                            break
+
+                    logging.info(f"✓ Populated album_artist for {total_rows_updated} rows")
+                finally:
+                    try:
+                        cursor.execute("SELECT pg_advisory_unlock(%s)", (lock_key,))
+                        conn.commit()
+                    except Exception:
+                        pass
+            else:
+                cursor.execute("UPDATE tracks SET album_artist = artist WHERE album_artist IS NULL")
+                rows_updated = cursor.rowcount
+                conn.commit()
+                logging.info(f"✓ Populated album_artist for {rows_updated} rows")
         except Exception as e:
             logging.error(f"✗ Failed to populate album_artist column: {e}")
             conn.close()
