@@ -7,7 +7,7 @@ import re
 import os
 import sys
 from typing import Optional, Dict, List, Tuple
-from . import session
+from . import session as shared_session, timeout_safe_session
 
 # Add parent directory to path to import root-level modules
 parent_dir = os.path.dirname(os.path.dirname(__file__))
@@ -15,6 +15,7 @@ if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
 from helpers.helpers import clean_discogs_biography
+from helpers.helpers import create_retry_session
 from helpers.matching_utils import strip_search_parentheses
 from discogs_singles_cache import normalize_track_title, get_discogs_cache
 
@@ -41,11 +42,55 @@ _DISCOGS_MIN_INTERVAL = 0.35
 _DISCOGS_CIRCUIT_BREAKER_OPEN = False  # Circuit breaker for when Discogs is down
 _DISCOGS_CIRCUIT_BREAKER_RESET_TIME = 0  # When to reset the circuit breaker
 _DISCOGS_CONSECUTIVE_ERRORS = 0  # Track consecutive errors to trigger circuit breaker
+_DISCOGS_RATE_LIMIT_UNTIL = 0.0  # Shared cooldown window after a 429 response
+
+
+def _build_discogs_session():
+    """Create a Discogs-specific session that does not auto-retry HTTP 429."""
+    return create_retry_session(
+        user_agent="sptnr-cli/1.0 +https://github.com/M0VENTURA/sptnr",
+        retries=3,
+        backoff=1.0,
+        status_forcelist=(500, 502, 503, 504),
+    )
+
+
+def _get_retry_after_seconds(response, default: float = 60.0) -> float:
+    """Parse Discogs Retry-After header safely."""
+    retry_after_raw = response.headers.get("Retry-After") if response is not None else None
+    try:
+        retry_after = float(retry_after_raw) if retry_after_raw is not None else float(default)
+    except (TypeError, ValueError):
+        retry_after = float(default)
+    return max(1.0, retry_after)
+
+
+def _set_discogs_rate_limit_window(wait_seconds: float) -> None:
+    """Record a shared cooldown window so later requests do not hammer Discogs."""
+    global _DISCOGS_RATE_LIMIT_UNTIL
+    _DISCOGS_RATE_LIMIT_UNTIL = max(_DISCOGS_RATE_LIMIT_UNTIL, time.time() + max(0.0, wait_seconds))
+
+
+def _sleep_for_discogs_rate_limit(wait_seconds: float, message: str | None = None) -> None:
+    """Sleep and publish a shared Discogs rate-limit cooldown window."""
+    _set_discogs_rate_limit_window(wait_seconds)
+    if message:
+        logger.warning(message)
+    time.sleep(max(0.0, wait_seconds))
+
+
+def _handle_discogs_rate_limit_response(response, message: str | None = None) -> float:
+    """Handle a 429 response and return the cooldown duration in seconds."""
+    wait_seconds = _get_retry_after_seconds(response)
+    _sleep_for_discogs_rate_limit(wait_seconds, message or f"Discogs rate limited - waiting {int(wait_seconds)}s")
+    return wait_seconds
 
 
 def _throttle_discogs():
     """Respect Discogs rate limit (1 request per 0.35 seconds per token)."""
     global _DISCOGS_LAST_REQUEST_TIME
+    if _DISCOGS_RATE_LIMIT_UNTIL > time.time():
+        time.sleep(_DISCOGS_RATE_LIMIT_UNTIL - time.time())
     elapsed = time.time() - _DISCOGS_LAST_REQUEST_TIME
     if elapsed < _DISCOGS_MIN_INTERVAL:
         time.sleep(_DISCOGS_MIN_INTERVAL - elapsed)
@@ -134,7 +179,10 @@ class DiscogsClient:
             enabled: Whether Discogs is enabled
         """
         self.token = token
-        self.session = http_session or session
+        if http_session is None or http_session is shared_session or http_session is timeout_safe_session:
+            self.session = _build_discogs_session()
+        else:
+            self.session = http_session
         self.enabled = enabled
         self.base_url = "https://api.discogs.com"
         self.headers = {
@@ -198,8 +246,7 @@ class DiscogsClient:
             def make_search_request(search_params):
                 response = self.session.get(search_url, headers=self.headers, params=search_params, timeout=timeout)
                 if response.status_code == 429:
-                    retry_after = int(response.headers.get("Retry-After", 60))
-                    time.sleep(retry_after)
+                    _handle_discogs_rate_limit_response(response)
                     _throttle_discogs()
                     response = self.session.get(search_url, headers=self.headers, params=search_params, timeout=timeout)
                 response.raise_for_status()
@@ -232,8 +279,7 @@ class DiscogsClient:
                 def make_release_request():
                     response = self.session.get(release_url, headers=self.headers, timeout=timeout)
                     if response.status_code == 429:
-                        retry_after = int(response.headers.get("Retry-After", 60))
-                        time.sleep(retry_after)
+                        _handle_discogs_rate_limit_response(response)
                         _throttle_discogs()
                         response = self.session.get(release_url, headers=self.headers, timeout=timeout)
                     response.raise_for_status()
@@ -316,8 +362,7 @@ class DiscogsClient:
             def make_search_request():
                 response = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
                 if response.status_code == 429:
-                    retry_after = int(response.headers.get("Retry-After", 60))
-                    time.sleep(retry_after)
+                    _handle_discogs_rate_limit_response(response)
                     _throttle_discogs()
                     response = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
                 response.raise_for_status()
@@ -384,8 +429,7 @@ class DiscogsClient:
                 def make_master_request():
                     response = self.session.get(master_url, headers=self.headers, timeout=timeout)
                     if response.status_code == 429:
-                        retry_after = int(response.headers.get("Retry-After", 60))
-                        time.sleep(retry_after)
+                        _handle_discogs_rate_limit_response(response)
                         _throttle_discogs()
                         response = self.session.get(master_url, headers=self.headers, timeout=timeout)
                     response.raise_for_status()
@@ -508,9 +552,10 @@ class DiscogsClient:
             log_debug(f"[DISCOGS_ARTIST_ID] Response status: {response.status_code}")
             
             if response.status_code == 429:
-                retry_after = int(response.headers.get("Retry-After", 60))
-                logger.warning(f"Discogs API rate limited, retrying after {retry_after}s")
-                time.sleep(retry_after)
+                wait_seconds = _handle_discogs_rate_limit_response(
+                    response,
+                    f"Discogs API rate limited, retrying after {int(_get_retry_after_seconds(response))}s"
+                )
                 _throttle_discogs()
                 response = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
             
@@ -619,8 +664,7 @@ class DiscogsClient:
                         rel_url = f"{self.base_url}/releases/{release_id}"
                         rel_response = self.session.get(rel_url, headers=self.headers, timeout=timeout)
                         if rel_response.status_code == 429:
-                            retry_after = int(rel_response.headers.get("Retry-After", 60))
-                            time.sleep(retry_after)
+                            _handle_discogs_rate_limit_response(rel_response)
                             _throttle_discogs()
                             rel_response = self.session.get(rel_url, headers=self.headers, timeout=timeout)
                         
@@ -874,10 +918,9 @@ class DiscogsClient:
                     
                     # Handle rate limiting (429) - this is temporary, not a server error
                     if res.status_code == 429:
-                        retry_after = int(res.headers.get("Retry-After", 60))
-                        log_debug(f"[DISCOGS_SINGLE] Rate limited, waiting {retry_after}s")
-                        logger.warning(f"Discogs rate limited - waiting {retry_after}s")
-                        time.sleep(retry_after)
+                        retry_after = _get_retry_after_seconds(res)
+                        log_debug(f"[DISCOGS_SINGLE] Rate limited, waiting {retry_after:.0f}s")
+                        _handle_discogs_rate_limit_response(res, f"Discogs rate limited - waiting {int(retry_after)}s")
                         _throttle_discogs()
                         res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
                     
@@ -994,9 +1037,8 @@ class DiscogsClient:
                     res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
                     
                     if res.status_code == 429:
-                        retry_after = int(res.headers.get("Retry-After", 60))
-                        logger.warning(f"Discogs rate limited in video check, waiting {retry_after}s")
-                        time.sleep(retry_after)
+                        retry_after = _get_retry_after_seconds(res)
+                        _handle_discogs_rate_limit_response(res, f"Discogs rate limited in video check, waiting {int(retry_after)}s")
                         _throttle_discogs()
                         res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
                     
@@ -1034,8 +1076,7 @@ class DiscogsClient:
                 master_url = f"{self.base_url}/masters/{master_id}"
                 master_res = self.session.get(master_url, headers=self.headers, timeout=timeout)
                 if master_res.status_code == 429:
-                    retry_after = int(master_res.headers.get("Retry-After", 60))
-                    time.sleep(retry_after)
+                    _handle_discogs_rate_limit_response(master_res)
                     # Retry the request after sleeping
                     _throttle_discogs()
                     master_res = self.session.get(master_url, headers=self.headers, timeout=timeout)
@@ -1082,8 +1123,7 @@ class DiscogsClient:
             
             res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
             if res.status_code == 429:
-                retry_after = int(res.headers.get("Retry-After", 60))
-                time.sleep(retry_after)
+                _handle_discogs_rate_limit_response(res)
                 _throttle_discogs()
                 res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
             res.raise_for_status()
@@ -1133,8 +1173,7 @@ class DiscogsClient:
             def make_search_request():
                 response = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
                 if response.status_code == 429:
-                    retry_after = int(response.headers.get("Retry-After", 60))
-                    time.sleep(retry_after)
+                    _handle_discogs_rate_limit_response(response)
                     _throttle_discogs()
                     response = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
                 response.raise_for_status()
@@ -1185,8 +1224,7 @@ class DiscogsClient:
             
             # Handle rate limiting
             if res.status_code == 429:
-                retry_after = int(res.headers.get("Retry-After", 60))
-                time.sleep(retry_after)
+                _handle_discogs_rate_limit_response(res)
                 res = self.session.get(release_url, headers=self.headers, timeout=timeout)
             
             res.raise_for_status()
@@ -1223,8 +1261,7 @@ class DiscogsClient:
             
             # Handle rate limiting
             if res.status_code == 429:
-                retry_after = int(res.headers.get("Retry-After", 60))
-                time.sleep(retry_after)
+                _handle_discogs_rate_limit_response(res)
                 res = self.session.get(release_url, headers=self.headers, timeout=timeout)
             
             res.raise_for_status()
@@ -1270,8 +1307,7 @@ class DiscogsClient:
             
             res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
             if res.status_code == 429:
-                retry_after = int(res.headers.get("Retry-After", 60))
-                time.sleep(retry_after)
+                _handle_discogs_rate_limit_response(res)
                 res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
             res.raise_for_status()
             
@@ -1289,8 +1325,7 @@ class DiscogsClient:
             _throttle_discogs()
             artist_res = self.session.get(artist_url, headers=self.headers, timeout=timeout)
             if artist_res.status_code == 429:
-                retry_after = int(artist_res.headers.get("Retry-After", 60))
-                time.sleep(retry_after)
+                _handle_discogs_rate_limit_response(artist_res)
                 artist_res = self.session.get(artist_url, headers=self.headers, timeout=timeout)
             artist_res.raise_for_status()
             
@@ -1339,8 +1374,7 @@ class DiscogsClient:
             artist_url = f"{self.base_url}/artists/{artist_id}"
             artist_res = self.session.get(artist_url, headers=self.headers, timeout=timeout)
             if artist_res.status_code == 429:
-                retry_after = int(artist_res.headers.get("Retry-After", 60))
-                time.sleep(retry_after)
+                _handle_discogs_rate_limit_response(artist_res)
                 _throttle_discogs()
                 artist_res = self.session.get(artist_url, headers=self.headers, timeout=timeout)
             artist_res.raise_for_status()

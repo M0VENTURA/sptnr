@@ -345,8 +345,24 @@ class CoverDetector:
             title_norm = self._normalize_name(title)
             earliest = None
             earliest_year = 9999
+            earliest_unknown_year = None
             fallback_earliest = None
             fallback_earliest_year = 9999
+            fallback_unknown_year = None
+
+            def _extract_year(full_recording: Dict, release: Optional[Dict] = None) -> Optional[int]:
+                """Extract a usable year from release dates or first-release-date."""
+                candidate_dates = []
+                if release:
+                    candidate_dates.append(str(release.get('date', '') or ''))
+                candidate_dates.append(str(full_recording.get('first-release-date', '') or ''))
+                for candidate in candidate_dates:
+                    if len(candidate) >= 4 and candidate[:4].isdigit():
+                        try:
+                            return int(candidate[:4])
+                        except (ValueError, TypeError):
+                            continue
+                return None
 
             for recording in recordings:
                 recording_id = recording.get('id')
@@ -408,32 +424,73 @@ class CoverDetector:
                     continue
 
                 releases = full_recording.get('release-list', []) or recording.get('release-list', [])
+                if not releases:
+                    release_year = _extract_year(full_recording)
+                    if writer_match:
+                        if release_year is not None:
+                            if release_year < earliest_year:
+                                earliest_year = release_year
+                                earliest = {
+                                    'artist': recording_artist,
+                                    'year': release_year,
+                                    'confidence': 'high' if writer_names else 'medium'
+                                }
+                        elif earliest_unknown_year is None:
+                            earliest_unknown_year = {
+                                'artist': recording_artist,
+                                'year': None,
+                                'confidence': 'medium'
+                            }
+                    elif artist_is_different:
+                        if release_year is not None:
+                            if release_year < fallback_earliest_year:
+                                fallback_earliest_year = release_year
+                                fallback_earliest = {
+                                    'artist': recording_artist,
+                                    'year': release_year,
+                                    'confidence': 'low'
+                                }
+                        elif fallback_unknown_year is None:
+                            fallback_unknown_year = {
+                                'artist': recording_artist,
+                                'year': None,
+                                'confidence': 'low'
+                            }
+                    continue
+
                 for release in releases:
-                    date = release.get('date', '')
-                    if not date:
-                        continue
-                    try:
-                        year = int(date[:4])
-                    except (ValueError, IndexError):
-                        continue
+                    year = _extract_year(full_recording, release)
 
                     if writer_match:
-                        if year < earliest_year:
+                        if year is not None and year < earliest_year:
                             earliest_year = year
                             earliest = {
                                 'artist': recording_artist,
                                 'year': year,
                                 'confidence': 'high' if writer_names else 'medium'
                             }
-                    elif artist_is_different and year < fallback_earliest_year:
-                        fallback_earliest_year = year
-                        fallback_earliest = {
-                            'artist': recording_artist,
-                            'year': year,
-                            'confidence': 'low'
-                        }
+                        elif year is None and earliest_unknown_year is None:
+                            earliest_unknown_year = {
+                                'artist': recording_artist,
+                                'year': None,
+                                'confidence': 'medium'
+                            }
+                    elif artist_is_different:
+                        if year is not None and year < fallback_earliest_year:
+                            fallback_earliest_year = year
+                            fallback_earliest = {
+                                'artist': recording_artist,
+                                'year': year,
+                                'confidence': 'low'
+                            }
+                        elif year is None and fallback_unknown_year is None:
+                            fallback_unknown_year = {
+                                'artist': recording_artist,
+                                'year': None,
+                                'confidence': 'low'
+                            }
 
-            return earliest or fallback_earliest
+            return earliest or earliest_unknown_year or fallback_earliest or fallback_unknown_year
 
         except Exception as e:
             logger.debug(f"Failed to find original recording for '{title}' by '{writer}': {e}")
