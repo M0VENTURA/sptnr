@@ -12,6 +12,56 @@ def _is_postgres_connection(conn):
     except (ImportError, AttributeError):
         return False
 
+
+def _row_first_value(row, default=None):
+    """Return the first value from sqlite tuple/Row or psycopg2 RealDictRow."""
+    if row is None:
+        return default
+    if isinstance(row, dict):
+        for value in row.values():
+            return value
+        return default
+    try:
+        return row[0]
+    except (KeyError, IndexError, TypeError):
+        return default
+
+
+def _table_exists(cursor, table_name, is_pg):
+    """Check whether a table exists using the current backend's system catalog."""
+    if is_pg:
+        cursor.execute(
+            "SELECT COUNT(*) AS count FROM information_schema.tables "
+            "WHERE table_name = %s AND table_schema = current_schema()",
+            (table_name,)
+        )
+        return (_row_first_value(cursor.fetchone(), 0) or 0) > 0
+
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
+    return bool(cursor.fetchone())
+
+
+def _get_table_columns(cursor, table_name, is_pg):
+    """Return a set of column names for a table."""
+    if is_pg:
+        cursor.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = %s AND table_schema = current_schema()",
+            (table_name,)
+        )
+        return {str(_row_first_value(row, "")) for row in cursor.fetchall() if _row_first_value(row, "")}
+
+    cursor.execute(f"PRAGMA table_info({table_name})")
+    columns = set()
+    for row in cursor.fetchall():
+        if isinstance(row, dict):
+            column_name = row.get("name")
+        else:
+            column_name = row[1] if len(row) > 1 else None
+        if column_name:
+            columns.add(column_name)
+    return columns
+
 def get_db_connection():
     """
     Get database connection.
@@ -78,18 +128,17 @@ def ensure_album_artist_column():
         
         conn = get_db_connection()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
         
         # Check if tracks table exists
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tracks'")
-        if not cursor.fetchone():
+        if not _table_exists(cursor, "tracks", is_pg):
             # Table doesn't exist yet, nothing to migrate
             logging.warning("Tracks table does not exist yet, skipping album_artist migration")
             conn.close()
             return False
         
         # Check if album_artist column exists
-        cursor.execute("PRAGMA table_info(tracks)")
-        columns = {row[1] for row in cursor.fetchall()}
+        columns = _get_table_columns(cursor, "tracks", is_pg)
         
         if 'album_artist' not in columns:
             # Add the album_artist column
@@ -139,15 +188,14 @@ def ensure_musicbrainz_album_mbid_column():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
 
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tracks'")
-        if not cursor.fetchone():
+        if not _table_exists(cursor, "tracks", is_pg):
             logging.warning("Tracks table does not exist yet, skipping MBID column migration")
             conn.close()
             return False
 
-        cursor.execute("PRAGMA table_info(tracks)")
-        columns = {row[1] for row in cursor.fetchall()}
+        columns = _get_table_columns(cursor, "tracks", is_pg)
 
         has_legacy = "beets_album_mbid" in columns
         has_new = "musicbrainz_album_mbid" in columns
@@ -163,8 +211,7 @@ def ensure_musicbrainz_album_mbid_column():
             except Exception as rename_error:
                 logging.warning(f"Rename failed (may already be done): {rename_error}")
                 # Try to verify the new column exists, if not add it
-                cursor.execute("PRAGMA table_info(tracks)")
-                columns_after = {row[1] for row in cursor.fetchall()}
+                columns_after = _get_table_columns(cursor, "tracks", is_pg)
                 if "musicbrainz_album_mbid" not in columns_after:
                     logging.info("New column doesn't exist; adding it instead")
                     cursor.execute("ALTER TABLE tracks ADD COLUMN musicbrainz_album_mbid TEXT")
@@ -212,15 +259,15 @@ def verify_album_artist_column():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
         
         # Check if tracks table exists
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tracks'")
-        if not cursor.fetchone():
+        if not _table_exists(cursor, "tracks", is_pg):
+            conn.close()
             return {"exists": False, "message": "Tracks table does not exist"}
         
         # Check if album_artist column exists
-        cursor.execute("PRAGMA table_info(tracks)")
-        columns = {row[1] for row in cursor.fetchall()}
+        columns = _get_table_columns(cursor, "tracks", is_pg)
         
         conn.close()
         
@@ -250,7 +297,8 @@ def get_current_track_rating(track_id: str) -> int:
         cursor.execute(f"SELECT stars FROM tracks WHERE id = {placeholder}", (track_id,))
         row = cursor.fetchone()
         conn.close()
-        return int(row[0]) if row else 0
+        value = _row_first_value(row, 0)
+        return int(value) if value is not None else 0
     except Exception as e:
         import logging
         logging.debug(f"Failed to get current rating for track {track_id}: {e}")
@@ -272,30 +320,15 @@ def ensure_writer_column():
         is_pg = _is_postgres_connection(conn)
         
         # Check if tracks table exists (database-agnostic)
-        if is_pg:
-            cursor.execute(
-                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'tracks' AND table_schema = current_schema()"
-            )
-        else:
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tracks'")
-        row = cursor.fetchone()
-        table_exists = (row[0] if row else 0) if is_pg else bool(row)
+        table_exists = _table_exists(cursor, "tracks", is_pg)
         if not table_exists:
             logging.warning("Tracks table does not exist yet, skipping writer column migration")
             conn.close()
             return False
         
         # Check if writer column exists (database-agnostic)
-        if is_pg:
-            cursor.execute(
-                "SELECT COUNT(*) FROM information_schema.columns "
-                "WHERE table_name = 'tracks' AND column_name = 'writer' AND table_schema = current_schema()"
-            )
-            writer_exists = (cursor.fetchone()[0] or 0) > 0
-        else:
-            cursor.execute("PRAGMA table_info(tracks)")
-            columns = {row[1] for row in cursor.fetchall()}
-            writer_exists = 'writer' in columns
+        columns = _get_table_columns(cursor, "tracks", is_pg)
+        writer_exists = 'writer' in columns
         
         if not writer_exists:
             # Add the writer column
@@ -348,28 +381,14 @@ def ensure_cover_columns():
         is_pg = _is_postgres_connection(conn)
 
         # Check if tracks table exists
-        if is_pg:
-            cursor.execute(
-                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'tracks' AND table_schema = current_schema()"
-            )
-        else:
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tracks'")
-        row = cursor.fetchone()
-        table_exists = (row[0] if row else 0) if is_pg else bool(row)
+        table_exists = _table_exists(cursor, "tracks", is_pg)
         if not table_exists:
             logging.warning("Tracks table does not exist yet, skipping cover columns migration")
             conn.close()
             return False
 
         # Determine existing columns
-        if is_pg:
-            cursor.execute(
-                "SELECT column_name FROM information_schema.columns WHERE table_name = 'tracks' AND table_schema = current_schema()"
-            )
-            existing = {row[0] for row in cursor.fetchall()}
-        else:
-            cursor.execute("PRAGMA table_info(tracks)")
-            existing = {row[1] for row in cursor.fetchall()}
+        existing = _get_table_columns(cursor, "tracks", is_pg)
 
         for col_name, col_def in columns_to_add:
             if col_name not in existing:
