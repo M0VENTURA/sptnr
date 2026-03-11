@@ -15,6 +15,8 @@ This system integrates with the background queue processor (runs every 60 second
 import sqlite3
 import shutil
 import logging
+import os
+import yaml
 from pathlib import Path
 from datetime import datetime
 from contextlib import closing
@@ -30,12 +32,47 @@ DB_FILE = "sptnr.db"
 DB_TIMEOUT = 120.0
 
 
+def _resolve_downloads_dir() -> Path:
+    """Resolve downloads path from config/env, tolerating /downloads or /downloads/Music."""
+    config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+    configured = None
+    try:
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            configured = (cfg.get("downloads") or {}).get("folder")
+    except Exception:
+        configured = None
+
+    base = configured or os.environ.get("DOWNLOADS_DIR") or DOWNLOADS_MUSIC_DIR
+    base_path = Path(base)
+    if base_path.name.lower() == "downloads":
+        music_path = base_path / "Music"
+        return music_path if music_path.exists() else base_path
+    return base_path
+
+
+def _resolve_music_dir() -> Path:
+    """Resolve music library root from config/env (navidrome.music_folder first)."""
+    config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+    configured = None
+    try:
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            configured = ((cfg.get("navidrome") or {}).get("music_folder") or "").strip() or None
+    except Exception:
+        configured = None
+
+    return Path(configured or os.environ.get("MUSIC_ROOT") or os.environ.get("MUSIC_FOLDER") or MUSIC_LIBRARY_DIR)
+
+
 class MusicBrainzFinalizer:
     """Finalizes MusicBrainz releases when all tracks are discovered"""
 
     def __init__(self):
-        self.downloads_dir = Path(DOWNLOADS_MUSIC_DIR)
-        self.music_dir = Path(MUSIC_LIBRARY_DIR)
+        self.downloads_dir = _resolve_downloads_dir()
+        self.music_dir = _resolve_music_dir()
         self.ensure_directories()
         self.ensure_schema()
 

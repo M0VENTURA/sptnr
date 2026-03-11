@@ -163,14 +163,18 @@ def update_scan_progress(files_found=None, recent_file=None, scanning=None, curr
 
 def resolve_downloads_dir():
     """Resolve downloads directory from env/config with safe fallback."""
-    def _prefer_music_subfolder(path: str) -> str:
+    def _pick_existing_downloads_path(path: str) -> str:
         if not path:
             return path
         normalized = os.path.normpath(path)
         if os.path.basename(normalized).lower() == "downloads":
-            # Normalize root downloads path to the Music subfolder consistently.
-            return os.path.join(normalized, "Music")
-        return path
+            music_subdir = os.path.join(normalized, "Music")
+            # Prefer /downloads/Music when present, but gracefully fall back to /downloads
+            # for setups that download directly into the root downloads folder.
+            if os.path.isdir(music_subdir):
+                return music_subdir
+            return normalized
+        return normalized
 
     config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
     try:
@@ -179,22 +183,42 @@ def resolve_downloads_dir():
                 cfg = yaml.safe_load(f) or {}
             configured = (cfg.get("downloads") or {}).get("folder")
             if configured:
-                return _prefer_music_subfolder(configured)
+                return _pick_existing_downloads_path(configured)
     except Exception as e:
         logger.warning(f"Could not read downloads folder from config: {e}")
 
     env_dir = os.environ.get("DOWNLOADS_DIR")
     if env_dir:
-        return _prefer_music_subfolder(env_dir)
+        return _pick_existing_downloads_path(env_dir)
 
     return "/downloads/Music"
+
+
+def resolve_music_dir():
+    """Resolve music library root from config/env with robust fallback."""
+    config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+    try:
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            configured = ((cfg.get("navidrome") or {}).get("music_folder") or "").strip()
+            if configured:
+                return os.path.normpath(configured)
+    except Exception as e:
+        logger.warning(f"Could not read music folder from config: {e}")
+
+    return os.path.normpath(
+        os.environ.get("MUSIC_ROOT")
+        or os.environ.get("MUSIC_FOLDER")
+        or "/music"
+    )
 
 
 def get_downloads_dir():
     """Dynamically get downloads directory (re-evaluates on each call for config changes)."""
     return resolve_downloads_dir()
 
-MUSIC_DIR = os.environ.get("MUSIC_ROOT", "/music")
+MUSIC_DIR = resolve_music_dir()
 
 
 def retry_on_db_lock(max_retries=3, initial_delay=0.5):
@@ -1153,7 +1177,7 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
         if not os.path.exists(file_path):
             return {'success': False, 'target_path': None, 'error': f'File not found: {file_path}'}
 
-        music_root = music_dir or MUSIC_DIR
+        music_root = music_dir or resolve_music_dir()
 
         album_artist = _sanitize_path_component(
             queue_item_dict.get('album_artist') or queue_item_dict.get('artist') or 'Unknown Artist'
