@@ -16997,6 +16997,7 @@ def api_queue_delete(queue_id):
 
         delete_download_file = request.args.get('delete_download_file', '0').lower() in {'1', 'true', 'yes'}
         downloads_root = os.path.abspath(os.environ.get("DOWNLOADS_DIR", "/downloads"))
+        music_root = os.path.abspath(os.environ.get("MUSIC_ROOT", "/music"))
 
         cursor.execute(
             f"SELECT file_path, found_filename, title FROM download_queue WHERE id = {placeholder}",
@@ -17013,20 +17014,23 @@ def api_queue_delete(queue_id):
 
         deleted_files = []
 
-        def _is_within_downloads(path_value):
+        def _is_within_allowed_root(path_value):
             if not path_value:
                 return False
             try:
                 abs_path = os.path.abspath(path_value)
-                return os.path.commonpath([abs_path, downloads_root]) == downloads_root
+                return (
+                    os.path.commonpath([abs_path, downloads_root]) == downloads_root
+                    or os.path.commonpath([abs_path, music_root]) == music_root
+                )
             except Exception:
                 return False
 
         def _try_delete(path_value):
             if not path_value or not os.path.exists(path_value):
                 return
-            if not _is_within_downloads(path_value):
-                logging.info(f"[QUEUE] Skip delete outside downloads root: {path_value}")
+            if not _is_within_allowed_root(path_value):
+                logging.info(f"[QUEUE] Skip delete outside allowed roots: {path_value}")
                 return
             try:
                 os.remove(path_value)
