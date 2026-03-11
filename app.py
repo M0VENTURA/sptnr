@@ -2088,6 +2088,63 @@ def _get_table_columns(cursor, table_name, is_postgres=False):
     return {row[1] for row in (cursor.fetchall() or []) if len(row) > 1}
 
 
+def _get_postgres_column_types(conn, table_name, column_names):
+    """Return a dict of PostgreSQL column_name -> data_type for the requested columns."""
+    if not _is_postgres_connection(conn) or not column_names:
+        return {}
+
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT column_name, data_type
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = %s
+              AND column_name = ANY(%s)
+            """,
+            (table_name, list(column_names)),
+        )
+        rows = cursor.fetchall() or []
+        result = {}
+        for row in rows:
+            if hasattr(row, 'keys'):
+                col = row.get('column_name')
+                dtype = row.get('data_type')
+            else:
+                col = row[0] if len(row) > 0 else None
+                dtype = row[1] if len(row) > 1 else None
+            if col:
+                result[col] = (dtype or '').lower()
+        return result
+    finally:
+        cursor.close()
+
+
+def _normalize_track_flag_payload(conn, flag_values):
+    """
+    Coerce track flag values based on DB schema.
+
+    - PostgreSQL BOOLEAN columns receive True/False.
+    - INTEGER/BIGINT/TEXT-backed flags receive 0/1.
+    """
+    if not flag_values:
+        return {}
+
+    if not _is_postgres_connection(conn):
+        return {k: int(bool(v)) for k, v in flag_values.items()}
+
+    column_types = _get_postgres_column_types(conn, 'tracks', flag_values.keys())
+    normalized = {}
+    for col, raw_val in flag_values.items():
+        bool_val = bool(raw_val)
+        if column_types.get(col) == 'boolean':
+            normalized[col] = bool_val
+        else:
+            normalized[col] = int(bool_val)
+    return normalized
+
+
 def _row_get(row, key, index=None, default=None):
     """Read a column from dict-like or indexable DB rows."""
     if row is None:
@@ -8395,11 +8452,19 @@ def track_edit(track_id):
     alternate_take = request.form.get("alternate_take") == "on"
     is_compilation = request.form.get("is_compilation") == "on"
 
-    # Persist feature flags as 0/1 to support legacy BIGINT/INTEGER schemas.
-    is_single_db = int(is_single)
-    is_cover_db = int(is_cover)
-    alternate_take_db = int(alternate_take)
-    is_compilation_db = int(is_compilation)
+    # Persist feature flags according to DB schema (BOOLEAN vs INTEGER/BIGINT).
+    normalized_flags = _normalize_track_flag_payload(conn, {
+        'is_single': is_single,
+        'is_cover': is_cover,
+        'alternate_take': alternate_take,
+        'is_compilation': is_compilation,
+        'single_manual_override': True,
+    })
+    is_single_db = normalized_flags.get('is_single')
+    is_cover_db = normalized_flags.get('is_cover')
+    alternate_take_db = normalized_flags.get('alternate_take')
+    is_compilation_db = normalized_flags.get('is_compilation')
+    single_manual_override_db = normalized_flags.get('single_manual_override')
     
     # First, get the file path from database
     cursor.execute(f"SELECT file_path FROM tracks WHERE id = {placeholder}", (track_id,))
@@ -8419,7 +8484,7 @@ def track_edit(track_id):
                 track_number = {placeholder}, disc_number = {placeholder}, comment = {placeholder}, isrc = {placeholder},
                 bpm = {placeholder}, bitrate = {placeholder}, sample_rate = {placeholder},
                 is_cover = {placeholder}, alternate_take = {placeholder}, is_compilation = {placeholder},
-                single_manual_override = 1
+                                single_manual_override = {placeholder}
             WHERE id = {placeholder}
         """, (title, artist, album, album_artist, stars, 
               is_single_db, single_confidence,
@@ -8428,7 +8493,7 @@ def track_edit(track_id):
               arranger, mixer, producer, work,
               track_number, disc_number, comment, isrc,
               bpm, bitrate, sample_rate,
-              is_cover_db, alternate_take_db, is_compilation_db,
+                            is_cover_db, alternate_take_db, is_compilation_db, single_manual_override_db,
               track_id))
         
         conn.commit()
@@ -21580,8 +21645,12 @@ def api_track_update_metadata():
                     bool_val = raw_val.strip().lower() in {'1', 'true', 'yes', 'on'}
                 else:
                     bool_val = bool(raw_val)
-                # Store as 0/1 for compatibility with integer-backed flag columns.
-                db_updates[field] = int(bool_val)
+                db_updates[field] = bool_val
+
+        # Coerce boolean-like flags according to current DB column types.
+        present_bool_fields = {field: db_updates[field] for field in optional_bool_fields if field in db_updates}
+        if present_bool_fields:
+            db_updates.update(_normalize_track_flag_payload(conn, present_bool_fields))
         
         if not db_updates:
             conn.close()
