@@ -7444,8 +7444,54 @@ def album_detail(artist, album):
             return (disc_num, track_num, track_str.lower(), title)
 
         tracks_with_genre_fit = sorted(tracks_with_genre_fit, key=_album_track_sort_key)
-        
-        # Group tracks by disc number
+
+        # Fetch missing tracks from MusicBrainz and merge into the list
+        mb_mbid = album_data.get('musicbrainz_album_mbid')
+        if mb_mbid:
+            try:
+                from post_download_processor import fetch_musicbrainz_release_metadata
+                mb_release = fetch_musicbrainz_release_metadata(mb_mbid)
+                if mb_release:
+                    # Build a set of (disc, normalised_title) keys already in the library
+                    library_keys = set()
+                    for t in tracks_with_genre_fit:
+                        t_disc = int(t.get('disc_number') or 1)
+                        t_norm = re.sub(r'\s+', ' ', (t.get('title') or '').lower().strip())
+                        library_keys.add((t_disc, t_norm))
+
+                    mb_year = mb_release.get('release_year') or ''
+                    mb_disc_count = mb_release.get('disc_count', 1)
+
+                    for mb_track in mb_release.get('tracks', []):
+                        t_disc = mb_track.get('disc_number', 1)
+                        t_title_raw = mb_track.get('title', '')
+                        t_norm = re.sub(r'\s+', ' ', t_title_raw.lower().strip())
+                        if (t_disc, t_norm) not in library_keys:
+                            tracks_with_genre_fit.append({
+                                'is_missing': True,
+                                'disc_number': t_disc,
+                                'track_number': mb_track.get('track_number'),
+                                'title': t_title_raw,
+                                'artist': mb_track.get('artist') or artist,
+                                'album': album,
+                                'album_artist': artist,
+                                'year': mb_year,
+                                'release_id': mb_mbid,
+                                'genre_matches': 0,
+                                'genre_fit_percent': 0,
+                                'matching_genres': [],
+                            })
+
+                    # Ensure total_discs covers any extra MB discs
+                    if mb_disc_count > (album_data.get('total_discs') or 1):
+                        album_data['total_discs'] = mb_disc_count
+
+                    # Re-sort so missing tracks appear in position among library tracks
+                    tracks_with_genre_fit = sorted(tracks_with_genre_fit, key=_album_track_sort_key)
+            except Exception as _mb_err:
+                logging.debug(f"[ALBUM] Could not fetch MB missing tracks for {artist} - {album}: {_mb_err}")
+
+
         tracks_by_disc = {}
         for track_dict in tracks_with_genre_fit:
             try:
