@@ -383,6 +383,25 @@ class MusicBrainzClient:
                 # No matching single found with same version
                 return False
                 
+            except requests.exceptions.HTTPError as e:
+                status_code = e.response.status_code if getattr(e, "response", None) is not None else None
+                if status_code in (429, 503, 504):
+                    if attempt < max_retries - 1:
+                        logger.debug(
+                            f"MusicBrainz is_single attempt {attempt+1}/{max_retries} got HTTP {status_code}, "
+                            f"retrying in {retry_delay}s..."
+                        )
+                        time.sleep(retry_delay)
+                        retry_delay *= 2
+                        continue
+                    logger.info(
+                        f"MusicBrainz is_single temporarily unavailable for '{title}' by '{artist}' "
+                        f"after {max_retries} attempts (HTTP {status_code})"
+                    )
+                    return False
+                logger.warning(f"MusicBrainz is_single HTTP error for '{title}' by '{artist}': {e}")
+                return False
+
             except (requests.exceptions.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
                 # Log SSL/connection/timeout errors at appropriate levels to reduce noise
                 error_type = type(e).__name__
@@ -471,6 +490,25 @@ class MusicBrainzClient:
                 logger.debug(f"MusicBrainz: No matching single found for '{title}' using artist MBID: {artist_mbid}")
                 return False
                 
+            except requests.exceptions.HTTPError as e:
+                status_code = e.response.status_code if getattr(e, "response", None) is not None else None
+                if status_code in (429, 503, 504):
+                    if attempt < max_retries - 1:
+                        logger.debug(
+                            f"MusicBrainz is_single_by_artist_mbid attempt {attempt+1}/{max_retries} got HTTP {status_code}, "
+                            f"retrying in {retry_delay}s..."
+                        )
+                        time.sleep(retry_delay)
+                        retry_delay *= 2
+                        continue
+                    logger.info(
+                        f"MusicBrainz is_single_by_artist_mbid temporarily unavailable for '{title}' "
+                        f"(MBID: {artist_mbid}) after {max_retries} attempts (HTTP {status_code})"
+                    )
+                    return False
+                logger.warning(f"MusicBrainz is_single_by_artist_mbid HTTP error for '{title}' (artist MBID: {artist_mbid}): {e}")
+                return False
+
             except (requests.exceptions.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
                 error_type = type(e).__name__
                 if attempt < max_retries - 1:
