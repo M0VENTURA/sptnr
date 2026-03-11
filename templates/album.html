@@ -651,7 +651,7 @@
                             <td class="d-md-none" style="padding: 0.5rem 0; border: none;">
                                 <div class="d-flex justify-content-between align-items-center gap-2">
                                     <input type="checkbox" class="form-check-input track-checkbox" data-track-id="{{ track.id }}" onchange="updateBulkActionsUI()">
-                                    <strong>{{ loop.index }}</strong>
+                                    <strong>{{ track.track_number or loop.index }}</strong>
                                     <a href="{{ url_for('track_detail', track_id=track.id) }}" class="text-reset flex-grow-1">
                                         {{ track.title }}
                                         {% if track.artist and track.artist != artist_name %}
@@ -664,7 +664,7 @@
                                 <input type="checkbox" class="form-check-input track-checkbox" data-track-id="{{ track.id }}" onchange="updateBulkActionsUI()">
                             </td>
                             <td class="d-none d-md-table-cell text-muted">
-                                {{ loop.index }}
+                                {{ track.track_number or loop.index }}
                             </td>
                             <td class="d-flex justify-content-between d-md-table-cell align-items-center">
                                 <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Track</span>
