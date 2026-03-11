@@ -18096,22 +18096,68 @@ def api_queue_processor_restart():
 @app.route("/api/queue/move-to-music/<int:queue_id>", methods=["POST"])
 def api_queue_move_to_music(queue_id):
     """
-    Move a matched queue item to /music directory with proper tagging
+    Move a matched or completed queue item to /music directory with proper tagging.
+    - matched: uses move_to_music_collection (MusicBrainz retag path)
+    - completed: uses move_single_track_to_music_dir (same flow as queue_processor auto-move)
     """
     try:
-        from download_monitor_enhancements import move_to_music_collection
-        
-        result = move_to_music_collection(queue_id)
-        
-        if 'error' in result:
-            return jsonify({"success": False, "error": result['error']}), 400
-        
-        return jsonify({
-            "success": True,
-            "path": result['path'],
-            "message": f"File moved to music collection: {result['path']}"
-        })
-        
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT status, file_path FROM download_queue WHERE id = %s", (queue_id,))
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row:
+            return jsonify({"success": False, "error": "Queue item not found"}), 404
+
+        item_status = row[0] if isinstance(row, (list, tuple)) else row.get('status')
+
+        if item_status == 'matched':
+            from download_monitor_enhancements import move_to_music_collection
+            result = move_to_music_collection(queue_id)
+            if 'error' in result:
+                return jsonify({"success": False, "error": result['error']}), 400
+            return jsonify({"success": True, "path": result['path'], "message": f"File moved to music collection: {result['path']}"})
+
+        elif item_status == 'completed':
+            from download_queue_manager import move_single_track_to_music_dir, update_queue_item
+            from download_file_verification import verify_file_in_music, mark_queue_item_moved
+            from datetime import datetime
+
+            conn2 = get_db()
+            cursor2 = conn2.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cursor2.execute("SELECT * FROM download_queue WHERE id = %s", (queue_id,))
+            queue_item = cursor2.fetchone()
+            conn2.close()
+
+            if not queue_item:
+                return jsonify({"success": False, "error": "Queue item not found"}), 404
+
+            move_result = move_single_track_to_music_dir(dict(queue_item))
+            if not move_result.get('success'):
+                return jsonify({"success": False, "error": move_result.get('error', 'Move failed')}), 500
+
+            target_path = move_result['target_path']
+            verify_result = verify_file_in_music(queue_id, target_path)
+            if verify_result.get('success'):
+                mark_queue_item_moved(queue_id, target_path)
+                update_queue_item(
+                    queue_id,
+                    status='imported',
+                    file_path=target_path,
+                    copied_individually=1,
+                    copied_individually_at=datetime.now().isoformat()
+                )
+                logging.info(f"[MANUAL_MOVE] Queue {queue_id}: verified and imported to {target_path}")
+            else:
+                update_queue_item(queue_id, status='completed', file_path=dict(queue_item).get('file_path'))
+                return jsonify({"success": False, "error": f"File copied but verification failed: {verify_result.get('error')}"}), 500
+
+            return jsonify({"success": True, "path": target_path, "message": f"File moved to music collection: {target_path}"})
+
+        else:
+            return jsonify({"success": False, "error": f"Track must be matched or completed (current status: {item_status})"}), 400
+
     except Exception as e:
         logging.error(f"Error moving queue item to music: {e}")
         import traceback

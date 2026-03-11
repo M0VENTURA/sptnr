@@ -1210,7 +1210,8 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
             'album': queue_item_dict.get('album') or 'Unknown Album',
             'year': year or '',
             'track_number': queue_item_dict.get('track_number'),
-            'disc_number': disc_num,
+            # Default: suppress disc tag until MusicBrainz confirms multi-disc
+            'disc_number': None,
         }
 
         cover_art_data = None
@@ -1228,16 +1229,27 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
                             or mb_release.get('year')
                         )
 
+                    # If the release has only one disc, strip the disc number tag entirely
+                    is_single_disc = mb_release.get('disc_count', 1) <= 1
+
                     for track in mb_release.get('tracks', []):
                         track_title = track.get('title', '').lower().strip()
                         queue_title = title.lower().strip()
                         if track_title and queue_title and track_title == queue_title:
-                            disc_num = track.get('disc_number', disc_num)
-                            tag_metadata['disc_number'] = disc_num
-                            logger.info(
-                                f"[COPY] Queue {queue_item_dict.get('id', 'unknown')}: "
-                                f"Updated disc_number from MusicBrainz: {disc_num}"
-                            )
+                            if is_single_disc:
+                                disc_num = None
+                                tag_metadata['disc_number'] = None
+                                logger.info(
+                                    f"[COPY] Queue {queue_item_dict.get('id', 'unknown')}: "
+                                    f"Single-disc release — disc_number removed from tags"
+                                )
+                            else:
+                                disc_num = track.get('disc_number', disc_num)
+                                tag_metadata['disc_number'] = disc_num
+                                logger.info(
+                                    f"[COPY] Queue {queue_item_dict.get('id', 'unknown')}: "
+                                    f"Updated disc_number from MusicBrainz: {disc_num}"
+                                )
                             break
 
                     if mb_release.get('cover_art'):

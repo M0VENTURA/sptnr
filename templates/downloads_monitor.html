@@ -1784,13 +1784,13 @@ async function loadFolderGroups(options = {}) {
                   const inferredArtistEnc = encodeInlineArg(inferredArtist || '');
                   const inferredAlbumEnc = encodeInlineArg(inferredAlbum || '');
                   const showRetry = queueStatusRow === 'failed';
-                  const canMoveToMusic = queueStatusRow === 'matched' && queueId > 0;
+                  const canMoveToMusic = (queueStatusRow === 'matched' || queueStatusRow === 'completed') && queueId > 0;
                   const canSendQueried = queueStatusRow === 'queried' && queueId > 0;
                   const canChangeMatch = queueId > 0;
                   const canResetMatch = ['matched', 'completed', 'possible_duplicate', 'unmatched'].includes(queueStatusRow) && queueId > 0;
                   const hasDownloadFile = !!(track.file_path || track.matched_file_path || group.matched_folder_path);
                   moveButtonHtml = `<div class="d-flex flex-column gap-1 align-items-center">
-                    ${canMoveToMusic ? `<button class="btn btn-sm btn-outline-success" onclick="moveMatchedToMusic(${queueId})" title="Move matched track to Music and retag from MusicBrainz"><i class="bi bi-box-arrow-right"></i></button>` : ''}
+                    ${canMoveToMusic ? `<button class="btn btn-sm btn-outline-success" onclick="moveMatchedToMusic(${queueId})" title="Move to /music and retag from MusicBrainz"><i class="bi bi-box-arrow-right"></i></button>` : ''}
                     ${canSendQueried ? `<button class="btn btn-sm btn-outline-primary" onclick="sendQueriedTrack(${queueId})" title="Send queried track to queue for Soulseek search"><i class="bi bi-send"></i></button>` : ''}
                     ${canChangeMatch ? `<button class="btn btn-sm btn-outline-info" onclick="openQueueItemMatchModal(${queueId}, '${inferredArtistEnc}', '${inferredAlbumEnc}', '${currentMbidEnc}')" title="Change or set MusicBrainz match for this queue item"><i class="bi bi-arrow-left-right"></i></button>` : ''}
                     ${canResetMatch ? `<button class="btn btn-sm btn-outline-warning" onclick="resetQueueMatch(${queueId})" title="Reset current match and mark as unmatched"><i class="bi bi-x-circle"></i></button>` : ''}
@@ -2737,7 +2737,7 @@ async function retryQueueItem(queueId) {
 }
 
 async function moveMatchedToMusic(queueId) {
-  if (!confirm('Move matched track to /Music and rewrite tags from MusicBrainz metadata?')) {
+  if (!confirm('Move track to /music and rewrite tags from MusicBrainz metadata?')) {
     return;
   }
 
