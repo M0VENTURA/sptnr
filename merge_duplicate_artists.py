@@ -188,13 +188,13 @@ def update_artist_name(old_artist, new_artist, mbid, dry_run=False):
     }
     
     try:
-        # Get all tracks with old artist name
+        # Get all tracks where either artist or album_artist matches the source variant.
         cursor.execute("""
             SELECT id, artist, album, album_artist, file_path, beets_path, track_number, disc_number, year, title
             FROM tracks
-            WHERE artist = %s AND musicbrainz_artist_id = %s
+            WHERE (artist = %s OR album_artist = %s) AND musicbrainz_artist_id = %s
             ORDER BY file_path
-        """, (old_artist, mbid))
+        """, (old_artist, old_artist, mbid))
         
         tracks = cursor.fetchall()
         logger.info(f"Found {len(tracks)} tracks to update: '{old_artist}' → '{new_artist}'")
@@ -209,8 +209,10 @@ def update_artist_name(old_artist, new_artist, mbid, dry_run=False):
             try:
                 track_id = track['id']
                 file_path = track['file_path']
-                old_album_artist = track['album_artist'] or old_artist
-                new_album_artist = old_album_artist if old_album_artist != old_artist else new_artist
+                old_track_artist = track['artist'] or old_artist
+                old_album_artist = track['album_artist'] or old_track_artist
+                new_track_artist = new_artist if old_track_artist == old_artist else old_track_artist
+                new_album_artist = new_artist if old_album_artist == old_artist else old_album_artist
                 
                 # Update database
                 if not dry_run:
@@ -219,7 +221,7 @@ def update_artist_name(old_artist, new_artist, mbid, dry_run=False):
                         SET artist = %s,
                             album_artist = %s
                         WHERE id = %s
-                    """, (new_artist, new_album_artist, track_id))
+                    """, (new_track_artist, new_album_artist, track_id))
                     stats['updated_db'] += 1
                 
                 # Update MP3 tags if file exists
@@ -228,7 +230,7 @@ def update_artist_name(old_artist, new_artist, mbid, dry_run=False):
                         from helpers.tag_manager import update_file_tags
                         
                         tag_updates = {
-                            'artist': new_artist,
+                            'artist': new_track_artist,
                             'album_artist': new_album_artist
                         }
                         

@@ -231,6 +231,8 @@ function displayDuplicateArtists(duplicates) {
     
     duplicates.forEach(dup => {
         const totalTracks = Object.values(dup.track_counts).reduce((a, b) => a + b, 0);
+        const sourceVariations = dup.variations.filter(v => v.toLowerCase() !== dup.canonical_mb.toLowerCase());
+        const affectedTracks = sourceVariations.reduce((sum, v) => sum + (dup.track_counts[v] || 0), 0);
         const variationsHtml = dup.variations.map(v => 
             `<span class="badge bg-secondary me-1">${v} (${dup.track_counts[v]})</span>`
         ).join('');
@@ -242,7 +244,7 @@ function displayDuplicateArtists(duplicates) {
             <td><strong>${dup.canonical_mb}</strong></td>
             <td class="text-center"><span class="badge bg-info">${totalTracks}</span></td>
             <td class="text-center">
-                <button class="btn btn-sm btn-primary" onclick="showMergeDialog('${dup.mbid}', '${dup.variations[0]}', '${dup.canonical_mb}', ${totalTracks})">
+                <button class="btn btn-sm btn-primary" onclick="showMergeDialog('${dup.mbid}', '${dup.canonical_mb}', ${totalTracks}, ${affectedTracks}, ${JSON.stringify(sourceVariations).replace(/"/g, '&quot;')})">
                     <i class="bi bi-merge"></i> Merge
                 </button>
             </td>
@@ -255,15 +257,18 @@ function displayDuplicateArtists(duplicates) {
     badge.style.display = 'inline-block';
 }
 
-function showMergeDialog(mbid, oldArtist, newArtist, totalTracks) {
-    document.getElementById('mergeOldArtist').textContent = oldArtist;
+function showMergeDialog(mbid, newArtist, totalTracks, affectedTracks, sourceVariations) {
+    const oldLabel = (sourceVariations && sourceVariations.length > 0)
+        ? sourceVariations.join(', ')
+        : 'No non-canonical variants found';
+    document.getElementById('mergeOldArtist').textContent = oldLabel;
     document.getElementById('mergeNewArtist').textContent = newArtist;
-    document.getElementById('mergeTotalTracks').textContent = `${totalTracks} tracks will be updated`;
+    document.getElementById('mergeTotalTracks').textContent = `${affectedTracks} tracks will be updated`;
     
     // Store merge data in button
     document.getElementById('confirmMergeBtn').dataset.mbid = mbid;
-    document.getElementById('confirmMergeBtn').dataset.oldArtist = oldArtist;
     document.getElementById('confirmMergeBtn').dataset.newArtist = newArtist;
+    document.getElementById('confirmMergeBtn').dataset.sourceArtists = JSON.stringify(sourceVariations || []);
     
     const mergeModal = new bootstrap.Modal(document.getElementById('mergeModal'));
     mergeModal.show();
@@ -271,8 +276,8 @@ function showMergeDialog(mbid, oldArtist, newArtist, totalTracks) {
 
 document.getElementById('confirmMergeBtn').addEventListener('click', async function() {
     const mbid = this.dataset.mbid;
-    const oldArtist = this.dataset.oldArtist;
     const newArtist = this.dataset.newArtist;
+    const sourceArtists = JSON.parse(this.dataset.sourceArtists || '[]');
     
     // Close merge dialog
     bootstrap.Modal.getInstance(document.getElementById('mergeModal')).hide();
@@ -288,8 +293,8 @@ document.getElementById('confirmMergeBtn').addEventListener('click', async funct
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-                old_artist: oldArtist,
                 new_artist: newArtist,
+                source_artists: sourceArtists,
                 mbid: mbid,
                 dry_run: false
             })

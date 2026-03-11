@@ -8098,27 +8098,81 @@ def api_merge_duplicate_artists():
     try:
         data = request.get_json()
         old_artist = data.get('old_artist', '').strip()
+        source_artists = data.get('source_artists') or []
         new_artist = data.get('new_artist', '').strip()
         mbid = data.get('mbid', '').strip()
         dry_run = data.get('dry_run', False)
         
-        if not old_artist or not new_artist or not mbid:
+        if not new_artist or not mbid:
             return jsonify({
                 "success": False,
-                "error": "old_artist, new_artist, and mbid are required"
+                "error": "new_artist and mbid are required"
             }), 400
-        
-        # Call the merge function from merge_duplicate_artists module
-        result = update_artist_name(old_artist, new_artist, mbid, dry_run=dry_run)
+
+        # Resolve source variants to merge. Prefer explicit list from UI, fallback to old_artist,
+        # then discover all non-canonical variants by MBID.
+        candidates = []
+        if isinstance(source_artists, list):
+            candidates.extend([str(name).strip() for name in source_artists if str(name).strip()])
+        if old_artist:
+            candidates.append(old_artist)
+
+        if not candidates:
+            conn = get_db()
+            cursor = conn.cursor()
+            placeholder = "%s" if _is_postgres_connection(conn) else "?"
+            cursor.execute(f"""
+                SELECT DISTINCT COALESCE(NULLIF(album_artist, ''), artist) AS variation
+                FROM tracks
+                WHERE musicbrainz_artist_id = {placeholder}
+            """, (mbid,))
+            candidates = [row[0] for row in cursor.fetchall() if row and row[0]]
+            conn.close()
+
+        merge_sources = []
+        seen = set()
+        for name in candidates:
+            key = name.lower()
+            if key == new_artist.lower():
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            merge_sources.append(name)
+
+        if not merge_sources:
+            return jsonify({
+                "success": True,
+                "dry_run": dry_run,
+                "updated_db": 0,
+                "updated_files": 0,
+                "moved_files": 0,
+                "errors": [],
+                "message": f"No non-canonical variants found to merge into '{new_artist}'"
+            })
+
+        aggregate = {
+            'updated_db': 0,
+            'updated_files': 0,
+            'moved_files': 0,
+            'errors': []
+        }
+
+        for source_name in merge_sources:
+            result = update_artist_name(source_name, new_artist, mbid, dry_run=dry_run)
+            aggregate['updated_db'] += result.get('updated_db', 0)
+            aggregate['updated_files'] += result.get('updated_files', 0)
+            aggregate['moved_files'] += result.get('moved_files', 0)
+            aggregate['errors'].extend(result.get('errors', []))
         
         return jsonify({
             "success": True,
             "dry_run": dry_run,
-            "updated_db": result.get('updated_db', 0),
-            "updated_files": result.get('updated_files', 0),
-            "moved_files": result.get('moved_files', 0),
-            "errors": result.get('errors', []),
-            "message": f"{'[DRY RUN] ' if dry_run else ''}Merged '{old_artist}' → '{new_artist}': {result.get('updated_db', 0)} tracks updated"
+            "updated_db": aggregate['updated_db'],
+            "updated_files": aggregate['updated_files'],
+            "moved_files": aggregate['moved_files'],
+            "errors": aggregate['errors'],
+            "message": f"{'[DRY RUN] ' if dry_run else ''}Merged {len(merge_sources)} variant(s) into '{new_artist}': {aggregate['updated_db']} tracks updated"
         })
         
     except Exception as e:
