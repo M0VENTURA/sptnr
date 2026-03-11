@@ -941,7 +941,7 @@ def update_queue_item(queue_id, **kwargs):
             for key, value in kwargs.items():
                 if key in ['status', 'source_id', 'found_filename', 'file_path', 'failure_reason', 
                            'retry_count', 'last_failure_time', 'imported_at', 'metadata', 'import_group', 'import_type',
-                           'copied_individually', 'copied_individually_at']:
+                           'copied_individually', 'copied_individually_at', 'duration']:
                     # Special handling for file_path to avoid UNIQUE constraint issues
                     if key == 'file_path' and value:
                         # Check if this file_path is already in use by another item
