@@ -8391,11 +8391,11 @@ def track_edit(track_id):
     alternate_take = request.form.get("alternate_take") == "on"
     is_compilation = request.form.get("is_compilation") == "on"
 
-    # PostgreSQL boolean columns require bool values; SQLite accepts ints.
-    is_single_db = is_single if is_pg else int(is_single)
-    is_cover_db = is_cover if is_pg else int(is_cover)
-    alternate_take_db = alternate_take if is_pg else int(alternate_take)
-    is_compilation_db = is_compilation if is_pg else int(is_compilation)
+    # Persist feature flags as 0/1 to support legacy BIGINT/INTEGER schemas.
+    is_single_db = int(is_single)
+    is_cover_db = int(is_cover)
+    alternate_take_db = int(alternate_take)
+    is_compilation_db = int(is_compilation)
     
     # First, get the file path from database
     cursor.execute(f"SELECT file_path FROM tracks WHERE id = {placeholder}", (track_id,))
@@ -21576,7 +21576,8 @@ def api_track_update_metadata():
                     bool_val = raw_val.strip().lower() in {'1', 'true', 'yes', 'on'}
                 else:
                     bool_val = bool(raw_val)
-                db_updates[field] = bool_val if is_pg else int(bool_val)
+                # Store as 0/1 for compatibility with integer-backed flag columns.
+                db_updates[field] = int(bool_val)
         
         if not db_updates:
             conn.close()
