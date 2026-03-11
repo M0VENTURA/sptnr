@@ -331,7 +331,31 @@
   </div>
 
   {% elif playlist_type == 'listenbrainz' %}
-  <!-- ListenBrainz Recommendations Playlist Creator -->
+  <!-- ListenBrainz RSS Playlists -->
+  <div class="row mb-3">
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header d-flex align-items-center justify-content-between flex-wrap gap-2">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-music-note-list"></i> ListenBrainz Weekly Playlists
+          </h5>
+          <div class="d-flex align-items-center gap-2 flex-wrap">
+            <small id="lbSyncBadge" class="text-muted"></small>
+            <input type="text" id="lbRssUsername" class="form-control form-control-sm"
+              style="width:160px" placeholder="LB username (optional)">
+            <button type="button" class="btn btn-sm btn-primary" onclick="syncListenBrainzRssPlaylists()">
+              <i class="bi bi-arrow-clockwise"></i> Sync Playlists
+            </button>
+          </div>
+        </div>
+        <div class="card-body p-0">
+          <div id="lbRssTables"><div class="p-3 text-muted">Loading playlists...</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Legacy: Create Playlist from ListenBrainz Recommendations -->
   <div class="row">
     <div class="col-12">
       <div class="card">
@@ -470,6 +494,7 @@
         </div>
       </div>
     </div>
+  </div>
   </div>
   {% endif %}
 </div>

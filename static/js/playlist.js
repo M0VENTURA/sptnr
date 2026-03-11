@@ -136,6 +136,7 @@ function setupBrowsePageListeners() {
 // ===============================
 
 function setupCreatePageListeners() {
+  if (document.getElementById("lbRssTables")) { loadListenBrainzRssTables(); loadListenBrainzSyncStatus(); }
   // Search and create playlist form handling
   const customPlaylistForm = document.getElementById('customPlaylistForm');
   if (customPlaylistForm) {
@@ -1187,6 +1188,147 @@ async function createPlaylistFromLastfm(event) {
 }
 
 // ===============================
+
+
+// =============================================================================
+// LISTENBRAINZ RSS PLAYLISTS
+// =============================================================================
+
+function _lbQueueStatusBadge(track) {
+  const ms = track.match_status;
+  const qs = track.queue_status;
+  const qid = track.queue_id;
+  if (ms === 'matched') {
+    return '<span class="badge bg-success ms-1" title="In your library"><i class="bi bi-check-circle-fill"></i> Matched</span>';
+  }
+  if (ms === 'queued' || qid) {
+    const label = qs || 'queued';
+    let cls = 'bg-secondary';
+    if (label === 'downloading') cls = 'bg-info text-dark';
+    else if (label === 'completed' || label === 'imported') cls = 'bg-success';
+    else if (label === 'failed') cls = 'bg-danger';
+    else if (label === 'searching') cls = 'bg-warning text-dark';
+    const failHint = track.queue_failure_reason ? ` title="${track.queue_failure_reason}"` : '';
+    return `<span class="badge ${cls} ms-1"${failHint}><i class="bi bi-download"></i> ${label}</span>`;
+  }
+  return '<span class="badge bg-secondary ms-1">missing</span>';
+}
+
+function renderListenBrainzPlaylistTables(playlists) {
+  const container = document.getElementById('lbRssTables');
+  if (!container) return;
+  if (!playlists || Object.keys(playlists).length === 0) {
+    container.innerHTML = '<div class="p-3 text-muted">No playlist data yet. Click Sync Playlists to fetch.</div>';
+    return;
+  }
+  const specOrder = ['weekly_jams','weekly_exploration','last_week_jams','last_week_exploration','rolling_jams','rolling_exploration'];
+  let html = '<div class="accordion accordion-flush" id="lbPlaylistAccordion">';
+  specOrder.forEach((key, idx) => {
+    const pl = playlists[key];
+    if (!pl) return;
+    const tracks = pl.tracks || [];
+    const matched = tracks.filter(t => t.match_status === 'matched').length;
+    const queued = tracks.filter(t => t.match_status === 'queued' || (t.queue_id && t.match_status !== 'matched')).length;
+    const missing = tracks.filter(t => t.match_status === 'missing').length;
+    const collapseId = `lb-collapse-${key}`;
+    html += `
+      <div class="accordion-item">
+        <h2 class="accordion-header">
+          <button class="accordion-button${idx > 0 ? ' collapsed' : ''}" type="button"
+            data-bs-toggle="collapse" data-bs-target="#${collapseId}">
+            <strong>${pl.name || key}</strong>
+            <span class="ms-2 badge bg-success">${matched} matched</span>
+            <span class="ms-1 badge bg-warning text-dark">${queued} queued</span>
+            <span class="ms-1 badge bg-secondary">${missing} missing</span>
+          </button>
+        </h2>
+        <div id="${collapseId}" class="accordion-collapse collapse${idx === 0 ? ' show' : ''}"
+          data-bs-parent="#lbPlaylistAccordion">
+          <div class="accordion-body p-0">`;
+    if (tracks.length === 0) {
+      html += '<p class="text-muted p-3 mb-0">No tracks yet.</p>';
+    } else {
+      html += `<div class="table-responsive"><table class="table table-sm table-hover mb-0">
+        <thead><tr>
+          <th>Artist</th><th>Title</th><th>Album</th><th>Status</th>
+        </tr></thead><tbody>`;
+      tracks.forEach(t => {
+        html += `<tr>
+          <td>${t.artist || ''}</td>
+          <td>${t.title || ''}</td>
+          <td class="text-muted small">${t.album || ''}</td>
+          <td>${_lbQueueStatusBadge(t)}</td>
+        </tr>`;
+      });
+      html += '</tbody></table></div>';
+    }
+    html += '</div></div></div>';
+  });
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+async function loadListenBrainzSyncStatus() {
+  const badge = document.getElementById('lbSyncBadge');
+  if (!badge) return;
+  try {
+    const resp = await fetch('/api/listenbrainz/rss/sync-status');
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (data.last_synced_at) {
+      const d = new Date(data.last_synced_at);
+      badge.textContent = `Last synced: ${d.toLocaleDateString()} ${d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`;
+    } else {
+      badge.textContent = 'Never synced';
+    }
+    if (data.last_rematch_at) {
+      const d2 = new Date(data.last_rematch_at);
+      badge.title = `Last re-match check: ${d2.toLocaleDateString()} ${d2.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`;
+    }
+  } catch (e) {
+    // ignore
+  }
+}
+
+async function loadListenBrainzRssTables() {
+  try {
+    const resp = await fetch('/api/listenbrainz/rss/playlists');
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (data.playlists) renderListenBrainzPlaylistTables(data.playlists);
+  } catch (e) {
+    const c = document.getElementById('lbRssTables');
+    if (c) c.innerHTML = '<div class="p-3 text-muted">Could not load playlists.</div>';
+  }
+}
+
+async function syncListenBrainzRssPlaylists() {
+  const btn = document.querySelector('button[onclick="syncListenBrainzRssPlaylists()"]');
+  const usernameInput = document.getElementById('lbRssUsername');
+  const lbUsername = usernameInput ? usernameInput.value.trim() : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Syncing...'; }
+  try {
+    const body = { enqueue_missing: true, write_m3u: true };
+    if (lbUsername) body.listenbrainz_username = lbUsername;
+    const resp = await fetch('/api/listenbrainz/rss/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    if (data.playlists) {
+      renderListenBrainzPlaylistTables(data.playlists);
+      await loadListenBrainzSyncStatus();
+    } else if (data.error) {
+      alert('Sync failed: ' + data.error);
+    }
+  } catch (e) {
+    alert('Sync error: ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Sync Playlists'; }
+  }
+}
+
 // LISTENBRAINZ RECOMMENDATIONS
 // ===============================
 

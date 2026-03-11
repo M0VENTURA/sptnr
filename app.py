@@ -8,6 +8,7 @@ from helpers.db_utils import (
 )
 from download_file_verification import ensure_verification_columns, ensure_queue_mbid_columns
 import os
+import xml.etree.ElementTree as ET
 # --- ENVIRONMENT VARIABLE EDITING SUPPORT ---
 # List of all environment variables used in the project (compiled from codebase)
 ALL_ENV_VARS = [
@@ -1562,6 +1563,11 @@ def _start_daily_scheduler():
             except Exception as exc:
                 logging.error(f"[DAILY] Error in ListenBrainz Monday sync: {exc}", exc_info=True)
 
+            try:
+                _run_daily_5am_lb_rematch()
+            except Exception as exc:
+                logging.error(f"[DAILY] Error in LB 5am rematch: {exc}", exc_info=True)
+
         logging.info("[DAILY] Daily scheduler stopped")
 
     _daily_scheduler_thread = threading.Thread(target=_daily_worker, daemon=True, name="daily-scheduler")
@@ -1656,6 +1662,131 @@ def api_queue_requeue_all_unmatched():
     except Exception as e:
         logging.error(f"Error re-queuing all unmatched: {e}")
         return jsonify({"error": str(e)}), 400
+
+def _run_monday_listenbrainz_rss_sync():
+    """Run ListenBrainz RSS playlist sync once per week (Monday morning) for configured users."""
+    now = datetime.now()
+    if now.weekday() != 0 or now.hour < 6:
+        return
+    cfg = get_config()
+    users = cfg.get("navidrome_users", []) or []
+    if not users:
+        return
+    conn = get_db()
+    try:
+        _ensure_listenbrainz_playlist_tables(conn)
+        cursor = conn.cursor()
+        placeholder = get_placeholder(conn)
+        week_key = f"{now.isocalendar().year}-W{now.isocalendar().week:02d}"
+        for user_cfg in users:
+            app_user = (user_cfg.get("user") or "").strip()
+            lb_token = (user_cfg.get("listenbrainz_user_token") or "").strip()
+            lb_username = (user_cfg.get("listenbrainz_username") or app_user).strip()
+            if not app_user or not lb_username:
+                continue
+            cursor.execute(
+                f"SELECT last_synced_week FROM listenbrainz_playlist_scheduler_state WHERE username = {placeholder}",
+                (app_user,),
+            )
+            row = cursor.fetchone()
+            last_week = row.get("last_synced_week") if isinstance(row, dict) else (row[0] if row else None)
+            if last_week == week_key:
+                continue
+            result = _sync_listenbrainz_rss_playlists_for_user(
+                app_username=app_user,
+                listenbrainz_username=lb_username,
+                lb_token=lb_token,
+                enqueue_missing=True,
+                write_m3u=True,
+            )
+            if not result.get("success"):
+                logging.warning(f"[LB_RSS] Monday sync failed for {app_user}: {result.get('error')}")
+                continue
+            now_iso = datetime.now().isoformat()
+            if _is_postgres_connection(conn):
+                cursor.execute("""
+                    INSERT INTO listenbrainz_playlist_scheduler_state (username, last_synced_week, last_synced_at)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (username) DO UPDATE
+                    SET last_synced_week = EXCLUDED.last_synced_week,
+                        last_synced_at = EXCLUDED.last_synced_at""",
+                    (app_user, week_key, now_iso))
+            else:
+                cursor.execute("""
+                    INSERT OR REPLACE INTO listenbrainz_playlist_scheduler_state
+                    (username, last_synced_week, last_synced_at)
+                    VALUES (?, ?, ?)""",
+                    (app_user, week_key, now_iso))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _run_daily_5am_lb_rematch():
+    """Every morning at 5am, re-check missing LB playlist tracks against the library
+    and update M3U playlists if new matches are found."""
+    now = datetime.now()
+    if now.hour != 5:
+        return
+    cfg = get_config()
+    users = cfg.get("navidrome_users", []) or []
+    if not users:
+        return
+    conn = get_db()
+    try:
+        _ensure_listenbrainz_playlist_tables(conn)
+        cursor = conn.cursor()
+        placeholder = get_placeholder(conn)
+        for user_cfg in users:
+            app_user = (user_cfg.get("user") or "").strip()
+            lb_username = (user_cfg.get("listenbrainz_username") or app_user).strip()
+            if not app_user:
+                continue
+            # Avoid running twice in the same hour
+            cursor.execute(
+                f"SELECT last_rematch_at FROM listenbrainz_playlist_scheduler_state WHERE username = {placeholder}",
+                (app_user,),
+            )
+            row = cursor.fetchone()
+            last_rematch = row.get("last_rematch_at") if isinstance(row, dict) else (row[0] if row else None)
+            if last_rematch:
+                try:
+                    from datetime import datetime as _dt
+                    last_dt = _dt.fromisoformat(last_rematch)
+                    if (now - last_dt).total_seconds() < 3600:
+                        continue
+                except Exception:
+                    pass
+            newly_matched = _rematch_missing_lb_playlist_tracks(conn, app_user)
+            if newly_matched > 0:
+                logging.info(f"[LB_REMATCH] {newly_matched} new track(s) matched for {app_user}; refreshing M3U files")
+                # Rewrite M3U for all playlists
+                for key in LISTENBRAINZ_PLAYLIST_SPECS.keys():
+                    playlist_name, rows = _load_playlist_rows(conn, app_user, key)
+                    file_paths = [r.get("file_path") for r in rows if r.get("file_path")]
+                    try:
+                        _write_m3u_playlist(playlist_name, file_paths)
+                    except Exception as exc:
+                        logging.warning(f"[LB_REMATCH] M3U write failed for {key}: {exc}")
+            now_iso = datetime.now().isoformat()
+            if _is_postgres_connection(conn):
+                cursor.execute("""
+                    INSERT INTO listenbrainz_playlist_scheduler_state (username, last_rematch_at)
+                    VALUES (%s, %s)
+                    ON CONFLICT (username) DO UPDATE SET last_rematch_at = EXCLUDED.last_rematch_at""",
+                    (app_user, now_iso))
+            else:
+                cursor.execute("""
+                    INSERT OR REPLACE INTO listenbrainz_playlist_scheduler_state
+                    (username, last_rematch_at)
+                    VALUES (?, ?)""",
+                    (app_user, now_iso))
+        conn.commit()
+    except Exception as exc:
+        logging.error(f"[LB_REMATCH] Daily rematch error: {exc}", exc_info=True)
+    finally:
+        conn.close()
+
 
 def _run_daily_new_artist_import():
     """Import new Navidrome album artists that are not yet in the local database.
@@ -22705,6 +22836,602 @@ def api_playlist_create_custom():
 
 
 # =============================================================================
+
+# =============================================================================
+# LISTENBRAINZ RSS PLAYLIST SPECS & HELPERS
+# =============================================================================
+
+LISTENBRAINZ_PLAYLIST_SPECS = {
+    "weekly_jams": {"suffix": "Weekly Jams", "bucket": "jams"},
+    "weekly_exploration": {"suffix": "Weekly Exploration", "bucket": "exploration"},
+    "last_week_jams": {"suffix": "Last Weeks Jams", "bucket": "jams"},
+    "last_week_exploration": {"suffix": "Last Weeks Exploration", "bucket": "exploration"},
+    "rolling_jams": {"suffix": "Jams", "bucket": "jams"},
+    "rolling_exploration": {"suffix": "Exploration", "bucket": "exploration"},
+}
+
+
+def _lb_row_value(row, key, idx):
+    if row is None:
+        return None
+    if isinstance(row, dict):
+        return row.get(key)
+    if hasattr(row, "keys"):
+        try:
+            return row[key]
+        except Exception:
+            pass
+    if isinstance(row, (list, tuple)) and len(row) > idx:
+        return row[idx]
+    return None
+
+
+def _normalize_lb_text(value):
+    text = (value or "").strip().lower()
+    if not text:
+        return ""
+    text = unicodedata.normalize("NFD", text)
+    text = "".join(c for c in text if unicodedata.category(c) != "Mn")
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+def _lb_track_uid(track):
+    mbid = (track.get("recording_mbid") or "").strip().lower()
+    if mbid:
+        return "mbid:" + mbid
+    key = "|".join([
+        _normalize_lb_text(track.get("artist_name")),
+        _normalize_lb_text(track.get("track_name")),
+        _normalize_lb_text(track.get("release_name")),
+    ])
+    return "hash:" + hashlib.sha1(key.encode("utf-8")).hexdigest()
+
+
+def _extract_mbid(value):
+    if not value:
+        return None
+    m = re.search(r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})", value)
+    return m.group(1) if m else None
+
+
+def _parse_listenbrainz_rss(xml_text):
+    tracks = []
+    if not xml_text:
+        return tracks
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return tracks
+    items = root.findall(".//item")
+    for item in items:
+        title_text = (item.findtext("title") or "").strip()
+        creator_text = (item.findtext("{http://purl.org/dc/elements/1.1/}creator") or "").strip()
+        guid_text = (item.findtext("guid") or "").strip()
+        link_text = (item.findtext("link") or "").strip()
+        desc_text = (item.findtext("description") or "").strip()
+        artist_name = creator_text
+        track_name = title_text
+        if " - " in title_text and not artist_name:
+            split = title_text.split(" - ", 1)
+            artist_name = split[0].strip()
+            track_name = split[1].strip()
+        recording_mbid = _extract_mbid(guid_text) or _extract_mbid(link_text) or _extract_mbid(desc_text)
+        if not artist_name and not track_name:
+            continue
+        tracks.append({
+            "artist_name": artist_name,
+            "track_name": track_name,
+            "release_name": "",
+            "recording_mbid": recording_mbid,
+            "release_mbid": None,
+            "source": "listenbrainz-rss",
+        })
+    return tracks
+
+
+def _listenbrainz_rss_candidates(username, rec_type):
+    slug_map = {
+        "weekly_jams": "weekly-jams",
+        "weekly_exploration": "weekly-exploration",
+        "last_week_jams": "last-week-jams",
+        "last_week_exploration": "last-week-exploration",
+    }
+    slug = slug_map.get(rec_type, rec_type.replace("_", "-"))
+    return [
+        f"https://listenbrainz.org/user/{username}/recommendations/{slug}/rss",
+        f"https://listenbrainz.org/user/{username}/{slug}/rss",
+        f"https://listenbrainz.org/user/{username}/feed/{slug}.rss",
+    ]
+
+
+def _normalize_listenbrainz_recommendation(rec, source):
+    artist_obj = rec.get("artist") if isinstance(rec, dict) else None
+    artist_name = rec.get("artist_name", "") if isinstance(rec, dict) else ""
+    if isinstance(artist_obj, dict):
+        artist_name = artist_name or artist_obj.get("name", "")
+    elif isinstance(artist_obj, str):
+        artist_name = artist_name or artist_obj
+    release_obj = rec.get("release") if isinstance(rec, dict) else None
+    release_name = rec.get("release_name", "") if isinstance(rec, dict) else ""
+    if isinstance(release_obj, dict):
+        release_name = release_name or release_obj.get("name", "")
+    return {
+        "artist_name": artist_name,
+        "track_name": (rec.get("recording_name") or rec.get("track_name") or rec.get("title") or rec.get("name") or "") if isinstance(rec, dict) else "",
+        "release_name": release_name,
+        "recording_mbid": (rec.get("recording_mbid") or rec.get("mbid") or "") if isinstance(rec, dict) else "",
+        "release_mbid": (rec.get("release_mbid") or "") if isinstance(rec, dict) else "",
+        "source": source,
+    }
+
+
+def _fetch_listenbrainz_feed_tracks(listenbrainz_username, rec_type, lb_token=None):
+    for url in _listenbrainz_rss_candidates(listenbrainz_username, rec_type):
+        try:
+            res = requests.get(url, timeout=(5, 20))
+            if res.status_code != 200:
+                continue
+            tracks = _parse_listenbrainz_rss(res.text)
+            if tracks:
+                return tracks, url
+        except Exception:
+            continue
+    if not lb_token:
+        return [], ""
+    from api_clients.audiodb_and_listenbrainz import ListenBrainzUserClient
+    client = ListenBrainzUserClient(lb_token)
+    if rec_type == "weekly_jams":
+        recs = client.get_weekly_jams(listenbrainz_username)
+    elif rec_type == "weekly_exploration":
+        recs = client.get_weekly_exploration(listenbrainz_username)
+    elif rec_type == "last_week_jams":
+        recs = client.get_last_week_jams(listenbrainz_username)
+    elif rec_type == "last_week_exploration":
+        recs = client.get_last_week_exploration(listenbrainz_username)
+    else:
+        recs = []
+    tracks = [_normalize_listenbrainz_recommendation(rec, f"listenbrainz-api:{rec_type}") for rec in (recs or [])]
+    return tracks, f"listenbrainz-api:{rec_type}"
+
+
+def _ensure_listenbrainz_playlist_tables(conn):
+    cursor = conn.cursor()
+    is_pg = _is_postgres_connection(conn)
+    if is_pg:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS listenbrainz_playlist_tracks (
+                id SERIAL PRIMARY KEY,
+                username TEXT NOT NULL,
+                listenbrainz_username TEXT NOT NULL,
+                playlist_key TEXT NOT NULL,
+                playlist_name TEXT NOT NULL,
+                track_uid TEXT NOT NULL,
+                artist_name TEXT,
+                track_name TEXT,
+                release_name TEXT,
+                recording_mbid TEXT,
+                release_mbid TEXT,
+                source TEXT,
+                week_key TEXT,
+                match_status TEXT NOT NULL,
+                local_track_id INTEGER,
+                file_path TEXT,
+                queue_id INTEGER,
+                synced_at TEXT NOT NULL,
+                metadata TEXT
+            )""")
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_lb_playlist_unique
+            ON listenbrainz_playlist_tracks (username, playlist_key, track_uid)""")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS listenbrainz_playlist_scheduler_state (
+                username TEXT PRIMARY KEY,
+                last_synced_week TEXT,
+                last_synced_at TEXT,
+                last_rematch_at TEXT
+            )""")
+    else:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS listenbrainz_playlist_tracks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL,
+                listenbrainz_username TEXT NOT NULL,
+                playlist_key TEXT NOT NULL,
+                playlist_name TEXT NOT NULL,
+                track_uid TEXT NOT NULL,
+                artist_name TEXT,
+                track_name TEXT,
+                release_name TEXT,
+                recording_mbid TEXT,
+                release_mbid TEXT,
+                source TEXT,
+                week_key TEXT,
+                match_status TEXT NOT NULL,
+                local_track_id INTEGER,
+                file_path TEXT,
+                queue_id INTEGER,
+                synced_at TEXT NOT NULL,
+                metadata TEXT,
+                UNIQUE(username, playlist_key, track_uid)
+            )""")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS listenbrainz_playlist_scheduler_state (
+                username TEXT PRIMARY KEY,
+                last_synced_week TEXT,
+                last_synced_at TEXT,
+                last_rematch_at TEXT
+            )""")
+    # Add last_rematch_at column if it doesn't exist yet (migration)
+    try:
+        if is_pg:
+            cursor.execute("ALTER TABLE listenbrainz_playlist_scheduler_state ADD COLUMN IF NOT EXISTS last_rematch_at TEXT")
+        else:
+            cursor.execute("PRAGMA table_info(listenbrainz_playlist_scheduler_state)")
+            cols = [r[1] if isinstance(r, (list, tuple)) else r.get("name") for r in (cursor.fetchall() or [])]
+            if "last_rematch_at" not in cols:
+                cursor.execute("ALTER TABLE listenbrainz_playlist_scheduler_state ADD COLUMN last_rematch_at TEXT")
+    except Exception:
+        pass
+    conn.commit()
+
+
+def _playlist_output_name(listenbrainz_username, playlist_key):
+    spec = LISTENBRAINZ_PLAYLIST_SPECS.get(playlist_key, {})
+    suffix = spec.get("suffix", playlist_key.replace("_", " ").title())
+    return f"{listenbrainz_username} {suffix}"
+
+
+def _resolve_playlists_dir():
+    music_root = os.environ.get("MUSIC_ROOT") or os.environ.get("MUSIC_FOLDER") or "/Music"
+    return Path(music_root) / "Playlists"
+
+
+def _write_m3u_playlist(playlist_name, file_paths):
+    output_dir = _resolve_playlists_dir()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = re.sub(r'[\\/:*?"<>|]+', "_", playlist_name).strip() or "listenbrainz_playlist"
+    output_path = output_dir / f"{safe_name}.m3u"
+    lines = ["#EXTM3U"]
+    lines.extend([p for p in file_paths if p])
+    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return str(output_path)
+
+
+def _match_track_in_library(conn, track):
+    cursor = conn.cursor()
+    placeholder = get_placeholder(conn)
+    rec_mbid = (track.get("recording_mbid") or "").strip()
+    if rec_mbid:
+        cursor.execute(
+            f"SELECT id, file_path FROM tracks WHERE musicbrainz_id = {placeholder} LIMIT 1",
+            (rec_mbid,),
+        )
+        row = cursor.fetchone()
+        if row:
+            return {"track_id": _lb_row_value(row, "id", 0), "file_path": _lb_row_value(row, "file_path", 1)}
+    artist_name = (track.get("artist_name") or "").strip()
+    track_name = (track.get("track_name") or "").strip()
+    if artist_name and track_name:
+        cursor.execute(
+            f"""SELECT id, file_path FROM tracks
+                WHERE LOWER(artist) = LOWER({placeholder})
+                  AND LOWER(title) = LOWER({placeholder})
+                ORDER BY last_scanned DESC NULLS LAST
+                LIMIT 1""",
+            (artist_name, track_name),
+        )
+        row = cursor.fetchone()
+        if row:
+            return {"track_id": _lb_row_value(row, "id", 0), "file_path": _lb_row_value(row, "file_path", 1)}
+    return None
+
+
+def _save_playlist_rows(conn, app_username, listenbrainz_username, playlist_key, tracks, replace_existing=False, week_key=None):
+    cursor = conn.cursor()
+    placeholder = get_placeholder(conn)
+    if replace_existing:
+        cursor.execute(
+            f"DELETE FROM listenbrainz_playlist_tracks WHERE username = {placeholder} AND playlist_key = {placeholder}",
+            (app_username, playlist_key),
+        )
+    now_iso = datetime.now().isoformat()
+    playlist_name = _playlist_output_name(listenbrainz_username, playlist_key)
+    is_pg = _is_postgres_connection(conn)
+    cols = "(username, listenbrainz_username, playlist_key, playlist_name, track_uid, artist_name, track_name, release_name, recording_mbid, release_mbid, source, week_key, match_status, local_track_id, file_path, queue_id, synced_at, metadata)"
+    vals = ", ".join([placeholder] * 18)
+    insert_sql = f"INSERT INTO listenbrainz_playlist_tracks {cols} VALUES ({vals})"
+    if is_pg:
+        conflict_sql = " ON CONFLICT (username, playlist_key, track_uid) DO NOTHING"
+    else:
+        insert_sql = insert_sql.replace("INSERT INTO", "INSERT OR IGNORE INTO", 1)
+        conflict_sql = ""
+    for track in tracks:
+        cursor.execute(
+            insert_sql + conflict_sql,
+            (
+                app_username, listenbrainz_username, playlist_key, playlist_name,
+                _lb_track_uid(track),
+                track.get("artist_name"), track.get("track_name"), track.get("release_name"),
+                track.get("recording_mbid"), track.get("release_mbid"),
+                track.get("source"), week_key,
+                track.get("match_status", "missing"),
+                track.get("local_track_id"), track.get("file_path"), track.get("queue_id"),
+                now_iso, json.dumps(track, ensure_ascii=False),
+            ),
+        )
+
+
+def _load_playlist_rows(conn, app_username, playlist_key, limit=500):
+    """Load playlist rows, joining download_queue for live queue status on missing tracks."""
+    cursor = conn.cursor()
+    placeholder = get_placeholder(conn)
+    cursor.execute(
+        f"""SELECT p.playlist_name, p.artist_name, p.track_name, p.release_name,
+                   p.recording_mbid, p.release_mbid, p.match_status, p.local_track_id,
+                   p.file_path, p.queue_id, p.source, p.synced_at,
+                   dq.status as queue_status, dq.failure_reason
+            FROM listenbrainz_playlist_tracks p
+            LEFT JOIN download_queue dq ON dq.id = p.queue_id
+            WHERE p.username = {placeholder} AND p.playlist_key = {placeholder}
+            ORDER BY p.id DESC
+            LIMIT {placeholder}""",
+        (app_username, playlist_key, limit),
+    )
+    rows = cursor.fetchall() or []
+    tracks = []
+    playlist_name = _playlist_output_name(app_username, playlist_key)
+    for row in rows:
+        pl = _lb_row_value(row, "playlist_name", 0)
+        if pl:
+            playlist_name = pl
+        tracks.append({
+            "artist": _lb_row_value(row, "artist_name", 1),
+            "title": _lb_row_value(row, "track_name", 2),
+            "album": _lb_row_value(row, "release_name", 3),
+            "recording_mbid": _lb_row_value(row, "recording_mbid", 4),
+            "release_mbid": _lb_row_value(row, "release_mbid", 5),
+            "match_status": _lb_row_value(row, "match_status", 6),
+            "track_id": _lb_row_value(row, "local_track_id", 7),
+            "file_path": _lb_row_value(row, "file_path", 8),
+            "queue_id": _lb_row_value(row, "queue_id", 9),
+            "source": _lb_row_value(row, "source", 10),
+            "synced_at": _lb_row_value(row, "synced_at", 11),
+            "queue_status": _lb_row_value(row, "queue_status", 12),
+            "queue_failure_reason": _lb_row_value(row, "failure_reason", 13),
+        })
+    return playlist_name, tracks
+
+
+def _rematch_missing_lb_playlist_tracks(conn, app_username):
+    """Re-check all 'missing' or 'queued' playlist rows that now appear in the library.
+    Update match_status, local_track_id, file_path for newly matched tracks.
+    Returns count of newly matched tracks.
+    """
+    cursor = conn.cursor()
+    placeholder = get_placeholder(conn)
+    cursor.execute(
+        f"""SELECT id, recording_mbid, artist_name, track_name, playlist_key
+            FROM listenbrainz_playlist_tracks
+            WHERE username = {placeholder} AND match_status IN ('missing', 'queued')""",
+        (app_username,),
+    )
+    rows = cursor.fetchall() or []
+    matched_count = 0
+    for row in rows:
+        row_id = _lb_row_value(row, "id", 0)
+        track = {
+            "recording_mbid": _lb_row_value(row, "recording_mbid", 1) or "",
+            "artist_name": _lb_row_value(row, "artist_name", 2) or "",
+            "track_name": _lb_row_value(row, "track_name", 3) or "",
+        }
+        match = _match_track_in_library(conn, track)
+        if match:
+            cursor.execute(
+                f"""UPDATE listenbrainz_playlist_tracks
+                    SET match_status = 'matched', local_track_id = {placeholder},
+                        file_path = {placeholder}
+                    WHERE id = {placeholder}""",
+                (match["track_id"], match["file_path"], row_id),
+            )
+            matched_count += 1
+    conn.commit()
+    return matched_count
+
+
+def _sync_listenbrainz_rss_playlists_for_user(app_username, listenbrainz_username, lb_token=None, enqueue_missing=True, write_m3u=True):
+    conn = get_db()
+    try:
+        _ensure_listenbrainz_playlist_tables(conn)
+        week_key = f"{datetime.now().isocalendar().year}-W{datetime.now().isocalendar().week:02d}"
+        weekly_results = {
+            "weekly_jams": [],
+            "weekly_exploration": [],
+            "last_week_jams": [],
+            "last_week_exploration": [],
+        }
+        from download_queue_manager import add_to_queue
+        for feed_key in weekly_results.keys():
+            feed_tracks, source_used = _fetch_listenbrainz_feed_tracks(listenbrainz_username, feed_key, lb_token=lb_token)
+            normalized = []
+            for track in feed_tracks:
+                match = _match_track_in_library(conn, track)
+                queue_id = None
+                match_status = "missing"
+                local_track_id = None
+                file_path = None
+                if match:
+                    match_status = "matched"
+                    local_track_id = match.get("track_id")
+                    file_path = match.get("file_path")
+                elif enqueue_missing:
+                    queued = add_to_queue(
+                        artist=track.get("artist_name") or "Unknown Artist",
+                        title=track.get("track_name") or "Unknown Track",
+                        album=track.get("release_name") or None,
+                        source="listenbrainz_rss",
+                        import_type="playlist",
+                        release_source="listenbrainz",
+                        release_id=track.get("release_mbid") or None,
+                        release_mbid=track.get("release_mbid") or None,
+                        recording_mbid=track.get("recording_mbid") or None,
+                    )
+                    if queued:
+                        queue_id = queued.get("id") if isinstance(queued, dict) else None
+                        match_status = "queued"
+                normalized.append({
+                    "artist_name": track.get("artist_name") or "",
+                    "track_name": track.get("track_name") or "",
+                    "release_name": track.get("release_name") or "",
+                    "recording_mbid": track.get("recording_mbid") or "",
+                    "release_mbid": track.get("release_mbid") or "",
+                    "source": source_used or track.get("source") or "listenbrainz",
+                    "match_status": match_status,
+                    "local_track_id": local_track_id,
+                    "file_path": file_path,
+                    "queue_id": queue_id,
+                })
+            weekly_results[feed_key] = normalized
+        _save_playlist_rows(conn, app_username, listenbrainz_username, "weekly_jams", weekly_results["weekly_jams"], replace_existing=True, week_key=week_key)
+        _save_playlist_rows(conn, app_username, listenbrainz_username, "weekly_exploration", weekly_results["weekly_exploration"], replace_existing=True, week_key=week_key)
+        _save_playlist_rows(conn, app_username, listenbrainz_username, "last_week_jams", weekly_results["last_week_jams"], replace_existing=True, week_key=week_key)
+        _save_playlist_rows(conn, app_username, listenbrainz_username, "last_week_exploration", weekly_results["last_week_exploration"], replace_existing=True, week_key=week_key)
+        _save_playlist_rows(conn, app_username, listenbrainz_username, "rolling_jams", weekly_results["weekly_jams"] + weekly_results["last_week_jams"], replace_existing=False, week_key=week_key)
+        _save_playlist_rows(conn, app_username, listenbrainz_username, "rolling_exploration", weekly_results["weekly_exploration"] + weekly_results["last_week_exploration"], replace_existing=False, week_key=week_key)
+        m3u_files = {}
+        playlist_payload = {}
+        for key in LISTENBRAINZ_PLAYLIST_SPECS.keys():
+            playlist_name, rows = _load_playlist_rows(conn, app_username, key)
+            playlist_payload[key] = {"name": playlist_name, "tracks": rows}
+            if write_m3u:
+                file_paths = [r.get("file_path") for r in rows if r.get("file_path")]
+                m3u_files[key] = _write_m3u_playlist(playlist_name, file_paths)
+        conn.commit()
+        return {
+            "success": True,
+            "username": app_username,
+            "listenbrainz_username": listenbrainz_username,
+            "playlists": playlist_payload,
+            "m3u_files": m3u_files,
+        }
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return {"success": False, "error": str(e)}
+    finally:
+        conn.close()
+
+
+@app.route("/api/listenbrainz/rss/sync", methods=["POST"])
+def api_listenbrainz_rss_sync():
+    """Sync ListenBrainz RSS feeds into six playlists with DB matching and queue fallback."""
+    try:
+        data = request.get_json(silent=True) or {}
+        enqueue_missing = bool(data.get("enqueue_missing", True))
+        write_m3u = bool(data.get("write_m3u", True))
+        cfg = get_config()
+        current_user = (session.get("username") or "").strip()
+        app_username = (data.get("user") or current_user).strip()
+        listenbrainz_username = (data.get("listenbrainz_username") or "").strip()
+        nav_users = cfg.get("navidrome_users", []) or []
+        user_cfg = next((u for u in nav_users if (u.get("user") or "").strip() == app_username), None)
+        lb_token = (user_cfg.get("listenbrainz_user_token") if user_cfg else "") or ""
+        if not listenbrainz_username:
+            listenbrainz_username = ((user_cfg or {}).get("listenbrainz_username") or app_username or "").strip()
+        if not app_username or not listenbrainz_username:
+            return jsonify({"error": "Missing app user or ListenBrainz username"}), 400
+        result = _sync_listenbrainz_rss_playlists_for_user(
+            app_username=app_username,
+            listenbrainz_username=listenbrainz_username,
+            lb_token=lb_token,
+            enqueue_missing=enqueue_missing,
+            write_m3u=write_m3u,
+        )
+        if not result.get("success"):
+            return jsonify({"error": result.get("error", "Sync failed")}), 500
+        # Record sync time
+        conn2 = get_db()
+        try:
+            _ensure_listenbrainz_playlist_tables(conn2)
+            cur2 = conn2.cursor()
+            now_iso = datetime.now().isoformat()
+            week_key = f"{datetime.now().isocalendar().year}-W{datetime.now().isocalendar().week:02d}"
+            if _is_postgres_connection(conn2):
+                cur2.execute("""
+                    INSERT INTO listenbrainz_playlist_scheduler_state (username, last_synced_week, last_synced_at)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (username) DO UPDATE
+                    SET last_synced_week = EXCLUDED.last_synced_week,
+                        last_synced_at = EXCLUDED.last_synced_at""",
+                    (app_username, week_key, now_iso))
+            else:
+                cur2.execute("""
+                    INSERT OR REPLACE INTO listenbrainz_playlist_scheduler_state
+                    (username, last_synced_week, last_synced_at)
+                    VALUES (?, ?, ?)""",
+                    (app_username, week_key, now_iso))
+            conn2.commit()
+        finally:
+            conn2.close()
+        return jsonify(result)
+    except Exception as e:
+        logging.error(f"ListenBrainz RSS sync failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/listenbrainz/rss/playlists", methods=["GET"])
+def api_listenbrainz_rss_playlists():
+    """Return persisted ListenBrainz RSS playlists for the current user."""
+    try:
+        app_username = (request.args.get("user") or session.get("username") or "").strip()
+        if not app_username:
+            return jsonify({"error": "Missing user"}), 400
+        conn = get_db()
+        try:
+            _ensure_listenbrainz_playlist_tables(conn)
+            payload = {}
+            for key in LISTENBRAINZ_PLAYLIST_SPECS.keys():
+                playlist_name, rows = _load_playlist_rows(conn, app_username, key)
+                payload[key] = {"name": playlist_name, "tracks": rows}
+            return jsonify({"success": True, "username": app_username, "playlists": payload})
+        finally:
+            conn.close()
+    except Exception as e:
+        logging.error(f"ListenBrainz playlist fetch failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/listenbrainz/rss/sync-status", methods=["GET"])
+def api_listenbrainz_rss_sync_status():
+    """Return last sync time and rematch time for the current user."""
+    try:
+        app_username = (request.args.get("user") or session.get("username") or "").strip()
+        if not app_username:
+            return jsonify({"error": "Missing user"}), 400
+        conn = get_db()
+        try:
+            _ensure_listenbrainz_playlist_tables(conn)
+            cursor = conn.cursor()
+            placeholder = get_placeholder(conn)
+            cursor.execute(
+                f"SELECT last_synced_week, last_synced_at, last_rematch_at FROM listenbrainz_playlist_scheduler_state WHERE username = {placeholder}",
+                (app_username,),
+            )
+            row = cursor.fetchone()
+            return jsonify({
+                "success": True,
+                "last_synced_week": _lb_row_value(row, "last_synced_week", 0) if row else None,
+                "last_synced_at": _lb_row_value(row, "last_synced_at", 1) if row else None,
+                "last_rematch_at": _lb_row_value(row, "last_rematch_at", 2) if row else None,
+            })
+        finally:
+            conn.close()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 # LISTENBRAINZ RECOMMENDATIONS API
 # =============================================================================
 
