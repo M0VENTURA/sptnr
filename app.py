@@ -15708,6 +15708,67 @@ def api_downloads_get_queue():
     """Get files in download queue"""
     try:
         from downloads_watcher import get_download_queue
+
+        # Keep queue semantics strict: "in_collection" only applies to files
+        # that are actually under the configured /music root.
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            is_pg = _is_postgres_connection(conn)
+            placeholder = "%s" if is_pg else "?"
+
+            cursor.execute(
+                f"""
+                SELECT id, status, in_collection, file_path, music_file_path
+                FROM download_queue
+                WHERE status = 'in_collection' OR COALESCE(in_collection, 0) = 1
+                """
+            )
+            flagged_rows = cursor.fetchall()
+
+            music_root = os.path.normpath(os.environ.get("MUSIC_ROOT", "/music"))
+            music_root_norm = music_root.replace("\\", "/").rstrip("/").lower()
+
+            def _is_under_music_root(path_value):
+                if not path_value:
+                    return False
+                norm = os.path.normpath(str(path_value)).replace("\\", "/").rstrip("/").lower()
+                return norm == music_root_norm or norm.startswith(music_root_norm + "/")
+
+            normalized_count = 0
+            for row in flagged_rows:
+                row_id = _row_get(row, 'id', 0)
+                row_status = _row_get(row, 'status', 1)
+                file_path = _row_get(row, 'file_path', 3)
+                music_file_path = _row_get(row, 'music_file_path', 4)
+
+                if _is_under_music_root(music_file_path) or _is_under_music_root(file_path):
+                    continue
+
+                corrected_status = 'completed' if row_status == 'in_collection' else row_status
+                cursor.execute(
+                    f"""
+                    UPDATE download_queue
+                    SET status = {placeholder},
+                        in_collection = 0,
+                        collection_track_id = NULL,
+                        collection_matched_at = NULL,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = {placeholder}
+                    """,
+                    (corrected_status, row_id),
+                )
+                normalized_count += 1
+
+            if normalized_count:
+                conn.commit()
+                logging.info(
+                    f"[QUEUE_NORMALIZE] Corrected {normalized_count} in_collection rows not under /music"
+                )
+
+            conn.close()
+        except Exception as normalize_err:
+            logging.debug(f"[QUEUE_NORMALIZE] Skipped in_collection normalization: {normalize_err}")
         
         status = request.args.get('status')
         limit = int(request.args.get('limit', 500))  # Increased from 50 to 500 to show all discovered files
