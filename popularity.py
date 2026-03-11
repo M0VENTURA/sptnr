@@ -571,7 +571,7 @@ def detect_compilation_album(artist: str, album: str, tracks: list, album_artist
     # Check album_artist field first (most reliable)
     if album_artist:
         album_artist_lower = album_artist.lower()
-        if album_artist_lower in ('various artists', 'various', 'compilation', 'soundtrack'):
+        if album_artist_lower in ('various artists', 'various artists -', 'various', 'compilation', 'soundtrack'):
             log_debug(f'Compilation detected for "{album}": album_artist="{album_artist}"')
             return True
     
@@ -3402,7 +3402,7 @@ def popularity_scan(
             # Skip for compilation albums (Various Artists, Compilation, Soundtrack)
             # Also skip if Spotify weight is 0 (API calls would be wasted)
             spotify_artist_id = None
-            is_compilation_group = artist.lower() in ('various artists', 'various', 'compilation', 'soundtrack')
+            is_compilation_group = artist.lower() in ('various artists', 'various artists -', 'various', 'compilation', 'soundtrack')
             
             if not is_compilation_group and SPOTIFY_WEIGHT > 0:
                 # Lookup Spotify artist ID for non-compilation artists
@@ -4152,13 +4152,18 @@ def popularity_scan(
                 detected_album_type = None
                 type_detection_source = None
                 
-                # Auto-detect Various Artists → Album (Compilation)
-                if artist.lower() == 'various artists':
+                # Auto-detect Various Artists / Compilation / Soundtrack album_artist → Album (Compilation)
+                # These album_artist values indicate multi-artist compilation albums and should all
+                # be treated identically to standard compilations for popularity and single scanning.
+                artist_lower = artist.lower()
+                compilation_artists = ('various artists', 'various artists -', 'various', 'compilation', 'soundtrack')
+                if artist_lower in compilation_artists:
                     detected_album_type = 'album+compilation'
-                    type_detection_source = 'auto-detected (Various Artists)'
-                    log_info(f'✅ AUTO-DETECTED: Compilation album - "{album}" (artist: Various Artists)')
+                    type_detection_source = f'auto-detected (album_artist: {artist})'
+                    log_info(f'✅ AUTO-DETECTED: Compilation album - "{album}" (artist: {artist})')
                 
                 # Auto-detect Soundtrack in album name → Album (Soundtrack)
+                # (only when album_artist is NOT already a compilation-type artist)
                 elif 'soundtrack' in album.lower():
                     detected_album_type = 'album+soundtrack'
                     type_detection_source = 'auto-detected (Soundtrack in name)'
@@ -4396,7 +4401,7 @@ def popularity_scan(
                 # Detect if this album is a compilation ONLY if we're scanning a compilation artist
                 # (e.g., Various Artists, Soundtracks, etc.)
                 # This avoids running compilation detection on regular artist popularity scans
-                is_scanning_compilation_artist = artist.lower() in ('various artists', 'various', 'compilation', 'soundtrack', 'various artists -')
+                is_scanning_compilation_artist = artist.lower() in compilation_artists
                 
                 # Determine album type for optimized scanning strategy
                 album_type = "regular"  # Default: regular artist album
@@ -4420,6 +4425,10 @@ def popularity_scan(
                         log_info(f'Marked album as compilation: "{artist} - {album}"')
                         log_debug(f'Compilation detected for album: album_artist="{album_artist}", spotify_type="{spotify_album_type}"')
                         album_type = "various_artists"
+                        # Ensure album_type_from_field reflects compilation so single-scanning uses it
+                        if not is_compilation_type(album_type_from_field):
+                            album_type_from_field = 'album+compilation'
+                            log_debug(f'album_type_from_field updated to "album+compilation" for compilation album "{artist} - {album}"')
                 
                 # Check if this is a greatest hits album (even for regular artists)
                 if album_type == "regular":
