@@ -8157,7 +8157,11 @@ def api_merge_duplicate_artists():
                 FROM tracks
                 WHERE musicbrainz_artist_id = {placeholder}
             """, (mbid,))
-            candidates = [row[0] for row in cursor.fetchall() if row and row[0]]
+            candidates = []
+            for row in cursor.fetchall() or []:
+                variation = _row_get(row, 'variation', 0)
+                if variation:
+                    candidates.append(str(variation).strip())
             conn.close()
 
         merge_sources = []
