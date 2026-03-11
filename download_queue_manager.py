@@ -1729,6 +1729,78 @@ def check_downloads_folder():
         
         logger.info(f"Found {len(downloads_files)} audio files in {downloads_dir}, checking {len(queue_items)} queue items")
         
+        music_root = os.path.abspath(MUSIC_DIR)
+
+        def _is_within_music(path_value):
+            if not path_value:
+                return False
+            try:
+                abs_path = os.path.abspath(path_value)
+                return os.path.commonpath([abs_path, music_root]) == music_root
+            except Exception:
+                return False
+
+        def _find_existing_music_file(queue_item):
+            """Find a likely already-imported /music file for an active queue item."""
+            try:
+                # 1) Strongest match: recording MBID already present on tracks.mbid
+                recording_mbid = (queue_item.get('recording_mbid') or '').strip()
+                if recording_mbid:
+                    cursor.execute(
+                        """
+                        SELECT file_path
+                        FROM tracks
+                        WHERE mbid = %s
+                          AND file_path IS NOT NULL
+                          AND file_path != ''
+                          AND file_path NOT LIKE '__queued_for_download__%'
+                        ORDER BY id DESC
+                        LIMIT 1
+                        """,
+                        (recording_mbid,)
+                    )
+                    row = cursor.fetchone()
+                    if row:
+                        path_value = row.get('file_path') if hasattr(row, 'keys') else row[0]
+                        if path_value and _is_within_music(path_value) and os.path.isfile(path_value):
+                            return path_value
+
+                # 2) Fallback: artist+title (+album preference) against imported tracks
+                artist = (queue_item.get('artist') or '').strip()
+                title = (queue_item.get('title') or '').strip()
+                album = (queue_item.get('album') or '').strip()
+                if not artist or not title:
+                    return None
+
+                cursor.execute(
+                    """
+                    SELECT file_path,
+                           CASE
+                             WHEN %s != '' AND LOWER(COALESCE(album, '')) = LOWER(%s) THEN 0
+                             ELSE 1
+                           END AS album_rank
+                    FROM tracks
+                    WHERE LOWER(COALESCE(artist, '')) = LOWER(%s)
+                      AND LOWER(COALESCE(title, '')) = LOWER(%s)
+                      AND file_path IS NOT NULL
+                      AND file_path != ''
+                      AND file_path NOT LIKE '__queued_for_download__%'
+                    ORDER BY album_rank ASC, id DESC
+                    LIMIT 5
+                    """,
+                    (album, album, artist, title)
+                )
+                rows = cursor.fetchall() or []
+                for row in rows:
+                    path_value = row.get('file_path') if hasattr(row, 'keys') else row[0]
+                    if path_value and _is_within_music(path_value) and os.path.isfile(path_value):
+                        return path_value
+
+                return None
+            except Exception as e:
+                logger.debug(f"[RECONCILE] Failed to query tracks for queue item {queue_item.get('id')}: {e}")
+                return None
+
         # Try to match files to queue items
         for queue_item in queue_items:
             import shutil
@@ -1863,9 +1935,42 @@ def check_downloads_folder():
                 else:
                     logger.debug(f"Could not update queue item {queue_item['id']} - item may have been processed already")
             else:
-                # Debug: show what we're looking for
-                search_query = queue_item.get('search_query', f"{queue_item.get('artist', '')} {queue_item.get('title', '')}")
-                logger.debug(f"No match found for queue item {queue_item['id']}: {search_query}")
+                # If no file remains in /downloads, reconcile against /music in case a
+                # separate mover/importer already transferred the completed download.
+                existing_music_path = _find_existing_music_file(queue_item)
+                if existing_music_path:
+                    logger.info(
+                        f"[RECONCILE] Queue {queue_item['id']} found in library: {existing_music_path}"
+                    )
+                    verify_result = verify_file_in_music(queue_item['id'], existing_music_path)
+                    if verify_result.get('success'):
+                        mark_queue_item_moved(queue_item['id'], existing_music_path)
+                        update_queue_item(
+                            queue_item['id'],
+                            status='imported',
+                            found_filename=os.path.basename(existing_music_path),
+                            file_path=existing_music_path,
+                            copied_individually=1,
+                            copied_individually_at=datetime.now().isoformat()
+                        )
+                        completed_items.append({
+                            'queue_id': queue_item['id'],
+                            'filename': os.path.basename(existing_music_path),
+                            'file_path': existing_music_path,
+                            'artist': queue_item.get('artist'),
+                            'title': queue_item.get('title'),
+                            'album': queue_item.get('album'),
+                            'moved': True,
+                            'reconciled_from_library': True,
+                        })
+                    else:
+                        logger.debug(
+                            f"[RECONCILE] Queue {queue_item['id']} found candidate in /music but verification failed"
+                        )
+                else:
+                    # Debug: show what we're looking for
+                    search_query = queue_item.get('search_query', f"{queue_item.get('artist', '')} {queue_item.get('title', '')}")
+                    logger.debug(f"No match found for queue item {queue_item['id']}: {search_query}")
 
         conn.close()
 
