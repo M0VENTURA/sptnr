@@ -6574,6 +6574,7 @@ function openComprehensiveEditTrackModal(trackId, trackData) {
     document.getElementById('editTrackConfidenceField').value = trackData.single_confidence || 'low';
     document.getElementById('editTrackAlbumArtistField').value = trackData.album_artist || '';
     document.getElementById('editTrackComposerField').value = trackData.composer || '';
+    document.getElementById('editTrackWriterField').value = trackData.writer || '';
     document.getElementById('editTrackTrackNumberField').value = trackData.track_number || '';
     document.getElementById('editTrackDiscNumberField').value = trackData.disc_number || '';
     document.getElementById('editTrackMBIDField').value = trackData.mbid || '';
@@ -6635,6 +6636,122 @@ function escapeJsString(str) {
     return str.replace(/'/g, "\\'").replace(/"/g, '\\"');
 }
 
+function normalizeYear(value) {
+  if (value === null || value === undefined) return '';
+  const year = String(value).trim().slice(0, 4);
+  return /^\d{4}$/.test(year) ? year : '';
+}
+
+function applyLookupMetadataToEditForm(source, match) {
+  const currentTitle = document.getElementById('editTrackTitleField').value.trim();
+  const currentArtist = document.getElementById('editTrackArtistField').value.trim();
+  const currentAlbum = document.getElementById('editTrackAlbumField').value.trim();
+
+  if (match.title) {
+    if (source === 'musicbrainz') {
+      document.getElementById('editTrackTitleField').value = match.title;
+    } else if (match.matched_track && match.matched_track.title) {
+      document.getElementById('editTrackTitleField').value = match.matched_track.title;
+    }
+  }
+  if (match.artist) document.getElementById('editTrackArtistField').value = match.artist;
+  if (match.album) document.getElementById('editTrackAlbumField').value = match.album;
+  if (normalizeYear(match.year)) document.getElementById('editTrackYearField').value = normalizeYear(match.year);
+
+  if (match.mbid) {
+    document.getElementById('editTrackMBIDField').value = match.mbid;
+  }
+
+  const matchedTrack = match.matched_track || null;
+  if (matchedTrack && matchedTrack.track_number) {
+    document.getElementById('editTrackTrackNumberField').value = matchedTrack.track_number;
+  }
+
+  const writerList = (matchedTrack && Array.isArray(matchedTrack.writers)) ? matchedTrack.writers : [];
+  if (writerList.length) {
+    const joined = writerList.join(', ');
+    document.getElementById('editTrackWriterField').value = joined;
+    if (!document.getElementById('editTrackComposerField').value.trim()) {
+      document.getElementById('editTrackComposerField').value = joined;
+    }
+  }
+
+  let lookupGenres = [];
+  if (Array.isArray(match.genres)) lookupGenres = lookupGenres.concat(match.genres);
+  if (Array.isArray(match.genre)) lookupGenres = lookupGenres.concat(match.genre);
+  if (Array.isArray(match.style)) lookupGenres = lookupGenres.concat(match.style);
+  const dedupedGenres = Array.from(new Set(lookupGenres.map(g => String(g).trim()).filter(Boolean)));
+  if (dedupedGenres.length) {
+    editTrackCurrentGenres = dedupedGenres;
+    updateEditTrackGenresDisplay();
+  }
+
+  const singleField = document.getElementById('editTrackSingleField');
+  if (match.is_single === true || match.is_single === 1) {
+    singleField.checked = true;
+    document.getElementById('editTrackConfidenceField').value = 'high';
+  }
+
+  const summary = document.getElementById('editTrackLookupSummary');
+  if (summary) {
+    summary.classList.remove('d-none', 'alert-danger');
+    summary.classList.add('alert-success');
+    summary.innerHTML = `<strong>${source === 'musicbrainz' ? 'MusicBrainz' : 'Discogs'} match applied:</strong><br>` +
+      `${escapeHtml(currentArtist || 'Unknown Artist')} - ${escapeHtml(currentTitle || 'Unknown Title')} ` +
+      `→ ${escapeHtml(document.getElementById('editTrackArtistField').value)} - ${escapeHtml(document.getElementById('editTrackTitleField').value)} ` +
+      `${document.getElementById('editTrackAlbumField').value ? '· ' + escapeHtml(document.getElementById('editTrackAlbumField').value) : ''}`;
+  }
+}
+
+function lookupEditTrackMetadata(source) {
+  const title = document.getElementById('editTrackTitleField').value.trim();
+  const artist = document.getElementById('editTrackArtistField').value.trim();
+  const album = document.getElementById('editTrackAlbumField').value.trim();
+  const summary = document.getElementById('editTrackLookupSummary');
+
+  if (!title || !artist) {
+    alert('❌ Title and artist are required for external lookup');
+    return;
+  }
+
+  if (summary) {
+    summary.classList.remove('d-none', 'alert-success', 'alert-danger');
+    summary.classList.add('alert-info');
+    summary.textContent = `Searching ${source === 'musicbrainz' ? 'MusicBrainz' : 'Discogs'}...`;
+  }
+
+  fetch(`/api/track/${source}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, artist, album })
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.error) {
+      throw new Error(data.error);
+    }
+
+    const results = Array.isArray(data.results) ? data.results : [];
+    if (!results.length) {
+      if (summary) {
+        summary.classList.remove('alert-info', 'alert-success');
+        summary.classList.add('alert-danger');
+        summary.textContent = `No ${source === 'musicbrainz' ? 'MusicBrainz' : 'Discogs'} matches found.`;
+      }
+      return;
+    }
+
+    applyLookupMetadataToEditForm(source, results[0]);
+  })
+  .catch(err => {
+    if (summary) {
+      summary.classList.remove('alert-info', 'alert-success');
+      summary.classList.add('alert-danger');
+      summary.textContent = `Lookup failed: ${err.message}`;
+    }
+  });
+}
+
 function saveComprehensiveEditedTrack() {
     const trackId = document.getElementById('editTrackId').value;
     
@@ -6651,10 +6768,11 @@ function saveComprehensiveEditedTrack() {
         album: document.getElementById('editTrackAlbumField').value.trim(),
         year: document.getElementById('editTrackYearField').value || null,
         stars: parseInt(document.getElementById('editTrackStarsField').value) || 0,
-        is_single: document.getElementById('editTrackSingleField').checked ? 1 : 0,
+        is_single: document.getElementById('editTrackSingleField').checked,
         single_confidence: document.getElementById('editTrackConfidenceField').value,
         album_artist: document.getElementById('editTrackAlbumArtistField').value.trim(),
         composer: document.getElementById('editTrackComposerField').value.trim(),
+        writer: document.getElementById('editTrackWriterField').value.trim(),
         track_number: document.getElementById('editTrackTrackNumberField').value.trim(),
         disc_number: parseInt(document.getElementById('editTrackDiscNumberField').value) || null,
         mbid: document.getElementById('editTrackMBIDField').value.trim(),
@@ -6931,14 +7049,18 @@ document.addEventListener('DOMContentLoaded', function() {
                     
                     <!-- Album & Composer -->
                     <div class="row g-3 mb-4">
-                        <div class="col-md-6">
+                      <div class="col-md-4">
                             <label for="editTrackAlbumArtistField" class="form-label">Album Artist</label>
                             <input type="text" class="form-control" id="editTrackAlbumArtistField" name="album_artist" placeholder="Leave empty to use artist">
                         </div>
-                        <div class="col-md-6">
+                      <div class="col-md-4">
                             <label for="editTrackComposerField" class="form-label">Composer</label>
                             <input type="text" class="form-control" id="editTrackComposerField" name="composer" placeholder="Composer name">
                         </div>
+                      <div class="col-md-4">
+                        <label for="editTrackWriterField" class="form-label">Writer</label>
+                        <input type="text" class="form-control" id="editTrackWriterField" name="writer" placeholder="Writer / lyricist">
+                      </div>
                     </div>
                     
                     <!-- Genres -->
@@ -6980,6 +7102,20 @@ document.addEventListener('DOMContentLoaded', function() {
                         <label for="editTrackMBIDField" class="form-label">MusicBrainz ID</label>
                         <input type="text" class="form-control" id="editTrackMBIDField" name="mbid" placeholder="e.g., 579fc21e-40d4-4d72-835c-659e2a4108e4">
                         <small class="text-muted">Used for accurate metadata matching</small>
+                    </div>
+
+                    <!-- External Lookups -->
+                    <div class="mb-4">
+                      <h6 class="mb-2"><i class="bi bi-database"></i> External Lookups</h6>
+                      <div class="d-grid gap-2">
+                        <button type="button" class="btn btn-outline-info" onclick="lookupEditTrackMetadata('musicbrainz')">
+                          <i class="bi bi-search"></i> MusicBrainz Lookup
+                        </button>
+                        <button type="button" class="btn btn-outline-warning" onclick="lookupEditTrackMetadata('discogs')">
+                          <i class="bi bi-search"></i> Discogs Lookup
+                        </button>
+                      </div>
+                      <div id="editTrackLookupSummary" class="alert d-none mt-2 mb-0"></div>
                     </div>
                     
                     <!-- Comment -->

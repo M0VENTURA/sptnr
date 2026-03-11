@@ -1695,6 +1695,13 @@ async function loadFolderGroups(options = {}) {
                 </div>
               </div>
               <div class="col-md-6 text-end">
+                ${group.matched_folder_path ? `
+                  <button class="btn btn-sm btn-outline-danger me-2"
+                          onclick="deleteFolderAndQueueItemsFromEncoded('${encodeInlineArg(group.matched_folder_path)}')"
+                          title="Delete all files in this folder and remove linked queue items">
+                    <i class="bi bi-trash"></i> Delete Folder
+                  </button>
+                ` : ''}
                 <button class="btn btn-sm btn-outline-secondary ms-2" 
                         onclick="toggleTrackList('${tracklistId}', '${folderStateKey}', this)">
                   <i class="bi ${toggleIcon}"></i> ${toggleLabel}
@@ -1781,6 +1788,7 @@ async function loadFolderGroups(options = {}) {
                   const canSendQueried = queueStatusRow === 'queried' && queueId > 0;
                   const canChangeMatch = queueId > 0;
                   const canResetMatch = ['matched', 'completed', 'possible_duplicate', 'unmatched'].includes(queueStatusRow) && queueId > 0;
+                  const hasDownloadFile = !!(track.file_path || track.matched_file_path || group.matched_folder_path);
                   moveButtonHtml = `<div class="d-flex flex-column gap-1 align-items-center">
                     ${canMoveToMusic ? `<button class="btn btn-sm btn-outline-success" onclick="moveMatchedToMusic(${queueId})" title="Move matched track to Music and retag from MusicBrainz"><i class="bi bi-box-arrow-right"></i></button>` : ''}
                     ${canSendQueried ? `<button class="btn btn-sm btn-outline-primary" onclick="sendQueriedTrack(${queueId})" title="Send queried track to queue for Soulseek search"><i class="bi bi-send"></i></button>` : ''}
@@ -1790,8 +1798,9 @@ async function loadFolderGroups(options = {}) {
                       <i class="bi bi-search"></i>
                     </button>
                     ${showRetry ? `<button class="btn btn-sm btn-outline-warning" onclick="retryQueueItem(${queueId})" title="Retry queue item"><i class="bi bi-arrow-counterclockwise"></i></button>` : ''}
-                    <button class="btn btn-sm btn-outline-danger" onclick="deleteQueueItem(${queueId})" title="Remove from queue">
-                      <i class="bi bi-trash"></i>
+                    ${hasDownloadFile ? `<button class="btn btn-sm btn-danger" onclick="deleteQueueItem(${queueId}, true)" title="Delete file and remove from queue"><i class="bi bi-trash"></i></button>` : ''}
+                    <button class="btn btn-sm btn-outline-danger" onclick="deleteQueueItem(${queueId}, false)" title="Remove from queue only">
+                      <i class="bi bi-x-circle"></i>
                     </button>
                   </div>`;
                 } else if (matchedSelection && !trackMatched) {
@@ -3134,18 +3143,30 @@ async function resetQueueMatch(queueId) {
   }
 }
 
-async function deleteQueueItem(queueId) {
-  if (!confirm('Remove from queue?')) {
+async function deleteQueueItem(queueId, deleteDownloadsFile = false) {
+  const promptText = deleteDownloadsFile
+    ? 'Delete this item from queue and remove its file from /downloads?'
+    : 'Remove from queue only?';
+
+  if (!confirm(promptText)) {
     return;
   }
   
   try {
-    const data = await fetchJsonOrThrow(`/api/queue/${queueId}/delete`, {
+    const query = deleteDownloadsFile ? '?delete_download_file=1' : '';
+    const data = await fetchJsonOrThrow(`/api/queue/${queueId}/delete${query}`, {
       method: 'DELETE'
     });
     
     if (data.success) {
-      alert('✅ Removed from queue');
+      if (deleteDownloadsFile) {
+        const deletedCount = Array.isArray(data.deleted_download_files) ? data.deleted_download_files.length : 0;
+        alert(deletedCount > 0
+          ? '✅ Removed from queue and deleted file from /downloads'
+          : '✅ Removed from queue. No matching file was deleted from /downloads.');
+      } else {
+        alert('✅ Removed from queue');
+      }
       await loadQueueStatus();
       await loadFolderGroups({ forceRender: true });
     } else {
@@ -3153,6 +3174,45 @@ async function deleteQueueItem(queueId) {
     }
   } catch (error) {
     console.error('Error deleting item:', error);
+    alert('❌ Network error: ' + error.message);
+  }
+}
+
+function deleteFolderAndQueueItemsFromEncoded(folderPathEnc) {
+  const folderPath = decodeInlineArg(folderPathEnc, '');
+  return deleteFolderAndQueueItems(folderPath);
+}
+
+async function deleteFolderAndQueueItems(folderPath) {
+  if (!folderPath) {
+    alert('❌ Folder path is missing');
+    return;
+  }
+
+  if (!confirm(`Delete ALL files in this folder and remove linked queue items?\n\n${folderPath}`)) {
+    return;
+  }
+
+  try {
+    const data = await fetchJsonOrThrow('/api/queue/folder/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ folder_path: folderPath, remove_queue_items: true })
+    });
+
+    if (data.success) {
+      alert(
+        `✅ Folder cleanup complete\n\n` +
+        `Queue items removed: ${data.deleted_queue_items || 0}\n` +
+        `Files deleted: ${data.deleted_files_count || 0}`
+      );
+      await loadQueueStatus();
+      await loadFolderGroups({ forceRender: true });
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to delete folder'));
+    }
+  } catch (error) {
+    console.error('Error deleting folder and queue items:', error);
     alert('❌ Network error: ' + error.message);
   }
 }

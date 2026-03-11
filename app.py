@@ -16933,6 +16933,111 @@ def api_queue_cleanup_copied_sources():
         return jsonify({"error": str(e)}), 400
 
 
+@app.route("/api/queue/folder/delete", methods=["POST"])
+def api_queue_delete_folder():
+    """Delete all files in a downloads folder and optionally remove linked queue items."""
+    try:
+        data = request.get_json(silent=True) or {}
+        folder_path = (data.get("folder_path") or "").strip()
+        remove_queue_items = bool(data.get("remove_queue_items", True))
+
+        if not folder_path:
+            return jsonify({"error": "folder_path is required"}), 400
+
+        downloads_root = os.path.abspath(os.environ.get("DOWNLOADS_DIR", "/downloads"))
+        allowed_roots = [downloads_root, os.path.join(downloads_root, "Music")]
+        folder_abs = os.path.abspath(folder_path)
+
+        def _is_within_downloads(path_value):
+            try:
+                abs_path = os.path.abspath(path_value)
+                for root in allowed_roots:
+                    if os.path.commonpath([abs_path, os.path.abspath(root)]) == os.path.abspath(root):
+                        return True
+            except Exception:
+                return False
+            return False
+
+        if not _is_within_downloads(folder_abs):
+            return jsonify({"error": "Refusing to delete outside downloads root"}), 400
+
+        conn = get_db()
+        cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+
+        deleted_queue_items = 0
+        if remove_queue_items:
+            like_prefix = folder_abs.rstrip(os.sep) + os.sep + "%"
+            cursor.execute(
+                f"""
+                SELECT id
+                FROM download_queue
+                WHERE (file_path = {placeholder} OR file_path LIKE {placeholder})
+                   OR (matched_file_path = {placeholder} OR matched_file_path LIKE {placeholder})
+                """,
+                (folder_abs, like_prefix, folder_abs, like_prefix)
+            )
+            queue_ids = [row[0] for row in cursor.fetchall()]
+
+            if queue_ids:
+                if is_pg:
+                    cursor.execute("DELETE FROM download_queue WHERE id = ANY(%s)", (queue_ids,))
+                else:
+                    in_params = ",".join([placeholder] * len(queue_ids))
+                    cursor.execute(f"DELETE FROM download_queue WHERE id IN ({in_params})", tuple(queue_ids))
+                deleted_queue_items = cursor.rowcount
+                conn.commit()
+
+        deleted_files = []
+        deleted_dirs = []
+
+        if os.path.isdir(folder_abs):
+            for root, dirs, files in os.walk(folder_abs, topdown=False):
+                for filename in files:
+                    full_path = os.path.join(root, filename)
+                    if not _is_within_downloads(full_path):
+                        continue
+                    try:
+                        os.remove(full_path)
+                        if not os.path.exists(full_path):
+                            deleted_files.append(full_path)
+                    except Exception as delete_err:
+                        logging.warning(f"[QUEUE_FOLDER_DELETE] Failed to delete '{full_path}': {delete_err}")
+
+                for dirname in dirs:
+                    dir_path = os.path.join(root, dirname)
+                    try:
+                        if os.path.isdir(dir_path) and not os.listdir(dir_path):
+                            os.rmdir(dir_path)
+                            deleted_dirs.append(dir_path)
+                    except Exception:
+                        pass
+
+            try:
+                if os.path.isdir(folder_abs) and not os.listdir(folder_abs):
+                    os.rmdir(folder_abs)
+                    deleted_dirs.append(folder_abs)
+            except Exception:
+                pass
+
+        conn.close()
+
+        return jsonify({
+            "success": True,
+            "folder": folder_abs,
+            "deleted_queue_items": deleted_queue_items,
+            "deleted_files_count": len(deleted_files),
+            "deleted_dirs_count": len(deleted_dirs),
+            "deleted_files": deleted_files,
+            "deleted_dirs": deleted_dirs,
+        })
+
+    except Exception as e:
+        logging.error(f"Error deleting queue folder: {e}")
+        return jsonify({"error": str(e)}), 400
+
+
 @app.route("/api/queue/clear", methods=["POST", "DELETE"])
 def api_queue_clear():
     """Clear non-imported items from the download queue."""
@@ -19962,23 +20067,92 @@ def api_track_discogs_lookup():
         if not results_data:
             return jsonify({"results": [], "message": "No Discogs matches found"}), 200
         
-        # Format results
+        # Format results with track-level enrichment when possible
+        import difflib
+        import re
         formatted_results = []
         for result in results_data[:5]:
             # Check if format includes "Single" to detect singles
             formats = result.get("format", [])
             is_single_release = "Single" in formats if formats else False
+
+            release_title = result.get("title", "Unknown")
+            parsed_artist = artist
+            parsed_album = album or title
+            if " - " in release_title:
+                parts = release_title.split(" - ", 1)
+                if parts[0].strip():
+                    parsed_artist = parts[0].strip()
+                if parts[1].strip():
+                    parsed_album = parts[1].strip()
+
+            matched_track = None
+            discogs_genres = []
+
+            resource_url = result.get("resource_url", "")
+            if resource_url:
+                try:
+                    rel_resp = session.get(resource_url, headers=headers, timeout=(5, 10))
+                    if rel_resp.ok:
+                        rel_data = rel_resp.json() or {}
+
+                        # Merge release-level genres/styles for easy field application.
+                        discogs_genres = list(dict.fromkeys((rel_data.get("genres") or []) + (rel_data.get("styles") or [])))
+
+                        best_score = 0.0
+                        best_track = None
+                        for trk in rel_data.get("tracklist", []) or []:
+                            trk_title = (trk.get("title") or "").strip()
+                            if not trk_title:
+                                continue
+                            score = difflib.SequenceMatcher(None, title.lower(), trk_title.lower()).ratio()
+                            if score > best_score:
+                                best_score = score
+                                best_track = trk
+
+                        if best_track and best_score >= 0.55:
+                            position = (best_track.get("position") or "").strip()
+                            track_number = None
+                            match_num = re.search(r"(\d+)$", position)
+                            if match_num:
+                                track_number = match_num.group(1)
+
+                            writer_names = []
+                            for ea in best_track.get("extraartists", []) or []:
+                                role = str(ea.get("role") or "").lower()
+                                if any(keyword in role for keyword in ["writer", "lyric", "composer", "written"]):
+                                    name = (ea.get("name") or "").strip()
+                                    if name and name not in writer_names:
+                                        writer_names.append(name)
+
+                            matched_track = {
+                                "title": best_track.get("title", ""),
+                                "position": position,
+                                "track_number": track_number,
+                                "duration": best_track.get("duration", ""),
+                                "writers": writer_names,
+                                "confidence": round(best_score, 3),
+                            }
+                except Exception as enrich_error:
+                    logging.debug(f"Discogs release enrichment failed for {resource_url}: {enrich_error}")
+
+            if not discogs_genres:
+                discogs_genres = list(dict.fromkeys((result.get("genre", []) or []) + (result.get("style", []) or [])))
             
             formatted_results.append({
-                "title": result.get("title", "Unknown"),
+                "title": release_title,
+                "artist": parsed_artist,
+                "album": parsed_album,
                 "year": result.get("year", ""),
                 "genre": result.get("genre", []),
                 "style": result.get("style", []),
+                "genres": discogs_genres,
                 "format": formats,
                 "is_single": is_single_release,
-                "url": result.get("resource_url", ""),
+                "url": resource_url,
                 "source": "discogs",
-                "discogs_id": result.get("id", "")
+                "discogs_id": result.get("id", ""),
+                "matched_track": matched_track,
             })
         
         return jsonify({"results": formatted_results}), 200
@@ -21077,6 +21251,30 @@ def api_track_musicbrainz_lookup():
                             "id": rel.get("id", ""),
                             "title": rel.get("title", "")
                         })
+
+                    best_album = releases[0].get("title", "") if releases else ""
+                    best_year = ""
+                    for rel in releases:
+                        rel_date = (rel.get("date") or "").strip()
+                        if len(rel_date) >= 4 and rel_date[:4].isdigit():
+                            best_year = rel_date[:4]
+                            break
+
+                    writer_names = []
+                    for rel in rec.get("relations", []) or []:
+                        rel_type = str(rel.get("type") or "").lower()
+                        if rel_type in ("writer", "lyricist", "composer"):
+                            rel_artist = (rel.get("artist") or {}).get("name")
+                            if rel_artist and rel_artist not in writer_names:
+                                writer_names.append(rel_artist)
+
+                        work = rel.get("work") or {}
+                        for work_rel in work.get("relations", []) or []:
+                            work_rel_type = str(work_rel.get("type") or "").lower()
+                            if work_rel_type in ("writer", "lyricist", "composer"):
+                                work_artist = (work_rel.get("artist") or {}).get("name")
+                                if work_artist and work_artist not in writer_names:
+                                    writer_names.append(work_artist)
                     
                     # Calculate similarity scores
                     title_similarity = difflib.SequenceMatcher(None, title.lower(), rec_title.lower()).ratio()
@@ -21087,8 +21285,12 @@ def api_track_musicbrainz_lookup():
                         "mbid": rec_id,
                         "title": rec_title,
                         "artist": rec_artist,
+                        "album": best_album,
+                        "year": best_year,
                         "length": rec_length,
                         "releases": release_list,
+                        "writers": writer_names,
+                        "composer": ", ".join(writer_names) if writer_names else "",
                         "confidence": round(overall_confidence, 3),
                         "title_similarity": round(title_similarity, 3),
                         "artist_similarity": round(artist_similarity, 3),
@@ -21302,15 +21504,16 @@ def api_track_update_metadata():
         
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         
         # Build database update with provided fields - use PostgreSQL format
         db_updates = {}
         optional_string_fields = ['title', 'artist', 'album', 'album_artist', 'genres', 'year', 
                                    'composer', 'writer', 'arranger', 'mixer', 'producer', 'work',
                                    'track_number', 'comment', 'mbid', 'isrc', 'single_confidence']
-        optional_int_fields = ['stars', 'disc_number', 'bpm', 'bitrate', 'sample_rate', 'is_single',
-                                'is_cover', 'alternate_take', 'is_compilation']
+        optional_int_fields = ['stars', 'disc_number', 'bpm', 'bitrate', 'sample_rate']
+        optional_bool_fields = ['is_single', 'is_cover', 'alternate_take', 'is_compilation']
         
         for field in optional_string_fields:
             if field in data and data[field] is not None:
@@ -21319,9 +21522,18 @@ def api_track_update_metadata():
         for field in optional_int_fields:
             if field in data and data[field] is not None:
                 try:
-                    db_updates[field] = int(data[field]) if data[field] else (1 if field.startswith('is_') else None)
+                    db_updates[field] = int(data[field]) if data[field] != '' else None
                 except (ValueError, TypeError):
                     pass
+
+        for field in optional_bool_fields:
+            if field in data and data[field] is not None:
+                raw_val = data[field]
+                if isinstance(raw_val, str):
+                    bool_val = raw_val.strip().lower() in {'1', 'true', 'yes', 'on'}
+                else:
+                    bool_val = bool(raw_val)
+                db_updates[field] = bool_val if is_pg else int(bool_val)
         
         if not db_updates:
             conn.close()
