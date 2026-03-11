@@ -8,16 +8,19 @@ Background worker that processes items in the download queue.
 - Updates queue status and tracks file completion
 """
 
+import hashlib
 import os
+import re
+import requests
+import secrets
+import sqlite3
 import sys
 import time
-import sqlite3
 import traceback
-import re
 import yaml
 from datetime import datetime, timedelta
-from pathlib import Path
 from difflib import SequenceMatcher
+from pathlib import Path
 from helpers.metadata_reader import read_mp3_metadata
 try:
     from mutagen import File as MutagenFile
@@ -40,6 +43,10 @@ import logging
 logger = logging.getLogger(__name__)
 
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
+
+# Similarity thresholds for Navidrome existence checks
+_NAV_TITLE_SIMILARITY_THRESHOLD = 0.85
+_NAV_ARTIST_SIMILARITY_THRESHOLD = 0.75
 
 
 def _is_postgres_connection(conn):
@@ -538,11 +545,188 @@ def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=30):
         logger.error(f"Error marking queue item as failed: {e}")
         return False
 
+def _get_navidrome_config():
+    """Load Navidrome credentials from config file, supporting both navidrome_users list and legacy navidrome block."""
+    config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+    if not os.path.exists(config_path):
+        config_path = "/config/config.yml"
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        # Prefer navidrome_users list (multi-user config)
+        nav_users = cfg.get("navidrome_users") or []
+        if isinstance(nav_users, list) and nav_users:
+            first = nav_users[0]
+            base_url = first.get("base_url", "").rstrip("/")
+            username = first.get("user", "")
+            password = first.get("pass", "")
+            if base_url and username and password:
+                return base_url, username, password
+        # Fall back to legacy single navidrome block
+        nav = cfg.get("navidrome") or {}
+        base_url = nav.get("base_url", "").rstrip("/")
+        username = nav.get("user", "") or nav.get("username", "")
+        password = nav.get("pass", "") or nav.get("password", "")
+        if base_url and username and password:
+            return base_url, username, password
+    except Exception as e:
+        logger.debug(f"Could not read Navidrome config: {e}")
+    return None, None, None
+
+
+def _build_subsonic_auth_params(username, password):
+    """Build Subsonic API auth params using token-based authentication."""
+    salt = secrets.token_hex(8)
+    token = hashlib.md5((password + salt).encode()).hexdigest()
+    return {
+        "u": username,
+        "t": token,
+        "s": salt,
+        "v": "1.16.1",
+        "c": "sptnr",
+        "f": "json",
+    }
+
+
+def check_track_exists_in_db(queue_item):
+    """
+    Check if a track matching the queue item already exists in the local tracks database.
+
+    Returns:
+        tuple: (exists: bool, reason: str)
+    """
+    artist = queue_item.get("artist", "")
+    title = queue_item.get("title", "")
+    album = queue_item.get("album")
+
+    if not artist or not title:
+        return False, ""
+
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = _get_placeholder(conn)
+
+        if album:
+            cursor.execute(
+                f"""
+                SELECT id FROM tracks
+                WHERE LOWER(artist) = LOWER({placeholder})
+                  AND LOWER(title) = LOWER({placeholder})
+                  AND LOWER(album) = LOWER({placeholder})
+                LIMIT 1
+                """,
+                (artist, title, album),
+            )
+        else:
+            cursor.execute(
+                f"""
+                SELECT id FROM tracks
+                WHERE LOWER(artist) = LOWER({placeholder})
+                  AND LOWER(title) = LOWER({placeholder})
+                LIMIT 1
+                """,
+                (artist, title),
+            )
+
+        row = cursor.fetchone()
+        conn.close()
+
+        if row:
+            track_id = row["id"] if hasattr(row, "keys") else (row[0] if row else None)
+            reason = f"Track '{artist} - {title}' already exists in local database (track ID {track_id})"
+            return True, reason
+
+    except Exception as e:
+        logger.debug(f"DB existence check error for '{artist} - {title}': {e}")
+
+    return False, ""
+
+
+def check_track_exists_in_navidrome(queue_item):
+    """
+    Check if a track matching the queue item already exists in Navidrome via Subsonic search3 API.
+
+    Returns:
+        tuple: (exists: bool, reason: str)
+    """
+    artist = queue_item.get("artist", "")
+    title = queue_item.get("title", "")
+
+    if not artist or not title:
+        return False, ""
+
+    base_url, username, password = _get_navidrome_config()
+    if not base_url:
+        logger.debug("Navidrome not configured — skipping Navidrome existence check")
+        return False, ""
+
+    try:
+        auth_params = _build_subsonic_auth_params(username, password)
+        search_params = dict(auth_params)
+        search_params["query"] = f"{artist} {title}"
+        search_params["songCount"] = 10
+        search_params["albumCount"] = 0
+        search_params["artistCount"] = 0
+
+        response = requests.get(
+            f"{base_url}/rest/search3.view",
+            params=search_params,
+            timeout=10,
+        )
+        response.raise_for_status()
+
+        data = response.json()
+        if data.get("subsonic-response", {}).get("status") != "ok":
+            logger.debug(f"Navidrome search3 returned non-ok status for '{artist} - {title}'")
+            return False, ""
+
+        songs = data.get("subsonic-response", {}).get("searchResult3", {}).get("song", [])
+        if not isinstance(songs, list):
+            songs = [songs] if songs else []
+
+        def _sim(a, b):
+            if not a or not b:
+                return 0.0
+            return SequenceMatcher(None, a.lower().strip(), b.lower().strip()).ratio()
+
+        for song in songs:
+            title_sim = _sim(song.get("title", ""), title)
+            artist_sim = _sim(song.get("artist", ""), artist)
+            if title_sim >= _NAV_TITLE_SIMILARITY_THRESHOLD and artist_sim >= _NAV_ARTIST_SIMILARITY_THRESHOLD:
+                reason = (
+                    f"Track '{artist} - {title}' already exists in Navidrome "
+                    f"(matched: '{song.get('artist')} - {song.get('title')}', "
+                    f"id={song.get('id')})"
+                )
+                return True, reason
+
+    except Exception as e:
+        logger.debug(f"Navidrome existence check error for '{artist} - {title}': {e}")
+
+    return False, ""
+
+
 def search_and_download(queue_id, queue_item, client):
     """Search Soulseek for queue item and download top result"""
     try:
         search_query = queue_item['search_query']
-        
+
+        # Pre-download existence checks: skip download if the track already exists
+        # in the local database or in Navidrome (catches items indexed there but not
+        # yet scanned into the local DB).
+        db_exists, db_reason = check_track_exists_in_db(queue_item)
+        if db_exists:
+            logger.info(f"Queue {queue_id}: ⏭️  Skipping download — {db_reason}")
+            update_queue_status(queue_id, 'in_collection', failure_reason=db_reason)
+            return False
+
+        nav_exists, nav_reason = check_track_exists_in_navidrome(queue_item)
+        if nav_exists:
+            logger.info(f"Queue {queue_id}: ⏭️  Skipping download — {nav_reason}")
+            update_queue_status(queue_id, 'in_collection', failure_reason=nav_reason)
+            return False
+
         logger.info(f"Queue {queue_id}: Searching for '{search_query}'...")
         update_queue_status(queue_id, 'searching')
         
