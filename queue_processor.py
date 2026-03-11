@@ -160,6 +160,35 @@ def _extract_tag_value(tags, keys):
     return ''
 
 
+def _is_musicbrainz_backed(queue_item):
+    """Return True when queue item is tied to an expected MusicBrainz track/release."""
+    return bool(
+        queue_item.get('release_id')
+        or queue_item.get('release_mbid')
+        or queue_item.get('recording_mbid')
+        or queue_item.get('isrc')
+        or str(queue_item.get('release_source') or '').strip().lower() == 'musicbrainz'
+    )
+
+
+def _get_duration_match_tolerance(queue_item):
+    """Use stricter duration tolerance for MusicBrainz-backed queue items."""
+    return 10 if _is_musicbrainz_backed(queue_item) else 15
+
+
+def _extract_audio_file_duration_seconds(file_path):
+    """Extract duration from a downloaded file if mutagen is available."""
+    if not file_path or MutagenFile is None:
+        return None
+    try:
+        audio = MutagenFile(file_path)
+        if audio is not None and getattr(audio, 'info', None) and hasattr(audio.info, 'length'):
+            return _normalize_duration_seconds(audio.info.length)
+    except Exception:
+        return None
+    return None
+
+
 def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     """
     Score a Soulseek candidate path/name against queue metadata.
@@ -235,11 +264,14 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     candidate_duration = _normalize_duration_seconds(candidate_duration)
     if expected_duration and candidate_duration:
         duration_diff = abs(expected_duration - candidate_duration)
+        duration_tolerance = _get_duration_match_tolerance(queue_item)
         if duration_diff <= 4:
             score += 0.22
         elif duration_diff <= 8:
             score += 0.12
-        elif duration_diff > 15:
+        elif duration_diff <= duration_tolerance:
+            score += 0.05 if _is_musicbrainz_backed(queue_item) else 0.0
+        elif duration_diff > duration_tolerance:
             return 0.0
         else:
             score -= 0.05
@@ -263,11 +295,12 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
 
     file_artist = (metadata.get('artist') or '').strip()
     file_title = (metadata.get('title') or '').strip()
+    audio = None
 
     # read_mp3_metadata only handles MP3 ID3 tags. For FLAC, OGG, M4A and other
     # formats it returns an empty dict. Fall back to mutagen.File which supports
     # all common audio containers before giving up.
-    if (not file_artist or not file_title) and MutagenFile is not None:
+    if MutagenFile is not None:
         try:
             audio = MutagenFile(file_path)
             if audio is not None and audio.tags:
@@ -304,8 +337,32 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
     if artist_score < 0.55 or title_score < 0.55:
         return False
 
+    expected_duration = _normalize_duration_seconds(queue_item.get('duration'))
+    file_duration = None
+    if audio is not None and getattr(audio, 'info', None) and hasattr(audio.info, 'length'):
+        file_duration = _normalize_duration_seconds(audio.info.length)
+    if expected_duration and file_duration:
+        if abs(expected_duration - file_duration) > _get_duration_match_tolerance(queue_item):
+            return False
+
     combined = (artist_score + title_score) / 2
     return combined >= threshold
+
+
+def _file_matches_queue_item(file_path, queue_item, relative_name=None):
+    """Match a file to queue metadata, preferring tags and duration over filename alone."""
+    metadata_state = _metadata_matches_queue_item(file_path, queue_item)
+    if metadata_state is False:
+        return False, 'metadata'
+
+    candidate_name = relative_name or os.path.basename(file_path)
+    if metadata_state is True:
+        return True, 'metadata'
+
+    if matches_queue_item(candidate_name, queue_item, file_path=file_path):
+        return True, 'filename'
+
+    return False, 'filename'
 
 def get_db():
     """Get database connection using app backend (PostgreSQL or SQLite)."""
@@ -901,36 +958,25 @@ def check_completed_downloads():
                     local = transfer.get("localFilePath", "")
                     remote = transfer.get("filename", "")
                     if local and os.path.isfile(local):
-                        slskd_completed[remote] = local
-                        # Also index by basename for fuzzy matching
-                        slskd_completed[os.path.basename(local)] = local
+                        remote_norm = _normalize_transfer_key(remote)
+                        if remote_norm:
+                            slskd_completed[remote_norm] = local
+                            slskd_completed[os.path.basename(remote_norm)] = local
+                        slskd_completed[os.path.basename(local).lower()] = local
                 logger.debug(f"slskd API: {len(slskd_completed)} completed transfer paths")
 
                 # Fetch active transfers with an explicit status check so we can
                 # distinguish a true empty queue from an API failure.
                 try:
-                    status_url = f"{slskd_client.base_url}/transfers/downloads"
-                    status_resp = slskd_client.session.get(
-                        status_url,
-                        headers=slskd_client.headers,
-                        timeout=slskd_client.default_timeout,
-                    )
-                    if status_resp.status_code == 200:
-                        raw_active = status_resp.json()
-                        active_list = slskd_client._parse_transfers_response(raw_active)
-                        for transfer in active_list:
-                            filename = transfer.get("filename", "")
-                            norm = _normalize_transfer_key(filename)
-                            if norm:
-                                slskd_active[norm] = transfer
-                                slskd_active[os.path.basename(norm)] = transfer
-                        slskd_status_available = True
-                        logger.debug(f"slskd API: {len(active_list)} active transfer entries")
-                    else:
-                        logger.warning(
-                            f"slskd downloads status endpoint returned {status_resp.status_code}; "
-                            "skipping stale-download reconciliation this cycle"
-                        )
+                    active_list = slskd_client.get_active_downloads()
+                    for transfer in active_list:
+                        filename = transfer.get("filename", "")
+                        norm = _normalize_transfer_key(filename)
+                        if norm:
+                            slskd_active[norm] = transfer
+                            slskd_active[os.path.basename(norm)] = transfer
+                    slskd_status_available = True
+                    logger.debug(f"slskd API: {len(active_list)} active transfer entries")
                 except Exception as status_err:
                     logger.warning(
                         f"Could not fetch active slskd transfers for reconciliation: {status_err}"
@@ -975,11 +1021,23 @@ def check_completed_downloads():
             item_id = item["id"]
 
             # 1. Exact match via slskd localFilePath (most reliable)
-            if found_fn and found_fn in slskd_completed:
-                abs_path = slskd_completed[found_fn]
-                match_found = os.path.relpath(abs_path, DOWNLOADS_DIR)
-                match_meta_state = None  # path is authoritative
-                logger.debug(f"Queue {item_id}: matched via slskd localFilePath: {abs_path}")
+            if found_fn:
+                found_norm = _normalize_transfer_key(found_fn)
+                abs_path = slskd_completed.get(found_norm) or slskd_completed.get(os.path.basename(found_norm))
+            else:
+                abs_path = None
+
+            if abs_path:
+                candidate_rel = os.path.relpath(abs_path, DOWNLOADS_DIR)
+                is_match, match_source = _file_matches_queue_item(abs_path, item, candidate_rel)
+                if is_match:
+                    match_found = candidate_rel
+                    match_meta_state = match_source
+                    logger.debug(f"Queue {item_id}: matched via slskd localFilePath: {abs_path}")
+                else:
+                    logger.info(
+                        f"Queue {item_id}: rejecting slskd-completed file due to queue mismatch: {candidate_rel}"
+                    )
 
             # 2. Exact filename match against filesystem files
             if match_found is None and found_fn:
@@ -988,26 +1046,24 @@ def check_completed_downloads():
                     found_norm = found_fn.replace('\\', '/')
                     if rel_norm == found_norm or os.path.basename(rel_norm) == os.path.basename(found_norm):
                         file_path = os.path.join(DOWNLOADS_DIR, rel_file)
-                        meta_state = _metadata_matches_queue_item(file_path, item)
-                        if meta_state is False:
+                        is_match, match_source = _file_matches_queue_item(file_path, item, rel_file)
+                        if not is_match:
                             logger.info(
-                                f"Queue {item_id}: rejecting exact filename match due to metadata mismatch: {rel_file}"
+                                f"Queue {item_id}: rejecting exact filename match due to queue mismatch: {rel_file}"
                             )
                             continue
                         match_found = rel_file
-                        match_meta_state = meta_state
+                        match_meta_state = match_source
                         break
 
             # 3. Fuzzy match against filesystem files
             if match_found is None:
                 for filename in fs_files:
                     file_path = os.path.join(DOWNLOADS_DIR, filename)
-                    meta_state = _metadata_matches_queue_item(file_path, item)
-                    if meta_state is False:
-                        continue
-                    if meta_state is True or matches_queue_item(filename, item):
+                    is_match, match_source = _file_matches_queue_item(file_path, item, filename)
+                    if is_match:
                         match_found = filename
-                        match_meta_state = meta_state
+                        match_meta_state = match_source
                         logger.debug(f"Queue {item_id}: fuzzy match found: {filename}")
                         break
 
@@ -1078,7 +1134,7 @@ def check_completed_downloads():
 
             if match_found:
                 file_path = os.path.join(DOWNLOADS_DIR, match_found)
-                if match_meta_state is True:
+                if match_meta_state == 'metadata':
                     logger.info(
                         f"Queue {item_id}: matched file '{match_found}' by metadata — marking as completed"
                     )
@@ -1163,10 +1219,11 @@ def check_completed_downloads():
     except Exception as e:
         logger.error(f"Error checking completed downloads: {e}")
 
-def matches_queue_item(filename, queue_item):
+def matches_queue_item(filename, queue_item, file_path=None):
     """Conservative filename/path fallback matcher when metadata is unavailable."""
     try:
-        score = _score_soulseek_candidate(filename, queue_item)
+        candidate_duration = _extract_audio_file_duration_seconds(file_path) if file_path else None
+        score = _score_soulseek_candidate(filename, queue_item, candidate_duration=candidate_duration)
         return score >= 0.60
         
     except Exception as e:

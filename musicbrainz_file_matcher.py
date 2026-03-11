@@ -33,6 +33,31 @@ DB_TIMEOUT = 120.0
 
 # Supported audio formats
 AUDIO_EXTENSIONS = {'.mp3', '.flac', '.m4a', '.ogg', '.wav', '.aac', '.wma'}
+MB_DURATION_TOLERANCE_SECONDS = 10
+
+
+def _normalize_duration_seconds(value):
+    """Normalize duration values to integer seconds, handling ms values."""
+    if value in (None, "", 0, "0"):
+        return None
+    try:
+        duration_value = float(value)
+    except (TypeError, ValueError):
+        return None
+    if duration_value <= 0:
+        return None
+    if duration_value > 10000:
+        duration_value = duration_value / 1000.0
+    return int(round(duration_value))
+
+
+def _duration_is_compatible(file_duration, track_duration, tolerance=MB_DURATION_TOLERANCE_SECONDS):
+    """Return True when duration is unknown or within tolerance."""
+    file_secs = _normalize_duration_seconds(file_duration)
+    track_secs = _normalize_duration_seconds(track_duration)
+    if file_secs is None or track_secs is None:
+        return True
+    return abs(file_secs - track_secs) <= tolerance
 
 
 class MusicBrainzFileMatcher:
@@ -211,6 +236,7 @@ class MusicBrainzFileMatcher:
                 return None
             
             file_metadata = self.extract_file_metadata(file_path)
+            file_duration = _normalize_duration_seconds(file_metadata.get('duration'))
             best_match = None
             best_confidence = 0.0
             best_strategy = None
@@ -228,6 +254,9 @@ class MusicBrainzFileMatcher:
             # Strategy 2: ID3 Tag matching (Artist + Title)
             if not best_match and file_metadata.get('artist') and file_metadata.get('title'):
                 for track in tracks:
+                    if not _duration_is_compatible(file_duration, track.get('duration')):
+                        continue
+
                     # Exact match
                     artist_match = self.normalize_string(file_metadata['artist']).lower()
                     title_match = self.normalize_string(file_metadata['title']).lower()
@@ -246,6 +275,16 @@ class MusicBrainzFileMatcher:
                     
                     # Weighted: title is more important than artist
                     combined_score = (title_similarity * 0.7) + (artist_similarity * 0.3)
+
+                    track_duration = _normalize_duration_seconds(track.get('duration'))
+                    if file_duration and track_duration:
+                        duration_diff = abs(file_duration - track_duration)
+                        if duration_diff <= 4:
+                            combined_score += 0.05
+                        elif duration_diff <= MB_DURATION_TOLERANCE_SECONDS:
+                            combined_score += 0.02
+                        else:
+                            continue
                     
                     if combined_score > best_confidence and combined_score > 0.85:
                         best_match = track
@@ -256,10 +295,21 @@ class MusicBrainzFileMatcher:
             if not best_match or best_confidence < 0.85:
                 filename = file_path.stem.lower()
                 for track in tracks:
+                    if not _duration_is_compatible(file_duration, track.get('duration')):
+                        continue
+
                     track_name = self.normalize_string(
                         f"{track['track_title']} {track['track_artist']}".lower()
                     )
                     similarity = SequenceMatcher(None, filename, track_name).ratio()
+
+                    track_duration = _normalize_duration_seconds(track.get('duration'))
+                    if file_duration and track_duration:
+                        duration_diff = abs(file_duration - track_duration)
+                        if duration_diff <= 4:
+                            similarity += 0.05
+                        elif duration_diff <= MB_DURATION_TOLERANCE_SECONDS:
+                            similarity += 0.02
                     
                     if similarity > best_confidence and similarity > 0.80:
                         best_match = track
