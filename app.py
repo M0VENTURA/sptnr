@@ -16984,6 +16984,11 @@ def api_queue_delete_folder():
 
         downloads_root = os.path.abspath(os.environ.get("DOWNLOADS_DIR", "/downloads"))
         allowed_roots = [downloads_root, os.path.join(downloads_root, "Music")]
+        # Scan functions (e.g. scan_downloads_grouped_by_folder) return relative paths;
+        # anchor them to downloads_root before resolving, so os.path.abspath doesn't
+        # resolve relative to the process CWD and fail the security check.
+        if not os.path.isabs(folder_path):
+            folder_path = os.path.join(downloads_root, folder_path)
         folder_abs = os.path.abspath(folder_path)
 
         def _is_within_downloads(path_value):

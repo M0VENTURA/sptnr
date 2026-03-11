@@ -268,20 +268,69 @@ def ensure_musicbrainz_album_mbid_column():
                     conn.commit()
                     logging.info("✓ Added musicbrainz_album_mbid column")
         elif has_legacy and has_new:
-            try:
-                cursor.execute(
-                    """
-                    UPDATE tracks
-                    SET musicbrainz_album_mbid = beets_album_mbid
-                    WHERE (musicbrainz_album_mbid IS NULL OR musicbrainz_album_mbid = '')
-                      AND beets_album_mbid IS NOT NULL
-                      AND beets_album_mbid != ''
-                    """
-                )
-                conn.commit()
-                logging.info("✓ Backfilled musicbrainz_album_mbid from legacy beets_album_mbid")
-            except Exception as backfill_error:
-                logging.warning(f"Backfill failed: {backfill_error}")
+            # Guard with an advisory lock so concurrent workers don't deadlock on the
+            # full-table backfill UPDATE (same pattern as ensure_album_artist_column).
+            if is_pg:
+                mbid_lock_key = 915317412  # Stable app-specific key (album_artist uses 915317411)
+                cursor.execute("SELECT pg_try_advisory_lock(%s) AS acquired", (mbid_lock_key,))
+                lock_row = cursor.fetchone()
+                lock_acquired = bool(lock_row.get("acquired")) if isinstance(lock_row, dict) else bool(lock_row[0])
+                if not lock_acquired:
+                    logging.info("Another worker is already running musicbrainz_album_mbid backfill; skipping")
+                    conn.close()
+                    return True
+                try:
+                    total_updated = 0
+                    batch_size = 500
+                    while True:
+                        cursor.execute(
+                            """
+                            WITH to_update AS (
+                                SELECT id
+                                FROM tracks
+                                WHERE (musicbrainz_album_mbid IS NULL OR musicbrainz_album_mbid = '')
+                                  AND beets_album_mbid IS NOT NULL
+                                  AND beets_album_mbid != ''
+                                ORDER BY id
+                                FOR UPDATE SKIP LOCKED
+                                LIMIT %s
+                            )
+                            UPDATE tracks t
+                            SET musicbrainz_album_mbid = t.beets_album_mbid
+                            FROM to_update u
+                            WHERE t.id = u.id
+                            """,
+                            (batch_size,)
+                        )
+                        batch_updated = cursor.rowcount or 0
+                        conn.commit()
+                        total_updated += batch_updated
+                        if batch_updated == 0:
+                            break
+                    logging.info(f"✓ Backfilled musicbrainz_album_mbid from legacy beets_album_mbid ({total_updated} rows)")
+                except Exception as backfill_error:
+                    logging.warning(f"Backfill failed: {backfill_error}")
+                finally:
+                    try:
+                        cursor.execute("SELECT pg_advisory_unlock(%s)", (mbid_lock_key,))
+                        conn.commit()
+                    except Exception:
+                        pass
+            else:
+                try:
+                    cursor.execute(
+                        """
+                        UPDATE tracks
+                        SET musicbrainz_album_mbid = beets_album_mbid
+                        WHERE (musicbrainz_album_mbid IS NULL OR musicbrainz_album_mbid = '')
+                          AND beets_album_mbid IS NOT NULL
+                          AND beets_album_mbid != ''
+                        """
+                    )
+                    conn.commit()
+                    logging.info("✓ Backfilled musicbrainz_album_mbid from legacy beets_album_mbid")
+                except Exception as backfill_error:
+                    logging.warning(f"Backfill failed: {backfill_error}")
         elif not has_new:
             logging.info("Adding missing musicbrainz_album_mbid column")
             try:
