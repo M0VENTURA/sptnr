@@ -10461,6 +10461,41 @@ def api_queue_events():
             }
             for e in raw_events
         ]
+
+        # If no in-memory events, fall back to reading from the log file so
+        # the viewer is populated even after an app restart.
+        if not events:
+            queue_log_path = "/config/download_queue.log"
+            try:
+                if os.path.exists(queue_log_path):
+                    # Read only the tail of the file efficiently to avoid loading
+                    # potentially large log files entirely into memory.
+                    chunk_size = 8192
+                    tail_lines = []
+                    with open(queue_log_path, "rb") as fh:
+                        fh.seek(0, 2)  # seek to end
+                        file_size = fh.tell()
+                        offset = min(chunk_size * 4, file_size)
+                        fh.seek(file_size - offset)
+                        chunk = fh.read().decode("utf-8", errors="ignore")
+                        tail_lines = chunk.splitlines()
+
+                    # Newest first (matches in-memory event order); skip blank lines
+                    for line in reversed(tail_lines):
+                        line = line.strip()
+                        if not line:
+                            continue
+                        events.append({
+                            'created_at': None,
+                            'event_type': 'info',
+                            'message': line,
+                            'item_id': None,
+                            'details': {},
+                        })
+                        if len(events) >= limit:
+                            break
+            except Exception as log_err:
+                logging.debug(f"Could not read queue log file as fallback: {log_err}")
         
         return jsonify({
             'success': True,

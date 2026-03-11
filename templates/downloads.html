@@ -4375,8 +4375,9 @@ document.addEventListener('DOMContentLoaded', function() {
   // Give page a moment to settle
   setTimeout(autoLoadUpcomingReleases, 500);
   
-  // Load queue status
+  // Load queue status and events
   setTimeout(loadQueueStatus, 1000);
+  setTimeout(loadQueueEvents, 1200);
   
   // Initialize queue state management (persistence, auto-refresh, batch operations)
   initQueueStateManagement();
@@ -5059,37 +5060,33 @@ async function organizeGroup(groupId) {
 }
 
 async function deleteGroup(groupId) {
-  if (!confirm('Delete all files in this group?')) {
+  if (!confirm('Delete all items in this group from the queue?')) {
     return;
   }
   
   try {
-    // Get all completed items with this group ID
-    const response = await fetch('/api/queue/status?limit=100');
+    // Get all items (active + completed) with this group ID
+    const response = await fetch('/api/queue/status?limit=200');
     const data = await response.json();
-    
-    if (!data.completed) {
-      alert('❌ No completed items found');
-      return;
-    }
     
     // Handle two types of grouping:
     // 1. Batch-grouped items (album + artist set): groupId = "artist_album"
     // 2. Import-based grouping: groupId = import_group value
-    let itemsInGroup = [];
-    
-    // Try to parse batch-grouped format: "Artist_Album"
-    // Find items where artist + "_" + album matches the groupId
-    itemsInGroup = data.completed.filter(item => {
-      // Check for batch-grouped items (have album field)
+    const matchesGroup = (item) => {
       if (item.album) {
         const batchGroupId = `${item.artist || 'Various'}_${item.album}`;
         if (batchGroupId === groupId) return true;
       }
-      // Check for import-based grouping
       if (item.import_group === groupId) return true;
       return false;
-    });
+    };
+
+    // Search across completed AND active (queued/searching/downloading) items
+    const allItems = [
+      ...(data.completed || []),
+      ...(data.active || []),
+    ];
+    const itemsInGroup = allItems.filter(matchesGroup);
     
     if (itemsInGroup.length === 0) {
       alert('❌ No items found in this group');

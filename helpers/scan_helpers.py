@@ -272,6 +272,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
 
         # Prefetch cached track IDs for this artist and check for missing critical fields
         existing_track_ids: set[str] = set()
+        navidrome_track_ids: set[str] = set()  # All track IDs returned by Navidrome during this scan
         existing_album_tracks: dict[str, set[str]] = {}
         albums_needing_reimport: set[str] = set()  # Track albums with missing fields
         albums_logged: set[str] = set()  # Track which albums we've already logged
@@ -363,6 +364,11 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 logging.debug(f"Failed to fetch tracks for album '{album_name}': {e}")
                 tracks = []
                 api_album_artist = ""
+
+            # Collect ALL Navidrome track IDs (even for cached albums) to detect stale DB tracks
+            for t in tracks:
+                if t.get("id"):
+                    navidrome_track_ids.add(t.get("id"))
 
             cached_ids_for_album = existing_album_tracks.get(album_name, set())
 
@@ -472,6 +478,53 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
         if verbose:
             print(f"Artist scan complete: {artist_name}")
             logging.info(f"Artist scan complete: {artist_name}")
+
+        # Remove stale tracks from the database that no longer exist in Navidrome
+        # (e.g. files deleted from disk that show as grey in Navidrome).
+        # Only perform this cleanup during a full artist scan, not when using
+        # album_filter or filter_missing which intentionally skip some albums.
+        can_cleanup = not filter_missing and not album_filter
+        if can_cleanup and existing_track_ids:
+            stale_ids = existing_track_ids - navidrome_track_ids
+            if stale_ids:
+                try:
+                    conn = get_db_connection()
+                    try:
+                        cursor = conn.cursor()
+                        is_pg = _is_postgres_connection(conn)
+                        placeholder = "%s" if is_pg else "?"
+                        placeholders = ", ".join([placeholder] * len(stale_ids))
+                        cursor.execute(f"DELETE FROM tracks WHERE id IN ({placeholders})", list(stale_ids))
+                        conn.commit()
+                    finally:
+                        conn.close()
+                    logging.info(f"Removed {len(stale_ids)} stale track(s) for artist '{artist_name}' that no longer exist in Navidrome")
+                    log_unified(f"Navidrome Import - {artist_name} - Removed {len(stale_ids)} stale track(s) no longer in library")
+                except Exception as e:
+                    logging.error(f"Failed to remove stale tracks for artist '{artist_name}': {e}")
+
+        # Remove empty subdirectories under the artist's music folder.
+        # Files deleted from disk leave behind empty album directories; clean
+        # those up so the filesystem stays tidy.
+        if can_cleanup:
+            try:
+                music_root = os.environ.get("MUSIC_FOLDER") or os.environ.get("MUSIC_ROOT", "/music")
+                artist_dir = os.path.join(music_root, canonical_artist_name)
+                if os.path.isdir(artist_dir):
+                    for dirpath, dirnames, filenames in os.walk(artist_dir, topdown=False):
+                        # Only remove immediate subdirectories (album-level), not the
+                        # artist root itself, and only if truly empty (no files).
+                        if dirpath == artist_dir:
+                            continue
+                        if not os.listdir(dirpath):
+                            try:
+                                os.rmdir(dirpath)
+                                logging.info(f"Removed empty directory: {dirpath}")
+                                log_unified(f"Navidrome Import - {artist_name} - Removed empty directory: {os.path.basename(dirpath)}")
+                            except OSError as rmdir_err:
+                                logging.debug(f"Could not remove directory '{dirpath}': {rmdir_err}")
+            except Exception as e:
+                logging.debug(f"Empty-folder cleanup skipped for artist '{artist_name}': {e}")
     except Exception as e:
         logging.error(f"scan_artist_to_db failed for {artist_name}: {e}")
         raise
