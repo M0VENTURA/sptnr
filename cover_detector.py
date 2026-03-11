@@ -342,6 +342,43 @@ class CoverDetector:
             if not recordings:
                 return None
 
+            def _canonical_title(value: str) -> str:
+                # Remove common version suffixes like "(demo)", "[live]", "- remaster" so
+                # original recordings still match album track variants.
+                text = str(value or "").strip()
+                text = re.sub(r"\[[^\]]*\]", " ", text)
+                text = re.sub(r"\([^)]*\)", " ", text)
+                text = re.sub(r"\s+-\s+.*$", " ", text)
+                return self._normalize_name(text)
+
+            def _titles_match(left: str, right: str) -> bool:
+                left_raw = self._normalize_name(left)
+                right_raw = self._normalize_name(right)
+                left_can = _canonical_title(left)
+                right_can = _canonical_title(right)
+
+                if not left_raw or not right_raw:
+                    return False
+
+                # Exact raw match first, then canonicalized match.
+                if left_raw == right_raw or (left_can and left_can == right_can):
+                    return True
+
+                # Allow minor suffix/prefix variants once canonicalized.
+                if left_can and right_can:
+                    return left_can.startswith(right_can) or right_can.startswith(left_can)
+
+                return False
+
+            def _extract_credit_artist_name(artist_credit: List[Dict]) -> str:
+                # MusicBrainz may return a mixed list of dict/joinphrase tokens.
+                for entry in artist_credit or []:
+                    if isinstance(entry, dict):
+                        artist_name = (entry.get('artist') or {}).get('name')
+                        if artist_name:
+                            return artist_name
+                return ""
+
             title_norm = self._normalize_name(title)
             earliest = None
             earliest_year = 9999
@@ -379,7 +416,7 @@ class CoverDetector:
 
                 full_recording = details.get('recording', {})
                 recording_title = full_recording.get('title') or recording.get('title') or ''
-                if title_norm and self._normalize_name(recording_title) != title_norm:
+                if title_norm and not _titles_match(title, recording_title):
                     continue
 
                 writer_names = []
@@ -414,7 +451,9 @@ class CoverDetector:
                 artist_credit = full_recording.get('artist-credit', []) or recording.get('artist-credit', [])
                 if not artist_credit:
                     continue
-                recording_artist = artist_credit[0].get('artist', {}).get('name', '')
+                recording_artist = _extract_credit_artist_name(artist_credit)
+                if not recording_artist:
+                    continue
 
                 artist_is_different = True
                 if album_artist:
