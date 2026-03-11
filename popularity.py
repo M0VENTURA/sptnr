@@ -6043,9 +6043,16 @@ def popularity_scan(
                         singles_processed += 1
                         continue
                     
-                    # Use canonical album grouping artist for single-detection context.
-                    # This prevents featured tracks from being treated as isolated 1-track artist catalogs.
-                    track_artist = artist
+                    # For Various Artists / compilation albums, use the individual track artist for
+                    # single detection. Using the album artist ("Various Artists") would cause detection
+                    # to always fail since no singles are released under that name.
+                    # For regular albums, use the canonical album grouping artist to prevent featured
+                    # tracks from being treated as isolated 1-track artist catalogs.
+                    if is_compilation_group:
+                        individual_artist = row_get(track, 'artist', None)
+                        track_artist = individual_artist if individual_artist and individual_artist.strip() else artist
+                    else:
+                        track_artist = artist
                     log_debug(f"Calling detect_single_for_track with artist='{track_artist}', album='{album}', track_count={album_track_count}")
                     detection_result = detect_single_for_track(
                         title=title,
