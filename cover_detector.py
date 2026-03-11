@@ -337,6 +337,24 @@ class CoverDetector:
             if mb is None:
                 return None
 
+            # First query works by title+writer. This mirrors the MusicBrainz web
+            # Works view and gives us canonical writer-linked work IDs.
+            matched_work_ids = set()
+            try:
+                work_result = mb.search_works(work=title, artist=writer, limit=25)
+            except Exception:
+                work_result = {}
+
+            for work in work_result.get('work-list', []) or []:
+                work_id = work.get('id')
+                if not work_id:
+                    continue
+                work_title = work.get('title', '')
+                if work_title and self._normalize_name(work_title) != self._normalize_name(title):
+                    # Keep this strict to avoid attaching unrelated writer works.
+                    continue
+                matched_work_ids.add(work_id)
+
             result = mb.search_recordings(recording=title, limit=25)
             recordings = result.get('recording-list', [])
             if not recordings:
@@ -428,11 +446,14 @@ class CoverDetector:
                         if artist_name:
                             writer_names.append(artist_name)
 
+                recording_work_ids = set()
+
                 # Resolve work-level writers via explicit work lookup.
                 for rel in full_recording.get('work-relation-list', []) or []:
                     work_id = (rel.get('work') or {}).get('id')
                     if not work_id:
                         continue
+                    recording_work_ids.add(work_id)
                     try:
                         work_details = mb.get_work_by_id(work_id, includes=['artist-rels'])
                         work_data = work_details.get('work', {})
@@ -447,6 +468,10 @@ class CoverDetector:
 
                 writer_names = self._normalize_writer_credits(writer_names)
                 writer_match = any(self._names_match(writer, candidate) for candidate in writer_names)
+
+                # Strong signal: recording links to a work returned by title+writer search.
+                if not writer_match and matched_work_ids and (recording_work_ids & matched_work_ids):
+                    writer_match = True
 
                 artist_credit = full_recording.get('artist-credit', []) or recording.get('artist-credit', [])
                 if not artist_credit:
