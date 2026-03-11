@@ -7356,6 +7356,37 @@ def album_detail(artist, album):
                 track_dict['genre_fit_percent'] = 0
                 track_dict['matching_genres'] = []
                 tracks_with_genre_fit.append(track_dict)
+
+        # Ensure stable numeric track ordering on album pages.
+        # track_number may be stored as TEXT (e.g., "1/12"), so SQL lexical ordering
+        # can misorder values like 10 before 2.
+        def _album_track_sort_key(track_dict):
+            try:
+                disc_raw = track_dict.get('disc_number') if isinstance(track_dict, dict) else 1
+                disc_num = int(disc_raw) if disc_raw not in (None, "") else 1
+            except Exception:
+                disc_num = 1
+
+            track_raw = track_dict.get('track_number') if isinstance(track_dict, dict) else None
+            track_str = str(track_raw).strip() if track_raw not in (None, "") else ""
+
+            # Parse first numeric component from values like "01", "1/12", "A1".
+            track_num = 999999
+            if track_str:
+                try:
+                    match = re.search(r"(\d+)", track_str)
+                    if match:
+                        track_num = int(match.group(1))
+                except Exception:
+                    pass
+
+            title = ""
+            if isinstance(track_dict, dict):
+                title = (track_dict.get('title') or "").lower()
+
+            return (disc_num, track_num, track_str.lower(), title)
+
+        tracks_with_genre_fit = sorted(tracks_with_genre_fit, key=_album_track_sort_key)
         
         # Group tracks by disc number
         tracks_by_disc = {}
@@ -8323,7 +8354,8 @@ def track_edit(track_id):
     """Update track metadata and write to audio file"""
     conn = get_db()
     cursor = conn.cursor()
-    placeholder = "%s" if _is_postgres_connection(conn) else "?"
+    is_pg = _is_postgres_connection(conn)
+    placeholder = "%s" if is_pg else "?"
     
     # Get form data - ensure all string fields have defaults to avoid None when calling .strip()
     title = request.form.get("title", "").strip() or None
@@ -8331,7 +8363,7 @@ def track_edit(track_id):
     album = request.form.get("album", "").strip() or None
     album_artist = request.form.get("album_artist", "").strip() or None
     stars = request.form.get("stars", type=int)
-    is_single = 1 if request.form.get("is_single") == "on" else 0
+    is_single = request.form.get("is_single") == "on"
     single_confidence = request.form.get("single_confidence", "low")
     mbid = request.form.get("mbid", "").strip() or None
     suggested_mbid = request.form.get("suggested_mbid", "").strip() or None
@@ -8355,38 +8387,44 @@ def track_edit(track_id):
     sample_rate = request.form.get("sample_rate", type=int) or None
     
     # Flags
-    is_cover = 1 if request.form.get("is_cover") == "on" else 0
-    alternate_take = 1 if request.form.get("alternate_take") == "on" else 0
-    is_compilation = 1 if request.form.get("is_compilation") == "on" else 0
+    is_cover = request.form.get("is_cover") == "on"
+    alternate_take = request.form.get("alternate_take") == "on"
+    is_compilation = request.form.get("is_compilation") == "on"
+
+    # PostgreSQL boolean columns require bool values; SQLite accepts ints.
+    is_single_db = is_single if is_pg else int(is_single)
+    is_cover_db = is_cover if is_pg else int(is_cover)
+    alternate_take_db = alternate_take if is_pg else int(alternate_take)
+    is_compilation_db = is_compilation if is_pg else int(is_compilation)
     
     # First, get the file path from database
-    cursor.execute("SELECT file_path FROM tracks WHERE id = %s", (track_id,))
+    cursor.execute(f"SELECT file_path FROM tracks WHERE id = {placeholder}", (track_id,))
     file_result = cursor.fetchone()
     file_path = file_result["file_path"] if file_result else None
     
     # Update database with PostgreSQL syntax
     file_write_success = False
     try:
-        cursor.execute("""
+        cursor.execute(f"""
             UPDATE tracks
-            SET title = %s, artist = %s, album = %s, album_artist = %s, stars = %s, 
-                is_single = %s, single_confidence = %s,
-                mbid = %s, suggested_mbid = %s, suggested_mbid_confidence = %s,
-                genres = %s, year = %s, composer = %s, writer = %s, 
-                arranger = %s, mixer = %s, producer = %s, work = %s,
-                track_number = %s, disc_number = %s, comment = %s, isrc = %s,
-                bpm = %s, bitrate = %s, sample_rate = %s,
-                is_cover = %s, alternate_take = %s, is_compilation = %s,
+            SET title = {placeholder}, artist = {placeholder}, album = {placeholder}, album_artist = {placeholder}, stars = {placeholder}, 
+                is_single = {placeholder}, single_confidence = {placeholder},
+                mbid = {placeholder}, suggested_mbid = {placeholder}, suggested_mbid_confidence = {placeholder},
+                genres = {placeholder}, year = {placeholder}, composer = {placeholder}, writer = {placeholder}, 
+                arranger = {placeholder}, mixer = {placeholder}, producer = {placeholder}, work = {placeholder},
+                track_number = {placeholder}, disc_number = {placeholder}, comment = {placeholder}, isrc = {placeholder},
+                bpm = {placeholder}, bitrate = {placeholder}, sample_rate = {placeholder},
+                is_cover = {placeholder}, alternate_take = {placeholder}, is_compilation = {placeholder},
                 single_manual_override = 1
-            WHERE id = %s
+            WHERE id = {placeholder}
         """, (title, artist, album, album_artist, stars, 
-              is_single, single_confidence,
+              is_single_db, single_confidence,
               mbid, suggested_mbid, suggested_mbid_confidence,
               genres, year, composer, writer, 
               arranger, mixer, producer, work,
               track_number, disc_number, comment, isrc,
               bpm, bitrate, sample_rate,
-              is_cover, alternate_take, is_compilation,
+              is_cover_db, alternate_take_db, is_compilation_db,
               track_id))
         
         conn.commit()
