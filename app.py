@@ -4028,7 +4028,7 @@ def api_import_release():
             mb_url,
             params={
                 "fmt": "json",
-                "inc": "recordings+artist-relations+release-groups"
+                "inc": "recordings+artist-rels+release-groups"
             },
             headers=headers,
             timeout=15
@@ -11791,6 +11791,7 @@ def _initiate_slskd_download_bg(tracking_id, query):
 
 def _initiate_slskd_download(tracking_id, query, cursor, conn):
     """Helper to initiate a Soulseek download"""
+    placeholder = "%s" if _is_postgres_connection(conn) else "?"
     try:
         cfg = get_config()
         slskd_config = cfg.get("slskd", {})
@@ -12159,6 +12160,7 @@ def _initiate_qbit_download_bg(tracking_id, query):
 
 def _initiate_qbit_download(tracking_id, query, cursor, conn):
     """Helper to initiate a qBittorrent download"""
+    placeholder = "%s" if _is_postgres_connection(conn) else "?"
     try:
         cfg = get_config()
         qbit_config = cfg.get("qbittorrent", {})

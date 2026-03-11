@@ -9,6 +9,7 @@ then attributes the original artist and updates track metadata accordingly.
 import logging
 import json
 import sqlite3
+import re
 from typing import Optional, Dict, List, Tuple
 from pathlib import Path
 
@@ -271,32 +272,48 @@ class CoverDetector:
         Returns:
             True if they appear to be the same person/group or if writer is a band member
         """
-        # Normalize both names
-        writer_norm = writer.lower().strip()
-        artist_norm = artist.lower().strip()
-        
-        # Exact match
-        if writer_norm == artist_norm:
+        if self._names_match(writer, artist):
             return True
-        
-        # Check if one contains the other (handles "The Beatles" vs "Beatles")
-        if writer_norm in artist_norm or artist_norm in writer_norm:
-            return True
-        
-        # Check if writer is a band member
+
+        # For groups, writer credit should match a known member to count as non-cover.
         band_members = self._get_band_members(artist)
         if band_members:
             for member in band_members:
-                member_norm = member.lower().strip()
-                if member_norm == writer_norm:
-                    logger.debug(f"Writer '{writer}' identified as band member of '{artist}'")
-                    return True
-                # Also check partial matches (e.g., "Maynard Keenan" vs "Maynard James Keenan")
-                if (member_norm in writer_norm or writer_norm in member_norm) and len(writer_norm) > 5:
+                if self._names_match(writer, member):
                     logger.debug(f"Writer '{writer}' fuzzy-matched as band member '{member}' of '{artist}'")
                     return True
         
         return False
+
+    @staticmethod
+    def _normalize_name(value: str) -> str:
+        """Normalize person/group names for robust matching."""
+        if not value:
+            return ""
+        normalized = value.lower().strip()
+        normalized = normalized.replace("’", "'")
+        normalized = re.sub(r"\b(the|and)\b", " ", normalized)
+        normalized = re.sub(r"[^a-z0-9\s]", " ", normalized)
+        normalized = re.sub(r"\s+", " ", normalized)
+        return normalized.strip()
+
+    def _names_match(self, left: str, right: str) -> bool:
+        """Match names with token overlap to handle middle names and variants."""
+        left_norm = self._normalize_name(left)
+        right_norm = self._normalize_name(right)
+        if not left_norm or not right_norm:
+            return False
+        if left_norm == right_norm:
+            return True
+
+        left_tokens = {token for token in left_norm.split() if len(token) > 1}
+        right_tokens = {token for token in right_norm.split() if len(token) > 1}
+        if not left_tokens or not right_tokens:
+            return False
+
+        intersection = left_tokens & right_tokens
+        min_required = min(len(left_tokens), len(right_tokens))
+        return len(intersection) >= max(2, min_required)
     
     def _find_original_recording(self, title: str, writer: str) -> Optional[Dict]:
         """
@@ -319,33 +336,68 @@ class CoverDetector:
             if mb is None:
                 return None
             
-            # Search for recordings by this artist with this title
-            result = mb.search_recordings(
-                recording=title,
-                artist=writer,
-                limit=20
-            )
+            # Search by title first, then verify matching writer credits per recording/work.
+            result = mb.search_recordings(recording=title, limit=25)
             
             recordings = result.get('recording-list', [])
             if not recordings:
                 return None
             
-            # Find earliest release
+            title_norm = self._normalize_name(title)
+
+            # Find earliest release where writer is credited on recording/work.
             earliest = None
             earliest_year = 9999
             
             for recording in recordings:
-                # Check if artist name matches writer (case-insensitive)
-                artist_credit = recording.get('artist-credit', [])
+                recording_id = recording.get('id')
+                if not recording_id:
+                    continue
+
+                # Get full relation payload for this recording so we can inspect work-level writers.
+                try:
+                    details = mb.get_recording_by_id(
+                        recording_id,
+                        includes=['artist-credits', 'releases', 'work-rels', 'work-level-rels', 'artist-rels']
+                    )
+                except Exception:
+                    continue
+
+                full_recording = details.get('recording', {})
+                recording_title = full_recording.get('title') or recording.get('title') or ''
+                if title_norm and self._normalize_name(recording_title) != title_norm:
+                    continue
+
+                writer_names = []
+
+                # Direct recording-level writer credits.
+                for rel in full_recording.get('artist-relation-list', []) or []:
+                    rel_type = str(rel.get('type', '')).lower()
+                    if rel_type in ('composer', 'writer', 'lyricist'):
+                        artist_name = (rel.get('artist') or {}).get('name')
+                        if artist_name:
+                            writer_names.append(artist_name)
+
+                # Work-level writer credits (primary source for originals).
+                for rel in full_recording.get('work-relation-list', []) or []:
+                    work = rel.get('work', {})
+                    for work_rel in work.get('artist-relation-list', []) or []:
+                        rel_type = str(work_rel.get('type', '')).lower()
+                        if rel_type in ('composer', 'writer', 'lyricist'):
+                            artist_name = (work_rel.get('artist') or {}).get('name')
+                            if artist_name:
+                                writer_names.append(artist_name)
+
+                if not any(self._names_match(writer, candidate) for candidate in writer_names):
+                    continue
+
+                artist_credit = full_recording.get('artist-credit', []) or recording.get('artist-credit', [])
                 if not artist_credit:
                     continue
-                
                 recording_artist = artist_credit[0].get('artist', {}).get('name', '')
-                if writer.lower() not in recording_artist.lower():
-                    continue
-                
+
                 # Get earliest release year
-                releases = recording.get('release-list', [])
+                releases = full_recording.get('release-list', []) or recording.get('release-list', [])
                 for release in releases:
                     date = release.get('date', '')
                     if date:
@@ -356,7 +408,7 @@ class CoverDetector:
                                 earliest = {
                                     'artist': recording_artist,
                                     'year': year,
-                                    'confidence': 'high' if len(recordings) == 1 else 'medium'
+                                    'confidence': 'high' if len(writer_names) > 0 else 'medium'
                                 }
                         except (ValueError, IndexError):
                             continue
