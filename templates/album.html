@@ -512,6 +512,9 @@
                 <button class="btn btn-sm btn-info" onclick="openBulkGenreTaggerModal()">
                     <i class="bi bi-tags"></i> <span id="selectedCount">0</span> Add Tags
                 </button>
+                <button class="btn btn-sm btn-warning" onclick="confirmBulkRenameTracks()">
+                    <i class="bi bi-pencil-square"></i> Rename Selected
+                </button>
                 <button class="btn btn-sm btn-danger" onclick="confirmBulkDeleteTracks()">
                     <i class="bi bi-trash"></i> Delete Selected
                 </button>
@@ -2361,6 +2364,41 @@
         .catch(err => {
             alert('❌ Network error: ' + err.message);
         });
+    }
+
+    function confirmBulkRenameTracks() {
+        const trackIds = getSelectedTracks();
+        if (trackIds.length === 0) {
+            alert('Please select at least one track');
+            return;
+        }
+        if (!confirm(`Rename ${trackIds.length} track file(s) using the format configured in Settings?\n\nFiles will be moved to match the configured naming pattern.`)) {
+            return;
+        }
+        performBulkRename(trackIds);
+    }
+
+    async function performBulkRename(trackIds) {
+        let renamed = 0, skipped = 0, errors = [];
+        for (const trackId of trackIds) {
+            try {
+                const r = await fetch(`/api/track/${trackId}/rename-file`, { method: 'POST' });
+                const data = await r.json();
+                if (data.success) {
+                    if (data.renamed) renamed++;
+                    else skipped++;
+                } else {
+                    errors.push(`Track ${trackId}: ${data.error || data.message || 'Failed'}`);
+                }
+            } catch (err) {
+                errors.push(`Track ${trackId}: ${err.message}`);
+            }
+        }
+        let msg = `✅ Renamed: ${renamed}`;
+        if (skipped) msg += `, Already correct: ${skipped}`;
+        if (errors.length) msg += `\n❌ Errors (${errors.length}):\n` + errors.slice(0, 5).join('\n');
+        alert(msg);
+        if (renamed > 0) location.reload();
     }
 
     // ============================================

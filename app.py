@@ -23136,6 +23136,7 @@ def _playlist_output_name(listenbrainz_username, playlist_key):
 
 
 def _resolve_playlists_dir():
+    from pathlib import Path
     music_root = os.environ.get("MUSIC_ROOT") or os.environ.get("MUSIC_FOLDER") or "/Music"
     return Path(music_root) / "Playlists"
 
