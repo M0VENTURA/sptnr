@@ -478,17 +478,38 @@ except Exception as e:
 # --- Unified Log API ---
 @app.route("/api/unified-log")
 def api_unified_log():
-    lines = int(request.args.get("lines", 1000))
+    lines = int(request.args.get("lines", 400))
+    lines = max(1, min(lines, 2000))
     verbose = request.args.get("verbose", "0") == "1"
     unified_log_path = "/config/unified_scan.log"
-    log_lines = []
+
+    def _read_last_lines(path, max_lines, chunk_size=65536, max_bytes=4 * 1024 * 1024):
+        """Read only the tail of a text file to avoid loading large logs into memory."""
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            file_size = fh.tell()
+            if file_size <= 0:
+                return []
+
+            data = b""
+            cursor = file_size
+            needed_newlines = max_lines + 200  # allow room for post-filtering
+
+            while cursor > 0 and data.count(b"\n") < needed_newlines and len(data) < max_bytes:
+                read_size = min(chunk_size, cursor)
+                cursor -= read_size
+                fh.seek(cursor)
+                data = fh.read(read_size) + data
+
+        text = data.decode("utf-8", errors="ignore")
+        return text.splitlines()[-max_lines:]
+
     try:
         log_verbose(f"[api_unified_log] Reading {lines} lines from {unified_log_path}")
         if not os.path.exists(unified_log_path):
             log_verbose(f"[api_unified_log] Log file not found: {unified_log_path}")
             return jsonify({"error": f"Unified log file not found at {unified_log_path}", "lines": []}), 404
-        with open(unified_log_path, "r", encoding="utf-8", errors="ignore") as f:
-            log_lines = f.readlines()
+        log_lines = _read_last_lines(unified_log_path, lines)
     except Exception as e:
         log_verbose(f"[api_unified_log] Exception reading file: {e}")
         return jsonify({"error": str(e), "lines": []}), 500

@@ -1373,7 +1373,7 @@ def process_queue(client):
 def _load_auto_discovery_settings():
     """Load persistent auto-discovery settings from config/env with safe defaults."""
     enabled = True
-    interval_seconds = 60
+    interval_seconds = 600
 
     # Optional env overrides for quick control.
     env_enabled = os.environ.get("DOWNLOADS_AUTO_DISCOVER_ENABLED")
@@ -1405,8 +1405,8 @@ def _load_auto_discovery_settings():
     except Exception as e:
         logger.warning(f"Could not read auto-discovery settings: {e}")
 
-    if interval_seconds < 15:
-        interval_seconds = 15
+    if interval_seconds < 120:
+        interval_seconds = 120
 
     return enabled, interval_seconds
 

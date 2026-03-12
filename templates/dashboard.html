@@ -871,9 +871,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
     function updateUnifiedLog() {
         if (logPaused) return;
-        fetchJsonOrThrow('/api/unified-log?lines=1000')
+        fetchJsonOrThrow('/api/unified-log?lines=400')
             .then(data => {
-                clearApiError('/api/unified-log?lines=1000');
+                clearApiError('/api/unified-log?lines=400');
                 const logEl = document.getElementById('unifiedLog');
                 if (logEl && data && data.lines) {
                     // textContent handles HTML escaping safely - no manual escaping needed
@@ -881,7 +881,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     logEl.scrollTop = logEl.scrollHeight;
                 }
             })
-            .catch(error => logApiError('/api/unified-log?lines=1000', 'Error fetching unified log', error));
+            .catch(error => logApiError('/api/unified-log?lines=400', 'Error fetching unified log', error));
     }
 
     // Combined update function to reduce API calls
@@ -895,8 +895,8 @@ document.addEventListener('DOMContentLoaded', function() {
     // Initial update
     updateAll();
     
-    // Poll every 3 seconds (reduced from multiple intervals)
-    setInterval(updateAll, 3000);
+    // Poll every 5 seconds to reduce dashboard load while keeping updates responsive
+    setInterval(updateAll, 5000);
 });
 
 const dashboardApiErrorState = new Map();
