@@ -23839,13 +23839,18 @@ def api_upcoming_releases():
             placeholder = "%s" if _is_postgres_connection(conn) else "?"
             # Fetch all album-level queue entries that are not yet completed/failed
             cursor.execute(
-                f"SELECT LOWER(COALESCE(album_artist, artist)), LOWER(album) "
-                f"FROM download_queue "
-                f"WHERE import_type = 'album' "
-                f"  AND status NOT IN ('completed', 'failed', 'cancelled') "
-                f"  AND album IS NOT NULL"
+                "SELECT LOWER(COALESCE(album_artist, artist)) AS artist_key, LOWER(album) AS album_key "
+                "FROM download_queue "
+                "WHERE import_type = 'album' "
+                "  AND status NOT IN ('completed', 'failed', 'cancelled') "
+                "  AND album IS NOT NULL"
             )
-            queue_albums = {(row[0], row[1]) for row in (cursor.fetchall() or []) if row and row[0] and row[1]}
+            queue_albums = set()
+            for row in (cursor.fetchall() or []):
+                artist_val = _row_get(row, 'artist_key', index=0)
+                album_val = _row_get(row, 'album_key', index=1)
+                if artist_val and album_val:
+                    queue_albums.add((artist_val, album_val))
             conn.close()
 
             for release in releases:
