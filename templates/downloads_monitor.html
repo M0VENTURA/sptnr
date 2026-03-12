@@ -439,7 +439,9 @@ async function addToQueue(event) {
     if (data.success) {
       alert(`✅ Added to queue: ${artist} - ${title}`);
       document.getElementById('addToQueueForm').reset();
+      queuePageOffset = 0;
       await loadQueueStatus();
+      await loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true });
     } else {
       alert('❌ Error: ' + (data.error || 'Failed to add to queue'));
     }
@@ -1419,7 +1421,7 @@ async function loadFolderGroups(options = {}) {
       loadFolderStatus(),
       loadFolderDuplicates(),
       fetch('/api/downloads/grouped-folders').then(response => response.json()),
-      fetch('/api/downloads/queue?limit=500').then(response => response.json())
+      fetch(getQueuePageUrl()).then(response => response.json())
     ]);
     
     if (!folderData.success) {
@@ -1429,6 +1431,12 @@ async function loadFolderGroups(options = {}) {
     
     let groups = folderData.folder_groups || [];
     const queue = queueData.queue || [];
+    const totalQueueCount = Number(queueData.total_count || queue.length || 0);
+
+    if (totalQueueCount > 0 && queuePageOffset >= totalQueueCount) {
+      queuePageOffset = Math.max(0, Math.floor((totalQueueCount - 1) / QUEUE_PAGE_LIMIT) * QUEUE_PAGE_LIMIT);
+      return loadFolderGroups({ ...options, forceRender: true });
+    }
     
     // Add queue items that are ready to organize to the groups list
     // These show as pseudo-groups with queue_item=true to distinguish them
@@ -1678,6 +1686,7 @@ async function loadFolderGroups(options = {}) {
       if (keepVisibleOnEmpty) {
         section.style.display = 'block';
         badge.textContent = '0 items';
+        updateQueuePageControls(totalQueueCount, 0);
         list.innerHTML = `
           <div class="alert alert-info m-3 mb-0">
             <i class="bi bi-info-circle"></i> No items in download queue right now.
@@ -1693,11 +1702,13 @@ async function loadFolderGroups(options = {}) {
     if (!forceRender && nextSignature === lastFolderGroupsRenderSignature) {
       section.style.display = 'block';
       badge.textContent = `${totalGroups} items`;
+      updateQueuePageControls(totalQueueCount, queue.length);
       return;
     }
     
     section.style.display = 'block';
     badge.textContent = `${totalGroups} items`;
+    updateQueuePageControls(totalQueueCount, queue.length);
     
     let html = '';
 
@@ -2671,9 +2682,10 @@ async function clearQueue() {
     if (data.success) {
       const queueItemsDeleted = Number(data.queue_items_deleted || 0);
       alert(`✅ Queue cleared successfully!\n\nRemoved:\n- ${queueItemsDeleted} queue items\n- ${data.folder_matches_deleted} folder matches\n- ${data.track_matches_deleted} track matches`);
-      
-      // Reload the page to refresh all displays
-      window.location.reload();
+
+      queuePageOffset = 0;
+      await loadQueueStatus();
+      await loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true });
     } else {
       throw new Error(data.error || 'Failed to clear queue');
     }
@@ -2685,7 +2697,7 @@ async function clearQueue() {
 
 async function loadQueueStatus() {
   try {
-    const data = await fetchJsonOrThrow('/api/downloads/queue?limit=500');
+    const data = await fetchJsonOrThrow('/api/downloads/queue?limit=1&offset=0');
     
     if (!data || !data.queue) {
       console.error('Queue status error:', data?.error || 'Invalid response');
@@ -2695,21 +2707,24 @@ async function loadQueueStatus() {
       return;
     }
     
-    const queue = data.queue;
+    const queue = data.queue || [];
+    const statusCounts = data.status_counts || {};
+    const countFor = (...statuses) => statuses.reduce((sum, status) => sum + Number(statusCounts[status] || 0), 0);
     
     // Categorize items
     // Active Queue: actively being processed (queued, searching, downloading)
     // Possible duplicates are flagged but not active downloads
     // Discovered and pending_match are found files ready for review, not active
-    const active = queue.filter(item => ['queued', 'searching', 'downloading'].includes(item.status));
-    const completed = queue.filter(item => ['matched', 'completed', 'in_collection', 'duplicate', 'possible_duplicate'].includes(item.status));
-    const failed = queue.filter(item => item.status === 'failed');
+    const activeCount = countFor('queued', 'searching', 'downloading');
+    const completedCount = countFor('matched', 'completed', 'in_collection', 'duplicate', 'possible_duplicate');
+    const failedCount = countFor('failed');
+    const totalCount = Number(data.total_count || queue.length || 0);
     
     // Update counts
-    document.getElementById('queueActiveCount').textContent = active.length;
-    document.getElementById('queueCompletedCount').textContent = completed.length;
-    document.getElementById('queueFailedCount').textContent = failed.length;
-    document.getElementById('queueTotalCount').textContent = queue.length;
+    document.getElementById('queueActiveCount').textContent = activeCount;
+    document.getElementById('queueCompletedCount').textContent = completedCount;
+    document.getElementById('queueFailedCount').textContent = failedCount;
+    document.getElementById('queueTotalCount').textContent = totalCount;
     
   } catch (error) {
     console.error('Error loading queue status:', error);
