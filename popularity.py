@@ -6221,7 +6221,7 @@ def popularity_scan(
                         # Get all tracks for this album with metadata
                         # Note: Use COALESCE to handle album_artist grouping like singles detection does
                         cursor.execute(f"""
-                            SELECT id, title, artist, writer, mbid 
+                            SELECT id, title, artist, writer, mbid, file_path
                             FROM tracks 
                             WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
                             ORDER BY COALESCE(track_number, 0), title
@@ -7039,14 +7039,17 @@ def popularity_scan(
                 log_debug(f"Calling playlist creation for artist: {artist} with {len(tracks_list)} tracks")
                 create_or_update_playlist_for_artist(artist, tracks_list)
 
-            # After playlist creation, detect cover songs for this artist
-            # This batch process runs once per artist after all their tracks/albums are scanned
-            # ensuring we have all composer data available before comparing
-            log_debug(f"Starting cover detection for artist: {artist}")
-            covers_found = detect_covers_for_artist(artist, conn)
-            if covers_found > 0:
-                conn.commit()  # Commit cover detection results
-                log_debug(f"Cover detection results committed - {covers_found} covers detected for {artist}")
+            # Legacy composer-based artist-level cover detection is a fallback only.
+            # When CoverDetector is available, album-level MBID/work-relation detection
+            # already ran and should not be overwritten by this older heuristic pass.
+            if not HAVE_COVER_DETECTOR:
+                log_debug(f"Starting fallback cover detection for artist: {artist}")
+                covers_found = detect_covers_for_artist(artist, conn)
+                if covers_found > 0:
+                    conn.commit()  # Commit fallback cover detection results
+                    log_debug(f"Fallback cover detection results committed - {covers_found} covers detected for {artist}")
+            else:
+                log_debug(f"Skipping legacy artist-level cover detection for {artist} (CoverDetector active)")
 
             # Update artist progress tracking after completing all albums for this artist
             # Note: Progress is saved once per artist (not per track) to balance granularity
@@ -7166,12 +7169,14 @@ def detect_covers_for_artist(artist_name: str, conn: sqlite3.Connection) -> int:
     """
     try:
         cursor = conn.cursor()
+        is_pg = is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         
         # 1. Get all tracks for this artist with composers
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT id, title, composer, artist
             FROM tracks
-            WHERE artist = %s AND composer IS NOT NULL AND composer != ''
+            WHERE artist = {placeholder} AND composer IS NOT NULL AND composer != ''
             ORDER BY composer
         """, (artist_name,))
         
@@ -7202,9 +7207,9 @@ def detect_covers_for_artist(artist_name: str, conn: sqlite3.Connection) -> int:
                 continue
             
             # Search for other artists with same title AND same composer
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT artist FROM tracks
-                WHERE title = %s AND composer = %s AND artist != %s AND composer IS NOT NULL
+                WHERE title = {placeholder} AND composer = {placeholder} AND artist != {placeholder} AND composer IS NOT NULL
                 LIMIT 1
             """, (title, composer, artist_name))
             

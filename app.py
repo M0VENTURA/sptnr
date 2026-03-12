@@ -12549,7 +12549,7 @@ def _initiate_qbit_download_bg(tracking_id, query):
                 
                 # Start search
                 search_url = f"{web_url}/api/v2/search/start"
-                resp = session.post(search_url, data={"pattern": query, "plugins": "all", "category": "music"}, timeout=10)
+                resp = session.post(search_url, data={"pattern": query, "plugins": "all", "category": "Music"}, timeout=10)
                 
                 if resp.status_code not in [200, 201]:
                     raise Exception(f"Search failed: {resp.status_code}")
@@ -12608,10 +12608,13 @@ def _initiate_qbit_download_bg(tracking_id, query):
                         magnet = best_result.get('magnet_uri') or best_result.get('magnet')
                         torrent_url = best_result.get('torrent_url') or best_result.get('link')
                         
+                        add_payload = {"category": "Music", "tags": "Music"}
                         if magnet:
-                            resp = session.post(add_url, data={"urls": magnet}, timeout=10)
+                            add_payload["urls"] = magnet
+                            resp = session.post(add_url, data=add_payload, timeout=10)
                         elif torrent_url:
-                            resp = session.post(add_url, data={"urls": torrent_url}, timeout=10)
+                            add_payload["urls"] = torrent_url
+                            resp = session.post(add_url, data=add_payload, timeout=10)
                         else:
                             raise Exception("No magnet link or torrent URL found")
                         
@@ -12732,7 +12735,7 @@ def _initiate_qbit_download(tracking_id, query, cursor, conn):
                 
                 # Start search
                 search_url = f"{web_url}/api/v2/search/start"
-                resp = session.post(search_url, data={"pattern": query, "plugins": "all", "category": "music"}, timeout=10)
+                resp = session.post(search_url, data={"pattern": query, "plugins": "all", "category": "Music"}, timeout=10)
                 
                 if resp.status_code not in [200, 201]:
                     raise Exception(f"Search failed: {resp.status_code}")
@@ -12791,10 +12794,13 @@ def _initiate_qbit_download(tracking_id, query, cursor, conn):
                         magnet = best_result.get('magnet_uri') or best_result.get('magnet')
                         torrent_url = best_result.get('torrent_url') or best_result.get('link')
                         
+                        add_payload = {"category": "Music", "tags": "Music"}
                         if magnet:
-                            resp = session.post(add_url, data={"urls": magnet}, timeout=10)
+                            add_payload["urls"] = magnet
+                            resp = session.post(add_url, data=add_payload, timeout=10)
                         elif torrent_url:
-                            resp = session.post(add_url, data={"urls": torrent_url}, timeout=10)
+                            add_payload["urls"] = torrent_url
+                            resp = session.post(add_url, data=add_payload, timeout=10)
                         else:
                             raise Exception("No magnet link or torrent URL found")
                         
@@ -13895,7 +13901,7 @@ def qbit_search():
         
         # Start search with music category and all plugins
         search_url = f"{web_url}/api/v2/search/start"
-        resp = session.post(search_url, data={"pattern": query, "plugins": "all", "category": "music"})
+        resp = session.post(search_url, data={"pattern": query, "plugins": "all", "category": "Music"})
         
         if resp.status_code != 200:
             return jsonify({"error": f"Search failed: {resp.status_code}"}), 500

@@ -117,7 +117,12 @@ class CoverDetector:
                     logger.info(f"Potential cover: '{info['title']}' - lyricist/writer '{writer}' differs from artist '{artist}'")
                     
                     # Look up original recording by this writer
-                    original = self._find_original_recording(info['title'], writer, album_artist=artist)
+                    original = self._find_original_recording(
+                        info['title'],
+                        writer,
+                        album_artist=artist,
+                        recording_mbid=info.get('mbid')
+                    )
                     
                     if original:
                         result = {
@@ -233,6 +238,23 @@ class CoverDetector:
                         artist_name = artist_rel.get('artist', {}).get('name')
                         if artist_name and artist_name not in writers:
                             writers.append(artist_name)
+
+                # Some recording lookups return only work IDs without embedded artist
+                # relations, so resolve work details explicitly as a fallback.
+                if not artist_rels:
+                    work_id = work.get('id')
+                    if work_id:
+                        try:
+                            work_details = mb.get_work_by_id(work_id, includes=['artist-rels'])
+                            work_data = work_details.get('work', {})
+                            for work_rel in work_data.get('artist-relation-list', []) or []:
+                                rel_type = str(work_rel.get('type', '')).lower()
+                                if rel_type in ['composer', 'lyricist', 'writer']:
+                                    artist_name = (work_rel.get('artist') or {}).get('name')
+                                    if artist_name and artist_name not in writers:
+                                        writers.append(artist_name)
+                        except Exception:
+                            pass
             
             return writers
             
@@ -330,12 +352,30 @@ class CoverDetector:
         min_required = min(len(left_tokens), len(right_tokens))
         return len(intersection) >= max(2, min_required)
 
-    def _find_original_recording(self, title: str, writer: str, album_artist: Optional[str] = None) -> Optional[Dict]:
+    def _find_original_recording(
+        self,
+        title: str,
+        writer: str,
+        album_artist: Optional[str] = None,
+        recording_mbid: Optional[str] = None
+    ) -> Optional[Dict]:
         """Find earliest likely original recording for a title/writer pair."""
         try:
             mb = self._configure_musicbrainzngs()
             if mb is None:
                 return None
+
+            target_work_ids = set()
+            if recording_mbid:
+                try:
+                    target_result = mb.get_recording_by_id(recording_mbid, includes=['work-rels'])
+                    target_recording = target_result.get('recording', {})
+                    for rel in target_recording.get('work-relation-list', []) or []:
+                        work_id = (rel.get('work') or {}).get('id')
+                        if work_id:
+                            target_work_ids.add(work_id)
+                except Exception:
+                    pass
 
             # First query works by title+writer. This mirrors the MusicBrainz web
             # Works view and gives us canonical writer-linked work IDs.
@@ -405,6 +445,16 @@ class CoverDetector:
             fallback_earliest_year = 9999
             fallback_unknown_year = None
 
+            def _looks_non_original_release(release_title: str) -> bool:
+                text = self._normalize_name(release_title or "")
+                if not text:
+                    return False
+                blocked_markers = (
+                    'live', 'karaoke', 'tribute', 'remix', 'instrumental',
+                    'greatest hits', 'best of', 'compilation'
+                )
+                return any(marker in text for marker in blocked_markers)
+
             def _extract_year(full_recording: Dict, release: Optional[Dict] = None) -> Optional[int]:
                 """Extract a usable year from release dates or first-release-date."""
                 candidate_dates = []
@@ -469,6 +519,13 @@ class CoverDetector:
                 writer_names = self._normalize_writer_credits(writer_names)
                 writer_match = any(self._names_match(writer, candidate) for candidate in writer_names)
 
+                # Highest-confidence path: same underlying work as the scanned track MBID.
+                same_work_match = bool(target_work_ids and (recording_work_ids & target_work_ids))
+
+                # If the scanned track has known work IDs, constrain candidates to that same work.
+                if target_work_ids and not same_work_match:
+                    continue
+
                 # Strong signal: recording links to a work returned by title+writer search.
                 if not writer_match and matched_work_ids and (recording_work_ids & matched_work_ids):
                     writer_match = True
@@ -484,7 +541,7 @@ class CoverDetector:
                 if album_artist:
                     artist_is_different = not self._names_match(recording_artist, album_artist)
 
-                if not writer_match and not artist_is_different:
+                if not writer_match and not artist_is_different and not same_work_match:
                     continue
 
                 releases = full_recording.get('release-list', []) or recording.get('release-list', [])
@@ -524,20 +581,30 @@ class CoverDetector:
 
                 for release in releases:
                     year = _extract_year(full_recording, release)
+                    release_title = str(release.get('title', '') or '')
+                    is_official = str(release.get('status', '') or '').lower() == 'official'
+                    is_likely_non_original = _looks_non_original_release(release_title)
 
-                    if writer_match:
+                    if same_work_match or writer_match:
+                        # Prefer official and non-compilation/live releases for original attribution.
+                        confidence = 'high' if (same_work_match or writer_names) else 'medium'
+                        if is_likely_non_original:
+                            confidence = 'medium' if confidence == 'high' else confidence
+
                         if year is not None and year < earliest_year:
                             earliest_year = year
                             earliest = {
                                 'artist': recording_artist,
                                 'year': year,
-                                'confidence': 'high' if writer_names else 'medium'
+                                'confidence': confidence,
+                                'official': is_official,
                             }
                         elif year is None and earliest_unknown_year is None:
                             earliest_unknown_year = {
                                 'artist': recording_artist,
                                 'year': None,
-                                'confidence': 'medium'
+                                'confidence': 'medium',
+                                'official': is_official,
                             }
                     elif artist_is_different:
                         if year is not None and year < fallback_earliest_year:
@@ -545,13 +612,15 @@ class CoverDetector:
                             fallback_earliest = {
                                 'artist': recording_artist,
                                 'year': year,
-                                'confidence': 'low'
+                                'confidence': 'low',
+                                'official': is_official,
                             }
                         elif year is None and fallback_unknown_year is None:
                             fallback_unknown_year = {
                                 'artist': recording_artist,
                                 'year': None,
-                                'confidence': 'low'
+                                'confidence': 'low',
+                                'official': is_official,
                             }
 
             return earliest or earliest_unknown_year or fallback_earliest or fallback_unknown_year
