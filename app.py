@@ -17347,7 +17347,7 @@ def api_queue_delete(queue_id):
         placeholder = "%s" if is_pg else "?"
 
         delete_download_file = request.args.get('delete_download_file', '0').lower() in {'1', 'true', 'yes'}
-        downloads_root = os.path.abspath(os.environ.get("DOWNLOADS_DIR", "/downloads"))
+        downloads_root = os.path.abspath(_resolve_downloads_monitor_dir(get_config()))
         music_root = os.path.abspath(os.environ.get("MUSIC_ROOT", "/music"))
 
         cursor.execute(
@@ -17439,7 +17439,7 @@ def api_queue_cleanup_copied_sources():
         is_pg = _is_postgres_connection(conn)
         placeholder = "%s" if is_pg else "?"
 
-        downloads_root = os.path.abspath(os.environ.get("DOWNLOADS_DIR", "/downloads"))
+        downloads_root = os.path.abspath(_resolve_downloads_monitor_dir(get_config()))
 
         cursor.execute("""
             SELECT id, file_path, found_filename
@@ -17528,8 +17528,8 @@ def api_queue_delete_folder():
         if not folder_path:
             return jsonify({"error": "folder_path is required"}), 400
 
-        downloads_root = os.path.abspath(os.environ.get("DOWNLOADS_DIR", "/downloads"))
-        allowed_roots = [downloads_root, os.path.join(downloads_root, "Music")]
+        downloads_root = os.path.abspath(_resolve_downloads_monitor_dir(get_config()))
+        allowed_roots = [downloads_root]
         # Scan functions (e.g. scan_downloads_grouped_by_folder) return relative paths;
         # anchor them to downloads_root before resolving, so os.path.abspath doesn't
         # resolve relative to the process CWD and fail the security check.
@@ -17911,7 +17911,7 @@ def api_queue_organize(queue_id):
         # independently for this specific track.
         if not file_path or not os.path.exists(file_path):
             logging.info(f"[ORGANIZE] No valid file_path for queue {queue_id}, searching downloads folder independently...")
-            downloads_dir = os.environ.get("DOWNLOADS_DIR", "/downloads")
+            downloads_dir = _resolve_downloads_monitor_dir(get_config())
             found_path = None
 
             if os.path.isdir(downloads_dir):

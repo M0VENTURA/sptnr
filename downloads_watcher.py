@@ -27,36 +27,31 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def resolve_downloads_dir():
-    """Resolve downloads directory from env/config with safe fallback."""
-    def _prefer_music_subfolder(path: str) -> str:
-        if not path:
-            return path
-        normalized = os.path.normpath(path)
-        if os.path.basename(normalized).lower() == "downloads":
-            music_subdir = os.path.join(normalized, "Music")
-            if os.path.isdir(music_subdir):
-                return music_subdir
-        return path
-
-    env_dir = os.environ.get("DOWNLOADS_DIR")
-    if env_dir:
-        return _prefer_music_subfolder(env_dir)
-
+    """Resolve downloads directory from config/env with safe fallback.
+    Config file takes priority over environment variable."""
     config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
     try:
         if os.path.exists(config_path):
             with open(config_path, "r", encoding="utf-8") as f:
                 cfg = yaml.safe_load(f) or {}
             configured = (cfg.get("downloads") or {}).get("folder")
-            if configured:
-                return _prefer_music_subfolder(configured)
+            if configured and configured.strip():
+                return os.path.normpath(configured.strip())
     except Exception as e:
         logger.warning(f"Could not read downloads folder from config: {e}")
+
+    env_dir = os.environ.get("DOWNLOADS_DIR")
+    if env_dir and env_dir.strip():
+        return os.path.normpath(env_dir.strip())
 
     return "/downloads/Music"
 
 
-DOWNLOADS_DIR = resolve_downloads_dir()
+def get_downloads_dir():
+    """Dynamically get downloads directory (re-evaluates on each call for config changes)."""
+    return resolve_downloads_dir()
+
+
 MUSIC_DIR = os.environ.get("MUSIC_ROOT", "/music")
 
 
@@ -613,13 +608,14 @@ def add_to_database(file_info, metadata, source_file_path=None):
 
 def scan_downloads_folder():
     """Scan downloads folder recursively for MP3/FLAC files."""
-    if not os.path.exists(DOWNLOADS_DIR):
-        logger.warning(f"Downloads folder not found: {DOWNLOADS_DIR}")
+    downloads_dir = get_downloads_dir()
+    if not os.path.exists(downloads_dir):
+        logger.warning(f"Downloads folder not found: {downloads_dir}")
         return []
     
     results = []
 
-    for root, _, files in os.walk(DOWNLOADS_DIR):
+    for root, _, files in os.walk(downloads_dir):
         for filename in files:
             if not filename.lower().endswith((".mp3", ".flac")):
                 continue
@@ -631,7 +627,7 @@ def scan_downloads_folder():
                 continue
 
             try:
-                logger.info(f"Processing: {os.path.relpath(file_path, DOWNLOADS_DIR)}")
+                logger.info(f"Processing: {os.path.relpath(file_path, downloads_dir)}")
 
                 # Extract metadata
                 metadata = extract_mp3_metadata(file_path)
@@ -670,7 +666,7 @@ def scan_downloads_folder():
 
 def watch_downloads_folder(interval=10):
     """Watch downloads folder for new files (runs continuously)"""
-    logger.info(f"Starting downloads watcher for '{DOWNLOADS_DIR}' (interval: {interval}s)")
+    logger.info(f"Starting downloads watcher for '{get_downloads_dir()}' (interval: {interval}s)")
     
     while True:
         try:
