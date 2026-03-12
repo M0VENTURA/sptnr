@@ -11964,8 +11964,12 @@ def api_musicbrainz_download():
     max_retries = data.get("max_retries", 3)
     session_id = data.get("session_id", None)
     
-    if not all([release_id, release_title, artist, method]):
+    if not all([release_id, release_title, artist]):
         return jsonify({"error": "Missing required parameters"}), 400
+
+    if not method:
+        # Full-release downloads should prefer qBittorrent first.
+        method = "qbittorrent"
     
     if method not in ["slskd", "qbittorrent"]:
         return jsonify({"error": "Invalid method. Use 'slskd' or 'qbittorrent'"}), 400
@@ -12626,31 +12630,22 @@ def _initiate_qbit_download_bg(tracking_id, query):
                             """, (tracking_id,))
                             logging.info(f"[QBIT_MONITOR] Added torrent: {best_result.get('name', 'Unknown')}")
                         else:
-                            cursor2.execute(f"""
-                                UPDATE managed_downloads 
-                                SET status = 'error', error_message = {placeholder}, updated_at = CURRENT_TIMESTAMP
-                                WHERE id = {placeholder}
-                            """, (f"qBittorrent returned {resp.status_code}", tracking_id))
+                            logging.warning(f"[QBIT_MONITOR] qBittorrent add failed ({resp.status_code}), falling back to Soulseek")
+                            _initiate_slskd_download_bg(tracking_id, query)
+                            conn2.close()
+                            return
                     except Exception as e:
-                        cursor2.execute(f"""
-                            UPDATE managed_downloads 
-                            SET status = 'error', error_message = {placeholder}, updated_at = CURRENT_TIMESTAMP
-                            WHERE id = {placeholder}
-                        """, (str(e), tracking_id))
+                        logging.warning(f"[QBIT_MONITOR] qBittorrent add error ({e}), falling back to Soulseek")
+                        _initiate_slskd_download_bg(tracking_id, query)
+                        conn2.close()
+                        return
                     
                     conn2.commit()
                     conn2.close()
                 else:
-                    conn2 = get_db()
-                    cursor2 = conn2.cursor()
-                    placeholder = "%s" if _is_postgres_connection(conn2) else "?"
-                    cursor2.execute(f"""
-                        UPDATE managed_downloads 
-                        SET status = 'error', error_message = 'No torrent results found', updated_at = CURRENT_TIMESTAMP
-                        WHERE id = {placeholder}
-                    """, (tracking_id,))
-                    conn2.commit()
-                    conn2.close()
+                    logging.info(f"[QBIT_MONITOR] No qBittorrent results for '{query}', falling back to Soulseek")
+                    _initiate_slskd_download_bg(tracking_id, query)
+                    return
                     
             except Exception as e:
                 logging.error(f"[QBIT_MONITOR] Error: {e}")
@@ -12812,31 +12807,22 @@ def _initiate_qbit_download(tracking_id, query, cursor, conn):
                             """, (tracking_id,))
                             logging.info(f"[QBIT_MONITOR] Added torrent: {best_result.get('name', 'Unknown')}")
                         else:
-                            cursor2.execute(f"""
-                                UPDATE managed_downloads 
-                                SET status = 'error', error_message = {placeholder}, updated_at = CURRENT_TIMESTAMP
-                                WHERE id = {placeholder}
-                            """, (f"qBittorrent returned {resp.status_code}", tracking_id))
+                            logging.warning(f"[QBIT_MONITOR] qBittorrent add failed ({resp.status_code}), falling back to Soulseek")
+                            _initiate_slskd_download_bg(tracking_id, query)
+                            conn2.close()
+                            return
                     except Exception as e:
-                        cursor2.execute(f"""
-                            UPDATE managed_downloads 
-                            SET status = 'error', error_message = {placeholder}, updated_at = CURRENT_TIMESTAMP
-                            WHERE id = {placeholder}
-                        """, (str(e), tracking_id))
+                        logging.warning(f"[QBIT_MONITOR] qBittorrent add error ({e}), falling back to Soulseek")
+                        _initiate_slskd_download_bg(tracking_id, query)
+                        conn2.close()
+                        return
                     
                     conn2.commit()
                     conn2.close()
                 else:
-                    conn2 = get_db()
-                    cursor2 = conn2.cursor()
-                    placeholder = "%s" if _is_postgres_connection(conn2) else "?"
-                    cursor2.execute(f"""
-                        UPDATE managed_downloads 
-                        SET status = 'error', error_message = 'No torrent results found', updated_at = CURRENT_TIMESTAMP
-                        WHERE id = {placeholder}
-                    """, (tracking_id,))
-                    conn2.commit()
-                    conn2.close()
+                    logging.info(f"[QBIT_MONITOR] No qBittorrent results for '{query}', falling back to Soulseek")
+                    _initiate_slskd_download_bg(tracking_id, query)
+                    return
                     
             except Exception as e:
                 logging.error(f"[QBIT_MONITOR] Error: {e}")
@@ -17024,7 +17010,16 @@ def api_queue_add():
         artist = data.get('artist', '').strip() if data.get('artist') else ''
         title = data.get('title', '').strip() if data.get('title') else ''
         album = data.get('album', '').strip() if data.get('album') else None
-        source = data.get('source', 'soulseek')  # 'soulseek' or 'qbittorrent'
+        import_type = str(data.get('import_type', 'song') or 'song').strip().lower()
+        explicit_source = data.get('source')
+        if explicit_source:
+            source = str(explicit_source).strip().lower()
+        else:
+            # Default routing policy:
+            # - Album/full-release requests: qBittorrent first
+            # - Individual tracks: Soulseek first
+            is_album_request = bool(data.get('is_album')) or import_type == 'album'
+            source = 'qbittorrent' if is_album_request else 'soulseek'
 
         # Optional metadata used by file organization (year-based folder naming)
         # and post-download enrichment.
@@ -17078,6 +17073,7 @@ def api_queue_add():
                 album,
                 source,
                 priority,
+                import_type=import_type,
                 track_number=track_number,
                 album_artist=album_artist,
                 year=year,
@@ -17156,7 +17152,14 @@ def api_queue_add_batch():
             artist = item_data.get('artist', '').strip() if item_data.get('artist') else ''
             title = item_data.get('title', '').strip() if item_data.get('title') else ''
             album = item_data.get('album', '').strip() if item_data.get('album') else None
-            source = item_data.get('source', 'soulseek')
+            explicit_source = item_data.get('source') or data.get('source')
+            if explicit_source:
+                source = str(explicit_source).strip().lower()
+            else:
+                # Batch default routing policy:
+                # - Album imports: qBittorrent first
+                # - Song/playlist track imports: Soulseek first
+                source = 'qbittorrent' if import_type == 'album' else 'soulseek'
             
             # Extract MusicBrainz/Discogs metadata if provided
             # Handle both string and int types for numeric fields
