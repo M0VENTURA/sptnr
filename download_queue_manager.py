@@ -625,25 +625,29 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
             except (TypeError, ValueError):
                 duration = None
         
-        # Duplicate detection: Check for existing entry with same artist + album + title
-        # If duplicate exists, return the existing entry instead of inserting
-        
+        # Duplicate detection: Check for existing active entry with same (artist, album, title, source).
+        # The status exclusion list mirrors the uq_download_queue_active_identity partial index so that
+        # the pre-check catches exactly the rows the unique constraint covers, preventing spurious
+        # IntegrityErrors from race conditions between concurrent queue additions.
+
         if album:  # Only check duplicates if album is provided
             duplicate_check_query = """
                 SELECT * FROM download_queue
-                WHERE LOWER(artist) = LOWER(?) AND LOWER(album) = LOWER(?) AND LOWER(title) = LOWER(?)
-                AND status NOT IN ('completed', 'deleted')
+                WHERE LOWER(artist) = LOWER(?) AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(?, '')) AND LOWER(title) = LOWER(?)
+                AND source = ?
+                AND status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled')
                 ORDER BY created_at ASC
                 LIMIT 1
             """ if not is_pg else """
                 SELECT * FROM download_queue
-                WHERE LOWER(artist) = LOWER(%s) AND LOWER(album) = LOWER(%s) AND LOWER(title) = LOWER(%s)
-                AND status NOT IN ('completed', 'deleted')
+                WHERE LOWER(artist) = LOWER(%s) AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(%s, '')) AND LOWER(title) = LOWER(%s)
+                AND source = %s
+                AND status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled')
                 ORDER BY created_at ASC
                 LIMIT 1
             """
             
-            cursor.execute(duplicate_check_query, (artist, album, title))
+            cursor.execute(duplicate_check_query, (artist, album, title, source))
             existing = cursor.fetchone()
             
             if existing:
@@ -652,25 +656,27 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                 conn.close()
                 return dict(existing) if hasattr(existing, 'keys') else None
         
-        # If no album provided, check by artist + title only
+        # If no album provided, check by artist + title + source only
         elif not album:
             duplicate_check_query = """
                 SELECT * FROM download_queue
                 WHERE LOWER(artist) = LOWER(?) AND LOWER(title) = LOWER(?)
-                AND album IS NULL
-                AND status NOT IN ('completed', 'deleted')
+                AND COALESCE(album, '') = ''
+                AND source = ?
+                AND status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled')
                 ORDER BY created_at ASC
                 LIMIT 1
             """ if not is_pg else """
                 SELECT * FROM download_queue
                 WHERE LOWER(artist) = LOWER(%s) AND LOWER(title) = LOWER(%s)
-                AND album IS NULL
-                AND status NOT IN ('completed', 'deleted')
+                AND COALESCE(album, '') = ''
+                AND source = %s
+                AND status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled')
                 ORDER BY created_at ASC
                 LIMIT 1
             """
             
-            cursor.execute(duplicate_check_query, (artist, title))
+            cursor.execute(duplicate_check_query, (artist, title, source))
             existing = cursor.fetchone()
             
             if existing:
@@ -835,7 +841,10 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                 pass
         
     except psycopg2.IntegrityError as e:
-        logger.error(f"Database integrity error adding to queue: {e}")
+        # Duplicate key race condition: two concurrent add_to_queue calls both passed the
+        # pre-check before either committed. Log at WARNING (not ERROR) since this is a
+        # handled, non-fatal edge case that resolves itself by returning the existing item.
+        logger.warning(f"Duplicate key skipped for {artist!r} - {title!r} (source={source}): {e}")
         try:
             conn.rollback()
         except Exception:
@@ -2822,6 +2831,18 @@ def auto_discover_and_queue_files():
                 else:
                     logger.info(f"⚠️  Unmatched [{metadata_status}]: {artist} - {title} from {os.path.basename(os.path.dirname(full_path))}/{filename}")
                 
+            except psycopg2.IntegrityError as e:
+                # A duplicate row was inserted concurrently (race condition between parallel scans).
+                # This is non-fatal: the file is already tracked in the queue.  Roll back, log at
+                # INFO level and count as already-queued rather than as an error.
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                logger.info(
+                    f"Duplicate skipped during auto-discover for {file_info['filename']}: {e}"
+                )
+                stats['already_in_queue'] += 1
             except Exception as e:
                 try:
                     conn.rollback()
