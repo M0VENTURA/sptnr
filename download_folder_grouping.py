@@ -14,6 +14,13 @@ from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
 
 logger = logging.getLogger(__name__)
 
+_GROUP_SCAN_CACHE = {
+    'timestamp': 0.0,
+    'downloads_dir': None,
+    'result': None,
+}
+_GROUP_SCAN_CACHE_TTL_SECONDS = 30
+
 
 def scan_downloads_grouped_by_folder(downloads_dir, read_mp3_metadata):
     """
@@ -45,6 +52,17 @@ def scan_downloads_grouped_by_folder(downloads_dir, read_mp3_metadata):
         }
     """
     try:
+        import time
+
+        now_ts = time.time()
+        if (
+            _GROUP_SCAN_CACHE['result'] is not None
+            and _GROUP_SCAN_CACHE['downloads_dir'] == downloads_dir
+            and (now_ts - _GROUP_SCAN_CACHE['timestamp']) < _GROUP_SCAN_CACHE_TTL_SECONDS
+        ):
+            logger.debug("Returning cached grouped-folder scan result")
+            return dict(_GROUP_SCAN_CACHE['result'])
+
         if not os.path.isdir(downloads_dir):
             logger.warning(f"Downloads folder not found: {downloads_dir}")
             return {
@@ -160,7 +178,7 @@ def scan_downloads_grouped_by_folder(downloads_dir, read_mp3_metadata):
         
         logger.info(f"Grouped {sum(len(t) for t in folder_groups.values())} files into {len(folder_groups)} folders")
         
-        return {
+        result = {
             'folder_groups': grouped_output,
             'total_folders': len(folder_groups),
             'total_files': sum(len(t) for t in folder_groups.values()),
@@ -169,6 +187,12 @@ def scan_downloads_grouped_by_folder(downloads_dir, read_mp3_metadata):
                 'folders_mixed': sum(1 for g in grouped_output if not g['is_consistent'])
             }
         }
+
+        _GROUP_SCAN_CACHE['timestamp'] = now_ts
+        _GROUP_SCAN_CACHE['downloads_dir'] = downloads_dir
+        _GROUP_SCAN_CACHE['result'] = result
+
+        return result
         
     except Exception as e:
         logger.error(f"Error scanning downloads folder: {e}")

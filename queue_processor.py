@@ -1417,6 +1417,12 @@ def maybe_auto_discover_files(now_ts, last_run_ts):
     if not enabled:
         return last_run_ts
 
+    # Avoid a heavy discovery run immediately on process startup unless explicitly requested.
+    run_on_start = str(os.environ.get("DOWNLOADS_AUTO_DISCOVER_RUN_ON_START", "0")).strip().lower() in {"1", "true", "yes", "on"}
+    if last_run_ts is None and not run_on_start:
+        logger.info("[AUTO-DISCOVER] Startup run skipped; first run in %ss", interval_seconds)
+        return now_ts
+
     if last_run_ts is not None and (now_ts - last_run_ts) < interval_seconds:
         return last_run_ts
 

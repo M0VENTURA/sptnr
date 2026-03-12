@@ -2809,22 +2809,27 @@ def auto_discover_and_queue_files():
                 duplicate_existing = cursor.fetchone()
 
                 if duplicate_existing:
+                    existing_id = _row_get(duplicate_existing, 'id', 0, None)
                     execute_write_with_retry(
                         cursor,
                         conn,
                         f"""
-                        INSERT INTO download_queue 
-                        (artist, title, album, album_artist, track_number, disc_number, year, duration, found_filename, file_path,
-                         status, source, import_group, import_type, failure_reason, created_at, updated_at)
-                        VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder},
-                                'possible_duplicate', 'discovered', {placeholder}, 'album', 'Duplicate discovered during scan', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                    """,
-                        (artist, title, album, album_artist, track_number, disc_number, year, duration, filename, full_path, release_group),
-                        context="auto_discover duplicate insert"
+                        UPDATE download_queue
+                        SET found_filename = COALESCE(found_filename, {placeholder}),
+                            file_path = COALESCE(file_path, {placeholder}),
+                            failure_reason = CASE
+                                WHEN failure_reason IS NULL OR failure_reason = '' THEN 'Duplicate discovered during scan'
+                                ELSE failure_reason
+                            END,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = {placeholder}
+                        """,
+                        (filename, full_path, existing_id),
+                        context="auto_discover duplicate update"
                     )
 
-                    stats['queued'] += 1
-                    logger.info(f"⚠️  Duplicate [scan]: {artist} - {title} ({album})")
+                    stats['already_in_queue'] += 1
+                    logger.debug(f"[AUTO-DISCOVER] Duplicate skipped (existing queue id {existing_id}): {artist} - {title} ({album})")
                     continue
 
                 # Before creating a new entry, check if this file belongs to an existing album group
