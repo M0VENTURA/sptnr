@@ -1578,7 +1578,7 @@ def rename_track_file(track_id, db_conn, music_dir=None):
 
         cursor.execute(
             f"SELECT id, artist, album, album_artist, title, track_number, disc_number, "
-            f"file_path, year, release_year FROM tracks WHERE id = {placeholder}",
+            f"file_path, year FROM tracks WHERE id = {placeholder}",
             (track_id,),
         )
         row = cursor.fetchone()
