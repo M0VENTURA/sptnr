@@ -22980,22 +22980,26 @@ def _parse_listenbrainz_rss(xml_text):
         root = ET.fromstring(xml_text)
     except ET.ParseError:
         return tracks
-    items = root.findall(".//item")
-    for item in items:
-        title_text = (item.findtext("title") or "").strip()
-        creator_text = (item.findtext("{http://purl.org/dc/elements/1.1/}creator") or "").strip()
-        guid_text = (item.findtext("guid") or "").strip()
-        link_text = (item.findtext("link") or "").strip()
-        desc_text = (item.findtext("description") or "").strip()
+
+    def _append_track(title_text, creator_text, guid_text, link_text, desc_text):
+        title_text = (title_text or "").strip()
+        creator_text = (creator_text or "").strip()
+        guid_text = (guid_text or "").strip()
+        link_text = (link_text or "").strip()
+        desc_text = (desc_text or "").strip()
+
         artist_name = creator_text
         track_name = title_text
+
         if " - " in title_text and not artist_name:
             split = title_text.split(" - ", 1)
             artist_name = split[0].strip()
             track_name = split[1].strip()
+
         recording_mbid = _extract_mbid(guid_text) or _extract_mbid(link_text) or _extract_mbid(desc_text)
         if not artist_name and not track_name:
-            continue
+            return
+
         tracks.append({
             "artist_name": artist_name,
             "track_name": track_name,
@@ -23004,6 +23008,44 @@ def _parse_listenbrainz_rss(xml_text):
             "release_mbid": None,
             "source": "listenbrainz-rss",
         })
+
+    # RSS 2.0 feeds
+    items = root.findall(".//item")
+    for item in items:
+        _append_track(
+            item.findtext("title"),
+            item.findtext("{http://purl.org/dc/elements/1.1/}creator"),
+            item.findtext("guid"),
+            item.findtext("link"),
+            item.findtext("description"),
+        )
+
+    # Atom feeds fallback
+    atom_entries = root.findall(".//{http://www.w3.org/2005/Atom}entry")
+    for entry in atom_entries:
+        atom_title = entry.findtext("{http://www.w3.org/2005/Atom}title")
+        atom_id = entry.findtext("{http://www.w3.org/2005/Atom}id")
+        atom_summary = entry.findtext("{http://www.w3.org/2005/Atom}summary")
+        atom_content = entry.findtext("{http://www.w3.org/2005/Atom}content")
+
+        author = entry.find("{http://www.w3.org/2005/Atom}author")
+        atom_creator = ""
+        if author is not None:
+            atom_creator = (author.findtext("{http://www.w3.org/2005/Atom}name") or "").strip()
+
+        atom_link = ""
+        link_node = entry.find("{http://www.w3.org/2005/Atom}link")
+        if link_node is not None:
+            atom_link = (link_node.attrib.get("href") or "").strip()
+
+        _append_track(
+            atom_title,
+            atom_creator,
+            atom_id,
+            atom_link,
+            atom_summary or atom_content,
+        )
+
     return tracks
 
 
@@ -23017,7 +23059,11 @@ def _listenbrainz_rss_candidates(username, rec_type):
     slug = slug_map.get(rec_type, rec_type.replace("_", "-"))
     return [
         f"https://listenbrainz.org/user/{username}/recommendations/{slug}/rss",
+        f"https://listenbrainz.org/user/{username}/recommendations/{slug}.rss",
+        f"https://listenbrainz.org/user/{username}/playlists/{slug}/rss",
+        f"https://listenbrainz.org/user/{username}/playlists/{slug}.rss",
         f"https://listenbrainz.org/user/{username}/{slug}/rss",
+        f"https://listenbrainz.org/user/{username}/{slug}.rss",
         f"https://listenbrainz.org/user/{username}/feed/{slug}.rss",
     ]
 
@@ -23044,9 +23090,13 @@ def _normalize_listenbrainz_recommendation(rec, source):
 
 
 def _fetch_listenbrainz_feed_tracks(listenbrainz_username, rec_type, lb_token=None):
+    request_headers = {
+        "User-Agent": "sptnr/1.0 (+https://github.com/krestaino/sptnr)",
+        "Accept": "application/rss+xml, application/atom+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.1",
+    }
     for url in _listenbrainz_rss_candidates(listenbrainz_username, rec_type):
         try:
-            res = requests.get(url, timeout=(5, 20))
+            res = requests.get(url, timeout=(5, 20), headers=request_headers)
             if res.status_code != 200:
                 continue
             tracks = _parse_listenbrainz_rss(res.text)
@@ -23470,9 +23520,33 @@ def api_listenbrainz_rss_playlists():
         try:
             _ensure_listenbrainz_playlist_tables(conn)
             payload = {}
+            total_tracks = 0
             for key in LISTENBRAINZ_PLAYLIST_SPECS.keys():
                 playlist_name, rows = _load_playlist_rows(conn, app_username, key)
                 payload[key] = {"name": playlist_name, "tracks": rows}
+                total_tracks += len(rows)
+
+            # If nothing has been persisted yet, attempt one background-safe sync
+            # so the page can populate directly from RSS without requiring manual sync.
+            auto_sync = (request.args.get("auto_sync", "true") or "true").strip().lower() in ("1", "true", "yes", "on")
+            if total_tracks == 0 and auto_sync:
+                cfg = get_config()
+                nav_users = cfg.get("navidrome_users", []) or []
+                user_cfg = next((u for u in nav_users if (u.get("user") or "").strip() == app_username), None)
+                lb_username = ((user_cfg or {}).get("listenbrainz_username") or app_username or "").strip()
+                lb_token = ((user_cfg or {}).get("listenbrainz_user_token") or "").strip()
+
+                if lb_username:
+                    sync_result = _sync_listenbrainz_rss_playlists_for_user(
+                        app_username=app_username,
+                        listenbrainz_username=lb_username,
+                        lb_token=lb_token,
+                        enqueue_missing=True,
+                        write_m3u=False,
+                    )
+                    if sync_result.get("success") and sync_result.get("playlists"):
+                        payload = sync_result.get("playlists")
+
             return jsonify({"success": True, "username": app_username, "playlists": payload})
         finally:
             conn.close()

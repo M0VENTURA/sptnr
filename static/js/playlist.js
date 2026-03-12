@@ -1291,14 +1291,25 @@ async function loadListenBrainzSyncStatus() {
 }
 
 async function loadListenBrainzRssTables() {
+  const container = document.getElementById('lbRssTables');
   try {
     const resp = await fetch('/api/listenbrainz/rss/playlists');
-    if (!resp.ok) return;
+    if (!resp.ok) {
+      let errorMessage = 'Could not load playlists.';
+      try {
+        const err = await resp.json();
+        if (err && err.error) errorMessage = err.error;
+      } catch (_) {
+        // ignore json parse errors
+      }
+      if (container) container.innerHTML = `<div class="p-3 text-muted">${errorMessage}</div>`;
+      return;
+    }
     const data = await resp.json();
     if (data.playlists) renderListenBrainzPlaylistTables(data.playlists);
+    else if (container) container.innerHTML = '<div class="p-3 text-muted">No playlist data returned.</div>';
   } catch (e) {
-    const c = document.getElementById('lbRssTables');
-    if (c) c.innerHTML = '<div class="p-3 text-muted">Could not load playlists.</div>';
+    if (container) container.innerHTML = '<div class="p-3 text-muted">Could not load playlists.</div>';
   }
 }
 
