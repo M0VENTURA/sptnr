@@ -2658,7 +2658,38 @@ def auto_discover_and_queue_files():
                     logger.info(f"⚠️  Duplicate [scan]: {artist} - {title} ({album})")
                     continue
 
-                # No pending queue item matches → add as 'unmatched'
+                # Before creating a new entry, check if this file belongs to an existing album group
+                # in the queue. If so, update the existing item instead of creating a duplicate.
+                cursor.execute(f"""
+                    SELECT id, status FROM download_queue
+                    WHERE import_group = {placeholder}
+                      AND status IN ('queued', 'searching', 'downloading', 'matched')
+                      AND (file_path IS NULL OR file_path = '')
+                    LIMIT 1
+                """, (release_group,))
+                existing_group = cursor.fetchone()
+                
+                if existing_group:
+                    # File belongs to an existing album group - just update that item with the file path
+                    existing_id = _row_get(existing_group, 'id', 0, None)
+                    execute_write_with_retry(
+                        cursor,
+                        conn,
+                        f"""
+                        UPDATE download_queue 
+                        SET file_path = {placeholder},
+                            found_filename = {placeholder},
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = {placeholder}
+                        """,
+                        (full_path, filename, existing_id),
+                        context="auto_discover match to existing album group"
+                    )
+                    stats['queued'] += 1
+                    logger.info(f"✅ Matched to existing album group {existing_id}: {filename}")
+                    continue
+
+                # No pending queue item or album group matches → add as 'unmatched'
                 execute_write_with_retry(
                     cursor,
                     conn,
