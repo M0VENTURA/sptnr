@@ -1328,82 +1328,47 @@ def check_completed_downloads():
                             logger.info(f"[AUTO_MOVE] Queue {item_id}: verified and imported to {target_path}")
                         else:
                             logger.warning(
-                            source = (item.get('source') or 'soulseek').strip().lower()
+                                f"[AUTO_MOVE] Queue {item_id}: file verification failed after move to {target_path}, keeping as completed"
+                            )
                             update_queue_item(item_id, status='completed', file_path=file_path)
                     else:
-                                if source == 'qbittorrent':
-                                    if search_and_download_qbittorrent(item['id'], item):
-                                        processed += 1
-                                else:
-                                    if not client:
-                                        logger.error("SlskdClient not available, skipping Soulseek queue item")
-                                        break
-                                    if search_and_download(item['id'], item, client):
-                                        processed += 1
-                            except Exception as e:
-                                logger.error(f"Error processing queue {item['id']}: {e}")
-                                mark_failed(item['id'], f"Processing error: {str(e)}", schedule_retry=True)
+                        logger.warning(
+                            f"[AUTO_MOVE] Queue {item_id}: move to music dir failed, keeping as completed"
+                        )
+                except Exception as e:
+                    logger.error(f"[AUTO_MOVE] Queue {item_id}: error during auto-move: {e}")
+                    update_queue_item(item_id, status='completed', file_path=file_path)
 
-                        # Always check for completed downloads, even if no new items were processed
-                        # This ensures downloads that complete between processing cycles are detected
-                        check_completed_downloads()
-
-                        # Process completed downloads with MusicBrainz/Discogs metadata
-                        try:
-                            from post_download_processor import process_pending_completed_items
-                            post_stats = process_pending_completed_items(limit=5)
-                            if post_stats.get('processed', 0) > 0:
-                                logger.info(f"Post-download processing: {post_stats['processed']} items organized")
-                        except Exception as e:
-                            logger.error(f"Error in post-download processing: {e}")
-
-                        return processed
-
-                    except Exception as e:
-                        logger.error(f"Error in process_queue: {e}")
-                        return 0
+        conn.close()
+    except Exception as e:
+        logger.error(f"Error in check_completed_downloads: {e}")
 
 
-                def _load_auto_discovery_settings():
-                    """Load persistent auto-discovery settings from config/env with safe defaults."""
-                    enabled = True
-                    interval_seconds = 60
+def process_queue(client):
+    """Process queued download items"""
+    try:
+        items = get_queued_items(limit=10)
+        processed = 0
+        for item in items:
+            try:
+                source = (item.get('source') or 'soulseek').strip().lower()
+                if source == 'qbittorrent':
+                    if search_and_download_qbittorrent(item['id'], item):
+                        processed += 1
+                else:
+                    if not client:
+                        logger.error("SlskdClient not available, skipping Soulseek queue item")
+                        break
+                    if search_and_download(item['id'], item, client):
+                        processed += 1
+            except Exception as e:
+                logger.error(f"Error processing queue {item['id']}: {e}")
+                mark_failed(item['id'], f"Processing error: {str(e)}", schedule_retry=True)
 
-                    # Optional env overrides for quick control.
-                    env_enabled = os.environ.get("DOWNLOADS_AUTO_DISCOVER_ENABLED")
-                    env_interval = os.environ.get("DOWNLOADS_AUTO_DISCOVER_INTERVAL_SECONDS")
+        # Always check for completed downloads, even if no new items were processed
+        # This ensures downloads that complete between processing cycles are detected
+        check_completed_downloads()
 
-                    if env_enabled is not None:
-                        enabled = str(env_enabled).strip().lower() in {"1", "true", "yes", "on"}
-
-                    if env_interval:
-                        try:
-                            interval_seconds = int(env_interval)
-                        except ValueError:
-                            logger.warning("Invalid DOWNLOADS_AUTO_DISCOVER_INTERVAL_SECONDS='%s'", env_interval)
-
-                    # Config file settings override defaults when present.
-                    config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
-                    try:
-                        if os.path.exists(config_path):
-                            with open(config_path, 'r', encoding='utf-8') as f:
-                                cfg = yaml.safe_load(f) or {}
-
-                            features = cfg.get('features') or {}
-                            discovery_cfg = features.get('downloads_auto_discover') or {}
-
-                            if 'enabled' in discovery_cfg:
-                                enabled = bool(discovery_cfg.get('enabled'))
-                            if 'interval_seconds' in discovery_cfg:
-                                interval_seconds = int(discovery_cfg.get('interval_seconds') or interval_seconds)
-                    except Exception as e:
-                        logger.warning(f"Could not read auto-discovery settings: {e}")
-
-                    if interval_seconds < 15:
-                        interval_seconds = 15
-
-                    return enabled, interval_seconds
-        
         # Process completed downloads with MusicBrainz/Discogs metadata
         try:
             from post_download_processor import process_pending_completed_items
@@ -1412,9 +1377,9 @@ def check_completed_downloads():
                 logger.info(f"Post-download processing: {post_stats['processed']} items organized")
         except Exception as e:
             logger.error(f"Error in post-download processing: {e}")
-        
+
         return processed
-        
+
     except Exception as e:
         logger.error(f"Error in process_queue: {e}")
         return 0
@@ -1586,8 +1551,7 @@ def run_processor(interval=30):
     
     client = get_slskd_client()
     if not client:
-        logger.error("Cannot initialize SlskdClient - exiting")
-        sys.exit(1)
+        logger.warning("Soulseek (slskd) is not configured or not enabled — queue processor will run without Soulseek support")
     
     loop_count = 0
     last_auto_discover_ts = None
