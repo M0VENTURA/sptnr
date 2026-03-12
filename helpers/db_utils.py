@@ -78,7 +78,11 @@ def get_db_connection():
             import psycopg2
             import psycopg2.extras
             if pg_dsn:
-                conn = psycopg2.connect(pg_dsn, cursor_factory=psycopg2.extras.RealDictCursor)
+                conn = psycopg2.connect(
+                    pg_dsn,
+                    cursor_factory=psycopg2.extras.RealDictCursor,
+                    connect_timeout=10,
+                )
                 logging.debug(f"Connected to PostgreSQL: {pg_dsn.split('@')[1] if '@' in pg_dsn else 'configured'}")
             else:
                 conn = psycopg2.connect(
@@ -88,6 +92,7 @@ def get_db_connection():
                     password=os.environ.get("PG_PASSWORD", ""),
                     dbname=pg_database,
                     cursor_factory=psycopg2.extras.RealDictCursor,
+                    connect_timeout=10,
                 )
                 logging.debug(f"Connected to PostgreSQL: {pg_host}/{pg_database}")
             return conn
