@@ -167,6 +167,13 @@
       </h5>
       <div class="d-flex align-items-center gap-2 flex-wrap">
         <span class="badge bg-info" id="folderGroupsBadge">0 items</span>
+        <span class="text-muted small" id="queuePageSummary">Showing 0 of 0</span>
+        <button class="btn btn-sm btn-outline-secondary" id="queuePrevPageBtn" onclick="changeQueuePage(-1)" disabled>
+          <i class="bi bi-chevron-left"></i> Prev
+        </button>
+        <button class="btn btn-sm btn-outline-secondary" id="queueNextPageBtn" onclick="changeQueuePage(1)" disabled>
+          Next <i class="bi bi-chevron-right"></i>
+        </button>
         <button class="btn btn-sm btn-outline-warning" onclick="runQueueCleanup()" title="Remove expired duplicates and fully completed albums from queue">
           <i class="bi bi-broom"></i> Cleanup
         </button>
@@ -332,6 +339,49 @@
 // Queue management functions for downloads monitor
 
 let queueLogPaused = false;
+const QUEUE_PAGE_LIMIT = 100;
+let queuePageOffset = 0;
+
+function getQueuePageUrl(limit = QUEUE_PAGE_LIMIT, offset = queuePageOffset) {
+  const params = new URLSearchParams({
+    limit: String(limit),
+    offset: String(Math.max(0, offset))
+  });
+  return `/api/downloads/queue?${params.toString()}`;
+}
+
+function updateQueuePageControls(totalCount, loadedCount) {
+  const summary = document.getElementById('queuePageSummary');
+  const prevBtn = document.getElementById('queuePrevPageBtn');
+  const nextBtn = document.getElementById('queueNextPageBtn');
+
+  const safeTotal = Number(totalCount || 0);
+  const safeLoaded = Number(loadedCount || 0);
+  const start = safeTotal === 0 ? 0 : queuePageOffset + 1;
+  const end = safeTotal === 0 ? 0 : Math.min(queuePageOffset + safeLoaded, safeTotal);
+
+  if (summary) {
+    summary.textContent = safeTotal === 0 ? 'Showing 0 of 0' : `Showing ${start}-${end} of ${safeTotal}`;
+  }
+
+  if (prevBtn) {
+    prevBtn.disabled = queuePageOffset <= 0;
+  }
+
+  if (nextBtn) {
+    nextBtn.disabled = (queuePageOffset + safeLoaded) >= safeTotal;
+  }
+}
+
+function changeQueuePage(direction) {
+  const nextOffset = Math.max(0, queuePageOffset + (direction * QUEUE_PAGE_LIMIT));
+  if (nextOffset === queuePageOffset) {
+    return;
+  }
+
+  queuePageOffset = nextOffset;
+  loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true });
+}
 
 async function fetchJsonOrThrow(url, options = {}) {
   const response = await fetch(url, options);

@@ -16130,13 +16130,23 @@ def api_downloads_get_queue():
             logging.debug(f"[QUEUE_NORMALIZE] Skipped in_collection normalization: {normalize_err}")
         
         status = request.args.get('status')
-        limit = int(request.args.get('limit', 500))  # Increased from 50 to 500 to show all discovered files
+        limit = int(request.args.get('limit', 100))
+        offset = int(request.args.get('offset', 0))
+        if limit < 0:
+            limit = 0
+        if offset < 0:
+            offset = 0
         
-        queue = get_download_queue(status=status, limit=limit)
+        queue_data = get_download_queue(status=status, limit=limit, offset=offset)
         
         return jsonify({
-            "count": len(queue),
-            "queue": queue
+            "count": len(queue_data.get('queue', [])),
+            "queue": queue_data.get('queue', []),
+            "total_count": queue_data.get('total_count', 0),
+            "status_counts": queue_data.get('status_counts', {}),
+            "offset": queue_data.get('offset', offset),
+            "limit": queue_data.get('limit', limit),
+            "has_more": queue_data.get('has_more', False)
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 400

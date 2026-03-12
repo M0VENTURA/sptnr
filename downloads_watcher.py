@@ -247,19 +247,54 @@ def queue_incomplete_download(file_path, metadata):
             logger.info(f"File {file_path} already in queue")
         return False
 
-def get_download_queue(status=None, limit=50):
-    """Get files from download queue"""
+def get_download_queue(status=None, limit=50, offset=0):
+    """Get files from download queue with summary metadata."""
     try:
         conn = get_db()
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        limit = max(int(limit), 0)
+        offset = max(int(offset), 0)
+
+        if status:
+            cursor.execute("""
+                SELECT COUNT(*) AS total
+                FROM download_queue
+                WHERE status = %s
+            """, (status,))
+            total_count = int((cursor.fetchone() or {}).get('total', 0))
+
+            cursor.execute("""
+                SELECT status, COUNT(*) AS count
+                FROM download_queue
+                WHERE status = %s
+                GROUP BY status
+            """, (status,))
+        else:
+            cursor.execute("""
+                SELECT COUNT(*) AS total
+                FROM download_queue
+            """)
+            total_count = int((cursor.fetchone() or {}).get('total', 0))
+
+            cursor.execute("""
+                SELECT status, COUNT(*) AS count
+                FROM download_queue
+                GROUP BY status
+            """)
+
+        status_counts = {
+            row['status']: int(row['count'])
+            for row in cursor.fetchall()
+            if row and row.get('status')
+        }
         
         if status:
             cursor.execute("""
                 SELECT * FROM download_queue 
                 WHERE status = %s
                 ORDER BY created_at DESC
-                LIMIT %s
-            """, (status, limit))
+                LIMIT %s OFFSET %s
+            """, (status, limit, offset))
         else:
             cursor.execute("""
                 SELECT * FROM download_queue 
@@ -269,17 +304,30 @@ def get_download_queue(status=None, limit=50):
                         ELSE 1
                     END,
                     created_at DESC
-                LIMIT %s
-            """, (limit,))
+                LIMIT %s OFFSET %s
+            """, (limit, offset))
         
         rows = cursor.fetchall()
         conn.close()
         
-        # RealDictCursor already returns dict-like rows
-        return list(rows)
+        return {
+            'queue': list(rows),
+            'total_count': total_count,
+            'status_counts': status_counts,
+            'limit': limit,
+            'offset': offset,
+            'has_more': (offset + len(rows)) < total_count,
+        }
     except Exception as e:
         logger.error(f"Error getting download queue: {e}")
-        return []
+        return {
+            'queue': [],
+            'total_count': 0,
+            'status_counts': {},
+            'limit': limit,
+            'offset': offset,
+            'has_more': False,
+        }
 
 def get_retry_queue(limit=50):
     """Get files queued for retry"""
