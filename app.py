@@ -16404,6 +16404,7 @@ def api_downloads_manage_queue_item(queue_id):
     """Manage a queue item (mark as failed, successful, or delete)"""
     try:
         from downloads_watcher import mark_download_as_failed, mark_download_as_successful
+        from download_queue_manager import clear_queue_events_for_items
         conn = get_db()
         cursor = conn.cursor()
         is_pg = _is_postgres_connection(conn)
@@ -16422,6 +16423,8 @@ def api_downloads_manage_queue_item(queue_id):
         
         if action == 'delete':
             cursor.execute(f"DELETE FROM download_queue WHERE id = {placeholder}", (queue_id,))
+            # Clean up event logs for this deleted item
+            clear_queue_events_for_items([queue_id])
         elif action == 'successful':
             mark_download_as_successful(file_path)
         elif action == 'fail':
@@ -17365,6 +17368,7 @@ def api_queue_update(queue_id):
 def api_queue_delete(queue_id):
     """Delete queue item"""
     try:
+        from download_queue_manager import clear_queue_events_for_items
         conn = get_db()
         cursor = conn.cursor()
         is_pg = _is_postgres_connection(conn)
@@ -17428,6 +17432,8 @@ def api_queue_delete(queue_id):
                             break
         
         cursor.execute(f"DELETE FROM download_queue WHERE id = {placeholder}", (queue_id,))
+        # Clean up event logs for this deleted item
+        clear_queue_events_for_items([queue_id])
         conn.commit()
         
         deleted = cursor.rowcount > 0
@@ -17545,6 +17551,7 @@ def api_queue_cleanup_copied_sources():
 def api_queue_delete_folder():
     """Delete all files in a downloads folder and optionally remove linked queue items."""
     try:
+        from download_queue_manager import clear_queue_events_for_items
         data = request.get_json(silent=True) or {}
         folder_path = (data.get("folder_path") or "").strip()
         remove_queue_items = bool(data.get("remove_queue_items", True))
@@ -17580,6 +17587,7 @@ def api_queue_delete_folder():
         placeholder = "%s" if is_pg else "?"
 
         deleted_queue_items = 0
+        queue_ids_deleted = []
         if remove_queue_items:
             like_prefix = folder_abs.rstrip(os.sep) + os.sep + "%"
             cursor.execute(
@@ -17591,15 +17599,17 @@ def api_queue_delete_folder():
                 """,
                 (folder_abs, like_prefix, folder_abs, like_prefix)
             )
-            queue_ids = [row[0] for row in cursor.fetchall()]
+            queue_ids_deleted = [row[0] for row in cursor.fetchall()]
 
-            if queue_ids:
+            if queue_ids_deleted:
                 if is_pg:
-                    cursor.execute("DELETE FROM download_queue WHERE id = ANY(%s)", (queue_ids,))
+                    cursor.execute("DELETE FROM download_queue WHERE id = ANY(%s)", (queue_ids_deleted,))
                 else:
-                    in_params = ",".join([placeholder] * len(queue_ids))
-                    cursor.execute(f"DELETE FROM download_queue WHERE id IN ({in_params})", tuple(queue_ids))
+                    in_params = ",".join([placeholder] * len(queue_ids_deleted))
+                    cursor.execute(f"DELETE FROM download_queue WHERE id IN ({in_params})", tuple(queue_ids_deleted))
                 deleted_queue_items = cursor.rowcount
+                # Clean up event logs for deleted queue items
+                clear_queue_events_for_items(queue_ids_deleted)
                 conn.commit()
 
         deleted_files = []
@@ -17653,8 +17663,9 @@ def api_queue_delete_folder():
 
 @app.route("/api/queue/clear", methods=["POST", "DELETE"])
 def api_queue_clear():
-    """Clear non-imported items from the download queue."""
+    """Clear non-imported items from the download queue and their event logs."""
     try:
+        from download_queue_manager import clear_queue_events_for_items
         data = request.get_json(silent=True) or {}
         filters = data.get('filters', {})  # Optional filters: status, artist, album
 
@@ -17663,24 +17674,48 @@ def api_queue_clear():
         is_pg = _is_postgres_connection(conn)
         placeholder = "%s" if is_pg else "?"
 
-        # By default keep 'imported' records so history is preserved
-        query = f"DELETE FROM download_queue WHERE status != {placeholder}"
-        params = ['imported']
+        # First, get the IDs of items to be deleted so we can clean up their event logs
+        select_query = f"SELECT id FROM download_queue WHERE status != {placeholder}"
+        select_params = ['imported']
 
         if filters.get('status'):
-            query = f"DELETE FROM download_queue WHERE status = {placeholder}"
-            params = [filters['status']]
+            select_query = f"SELECT id FROM download_queue WHERE status = {placeholder}"
+            select_params = [filters['status']]
 
         if filters.get('artist'):
-            query += f" AND artist = {placeholder}"
-            params.append(filters['artist'])
+            select_query += f" AND artist = {placeholder}"
+            select_params.append(filters['artist'])
 
         if filters.get('album'):
-            query += f" AND album = {placeholder}"
-            params.append(filters['album'])
+            select_query += f" AND album = {placeholder}"
+            select_params.append(filters['album'])
 
-        cursor.execute(query, params)
+        cursor.execute(select_query, select_params)
+        queue_ids_to_delete = [row[0] for row in cursor.fetchall()]
+
+        # Now delete the items
+        delete_query = f"DELETE FROM download_queue WHERE status != {placeholder}"
+        delete_params = ['imported']
+
+        if filters.get('status'):
+            delete_query = f"DELETE FROM download_queue WHERE status = {placeholder}"
+            delete_params = [filters['status']]
+
+        if filters.get('artist'):
+            delete_query += f" AND artist = {placeholder}"
+            delete_params.append(filters['artist'])
+
+        if filters.get('album'):
+            delete_query += f" AND album = {placeholder}"
+            delete_params.append(filters['album'])
+
+        cursor.execute(delete_query, delete_params)
         deleted_count = cursor.rowcount
+        
+        # Clean up event logs for deleted items
+        if queue_ids_to_delete:
+            clear_queue_events_for_items(queue_ids_to_delete)
+        
         conn.commit()
         conn.close()
 

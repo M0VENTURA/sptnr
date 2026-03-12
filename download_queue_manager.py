@@ -138,6 +138,32 @@ def get_queue_events(limit=50, event_type=None):
         
         return events[:limit]
 
+def clear_queue_events_for_items(queue_ids):
+    """Remove event log entries for deleted queue items.
+    
+    This prevents stale log entries from appearing as if items are still processing
+    after they've been removed from the queue.
+    
+    Args:
+        queue_ids: Single queue ID (int/str) or list of queue IDs to remove events for
+    """
+    global _queue_events
+    
+    # Normalize to set for comparison
+    if not isinstance(queue_ids, (list, tuple, set)):
+        queue_ids = [queue_ids]
+    queue_ids_to_remove = set(str(qid) for qid in queue_ids)
+    
+    with _queue_events_lock:
+        # Filter out events for deleted queue items
+        _queue_events = [
+            e for e in _queue_events 
+            if e.get('item_id') is None or str(e.get('item_id')) not in queue_ids_to_remove
+        ]
+    
+    if queue_ids_to_remove:
+        logger.debug(f"Cleared event log entries for queue items: {queue_ids_to_remove}")
+
 def get_scan_progress():
     """Get current scan progress state."""
     return _scan_progress.copy()
@@ -1153,7 +1179,7 @@ def mark_as_failed(queue_id, reason, retry_delay_minutes=30):
 
 def clear_queue(keep_completed=False):
     """
-    Clear all items from the download queue.
+    Clear all items from the download queue and their event logs.
     
     Args:
         keep_completed: If True, keep 'completed' and 'imported' items (only clear active/failed items)
@@ -1170,7 +1196,11 @@ def clear_queue(keep_completed=False):
             cursor.execute("DELETE FROM download_queue WHERE status NOT IN ('completed', 'imported')")
             logger.info("Cleared all active and failed queue items (kept completed/imported)")
         else:
-            # Clear everything
+            # Clear everything - wipe event logs completely
+            global _queue_events
+            with _queue_events_lock:
+                _queue_events = []
+            logger.debug("Cleared all queue event log entries")
             cursor.execute("DELETE FROM download_queue")
             logger.info("Cleared entire download queue")
         
