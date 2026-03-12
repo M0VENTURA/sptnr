@@ -22,6 +22,7 @@ import requests
 from difflib import SequenceMatcher
 from datetime import datetime, timedelta
 from pathlib import Path
+from helpers.db_utils import get_db_connection, is_postgres_configured, _is_postgres_connection
 from helpers.metadata_reader import read_mp3_metadata
 from api_clients import session  # Use shared session with retry logic & connection pooling
 from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
@@ -57,11 +58,12 @@ _scan_progress = {
 # Validate PostgreSQL configuration at module load time
 def _validate_postgres_config():
     """Ensure PostgreSQL is configured - SQLite is no longer supported due to locking issues"""
-    if not all([PG_HOST, PG_USER, PG_DATABASE]):
+    if not is_postgres_configured():
         error_msg = (
             "❌ PostgreSQL configuration is REQUIRED but not fully configured.\n"
             "   SQLite is no longer supported due to 'database is locked' errors with concurrent access.\n"
             "   Please set these environment variables:\n"
+            "   - DATABASE_URL or PG_DSN (recommended), OR\n"
             "   - PG_HOST (e.g., 'db.example.com')\n"
             "   - PG_USER (e.g., 'sptnr')\n"
             "   - PG_DATABASE (e.g., 'sptnr', default if not set)\n"
@@ -282,28 +284,21 @@ def retry_on_db_lock(max_retries=3, initial_delay=0.5):
 
 def get_db():
     """Get PostgreSQL database connection (SQLite no longer supported due to locking issues)"""
-    if not all([PG_HOST, PG_USER, PG_DATABASE]):
+    conn = get_db_connection()
+    if not _is_postgres_connection(conn):
+        try:
+            conn.close()
+        except Exception:
+            pass
         raise RuntimeError(
-            "PostgreSQL configuration is required but not found. "
-            "Please set PG_HOST, PG_USER, and PG_DATABASE environment variables. "
-            "SQLite is no longer supported due to database locking issues with concurrent access."
+            "download_queue_manager requires PostgreSQL. "
+            "SQLite connections are not supported for queue manager operations."
         )
-    
     try:
-        conn = psycopg2.connect(
-            host=PG_HOST,
-            user=PG_USER,
-            password=PG_PASSWORD,
-            database=PG_DATABASE,
-            port=int(PG_PORT),
-            connect_timeout=10,
-            cursor_factory=psycopg2.extras.RealDictCursor,
-        )
         conn.set_session(autocommit=False)
-        return conn
-    except psycopg2.Error as e:
-        logger.error(f"Failed to connect to PostgreSQL: {e}")
-        raise
+    except Exception:
+        pass
+    return conn
 
 
 def _ensure_download_queue_columns(conn, cursor, is_pg=True):
