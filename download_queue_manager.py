@@ -1676,10 +1676,9 @@ def rename_track_file(track_id, db_conn, music_dir=None):
         _shutil.move(file_path, new_path)
         logger.info(f"[RENAME] Moved: {file_path!r} -> {new_path!r}")
 
-        ts_expr = "CURRENT_TIMESTAMP" if is_pg else "datetime('now')"
         cursor.execute(
-            f"UPDATE tracks SET file_path = {placeholder}, beets_path = {placeholder}, "
-            f"updated_at = {ts_expr} WHERE id = {placeholder}",
+            f"UPDATE tracks SET file_path = {placeholder}, beets_path = {placeholder} "
+            f"WHERE id = {placeholder}",
             (new_path, new_path, track_id),
         )
         db_conn.commit()
@@ -2457,6 +2456,8 @@ def auto_discover_and_queue_files():
                 track_number = metadata.get('track_number')
                 disc_number = metadata.get('disc_number')
                 year = metadata.get('date') or metadata.get('year')
+                duration_ms = metadata.get('duration_ms')
+                duration = int(duration_ms / 1000) if duration_ms and duration_ms > 0 else None
                 release_group = _build_release_import_group(album_artist or artist, album)
                 
                 # Log metadata extraction status
@@ -2645,12 +2646,12 @@ def auto_discover_and_queue_files():
                         conn,
                         f"""
                         INSERT INTO download_queue 
-                        (artist, title, album, album_artist, track_number, disc_number, year, found_filename, file_path,
+                        (artist, title, album, album_artist, track_number, disc_number, year, duration, found_filename, file_path,
                          status, source, import_group, import_type, failure_reason, created_at, updated_at)
-                        VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder},
+                        VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder},
                                 'possible_duplicate', 'discovered', {placeholder}, 'album', 'Duplicate discovered during scan', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """,
-                        (artist, title, album, album_artist, track_number, disc_number, year, filename, full_path, release_group),
+                        (artist, title, album, album_artist, track_number, disc_number, year, duration, filename, full_path, release_group),
                         context="auto_discover duplicate insert"
                     )
 
@@ -2695,11 +2696,11 @@ def auto_discover_and_queue_files():
                     conn,
                     f"""
                     INSERT INTO download_queue 
-                    (artist, title, album, album_artist, track_number, disc_number, year, found_filename, file_path, 
+                    (artist, title, album, album_artist, track_number, disc_number, year, duration, found_filename, file_path, 
                      status, source, import_group, import_type, created_at, updated_at)
-                    VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'unmatched', 'discovered', {placeholder}, 'album', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'unmatched', 'discovered', {placeholder}, 'album', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """,
-                    (artist, title, album, album_artist, track_number, disc_number, year, filename, full_path, release_group),
+                    (artist, title, album, album_artist, track_number, disc_number, year, duration, filename, full_path, release_group),
                     context="auto_discover unmatched insert"
                 )
 
