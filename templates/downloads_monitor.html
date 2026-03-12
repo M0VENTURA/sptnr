@@ -339,7 +339,7 @@
 // Queue management functions for downloads monitor
 
 let queueLogPaused = false;
-const QUEUE_PAGE_LIMIT = 100;
+const QUEUE_PAGE_LIMIT = 500;  // Show up to 500 items per page to avoid pagination
 let queuePageOffset = 0;
 
 function getQueuePageUrl(limit = QUEUE_PAGE_LIMIT, offset = queuePageOffset) {

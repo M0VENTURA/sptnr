@@ -4994,7 +4994,7 @@ let currentOrganizeGroupItems = [];
 async function organizeGroup(groupId) {
   try {
     // Get all completed items with this group ID
-    const response = await fetch('/api/queue/status?limit=100');
+    const response = await fetch('/api/queue/status?limit=500');
     
     if (!response.ok) {
       console.error(`HTTP Error ${response.status}: ${response.statusText}`);
