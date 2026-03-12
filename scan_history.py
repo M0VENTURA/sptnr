@@ -4,11 +4,12 @@ Scan History Tracker
 Tracks individual album scans across different scan types (Navidrome, Popularity, Beets)
 """
 
-import sqlite3
 import logging
+import sqlite3
 from datetime import datetime
 import os
 import time
+from helpers.db_utils import get_db_connection, _is_postgres_connection
 
 
 def _get_db_path():
@@ -54,6 +55,36 @@ def _get_db_path():
 DB_PATH = _get_db_path()
 
 
+def _placeholder(is_pg: bool) -> str:
+    return "%s" if is_pg else "?"
+
+
+def _table_exists(cursor, table_name: str, is_pg: bool) -> bool:
+    if is_pg:
+        cursor.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = current_schema() AND table_name = %s
+            )
+            """,
+            (table_name,)
+        )
+        row = cursor.fetchone()
+        if isinstance(row, dict):
+            return bool(row.get("exists"))
+        return bool(row[0]) if row else False
+
+    cursor.execute(
+        """
+        SELECT name FROM sqlite_master
+        WHERE type='table' AND name=?
+        """,
+        (table_name,)
+    )
+    return cursor.fetchone() is not None
+
+
 def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: int = 0, status: str = "completed", source: str = ""):
     """
     Log an album scan to the scan_history table with retry logic for database locks.
@@ -73,24 +104,45 @@ def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: in
     
     for attempt in range(max_retries):
         try:
-            # Use higher timeout and WAL mode for better concurrency
-            conn = sqlite3.connect(DB_PATH, timeout=120.0)
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=5000")  # 5 second busy timeout
+            conn = get_db_connection()
+            is_pg = _is_postgres_connection(conn)
+            placeholder = _placeholder(is_pg)
+
+            if not is_pg:
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA busy_timeout=5000")  # 5 second busy timeout
             
             # Create table if it doesn't exist
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS scan_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    artist TEXT NOT NULL,
-                    album TEXT NOT NULL,
-                    scan_type TEXT NOT NULL,
-                    scan_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    tracks_processed INTEGER DEFAULT 0,
-                    status TEXT DEFAULT 'completed',
-                    source TEXT DEFAULT ''
+            if is_pg:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS scan_history (
+                        id BIGSERIAL PRIMARY KEY,
+                        artist TEXT NOT NULL,
+                        album TEXT NOT NULL,
+                        scan_type TEXT NOT NULL,
+                        scan_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        tracks_processed INTEGER DEFAULT 0,
+                        status TEXT DEFAULT 'completed',
+                        source TEXT DEFAULT ''
+                    )
+                    """
                 )
-            """)
+            else:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS scan_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        artist TEXT NOT NULL,
+                        album TEXT NOT NULL,
+                        scan_type TEXT NOT NULL,
+                        scan_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        tracks_processed INTEGER DEFAULT 0,
+                        status TEXT DEFAULT 'completed',
+                        source TEXT DEFAULT ''
+                    )
+                    """
+                )
             
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_scan_history_timestamp 
@@ -105,8 +157,9 @@ def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: in
             # Insert scan record
             conn.execute("""
                 INSERT INTO scan_history (artist, album, scan_type, tracks_processed, status, source)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (artist, album, scan_type, tracks_processed, status, source))
+                VALUES ({}, {}, {}, {}, {}, {})
+            """.format(placeholder, placeholder, placeholder, placeholder, placeholder, placeholder),
+            (artist, album, scan_type, tracks_processed, status, source))
             
             conn.commit()
             conn.close()
@@ -114,22 +167,15 @@ def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: in
             logging.info(f"Successfully logged {scan_type} scan for '{artist}' - '{album}' to scan_history")
             return  # Success, exit function
             
-        except sqlite3.OperationalError as e:
-            if "database is locked" in str(e) and attempt < max_retries - 1:
+        except Exception as e:
+            if "database is locked" in str(e).lower() and attempt < max_retries - 1:
                 # Transient lock, retry with exponential backoff
                 wait_time = retry_delay * (2 ** attempt)  # 0.5s, 1s, 2s
                 logging.warning(f"Database locked when logging {scan_type} scan, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries}): {e}")
                 time.sleep(wait_time)
                 continue
-            else:
-                logging.error(f"Error logging album scan for '{artist}' - '{album}' after {attempt + 1} attempts: {e}")
-                logging.error(f"DB_PATH={DB_PATH}")
-                return  # Return gracefully on final failure instead of raising
-        except Exception as e:
             logging.error(f"Error logging album scan for '{artist}' - '{album}': {e}")
             logging.error(f"DB_PATH={DB_PATH}")
-            import traceback
-            logging.error(traceback.format_exc())
             return
 
 def was_album_scanned(artist: str, album: str, scan_type: str, days_threshold: int = None) -> bool:
@@ -147,18 +193,16 @@ def was_album_scanned(artist: str, album: str, scan_type: str, days_threshold: i
         True if album was already successfully scanned (within days_threshold if provided), False otherwise
     """
     try:
-        conn = sqlite3.connect(DB_PATH, timeout=120.0)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=5000")  # 5 second busy timeout
+        conn = get_db_connection()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = _placeholder(is_pg)
+        if not is_pg:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")  # 5 second busy timeout
         cursor = conn.cursor()
         
         # Check if scan_history table exists
-        cursor.execute("""
-            SELECT name FROM sqlite_master 
-            WHERE type='table' AND name='scan_history'
-        """)
-        
-        if not cursor.fetchone():
+        if not _table_exists(cursor, "scan_history", is_pg):
             # Table doesn't exist yet, assume not scanned
             conn.close()
             return False
@@ -167,19 +211,36 @@ def was_album_scanned(artist: str, album: str, scan_type: str, days_threshold: i
         # Using LIMIT 1 for efficiency - we only need to know if any record exists
         if days_threshold is not None:
             # Time-based check: only consider scans within the last N days
-            cursor.execute("""
-                SELECT 1 FROM scan_history
-                WHERE artist = ? AND album = ? AND scan_type = ? AND status = 'completed'
-                AND datetime(scan_timestamp) > datetime('now', '-' || ? || ' days')
-                LIMIT 1
-            """, (artist, album, scan_type, days_threshold))
+            if is_pg:
+                cursor.execute(
+                    f"""
+                    SELECT 1 FROM scan_history
+                    WHERE artist = {placeholder} AND album = {placeholder} AND scan_type = {placeholder} AND status = 'completed'
+                    AND scan_timestamp > (CURRENT_TIMESTAMP - ({placeholder} || ' days')::interval)
+                    LIMIT 1
+                    """,
+                    (artist, album, scan_type, str(days_threshold))
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT 1 FROM scan_history
+                    WHERE artist = ? AND album = ? AND scan_type = ? AND status = 'completed'
+                    AND datetime(scan_timestamp) > datetime('now', '-' || ? || ' days')
+                    LIMIT 1
+                    """,
+                    (artist, album, scan_type, days_threshold)
+                )
         else:
             # Legacy behavior: check if ever scanned
-            cursor.execute("""
+            cursor.execute(
+                f"""
                 SELECT 1 FROM scan_history
-                WHERE artist = ? AND album = ? AND scan_type = ? AND status = 'completed'
+                WHERE artist = {placeholder} AND album = {placeholder} AND scan_type = {placeholder} AND status = 'completed'
                 LIMIT 1
-            """, (artist, album, scan_type))
+                """,
+                (artist, album, scan_type)
+            )
         
         result = cursor.fetchone()
         conn.close()
@@ -203,41 +264,42 @@ def get_recent_album_scans(limit: int = 10):
         List of dicts with scan information
     """
     try:
-        conn = sqlite3.connect(DB_PATH, timeout=120.0)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=5000")  # 5 second busy timeout
-        conn.row_factory = sqlite3.Row
+        conn = get_db_connection()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = _placeholder(is_pg)
+        if not is_pg:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")  # 5 second busy timeout
+            conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
         # Check if scan_history table exists
-        cursor.execute("""
-            SELECT name FROM sqlite_master 
-            WHERE type='table' AND name='scan_history'
-        """)
-        
-        if not cursor.fetchone():
+        if not _table_exists(cursor, "scan_history", is_pg):
             # Table doesn't exist yet, return empty list
             conn.close()
             return []
         
-        cursor.execute("""
+        cursor.execute(
+            f"""
             SELECT artist, album, scan_type, scan_timestamp, tracks_processed, status, source
             FROM scan_history
             WHERE status != 'skipped'
             ORDER BY scan_timestamp DESC
-            LIMIT ?
-        """, (limit,))
+            LIMIT {placeholder}
+            """,
+            (limit,)
+        )
         
         scans = []
         for row in cursor.fetchall():
             scans.append({
-                'artist': row['artist'],
-                'album': row['album'],
-                'scan_type': row['scan_type'],
-                'scan_timestamp': row['scan_timestamp'],
-                'tracks_processed': row['tracks_processed'],
-                'status': row['status'],
-                'source': row['source'] if 'source' in row.keys() else ''
+                'artist': row['artist'] if hasattr(row, 'keys') else row[0],
+                'album': row['album'] if hasattr(row, 'keys') else row[1],
+                'scan_type': row['scan_type'] if hasattr(row, 'keys') else row[2],
+                'scan_timestamp': row['scan_timestamp'] if hasattr(row, 'keys') else row[3],
+                'tracks_processed': row['tracks_processed'] if hasattr(row, 'keys') else row[4],
+                'status': row['status'] if hasattr(row, 'keys') else row[5],
+                'source': (row['source'] if hasattr(row, 'keys') and 'source' in row.keys() else (row[6] if len(row) > 6 else ''))
             })
         
         conn.close()

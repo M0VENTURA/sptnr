@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
 from database_abstraction import DatabaseQuery, is_postgres_connection
+from helpers.db_utils import get_db_connection
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -47,14 +48,8 @@ class MusicBrainzReleaseManager:
         self.music_dir.mkdir(parents=True, exist_ok=True)
 
     def get_db(self):
-        """Get active app database connection (PostgreSQL or SQLite fallback)."""
-        try:
-            from app import get_db as app_get_db
-            return app_get_db()
-        except Exception:
-            conn = sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)
-            conn.row_factory = sqlite3.Row
-            return conn
+        """Get database connection from shared backend helper."""
+        return get_db_connection()
 
     @staticmethod
     def _row_get(row, key, index=0, default=None):

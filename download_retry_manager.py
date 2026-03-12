@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 from typing import Dict
 
 import sqlite3
+from helpers.db_utils import get_db_connection, _is_postgres_connection, is_postgres_configured
 
 # Configure logging
 logging.basicConfig(
@@ -55,12 +56,13 @@ class DownloadRetryManager:
         }
 
     def _open_db(self):
-        """Open DB connection via app backend first (PostgreSQL/SQLite), then legacy fallback."""
+        """Open DB connection with strict fallback: SQLite only when Postgres is not configured."""
         try:
-            from app import get_db as app_get_db, _is_postgres_connection
-            conn = app_get_db()
+            conn = get_db_connection()
             return conn, bool(_is_postgres_connection(conn))
         except Exception:
+            if is_postgres_configured():
+                raise
             conn = sqlite3.connect(self.db_path, timeout=120.0)
             conn.row_factory = sqlite3.Row
             return conn, False

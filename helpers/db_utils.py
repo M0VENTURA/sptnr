@@ -4,6 +4,15 @@ import logging
 
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 
+
+def is_postgres_configured() -> bool:
+    """Return True when PostgreSQL connection settings are configured."""
+    pg_dsn = (os.environ.get("DATABASE_URL") or os.environ.get("PG_DSN") or "").strip()
+    pg_host = (os.environ.get("PG_HOST") or "").strip()
+    pg_user = (os.environ.get("PG_USER") or "").strip()
+    pg_database = (os.environ.get("PG_DATABASE") or "").strip()
+    return bool(pg_dsn or (pg_host and pg_user and pg_database))
+
 def _is_postgres_connection(conn):
     """Detect if connection is PostgreSQL."""
     try:
@@ -73,7 +82,7 @@ def get_db_connection():
     pg_user = os.environ.get("PG_USER", "")
     pg_database = os.environ.get("PG_DATABASE", "sptnr")
 
-    if pg_dsn or (pg_host and pg_user):
+    if is_postgres_configured():
         try:
             import psycopg2
             import psycopg2.extras
@@ -96,10 +105,15 @@ def get_db_connection():
                 )
                 logging.debug(f"Connected to PostgreSQL: {pg_host}/{pg_database}")
             return conn
-        except ImportError:
-            logging.warning("PostgreSQL configured but psycopg2 not installed, falling back to SQLite")
+        except ImportError as e:
+            raise RuntimeError(
+                "PostgreSQL is configured but psycopg2 is not installed. "
+                "Install psycopg2-binary to continue."
+            ) from e
         except Exception as e:
-            logging.warning(f"Failed to connect to PostgreSQL: {e}, falling back to SQLite")
+            raise RuntimeError(
+                f"PostgreSQL is configured but connection failed: {e}"
+            ) from e
     
     # Fall back to SQLite
     # Ensure database directory exists

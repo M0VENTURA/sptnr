@@ -99,6 +99,8 @@ If an album-level update occurs, **all tracks in that album** must be updated in
 - All DB I/O must go through `database_abstraction.py`.
 - Never scatter raw SQL across unrelated modules.
 - Use `is_postgres_connection()` / `DatabaseQuery` helpers for dialect differences.
+- SQLite fallback is allowed **only when PostgreSQL is not configured**.
+- If PostgreSQL is configured but unavailable, fail fast and log a clear error; do not silently redirect writes/reads to SQLite.
 
 ---
 

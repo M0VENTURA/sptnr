@@ -22,6 +22,7 @@ from datetime import datetime
 from contextlib import closing
 from typing import Any
 from database_abstraction import DatabaseQuery, is_postgres_connection
+from helpers.db_utils import get_db_connection
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -83,9 +84,7 @@ class MusicBrainzFinalizer:
 
     def get_db(self):
         """Get database connection"""
-        conn = sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)
-        conn.row_factory = sqlite3.Row
-        return conn
+        return get_db_connection()
 
     def ensure_schema(self):
         """Ensure MusicBrainz release tables exist before finalization checks run."""
