@@ -401,6 +401,148 @@ def get_slskd_client():
         logger.error(f"Error getting SlskdClient: {e}")
         return None
 
+
+def _load_qbittorrent_config():
+    """Load qBittorrent settings from config.yaml with safe defaults."""
+    config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+    if not os.path.exists(config_path):
+        config_path = "/config/config.yml"
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        return cfg.get("qbittorrent", {}) or {}
+    except Exception as e:
+        logger.error(f"Could not load qBittorrent config: {e}")
+        return {}
+
+
+def _fallback_queue_item_to_soulseek(queue_id, reason, retry_delay_minutes=5):
+    """Switch a queue item to Soulseek and requeue it for a fallback attempt."""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = _get_placeholder(conn)
+        next_retry = (datetime.now() + timedelta(minutes=retry_delay_minutes)).isoformat()
+        cursor.execute(
+            f"""
+            UPDATE download_queue
+            SET source = 'soulseek',
+                status = 'queued',
+                failure_reason = {placeholder},
+                next_retry_at = {placeholder},
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = {placeholder}
+            """,
+            (reason, next_retry, queue_id),
+        )
+        conn.commit()
+        conn.close()
+        logger.warning(f"Queue {queue_id}: switched to Soulseek fallback ({reason})")
+        return True
+    except Exception as e:
+        logger.error(f"Queue {queue_id}: could not switch to Soulseek fallback: {e}")
+        return False
+
+
+def search_and_download_qbittorrent(queue_id, queue_item):
+    """Search qBittorrent for queue item and enqueue top torrent; fallback to Soulseek when needed."""
+    try:
+        qbit_cfg = _load_qbittorrent_config()
+        if not qbit_cfg.get("enabled"):
+            _fallback_queue_item_to_soulseek(queue_id, "qBittorrent disabled")
+            return False
+
+        web_url = (qbit_cfg.get("web_url") or "http://localhost:8080").rstrip("/")
+        username = qbit_cfg.get("username") or ""
+        password = qbit_cfg.get("password") or ""
+        search_query = queue_item.get("search_query") or f"{queue_item.get('artist', '')} - {queue_item.get('title', '')}"
+
+        update_queue_status(queue_id, "searching")
+
+        with requests.Session() as session:
+            if username and password:
+                try:
+                    session.post(
+                        f"{web_url}/api/v2/auth/login",
+                        data={"username": username, "password": password},
+                        timeout=8,
+                    )
+                except Exception as login_err:
+                    logger.debug(f"Queue {queue_id}: qBittorrent login warning: {login_err}")
+
+            start_resp = session.post(
+                f"{web_url}/api/v2/search/start",
+                data={"pattern": search_query, "plugins": "all", "category": "Music"},
+                timeout=12,
+            )
+            if start_resp.status_code not in (200, 201):
+                _fallback_queue_item_to_soulseek(queue_id, f"qBittorrent search start failed: {start_resp.status_code}")
+                return False
+
+            search_id = (start_resp.json() or {}).get("id")
+            if not search_id:
+                _fallback_queue_item_to_soulseek(queue_id, "qBittorrent returned no search id")
+                return False
+
+            best_result = None
+            for _ in range(40):
+                time.sleep(0.5)
+                status_resp = session.get(f"{web_url}/api/v2/search/status", params={"id": search_id}, timeout=8)
+                if status_resp.status_code != 200:
+                    continue
+
+                results_resp = session.get(
+                    f"{web_url}/api/v2/search/results",
+                    params={"id": search_id, "limit": 200},
+                    timeout=8,
+                )
+                if results_resp.status_code == 200:
+                    results = (results_resp.json() or {}).get("results", [])
+                    if results:
+                        best_result = max(results, key=lambda r: (r.get("nb_seeders", 0), r.get("size", 0)))
+
+                status_rows = status_resp.json() or []
+                if status_rows and status_rows[0].get("status") == "Stopped":
+                    break
+
+            try:
+                session.post(f"{web_url}/api/v2/search/stop", data={"id": search_id}, timeout=5)
+            except Exception:
+                pass
+
+            if not best_result:
+                _fallback_queue_item_to_soulseek(queue_id, "No qBittorrent results found", retry_delay_minutes=1)
+                return False
+
+            magnet = best_result.get("magnet_uri") or best_result.get("magnet")
+            torrent_url = best_result.get("torrent_url") or best_result.get("link")
+            if not (magnet or torrent_url):
+                _fallback_queue_item_to_soulseek(queue_id, "qBittorrent result missing magnet/url", retry_delay_minutes=1)
+                return False
+
+            add_resp = session.post(
+                f"{web_url}/api/v2/torrents/add",
+                data={
+                    "urls": magnet or torrent_url,
+                    "category": "Music",
+                    "tags": "Music",
+                },
+                timeout=12,
+            )
+            if add_resp.status_code in (200, 403):
+                update_queue_status(queue_id, "downloading", found_filename=best_result.get("fileName") or best_result.get("name") or "")
+                logger.info(f"Queue {queue_id}: qBittorrent download queued successfully")
+                return True
+
+            _fallback_queue_item_to_soulseek(queue_id, f"qBittorrent add failed: {add_resp.status_code}", retry_delay_minutes=1)
+            return False
+
+    except Exception as e:
+        logger.error(f"Queue {queue_id}: qBittorrent error: {e}")
+        _fallback_queue_item_to_soulseek(queue_id, f"qBittorrent error: {e}", retry_delay_minutes=1)
+        return False
+
 def cleanup_stuck_searching_items():
     """Detect and mark as failed any items stuck in 'searching' for too long"""
     try:
@@ -459,7 +601,6 @@ def get_queued_items(limit=10):
             SELECT * FROM download_queue 
             WHERE status = 'queued'
             AND (next_retry_at IS NULL OR next_retry_at <= {placeholder})
-            AND source = 'soulseek'
             ORDER BY priority ASC, retry_count ASC, next_retry_at ASC, created_at ASC
             LIMIT {placeholder}
         """.format(placeholder=placeholder), (now, limit))
@@ -486,7 +627,7 @@ def update_queue_status(queue_id, status, **kwargs):
         # Add any additional fields to update
         for key, value in kwargs.items():
             if key in ['found_filename', 'file_path', 'failure_reason', 'retry_count', 
-                       'last_failure_time', 'source_id']:
+                       'last_failure_time', 'source_id', 'source']:
                 updates.append(f"{key} = {placeholder}")
                 params.append(value)
         
@@ -557,8 +698,8 @@ def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=30):
         cursor = conn.cursor()
         placeholder = "%s" if is_pg else "?"
         
-        # Get current retry count
-        cursor.execute(f"SELECT retry_count FROM download_queue WHERE id = {placeholder}", (queue_id,))
+        # Get current retry_count and max_retries to enforce bounded retry behavior
+        cursor.execute(f"SELECT retry_count, max_retries FROM download_queue WHERE id = {placeholder}", (queue_id,))
         row = cursor.fetchone()
         
         if not row:
@@ -566,16 +707,19 @@ def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=30):
             return False
         
         retry_count = (row['retry_count'] or 0) + 1
+        max_retries = row.get('max_retries') if hasattr(row, 'keys') else (row[1] if len(row) > 1 else None)
         
-        # Always schedule retry if requested - no max retry limit for Soulseek searches
-        if schedule_retry:
+        if schedule_retry and (not max_retries or retry_count < max_retries):
             next_retry = datetime.now() + timedelta(minutes=retry_delay_minutes)
             new_status = 'queued'
             logger.warning(f"Queue {queue_id}: Failed ({reason}), scheduling retry #{retry_count} at {next_retry}")
         else:
             next_retry = None
             new_status = 'failed'
-            logger.error(f"Queue {queue_id}: Failed permanently ({reason}) - retry not requested")
+            if schedule_retry and max_retries:
+                logger.error(f"Queue {queue_id}: Failed permanently ({reason}) after max retries ({retry_count}/{max_retries})")
+            else:
+                logger.error(f"Queue {queue_id}: Failed permanently ({reason}) - retry not requested")
         
         cursor.execute(f"""
             UPDATE download_queue 
@@ -587,7 +731,7 @@ def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=30):
         conn.commit()
         conn.close()
         
-        return schedule_retry  # Return whether retry was scheduled
+        return new_status == 'queued'  # Return whether retry was scheduled
         
     except Exception as e:
         logger.error(f"Error marking queue item as failed: {e}")
@@ -1007,6 +1151,7 @@ def check_completed_downloads():
         for item in downloading:
             match_found = None
             match_meta_state = None
+            item_source = (item.get("source") or "soulseek").strip().lower()
 
             found_fn = item.get("found_filename") or ""
             item_id = item["id"]
@@ -1061,7 +1206,7 @@ def check_completed_downloads():
             # 4. No file match found. Reconcile against live slskd transfers so
             # stale 'downloading' rows do not remain stuck forever.
             if match_found is None:
-                if slskd_status_available:
+                if item_source == 'soulseek' and slskd_status_available:
                     found_fn = item.get("found_filename") or ""
                     transfer = _get_transfer_entry(found_fn)
 
@@ -1108,7 +1253,7 @@ def check_completed_downloads():
                             retry_delay_minutes=10,
                         )
 
-                elif _is_stale_queue_item(item, stale_minutes=10):
+                elif item_source == 'soulseek' and _is_stale_queue_item(item, stale_minutes=10):
                     # slskd API was unavailable but the item has been stuck in
                     # 'downloading' for too long with no file present.  Re-queue
                     # so it can be retried once slskd becomes reachable again.
@@ -1120,6 +1265,15 @@ def check_completed_downloads():
                         "No file found and slskd unavailable while marked downloading",
                         schedule_retry=True,
                         retry_delay_minutes=15,
+                    )
+                    continue
+                elif item_source == 'qbittorrent' and _is_stale_queue_item(item, stale_minutes=20):
+                    # qBittorrent items that do not produce local files in a timely
+                    # way are switched to Soulseek for a deterministic fallback path.
+                    _fallback_queue_item_to_soulseek(
+                        item_id,
+                        "qBittorrent download stale with no local file",
+                        retry_delay_minutes=1,
                     )
                     continue
 
@@ -1174,79 +1328,81 @@ def check_completed_downloads():
                             logger.info(f"[AUTO_MOVE] Queue {item_id}: verified and imported to {target_path}")
                         else:
                             logger.warning(
-                                f"[AUTO_MOVE] Queue {item_id}: verification FAILED "
-                                f"({verify_result.get('error')}), marking back to 'completed'"
-                            )
+                            source = (item.get('source') or 'soulseek').strip().lower()
                             update_queue_item(item_id, status='completed', file_path=file_path)
                     else:
-                        logger.warning(
-                            f"[AUTO_MOVE] Queue {item_id}: could not move "
-                            f"({move_result.get('error')}), keeping as 'completed'"
-                        )
-                except Exception as move_err:
-                    logger.warning(f"[AUTO_MOVE] Queue {item_id}: move error: {move_err}")
+                                if source == 'qbittorrent':
+                                    if search_and_download_qbittorrent(item['id'], item):
+                                        processed += 1
+                                else:
+                                    if not client:
+                                        logger.error("SlskdClient not available, skipping Soulseek queue item")
+                                        break
+                                    if search_and_download(item['id'], item, client):
+                                        processed += 1
+                            except Exception as e:
+                                logger.error(f"Error processing queue {item['id']}: {e}")
+                                mark_failed(item['id'], f"Processing error: {str(e)}", schedule_retry=True)
 
-                newly_completed.append(item)
+                        # Always check for completed downloads, even if no new items were processed
+                        # This ensures downloads that complete between processing cycles are detected
+                        check_completed_downloads()
 
-        conn.close()
+                        # Process completed downloads with MusicBrainz/Discogs metadata
+                        try:
+                            from post_download_processor import process_pending_completed_items
+                            post_stats = process_pending_completed_items(limit=5)
+                            if post_stats.get('processed', 0) > 0:
+                                logger.info(f"Post-download processing: {post_stats['processed']} items organized")
+                        except Exception as e:
+                            logger.error(f"Error in post-download processing: {e}")
 
-        for item in newly_completed:
-            try:
-                from download_queue_manager import auto_move_completed_album
-                result = auto_move_completed_album(
-                    release_id=item.get('release_id'),
-                    artist=item.get('artist'),
-                    album=item.get('album')
-                )
-                if result.get('album_complete'):
-                    logger.info(
-                        f"[AUTO_MOVE] Album complete after download: "
-                        f"{item.get('artist')} – {item.get('album')} | "
-                        f"moved={result['moved']}, already_copied={result['already_copied']}"
-                    )
-            except Exception as auto_err:
-                logger.warning(f"[AUTO_MOVE] Error triggering auto-move for queue {item['id']}: {auto_err}")
+                        return processed
 
-    except Exception as e:
-        logger.error(f"Error checking completed downloads: {e}")
+                    except Exception as e:
+                        logger.error(f"Error in process_queue: {e}")
+                        return 0
 
-def matches_queue_item(filename, queue_item, file_path=None):
-    """Conservative filename/path fallback matcher when metadata is unavailable."""
-    try:
-        candidate_duration = _extract_audio_file_duration_seconds(file_path) if file_path else None
-        score = _score_soulseek_candidate(filename, queue_item, candidate_duration=candidate_duration)
-        return score >= 0.60
-        
-    except Exception as e:
-        logger.error(f"Error matching filename: {e}")
-        return False
 
-def process_queue(client):
-    """Process one batch of queued items"""
-    try:
-        items = get_queued_items(limit=5)
-        
-        if not items:
-            logger.debug("No queued items to process")
-        else:
-            logger.info(f"Processing {len(items)} queue items...")
-        
-        processed = 0
-        for item in items:
-            if not client:
-                logger.error("SlskdClient not available, skipping")
-                break
-            
-            try:
-                if search_and_download(item['id'], item, client):
-                    processed += 1
-            except Exception as e:
-                logger.error(f"Error processing queue {item['id']}: {e}")
-                mark_failed(item['id'], f"Processing error: {str(e)}", schedule_retry=True)
-        
-        # Always check for completed downloads, even if no new items were processed
-        # This ensures downloads that complete between processing cycles are detected
-        check_completed_downloads()
+                def _load_auto_discovery_settings():
+                    """Load persistent auto-discovery settings from config/env with safe defaults."""
+                    enabled = True
+                    interval_seconds = 60
+
+                    # Optional env overrides for quick control.
+                    env_enabled = os.environ.get("DOWNLOADS_AUTO_DISCOVER_ENABLED")
+                    env_interval = os.environ.get("DOWNLOADS_AUTO_DISCOVER_INTERVAL_SECONDS")
+
+                    if env_enabled is not None:
+                        enabled = str(env_enabled).strip().lower() in {"1", "true", "yes", "on"}
+
+                    if env_interval:
+                        try:
+                            interval_seconds = int(env_interval)
+                        except ValueError:
+                            logger.warning("Invalid DOWNLOADS_AUTO_DISCOVER_INTERVAL_SECONDS='%s'", env_interval)
+
+                    # Config file settings override defaults when present.
+                    config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+                    try:
+                        if os.path.exists(config_path):
+                            with open(config_path, 'r', encoding='utf-8') as f:
+                                cfg = yaml.safe_load(f) or {}
+
+                            features = cfg.get('features') or {}
+                            discovery_cfg = features.get('downloads_auto_discover') or {}
+
+                            if 'enabled' in discovery_cfg:
+                                enabled = bool(discovery_cfg.get('enabled'))
+                            if 'interval_seconds' in discovery_cfg:
+                                interval_seconds = int(discovery_cfg.get('interval_seconds') or interval_seconds)
+                    except Exception as e:
+                        logger.warning(f"Could not read auto-discovery settings: {e}")
+
+                    if interval_seconds < 15:
+                        interval_seconds = 15
+
+                    return enabled, interval_seconds
         
         # Process completed downloads with MusicBrainz/Discogs metadata
         try:

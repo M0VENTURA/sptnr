@@ -16998,6 +16998,7 @@ def api_queue_add():
     """Add song/album to download queue"""
     try:
         from download_queue_manager import add_to_queue, check_downloads_folder
+        allowed_sources = {"soulseek", "qbittorrent"}
         
         data = request.get_json()
         if not data:
@@ -17020,6 +17021,11 @@ def api_queue_add():
             # - Individual tracks: Soulseek first
             is_album_request = bool(data.get('is_album')) or import_type == 'album'
             source = 'qbittorrent' if is_album_request else 'soulseek'
+
+        if source not in allowed_sources:
+            return jsonify({
+                "error": f"Invalid source '{source}'. Allowed: {', '.join(sorted(allowed_sources))}"
+            }), 400
 
         # Optional metadata used by file organization (year-based folder naming)
         # and post-download enrichment.
@@ -17112,6 +17118,7 @@ def api_queue_add_batch():
     try:
         from download_queue_manager import add_to_queue
         import uuid
+        allowed_sources = {"soulseek", "qbittorrent"}
         
         data = request.get_json()
         if not data or 'items' not in data:
@@ -17160,6 +17167,12 @@ def api_queue_add_batch():
                 # - Album imports: qBittorrent first
                 # - Song/playlist track imports: Soulseek first
                 source = 'qbittorrent' if import_type == 'album' else 'soulseek'
+
+            if source not in allowed_sources:
+                failed_count += 1
+                failed_tracks.append(title or 'Unknown')
+                logging.warning(f"Skipping item with invalid source '{source}' for {artist} - {title}")
+                continue
             
             # Extract MusicBrainz/Discogs metadata if provided
             # Handle both string and int types for numeric fields
@@ -17251,12 +17264,14 @@ def api_queue_status():
         # source=None returns all sources (soulseek, qbittorrent, discovered/unmatched)
         source = request.args.get('source') or None
         limit = int(request.args.get('limit', 50))
+        reconcile = str(request.args.get('reconcile', 'false')).strip().lower() in ('1', 'true', 'yes', 'on')
 
-        # Reconcile stale/failed slskd transfers so queue state reflects current API state.
-        try:
-            check_and_remove_failed_downloads()
-        except Exception as reconcile_err:
-            logging.debug(f"Queue status reconcile skipped: {reconcile_err}")
+        # Reconciliation is optional to keep this endpoint side-effect free by default.
+        if reconcile:
+            try:
+                check_and_remove_failed_downloads()
+            except Exception as reconcile_err:
+                logging.debug(f"Queue status reconcile skipped: {reconcile_err}")
 
         # Get queue items (all sources by default)
         active_queue = get_queue(status=status, source=source, limit=limit)

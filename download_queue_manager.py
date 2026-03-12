@@ -330,6 +330,23 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                             pass
                         logger.warning(f"Could not add {col} column: {e}")
 
+            # Prevent duplicate active queue rows under concurrent enqueue requests.
+            try:
+                cursor.execute(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS uq_download_queue_active_identity
+                    ON download_queue (LOWER(artist), LOWER(COALESCE(album, '')), LOWER(title), source)
+                    WHERE status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled')
+                    """
+                )
+                conn.commit()
+            except Exception as e:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                logger.warning(f"Could not create active queue dedupe index: {e}")
+
             _queue_schema_checked = True
         except Exception as e:
             logger.warning(f"Schema check failed: {e}")
@@ -797,6 +814,44 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
             conn.rollback()
         except Exception:
             pass
+        # Unique-index dedupe race: return existing active item when available.
+        try:
+            conn2 = get_db()
+            cursor2 = conn2.cursor()
+            if album:
+                cursor2.execute(
+                    """
+                    SELECT * FROM download_queue
+                    WHERE LOWER(artist) = LOWER(%s)
+                    AND LOWER(COALESCE(album, '')) = LOWER(%s)
+                    AND LOWER(title) = LOWER(%s)
+                    AND source = %s
+                    AND status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled')
+                    ORDER BY created_at ASC
+                    LIMIT 1
+                    """,
+                    (artist, album, title, source),
+                )
+            else:
+                cursor2.execute(
+                    """
+                    SELECT * FROM download_queue
+                    WHERE LOWER(artist) = LOWER(%s)
+                    AND LOWER(COALESCE(album, '')) = ''
+                    AND LOWER(title) = LOWER(%s)
+                    AND source = %s
+                    AND status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled')
+                    ORDER BY created_at ASC
+                    LIMIT 1
+                    """,
+                    (artist, title, source),
+                )
+            existing = cursor2.fetchone()
+            conn2.close()
+            if existing:
+                return dict(existing)
+        except Exception as lookup_err:
+            logger.warning(f"Could not resolve dedupe race by lookup: {lookup_err}")
         return None
     except psycopg2.DatabaseError as e:
         logger.error(f"Database error adding to queue: {e}")

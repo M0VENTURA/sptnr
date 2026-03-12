@@ -809,6 +809,19 @@ def update_schema(db_path):
             else:
                 raise
 
+    # Prevent duplicate active queue entries for the same logical track/source.
+    try:
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_download_queue_active_identity
+            ON download_queue (LOWER(artist), LOWER(COALESCE(album, '')), LOWER(title), source)
+            WHERE status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled')
+        """)
+    except sqlite3.OperationalError as e:
+        if "no such column" in str(e).lower() or "no such table" in str(e).lower():
+            pass
+        else:
+            raise
+
 
     # ✅ Ensure lastfm_recommendations table exists (for caching Last.fm recommendations)
     cursor.execute("""
