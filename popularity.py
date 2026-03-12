@@ -2190,7 +2190,7 @@ def detect_single_for_track(
         log_info(f"✅ [SINGLE DETECTION] Using ADVANCED detection path for: {title}")
         conn = None
         try:
-            from deprecated.single_detection_enhanced import detect_single_enhanced, store_single_detection_result
+            from single_detection_enhanced import detect_single_enhanced, store_single_detection_result
             # get_db_connection is already available in this module
             conn = get_db_connection()
             
