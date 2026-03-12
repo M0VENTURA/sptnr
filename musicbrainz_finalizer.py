@@ -344,7 +344,7 @@ class MusicBrainzFinalizer:
             shutil.move(str(file_path), str(destination))
             logger.debug(f"[FINALIZER] Moved {file_path.name} → {destination.name}")
             
-            # Update database with finalized info
+            # Update database with finalized info in musicbrainz_release_tracks
             cursor.execute(f"""
                 UPDATE musicbrainz_release_tracks
                 SET status = 'finalized',
@@ -352,6 +352,33 @@ class MusicBrainzFinalizer:
                     updated_at = CURRENT_TIMESTAMP
                 WHERE release_id = {placeholder} AND track_number = {placeholder}
             """, (str(destination), release_id, track_number))
+            
+            # Also update the corresponding download_queue item with the new file_path
+            # This ensures the item can be organized/copied to the music library
+            cursor.execute(f"""
+                SELECT queue_id FROM musicbrainz_release_tracks
+                WHERE release_id = {placeholder} AND track_number = {placeholder}
+            """, (release_id, track_number))
+            
+            queue_row = cursor.fetchone()
+            queue_id = None
+            if queue_row:
+                # Handle both dict-like (PostgreSQL) and tuple/list-like (SQLite) rows
+                if hasattr(queue_row, 'get'):
+                    queue_id = queue_row.get('queue_id')
+                else:
+                    queue_id = queue_row[0]
+            
+            if queue_id:
+                logger.debug(f"[FINALIZER] Updating download_queue item {queue_id} with file_path: {destination}")
+                cursor.execute(f"""
+                    UPDATE download_queue
+                    SET file_path = {placeholder},
+                        status = 'completed',
+                        found_filename = {placeholder},
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = {placeholder}
+                """, (str(destination), new_name, queue_id))
             
             return True
             
