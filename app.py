@@ -1286,16 +1286,26 @@ def _request_scan_stop(path: str, scan_type: str):
 
 
 def _resolve_downloads_monitor_dir(cfg: dict | None = None) -> str:
-    """Resolve downloads scan folder, preferring a Music subfolder when configured root is /downloads."""
+    """Resolve downloads scan folder based on configuration.
+    
+    Respects user's configured downloads.folder path directly.
+    Falls back to environment variable or default /downloads/Music.
+    """
     cfg = cfg or {}
     downloads_cfg = cfg.get("downloads", {}) if isinstance(cfg, dict) else {}
-    configured = downloads_cfg.get("folder") or os.environ.get("DOWNLOADS_DIR") or "/downloads/Music"
-    normalized = os.path.normpath(configured)
-
-    if os.path.basename(normalized).lower() == "downloads":
-        return os.path.join(normalized, "Music")
-
-    return configured
+    
+    # Try configured folder first
+    configured = downloads_cfg.get("folder")
+    if configured and configured.strip():
+        return os.path.normpath(configured.strip())
+    
+    # Fall back to environment variable
+    env_dir = os.environ.get("DOWNLOADS_DIR")
+    if env_dir and env_dir.strip():
+        return os.path.normpath(env_dir.strip())
+    
+    # Default fallback
+    return "/downloads/Music"
 
 
 def _is_process_alive(proc):
