@@ -959,41 +959,45 @@ def save_to_db(track_data):
             else:
                 existing = None
         
-        # If no match by file_path, try content matching
-        if not existing:
+        # If no match by file_path, optionally try content matching.
+        # Important: when a real file_path exists (normal Navidrome import),
+        # keep distinct files even if artist/album/title/duration are identical.
+        # This aligns DB rows with what Navidrome indexes on disk.
+        should_content_dedupe = not file_path or str(file_path).startswith("__queued_for_download__")
+        if not existing and should_content_dedupe:
             # Look for existing track with same content
             if duration:
                 # Match by artist, album, title, and duration (within 2 seconds tolerance)
-                                _run_with_db_lock_retry(
-                                        lambda: cursor.execute(
-                                                f"""
-                                                SELECT id, beets_mbid, mbid, file_path, last_scanned 
-                                                FROM tracks 
-                                                WHERE artist = {placeholder} AND album = {placeholder} AND title = {placeholder} 
-                                                    AND ABS(COALESCE(duration, 0) - {placeholder}) <= 2
-                                                    AND id != {placeholder}
-                                                LIMIT 1
-                                                """,
-                                                (artist, album, title, duration, track_id)
-                                        ),
-                                        "save_to_db duplicate duration lookup"
-                                )
+                _run_with_db_lock_retry(
+                    lambda: cursor.execute(
+                        f"""
+                        SELECT id, beets_mbid, mbid, file_path, last_scanned 
+                        FROM tracks 
+                        WHERE artist = {placeholder} AND album = {placeholder} AND title = {placeholder} 
+                            AND ABS(COALESCE(duration, 0) - {placeholder}) <= 2
+                            AND id != {placeholder}
+                        LIMIT 1
+                        """,
+                        (artist, album, title, duration, track_id)
+                    ),
+                    "save_to_db duplicate duration lookup"
+                )
             else:
                 # Match by artist, album, title only
-                                _run_with_db_lock_retry(
-                                        lambda: cursor.execute(
-                                                f"""
-                                                SELECT id, beets_mbid, mbid, file_path, last_scanned 
-                                                FROM tracks 
-                                                WHERE artist = {placeholder} AND album = {placeholder} AND title = {placeholder} 
-                                                    AND id != {placeholder}
-                                                LIMIT 1
-                                                """,
-                                                (artist, album, title, track_id)
-                                        ),
-                                        "save_to_db duplicate content lookup"
-                                )
-            
+                _run_with_db_lock_retry(
+                    lambda: cursor.execute(
+                        f"""
+                        SELECT id, beets_mbid, mbid, file_path, last_scanned 
+                        FROM tracks 
+                        WHERE artist = {placeholder} AND album = {placeholder} AND title = {placeholder} 
+                            AND id != {placeholder}
+                        LIMIT 1
+                        """,
+                        (artist, album, title, track_id)
+                    ),
+                    "save_to_db duplicate content lookup"
+                )
+
             existing = cursor.fetchone()
         
         if existing:
