@@ -2176,10 +2176,18 @@ def check_downloads_folder():
             
             # Try exact filename match first (but still verify metadata when available)
             if queue_item['found_filename']:
+                found_name = str(queue_item['found_filename']).replace('\\', '/').strip()
+                basename_candidates = [f for f in downloads_files if f['filename'] == found_name]
+                basename_is_unique = len(basename_candidates) == 1
+
                 for file_info in downloads_files:
-                    if file_info['filename'] == queue_item['found_filename'] or \
-                       file_info['rel_path'] == queue_item['found_filename'] or \
-                       file_info['full_path'] == queue_item['found_filename']:
+                    rel_name = file_info['rel_path'].replace('\\', '/')
+                    full_name = file_info['full_path'].replace('\\', '/')
+
+                    is_rel_or_full = (rel_name == found_name or full_name == found_name)
+                    is_basename = (file_info['filename'] == found_name)
+
+                    if is_rel_or_full or is_basename:
                         metadata = None
                         try:
                             metadata = read_mp3_metadata(file_info['full_path'])
@@ -2190,6 +2198,12 @@ def check_downloads_folder():
                         if meta_state is False:
                             # File metadata doesn't match queue item, skip this file
                             continue
+
+                        # If only basename matches and metadata is missing/neutral,
+                        # only accept when basename is unique in this scan pass.
+                        if is_basename and not is_rel_or_full and meta_state is not True and not basename_is_unique:
+                            continue
+
                         else:
                             match_found = file_info['filename']
                             match_path = file_info['full_path']
@@ -2634,8 +2648,11 @@ def auto_discover_and_queue_files():
                 placeholder = "%s" if is_pg else "?"
                 cursor.execute(f"""
                     SELECT id, status FROM download_queue 
-                    WHERE (file_path = {placeholder} OR found_filename = {placeholder})
-                """, (full_path, filename))
+                    WHERE file_path = {placeholder}
+                       OR found_filename = {placeholder}
+                       OR found_filename = {placeholder}
+                       OR found_filename = {placeholder}
+                """, (full_path, filename, file_info['rel_path'], full_path))
                 
                 existing = cursor.fetchone()
                 if existing:
@@ -3262,20 +3279,46 @@ def check_and_remove_failed_downloads():
                 else:
                     logger.debug(f"No transfer_id/username — cannot cancel slskd entry for {filename!r}")
                 
-                # Find matching queue item by found_filename or search_query
+                # Find matching queue item with strict-first lookup to avoid basename collisions.
                 basename = filename.rsplit('/', 1)[-1].rsplit('\\', 1)[-1]
+                normalized_filename = filename.replace('\\', '/').strip()
+
                 cursor.execute(
                     f"""
                     SELECT id FROM download_queue
                     WHERE source = 'soulseek'
-                    AND status IN ('downloading', 'searching')
-                    AND (found_filename = {placeholder} OR search_query LIKE {placeholder})
+                      AND status IN ('downloading', 'searching')
+                      AND (
+                            file_path = {placeholder}
+                         OR found_filename = {placeholder}
+                         OR found_filename = {placeholder}
+                      )
+                    ORDER BY updated_at DESC
                     LIMIT 1
                     """,
-                    (filename, f"%{basename}%"),
+                    (normalized_filename, normalized_filename, basename),
                 )
-                
+
                 queue_item = cursor.fetchone()
+
+                # Fallback: parse common "Artist - Title.ext" patterns and match artist/title exactly.
+                if not queue_item:
+                    stem = os.path.splitext(basename)[0]
+                    parts = [p.strip() for p in stem.split(' - ', 1)]
+                    if len(parts) == 2 and parts[0] and parts[1]:
+                        cursor.execute(
+                            f"""
+                            SELECT id FROM download_queue
+                            WHERE source = 'soulseek'
+                              AND status IN ('downloading', 'searching')
+                              AND LOWER(artist) = LOWER({placeholder})
+                              AND LOWER(title) = LOWER({placeholder})
+                            ORDER BY updated_at DESC
+                            LIMIT 1
+                            """,
+                            (parts[0], parts[1]),
+                        )
+                        queue_item = cursor.fetchone()
                 if queue_item:
                     queue_id = queue_item['id'] if hasattr(queue_item, 'keys') else queue_item[0]
                     logger.info(f"Marking queue item {queue_id} for retry (failed download: {state!r})")
@@ -3320,16 +3363,18 @@ def cleanup_imported(days=7):
     try:
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = isinstance(conn, psycopg2.extensions.connection)
+        placeholder = "%s" if is_pg else "?"
         
         cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()
         
         execute_write_with_retry(
             cursor,
             conn,
-            """
+            f"""
             DELETE FROM download_queue 
             WHERE status = 'imported' 
-            AND imported_at < ?
+            AND imported_at < {placeholder}
         """,
             (cutoff_date,),
             context="cleanup_imported delete"
@@ -4355,25 +4400,28 @@ def process_complete_albums():
                 else:
                     conn = get_db()
                     cursor = conn.cursor()
+                    from app import _is_postgres_connection as app_is_postgres_connection
+                    is_pg = bool(app_is_postgres_connection(conn))
+                    placeholder = "%s" if is_pg else "?"
                     _ensure_matching_columns(cursor)
                     candidates_json = json.dumps(scored_candidates[:5]) if scored_candidates else "[]"
                     best_score = scored_candidates[0].get('confidence') if scored_candidates else 0
 
                     for track in completion['tracks']:
                         cursor.execute(
-                            """
+                            f"""
                             UPDATE download_queue
                             SET status = 'pending_match',
                                 mb_match_status = 'needs_review',
-                                mb_match_score = ?,
-                                mb_match_candidates = ?,
+                                mb_match_score = {placeholder},
+                                mb_match_candidates = {placeholder},
                                 mb_release_group_id = NULL,
                                 mb_matched_title = NULL,
                                 mb_matched_artist = NULL,
                                 mb_matched_year = NULL,
                                 mb_last_match_at = CURRENT_TIMESTAMP,
                                 updated_at = CURRENT_TIMESTAMP
-                            WHERE id = ?
+                            WHERE id = {placeholder}
                             """,
                             (best_score, candidates_json, track['id'])
                         )
