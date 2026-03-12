@@ -2227,6 +2227,7 @@ def is_match(filename, queue_item):
         artist = (queue_item['artist'] or '').lower()
         title = (queue_item['title'] or '').lower()
         album = (queue_item['album'] or '').lower()
+        search_query = (queue_item.get('query') or f"{artist} {title}".strip()).lower()
         
         # Require artist/title presence first; this is a fallback only.
         if not artist or not title:
