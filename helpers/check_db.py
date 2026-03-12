@@ -256,6 +256,14 @@ required_artist_stats_columns = {
     "mean_popularity_adjusted": "REAL"      # Mean popularity adjusted for pre-2005 releases
 }
 
+# SQL for the unique partial index that prevents duplicate active download_queue entries.
+# Extracted as a constant to keep the definition in a single place.
+_UQ_DOWNLOAD_QUEUE_INDEX_SQL = """
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_download_queue_active_identity
+    ON download_queue (LOWER(artist), LOWER(COALESCE(album, '')), LOWER(title), source)
+    WHERE status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled')
+"""
+
 def update_schema(db_path):
     """
     Ensure the 'tracks', 'artists', and 'artist_stats' tables exist and have all required columns.
@@ -810,17 +818,32 @@ def update_schema(db_path):
                 raise
 
     # Prevent duplicate active queue entries for the same logical track/source.
+    # Before creating the unique index, deduplicate any existing active rows that would
+    # violate the constraint (keep the highest-id row per unique identity group).
+    # The outer WHERE clause is applied first to avoid scanning completed/terminal rows.
     try:
         cursor.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_download_queue_active_identity
-            ON download_queue (LOWER(artist), LOWER(COALESCE(album, '')), LOWER(title), source)
+            DELETE FROM download_queue
             WHERE status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled')
+            AND id NOT IN (
+                SELECT MAX(id)
+                FROM download_queue
+                WHERE status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled')
+                GROUP BY LOWER(artist), LOWER(COALESCE(album, '')), LOWER(title), source
+            )
         """)
+        if cursor.rowcount > 0:
+            print(f"✅ Removed {cursor.rowcount} duplicate active download_queue row(s) before index creation")
+    except sqlite3.OperationalError as e:
+        print(f"⚠️ Could not deduplicate active download_queue rows: {e}")
+
+    try:
+        cursor.execute(_UQ_DOWNLOAD_QUEUE_INDEX_SQL)
     except sqlite3.OperationalError as e:
         if "no such column" in str(e).lower() or "no such table" in str(e).lower():
             pass
         else:
-            raise
+            print(f"⚠️ Could not create active queue dedupe index: {e}")
 
 
     # ✅ Ensure lastfm_recommendations table exists (for caching Last.fm recommendations)
@@ -1051,10 +1074,14 @@ def update_schema(db_path):
             common_columns = [col for col in backup_columns if col in new_columns]
             
             if common_columns:
-                # Restore data using only common columns
+                # Restore data using only common columns.
+                # INSERT OR IGNORE is used because duplicate active rows may exist in the
+                # backup from before the uq_download_queue_active_identity index was
+                # introduced; silently skipping them is safe as only the most-recent row
+                # per identity group is needed.
                 columns_list = ', '.join(common_columns)
                 insert_sql = f"""
-                    INSERT INTO download_queue ({columns_list})
+                    INSERT OR IGNORE INTO download_queue ({columns_list})
                     SELECT {columns_list} FROM download_queue_backup;
                 """
                 cursor.execute(insert_sql)
@@ -1065,6 +1092,12 @@ def update_schema(db_path):
             
             # Re-enable foreign key checks
             cursor.execute("PRAGMA foreign_keys=ON;")
+            
+            # Recreate the unique deduplication index that was lost when the table was dropped
+            try:
+                cursor.execute(_UQ_DOWNLOAD_QUEUE_INDEX_SQL)
+            except sqlite3.OperationalError as idx_err:
+                print(f"⚠️ Could not recreate active queue dedupe index after migration: {idx_err}")
             
             print("✅ download_queue table fixed successfully")
     except Exception as e:
