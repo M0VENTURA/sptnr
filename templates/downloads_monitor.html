@@ -1888,6 +1888,8 @@ async function loadFolderGroups(options = {}) {
                 if (isQueueItem) {
                   const queueId = Number(track.id || group.queue_item_id || 0);
                   const queueStatusRow = String(track.status || group.queue_item_status || '').toLowerCase();
+                  const normalizedTrackPath = String(track.file_path || track.matched_file_path || track.music_file_path || '').replace(/\\/g, '/').toLowerCase();
+                  const isDownloadsBacked = normalizedTrackPath.startsWith('/downloads/') || normalizedTrackPath === '/downloads' || normalizedTrackPath.includes('/downloads/');
                   const artistEnc = encodeInlineArg(track.artist || group.artist || '');
                   const titleEnc = encodeInlineArg(track.title || group.album || '');
                   const currentMbidEnc = encodeInlineArg(track.release_mbid || group.release_id || '');
@@ -1900,7 +1902,7 @@ async function loadFolderGroups(options = {}) {
                   const inferredArtistEnc = encodeInlineArg(inferredArtist || '');
                   const inferredAlbumEnc = encodeInlineArg(inferredAlbum || '');
                   const showRetry = queueStatusRow === 'failed';
-                  const canMoveToMusic = (queueStatusRow === 'matched' || queueStatusRow === 'completed') && queueId > 0;
+                  const canMoveToMusic = (queueStatusRow === 'matched' || queueStatusRow === 'completed' || (queueStatusRow === 'in_collection' && isDownloadsBacked)) && queueId > 0;
                   const canSendQueried = queueStatusRow === 'queried' && queueId > 0;
                   const canChangeMatch = queueId > 0;
                   const canResetMatch = ['matched', 'completed', 'possible_duplicate', 'unmatched'].includes(queueStatusRow) && queueId > 0;

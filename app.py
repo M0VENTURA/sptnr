@@ -16150,7 +16150,8 @@ def api_downloads_get_queue():
 
             cursor.execute(
                 f"""
-                SELECT id, status, in_collection, file_path, music_file_path
+                SELECT id, status, in_collection, file_path, music_file_path,
+                       artist, album, album_artist
                 FROM download_queue
                 WHERE status = 'in_collection' OR COALESCE(in_collection, 0) = 1
                 """
@@ -16166,14 +16167,49 @@ def api_downloads_get_queue():
                 norm = os.path.normpath(str(path_value)).replace("\\", "/").rstrip("/").lower()
                 return norm == music_root_norm or norm.startswith(music_root_norm + "/")
 
+            def _sanitize_collection_segment(value):
+                value = str(value or "").strip()
+                invalid = '<>:"|?*\\'
+                for ch in invalid:
+                    value = value.replace(ch, '_')
+                return value.strip('. ').lower()
+
+            def _is_valid_collection_location(path_value, artist_value, album_value, album_artist_value=None):
+                if not path_value:
+                    return False
+                norm = os.path.normpath(str(path_value)).replace("\\", "/").rstrip("/")
+                lowered = norm.lower()
+                if lowered.startswith("__queued_for_download__"):
+                    return False
+                if not _is_under_music_root(norm):
+                    return False
+                try:
+                    rel_path = os.path.relpath(norm, music_root).replace("\\", "/")
+                except Exception:
+                    return False
+                rel_parts = [part for part in rel_path.split("/") if part and part not in (".", "..")]
+                if len(rel_parts) < 3:
+                    return False
+                expected_artist = _sanitize_collection_segment(album_artist_value or artist_value or "Unknown Artist")
+                expected_album = _sanitize_collection_segment(album_value or "Unknown Album")
+                artist_dir = _sanitize_collection_segment(rel_parts[0])
+                album_dir = _sanitize_collection_segment(rel_parts[-2])
+                return artist_dir == expected_artist and (album_dir == expected_album or album_dir.endswith(f" - {expected_album}"))
+
             normalized_count = 0
             for row in flagged_rows:
                 row_id = _row_get(row, 'id', 0)
                 row_status = _row_get(row, 'status', 1)
                 file_path = _row_get(row, 'file_path', 3)
                 music_file_path = _row_get(row, 'music_file_path', 4)
+                artist_value = _row_get(row, 'artist', 5)
+                album_value = _row_get(row, 'album', 6)
+                album_artist_value = _row_get(row, 'album_artist', 7)
 
-                if _is_under_music_root(music_file_path) or _is_under_music_root(file_path):
+                if (
+                    _is_valid_collection_location(music_file_path, artist_value, album_value, album_artist_value)
+                    or _is_valid_collection_location(file_path, artist_value, album_value, album_artist_value)
+                ):
                     continue
 
                 # Never leave an item as completed without a usable file path.
@@ -18688,6 +18724,26 @@ def api_queue_move_to_music(queue_id):
             return jsonify({"success": False, "error": "Queue item not found"}), 404
 
         item_status = row[0] if isinstance(row, (list, tuple)) else row.get('status')
+        file_path_value = row[1] if isinstance(row, (list, tuple)) else row.get('file_path')
+
+        def _normalize_runtime_path(path_value):
+            if not path_value:
+                return ""
+            return os.path.normpath(str(path_value)).replace("\\", "/").rstrip("/")
+
+        def _is_under_root(path_value, root_value):
+            normalized_path = _normalize_runtime_path(path_value)
+            normalized_root = _normalize_runtime_path(root_value)
+            if not normalized_path or not normalized_root:
+                return False
+            lowered_path = normalized_path.lower()
+            lowered_root = normalized_root.lower()
+            return lowered_path == lowered_root or lowered_path.startswith(lowered_root + "/")
+
+        music_root = os.environ.get("MUSIC_ROOT", "/music")
+        downloads_root = os.environ.get("DOWNLOADS_DIR", "/downloads/Music")
+        file_in_music = _is_under_root(file_path_value, music_root)
+        file_in_downloads = _is_under_root(file_path_value, downloads_root) or _is_under_root(file_path_value, "/downloads")
 
         if item_status == 'matched':
             from download_monitor_enhancements import move_to_music_collection
@@ -18696,10 +18752,16 @@ def api_queue_move_to_music(queue_id):
                 return jsonify({"success": False, "error": result['error']}), 400
             return jsonify({"success": True, "path": result['path'], "message": f"File moved to music collection: {result['path']}"})
 
-        elif item_status == 'completed':
+        elif item_status in ('completed', 'in_collection'):
             from download_queue_manager import move_single_track_to_music_dir, update_queue_item
             from download_file_verification import verify_file_in_music, mark_queue_item_moved
             from datetime import datetime
+
+            if item_status == 'in_collection' and file_in_music:
+                return jsonify({"success": False, "error": "Queue item already points to a file under /music"}), 400
+
+            if item_status == 'in_collection' and not file_in_downloads:
+                return jsonify({"success": False, "error": "Queue item marked in_collection can only be moved when its source file is still under /downloads"}), 400
 
             conn2 = get_db()
             cursor2 = conn2.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -18737,7 +18799,7 @@ def api_queue_move_to_music(queue_id):
             return jsonify({"success": True, "path": target_path, "message": f"File moved to music collection: {target_path}"})
 
         else:
-            return jsonify({"success": False, "error": f"Track must be matched or completed (current status: {item_status})"}), 400
+            return jsonify({"success": False, "error": f"Track must be matched, completed, or downloads-backed in_collection (current status: {item_status})"}), 400
 
     except Exception as e:
         logging.error(f"Error moving queue item to music: {e}")

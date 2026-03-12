@@ -250,6 +250,71 @@ def resolve_music_dir():
     )
 
 
+def _normalize_path_for_compare(path_value):
+    if not path_value:
+        return ""
+    return os.path.normpath(str(path_value)).replace("\\", "/").rstrip("/")
+
+
+def _is_under_root(path_value, root_value):
+    normalized_path = _normalize_path_for_compare(path_value)
+    normalized_root = _normalize_path_for_compare(root_value)
+    if not normalized_path or not normalized_root:
+        return False
+    lowered_path = normalized_path.lower()
+    lowered_root = normalized_root.lower()
+    return lowered_path == lowered_root or lowered_path.startswith(lowered_root + "/")
+
+
+def _is_valid_collection_track_path(path_value, artist, album, album_artist=None):
+    if not path_value:
+        return False
+
+    normalized_path = _normalize_path_for_compare(path_value)
+    if not normalized_path or normalized_path.startswith("__queued_for_download__"):
+        return False
+
+    music_root = resolve_music_dir()
+    if not _is_under_root(normalized_path, music_root):
+        return False
+
+    try:
+        rel_path = os.path.relpath(normalized_path, _normalize_path_for_compare(music_root))
+    except Exception:
+        return False
+
+    rel_parts = [part for part in rel_path.replace("\\", "/").split("/") if part and part not in (".", "..")]
+    if len(rel_parts) < 3:
+        return False
+
+    expected_artist = _sanitize_path_component(album_artist or artist or "Unknown Artist").lower()
+    expected_album = _sanitize_path_component(album or "Unknown Album").lower()
+    artist_dir = _sanitize_path_component(rel_parts[0]).lower()
+    album_dir = _sanitize_path_component(rel_parts[-2]).lower()
+
+    if artist_dir != expected_artist:
+        return False
+
+    return album_dir == expected_album or album_dir.endswith(f" - {expected_album}")
+
+
+def _pick_valid_collection_track_row(rows, artist, album, album_artist=None):
+    for row in rows or []:
+        try:
+            file_path = row.get('file_path') if hasattr(row, 'get') else row[1]
+        except Exception:
+            file_path = None
+
+        try:
+            candidate_album_artist = row.get('album_artist') if hasattr(row, 'get') else row[3]
+        except Exception:
+            candidate_album_artist = None
+
+        if _is_valid_collection_track_path(file_path, artist, album, candidate_album_artist or album_artist or artist):
+            return row
+    return None
+
+
 def get_downloads_dir():
     """Dynamically get downloads directory (re-evaluates on each call for config changes)."""
     return resolve_downloads_dir()
@@ -711,26 +776,35 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         if release_mbid or release_id:  # Only check if we have MBID
             mbid_to_check = release_mbid or release_id
             collection_check_query = """
-                SELECT id, file_path FROM tracks
+                SELECT id, file_path, album, album_artist FROM tracks
                 WHERE LOWER(artist) = LOWER(?) AND LOWER(title) = LOWER(?)
                 AND (release_group_mbid = ? OR suggested_mbid = ?)
-                LIMIT 1
+                ORDER BY id DESC
+                LIMIT 10
             """ if not is_pg else """
-                SELECT id, file_path FROM tracks
+                SELECT id, file_path, album, album_artist FROM tracks
                 WHERE LOWER(artist) = LOWER(%s) AND LOWER(title) = LOWER(%s)
                 AND (release_group_mbid = %s OR suggested_mbid = %s)
-                LIMIT 1
+                ORDER BY id DESC
+                LIMIT 10
             """
             
             try:
                 cursor.execute(collection_check_query, (artist, title, mbid_to_check, mbid_to_check))
-                collection_track = cursor.fetchone()
+                collection_track = _pick_valid_collection_track_row(
+                    cursor.fetchall(),
+                    artist,
+                    album,
+                    album_artist,
+                )
                 
                 if collection_track:
                     in_collection = True
                     collection_track_id = collection_track[0] if isinstance(collection_track, tuple) else collection_track.get('id')
                     initial_status = 'in_collection'
                     logger.info(f"Track already in collection: {artist} - {title} (track ID {collection_track_id})")
+                else:
+                    logger.debug(f"Ignoring collection candidate outside canonical library path: {artist} - {title}")
             except Exception as e_collection:
                 # tracks table might not exist or columns missing, that's okay
                 # CRITICAL: Must rollback transaction to recover from failed query
@@ -2520,6 +2594,27 @@ def auto_discover_and_queue_files():
                 return rows
             col_names = [d[0] for d in description]
             return [dict(zip(col_names, r)) for r in rows]
+
+        def _find_library_track_id(artist_value, album_value, title_value, album_artist_value=None):
+            cursor.execute(
+                f"""
+                SELECT id, file_path, album, album_artist
+                FROM tracks
+                WHERE LOWER(artist) = LOWER({placeholder})
+                  AND LOWER(album) = LOWER({placeholder})
+                  AND LOWER(title) = LOWER({placeholder})
+                ORDER BY id DESC
+                LIMIT 10
+                """,
+                (artist_value, album_value, title_value),
+            )
+            valid_row = _pick_valid_collection_track_row(
+                cursor.fetchall(),
+                artist_value,
+                album_value,
+                album_artist_value,
+            )
+            return _row_get(valid_row, 'id', 0, None) if valid_row else None
         
         # Ensure required columns exist for auto-discovery inserts
         if is_pg:
@@ -2658,17 +2753,9 @@ def auto_discover_and_queue_files():
                 if existing:
                     existing_id = _row_get(existing, 'id', 0, None)
                     existing_status = _row_get(existing, 'status', 1, None)
-                    collection_track_id = None
-                    cursor.execute(f"""
-                        SELECT id FROM tracks
-                        WHERE LOWER(artist) = LOWER({placeholder}) 
-                        AND LOWER(album) = LOWER({placeholder}) 
-                        AND LOWER(title) = LOWER({placeholder})
-                    """, (artist, album, title))
-                    in_library = cursor.fetchone()
-                    if in_library:
+                    collection_track_id = _find_library_track_id(artist, album, title, album_artist)
+                    if collection_track_id is not None:
                         stats['already_in_library'] += 1
-                        collection_track_id = _row_get(in_library, 'id', 0, None)
                         execute_write_with_retry(
                             cursor,
                             conn,
@@ -2697,16 +2784,9 @@ def auto_discover_and_queue_files():
                     continue
                 
                 # Check if track exists in library (case-insensitive)
-                cursor.execute(f"""
-                    SELECT id FROM tracks
-                    WHERE LOWER(artist) = LOWER({placeholder}) 
-                    AND LOWER(album) = LOWER({placeholder}) 
-                    AND LOWER(title) = LOWER({placeholder})
-                """, (artist, album, title))
-                in_library = cursor.fetchone()
-                if in_library:
+                collection_track_id = _find_library_track_id(artist, album, title, album_artist)
+                if collection_track_id is not None:
                     stats['already_in_library'] += 1
-                    collection_track_id = _row_get(in_library, 'id', 0, None)
                     logger.debug(f"Track already in library: {artist} - {title}")
 
                     execute_write_with_retry(
@@ -2803,9 +2883,8 @@ def auto_discover_and_queue_files():
                       AND LOWER(title) = LOWER({placeholder})
                       AND LOWER(COALESCE(album, '')) = LOWER(COALESCE({placeholder}, ''))
                       AND status NOT IN ('removed', 'cancelled')
-                      AND (file_path IS NULL OR file_path != {placeholder})
                     LIMIT 1
-                """, (artist, title, album, full_path))
+                                """, (artist, title, album))
                 duplicate_existing = cursor.fetchone()
 
                 if duplicate_existing:

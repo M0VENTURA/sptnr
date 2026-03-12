@@ -6,8 +6,12 @@ enable MusicBrainz metadata matching before file organization.
 This module is meant to be imported into download_queue_manager.py.
 """
 
+import copy
+import json
 import os
 import logging
+import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
@@ -20,6 +24,48 @@ _GROUP_SCAN_CACHE = {
     'result': None,
 }
 _GROUP_SCAN_CACHE_TTL_SECONDS = 30
+_GROUP_SCAN_CACHE_FILE = os.path.join(tempfile.gettempdir(), "sptnr_group_scan_cache.json")
+
+
+def _load_shared_group_scan_cache(downloads_dir, now_ts):
+    try:
+        if not os.path.exists(_GROUP_SCAN_CACHE_FILE):
+            return None
+        with open(_GROUP_SCAN_CACHE_FILE, "r", encoding="utf-8") as cache_file:
+            payload = json.load(cache_file)
+        if not isinstance(payload, dict):
+            return None
+        if payload.get('downloads_dir') != downloads_dir:
+            return None
+        timestamp = float(payload.get('timestamp') or 0.0)
+        if (now_ts - timestamp) >= _GROUP_SCAN_CACHE_TTL_SECONDS:
+            return None
+        result = payload.get('result')
+        if not isinstance(result, dict):
+            return None
+        _GROUP_SCAN_CACHE['timestamp'] = timestamp
+        _GROUP_SCAN_CACHE['downloads_dir'] = downloads_dir
+        _GROUP_SCAN_CACHE['result'] = result
+        logger.debug("Returning shared grouped-folder scan cache result")
+        return copy.deepcopy(result)
+    except Exception as cache_err:
+        logger.debug(f"Could not read shared grouped-folder cache: {cache_err}")
+        return None
+
+
+def _store_shared_group_scan_cache(downloads_dir, now_ts, result):
+    try:
+        temp_path = f"{_GROUP_SCAN_CACHE_FILE}.tmp"
+        payload = {
+            'timestamp': now_ts,
+            'downloads_dir': downloads_dir,
+            'result': result,
+        }
+        with open(temp_path, "w", encoding="utf-8") as cache_file:
+            json.dump(payload, cache_file)
+        os.replace(temp_path, _GROUP_SCAN_CACHE_FILE)
+    except Exception as cache_err:
+        logger.debug(f"Could not write shared grouped-folder cache: {cache_err}")
 
 
 def scan_downloads_grouped_by_folder(downloads_dir, read_mp3_metadata):
@@ -52,8 +98,6 @@ def scan_downloads_grouped_by_folder(downloads_dir, read_mp3_metadata):
         }
     """
     try:
-        import time
-
         now_ts = time.time()
         if (
             _GROUP_SCAN_CACHE['result'] is not None
@@ -61,7 +105,11 @@ def scan_downloads_grouped_by_folder(downloads_dir, read_mp3_metadata):
             and (now_ts - _GROUP_SCAN_CACHE['timestamp']) < _GROUP_SCAN_CACHE_TTL_SECONDS
         ):
             logger.debug("Returning cached grouped-folder scan result")
-            return dict(_GROUP_SCAN_CACHE['result'])
+            return copy.deepcopy(_GROUP_SCAN_CACHE['result'])
+
+        shared_cache_result = _load_shared_group_scan_cache(downloads_dir, now_ts)
+        if shared_cache_result is not None:
+            return shared_cache_result
 
         if not os.path.isdir(downloads_dir):
             logger.warning(f"Downloads folder not found: {downloads_dir}")
@@ -191,8 +239,9 @@ def scan_downloads_grouped_by_folder(downloads_dir, read_mp3_metadata):
         _GROUP_SCAN_CACHE['timestamp'] = now_ts
         _GROUP_SCAN_CACHE['downloads_dir'] = downloads_dir
         _GROUP_SCAN_CACHE['result'] = result
+        _store_shared_group_scan_cache(downloads_dir, now_ts, result)
 
-        return result
+        return copy.deepcopy(result)
         
     except Exception as e:
         logger.error(f"Error scanning downloads folder: {e}")
