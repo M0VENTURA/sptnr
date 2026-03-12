@@ -730,8 +730,9 @@ def detect_and_queue_missing_tracks(artist: str, album: str, album_tracks: list,
         
         log_info(f"MusicBrainz shows {len(mb_tracks)} track(s) for '{artist} - {album}', local library has {len(album_tracks)} track(s)")
         
-        # Create normalized title map for local tracks
+        # Create normalized title map and track number set for local tracks
         local_tracks_normalized = {}
+        local_track_numbers = set()
         for track in album_tracks:
             track_title = track.get('title', '')
             if track_title:
@@ -742,6 +743,12 @@ def detect_and_queue_missing_tracks(artist: str, album: str, album_tracks: list,
                 normalized = re.sub(r'[^a-z0-9]+', ' ', normalized)
                 normalized = ' '.join(normalized.split())
                 local_tracks_normalized[normalized] = track_title
+            track_num = track.get('track_number')
+            if track_num is not None:
+                try:
+                    local_track_numbers.add(int(str(track_num).split('/')[0].strip()))
+                except (ValueError, TypeError):
+                    pass
         
         # Find missing tracks
         missing_tracks = []
@@ -757,8 +764,20 @@ def detect_and_queue_missing_tracks(artist: str, album: str, album_tracks: list,
             mb_normalized = re.sub(r'[^a-z0-9]+', ' ', mb_normalized)
             mb_normalized = ' '.join(mb_normalized.split())
             
-            # Check if track exists locally
-            if mb_normalized not in local_tracks_normalized:
+            # Determine MB track number
+            mb_number = mb_track.get('number')
+            mb_track_num = None
+            if mb_number is not None:
+                try:
+                    mb_track_num = int(str(mb_number).split('/')[0].strip())
+                except (ValueError, TypeError):
+                    pass
+            
+            # Check if track exists locally by title OR track number
+            title_match = mb_normalized in local_tracks_normalized
+            number_match = mb_track_num is not None and mb_track_num in local_track_numbers
+            
+            if not title_match and not number_match:
                 missing_tracks.append(mb_track)
         
         if not missing_tracks:
