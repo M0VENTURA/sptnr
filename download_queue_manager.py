@@ -87,6 +87,14 @@ _NO_AUDIO_LOG_INTERVAL_SECONDS = 600
 _queue_schema_checked = False
 _queue_schema_lock = threading.Lock()
 
+# Throttle expensive downloads-folder checks triggered by frequent UI polling.
+_downloads_check_lock = threading.Lock()
+_downloads_check_cache = {
+    'timestamp': 0.0,
+    'result': []
+}
+_DOWNLOADS_CHECK_MIN_INTERVAL_SECONDS = 20
+
 # In-memory event queue for displaying logs on UI (keep last 200 events)
 _queue_events = []
 _queue_events_lock = threading.Lock()
@@ -2020,7 +2028,18 @@ def check_downloads_folder():
     Returns:
         List of newly completed items
     """
+    lock_acquired = False
     try:
+        now = time.time()
+        cache_age = now - _downloads_check_cache['timestamp']
+        if cache_age < _DOWNLOADS_CHECK_MIN_INTERVAL_SECONDS:
+            return list(_downloads_check_cache['result'])
+
+        # If a check is already running in this process, return cached data.
+        if not _downloads_check_lock.acquire(blocking=False):
+            return list(_downloads_check_cache['result'])
+        lock_acquired = True
+
         downloads_dir = get_downloads_dir()
         if not os.path.isdir(downloads_dir):
             logger.warning(f"Downloads folder not found: {downloads_dir}")
@@ -2304,6 +2323,8 @@ def check_downloads_folder():
         if completed_items:
             logger.info(f"Found {len(completed_items)} completed downloads")
 
+        _downloads_check_cache['timestamp'] = time.time()
+        _downloads_check_cache['result'] = list(completed_items)
         return completed_items
         
     except Exception as e:
@@ -2311,6 +2332,12 @@ def check_downloads_folder():
         import traceback
         logger.error(traceback.format_exc())
         return []
+    finally:
+        if lock_acquired:
+            try:
+                _downloads_check_lock.release()
+            except Exception:
+                pass
 
 
 def is_match(filename, queue_item):

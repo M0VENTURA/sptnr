@@ -1517,6 +1517,56 @@ def _start_boot_navidrome_import():
 # --- Daily scheduled task globals ---
 _daily_scheduler_thread = None
 _daily_scheduler_stop = None
+_startup_leader_lock_conn = None
+_startup_leader_lock_file_fd = None
+
+
+def _acquire_startup_leader_lock() -> bool:
+    """Acquire a cross-process lock so only one worker starts background schedulers.
+
+    In production we run under gunicorn with multiple workers. Without a leader lock,
+    each worker starts the same periodic jobs, creating contention and request stalls.
+    """
+    global _startup_leader_lock_conn, _startup_leader_lock_file_fd
+
+    # PostgreSQL path: advisory lock tied to this connection's lifetime.
+    try:
+        conn = get_db()
+        if _is_postgres_connection(conn):
+            cursor = conn.cursor()
+            lock_key = 915317499  # app-specific startup leader lock
+            cursor.execute("SELECT pg_try_advisory_lock(%s) AS acquired", (lock_key,))
+            row = cursor.fetchone()
+            acquired = bool(_row_get(row, 'acquired', 0))
+
+            if acquired:
+                _startup_leader_lock_conn = conn  # keep alive to hold lock
+                logging.info("[BOOT] Startup leader lock acquired in this worker")
+                return True
+
+            conn.close()
+            logging.info("[BOOT] Startup leader lock already held by another worker")
+            return False
+
+        # Not PostgreSQL; close and continue to file-lock fallback.
+        conn.close()
+    except Exception as lock_err:
+        logging.debug(f"[BOOT] PostgreSQL leader lock unavailable: {lock_err}")
+
+    # Fallback for SQLite/non-PG: best-effort lock file.
+    try:
+        lock_path = "/tmp/sptnr_startup_leader.lock"
+        _startup_leader_lock_file_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(_startup_leader_lock_file_fd, str(os.getpid()).encode("ascii", "ignore"))
+        logging.info("[BOOT] Startup lock file acquired in this worker")
+        return True
+    except FileExistsError:
+        logging.info("[BOOT] Startup lock file already exists; skipping background schedulers")
+        return False
+    except Exception as lock_file_err:
+        # Fail-open for environments where lock file cannot be created.
+        logging.warning(f"[BOOT] Could not create startup lock file, enabling schedulers here: {lock_file_err}")
+        return True
 
 
 def _start_daily_scheduler():
@@ -2024,19 +2074,24 @@ def _get_auto_boot_import_setting():
 
 AUTO_BOOT_ND_IMPORT = _get_auto_boot_import_setting()
 
+# Leader election for startup jobs under multi-worker servers (gunicorn).
+_is_startup_leader_worker = _acquire_startup_leader_lock()
 
-# Kick off Navidrome metadata-only import at startup (missing-only)
-if AUTO_BOOT_ND_IMPORT:
+
+# Kick off startup background tasks only in the elected leader worker.
+if _is_startup_leader_worker:
+    if AUTO_BOOT_ND_IMPORT:
+        try:
+            _start_boot_navidrome_import()
+        except Exception as e:
+            logging.error(f"Failed to start boot Navidrome import: {e}")
+
     try:
-        _start_boot_navidrome_import()
+        _start_daily_scheduler()
     except Exception as e:
-        logging.error(f"Failed to start boot Navidrome import: {e}")
-
-# Start daily maintenance scheduler (new artist import + missing releases check)
-try:
-    _start_daily_scheduler()
-except Exception as e:
-    logging.error(f"Failed to start daily scheduler: {e}")
+        logging.error(f"Failed to start daily scheduler: {e}")
+else:
+    logging.info("[BOOT] Non-leader worker: startup background schedulers not started in this process")
 
 def _needs_setup(cfg=None):
     cfg = cfg if cfg is not None else _read_yaml(CONFIG_PATH)[0]
@@ -18442,13 +18497,26 @@ def api_queue_processor_status():
             except:
                 pass
         
-        # Check queue status
-        from download_queue_manager import get_queue
-        
-        queued_items = get_queue(status='queued', limit=100)
-        downloading_items = get_queue(status='downloading', limit=100)
-        failed_items = get_queue(status='failed', limit=100)
-        completed_items = get_queue(status='completed', limit=100)
+        # Check queue status via a single aggregate query (cheap, no schema checks).
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT status, COUNT(*) AS count
+            FROM download_queue
+            WHERE status IN ('queued', 'downloading', 'failed', 'completed')
+            GROUP BY status
+            """
+        )
+        rows = cursor.fetchall() or []
+        conn.close()
+
+        counts = {'queued': 0, 'downloading': 0, 'failed': 0, 'completed': 0}
+        for row in rows:
+            status_value = _row_get(row, 'status', 0)
+            count_value = int(_row_get(row, 'count', 1, 0) or 0)
+            if status_value in counts:
+                counts[status_value] = count_value
         
         return jsonify({
             "success": True,
@@ -18457,11 +18525,11 @@ def api_queue_processor_status():
             "processor_memory_mb": round(processor_memory, 2) if processor_memory else 0,
             "processor_uptime": str(processor_uptime) if processor_uptime else None,
             "queue_stats": {
-                "queued": len(queued_items),
-                "downloading": len(downloading_items),
-                "failed": len(failed_items),
-                "completed": len(completed_items),
-                "total": len(queued_items) + len(downloading_items) + len(failed_items) + len(completed_items)
+                "queued": counts['queued'],
+                "downloading": counts['downloading'],
+                "failed": counts['failed'],
+                "completed": counts['completed'],
+                "total": counts['queued'] + counts['downloading'] + counts['failed'] + counts['completed']
             }
         })
         
