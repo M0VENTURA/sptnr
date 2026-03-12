@@ -18524,6 +18524,10 @@ def api_queue_move_to_music(queue_id):
             if not queue_item:
                 return jsonify({"success": False, "error": "Queue item not found"}), 404
 
+            # Check that file_path exists before attempting to move
+            if not queue_item.get('file_path'):
+                return jsonify({"success": False, "error": f"Queue item {queue_id} is marked completed but has no file_path. Cannot move to music directory until file is found."}), 400
+
             move_result = move_single_track_to_music_dir(dict(queue_item))
             if not move_result.get('success'):
                 return jsonify({"success": False, "error": move_result.get('error', 'Move failed')}), 500

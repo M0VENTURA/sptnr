@@ -1173,7 +1173,8 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
     try:
         file_path = queue_item_dict.get('file_path')
         if not file_path:
-            return {'success': False, 'target_path': None, 'error': 'No file_path in queue item'}
+            queue_id = queue_item_dict.get('id', 'unknown')
+            return {'success': False, 'target_path': None, 'error': f'Queue item {queue_id} has no file_path (may not be completed yet)'}
         if not os.path.exists(file_path):
             return {'success': False, 'target_path': None, 'error': f'File not found: {file_path}'}
 
