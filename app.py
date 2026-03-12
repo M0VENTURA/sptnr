@@ -10,9 +10,13 @@ from download_file_verification import ensure_verification_columns, ensure_queue
 import os
 import xml.etree.ElementTree as ET
 # --- ENVIRONMENT VARIABLE EDITING SUPPORT ---
-# List of all environment variables used in the project (compiled from codebase)
-ALL_ENV_VARS = [
-    "SECRET_KEY", "CONFIG_PATH", "DB_PATH", "LOG_PATH", "APP_DIR", "SPTNR_DISABLE_BOOT_ND_IMPORT", "SPTNR_SKIP_SINGLES",
+        if not artist:
+            logging.warning("Queue add missing required artist")
+            return jsonify({"error": "Artist is required"}), 400
+
+        if not title and not album:
+            logging.warning(f"Queue add missing title and album: artist='{artist}'")
+            return jsonify({"error": "Either song title or album name is required"}), 400
     "MUSIC_ROOT", "MUSIC_FOLDER", "DOWNLOADS_DIR", "POPULARITY_LOG_PATH", "POPULARITY_LOG_STDOUT", "POPULARITY_PROGRESS_FILE",
     "NAVIDROME_PROGRESS_FILE", "SINGLES_PROGRESS_FILE", "PROGRESS_FILE", "TIMEZONE", "TZ", "SPOTIFY_USER_TOKEN",
     "SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET", "SPOTIFY_WEIGHT", "LASTFM_WEIGHT", "AGE_WEIGHT",

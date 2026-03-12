@@ -68,8 +68,8 @@
             <input type="text" id="queueArtist" class="form-control" placeholder="e.g., Daft Punk" required>
           </div>
           <div class="col-md-3">
-            <label for="queueTitle" class="form-label">Song Title *</label>
-            <input type="text" id="queueTitle" class="form-control" placeholder="e.g., Get Lucky" required>
+            <label for="queueTitle" class="form-label">Song Title</label>
+            <input type="text" id="queueTitle" class="form-control" placeholder="e.g., Get Lucky">
           </div>
           <div class="col-md-3">
             <label for="queueAlbum" class="form-label">Album (Optional)</label>
@@ -93,9 +93,12 @@
               <option value="qbittorrent">⚡ qBittorrent (Albums)</option>
             </select>
           </div>
-          <div class="col-md-6 d-flex align-items-end">
-            <button type="submit" class="btn btn-primary w-100">
+          <div class="col-md-6 d-flex align-items-end gap-2">
+            <button type="submit" class="btn btn-primary flex-grow-1">
               <i class="bi bi-plus-circle"></i> Add to Queue
+            </button>
+            <button type="button" class="btn btn-outline-info" onclick="searchMusicBrainzForQueue()" title="Search MusicBrainz for releases by artist/album and queue tracks">
+              <i class="bi bi-music-note-list"></i> Search Releases
             </button>
           </div>
         </div>
@@ -284,6 +287,35 @@
     </div>
   </div>
 
+  <div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span><i class="bi bi-terminal"></i> Queue Activity Log</span>
+      <button id="queueLogPauseBtn" type="button" class="btn btn-sm btn-outline-secondary" onclick="toggleQueueLogPause()">
+        <i class="bi bi-pause-fill"></i> Pause
+      </button>
+    </div>
+    <div class="card-body p-2">
+      <pre id="queueActivityLog" style="height:250px; overflow-y:auto; font-family:monospace; font-size:12px; background:#111; color:#ccc; padding:8px; margin:0; border-radius:4px;"></pre>
+    </div>
+  </div>
+
+  <div class="modal fade" id="musicBrainzModal" tabindex="-1" aria-labelledby="musicBrainzModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="musicBrainzModalLabel"><i class="bi bi-disc"></i> MusicBrainz Release Search</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div id="mbSearchInfo" class="alert alert-info" style="display:none;"></div>
+          <div id="mbSearchStatus" class="alert alert-secondary" style="display:none;"></div>
+          <div id="mbSearchError" class="alert alert-danger" style="display:none;"></div>
+          <div id="mbSearchResults"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
 </div>
 
 <style>
@@ -298,6 +330,8 @@
 
 <script>
 // Queue management functions for downloads monitor
+
+let queueLogPaused = false;
 
 async function fetchJsonOrThrow(url, options = {}) {
   const response = await fetch(url, options);
@@ -327,8 +361,21 @@ async function addToQueue(event) {
   const source = document.getElementById('queueSource').value;
   const priority = parseInt(document.getElementById('queuePriority').value);
   
-  if (!artist || !title) {
-    alert('Please enter artist and song title');
+  if (!artist) {
+    alert('Please enter an artist.');
+    return;
+  }
+
+  if (!title && !album) {
+    alert('Please enter either a song title or an album name.');
+    return;
+  }
+
+  if (!title && album) {
+    const proceed = confirm('No song title was entered. Search MusicBrainz releases for this artist/album instead?');
+    if (proceed) {
+      searchMusicBrainzForQueue();
+    }
     return;
   }
   
@@ -350,6 +397,18 @@ async function addToQueue(event) {
     console.error('Error adding to queue:', error);
     alert('❌ Network error: ' + error.message);
   }
+}
+
+function searchMusicBrainzForQueue() {
+  const artist = document.getElementById('queueArtist').value.trim();
+  const album = document.getElementById('queueAlbum').value.trim();
+
+  if (!artist) {
+    alert('Please enter an artist before searching MusicBrainz.');
+    return;
+  }
+
+  searchMusicBrainzRelease(null, artist, album);
 }
 
 async function discoverFiles(clickEvent) {
@@ -1302,22 +1361,16 @@ async function loadFolderGroups(options = {}) {
   try {
     // Trigger queue status scan first so newly downloaded files are matched immediately.
     // This makes "Auto Apply" and queue/folder transitions appear in one refresh cycle.
-    try {
-      await fetch('/api/queue/status?limit=200');
-    } catch (syncErr) {
+    fetch('/api/queue/status?limit=200').catch(syncErr => {
       console.debug('Queue sync pre-pass failed (non-fatal):', syncErr);
-    }
+    });
 
-    // Load folder status from database first
-    await loadFolderStatus();
-    await loadFolderDuplicates();
-    
-    // Fetch both folder groups AND queue items to integrate them
-    const folderResponse = await fetch('/api/downloads/grouped-folders');
-    const folderData = await folderResponse.json();
-    
-    const queueResponse = await fetch('/api/downloads/queue?limit=500');
-    const queueData = await queueResponse.json();
+    const [,, folderData, queueData] = await Promise.all([
+      loadFolderStatus(),
+      loadFolderDuplicates(),
+      fetch('/api/downloads/grouped-folders').then(response => response.json()),
+      fetch('/api/downloads/queue?limit=500').then(response => response.json())
+    ]);
     
     if (!folderData.success) {
       console.error('Error loading folder groups:', folderData.error);
@@ -1363,7 +1416,8 @@ async function loadFolderGroups(options = {}) {
           artist: item.artist || '',
           album: item.album || '',
           filename: item.found_filename || item.title || '',
-          file_path: item.file_path || item.matched_file_path || '',
+          file_path: item.file_path || item.music_file_path || item.matched_file_path || '',
+          music_file_path: item.music_file_path || '',
           matched_file_path: item.matched_file_path || '',
           track_number: item.track_number,
           duration: item.duration || 0,
@@ -1434,7 +1488,8 @@ async function loadFolderGroups(options = {}) {
           artist: item.artist || '',
           album: item.album || '',
           filename: item.found_filename || item.title || '',
-          file_path: item.file_path || item.matched_file_path || '',
+          file_path: item.file_path || item.music_file_path || item.matched_file_path || '',
+          music_file_path: item.music_file_path || '',
           matched_file_path: item.matched_file_path || '',
           track_number: item.track_number,
           duration: item.duration || 0,
@@ -1788,7 +1843,7 @@ async function loadFolderGroups(options = {}) {
                   const canSendQueried = queueStatusRow === 'queried' && queueId > 0;
                   const canChangeMatch = queueId > 0;
                   const canResetMatch = ['matched', 'completed', 'possible_duplicate', 'unmatched'].includes(queueStatusRow) && queueId > 0;
-                  const hasDownloadFile = !!(track.file_path || track.matched_file_path || group.matched_folder_path);
+                  const hasDownloadFile = !!(track.file_path || track.matched_file_path || track.music_file_path || group.matched_folder_path);
                   moveButtonHtml = `<div class="d-flex flex-column gap-1 align-items-center">
                     ${canMoveToMusic ? `<button class="btn btn-sm btn-outline-success" onclick="moveMatchedToMusic(${queueId})" title="Move to /music and retag from MusicBrainz"><i class="bi bi-box-arrow-right"></i></button>` : ''}
                     ${canSendQueried ? `<button class="btn btn-sm btn-outline-primary" onclick="sendQueriedTrack(${queueId})" title="Send queried track to queue for Soulseek search"><i class="bi bi-send"></i></button>` : ''}
@@ -1848,7 +1903,7 @@ async function loadFolderGroups(options = {}) {
                         <td>
                           <span style="font-size: 14px;">${escapeHtml(track.title || 'Unknown')}</span>
                           ${mappingHint}
-                          ${(track.file_path || track.matched_file_path) ? `<div class="small text-muted mt-1"><i class="bi bi-file-earmark"></i> ${escapeHtml(track.file_path || track.matched_file_path)}</div>` : ''}
+                          ${(track.file_path || track.matched_file_path || track.music_file_path) ? `<div class="small text-muted mt-1"><i class="bi bi-file-earmark"></i> ${escapeHtml(track.file_path || track.matched_file_path || track.music_file_path)}</div>` : ''}
                         </td>
                         <td><span style="font-size: 14px;">${duration}</span></td>
                         ${isQueueItem ? (() => {
@@ -3687,6 +3742,53 @@ function showDestinationFolderPicker() {
   alert('Please specify the full path to your destination folder');
 }
 
+async function loadQueueLog() {
+  if (queueLogPaused) {
+    return;
+  }
+
+  const logEl = document.getElementById('queueActivityLog');
+  if (!logEl) {
+    return;
+  }
+
+  try {
+    const data = await fetchJsonOrThrow('/api/queue/events?limit=100');
+    const events = Array.isArray(data.events) ? data.events : [];
+    const lines = events.slice().reverse().map(event => {
+      const createdAt = event.created_at || event.timestamp || null;
+      const timestamp = createdAt ? new Date(createdAt) : null;
+      const timeLabel = timestamp && !Number.isNaN(timestamp.getTime())
+        ? timestamp.toLocaleTimeString([], { hour12: false })
+        : '--:--:--';
+      const typeLabel = String(event.event_type || event.type || 'info').toUpperCase().padEnd(12, ' ');
+      return `[${timeLabel}] ${typeLabel} ${event.message || ''}`;
+    });
+
+    logEl.textContent = lines.length ? lines.join('\n') : 'No queue events yet.';
+    logEl.scrollTop = logEl.scrollHeight;
+  } catch (error) {
+    console.error('Error loading queue activity log:', error);
+    logEl.textContent = 'Failed to load queue activity log.';
+  }
+}
+
+function toggleQueueLogPause() {
+  queueLogPaused = !queueLogPaused;
+  const btn = document.getElementById('queueLogPauseBtn');
+  if (!btn) {
+    return;
+  }
+
+  btn.innerHTML = queueLogPaused
+    ? '<i class="bi bi-play-fill"></i> Resume'
+    : '<i class="bi bi-pause-fill"></i> Pause';
+
+  if (!queueLogPaused) {
+    loadQueueLog();
+  }
+}
+
 // Load queue status on page load
 document.addEventListener('DOMContentLoaded', function() {
   // Load queue status and folder groups together to keep them in sync
@@ -3696,10 +3798,21 @@ document.addEventListener('DOMContentLoaded', function() {
   }
   
   setTimeout(loadBothAsync, 500);
+  loadQueueLog();
   // Refresh both together every 5 seconds to keep them synchronized
   setInterval(loadBothAsync, 5000);
+  setInterval(loadQueueLog, 5000);
   // Auto-discover files every 60 seconds
   setInterval(autoDiscoverFiles, 60000);
+
+  setTimeout(async () => {
+    try {
+      await fetchJsonOrThrow('/api/queue/requeue-all-unmatched', { method: 'POST' });
+      await loadBothAsync();
+    } catch (error) {
+      console.debug('Auto-requeue unmatched failed:', error);
+    }
+  }, 3000);
   
   // Listen for queue updates from other tabs/windows (e.g., downloads.html)
   window.addEventListener('storage', function(e) {
@@ -3707,6 +3820,7 @@ document.addEventListener('DOMContentLoaded', function() {
       console.log('Queue updated from another tab, refreshing immediately...');
       loadQueueStatus();
       loadFolderGroups({ keepVisibleOnEmpty: true });
+      loadQueueLog();
     }
   });
 });
