@@ -8406,6 +8406,37 @@ def api_album_rename_files(artist, album):
         }), 500
 
 
+@app.route("/api/track/<track_id>/rename-file", methods=["POST"])
+def api_track_rename_file(track_id):
+    """
+    Rename/move a single track's file using the configured file_name_format from config.
+
+    Reads downloads.file_name_format (same setting used by Queue Manager organize).
+    Moves the file to the new path and updates the database.
+
+    Returns:
+        JSON with success, renamed, old_path, new_path, message, error
+    """
+    try:
+        from download_queue_manager import rename_track_file
+
+        conn = get_db()
+        cfg = get_config()
+        music_dir = cfg.get("navidrome", {}).get("music_folder", "/music")
+
+        result = rename_track_file(track_id, conn, music_dir=music_dir)
+        conn.close()
+
+        status_code = 200 if result.get("success") else 400
+        return jsonify(result), status_code
+
+    except Exception as e:
+        logging.error(f"Error renaming track file {track_id}: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/duplicate-artists/<path:artist>", methods=["GET"])
 def api_get_duplicate_artists(artist):
     """

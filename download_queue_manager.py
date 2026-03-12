@@ -1506,6 +1506,196 @@ def rename_album_files(artist, album, db_conn, music_dir=None):
         return result
 
 
+def _read_track_file_name_format():
+    """Read configurable file naming format from config, with sensible default."""
+    config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+    try:
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            fmt = (cfg.get("downloads") or {}).get("file_name_format")
+            if isinstance(fmt, str) and fmt.strip():
+                return fmt.strip()
+    except Exception as cfg_err:
+        logger.debug(f"[RENAME] Could not read naming format from config: {cfg_err}")
+    return "{album_artist}/{year} - {album}/{track_number}. {artist} - {title}"
+
+
+def _format_track_number_for_rename(track_number, disc_number=None):
+    """Format a track number for use in path format strings."""
+    try:
+        disc_num = int(str(disc_number).split("/")[0]) if disc_number else 1
+        track_num = int(str(track_number).split("/")[0]) if track_number else 0
+        if disc_num > 1:
+            return f"{disc_num}{track_num:02d}"
+        return f"{track_num:02d}"
+    except Exception:
+        return "00"
+
+
+def rename_track_file(track_id, db_conn, music_dir=None):
+    """
+    Rename/move a single track file based on the configured file_name_format from config.
+
+    Reads downloads.file_name_format from config (same setting used by Queue Manager organize).
+    Moves the file to the new path and updates the database file_path.
+
+    Args:
+        track_id: ID of the track to rename
+        db_conn: Database connection
+        music_dir: Base music directory (defaults to resolve_music_dir())
+
+    Returns:
+        Dict with:
+        - success: bool
+        - renamed: bool (True if file was actually moved)
+        - old_path: original file path
+        - new_path: destination file path
+        - message: human-readable result
+        - error: error message (if failed)
+    """
+    import re as _re
+    import shutil as _shutil
+
+    result = {
+        "success": False,
+        "renamed": False,
+        "old_path": None,
+        "new_path": None,
+        "message": "",
+        "error": "",
+    }
+
+    try:
+        cursor = db_conn.cursor()
+        is_pg = False
+        try:
+            from app import _is_postgres_connection
+            is_pg = bool(_is_postgres_connection(db_conn))
+        except Exception:
+            pass
+        placeholder = "%s" if is_pg else "?"
+
+        cursor.execute(
+            f"SELECT id, artist, album, album_artist, title, track_number, disc_number, "
+            f"file_path, year, release_year FROM tracks WHERE id = {placeholder}",
+            (track_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            result["error"] = f"Track {track_id} not found"
+            return result
+
+        track = dict(row)
+        file_path = track.get("file_path") or ""
+        result["old_path"] = file_path
+
+        if not file_path or file_path.startswith("__queued_"):
+            result["error"] = "Track has no file path (may be a queued placeholder)"
+            return result
+
+        if not os.path.exists(file_path):
+            result["error"] = f"File not found on disk: {file_path}"
+            return result
+
+        music_root = music_dir or resolve_music_dir()
+        file_name_format = _read_track_file_name_format()
+
+        # Extract year (handle full date strings)
+        year_raw = track.get("year") or track.get("release_year")
+        year_val = "Unknown"
+        if year_raw:
+            m = _re.search(r"(19|20)\d{2}", str(year_raw))
+            if m:
+                year_val = m.group(0)
+
+        track_artist = track.get("artist") or "Unknown Artist"
+        album_artist = track.get("album_artist") or track_artist
+        album = track.get("album") or "Unknown Album"
+        title = track.get("title") or "Unknown Title"
+        track_number = _format_track_number_for_rename(
+            track.get("track_number"), track.get("disc_number")
+        )
+
+        format_vars = {
+            "album_artist": _sanitize_path_component(album_artist),
+            "year": year_val,
+            "album": _sanitize_path_component(album),
+            "track_number": track_number,
+            "artist": _sanitize_path_component(track_artist),
+            "title": _sanitize_path_component(title),
+        }
+
+        try:
+            relative_path = file_name_format.format(**format_vars)
+        except Exception:
+            relative_path = (
+                f"{format_vars['album_artist']}/{format_vars['year']} - {format_vars['album']}/"
+                f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}"
+            )
+
+        # Sanitize each component
+        relative_path = relative_path.strip().replace("\\", "/").lstrip("/")
+        parts = []
+        for part in relative_path.split("/"):
+            clean = _sanitize_path_component(part)
+            if clean and clean not in (".", ".."):
+                parts.append(clean)
+
+        if not parts:
+            result["error"] = "Could not build a valid target path from format"
+            return result
+
+        ext = os.path.splitext(file_path)[1].lower()
+        relative_joined = os.path.join(*parts)
+        base_name, ext_from_format = os.path.splitext(relative_joined)
+        if not ext_from_format:
+            relative_joined = relative_joined + ext
+
+        new_path = os.path.join(music_root, relative_joined)
+        new_dir = os.path.dirname(new_path)
+        os.makedirs(new_dir, exist_ok=True)
+
+        # Handle filename conflict (path changed AND target already occupied by a different file)
+        if os.path.exists(new_path) and os.path.abspath(new_path) != os.path.abspath(file_path):
+            stem, file_ext = os.path.splitext(new_path)
+            counter = 1
+            while os.path.exists(f"{stem}_{counter}{file_ext}"):
+                counter += 1
+            new_path = f"{stem}_{counter}{file_ext}"
+
+        result["new_path"] = new_path
+
+        if os.path.abspath(new_path) == os.path.abspath(file_path):
+            result["success"] = True
+            result["renamed"] = False
+            result["message"] = "File is already at the correct path"
+            return result
+
+        _shutil.move(file_path, new_path)
+        logger.info(f"[RENAME] Moved: {file_path!r} -> {new_path!r}")
+
+        ts_expr = "CURRENT_TIMESTAMP" if is_pg else "datetime('now')"
+        cursor.execute(
+            f"UPDATE tracks SET file_path = {placeholder}, beets_path = {placeholder}, "
+            f"updated_at = {ts_expr} WHERE id = {placeholder}",
+            (new_path, new_path, track_id),
+        )
+        db_conn.commit()
+
+        result["success"] = True
+        result["renamed"] = True
+        result["message"] = f"Renamed to: {os.path.basename(new_path)}"
+        return result
+
+    except Exception as e:
+        logger.error(f"[RENAME] Error renaming track {track_id}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        result["error"] = str(e)
+        return result
+
+
 def _load_format_bitrate_config():
     """
     Load format/bitrate priority configuration from /config/config.yaml

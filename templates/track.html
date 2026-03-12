@@ -105,6 +105,11 @@
                     <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Rescan Track</span>
                 </button>
             </form>
+            <button type="button" class="btn btn-outline-warning" id="renameFileBtn"
+                    onclick="renameTrackFile('{{ track.id }}')"
+                    title="Rename/move the file using the format configured in Settings (downloads.file_name_format)">
+                <i class="bi bi-pencil-square"></i> <span class="d-none d-sm-inline">Rename File</span>
+            </button>
         </div>
     </div>
 
@@ -797,6 +802,34 @@
 </div>
 
 <script>
+    function renameTrackFile(trackId) {
+        const btn = document.getElementById('renameFileBtn');
+        const originalHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Renaming…';
+
+        fetch('/api/track/' + trackId + '/rename-file', { method: 'POST' })
+            .then(r => r.json())
+            .then(data => {
+                btn.disabled = false;
+                btn.innerHTML = originalHtml;
+                if (data.success && data.renamed) {
+                    const msg = 'File renamed successfully.\n\nNew path:\n' + data.new_path;
+                    alert(msg);
+                    location.reload();
+                } else if (data.success && !data.renamed) {
+                    alert('File is already at the correct path — no rename needed.');
+                } else {
+                    alert('Rename failed: ' + (data.error || data.message || 'Unknown error'));
+                }
+            })
+            .catch(err => {
+                btn.disabled = false;
+                btn.innerHTML = originalHtml;
+                alert('Request failed: ' + err);
+            });
+    }
+
     function addGenreToTrack(genre) {
         // This could update a hidden genres field if you add it to the form
         // For now, just show an alert
