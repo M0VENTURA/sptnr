@@ -16155,20 +16155,48 @@ def api_downloads_get_queue():
                 if _is_under_music_root(music_file_path) or _is_under_music_root(file_path):
                     continue
 
-                corrected_status = 'completed' if row_status == 'in_collection' else row_status
+                # Never leave an item as completed without a usable file path.
+                normalized_path = file_path or music_file_path
+                corrected_status = row_status
+                if row_status == 'in_collection':
+                    corrected_status = 'completed' if normalized_path else 'unmatched'
+
                 cursor.execute(
                     f"""
                     UPDATE download_queue
                     SET status = {placeholder},
+                        file_path = COALESCE(file_path, {placeholder}),
                         in_collection = 0,
                         collection_track_id = NULL,
                         collection_matched_at = NULL,
+                        failure_reason = CASE
+                            WHEN {placeholder} = 'unmatched'
+                            THEN 'Queue normalization: item marked in_collection but missing file_path'
+                            ELSE failure_reason
+                        END,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = {placeholder}
                     """,
-                    (corrected_status, row_id),
+                    (corrected_status, normalized_path, corrected_status, row_id),
                 )
                 normalized_count += 1
+
+            # Safety net: downgrade invalid completed rows missing file_path so the
+            # UI no longer shows them as move-ready when no source file is known.
+            cursor.execute(
+                f"""
+                UPDATE download_queue
+                SET status = 'unmatched',
+                    failure_reason = COALESCE(
+                        failure_reason,
+                        'Auto-corrected: completed status without file_path'
+                    ),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE status = 'completed'
+                  AND (file_path IS NULL OR file_path = '')
+                """
+            )
+            normalized_count += cursor.rowcount or 0
 
             if normalized_count:
                 conn.commit()

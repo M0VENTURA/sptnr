@@ -1045,6 +1045,31 @@ def update_queue_item(queue_id, **kwargs):
             # Build update query
             updates = []
             params = []
+
+            # Guardrail: completed rows must always have a file_path, either newly
+            # provided or already persisted on the queue item.
+            if kwargs.get('status') == 'completed':
+                new_file_path = kwargs.get('file_path')
+                if not new_file_path:
+                    cursor.execute(
+                        f"SELECT file_path FROM download_queue WHERE id = {placeholder}",
+                        (queue_id,)
+                    )
+                    existing_row = cursor.fetchone()
+                    existing_file_path = None
+                    if existing_row:
+                        existing_file_path = (
+                            existing_row.get('file_path')
+                            if hasattr(existing_row, 'get')
+                            else existing_row[0]
+                        )
+
+                    if not existing_file_path:
+                        logger.warning(
+                            f"Refusing to mark queue item {queue_id} as completed without file_path"
+                        )
+                        conn.close()
+                        return None
             
             for key, value in kwargs.items():
                 if key in ['status', 'source_id', 'found_filename', 'file_path', 'failure_reason', 
