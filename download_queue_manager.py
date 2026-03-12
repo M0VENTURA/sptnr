@@ -357,12 +357,22 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                         logger.warning(f"Could not add {col} column: {e}")
 
             # Prevent duplicate active queue rows under concurrent enqueue requests.
+            # 'in_collection' is treated as a terminal state (like 'completed') and must be
+            # excluded so that re-queueing a track whose prior row was cleared to in_collection
+            # does not trigger a unique-key conflict.
             try:
+                # Drop the existing index before recreating to ensure the WHERE clause is
+                # always up-to-date with the current definition.  IF NOT EXISTS on the CREATE
+                # acts as a safety net in case the drop was silently skipped.
+                cursor.execute(
+                    "DROP INDEX IF EXISTS uq_download_queue_active_identity"
+                )
+                conn.commit()
                 cursor.execute(
                     """
                     CREATE UNIQUE INDEX IF NOT EXISTS uq_download_queue_active_identity
                     ON download_queue (LOWER(artist), LOWER(COALESCE(album, '')), LOWER(title), source)
-                    WHERE status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled')
+                    WHERE status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled', 'in_collection')
                     """
                 )
                 conn.commit()
@@ -635,14 +645,14 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                 SELECT * FROM download_queue
                 WHERE LOWER(artist) = LOWER(?) AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(?, '')) AND LOWER(title) = LOWER(?)
                 AND source = ?
-                AND status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled')
+                AND status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled', 'in_collection')
                 ORDER BY created_at ASC
                 LIMIT 1
             """ if not is_pg else """
                 SELECT * FROM download_queue
                 WHERE LOWER(artist) = LOWER(%s) AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(%s, '')) AND LOWER(title) = LOWER(%s)
                 AND source = %s
-                AND status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled')
+                AND status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled', 'in_collection')
                 ORDER BY created_at ASC
                 LIMIT 1
             """
@@ -663,7 +673,7 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                 WHERE LOWER(artist) = LOWER(?) AND LOWER(title) = LOWER(?)
                 AND COALESCE(album, '') = ''
                 AND source = ?
-                AND status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled')
+                AND status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled', 'in_collection')
                 ORDER BY created_at ASC
                 LIMIT 1
             """ if not is_pg else """
@@ -671,7 +681,7 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                 WHERE LOWER(artist) = LOWER(%s) AND LOWER(title) = LOWER(%s)
                 AND COALESCE(album, '') = ''
                 AND source = %s
-                AND status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled')
+                AND status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled', 'in_collection')
                 ORDER BY created_at ASC
                 LIMIT 1
             """
@@ -861,7 +871,7 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                     AND LOWER(COALESCE(album, '')) = LOWER(%s)
                     AND LOWER(title) = LOWER(%s)
                     AND source = %s
-                    AND status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled')
+                    AND status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled', 'in_collection')
                     ORDER BY created_at ASC
                     LIMIT 1
                     """,
@@ -875,7 +885,7 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                     AND LOWER(COALESCE(album, '')) = ''
                     AND LOWER(title) = LOWER(%s)
                     AND source = %s
-                    AND status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled')
+                    AND status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled', 'in_collection')
                     ORDER BY created_at ASC
                     LIMIT 1
                     """,
