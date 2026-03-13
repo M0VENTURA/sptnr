@@ -559,11 +559,46 @@ def _add_queue_item_to_tracks_table(conn, cursor, is_pg, artist, title, album, a
     When the download completes, this record will be updated with the actual file_path.
     """
     try:
-        # Generate a unique track ID for this queue item
-        track_id = f"queue_{queue_id}"
-        
         # Special marker for queued downloads
         file_path_marker = f"__queued_for_download__queue_id_{queue_id}"
+
+        # Reuse an existing queued placeholder row for the same track identity so
+        # repeated queue actions update one row instead of creating duplicates.
+        existing_track_id = None
+        if is_pg:
+            cursor.execute(
+                """
+                SELECT id
+                FROM tracks
+                WHERE LOWER(artist) = LOWER(%s)
+                  AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(%s, ''))
+                  AND LOWER(title) = LOWER(%s)
+                  AND file_path LIKE '__queued_for_download__%%'
+                ORDER BY last_scanned DESC NULLS LAST, id DESC
+                LIMIT 1
+                """,
+                (artist, album, title),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT id
+                FROM tracks
+                WHERE LOWER(artist) = LOWER(?)
+                  AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(?, ''))
+                  AND LOWER(title) = LOWER(?)
+                  AND file_path LIKE '__queued_for_download__%'
+                ORDER BY last_scanned DESC, id DESC
+                LIMIT 1
+                """,
+                (artist, album, title),
+            )
+        existing_row = cursor.fetchone()
+        if existing_row:
+            existing_track_id = existing_row.get('id') if hasattr(existing_row, 'get') else existing_row[0]
+
+        # Generate a deterministic queue placeholder ID only when no existing queued row is present.
+        track_id = existing_track_id or f"queue_{queue_id}"
         
         placeholder = "%s" if is_pg else "?"
         
@@ -615,6 +650,33 @@ def _add_queue_item_to_tracks_table(conn, cursor, is_pg, artist, title, album, a
                 track_id, artist, album, title, album_artist or artist, track_number, year,
                 duration, disc_number, recording_mbid, release_mbid, file_path_marker
             ))
+
+        # Remove stale duplicate queued placeholders for the same track identity,
+        # keeping the row we just inserted/updated.
+        if is_pg:
+            cursor.execute(
+                """
+                DELETE FROM tracks
+                WHERE LOWER(artist) = LOWER(%s)
+                  AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(%s, ''))
+                  AND LOWER(title) = LOWER(%s)
+                  AND file_path LIKE '__queued_for_download__%%'
+                  AND id <> %s
+                """,
+                (artist, album, title, track_id),
+            )
+        else:
+            cursor.execute(
+                """
+                DELETE FROM tracks
+                WHERE LOWER(artist) = LOWER(?)
+                  AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(?, ''))
+                  AND LOWER(title) = LOWER(?)
+                  AND file_path LIKE '__queued_for_download__%'
+                  AND id <> ?
+                """,
+                (artist, album, title, track_id),
+            )
         
         conn.commit()
         logger.debug(f"Synced queue item {queue_id} to tracks table as {track_id}")
