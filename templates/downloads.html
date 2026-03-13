@@ -7000,7 +7000,7 @@ function updateProcessorStatusCard(pData) {
     badge.className = 'badge bg-success';
     badge.innerHTML = '<i class="bi bi-play-circle-fill me-1"></i> Running';
 
-    const uptime = pData.processor_uptime ? pData.processor_uptime.split('.')[0] : 'N/A';
+    const uptime = pData.processor_uptime ? pData.processor_uptime.split('.')[0] : 'N/A'; // trim microseconds (format: HH:MM:SS.ffffff)
     const memory = pData.processor_memory_mb || 0;
     const stats = pData.queue_stats || {};
 
