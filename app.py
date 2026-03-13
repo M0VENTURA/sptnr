@@ -16491,11 +16491,11 @@ def api_downloads_get_queue():
                 ):
                     continue
 
-                # Never leave an item as completed without a usable file path.
+                # Invalid in_collection rows should return to unmatched so users can rematch.
                 normalized_path = file_path or music_file_path
                 corrected_status = row_status
                 if row_status == 'in_collection':
-                    corrected_status = 'completed' if normalized_path else 'unmatched'
+                    corrected_status = 'unmatched'
 
                 cursor.execute(
                     f"""
@@ -16507,7 +16507,7 @@ def api_downloads_get_queue():
                         collection_matched_at = NULL,
                         failure_reason = CASE
                             WHEN {placeholder} = 'unmatched'
-                            THEN 'Queue normalization: item marked in_collection but missing file_path'
+                            THEN 'Queue normalization: item marked in_collection but file is not in /music'
                             ELSE failure_reason
                         END,
                         updated_at = CURRENT_TIMESTAMP
@@ -16529,7 +16529,7 @@ def api_downloads_get_queue():
                     ),
                     updated_at = CURRENT_TIMESTAMP
                 WHERE status = 'completed'
-                  AND (file_path IS NULL OR file_path = '')
+                  AND TRIM(COALESCE(file_path, '')) = ''
                 """
             )
             normalized_count += cursor.rowcount or 0
@@ -19440,7 +19440,21 @@ def api_queue_reset_match(queue_id):
             f"""
             UPDATE download_queue
             SET release_mbid = NULL,
+                release_id = NULL,
+                release_source = NULL,
+                mb_release_group_id = NULL,
+                mb_match_status = NULL,
+                mb_match_score = NULL,
+                mb_match_candidates = NULL,
+                mb_matched_title = NULL,
+                mb_matched_artist = NULL,
+                mb_matched_year = NULL,
+                mb_last_match_at = NULL,
                 status = 'unmatched',
+                in_collection = 0,
+                collection_track_id = NULL,
+                collection_matched_at = NULL,
+                failure_reason = NULL,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = {placeholder}
             """,
