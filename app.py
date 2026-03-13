@@ -1178,6 +1178,10 @@ scan_lock = threading.Lock()
 _QUEUE_NORMALIZE_COOLDOWN_SECONDS = int(os.environ.get("QUEUE_NORMALIZE_COOLDOWN_SECONDS", "20"))
 _queue_normalize_last_run_ts = 0.0
 _queue_normalize_gate_lock = threading.Lock()
+# Maximum number of MusicBrainz release groups to fetch per search request.
+# Kept low to stay well under the Cloudflare/proxy 100-second gateway timeout
+# (each group requires one HTTP request + 1-second rate-limit sleep).
+_MB_SEARCH_MAX_RELEASE_GROUPS = 6
 # Retry scheduler management
 retry_scheduler = {
     "thread": None,
@@ -24742,9 +24746,11 @@ def api_search_musicbrainz_release():
                 "message": f"No releases found for {artist}" + (f" - {album}" if album else "")
             })
         
-        # For each release group, fetch one representative release with tracks
+        # For each release group, fetch one representative release with tracks.
+        # Use a single browse-releases call per release group (instead of two separate calls)
+        # to avoid Cloudflare 524 timeouts caused by excessive sequential HTTP requests.
         results = []
-        for rg in release_groups[:10]:
+        for rg in release_groups[:_MB_SEARCH_MAX_RELEASE_GROUPS]:
             rg_id = rg.get("id", "")
             rg_title = rg.get("title", "")
             rg_type = rg.get("primary-type", "")
@@ -24763,44 +24769,34 @@ def api_search_musicbrainz_release():
                         and credit_norm not in requested_artist_norm
                     ):
                         continue
-            
-            # Fetch releases in this release group
-            releases_url = f"https://musicbrainz.org/ws/2/release-group/{rg_id}"
-            releases_params = {
-                "fmt": "json",
-                "inc": "releases"
-            }
-            
-            time.sleep(1)  # Rate limiting
-            
+
+            # Single request: browse releases in this release group with recordings included.
+            # This replaces the previous two-request pattern (release-group detail + release detail)
+            # and keeps rate limiting to one sleep per iteration.
+            time.sleep(1)  # MusicBrainz rate limiting: max 1 req/sec
+
             try:
-                releases_response = requests.get(releases_url, headers=headers, params=releases_params, timeout=15)
-                releases_response.raise_for_status()
-                rg_data = releases_response.json()
-                
-                releases = rg_data.get("releases", [])
+                browse_url = "https://musicbrainz.org/ws/2/release"
+                browse_params = {
+                    "fmt": "json",
+                    "release-group": rg_id,
+                    "inc": "recordings",
+                    "limit": 1,
+                }
+                browse_response = requests.get(browse_url, headers=headers, params=browse_params, timeout=15)
+                browse_response.raise_for_status()
+                browse_data = browse_response.json()
+
+                releases = browse_data.get("releases", [])
                 if not releases:
                     continue
-                
-                # Pick the first release to get tracks
+
                 release = releases[0]
                 release_id = release.get("id", "")
-                
-                # Fetch full release with tracks
-                release_url = f"https://musicbrainz.org/ws/2/release/{release_id}"
-                release_params = {
-                    "fmt": "json",
-                    "inc": "recordings"
-                }
-                
-                time.sleep(1)  # Rate limiting
-                
-                release_response = requests.get(release_url, headers=headers, params=release_params, timeout=15)
-                release_response.raise_for_status()
-                release_data = release_response.json()
-                
-                # Extract tracks
-                media = release_data.get("media", [])
+                release_date = release.get("date", "")
+
+                # Extract tracks from the inline recordings
+                media = release.get("media", [])
                 tracks = []
                 for disc in media:
                     for track in disc.get("tracks", []):
@@ -24810,19 +24806,19 @@ def api_search_musicbrainz_release():
                             "position": track.get("position", ""),
                             "length": recording.get("length", 0)
                         })
-                
+
                 results.append({
                     "release_group_id": rg_id,
                     "release_id": release_id,
                     "title": rg_title,
                     "artist": artist,
                     "type": rg_type,
-                    "date": first_release_date or release.get("date", "") or release_data.get("date", ""),
-                    "year": (first_release_date or release.get("date", "") or release_data.get("date", ""))[:4],
+                    "date": first_release_date or release_date,
+                    "year": (first_release_date or release_date)[:4],
                     "track_count": len(tracks),
                     "tracks": tracks
                 })
-                
+
             except Exception as e:
                 logging.warning(f"Error fetching tracks for release group {rg_id}: {e}")
                 continue

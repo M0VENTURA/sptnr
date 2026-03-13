@@ -387,6 +387,11 @@ async function fetchJsonOrThrow(url, options = {}) {
   const response = await fetch(url, options);
   const raw = await response.text();
 
+  // Gateway timeouts return HTML error pages, not JSON
+  if (response.status === 524 || response.status === 504 || response.status === 502) {
+    throw new Error(`Connection timed out (HTTP ${response.status}). The server took too long to respond — please try again in a moment.`);
+  }
+
   let data = null;
   try {
     data = raw ? JSON.parse(raw) : {};
