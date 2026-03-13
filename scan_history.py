@@ -129,6 +129,43 @@ def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: in
                     )
                     """
                 )
+
+                # Self-heal legacy PostgreSQL schemas where `id` exists but has no default
+                # (e.g., migrated table with BIGINT NOT NULL and no sequence default).
+                cursor.execute(
+                    """
+                    SELECT column_default
+                    FROM information_schema.columns
+                    WHERE table_schema = current_schema()
+                      AND table_name = 'scan_history'
+                      AND column_name = 'id'
+                    """
+                )
+                default_row = cursor.fetchone()
+                if isinstance(default_row, dict):
+                    id_default = default_row.get("column_default")
+                else:
+                    id_default = default_row[0] if default_row else None
+
+                if not id_default:
+                    cursor.execute("CREATE SEQUENCE IF NOT EXISTS scan_history_id_seq")
+                    cursor.execute("SELECT COALESCE(MAX(id), 0) AS max_id FROM scan_history")
+                    max_id_row = cursor.fetchone()
+                    if isinstance(max_id_row, dict):
+                        max_id = int(max_id_row.get("max_id") or 0)
+                    else:
+                        max_id = int(max_id_row[0] if max_id_row else 0)
+
+                    # Ensure sequence starts above current max id.
+                    cursor.execute("SELECT setval('scan_history_id_seq', %s, %s)", (max_id, max_id > 0))
+                    cursor.execute(
+                        """
+                        ALTER TABLE scan_history
+                        ALTER COLUMN id SET DEFAULT nextval('scan_history_id_seq')
+                        """
+                    )
+                    cursor.execute("ALTER SEQUENCE scan_history_id_seq OWNED BY scan_history.id")
+                    logging.info("scan_history.id default was missing; attached scan_history_id_seq")
             else:
                 cursor.execute(
                     """
