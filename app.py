@@ -3116,6 +3116,28 @@ def artist_corrections(name):
             ORDER BY album, track_number, title
         """, (artist_name,))
         missing_tracks = [dict(r) for r in cursor.fetchall()]
+
+        # Fetch albums that have a MusicBrainz MBID so the corrections page can
+        # offer the async "Check for Missing Tracks" feature per album.
+        mb_albums = []
+        try:
+            cursor.execute(f"""
+                SELECT album, COUNT(*) as track_count, MAX(musicbrainz_album_mbid) as mb_mbid
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                  AND musicbrainz_album_mbid IS NOT NULL AND musicbrainz_album_mbid != ''
+                GROUP BY album
+                ORDER BY album
+            """, (artist_name,))
+            for row in cursor.fetchall():
+                rd = dict(row) if hasattr(row, "keys") else {"album": row[0], "track_count": row[1], "mb_mbid": row[2]}
+                mb_albums.append({
+                    "album": rd.get("album"),
+                    "track_count": int(rd.get("track_count") or 0),
+                    "mb_mbid": rd.get("mb_mbid"),
+                })
+        except Exception as mb_err:
+            logging.debug(f"[CORRECTIONS] Could not fetch MB albums: {mb_err}")
     finally:
         conn.close()
 
@@ -3124,6 +3146,7 @@ def artist_corrections(name):
         artist_name=artist_name,
         duplicates=duplicate_groups,
         missing_tracks=missing_tracks,
+        mb_albums=mb_albums,
         duplicate_count=sum(max(int(d.get("duplicate_count") or 0) - 1, 0) for d in duplicate_groups),
         missing_count=len(missing_tracks),
     )
@@ -3200,6 +3223,256 @@ def api_artist_corrections_delete_track():
         })
     except Exception as e:
         logging.error(f"[CORRECTIONS] Failed to delete track: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/album/library-tracks")
+def api_album_library_tracks():
+    """Get all library tracks for a specific artist/album (for the match-missing-track modal)."""
+    try:
+        artist = request.args.get("artist", "").strip()
+        album = request.args.get("album", "").strip()
+        if not artist or not album:
+            return jsonify({"error": "artist and album required"}), 400
+
+        conn = get_db()
+        cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+
+        cursor.execute(f"""
+            SELECT id, title, track_number, disc_number, file_path
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+              AND album = {placeholder}
+            ORDER BY COALESCE(disc_number, 1), track_number
+        """, (artist, album))
+        tracks = [dict(r) for r in cursor.fetchall()]
+        conn.close()
+        return jsonify({"tracks": tracks})
+    except Exception as e:
+        logging.error(f"[LIBRARY_TRACKS] Error: {e}")
+        return jsonify({"error": str(e), "tracks": []}), 500
+
+
+@app.route("/api/album/missing-tracks")
+def api_album_missing_tracks():
+    """Check which tracks are in the MusicBrainz release but missing from the library for an album."""
+    try:
+        artist = request.args.get("artist", "").strip()
+        album = request.args.get("album", "").strip()
+        if not artist or not album:
+            return jsonify({"error": "artist and album required"}), 400
+
+        conn = get_db()
+        cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+
+        # Get library track count and MB MBID for this album
+        try:
+            cursor.execute(f"""
+                SELECT COUNT(*) as track_count, MAX(musicbrainz_album_mbid) as mb_mbid
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
+            """, (artist, album))
+        except Exception:
+            cursor.execute(f"""
+                SELECT COUNT(*) as track_count, NULL as mb_mbid
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
+            """, (artist, album))
+
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"missing_tracks": [], "missing_count": 0, "library_count": 0})
+
+        row_dict = dict(row) if hasattr(row, "keys") else {"track_count": row[0], "mb_mbid": row[1]}
+        library_count = int(row_dict.get("track_count") or 0)
+        mb_mbid = row_dict.get("mb_mbid")
+
+        if not mb_mbid:
+            conn.close()
+            return jsonify({"missing_tracks": [], "missing_count": 0, "library_count": library_count, "reason": "no_mbid"})
+
+        # Fetch library tracks for this album
+        cursor.execute(f"""
+            SELECT id, title, track_number, disc_number FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
+        """, (artist, album))
+        library_rows = cursor.fetchall()
+        conn.close()
+
+        library_keys = set()
+        for t in library_rows:
+            t_dict = dict(t) if hasattr(t, "keys") else {"id": t[0], "title": t[1], "track_number": t[2], "disc_number": t[3]}
+            disc = int(t_dict.get("disc_number") or 1)
+            norm = re.sub(r'\s+', ' ', (t_dict.get("title") or "").lower().strip())
+            library_keys.add((disc, norm))
+
+        # Fetch MusicBrainz release tracklist
+        from post_download_processor import fetch_musicbrainz_release_metadata
+        mb_release = fetch_musicbrainz_release_metadata(mb_mbid)
+        if not mb_release:
+            return jsonify({"missing_tracks": [], "missing_count": 0, "library_count": library_count, "reason": "mb_not_found"})
+
+        mb_tracks = mb_release.get("tracks", [])
+        mb_total = len(mb_tracks)
+        mb_year = mb_release.get("release_year") or ""
+
+        missing = []
+        for mb_track in mb_tracks:
+            t_disc = int(mb_track.get("disc_number") or 1)
+            t_title = mb_track.get("title", "")
+            t_norm = re.sub(r'\s+', ' ', t_title.lower().strip())
+            if (t_disc, t_norm) not in library_keys:
+                missing.append({
+                    "title": t_title,
+                    "track_number": mb_track.get("track_number"),
+                    "disc_number": t_disc,
+                    "artist": mb_track.get("artist") or artist,
+                    "album": album,
+                    "album_artist": artist,
+                    "year": mb_year,
+                    "release_id": mb_mbid,
+                    "is_missing": True,
+                })
+
+        return jsonify({
+            "missing_tracks": missing,
+            "missing_count": len(missing),
+            "mb_total": mb_total,
+            "library_count": library_count,
+        })
+    except Exception as e:
+        logging.error(f"[MISSING_TRACKS] Error checking missing tracks for {artist}/{album}: {e}")
+        return jsonify({"error": str(e), "missing_tracks": [], "missing_count": 0}), 500
+
+
+@app.route("/api/artist/corrections-albums")
+def api_artist_corrections_albums():
+    """Return albums for an artist that have a MusicBrainz MBID, for the corrections page."""
+    try:
+        artist_name = request.args.get("artist", "").strip()
+        if not artist_name:
+            return jsonify({"error": "artist required"}), 400
+
+        conn = get_db()
+        cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+
+        try:
+            cursor.execute(f"""
+                SELECT album, COUNT(*) as track_count, MAX(musicbrainz_album_mbid) as mb_mbid
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                  AND musicbrainz_album_mbid IS NOT NULL AND musicbrainz_album_mbid != ''
+                GROUP BY album
+            """, (artist_name,))
+        except Exception:
+            conn.close()
+            return jsonify({"albums": []})
+
+        albums = []
+        for row in cursor.fetchall():
+            row_dict = dict(row) if hasattr(row, "keys") else {"album": row[0], "track_count": row[1], "mb_mbid": row[2]}
+            albums.append({
+                "album": row_dict.get("album"),
+                "track_count": int(row_dict.get("track_count") or 0),
+                "mb_mbid": row_dict.get("mb_mbid"),
+            })
+        conn.close()
+        return jsonify({"albums": albums})
+    except Exception as e:
+        logging.error(f"[CORRECTIONS_ALBUMS] Error: {e}")
+        return jsonify({"error": str(e), "albums": []}), 500
+
+
+@app.route("/api/track/match-missing", methods=["POST"])
+def api_track_match_missing():
+    """Match a MusicBrainz 'missing' track to an existing track in the database.
+
+    Syncs the MB title (and optionally track number and release ID) to the chosen
+    existing track, then updates the MP3 file tags if the file exists.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        track_id = str(data.get("track_id") or "").strip()
+        mb_title = (data.get("mb_title") or "").strip()
+        mb_track_number = data.get("mb_track_number")
+        mb_release_id = (data.get("mb_release_id") or "").strip()
+
+        if not track_id or not mb_title:
+            return jsonify({"success": False, "error": "track_id and mb_title are required"}), 400
+
+        conn = get_db()
+        cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+
+        cursor.execute(f"""
+            SELECT id, file_path, title, track_number, album, artist, album_artist
+            FROM tracks WHERE CAST(id AS TEXT) = {placeholder} LIMIT 1
+        """, (track_id,))
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"success": False, "error": "Track not found"}), 404
+
+        track = dict(row) if hasattr(row, "keys") else {
+            "id": row[0], "file_path": row[1], "title": row[2], "track_number": row[3],
+            "album": row[4], "artist": row[5], "album_artist": row[6],
+        }
+
+        update_parts = [f"title = {placeholder}"]
+        params = [mb_title]
+        if mb_track_number is not None:
+            update_parts.append(f"track_number = {placeholder}")
+            params.append(mb_track_number)
+        if mb_release_id:
+            # Update musicbrainz_album_mbid if column exists
+            try:
+                conn2 = get_db()
+                c2 = conn2.cursor()
+                c2.execute(f"SELECT musicbrainz_album_mbid FROM tracks LIMIT 1")
+                conn2.close()
+                update_parts.append(f"musicbrainz_album_mbid = {placeholder}")
+                params.append(mb_release_id)
+            except Exception:
+                pass
+        params.append(track_id)
+        cursor.execute(f"UPDATE tracks SET {', '.join(update_parts)} WHERE CAST(id AS TEXT) = {placeholder}", params)
+        conn.commit()
+        conn.close()
+
+        # Update MP3 file tags
+        updated_file = False
+        file_path = track.get("file_path")
+        if file_path and os.path.exists(str(file_path)):
+            try:
+                from helpers.tag_manager import write_tags_to_file
+                tag_updates = {"title": mb_title}
+                if mb_track_number is not None:
+                    tag_updates["tracknumber"] = str(mb_track_number)
+                updated_file = write_tags_to_file(str(file_path), tag_updates)
+            except Exception as tag_err:
+                logging.warning(f"[MATCH_MISSING] Could not update tags for {file_path}: {tag_err}")
+
+        logging.info(
+            f"[MATCH_MISSING] Track {track_id} '{track.get('title')}' → '{mb_title}' "
+            f"(file_updated={updated_file})"
+        )
+        return jsonify({
+            "success": True,
+            "updated_track_id": track_id,
+            "old_title": track.get("title"),
+            "new_title": mb_title,
+            "updated_file": updated_file,
+        })
+    except Exception as e:
+        logging.error(f"[MATCH_MISSING] Error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 

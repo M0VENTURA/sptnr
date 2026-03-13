@@ -523,7 +523,7 @@
         <div class="table-responsive">
             {# Macro: render a single row for a track that exists in MusicBrainz but not in the library #}
             {% macro missing_track_row(track) %}
-            <tr class="text-muted" style="opacity: 0.6;">
+            <tr class="text-muted missing-track-row" style="opacity: 0.6;">
                 <td></td>
                 <td class="fst-italic">{{ track.track_number or '?' }}</td>
                 <td colspan="6" class="fst-italic">
@@ -531,18 +531,30 @@
                     <span class="badge bg-warning text-dark ms-2" style="font-size: 0.65rem; vertical-align: middle;">Missing</span>
                 </td>
                 <td class="text-end">
-                    <button class="btn btn-sm btn-outline-success queue-missing-btn"
-                        title="Add to download queue"
-                        data-artist="{{ track.artist|escapejs }}"
-                        data-album-artist="{{ track.album_artist|escapejs }}"
-                        data-title="{{ track.title|escapejs }}"
-                        data-album="{{ track.album|escapejs }}"
-                        data-track-number="{{ track.track_number or '' }}"
-                        data-year="{{ track.year or '' }}"
-                        data-release-id="{{ track.release_id or '' }}"
-                        onclick="queueMissingTrack(this)">
-                        <i class="bi bi-download"></i>
-                    </button>
+                    <div class="btn-group btn-group-sm">
+                        <button class="btn btn-outline-success queue-missing-btn"
+                            title="Add to download queue"
+                            data-artist="{{ track.artist|escapejs }}"
+                            data-album-artist="{{ track.album_artist|escapejs }}"
+                            data-title="{{ track.title|escapejs }}"
+                            data-album="{{ track.album|escapejs }}"
+                            data-track-number="{{ track.track_number or '' }}"
+                            data-year="{{ track.year or '' }}"
+                            data-release-id="{{ track.release_id or '' }}"
+                            onclick="queueMissingTrack(this)">
+                            <i class="bi bi-download"></i>
+                        </button>
+                        <button class="btn btn-outline-primary"
+                            title="Match to an existing song in the library"
+                            data-title="{{ track.title|escapejs }}"
+                            data-track-number="{{ track.track_number or '' }}"
+                            data-release-id="{{ track.release_id or '' }}"
+                            data-artist="{{ track.artist|escapejs }}"
+                            data-album="{{ track.album|escapejs }}"
+                            onclick="openAlbumMatchModal(this)">
+                            <i class="bi bi-link-45deg"></i>
+                        </button>
+                    </div>
                 </td>
             </tr>
             {% endmacro %}
@@ -3297,7 +3309,120 @@
         }
     }
 
+    // ── Match Missing Track to Existing Song ──────────────────────────────────
+    let _matchMbTrack = null;
+
+    async function openAlbumMatchModal(btn) {
+        _matchMbTrack = {
+            title: btn.dataset.title,
+            track_number: btn.dataset.trackNumber,
+            release_id: btn.dataset.releaseId,
+            artist: btn.dataset.artist,
+            album: btn.dataset.album,
+        };
+        document.getElementById('albumMatchMbTitle').textContent = _matchMbTrack.title;
+        document.getElementById('albumMatchMbTrackNum').textContent = _matchMbTrack.track_number || '?';
+
+        const tbody = document.getElementById('albumMatchCandidatesTbody');
+        tbody.innerHTML = '<tr><td colspan="4" class="text-center"><span class="spinner-border spinner-border-sm"></span> Loading…</td></tr>';
+
+        const modalEl = document.getElementById('albumMatchTrackModal');
+        new bootstrap.Modal(modalEl).show();
+
+        // Fetch library tracks for this album
+        try {
+            const artistName = "{{ artist_name|escapejs }}";
+            const albumName = "{{ album_name|escapejs }}";
+            const resp = await fetch(`/api/album/library-tracks?artist=${encodeURIComponent(artistName)}&album=${encodeURIComponent(albumName)}`);
+            const data = await resp.json();
+            const tracks = data.tracks || [];
+            if (tracks.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">No library tracks found for this album.</td></tr>';
+            } else {
+                tbody.innerHTML = tracks.map(t => `
+                    <tr>
+                        <td class="text-muted">${t.track_number || '—'}</td>
+                        <td>${escapeHtml(t.title || '—')}</td>
+                        <td class="small text-muted">${escapeHtml(t.file_path || '—')}</td>
+                        <td class="text-center">
+                            <button class="btn btn-sm btn-primary" onclick="doAlbumMatchTrack('${t.id}')">
+                                <i class="bi bi-check-lg"></i> Match
+                            </button>
+                        </td>
+                    </tr>`).join('');
+            }
+        } catch (err) {
+            tbody.innerHTML = `<tr><td colspan="4" class="text-danger text-center">Error: ${escapeHtml(err.message)}</td></tr>`;
+        }
+    }
+
+    async function doAlbumMatchTrack(trackId) {
+        if (!_matchMbTrack) return;
+        if (!confirm(`Sync MB metadata to this track?\n\nNew title: "${_matchMbTrack.title}"\n\nThis will update the database and the MP3 file tags.`)) return;
+
+        try {
+            const resp = await fetch('/api/track/match-missing', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    track_id: String(trackId),
+                    mb_title: _matchMbTrack.title,
+                    mb_track_number: _matchMbTrack.track_number,
+                    mb_release_id: _matchMbTrack.release_id,
+                })
+            });
+            const result = await resp.json();
+            bootstrap.Modal.getInstance(document.getElementById('albumMatchTrackModal')).hide();
+            if (result.success) {
+                alert(`✓ Matched!\n"${result.old_title}" → "${result.new_title}"${result.updated_file ? '\nMP3 tags updated.' : ''}`);
+                location.reload();
+            } else {
+                alert(`✗ Error: ${result.error}`);
+            }
+        } catch (err) {
+            alert(`✗ Error: ${err.message}`);
+        }
+    }
+
+    function escapeHtml(str) {
+        return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
 </script>
+
+<!-- Match Missing Track Modal (Album Page) -->
+<div class="modal fade" id="albumMatchTrackModal" tabindex="-1" aria-labelledby="albumMatchTrackModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="albumMatchTrackModalLabel">Match Missing Track to Existing Song</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted mb-2">
+                    <strong id="albumMatchMbTitle"></strong> (Track <span id="albumMatchMbTrackNum"></span>)
+                    — select a track from the library to sync this MB metadata to it.
+                </p>
+                <div class="table-responsive">
+                    <table class="table table-hover table-sm mb-0">
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>Current Title</th>
+                                <th>File</th>
+                                <th class="text-center">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="albumMatchCandidatesTbody"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            </div>
+        </div>
+    </div>
+</div>
 <script src="{{ url_for('static', filename='js/genre-utils.js') }}"></script>
 
 {# Shared MusicBrainz Release Search System #}

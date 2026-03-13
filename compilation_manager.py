@@ -284,7 +284,7 @@ def get_main_tracks_for_artist(artist, db_path="/database/sptnr.db"):
         # Get all tracks where artist is the album artist
         cursor.execute("""
             SELECT 
-                id, title, album, track_number,
+                id, title, album, track_number, file_path,
                 featured_artists, compilation_artists,
                 score, stars, navidrome_rating
             FROM tracks 

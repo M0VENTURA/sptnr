@@ -64,6 +64,14 @@
   </div>
   {% endif %}
 
+  <!-- Correcting Needed badge — always shown when corrections exist -->
+  <div id="artist-corrections-banner" style="display:none;" class="mb-3">
+    <a href="{{ url_for('artist_corrections', name=artist_name) }}" class="btn btn-outline-danger btn-sm">
+      <i class="bi bi-tools"></i> Correcting Needed
+    </a>
+    <span id="artist-missing-tracks-badge" class="badge bg-warning text-dark ms-2" style="display:none;"></span>
+  </div>
+
   <div class="card mb-4 sticky-top" style="top: 0.75rem; z-index: 1000;">
     <div class="card-body py-2 px-3">
       <ul class="nav nav-pills gap-2 small">
@@ -3718,6 +3726,57 @@ async function loadArtistCoveredBy(artistName) {
     container.innerHTML = `<div class="p-3 text-danger text-center"><i class="bi bi-exclamation-triangle"></i> Error loading covers: ${escapeHtml(e.message)}</div>`;
   }
 }
+
+// ── Artist Corrections Banner + Missing Tracks Check ──────────────────────
+(function initCorrectionsAndMissingTracks() {
+  const artistNameEl = document.querySelector('[data-artist-name]');
+  const artistNameForCorr = artistNameEl ? artistNameEl.dataset.artistName : '';
+  if (!artistNameForCorr) return;
+
+  // Show corrections banner (always show link to corrections page)
+  const banner = document.getElementById('artist-corrections-banner');
+  if (banner) banner.style.display = 'block';
+
+  // Async: check albums with MB MBIDs for missing tracks
+  const mbRows = document.querySelectorAll('tr[data-mb-mbid]');
+  if (!mbRows || mbRows.length === 0) return;
+
+  const checks = Array.from(mbRows).map(row => {
+    const albumName = row.dataset.albumName;
+    const mbMbid = row.dataset.mbMbid;
+    if (!albumName || !mbMbid) return Promise.resolve(0);
+
+    return fetch(`/api/album/missing-tracks?artist=${encodeURIComponent(artistNameForCorr)}&album=${encodeURIComponent(albumName)}`)
+      .then(r => r.ok ? r.json() : { missing_count: 0 })
+      .then(data => {
+        const count = data.missing_count || 0;
+        if (count > 0) {
+          // Show badge on the status cell of this album row
+          const badge = row.querySelector('.album-missing-tracks-badge');
+          if (badge) {
+            badge.textContent = `${count} track${count !== 1 ? 's' : ''} missing`;
+            badge.style.display = 'inline-block';
+          }
+          // Show the "Search missing tracks" button
+          const searchBtn = row.querySelector('.album-search-missing-btn');
+          if (searchBtn) searchBtn.style.display = 'inline-block';
+        }
+        return count;
+      })
+      .catch(() => 0);
+  });
+
+  Promise.all(checks).then(counts => {
+    const totalMissingTracks = counts.reduce((a, b) => a + b, 0);
+    if (totalMissingTracks > 0) {
+      const badge = document.getElementById('artist-missing-tracks-badge');
+      if (badge) {
+        badge.textContent = `${totalMissingTracks} missing track${totalMissingTracks !== 1 ? 's' : ''} in library`;
+        badge.style.display = 'inline-block';
+      }
+    }
+  });
+})();
 </script>
 <script src="{{ url_for('static', filename='js/genre-utils.js') }}"></script>
 <style>
