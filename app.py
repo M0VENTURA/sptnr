@@ -2891,53 +2891,201 @@ def artist_corrections(name):
     is_pg = _is_postgres_connection(conn)
     placeholder = "%s" if is_pg else "?"
 
-    duplicates = []
+    duplicate_groups = []
     missing_tracks = []
 
     try:
-        if is_pg:
-            cursor.execute(f"""
-                SELECT
-                    album,
-                    title,
-                    COALESCE(NULLIF(artist, ''), '—') AS track_artist,
-                    TRIM(COALESCE(CAST(track_number AS TEXT), '')) AS track_number,
-                    COUNT(*) AS duplicate_count,
-                    STRING_AGG(CAST(id AS TEXT), ', ' ORDER BY id) AS track_ids
-                FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
-                  AND title IS NOT NULL
-                  AND TRIM(title) != ''
-                GROUP BY
-                    album,
-                    title,
-                    COALESCE(NULLIF(artist, ''), '—'),
-                    TRIM(COALESCE(CAST(track_number AS TEXT), ''))
-                HAVING COUNT(*) > 1
-                ORDER BY duplicate_count DESC, album, title, track_artist, track_number
-            """, (artist_name,))
-        else:
-            cursor.execute(f"""
-                SELECT
-                    album,
-                    title,
-                    COALESCE(NULLIF(artist, ''), '—') AS track_artist,
-                    TRIM(COALESCE(CAST(track_number AS TEXT), '')) AS track_number,
-                    COUNT(*) AS duplicate_count,
-                    GROUP_CONCAT(id, ', ') AS track_ids
-                FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
-                  AND title IS NOT NULL
-                  AND TRIM(title) != ''
-                GROUP BY
-                    album,
-                    title,
-                    COALESCE(NULLIF(artist, ''), '—'),
-                    TRIM(COALESCE(CAST(track_number AS TEXT), ''))
-                HAVING COUNT(*) > 1
-                ORDER BY duplicate_count DESC, album, title, track_artist, track_number
-            """, (artist_name,))
-        duplicates = [dict(r) for r in cursor.fetchall()]
+        cursor.execute(f"""
+            SELECT
+                id,
+                album,
+                title,
+                COALESCE(NULLIF(artist, ''), '—') AS track_artist,
+                TRIM(COALESCE(CAST(track_number AS TEXT), '')) AS track_number,
+                TRIM(COALESCE(CAST(disc_number AS TEXT), '')) AS disc_number,
+                file_path,
+                duration,
+                COALESCE(NULLIF(mbid, ''), '') AS mbid,
+                COALESCE(NULLIF(suggested_mbid, ''), '') AS suggested_mbid,
+                COALESCE(NULLIF(album_artist, ''), artist) AS album_artist
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+              AND title IS NOT NULL
+              AND TRIM(title) != ''
+            ORDER BY album, title, track_artist, track_number, id
+        """, (artist_name,))
+        candidate_rows = [dict(r) for r in cursor.fetchall()]
+
+        def _duration_to_display(raw_duration):
+            if raw_duration in (None, ""):
+                return "—"
+            try:
+                duration_seconds = float(raw_duration)
+                if duration_seconds > 10000:
+                    duration_seconds = duration_seconds / 1000.0
+                duration_seconds = int(round(duration_seconds))
+                minutes = duration_seconds // 60
+                seconds = duration_seconds % 60
+                return f"{minutes}:{seconds:02d}"
+            except Exception:
+                return "—"
+
+        def _normalize_name_component(value):
+            return _queue_sanitize_component(str(value or "")).lower()
+
+        def _build_expected_filename(track_row):
+            file_name_format = _read_queue_naming_format()
+            file_ext = os.path.splitext(str(track_row.get("file_path") or ""))[1] or ".mp3"
+
+            year_value = str(track_row.get("year") or "").strip()[:4] if track_row.get("year") else "Unknown"
+            format_vars = {
+                "track_number": _queue_safe_track_number(track_row.get("track_number")),
+                "artist": _queue_sanitize_component(track_row.get("track_artist") or "Unknown Artist") or "Unknown Artist",
+                "album_artist": _queue_sanitize_component(track_row.get("album_artist") or track_row.get("track_artist") or "Unknown Artist") or "Unknown Artist",
+                "title": _queue_sanitize_component(track_row.get("title") or "Unknown Title") or "Unknown Title",
+                "album": _queue_sanitize_component(track_row.get("album") or "Unknown Album") or "Unknown Album",
+                "year": year_value or "Unknown",
+            }
+
+            fallback_rel = (
+                f"{format_vars['album_artist']}/{format_vars['year']} - {format_vars['album']}/"
+                f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}{file_ext}"
+            )
+
+            try:
+                rendered = file_name_format.format(**format_vars)
+            except Exception:
+                rendered = fallback_rel
+
+            if not isinstance(rendered, str) or not rendered.strip():
+                rendered = fallback_rel
+
+            rendered = rendered.strip().replace("\\", "/")
+            base_name = os.path.basename(rendered)
+            if not base_name:
+                base_name = os.path.basename(fallback_rel)
+
+            if not os.path.splitext(base_name)[1]:
+                base_name = f"{base_name}{file_ext}"
+
+            return base_name
+
+        grouped = {}
+        for row in candidate_rows:
+            group_key = (
+                row.get("album") or "",
+                row.get("title") or "",
+                row.get("track_artist") or "",
+                row.get("track_number") or "",
+            )
+            grouped.setdefault(group_key, []).append(row)
+
+        for (album, title, track_artist, track_number), tracks in grouped.items():
+            if len(tracks) < 2:
+                continue
+
+            mbid_counts = {}
+            for track in tracks:
+                mbid_value = (track.get("mbid") or "").strip()
+                if mbid_value:
+                    mbid_counts[mbid_value] = mbid_counts.get(mbid_value, 0) + 1
+            consensus_mbid = max(mbid_counts, key=mbid_counts.get) if mbid_counts else ""
+
+            scored_tracks = []
+            for track in tracks:
+                file_path = str(track.get("file_path") or "")
+                file_name = os.path.basename(file_path) if file_path else ""
+                expected_name = _build_expected_filename(track)
+
+                actual_name_norm = _normalize_name_component(os.path.splitext(file_name)[0])
+                expected_name_norm = _normalize_name_component(os.path.splitext(expected_name)[0])
+                filename_similarity = (
+                    difflib.SequenceMatcher(None, actual_name_norm, expected_name_norm).ratio()
+                    if actual_name_norm and expected_name_norm
+                    else 0.0
+                )
+
+                mbid_score = 0.0
+                if (track.get("mbid") or "").strip():
+                    mbid_score += 4.0
+                if (track.get("suggested_mbid") or "").strip():
+                    mbid_score += 2.0
+                if consensus_mbid:
+                    if (track.get("mbid") or "").strip() == consensus_mbid:
+                        mbid_score += 3.0
+                    elif (track.get("mbid") or "").strip():
+                        mbid_score -= 2.0
+
+                path_score = 0.0
+                lowered_path = file_path.replace("\\", "/").lower()
+                if lowered_path.startswith("__queued_for_download__"):
+                    path_score -= 2.5
+                elif "/downloads/" in lowered_path:
+                    path_score -= 1.5
+                elif "/music/" in lowered_path:
+                    path_score += 1.0
+
+                duration_bonus = 0.3 if track.get("duration") not in (None, "", 0, "0") else 0.0
+                keep_score = mbid_score + (filename_similarity * 2.5) + path_score + duration_bonus
+
+                recommendation_notes = []
+                if consensus_mbid and (track.get("mbid") or "").strip() == consensus_mbid:
+                    recommendation_notes.append("Matches consensus MBID")
+                if filename_similarity >= 0.9:
+                    recommendation_notes.append("Strong queue filename format match")
+                elif filename_similarity >= 0.75:
+                    recommendation_notes.append("Good queue filename format match")
+                if "/downloads/" in lowered_path or lowered_path.startswith("__queued_for_download__"):
+                    recommendation_notes.append("Located in downloads/queued path")
+
+                scored_tracks.append({
+                    **track,
+                    "file_name": file_name or "—",
+                    "duration_display": _duration_to_display(track.get("duration")),
+                    "expected_filename": expected_name,
+                    "filename_similarity": round(filename_similarity, 3),
+                    "mbid_score": round(mbid_score, 2),
+                    "keep_score": round(keep_score, 3),
+                    "recommendation_notes": recommendation_notes,
+                })
+
+            sorted_by_keep = sorted(
+                scored_tracks,
+                key=lambda t: (
+                    t.get("keep_score", 0),
+                    -t.get("filename_similarity", 0),
+                    str(t.get("id") or ""),
+                ),
+            )
+            recommended_delete_id = sorted_by_keep[0].get("id") if sorted_by_keep else None
+
+            for track in scored_tracks:
+                track["recommend_delete"] = str(track.get("id")) == str(recommended_delete_id)
+
+            track_ids = ", ".join(str(t.get("id")) for t in scored_tracks)
+            recommendation_basis = "MusicBrainz confidence + queue filename format similarity"
+            if consensus_mbid:
+                recommendation_basis += f" (consensus MBID: {consensus_mbid})"
+
+            duplicate_groups.append({
+                "album": album,
+                "title": title,
+                "track_artist": track_artist,
+                "track_number": track_number,
+                "duplicate_count": len(scored_tracks),
+                "track_ids": track_ids,
+                "tracks": sorted(scored_tracks, key=lambda t: str(t.get("id") or "")),
+                "recommended_delete_id": recommended_delete_id,
+                "recommendation_basis": recommendation_basis,
+            })
+
+        duplicate_groups.sort(
+            key=lambda g: (
+                -(int(g.get("duplicate_count") or 0)),
+                str(g.get("album") or ""),
+                str(g.get("title") or ""),
+            )
+        )
 
         cursor.execute(f"""
             SELECT
@@ -2963,11 +3111,85 @@ def artist_corrections(name):
     return render_template(
         "artist_corrections.html",
         artist_name=artist_name,
-        duplicates=duplicates,
+        duplicates=duplicate_groups,
         missing_tracks=missing_tracks,
-        duplicate_count=sum(int(d.get("duplicate_count") or 0) - 1 for d in duplicates),
+        duplicate_count=sum(max(int(d.get("duplicate_count") or 0) - 1, 0) for d in duplicate_groups),
         missing_count=len(missing_tracks),
     )
+
+
+@app.route("/api/artist/corrections/delete-track", methods=["POST"])
+def api_artist_corrections_delete_track():
+    """Delete one track row (and optionally its file) from Corrections UI."""
+    try:
+        payload = request.get_json(silent=True) or {}
+        track_id = str(payload.get("track_id") or "").strip()
+        delete_file = bool(payload.get("delete_file", True))
+
+        if not track_id:
+            return jsonify({"success": False, "error": "track_id is required"}), 400
+
+        conn = get_db()
+        cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+
+        cursor.execute(
+            f"""
+            SELECT id, file_path, artist, album, title
+            FROM tracks
+            WHERE CAST(id AS TEXT) = {placeholder}
+            LIMIT 1
+            """,
+            (track_id,),
+        )
+        row = cursor.fetchone()
+
+        if not row:
+            conn.close()
+            return jsonify({"success": False, "error": "Track not found"}), 404
+
+        row_dict = dict(row) if hasattr(row, "keys") else {
+            "id": row[0],
+            "file_path": row[1],
+            "artist": row[2],
+            "album": row[3],
+            "title": row[4],
+        }
+
+        deleted_file = False
+        file_path = row_dict.get("file_path")
+        if delete_file and file_path:
+            normalized_file_path = str(file_path).replace("\\", "/")
+            if not normalized_file_path.startswith("__queued_for_download__") and os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                    deleted_file = True
+                except Exception as file_err:
+                    logging.warning(f"[CORRECTIONS] Could not delete file for track {track_id}: {file_err}")
+
+        cursor.execute(
+            f"DELETE FROM tracks WHERE CAST(id AS TEXT) = {placeholder}",
+            (track_id,),
+        )
+        conn.commit()
+        conn.close()
+
+        logging.info(
+            f"[CORRECTIONS] Deleted duplicate track {track_id}: "
+            f"{row_dict.get('artist')} - {row_dict.get('title')} "
+            f"(file_deleted={deleted_file})"
+        )
+
+        return jsonify({
+            "success": True,
+            "deleted_track_id": track_id,
+            "deleted_file": deleted_file,
+            "message": "Track deleted successfully",
+        })
+    except Exception as e:
+        logging.error(f"[CORRECTIONS] Failed to delete track: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/search")

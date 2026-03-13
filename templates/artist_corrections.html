@@ -84,7 +84,7 @@
                             <th>Track Artist</th>
                             <th class="text-center">Track #</th>
                             <th class="text-center">Count</th>
-                            <th>Track IDs</th>
+                            <th>Duplicate Files (Path, Length, Recommendation, Action)</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -96,7 +96,71 @@
                                 <td>{{ row.track_artist or '—' }}</td>
                                 <td class="text-center">{{ row.track_number or '—' }}</td>
                                 <td class="text-center"><span class="badge bg-danger">{{ row.duplicate_count }}</span></td>
-                                <td class="small text-muted">{{ row.track_ids or '—' }}</td>
+                                <td>
+                                    <div class="small mb-2">
+                                        <span class="badge bg-warning text-dark">
+                                            Recommend delete: {{ row.recommended_delete_id or '—' }}
+                                        </span>
+                                        <span class="text-muted ms-2">{{ row.recommendation_basis }}</span>
+                                    </div>
+                                    <div class="table-responsive">
+                                        <table class="table table-sm mb-0 artist-corrections-table">
+                                            <thead>
+                                                <tr>
+                                                    <th>Track ID</th>
+                                                    <th>File Path</th>
+                                                    <th class="text-center">Length</th>
+                                                    <th class="text-center">MBID</th>
+                                                    <th class="text-center">Queue Format Match</th>
+                                                    <th class="text-center">Action</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {% for track in row.tracks %}
+                                                <tr class="{% if track.recommend_delete %}table-danger{% endif %}">
+                                                    <td class="small text-muted">
+                                                        {{ track.id }}
+                                                        {% if track.recommend_delete %}
+                                                            <span class="badge bg-danger ms-1">recommended delete</span>
+                                                        {% endif %}
+                                                    </td>
+                                                    <td class="small text-muted">
+                                                        <div>{{ track.file_path or '—' }}</div>
+                                                        {% if track.expected_filename %}
+                                                            <div class="text-info">Expected: {{ track.expected_filename }}</div>
+                                                        {% endif %}
+                                                        {% if track.recommendation_notes %}
+                                                            <div class="text-warning">{{ track.recommendation_notes | join(' · ') }}</div>
+                                                        {% endif %}
+                                                    </td>
+                                                    <td class="text-center">{{ track.duration_display or '—' }}</td>
+                                                    <td class="text-center small">
+                                                        {% if track.mbid %}
+                                                            <span class="badge bg-success">MBID</span>
+                                                        {% else %}
+                                                            <span class="badge bg-secondary">none</span>
+                                                        {% endif %}
+                                                        {% if track.suggested_mbid %}
+                                                            <span class="badge bg-info">Suggested</span>
+                                                        {% endif %}
+                                                    </td>
+                                                    <td class="text-center small">
+                                                        {{ (track.filename_similarity * 100) | round(1) }}%
+                                                    </td>
+                                                    <td class="text-center">
+                                                        <button
+                                                            class="btn btn-sm {% if track.recommend_delete %}btn-danger{% else %}btn-outline-danger{% endif %}"
+                                                            onclick="deleteDuplicateTrack('{{ track.id }}', {{ 'true' if track.recommend_delete else 'false' }})"
+                                                            title="Delete this duplicate track (and file if present)">
+                                                            <i class="bi bi-trash"></i> Delete
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                                {% endfor %}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </td>
                             </tr>
                             {% endfor %}
                         {% else %}
@@ -317,5 +381,36 @@ document.getElementById('confirmMergeBtn').addEventListener('click', async funct
     }
 }
 );
+
+async function deleteDuplicateTrack(trackId, isRecommendedDelete) {
+    const recommendationNote = isRecommendedDelete
+        ? 'This is the recommended duplicate to delete.\n\n'
+        : '';
+
+    if (!confirm(`${recommendationNote}Delete track ${trackId} from database and delete its file from disk if it exists?`)) {
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/artist/corrections/delete-track', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                track_id: String(trackId),
+                delete_file: true
+            })
+        });
+
+        const result = await response.json();
+        if (!response.ok || !result.success) {
+            throw new Error(result.error || 'Failed to delete track');
+        }
+
+        alert(`Deleted track ${trackId}${result.deleted_file ? ' and file' : ''}.`);
+        location.reload();
+    } catch (error) {
+        alert(`Could not delete track ${trackId}: ${error.message}`);
+    }
+}
 </script>
 {% endblock %}
