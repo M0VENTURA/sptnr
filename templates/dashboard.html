@@ -35,74 +35,45 @@
     </div>
     {% endif %}
     
-    <!-- Statistics Cards -->
-    <div class="row g-2 g-md-3 mb-4">
-        <div class="col-6 col-sm-4 col-md-3">
-            <div class="card h-100">
-                <div class="card-body text-center">
-                    <div class="stat-label mb-2">
-                        <i class="bi bi-people"></i> Artists
-                    </div>
-                    <div class="h4 mb-0">{{ artist_count }}</div>
-                </div>
-            </div>
-        </div>
-        <div class="col-6 col-sm-4 col-md-3">
-            <div class="card h-100">
-                <div class="card-body text-center">
-                    <div class="stat-label mb-2">
-                        <i class="bi bi-disc"></i> Albums
-                    </div>
-                    <div class="h4 mb-0">{{ album_count }}</div>
-                </div>
-            </div>
-        </div>
-        <div class="col-6 col-sm-6 col-md-3">
-            <div class="card h-100">
-                <div class="card-body text-center">
-                    <div class="stat-label mb-2">
-                        <i class="bi bi-music-note"></i> Tracks
-                    </div>
-                    <div class="h4 mb-0">{{ track_count }}</div>
-                </div>
-            </div>
-        </div>
-        <div class="col-6 col-sm-6 col-md-3">
-            <div class="card h-100">
-                <div class="card-body text-center">
-                    <div class="stat-label mb-2">
-                        <i class="bi bi-single-music"></i> Singles
-                    </div>
-                    <div class="h4 mb-0">{{ singles_count }}</div>
-                </div>
-            </div>
-        </div>
-    </div>
-    
-    <!-- Queue Processor Status Card -->
-    <div class="card mb-4 border-primary">
-        <div class="card-header bg-primary bg-opacity-10 border-primary d-flex justify-content-between align-items-center">
+    <!-- Add to Download Queue Card -->
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
             <h5 class="card-title mb-0">
-                <i class="bi bi-hourglass-split"></i> Download Queue Processor
+                <i class="bi bi-plus-circle"></i> Add to Download Queue
             </h5>
-            <div id="processorStatusBadge" class="placeholder-glow">
-                <span class="placeholder col-3"></span>
-            </div>
+            <a href="{{ url_for('downloads') }}#queueContent" class="btn btn-sm btn-outline-primary">
+                <i class="bi bi-list-check"></i> View Queue
+            </a>
         </div>
         <div class="card-body">
-            <div class="row align-items-center">
-                <div class="col-md-8">
-                    <div id="processorStatusContent" class="placeholder-glow">
-                        <p class="placeholder col-12"></p>
-                        <p class="placeholder col-9"></p>
+            <form id="dashboardAddToQueueForm" onsubmit="dashboardAddToQueue(event)">
+                <div class="row g-2">
+                    <div class="col-md-3">
+                        <input type="text" class="form-control" id="dashQueueArtist" placeholder="Artist *" required>
+                    </div>
+                    <div class="col-md-3">
+                        <input type="text" class="form-control" id="dashQueueTitle" placeholder="Song Title *" required>
+                    </div>
+                    <div class="col-md-3">
+                        <input type="text" class="form-control" id="dashQueueAlbum" placeholder="Album (optional)">
+                    </div>
+                    <div class="col-md-1">
+                        <select class="form-select" id="dashQueueSource">
+                            <option value="soulseek">Soulseek</option>
+                            <option value="qbittorrent">qBittorrent</option>
+                        </select>
+                    </div>
+                    <div class="col-md-1">
+                        <input type="number" class="form-control" id="dashQueuePriority" value="5" min="1" max="10" title="Priority (1=highest)">
+                    </div>
+                    <div class="col-md-1">
+                        <button type="submit" class="btn btn-primary w-100">
+                            <i class="bi bi-plus"></i> Add
+                        </button>
                     </div>
                 </div>
-                <div class="col-md-4 text-end">
-                    <button id="restartProcessorBtn" class="btn btn-sm btn-primary" onclick="restartQueueProcessor()" disabled>
-                        <i class="bi bi-arrow-clockwise"></i> Restart Processor
-                    </button>
-                </div>
-            </div>
+                <div id="dashQueueFeedback" class="mt-2" style="display:none"></div>
+            </form>
         </div>
     </div>
     
@@ -136,10 +107,8 @@
             </h5>
         </div>
         <div class="card-body">
-            <p class="text-muted small mb-3">Run individual scan operations for more control over the process.</p>
-            
             <!-- Unified Progress Bar -->
-            <div id="unified-progress-container" class="mb-4">
+            <div id="unified-progress-container" class="mb-3">
                 <div class="d-flex justify-content-between mb-2">
                     <small class="text-muted"><strong>Current Scan:</strong> <span id="current-scan-name">Idle</span></small>
                     <small class="text-muted"><span id="unified-progress-percent">0%</span></small>
@@ -152,126 +121,52 @@
                 </div>
                 <small class="text-muted d-block"><span id="unified-progress-details">Ready to start a scan</span></small>
             </div>
-            
-            <!-- Scan Control Buttons -->
-            <div class="row g-2">
-                <!-- Navidrome Sync Button -->
-                <div class="col-12 col-md-4">
-                    <div class="card h-100 scan-operation-card">
-                        <div class="card-body p-3">
-                            <h6 class="mb-2">
-                                <i class="bi bi-cloud"></i> Navidrome Sync
-                            </h6>
-                            <p class="small text-muted mb-3">Synchronize music library from Navidrome server</p>
-                            <div class="btn-group w-100" role="group">
-                                <button type="button" class="btn btn-primary btn-sm dropdown-toggle scan-dropdown-btn scan-start-btn" data-bs-toggle="dropdown" aria-expanded="false" data-scan-type="navidrome">
-                                    <i class="bi bi-play-fill"></i> Start
-                                </button>
-                                <ul class="dropdown-menu">
-                                    <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="navidrome" data-action="navidrome" data-mode="all"><strong>Full Scan</strong><br><small class="text-muted d-block">Rescan all, skip recently updated</small></a></li>
-                                    <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="navidrome" data-action="navidrome" data-mode="force"><strong>Full (Forced)</strong><br><small class="text-muted d-block">Rescan all, ignore updates</small></a></li>
-                                    <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="navidrome" data-action="navidrome" data-mode="missing"><strong>Missing Only</strong><br><small class="text-muted d-block">Only new/incomplete entries</small></a></li>
-                                    <li><hr class="dropdown-divider"></li>
-                                    <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="navidrome" data-action="navidrome" data-mode="resume"><strong>Resume from Last</strong><br><small class="text-muted d-block">Continue from last scanned artist</small></a></li>
-                                    <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="navidrome" data-action="navidrome" data-mode="resume_force"><strong>Resume (Forced)</strong><br><small class="text-muted d-block">Resume and force rescan all data</small></a></li>
-                                </ul>
-                            </div>
-                        </div>
-                    </div>
+
+            <!-- Scan Controls Row -->
+            <div class="d-flex flex-wrap align-items-center gap-3">
+                <!-- Start Scan Dropdown -->
+                <div class="d-flex align-items-center gap-2">
+                    <select id="scanTypeSelect" class="form-select form-select-sm" style="min-width: 210px;">
+                        <option value="navidrome">Navidrome Import</option>
+                        <option value="metadata">Metadata Import</option>
+                        <option value="popularity">Popularity and Single Scan</option>
+                        <option value="combined">Combined Scan</option>
+                    </select>
+                    <button id="startScanBtn" class="btn btn-primary btn-sm" onclick="startSelectedScan()">
+                        <i class="bi bi-play-fill"></i> Start Scan
+                    </button>
                 </div>
-                
-                <!-- Popularity & Singles Button -->
-                <div class="col-12 col-md-4">
-                    <div class="card h-100 scan-operation-card">
-                        <div class="card-body p-3">
-                            <h6 class="mb-2">
-                                <i class="bi bi-graph-up"></i> Popularity & Singles
-                            </h6>
-                            <p class="small text-muted mb-3">Calculate popularity ratings and identify singles</p>
-                            <div class="btn-group w-100" role="group">
-                                <button id="popularity-start-btn" type="button" class="btn btn-success btn-sm dropdown-toggle scan-dropdown-btn scan-start-btn" data-bs-toggle="dropdown" aria-expanded="false" data-scan-type="popularity">
-                                    <i class="bi bi-play-fill"></i> Start
-                                </button>
-                                <ul class="dropdown-menu">
-                                    <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="popularity" data-action="popularity" data-mode="all"><strong>Full Scan</strong><br><small class="text-muted d-block">Rescan all, skip recently updated</small></a></li>
-                                    <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="popularity" data-action="popularity" data-mode="force"><strong>Full (Forced)</strong><br><small class="text-muted d-block">Rescan all, ignore updates</small></a></li>
-                                    <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="popularity" data-action="popularity" data-mode="missing"><strong>Missing Only</strong><br><small class="text-muted d-block">Only new/incomplete entries</small></a></li>
-                                    <li><hr class="dropdown-divider"></li>
-                                    <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="popularity" data-action="popularity" data-mode="singles"><strong>Singles Only</strong><br><small class="text-muted d-block">Rescan singles detection only</small></a></li>
-                                    <li><hr class="dropdown-divider"></li>
-                                    <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="popularity" data-action="popularity" data-mode="resume"><strong>Resume from Last</strong><br><small class="text-muted d-block">Continue from last scanned artist</small></a></li>
-                                    <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="popularity" data-action="popularity" data-mode="resume_force"><strong>Resume (Forced)</strong><br><small class="text-muted d-block">Resume and force rescan all data</small></a></li>
-                                </ul>
-                            </div>
-                        </div>
-                    </div>
+
+                <!-- Perpetual Checkbox -->
+                <div class="form-check form-switch" title="Scans will restart automatically when they reach the end">
+                    <input class="form-check-input" type="checkbox" id="perpetualCheck" {{ 'checked' if perpetual else '' }} onchange="updateFeature('perpetual', this.checked)">
+                    <label class="form-check-label" for="perpetualCheck">Perpetual</label>
                 </div>
-                
-                <!-- Combined Scan Button -->
-                <div class="col-12 col-md-4">
-                    <div class="card h-100 scan-operation-card">
-                        <div class="card-body p-3">
-                            <h6 class="mb-2">
-                                <i class="bi bi-lightning-fill"></i> Combined Scan
-                            </h6>
-                            <p class="small text-muted mb-3">Process each artist: Navidrome import → Popularity → Singles scan</p>
-                            <div class="btn-group w-100" role="group">
-                                <button type="button" class="btn btn-info btn-sm dropdown-toggle scan-dropdown-btn scan-start-btn" data-bs-toggle="dropdown" aria-expanded="false" data-scan-type="combined" style="color: #000; font-weight: 600;">
-                                    <i class="bi bi-play-fill"></i> Start
-                                </button>
-                                <ul class="dropdown-menu">
-                                    <!-- Note: No "Missing Only" mode - Combined scan processes each artist individually,
-                                         so it doesn't use bulk filtering like other scans. All artists are processed
-                                         sequentially with complete Navidrome→Popularity→Singles workflow. -->
-                                    <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="combined" data-action="combined" data-mode="all"><strong>Full Scan</strong><br><small class="text-muted d-block">Process all artists sequentially</small></a></li>
-                                    <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="combined" data-action="combined" data-mode="force"><strong>Full (Forced)</strong><br><small class="text-muted d-block">Force rescan all data</small></a></li>
-                                    <li><hr class="dropdown-divider"></li>
-                                    <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="combined" data-action="combined" data-mode="resume"><strong>Resume from Last</strong><br><small class="text-muted d-block">Continue from last scanned artist</small></a></li>
-                                    <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="combined" data-action="combined" data-mode="resume_force"><strong>Resume (Forced)</strong><br><small class="text-muted d-block">Resume and force rescan all data</small></a></li>
-                                </ul>
-                            </div>
-                        </div>
-                    </div>
+
+                <!-- Forced Checkbox -->
+                <div class="form-check form-switch" title="Scans will always run in forced mode, ignoring recent scan status">
+                    <input class="form-check-input" type="checkbox" id="forcedCheck" {{ 'checked' if forced else '' }} onchange="updateFeature('force', this.checked)">
+                    <label class="form-check-label" for="forcedCheck">Forced</label>
                 </div>
-            </div>
-            
-            <!-- MP3 Metadata Import Button -->
-            <div class="row g-3 mt-1">
-                <div class="col-12 col-md-4">
-                    <div class="card h-100 scan-operation-card">
-                        <div class="card-body p-3">
-                            <h6 class="mb-2">
-                                <i class="bi bi-music-note"></i> MP3 Import
-                            </h6>
-                            <p class="small text-muted mb-3">Scan and import MP3 metadata from local music directory</p>
-                            <form method="POST" action="{{ url_for('scan_mp3_import') }}" class="d-inline w-100">
-                                <button type="submit" class="btn btn-primary btn-sm w-100">
-                                    <i class="bi bi-play-fill"></i> Start Scan
-                                </button>
-                            </form>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- Unified Stop and Clear Buttons -->
-            <div class="mt-3 pt-3 border-top d-flex gap-2 align-items-center">
-                <form method="POST" action="{{ url_for('scan_stop_all') }}" class="d-flex gap-1 flex-grow-1">
-                    <button type="submit" class="btn btn-danger btn-sm flex-grow-1" id="unified-stop-btn" style="display: none;">
-                        <i class="bi bi-stop-fill"></i> Stop All Scans
+
+                <!-- Stop Scans Button -->
+                <form method="POST" action="{{ url_for('scan_stop_all') }}" class="mb-0">
+                    <button type="submit" class="btn btn-danger btn-sm" id="unified-stop-btn" style="display: none;">
+                        <i class="bi bi-stop-fill"></i> Stop Scans
                     </button>
                 </form>
-                <form method="POST" action="{{ url_for('scan_clear_stuck') }}">
+
+                <!-- Clear Stuck Scans -->
+                <form method="POST" action="{{ url_for('scan_clear_stuck') }}" class="mb-0 ms-auto">
                     <button type="submit" class="btn btn-outline-warning btn-sm">
-                        <i class="bi bi-arrow-clockwise"></i> Clear Stuck Scans
+                        <i class="bi bi-arrow-clockwise"></i> Clear Stuck
                     </button>
                 </form>
             </div>
-            
-            <!-- Stuck Scans Info -->
+
             <div class="mt-2">
                 <small class="text-muted">
-                    <i class="bi bi-info-circle"></i> If a scan appears stuck, click "Clear Stuck Scans" to reset stale progress files
+                    <i class="bi bi-info-circle"></i> If a scan appears stuck, click "Clear Stuck" to reset stale progress files
                 </small>
             </div>
         </div>
@@ -520,41 +415,9 @@
 document.addEventListener('DOMContentLoaded', function() {
     var initialRecentScans = JSON.parse('{{ recent_scans|default([])|tojson|safe }}');
     var recentScansBody = document.getElementById('recent-scans-body');
-    var popButton = document.getElementById('popularity-start-btn');
-    var popButtonDefaultLabel = popButton ? popButton.innerHTML : '';
-
-    // Handle scan action dropdown clicks
-    document.querySelectorAll('.scan-action-btn').forEach(btn => {
-        btn.addEventListener('click', function(e) {
-            e.preventDefault();
-            var scanType = this.getAttribute('data-scan-type');
-            var action = this.getAttribute('data-action');
-            var mode = this.getAttribute('data-mode');
-            // Build the form and submit it
-            var actionUrl = '';
-            if (action === 'navidrome') {
-                actionUrl = '{{ url_for("scan_navidrome") }}';
-            } else if (action === 'popularity') {
-                actionUrl = '{{ url_for("scan_popularity_route") }}';
-            } else if (action === 'combined') {
-                actionUrl = '{{ url_for("scan_combined") }}';
-            }
-            // Add query parameters to URL
-            var url = new URL(actionUrl, window.location.origin);
-            url.searchParams.append('mode', mode);
-            // Submit via POST form
-            var form = document.createElement('form');
-            form.method = 'POST';
-            form.action = url.toString();
-            document.body.appendChild(form);
-            form.submit();
-        });
-    });
 
     // Cache previous state to avoid unnecessary DOM updates
     var previousScanStates = {};
-    var previousProgress = {};
-    var lastRenderedRecentScans = JSON.stringify(initialRecentScans);
 
     function renderRecentScans(scans) {
         if (!recentScansBody) return;
@@ -652,11 +515,8 @@ document.addEventListener('DOMContentLoaded', function() {
             .then(data => {
                 clearApiError(endpoint);
                 const payload = data.scans || [];
-                const serialized = JSON.stringify(payload);
-                if (serialized !== lastRenderedRecentScans) {
-                    lastRenderedRecentScans = serialized;
-                    renderRecentScans(payload);
-                }
+                // Always re-render to ensure new scan entries are shown
+                renderRecentScans(payload);
             })
             .catch(error => logApiError(endpoint, 'Error fetching recent scans', error));
     }
@@ -669,38 +529,18 @@ document.addEventListener('DOMContentLoaded', function() {
         fetchJsonOrThrow('/api/scan-status')
             .then(data => {
                 clearApiError('/api/scan-status');
-                let navRunning = false;
                 // Update badge and progress container visibility based on running status
                 document.querySelectorAll('.scan-badge').forEach(badge => {
                     const scanType = badge.getAttribute('data-scan-type');
                     const scanData = data[scanType];
                     const isRunning = scanData && scanData.running;
-                    if (scanType === 'navidrome_scan') {
-                        navRunning = Boolean(isRunning);
-                    }
                     
                     // Only update if state changed
                     if (previousScanStates[scanType] !== isRunning) {
                         previousScanStates[scanType] = isRunning;
-                        
-                        if (isRunning) {
-                            badge.style.display = 'block';
-                        } else {
-                            badge.style.display = 'none';
-                        }
+                        badge.style.display = isRunning ? 'block' : 'none';
                     }
                 });
-
-                // Disable popularity start while Navidrome is running
-                if (popButton) {
-                    if (navRunning) {
-                        popButton.disabled = true;
-                        popButton.innerHTML = '<i class="bi bi-lock"></i> Waiting for Navidrome';
-                    } else {
-                        popButton.disabled = false;
-                        popButton.innerHTML = popButtonDefaultLabel;
-                    }
-                }
             })
             .catch(error => logApiError('/api/scan-status', 'Error fetching scan status', error));
     }
@@ -718,7 +558,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 const progressPercent = document.getElementById('unified-progress-percent');
                 const scanName = document.getElementById('current-scan-name');
                 const progressDetails = document.getElementById('unified-progress-details');
-                const startButtons = document.querySelectorAll('.scan-start-btn');
+                const startBtn = document.getElementById('startScanBtn');
                 const stopButton = document.getElementById('unified-stop-btn');
                 
                 // Determine which scan is actually running and get its type
@@ -744,8 +584,8 @@ document.addEventListener('DOMContentLoaded', function() {
                         }
                     }
                     
-                    // Enable all start buttons and hide stop button
-                    startButtons.forEach(btn => btn.disabled = false);
+                    // Enable start button and hide stop button
+                    if (startBtn) startBtn.disabled = false;
                     if (stopButton) stopButton.style.display = 'none';
                     runningScans.clear();
                     return;
@@ -754,9 +594,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 // Detect which scan is running based on data fields present
                 if (data.scanned_albums !== undefined && data.total_albums !== undefined) {
                     activeScanType = 'navidrome_scan';
-                    scanDisplayName = 'Navidrome Sync';
+                    scanDisplayName = 'Navidrome Import';
                 } else if (data.processed_artists !== undefined && data.total_artists !== undefined) {
-                    // Could be popularity, singles, combined, or missing_releases - check scan_type field
                     if (data.scan_type === 'singles_scan') {
                         activeScanType = 'singles_scan';
                         scanDisplayName = 'Singles Detection';
@@ -768,13 +607,12 @@ document.addEventListener('DOMContentLoaded', function() {
                         scanDisplayName = 'Missing Releases Scan';
                     } else {
                         activeScanType = 'popularity_scan';
-                        scanDisplayName = 'Popularity & Singles';
+                        scanDisplayName = 'Popularity and Single Scan';
                     }
                 } else {
-                    // Default based on scan_type if present
                     const scanTypeMapping = {
-                        'navidrome_scan': { type: 'navidrome_scan', name: 'Navidrome Sync' },
-                        'popularity_scan': { type: 'popularity_scan', name: 'Popularity & Singles' },
+                        'navidrome_scan': { type: 'navidrome_scan', name: 'Navidrome Import' },
+                        'popularity_scan': { type: 'popularity_scan', name: 'Popularity and Single Scan' },
                         'singles_scan': { type: 'singles_scan', name: 'Singles Detection' },
                         'combined_scan': { type: 'combined_scan', name: 'Combined Scan' },
                         'missing_releases_scan': { type: 'missing_releases_scan', name: 'Missing Releases Scan' }
@@ -833,28 +671,16 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (progressBar) {
                     progressBar.style.width = percent + '%';
                     progressBar.setAttribute('aria-valuenow', percent);
-                    // Update color and animation
                     progressBar.classList.remove('bg-secondary', 'bg-primary', 'bg-success', 'bg-info', 'bg-warning');
                     progressBar.classList.add(barColor, 'progress-bar-animated', 'progress-bar-striped');
                 }
                 
-                // Update percentage
-                if (progressPercent) {
-                    progressPercent.textContent = percent + '%';
-                }
+                if (progressPercent) progressPercent.textContent = percent + '%';
+                if (scanName) scanName.textContent = scanDisplayName;
+                if (progressDetails) progressDetails.textContent = details;
                 
-                // Update scan name
-                if (scanName) {
-                    scanName.textContent = scanDisplayName;
-                }
-                
-                // Update details
-                if (progressDetails) {
-                    progressDetails.textContent = details;
-                }
-                
-                // Disable all start buttons and show stop button
-                startButtons.forEach(btn => btn.disabled = true);
+                // Disable start button and show stop button
+                if (startBtn) startBtn.disabled = true;
                 if (stopButton) stopButton.style.display = 'block';
             })
             .catch(error => logApiError('/api/scan-progress', 'Error fetching scan progress', error));
@@ -1047,131 +873,88 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 
-// ===== Queue Processor Status Functions =====
+// ===== Scan Controls =====
 
-async function checkQueueProcessorStatus() {
+function startSelectedScan() {
+    const scanType = document.getElementById('scanTypeSelect').value;
+    const forced = document.getElementById('forcedCheck').checked;
+    const mode = forced ? 'force' : 'all';
+
+    var actionUrl = '';
+    if (scanType === 'navidrome') {
+        actionUrl = '{{ url_for("scan_navidrome") }}';
+    } else if (scanType === 'metadata') {
+        actionUrl = '{{ url_for("scan_mp3_import") }}';
+    } else if (scanType === 'popularity') {
+        actionUrl = '{{ url_for("scan_popularity_route") }}';
+    } else if (scanType === 'combined') {
+        actionUrl = '{{ url_for("scan_combined") }}';
+    }
+
+    var url = new URL(actionUrl, window.location.origin);
+    if (scanType !== 'metadata') {
+        url.searchParams.append('mode', mode);
+    }
+
+    var form = document.createElement('form');
+    form.method = 'POST';
+    form.action = url.toString();
+    document.body.appendChild(form);
+    form.submit();
+}
+
+// ===== Feature Flag Toggles =====
+
+async function updateFeature(key, value) {
     try {
-        const data = await fetchJsonOrThrow('/api/queue-processor/status');
-        clearApiError('/api/queue-processor/status');
-        
-        const statusBadge = document.getElementById('processorStatusBadge');
-        const statusContent = document.getElementById('processorStatusContent');
-        const restartBtn = document.getElementById('restartProcessorBtn');
-        
-        if (data.processor_running) {
-            // Processor is running
-            statusBadge.innerHTML = '<span class="badge bg-success"><i class="bi bi-play-circle-fill"></i> Running</span>';
-            
-            const uptime = data.processor_uptime ? data.processor_uptime.split('.')[0] : 'N/A';
-            const memory = data.processor_memory_mb || 0;
-            
-            statusContent.innerHTML = `
-                <div class="d-flex justify-content-between mb-2">
-                    <span><strong>Status:</strong> <span class="text-success">✓ Active</span></span>
-                    <span><strong>PID:</strong> ${data.processor_pid || 'N/A'}</span>
-                </div>
-                <div class="d-flex justify-content-between mb-2">
-                    <span><strong>Memory:</strong> ${memory.toFixed(2)} MB</span>
-                    <span><strong>Uptime:</strong> ${uptime}</span>
-                </div>
-                <div class="progress mb-2" style="height: 20px;">
-                    <div class="progress-bar bg-success" role="progressbar" style="width: 100%;" title="Processor Active">
-                        <small class="text-dark">Active Queue Processing</small>
-                    </div>
-                </div>
-                <div class="d-flex justify-content-between">
-                    <span><strong>Queued:</strong> <span class="badge bg-info">${data.queue_stats.queued}</span></span>
-                    <span><strong>Downloading:</strong> <span class="badge bg-warning">${data.queue_stats.downloading}</span></span>
-                    <span><strong>Failed:</strong> <span class="badge ${data.queue_stats.failed > 0 ? 'bg-danger' : 'bg-secondary'}">${data.queue_stats.failed}</span></span>
-                    <span><strong>Completed:</strong> <span class="badge bg-success">${data.queue_stats.completed}</span></span>
-                </div>
-            `;
-            
-            restartBtn.disabled = false;
-            restartBtn.classList.remove('btn-danger');
-            restartBtn.classList.add('btn-primary');
-        } else {
-            // Processor not running
-            statusBadge.innerHTML = '<span class="badge bg-danger"><i class="bi bi-exclamation-circle-fill"></i> Stopped</span>';
-            
-            statusContent.innerHTML = `
-                <div class="alert alert-warning mb-0">
-                    <i class="bi bi-exclamation-triangle"></i> 
-                    <strong>Queue processor is not running!</strong> Click the "Restart Processor" button to start it.
-                </div>
-                <div class="d-flex justify-content-between mt-2">
-                    <span><strong>Queued:</strong> <span class="badge bg-info">${data.queue_stats.queued}</span></span>
-                    <span><strong>Downloading:</strong> <span class="badge bg-warning">${data.queue_stats.downloading}</span></span>
-                    <span><strong>Failed:</strong> <span class="badge bg-danger">${data.queue_stats.failed}</span></span>
-                    <span><strong>Completed:</strong> <span class="badge bg-success">${data.queue_stats.completed}</span></span>
-                </div>
-            `;
-            
-            restartBtn.disabled = false;
-            restartBtn.classList.add('btn-danger');
-            restartBtn.classList.remove('btn-primary');
+        const payload = {};
+        payload[key] = value;
+        const resp = await fetch('/api/features/update', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (!resp.ok) {
+            console.error('Failed to update feature flag', key);
         }
-    } catch (error) {
-        logApiError('/api/queue-processor/status', 'Error checking queue processor status', error);
-        document.getElementById('processorStatusBadge').innerHTML = '<span class="badge bg-secondary">Error</span>';
-        document.getElementById('processorStatusContent').innerHTML = `
-            <p class="text-danger mb-0"><i class="bi bi-exclamation-circle"></i> Failed to check processor status</p>
-        `;
+    } catch (e) {
+        console.error('Error updating feature flag', key, e);
     }
 }
 
-async function restartQueueProcessor() {
-    const btn = document.getElementById('restartProcessorBtn');
-    const originalText = btn.innerHTML;
-    
+// ===== Dashboard Add to Queue =====
+
+async function dashboardAddToQueue(event) {
+    event.preventDefault();
+    const artist = document.getElementById('dashQueueArtist').value.trim();
+    const title = document.getElementById('dashQueueTitle').value.trim();
+    const album = document.getElementById('dashQueueAlbum').value.trim();
+    const source = document.getElementById('dashQueueSource').value;
+    const priority = parseInt(document.getElementById('dashQueuePriority').value) || 5;
+    const feedback = document.getElementById('dashQueueFeedback');
+
+    if (!artist || !title) return;
+
     try {
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Restarting...';
-
-        const data = await fetchJsonOrThrow('/api/queue-processor/restart', {
+        const resp = await fetch('/api/queue/add', {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            }
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ artist, title, album, source, priority })
         });
-        clearApiError('/api/queue-processor/restart');
-        
-        if (data.success) {
-            btn.innerHTML = '<i class="bi bi-check-circle"></i> Restarted!';
-            btn.classList.remove('btn-danger');
-            btn.classList.add('btn-success');
-            
-            // Wait 2 seconds then check status
-            setTimeout(() => {
-                checkQueueProcessorStatus();
-                btn.innerHTML = originalText;
-            }, 2000);
+        const data = await resp.json();
+        feedback.style.display = 'block';
+        if (data.success || data.queue_id) {
+            feedback.innerHTML = '<span class="text-success"><i class="bi bi-check-circle"></i> Added to queue!</span>';
+            document.getElementById('dashboardAddToQueueForm').reset();
         } else {
-            btn.innerHTML = '<i class="bi bi-exclamation-circle"></i> Failed!';
-            btn.classList.add('btn-danger');
-            console.error('Failed to restart:', data.error);
-            
-            setTimeout(() => {
-                btn.innerHTML = originalText;
-                btn.disabled = false;
-            }, 3000);
+            feedback.innerHTML = `<span class="text-danger"><i class="bi bi-exclamation-circle"></i> ${escapeHtml(data.error || 'Failed to add to queue')}</span>`;
         }
-    } catch (error) {
-        logApiError('/api/queue-processor/restart', 'Error restarting processor', error);
-        btn.innerHTML = '<i class="bi bi-exclamation-circle"></i> Error!';
-        btn.classList.add('btn-danger');
-        
-        setTimeout(() => {
-            btn.innerHTML = originalText;
-            btn.disabled = false;
-        }, 3000);
+        setTimeout(() => { feedback.style.display = 'none'; }, 3000);
+    } catch (e) {
+        feedback.style.display = 'block';
+        feedback.innerHTML = '<span class="text-danger"><i class="bi bi-exclamation-circle"></i> Error adding to queue</span>';
+        setTimeout(() => { feedback.style.display = 'none'; }, 3000);
     }
-} // <-- Ensure this closes restartQueueProcessor
-
-// Check status on page load and refresh every 30 seconds
-document.addEventListener('DOMContentLoaded', function() {
-    checkQueueProcessorStatus();
-    setInterval(checkQueueProcessorStatus, 30 * 1000);
-});
+}
 </script>
 {% endblock %}

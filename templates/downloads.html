@@ -779,6 +779,32 @@
     <!-- Download Queue Tab -->
     <div class="tab-pane fade" id="queueContent" role="tabpanel">
 
+      <!-- ── Queue Processor Status ── -->
+      <div class="card mb-3 border-primary" id="queueProcessorStatusCard">
+        <div class="card-header bg-primary bg-opacity-10 border-primary d-flex justify-content-between align-items-center py-2">
+          <h6 class="card-title mb-0">
+            <i class="bi bi-hourglass-split"></i> Download Queue Processor
+          </h6>
+          <div id="processorStatusBadge" class="badge bg-secondary">
+            <i class="bi bi-circle-fill me-1" style="font-size:0.6em"></i> Loading...
+          </div>
+        </div>
+        <div class="card-body py-2">
+          <div class="row align-items-center">
+            <div class="col-md-9">
+              <div id="processorStatusContent" class="small">
+                <span class="text-muted">Checking processor status...</span>
+              </div>
+            </div>
+            <div class="col-md-3 text-end">
+              <button id="restartProcessorBtn" class="btn btn-sm btn-primary" onclick="restartQueueProcessor()" disabled>
+                <i class="bi bi-arrow-clockwise"></i> Restart Processor
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- ── Queue Stats Bar ── -->
       <div class="card mb-3 border-0 bg-body-tertiary" id="queueStatsBar">
         <div class="card-body py-2">
@@ -800,9 +826,6 @@
               <i class="bi bi-music-note-list me-1"></i><span id="statImportedNum">0</span> Imported
             </span>
             <div class="ms-auto d-flex align-items-center gap-2">
-              <span id="processorStatusBadge" class="badge bg-secondary" title="Queue processor status">
-                <i class="bi bi-circle-fill me-1" style="font-size:0.6em"></i> Processor
-              </span>
               <span id="queueLastRefreshed" class="text-muted" style="font-size:0.75rem"></span>
               <button class="btn btn-sm btn-outline-secondary" onclick="loadQueueStatus()" title="Refresh now">
                 <i class="bi bi-arrow-clockwise" id="queueRefreshIcon"></i>
@@ -4478,12 +4501,7 @@ async function loadQueueStatus() {
     // ── Processor status ──
     if (processorResp && processorResp.ok) {
       const pData = await processorResp.json();
-      const badge = document.getElementById('processorStatusBadge');
-      if (badge) {
-        const running = pData.running || pData.status === 'running';
-        badge.className = `badge ${running ? 'bg-success' : 'bg-secondary'}`;
-        badge.innerHTML = `<i class="bi bi-circle-fill me-1" style="font-size:0.6em"></i> Processor ${running ? 'Running' : 'Stopped'}`;
-      }
+      updateProcessorStatusCard(pData);
     }
 
     // ── Last refreshed ──
@@ -6966,6 +6984,90 @@ function stopQueueEventsAutoRefresh() {
   if (queueEventsRefreshInterval) {
     clearInterval(queueEventsRefreshInterval);
     queueEventsRefreshInterval = null;
+  }
+}
+
+// ── Queue Processor Status Card ──
+function updateProcessorStatusCard(pData) {
+  const badge = document.getElementById('processorStatusBadge');
+  const content = document.getElementById('processorStatusContent');
+  const restartBtn = document.getElementById('restartProcessorBtn');
+  if (!badge) return;
+
+  const running = pData.processor_running || pData.running || pData.status === 'running';
+
+  if (running) {
+    badge.className = 'badge bg-success';
+    badge.innerHTML = '<i class="bi bi-play-circle-fill me-1"></i> Running';
+
+    const uptime = pData.processor_uptime ? pData.processor_uptime.split('.')[0] : 'N/A'; // trim microseconds (format: HH:MM:SS.ffffff)
+    const memory = pData.processor_memory_mb || 0;
+    const stats = pData.queue_stats || {};
+
+    if (content) {
+      content.innerHTML = `
+        <span class="me-3"><strong>PID:</strong> ${pData.processor_pid || 'N/A'}</span>
+        <span class="me-3"><strong>Memory:</strong> ${memory.toFixed ? memory.toFixed(2) : memory} MB</span>
+        <span class="me-3"><strong>Uptime:</strong> ${uptime}</span>
+        <span class="me-2"><strong>Queued:</strong> <span class="badge bg-info">${stats.queued || 0}</span></span>
+        <span class="me-2"><strong>Active:</strong> <span class="badge bg-warning text-dark">${stats.downloading || 0}</span></span>
+        <span class="me-2"><strong>Failed:</strong> <span class="badge ${(stats.failed || 0) > 0 ? 'bg-danger' : 'bg-secondary'}">${stats.failed || 0}</span></span>
+      `;
+    }
+    if (restartBtn) {
+      restartBtn.disabled = false;
+      restartBtn.classList.remove('btn-danger');
+      restartBtn.classList.add('btn-primary');
+    }
+  } else {
+    badge.className = 'badge bg-danger';
+    badge.innerHTML = '<i class="bi bi-exclamation-circle-fill me-1"></i> Stopped';
+
+    if (content) {
+      content.innerHTML = '<span class="text-warning"><i class="bi bi-exclamation-triangle"></i> Queue processor is not running. Click "Restart Processor" to start it.</span>';
+    }
+    if (restartBtn) {
+      restartBtn.disabled = false;
+      restartBtn.classList.add('btn-danger');
+      restartBtn.classList.remove('btn-primary');
+    }
+  }
+}
+
+async function restartQueueProcessor() {
+  const btn = document.getElementById('restartProcessorBtn');
+  const originalText = btn ? btn.innerHTML : '';
+  try {
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Restarting...';
+    }
+    const resp = await fetch('/api/queue-processor/restart', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    const data = await resp.json();
+    if (data.success) {
+      if (btn) {
+        btn.innerHTML = '<i class="bi bi-check-circle"></i> Restarted!';
+        btn.classList.remove('btn-danger');
+        btn.classList.add('btn-success');
+      }
+      setTimeout(() => {
+        loadQueueStatus();
+        if (btn) { btn.innerHTML = originalText; btn.disabled = false; }
+      }, 2000);
+    } else {
+      if (btn) {
+        btn.innerHTML = '<i class="bi bi-exclamation-circle"></i> Failed!';
+        setTimeout(() => { btn.innerHTML = originalText; btn.disabled = false; }, 3000);
+      }
+    }
+  } catch (e) {
+    if (btn) {
+      btn.innerHTML = '<i class="bi bi-exclamation-circle"></i> Error!';
+      setTimeout(() => { btn.innerHTML = originalText; btn.disabled = false; }, 3000);
+    }
   }
 }
 
