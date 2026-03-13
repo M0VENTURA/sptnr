@@ -44,7 +44,6 @@
         <a href="#api-integrations" class="btn btn-sm btn-outline-primary">API Keys</a>
         <a href="#database" class="btn btn-sm btn-outline-primary">Database</a>
         <a href="#search-filters" class="btn btn-sm btn-outline-primary">Search Filters</a>
-        <a href="#logging" class="btn btn-sm btn-outline-primary">Logging</a>
       </div>
     </div>
   </div>
@@ -391,11 +390,6 @@
               <label class="form-label form-label-sm">API Key</label>
               <input type="text" class="form-control form-control-sm" id="lastfm_api_key" placeholder="your_lastfm_api_key" value="{{ config.get('api_integrations', {}).get('lastfm', {}).get('api_key', '') }}">
             </div>
-            <div class="col-12">
-              <label class="form-label form-label-sm">Username (Optional)</label>
-              <input type="text" class="form-control form-control-sm" id="lastfm_username" placeholder="your_lastfm_username" value="{{ config.get('api_integrations', {}).get('lastfm', {}).get('username', '') }}">
-              <small class="text-muted">Your Last.fm username for personalized data</small>
-            </div>
           </div>
         </div>
 
@@ -413,13 +407,9 @@
           </div>
           <div class="row g-2 mt-2">
             <div class="col-12">
-              <label class="form-label form-label-sm">API Key</label>
-              <input type="text" class="form-control form-control-sm" id="listenbrainz_api_key" placeholder="your_listenbrainz_api_key" value="{{ config.get('api_integrations', {}).get('listenbrainz', {}).get('api_key', '') }}">
-            </div>
-            <div class="col-12">
-              <label class="form-label form-label-sm">Username (Optional)</label>
-              <input type="text" class="form-control form-control-sm" id="listenbrainz_username" placeholder="your_listenbrainz_username" value="{{ config.get('api_integrations', {}).get('listenbrainz', {}).get('username', '') }}">
-              <small class="text-muted">Your ListenBrainz username for personalized data</small>
+              <label class="form-label form-label-sm">User Token (Optional)</label>
+              <input type="text" class="form-control form-control-sm" id="listenbrainz_token" placeholder="your_listenbrainz_user_token" value="{{ config.get('api_integrations', {}).get('listenbrainz', {}).get('token', config.get('api_integrations', {}).get('listenbrainz', {}).get('api_key', '')) }}">
+              <small class="text-muted">Token is optional for public popularity APIs, but required for personalized actions.</small>
             </div>
           </div>
         </div>
@@ -450,9 +440,6 @@
             <div class="flex-grow-1">
               <h6 class="mb-1"><i class="bi bi-music-note-list"></i> MusicBrainz (Built-In)</h6>
               <small class="text-muted d-block mb-2">Primary music metadata database. Included by default, no configuration needed.</small>
-            </div>
-            <div class="form-check form-switch">
-              <input class="form-check-input" type="checkbox" id="musicbrainz_enabled" {% if config.get('api_integrations', {}).get('musicbrainz', {}).get('enabled') %}checked{% endif %} disabled>
             </div>
           </div>
         </div>
@@ -581,14 +568,6 @@
           <label class="form-label">Database Path</label>
           <input type="text" class="form-control" id="db_path" placeholder="/database/sptnr.db" value="{{ config.get('database', {}).get('path', '') }}">
         </div>
-        <div class="col-12">
-          <div class="form-check">
-            <input class="form-check-input" type="checkbox" id="db_vacuum" {% if config.get('database', {}).get('vacuum_on_start') %}checked{% endif %}>
-            <label class="form-check-label" for="db_vacuum">
-              Vacuum on start (optimize database file)
-            </label>
-          </div>
-        </div>
       </div>
       
       <!-- Database Cleanup Section -->
@@ -651,39 +630,6 @@
           </button>
           <div class="form-text text-danger mt-2">This will copy all data from SQLite to PostgreSQL and update your configuration. This may take several minutes for large databases.</div>
           <div id="pgMigrateMsg" class="mt-2"></div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Logging Section -->
-  <div class="card shadow-sm mb-3" id="logging">
-    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
-      <h5 class="mb-0"><i class="bi bi-file-text"></i> Logging</h5>
-    </div>
-    <div class="card-body">
-      <div class="row g-3">
-        <div class="col-12 col-sm-6">
-          <label class="form-label">Log Level</label>
-          <select class="form-select" id="log_level">
-            {% set current_level = config.get('logging', {}).get('level', 'INFO') %}
-            <option value="DEBUG" {% if current_level == 'DEBUG' %}selected{% endif %}>DEBUG</option>
-            <option value="INFO" {% if current_level == 'INFO' %}selected{% endif %}>INFO</option>
-            <option value="WARNING" {% if current_level == 'WARNING' %}selected{% endif %}>WARNING</option>
-            <option value="ERROR" {% if current_level == 'ERROR' %}selected{% endif %}>ERROR</option>
-          </select>
-        </div>
-        <div class="col-12 col-sm-6">
-          <label class="form-label">Log to Console</label>
-          <select class="form-select" id="log_console">
-            {% set current_console = config.get('logging', {}).get('console', true) %}
-            <option value="true" {% if current_console == true or current_console == 'true' %}selected{% endif %}>Yes</option>
-            <option value="false" {% if current_console == false or current_console == 'false' %}selected{% endif %}>No</option>
-          </select>
-        </div>
-        <div class="col-12">
-          <label class="form-label">Log File Path</label>
-          <input type="text" class="form-control" id="log_file" placeholder="/config/app.log" value="{{ config.get('logging', {}).get('file', '') }}">
         </div>
       </div>
     </div>
@@ -1025,20 +971,15 @@ function buildConfigObject() {
       },
       lastfm: {
         enabled: getChecked('lastfm_enabled', false),
-        api_key: getValue('lastfm_api_key', ''),
-        username: getValue('lastfm_username', '')
+        api_key: getValue('lastfm_api_key', '')
       },
       listenbrainz: {
         enabled: getChecked('listenbrainz_enabled', false),
-        api_key: getValue('listenbrainz_api_key', ''),
-        username: getValue('listenbrainz_username', '')
+        token: getValue('listenbrainz_token', '')
       },
       discogs: {
         enabled: getChecked('discogs_enabled', false),
         token: getValue('discogs_token', '')
-      },
-      musicbrainz: {
-        enabled: getChecked('musicbrainz_enabled', false)
       },
       audiodb: {
         enabled: getChecked('audiodb_enabled', false),
@@ -1046,13 +987,7 @@ function buildConfigObject() {
       }
     },
     database: {
-      path: getValue('db_path', ''),
-      vacuum_on_start: getChecked('db_vacuum', false)
-    },
-    logging: {
-      level: getValue('log_level', 'INFO'),
-      file: getValue('log_file', ''),
-      console: getValue('log_console', 'true') === 'true'
+      path: getValue('db_path', '')
     },
     strip_parentheses_filters: Array.from(
       document.querySelectorAll('#stripKeywordsList .badge')

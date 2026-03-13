@@ -978,27 +978,33 @@ def setup():
                 "force": False,
                 "verbose": False,
                 "perpetual": True,
+                "full_scan": False,
+                "auto_boot_navidrome_scan": False,
                 "artist": [],
                 "album_skip_days": 7,
-                "album_skip_min_tracks": 1,
-                "clamp_min": 0.75,
-                "clamp_max": 1.25,
-                "cap_top4_pct": 0.25,
                 "title_sim_threshold": 0.92,
-                "short_release_counts_as_match": False,
-                "secondary_single_lookup_enabled": True,
-                "secondary_lookup_metric": "score",
-                "secondary_lookup_delta": 0.05,
-                "secondary_required_strong_sources": 2,
-                "median_gate_strategy": "hard",
                 "use_lastfm_single": True,
                 "refresh_artist_index_on_start": False,
-                "discogs_min_interval_sec": 0.35,
-                "include_user_ratings_on_scan": True,
                 "scan_worker_threads": 4,
                 "spotify_prefetch_timeout": 30,
+                "strict_spotify_matching": True,
+                "spotify_duration_tolerance": 2,
+                "retry_scheduler": {
+                    "interval_seconds": 60,
+                    "auto_start": True,
+                },
+                "download_queue_cleanup_scheduler": {
+                    "enabled": True,
+                    "interval_minutes": 60,
+                },
+                "source_discogs_confidence": "high",
+                "source_spotify_confidence": "medium",
+                "source_musicbrainz_confidence": "medium",
+                "source_discogs_video_confidence": "medium",
+                "source_lastfm_confidence": "medium",
+                "source_radio_edit_confidence": "medium",
             }
-            weights = {"spotify": 0.4, "lastfm": 0.3, "age": 0.3}
+            weights = {"spotify": 0.10, "lastfm": 0.30, "listenbrainz": 0.35, "age": 0.25}
 
             config = {
                 "navidrome_users": users,
@@ -1034,13 +1040,31 @@ def setup():
                 },
                 "downloads": {
                     "folder": "/downloads/Music",
+                    "file_name_format": "{album_artist}/{year} - {album}/{track_number}. {artist} - {title}",
                     "incomplete_folder": "/downloads/Soulseek/Incomplete",
                     "monitor_incomplete": True
+                },
+                "watcher": {
+                    "scan_interval": 30,
+                    "navidrome_sync_wait": 600,
+                    "auto_import_enabled": True,
+                    "auto_popularity_scan": True,
+                    "downloads_watcher_enabled": True,
                 },
                 "weights": weights,
                 "database": {"path": "/database/sptnr.db", "vacuum_on_start": False},
                 "logging": {"level": "INFO", "file": "/config/app.log", "console": True},
                 "features": features,
+                "single_detection": {
+                    "zscore_medium_threshold": 0.6,
+                    "zscore_high_threshold": 1.0,
+                    "standout_gap_z": 0.75,
+                },
+                "strip_parentheses_filters": [
+                    "remaster", "remastered", "radio edit", "radio mix",
+                    "single version", "album version", "deluxe", "deluxe edition",
+                    "extended", "extended edition", "expanded", "expanded edition", "edition"
+                ],
             }
             # Always set main navidrome section to first user for compatibility
             if users and len(users) > 0:
@@ -10378,6 +10402,13 @@ def config_save_json():
         features['retry_scheduler'] = _as_dict(features.get('retry_scheduler'))
         features['download_queue_cleanup_scheduler'] = _as_dict(features.get('download_queue_cleanup_scheduler'))
 
+        api_integrations = _as_dict(data.get('api_integrations', {}))
+        listenbrainz_cfg = _as_dict(api_integrations.get('listenbrainz', {}))
+        # Backward compatibility: map listenbrainz.api_key -> listenbrainz.token.
+        if listenbrainz_cfg.get('api_key') and not listenbrainz_cfg.get('token'):
+            listenbrainz_cfg['token'] = listenbrainz_cfg.get('api_key')
+        api_integrations['listenbrainz'] = listenbrainz_cfg
+
         config_dict = {
             'navidrome_users': navidrome_users,
             'qbittorrent': _as_dict(data.get('qbittorrent', {})),
@@ -10385,7 +10416,7 @@ def config_save_json():
             'authentik': _as_dict(data.get('authentik', {})),
             'bookmarks': _as_dict(data.get('bookmarks', {})),
             'downloads': _as_dict(data.get('downloads', {})),
-            'api_integrations': _as_dict(data.get('api_integrations', {})),
+            'api_integrations': api_integrations,
             'database': _as_dict(data.get('database', {})),
             'logging': _as_dict(data.get('logging', {})),
             'web_api_key': data.get('web_api_key', ''),
@@ -10415,6 +10446,32 @@ def config_save_json():
                 config_dict['single_detection'] = existing_config['single_detection']
             if 'strip_parentheses_filters' not in data and 'strip_parentheses_filters' in existing_config:
                 config_dict['strip_parentheses_filters'] = existing_config['strip_parentheses_filters']
+            if 'database' not in data and 'database' in existing_config:
+                config_dict['database'] = existing_config['database']
+            if 'logging' not in data and 'logging' in existing_config:
+                config_dict['logging'] = existing_config['logging']
+
+            if isinstance(existing_config.get('api_integrations'), dict):
+                existing_api = existing_config.get('api_integrations') or {}
+                incoming_api = config_dict.get('api_integrations') or {}
+
+                # Preserve ListenBrainz token/username when omitted by compact UI payload.
+                existing_lb = existing_api.get('listenbrainz') if isinstance(existing_api.get('listenbrainz'), dict) else {}
+                incoming_lb = incoming_api.get('listenbrainz') if isinstance(incoming_api.get('listenbrainz'), dict) else {}
+                if existing_lb:
+                    for key in ('token', 'api_key', 'username'):
+                        if incoming_lb.get(key) in (None, '') and existing_lb.get(key) not in (None, ''):
+                            incoming_lb[key] = existing_lb.get(key)
+                    incoming_api['listenbrainz'] = incoming_lb
+
+                # Preserve Last.fm username when omitted.
+                existing_lastfm = existing_api.get('lastfm') if isinstance(existing_api.get('lastfm'), dict) else {}
+                incoming_lastfm = incoming_api.get('lastfm') if isinstance(incoming_api.get('lastfm'), dict) else {}
+                if existing_lastfm.get('username') not in (None, '') and incoming_lastfm.get('username') in (None, ''):
+                    incoming_lastfm['username'] = existing_lastfm.get('username')
+                    incoming_api['lastfm'] = incoming_lastfm
+
+                config_dict['api_integrations'] = incoming_api
             # Also preserve legacy navidrome config if it exists (for backward compatibility)
             if 'navidrome' in existing_config and not config_dict.get('navidrome_users'):
                 config_dict['navidrome'] = existing_config['navidrome']
