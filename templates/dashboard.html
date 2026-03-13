@@ -647,9 +647,10 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     function updateRecentScans() {
-        fetchJsonOrThrow('/api/recent-scans')
+        const endpoint = '/api/recent-scans';
+        fetchJsonOrThrow(`${endpoint}?_ts=${Date.now()}`, { cache: 'no-store' })
             .then(data => {
-                clearApiError('/api/recent-scans');
+                clearApiError(endpoint);
                 const payload = data.scans || [];
                 const serialized = JSON.stringify(payload);
                 if (serialized !== lastRenderedRecentScans) {
@@ -657,7 +658,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     renderRecentScans(payload);
                 }
             })
-            .catch(error => logApiError('/api/recent-scans', 'Error fetching recent scans', error));
+            .catch(error => logApiError(endpoint, 'Error fetching recent scans', error));
     }
 
     // Render initial recent scans

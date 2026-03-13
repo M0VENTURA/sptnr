@@ -11,6 +11,7 @@ import json
 import os
 import logging
 import tempfile
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +26,7 @@ _GROUP_SCAN_CACHE = {
 }
 _GROUP_SCAN_CACHE_TTL_SECONDS = 30
 _GROUP_SCAN_CACHE_FILE = os.path.join(tempfile.gettempdir(), "sptnr_group_scan_cache.json")
+_GROUP_SCAN_LOCK = threading.Lock()
 
 
 def _load_shared_group_scan_cache(downloads_dir, now_ts):
@@ -97,7 +99,11 @@ def scan_downloads_grouped_by_folder(downloads_dir, read_mp3_metadata):
             'stats': {...}
         }
     """
+    lock_acquired = False
     try:
+        _GROUP_SCAN_LOCK.acquire()
+        lock_acquired = True
+
         now_ts = time.time()
         if (
             _GROUP_SCAN_CACHE['result'] is not None
@@ -253,6 +259,9 @@ def scan_downloads_grouped_by_folder(downloads_dir, read_mp3_metadata):
             'total_files': 0,
             'error': str(e)
         }
+    finally:
+        if lock_acquired:
+            _GROUP_SCAN_LOCK.release()
 
 
 def match_folder_group_with_musicbrainz(folder_path, artist, album, mb_client=None, manual_query=None):
@@ -289,6 +298,20 @@ def match_folder_group_with_musicbrainz(folder_path, artist, album, mb_client=No
             search_album = re.sub(r'\s*\((?:Deluxe|Limited|Special|Expanded|Remaster).*?\)\s*$', '', search_album, flags=re.IGNORECASE)
             search_album = re.sub(r'\s*\[(?:Deluxe|Limited|Special|Expanded|Remaster).*?\]\s*$', '', search_album, flags=re.IGNORECASE)
             
+            if not search_artist and not search_album:
+                logger.debug(
+                    f"Skipping MusicBrainz folder match due to empty search terms: "
+                    f"folder='{folder_path}', artist='{artist}', album='{album}'"
+                )
+                return {
+                    'folder_path': folder_path,
+                    'artist': artist,
+                    'album': album,
+                    'candidates': [],
+                    'success': False,
+                    'error': 'No search terms provided'
+                }
+
             logger.info(f"Searching MusicBrainz for: {search_artist} - {search_album}")
         
         # MusicBrainz API base URL

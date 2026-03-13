@@ -1175,6 +1175,9 @@ scan_process_combined = None  # Combined scan process (Navidrome + Popularity + 
 scan_process_missing_releases = None  # Missing releases scan process
 scan_process_mp3_import = None  # MP3 metadata import scan process
 scan_lock = threading.Lock()
+_QUEUE_NORMALIZE_COOLDOWN_SECONDS = int(os.environ.get("QUEUE_NORMALIZE_COOLDOWN_SECONDS", "20"))
+_queue_normalize_last_run_ts = 0.0
+_queue_normalize_gate_lock = threading.Lock()
 # Retry scheduler management
 retry_scheduler = {
     "thread": None,
@@ -11145,10 +11148,26 @@ def api_recent_scans():
         limit = min(limit, 100)
         from scan_history import get_recent_album_scans
         scans = get_recent_album_scans(limit=limit)
-        return jsonify({"scans": scans})
+        response = jsonify({
+            "scans": scans,
+            "fetched_at": datetime.utcnow().isoformat() + "Z",
+        })
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
     except Exception as e:
         logging.error(f"Error fetching recent scans: {e}")
-        return jsonify({"scans": [], "error": str(e)}), 500
+        # Return 200 with error payload so dashboard poller continues rendering.
+        response = jsonify({
+            "scans": [],
+            "error": str(e),
+            "fetched_at": datetime.utcnow().isoformat() + "Z",
+        })
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
 
 
 @app.route("/api/scan-progress")
@@ -16449,128 +16468,140 @@ def api_downloads_get_queue():
 
         # Keep queue semantics strict: "in_collection" only applies to files
         # that are actually under the configured /music root.
-        try:
-            conn = get_db()
-            cursor = conn.cursor()
-            is_pg = _is_postgres_connection(conn)
-            placeholder = "%s" if is_pg else "?"
+        run_normalization = False
+        now_ts = time.time()
+        if _queue_normalize_gate_lock.acquire(blocking=False):
+            try:
+                global _queue_normalize_last_run_ts
+                if (now_ts - _queue_normalize_last_run_ts) >= _QUEUE_NORMALIZE_COOLDOWN_SECONDS:
+                    _queue_normalize_last_run_ts = now_ts
+                    run_normalization = True
+            finally:
+                _queue_normalize_gate_lock.release()
 
-            cursor.execute(
-                f"""
-                SELECT id, status, in_collection, file_path, music_file_path,
-                       artist, album, album_artist
-                FROM download_queue
-                WHERE status = 'in_collection' OR COALESCE(in_collection, 0) = 1
-                """
-            )
-            flagged_rows = cursor.fetchall()
-
-            music_root = os.path.normpath(os.environ.get("MUSIC_ROOT", "/music"))
-            music_root_norm = music_root.replace("\\", "/").rstrip("/").lower()
-
-            def _is_under_music_root(path_value):
-                if not path_value:
-                    return False
-                norm = os.path.normpath(str(path_value)).replace("\\", "/").rstrip("/").lower()
-                return norm == music_root_norm or norm.startswith(music_root_norm + "/")
-
-            def _sanitize_collection_segment(value):
-                value = str(value or "").strip()
-                invalid = '<>:"|?*\\'
-                for ch in invalid:
-                    value = value.replace(ch, '_')
-                return value.strip('. ').lower()
-
-            def _is_valid_collection_location(path_value, artist_value, album_value, album_artist_value=None):
-                if not path_value:
-                    return False
-                norm = os.path.normpath(str(path_value)).replace("\\", "/").rstrip("/")
-                lowered = norm.lower()
-                if lowered.startswith("__queued_for_download__"):
-                    return False
-                if not _is_under_music_root(norm):
-                    return False
-                try:
-                    rel_path = os.path.relpath(norm, music_root).replace("\\", "/")
-                except Exception:
-                    return False
-                rel_parts = [part for part in rel_path.split("/") if part and part not in (".", "..")]
-                if len(rel_parts) < 3:
-                    return False
-                expected_artist = _sanitize_collection_segment(album_artist_value or artist_value or "Unknown Artist")
-                expected_album = _sanitize_collection_segment(album_value or "Unknown Album")
-                artist_dir = _sanitize_collection_segment(rel_parts[0])
-                album_dir = _sanitize_collection_segment(rel_parts[-2])
-                return artist_dir == expected_artist and (album_dir == expected_album or album_dir.endswith(f" - {expected_album}"))
-
-            normalized_count = 0
-            for row in flagged_rows:
-                row_id = _row_get(row, 'id', 0)
-                row_status = _row_get(row, 'status', 1)
-                file_path = _row_get(row, 'file_path', 3)
-                music_file_path = _row_get(row, 'music_file_path', 4)
-                artist_value = _row_get(row, 'artist', 5)
-                album_value = _row_get(row, 'album', 6)
-                album_artist_value = _row_get(row, 'album_artist', 7)
-
-                if (
-                    _is_valid_collection_location(music_file_path, artist_value, album_value, album_artist_value)
-                    or _is_valid_collection_location(file_path, artist_value, album_value, album_artist_value)
-                ):
-                    continue
-
-                # Invalid in_collection rows should return to unmatched so users can rematch.
-                normalized_path = file_path or music_file_path
-                corrected_status = row_status
-                if row_status == 'in_collection':
-                    corrected_status = 'unmatched'
+        if run_normalization:
+            try:
+                conn = get_db()
+                cursor = conn.cursor()
+                is_pg = _is_postgres_connection(conn)
+                placeholder = "%s" if is_pg else "?"
 
                 cursor.execute(
                     f"""
+                    SELECT id, status, in_collection, file_path, music_file_path,
+                           artist, album, album_artist
+                    FROM download_queue
+                    WHERE status = 'in_collection' OR COALESCE(in_collection, 0) = 1
+                    """
+                )
+                flagged_rows = cursor.fetchall()
+
+                music_root = os.path.normpath(os.environ.get("MUSIC_ROOT", "/music"))
+                music_root_norm = music_root.replace("\\", "/").rstrip("/").lower()
+
+                def _is_under_music_root(path_value):
+                    if not path_value:
+                        return False
+                    norm = os.path.normpath(str(path_value)).replace("\\", "/").rstrip("/").lower()
+                    return norm == music_root_norm or norm.startswith(music_root_norm + "/")
+
+                def _sanitize_collection_segment(value):
+                    value = str(value or "").strip()
+                    invalid = '<>:"|?*\\'
+                    for ch in invalid:
+                        value = value.replace(ch, '_')
+                    return value.strip('. ').lower()
+
+                def _is_valid_collection_location(path_value, artist_value, album_value, album_artist_value=None):
+                    if not path_value:
+                        return False
+                    norm = os.path.normpath(str(path_value)).replace("\\", "/").rstrip("/")
+                    lowered = norm.lower()
+                    if lowered.startswith("__queued_for_download__"):
+                        return False
+                    if not _is_under_music_root(norm):
+                        return False
+                    try:
+                        rel_path = os.path.relpath(norm, music_root).replace("\\", "/")
+                    except Exception:
+                        return False
+                    rel_parts = [part for part in rel_path.split("/") if part and part not in (".", "..")]
+                    if len(rel_parts) < 3:
+                        return False
+                    expected_artist = _sanitize_collection_segment(album_artist_value or artist_value or "Unknown Artist")
+                    expected_album = _sanitize_collection_segment(album_value or "Unknown Album")
+                    artist_dir = _sanitize_collection_segment(rel_parts[0])
+                    album_dir = _sanitize_collection_segment(rel_parts[-2])
+                    return artist_dir == expected_artist and (album_dir == expected_album or album_dir.endswith(f" - {expected_album}"))
+
+                normalized_count = 0
+                for row in flagged_rows:
+                    row_id = _row_get(row, 'id', 0)
+                    row_status = _row_get(row, 'status', 1)
+                    file_path = _row_get(row, 'file_path', 3)
+                    music_file_path = _row_get(row, 'music_file_path', 4)
+                    artist_value = _row_get(row, 'artist', 5)
+                    album_value = _row_get(row, 'album', 6)
+                    album_artist_value = _row_get(row, 'album_artist', 7)
+
+                    if (
+                        _is_valid_collection_location(music_file_path, artist_value, album_value, album_artist_value)
+                        or _is_valid_collection_location(file_path, artist_value, album_value, album_artist_value)
+                    ):
+                        continue
+
+                    # Invalid in_collection rows should return to unmatched so users can rematch.
+                    normalized_path = file_path or music_file_path
+                    corrected_status = row_status
+                    if row_status == 'in_collection':
+                        corrected_status = 'unmatched'
+
+                    cursor.execute(
+                        f"""
+                        UPDATE download_queue
+                        SET status = {placeholder},
+                            file_path = COALESCE(file_path, {placeholder}),
+                            in_collection = 0,
+                            collection_track_id = NULL,
+                            collection_matched_at = NULL,
+                            failure_reason = CASE
+                                WHEN {placeholder} = 'unmatched'
+                                THEN 'Queue normalization: item marked in_collection but file is not in /music'
+                                ELSE failure_reason
+                            END,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = {placeholder}
+                        """,
+                        (corrected_status, normalized_path, corrected_status, row_id),
+                    )
+                    normalized_count += 1
+
+                # Safety net: downgrade invalid completed rows missing file_path so the
+                # UI no longer shows them as move-ready when no source file is known.
+                cursor.execute(
+                    f"""
                     UPDATE download_queue
-                    SET status = {placeholder},
-                        file_path = COALESCE(file_path, {placeholder}),
-                        in_collection = 0,
-                        collection_track_id = NULL,
-                        collection_matched_at = NULL,
-                        failure_reason = CASE
-                            WHEN {placeholder} = 'unmatched'
-                            THEN 'Queue normalization: item marked in_collection but file is not in /music'
-                            ELSE failure_reason
-                        END,
+                    SET status = 'unmatched',
+                        failure_reason = COALESCE(
+                            failure_reason,
+                            'Auto-corrected: completed status without file_path'
+                        ),
                         updated_at = CURRENT_TIMESTAMP
-                    WHERE id = {placeholder}
-                    """,
-                    (corrected_status, normalized_path, corrected_status, row_id),
+                    WHERE status = 'completed'
+                      AND TRIM(COALESCE(file_path, '')) = ''
+                    """
                 )
-                normalized_count += 1
+                normalized_count += cursor.rowcount or 0
 
-            # Safety net: downgrade invalid completed rows missing file_path so the
-            # UI no longer shows them as move-ready when no source file is known.
-            cursor.execute(
-                f"""
-                UPDATE download_queue
-                SET status = 'unmatched',
-                    failure_reason = COALESCE(
-                        failure_reason,
-                        'Auto-corrected: completed status without file_path'
-                    ),
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE status = 'completed'
-                  AND TRIM(COALESCE(file_path, '')) = ''
-                """
-            )
-            normalized_count += cursor.rowcount or 0
+                if normalized_count:
+                    conn.commit()
+                    logging.info(
+                        f"[QUEUE_NORMALIZE] Corrected {normalized_count} in_collection rows not under /music"
+                    )
 
-            if normalized_count:
-                conn.commit()
-                logging.info(
-                    f"[QUEUE_NORMALIZE] Corrected {normalized_count} in_collection rows not under /music"
-                )
-
-            conn.close()
-        except Exception as normalize_err:
-            logging.debug(f"[QUEUE_NORMALIZE] Skipped in_collection normalization: {normalize_err}")
+                conn.close()
+            except Exception as normalize_err:
+                logging.debug(f"[QUEUE_NORMALIZE] Skipped in_collection normalization: {normalize_err}")
         
         status = request.args.get('status')
         limit = int(request.args.get('limit', 100))
