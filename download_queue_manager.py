@@ -28,15 +28,13 @@ from api_clients import session  # Use shared session with retry logic & connect
 from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
 from download_file_verification import verify_file_in_music, mark_queue_item_moved
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - [Download Queue] %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("/config/download_queue.log"),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("download_queue")
+if not logger.handlers:
+    _queue_log_handler = logging.FileHandler("/config/download_queue.log")
+    _queue_log_handler.setFormatter(logging.Formatter('%(asctime)s - [Download Queue] %(levelname)s - %(message)s'))
+    logger.addHandler(_queue_log_handler)
+logger.setLevel(logging.INFO)
+logger.propagate = False
 
 # PostgreSQL configuration (required - SQLite not supported)
 PG_HOST = os.environ.get("PG_HOST")
@@ -2773,7 +2771,12 @@ def auto_discover_and_queue_files():
                             (1, collection_track_id, filename, full_path, existing_id),
                             context="auto_discover existing queue in-library update"
                         )
-                        logger.info(
+                        log_queue_event(
+                            'status_change',
+                            f"[AUTO-DISCOVER] Cleared existing queue item {existing_id} as in_collection: {artist} - {title}",
+                            item_id=existing_id,
+                        )
+                        logger.debug(
                             f"[AUTO-DISCOVER] Cleared existing queue item {existing_id} as in_collection: "
                             f"{artist} - {title}"
                         )
@@ -2810,7 +2813,11 @@ def auto_discover_and_queue_files():
                         context="auto_discover in-library update"
                     )
 
-                    logger.info(
+                    log_queue_event(
+                        'info',
+                        f"[AUTO-DISCOVER] Skipped queueing library track and cleared matching queue rows: {artist} - {title}",
+                    )
+                    logger.debug(
                         f"[AUTO-DISCOVER] Skipped queueing library track and cleared matching queue rows: "
                         f"{artist} - {title}"
                     )
@@ -3012,9 +3019,17 @@ def auto_discover_and_queue_files():
         
         conn.close()
         
-        logger.info(f"Auto-discovery complete: {stats['queued']} files added to queue, "
-                   f"{stats['already_in_queue']} already queued, "
-                   f"{stats['already_in_library']} in library")
+        log_queue_event(
+            'info',
+            f"Auto-discovery complete: {stats['queued']} files added to queue, "
+            f"{stats['already_in_queue']} already queued, "
+            f"{stats['already_in_library']} in library"
+        )
+        logger.info(
+            f"Auto-discovery complete: {stats['queued']} files added to queue, "
+            f"{stats['already_in_queue']} already queued, "
+            f"{stats['already_in_library']} in library"
+        )
         
         # Mark scan as complete
         update_scan_progress(scanning=False, files_found=stats['scanned'])
