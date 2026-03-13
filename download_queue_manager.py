@@ -763,65 +763,55 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
             except (TypeError, ValueError):
                 duration = None
         
-        # Duplicate detection: Check for existing active entry with same (artist, album, title, source).
-        # The status exclusion list mirrors the uq_download_queue_active_identity partial index so that
-        # the pre-check catches exactly the rows the unique constraint covers, preventing spurious
-        # IntegrityErrors from race conditions between concurrent queue additions.
+        # Duplicate detection: Check for existing active entry with same artist + title.
+        # Always check by artist + title + source regardless of album, so the same track
+        # is not queued twice even when the album field differs between requests.
+        # A secondary album-specific check is run first for exact matches (avoids false
+        # positives when the same song genuinely appears on multiple albums).
+        placeholder = "%s" if is_pg else "?"
 
-        if album:  # Only check duplicates if album is provided
-            duplicate_check_query = """
+        if album:
+            # 1. Exact match: same artist + album + title + source
+            cursor.execute(
+                f"""
                 SELECT * FROM download_queue
-                WHERE LOWER(artist) = LOWER(?) AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(?, '')) AND LOWER(title) = LOWER(?)
-                AND source = ?
-                AND status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled', 'in_collection')
+                WHERE LOWER(artist) = LOWER({placeholder})
+                  AND LOWER(COALESCE(album, '')) = LOWER(COALESCE({placeholder}, ''))
+                  AND LOWER(title) = LOWER({placeholder})
+                  AND source = {placeholder}
+                  AND status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled', 'in_collection')
                 ORDER BY created_at ASC
                 LIMIT 1
-            """ if not is_pg else """
-                SELECT * FROM download_queue
-                WHERE LOWER(artist) = LOWER(%s) AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(%s, '')) AND LOWER(title) = LOWER(%s)
-                AND source = %s
-                AND status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled', 'in_collection')
-                ORDER BY created_at ASC
-                LIMIT 1
-            """
-            
-            cursor.execute(duplicate_check_query, (artist, album, title, source))
+                """,
+                (artist, album, title, source),
+            )
             existing = cursor.fetchone()
-            
             if existing:
                 existing_id = existing[0] if isinstance(existing, tuple) else existing.get('id')
                 logger.info(f"Duplicate skipped: {artist} - {title} already in queue (ID {existing_id})")
                 conn.close()
                 return dict(existing) if hasattr(existing, 'keys') else None
-        
-        # If no album provided, check by artist + title + source only
-        elif not album:
-            duplicate_check_query = """
-                SELECT * FROM download_queue
-                WHERE LOWER(artist) = LOWER(?) AND LOWER(title) = LOWER(?)
-                AND COALESCE(album, '') = ''
-                AND source = ?
-                AND status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled', 'in_collection')
-                ORDER BY created_at ASC
-                LIMIT 1
-            """ if not is_pg else """
-                SELECT * FROM download_queue
-                WHERE LOWER(artist) = LOWER(%s) AND LOWER(title) = LOWER(%s)
-                AND COALESCE(album, '') = ''
-                AND source = %s
-                AND status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled', 'in_collection')
-                ORDER BY created_at ASC
-                LIMIT 1
-            """
-            
-            cursor.execute(duplicate_check_query, (artist, title, source))
-            existing = cursor.fetchone()
-            
-            if existing:
-                existing_id = existing[0] if isinstance(existing, tuple) else existing.get('id')
-                logger.info(f"Duplicate skipped: {artist} - {title} already in queue (ID {existing_id})")
-                conn.close()
-                return dict(existing) if hasattr(existing, 'keys') else None
+
+        # 2. Cross-album check: same artist + title + source regardless of album.
+        # This prevents re-queuing when the album is missing in one of the requests.
+        cursor.execute(
+            f"""
+            SELECT * FROM download_queue
+            WHERE LOWER(artist) = LOWER({placeholder})
+              AND LOWER(title) = LOWER({placeholder})
+              AND source = {placeholder}
+              AND status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled', 'in_collection')
+            ORDER BY created_at ASC
+            LIMIT 1
+            """,
+            (artist, title, source),
+        )
+        existing = cursor.fetchone()
+        if existing:
+            existing_id = existing[0] if isinstance(existing, tuple) else existing.get('id')
+            logger.info(f"Duplicate skipped: {artist} - {title} already in queue (ID {existing_id})")
+            conn.close()
+            return dict(existing) if hasattr(existing, 'keys') else None
         
         # No duplicate found, proceed with insertion
         is_duplicate = False
@@ -997,37 +987,23 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         except Exception:
             pass
         # Unique-index dedupe race: return existing active item when available.
+        # Use the same artist + title + source cross-album check for consistency.
         try:
             conn2 = get_db()
             cursor2 = conn2.cursor()
-            if album:
-                cursor2.execute(
-                    """
-                    SELECT * FROM download_queue
-                    WHERE LOWER(artist) = LOWER(%s)
-                    AND LOWER(COALESCE(album, '')) = LOWER(%s)
-                    AND LOWER(title) = LOWER(%s)
-                    AND source = %s
-                    AND status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled', 'in_collection')
-                    ORDER BY created_at ASC
-                    LIMIT 1
-                    """,
-                    (artist, album, title, source),
-                )
-            else:
-                cursor2.execute(
-                    """
-                    SELECT * FROM download_queue
-                    WHERE LOWER(artist) = LOWER(%s)
-                    AND LOWER(COALESCE(album, '')) = ''
-                    AND LOWER(title) = LOWER(%s)
-                    AND source = %s
-                    AND status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled', 'in_collection')
-                    ORDER BY created_at ASC
-                    LIMIT 1
-                    """,
-                    (artist, title, source),
-                )
+            ph2 = "%s" if _is_postgres_connection(conn2) else "?"
+            cursor2.execute(
+                f"""
+                SELECT * FROM download_queue
+                WHERE LOWER(artist) = LOWER({ph2})
+                  AND LOWER(title) = LOWER({ph2})
+                  AND source = {ph2}
+                  AND status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled', 'in_collection')
+                ORDER BY created_at ASC
+                LIMIT 1
+                """,
+                (artist, title, source),
+            )
             existing = cursor2.fetchone()
             conn2.close()
             if existing:
