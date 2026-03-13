@@ -244,6 +244,13 @@ from popularity_helpers import save_to_db
 
 import sys
 
+STARTUP_DIAGNOSTICS = (
+    os.environ.get("SPTNR_STARTUP_DIAGNOSTICS")
+    or os.environ.get("SPTNR_VERBOSE_APP")
+    or os.environ.get("SPTNR_VERBOSE")
+    or "0"
+) == "1"
+
 # Diagnostic: Print which start.py is being imported
 import importlib.util
 spec = importlib.util.find_spec("start")
@@ -307,12 +314,6 @@ DISCOGS_RATE_LIMIT_DELAY = 1  # seconds between Discogs API requests
 LOG_PATH = os.environ.get("LOG_PATH", "/config/sptnr.log")
 VERBOSE = (
     os.environ.get("SPTNR_VERBOSE_APP") or os.environ.get("SPTNR_VERBOSE") or "0"
-) == "1"
-STARTUP_DIAGNOSTICS = (
-    os.environ.get("SPTNR_STARTUP_DIAGNOSTICS")
-    or os.environ.get("SPTNR_VERBOSE_APP")
-    or os.environ.get("SPTNR_VERBOSE")
-    or "0"
 ) == "1"
 
 def log_basic(msg):
