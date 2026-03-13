@@ -88,6 +88,13 @@ class QueueHardeningTests(unittest.TestCase):
         # without constraining album — verify the pattern is present.
         self.assertIn("Cross-album check", mgr_text)
 
+    def test_check_track_exists_in_db_excludes_queued_placeholders(self):
+        """check_track_exists_in_db must not match placeholder rows inserted by _add_queue_item_to_tracks_table."""
+        processor_text = _read("queue_processor.py")
+        # The query must explicitly exclude file_path values that are queue placeholders
+        # to prevent newly-queued items from immediately being marked in_collection.
+        self.assertIn("file_path NOT LIKE '__queued_for_download__%'", processor_text)
+
 
 class FilenameMatchLogicTests(unittest.TestCase):
     """Unit tests for _filename_matches_queue_item (no DB/network needed)."""
