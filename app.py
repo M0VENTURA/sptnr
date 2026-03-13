@@ -22458,6 +22458,129 @@ def api_artist_apply_genres():
         if conn:
             conn.close()
 
+
+@app.route("/api/artist/genre-recommendations", methods=["GET"])
+def api_artist_genre_recommendations():
+    """Fetch artist genre recommendations from MusicBrainz via backend proxy."""
+    artist_name = (request.args.get("artist", "") or "").strip()
+    if not artist_name:
+        return jsonify({"error": "Artist name is required"}), 400
+
+    try:
+        headers = {
+            "User-Agent": MUSICBRAINZ_USER_AGENT,
+            "Accept": "application/json"
+        }
+
+        # Search first, then fetch artist details with tags/genres for better recommendations.
+        search_params = {
+            "query": f'artist:"{artist_name}"',
+            "fmt": "json",
+            "limit": 5,
+        }
+
+        with create_retry_session(
+            user_agent=MUSICBRAINZ_USER_AGENT,
+            retries=2,
+            backoff=0.5,
+            status_forcelist=(429, 500, 502, 503, 504),
+        ) as session:
+            search_response = session.get(
+                "https://musicbrainz.org/ws/2/artist",
+                params=search_params,
+                headers=headers,
+                timeout=(5, 10),
+            )
+            search_response.raise_for_status()
+            search_data = search_response.json() or {}
+
+            candidates = search_data.get("artists", []) or []
+            if not candidates:
+                return jsonify({
+                    "success": True,
+                    "artist": artist_name,
+                    "recommendations": [],
+                    "message": "No MusicBrainz artist matches found",
+                })
+
+            requested_norm = _normalize_artist_name(artist_name)
+
+            def _candidate_rank(candidate):
+                candidate_name = candidate.get("name", "")
+                candidate_norm = _normalize_artist_name(candidate_name)
+                try:
+                    mb_score = int(candidate.get("score") or 0)
+                except (TypeError, ValueError):
+                    mb_score = 0
+                exact_bonus = 1000 if candidate_norm == requested_norm else 0
+                return exact_bonus + mb_score
+
+            best_candidate = max(candidates, key=_candidate_rank)
+            artist_mbid = best_candidate.get("id", "")
+
+            if not artist_mbid:
+                return jsonify({
+                    "success": True,
+                    "artist": artist_name,
+                    "recommendations": [],
+                    "message": "Matched artist has no MusicBrainz ID",
+                })
+
+            details_response = session.get(
+                f"https://musicbrainz.org/ws/2/artist/{artist_mbid}",
+                params={"fmt": "json", "inc": "genres+tags"},
+                headers=headers,
+                timeout=(5, 10),
+            )
+            details_response.raise_for_status()
+            details = details_response.json() or {}
+
+        genre_scores = {}
+        for entry in (details.get("genres", []) or []):
+            name = str(entry.get("name") or "").strip()
+            if not name:
+                continue
+            count = entry.get("count") or 0
+            try:
+                count_val = int(count)
+            except (TypeError, ValueError):
+                count_val = 0
+            genre_scores[name] = max(genre_scores.get(name, 0), count_val)
+
+        for entry in (details.get("tags", []) or []):
+            name = str(entry.get("name") or "").strip()
+            if not name:
+                continue
+            count = entry.get("count") or 0
+            try:
+                count_val = int(count)
+            except (TypeError, ValueError):
+                count_val = 0
+            genre_scores[name] = max(genre_scores.get(name, 0), count_val)
+
+        recommendations = [
+            name for name, _ in sorted(
+                genre_scores.items(),
+                key=lambda item: (-item[1], item[0].lower()),
+            )
+        ][:15]
+
+        return jsonify({
+            "success": True,
+            "artist": artist_name,
+            "musicbrainz_artist": best_candidate.get("name", artist_name),
+            "musicbrainz_artist_id": artist_mbid,
+            "recommendations": recommendations,
+            "source": "musicbrainz",
+        })
+
+    except requests.exceptions.RequestException as e:
+        logging.warning(f"[ARTIST GENRES] MusicBrainz request failed for '{artist_name}': {e}")
+        return jsonify({"error": "MusicBrainz request failed"}), 503
+    except Exception as e:
+        logging.error(f"[ARTIST GENRES] Error fetching genre recommendations for '{artist_name}': {e}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/api/track/musicbrainz", methods=["POST"])
 def api_track_musicbrainz_lookup():
     """Lookup track on MusicBrainz for multiple matches (Picard-style) with retry logic"""

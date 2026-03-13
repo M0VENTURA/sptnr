@@ -2853,22 +2853,23 @@ function fetchArtistGenreRecommendations() {
   btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Fetching...';
   container.innerHTML = '<span class="text-muted small">Loading recommendations...</span>';
   
-  // Fetch artist info from MusicBrainz to get genres/tags
-  fetch(`https://musicbrainz.org/ws/2/artist?query=artist:"${encodeURIComponent(artistName)}"&fmt=json&limit=5`, {
-    headers: { 'User-Agent': 'sptnr-web/1.0' }
-  })
-    .then(r => r.json())
+  // Fetch recommendations through backend so MusicBrainz headers are always set server-side.
+  fetch(`/api/artist/genre-recommendations?artist=${encodeURIComponent(artistName)}`)
+    .then(r => {
+      if (!r.ok) {
+        throw new Error('Failed to fetch artist recommendations');
+      }
+      return r.json();
+    })
     .then(data => {
       const genres = new Set();
-      
-      // MusicBrainz artists have tags which can be used as genres
-      if (data.artists && data.artists.length > 0) {
-        const artist = data.artists[0];
-        if (artist.tags) {
-          artist.tags.slice(0, 15).forEach(tag => {
-            if (tag.name) genres.add(tag.name);
-          });
-        }
+
+      if (Array.isArray(data.recommendations)) {
+        data.recommendations.forEach(genre => {
+          if (genre && String(genre).trim()) {
+            genres.add(String(genre).trim());
+          }
+        });
       }
       
       if (genres.size === 0) {
