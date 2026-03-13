@@ -7244,21 +7244,26 @@ def detect_covers_for_artist(artist_name: str, conn: sqlite3.Connection) -> int:
 
 def create_or_update_playlist_for_artist(artist_name: str, tracks: list):
     """
-    Create/refresh 'Essential {artist}' smart playlist using Navidrome's 0â€“5 rating scale.
+    Create/refresh 'Essential {artist}' smart playlist using Navidrome's 0-5 rating scale.
 
     Logic:
-      - Case A: if artist has >= 10 five-star tracks, build a pure 5★ essentials playlist.
+      - Case A: if artist has >= 10 five-star tracks, build a pure 5-star essentials playlist.
       - Case B: if total tracks >= 100, build top 10% essentials sorted by rating.
-    
+      - Otherwise: delete any existing playlist (requirements not met).
+
     Args:
         artist_name: Name of the artist
         tracks: List of track dictionaries with id, artist, album, title, stars
     """
+    # Skip playlist creation for compilation/various artists entries
+    if artist_name.lower() == "various artists":
+        return
+
     total_tracks = len(tracks)
     five_star_tracks = [t for t in tracks if (t["stars"] or 0) == 5]
     playlist_name = f"Essential {artist_name}"
 
-    # CASE A – 10+ five-star tracks → purely 5★ essentials
+    # CASE A - 10+ five-star tracks -> purely 5-star essentials (always update)
     if len(five_star_tracks) >= 10:
         _delete_nsp_file(playlist_name)
         playlist_data = {
@@ -7268,10 +7273,10 @@ def create_or_update_playlist_for_artist(artist_name: str, tracks: list):
             "sort": "random"
         }
         _create_nsp_file(playlist_name, playlist_data)
-        log_basic(f"Essential playlist created for '{artist_name}' (5★ essentials)")
+        log_basic(f"Essential playlist created for '{artist_name}' (5-star essentials)")
         return
 
-    # CASE B – 100+ total tracks → top 10% by rating
+    # CASE B - 100+ total tracks -> top 10% by rating (always update)
     if total_tracks >= 100:
         _delete_nsp_file(playlist_name)
         limit = max(1, math.ceil(total_tracks * 0.10))
@@ -7286,66 +7291,69 @@ def create_or_update_playlist_for_artist(artist_name: str, tracks: list):
         log_basic(f"Essential playlist created for '{artist_name}' (top 10% by rating)")
         return
 
-    # If artist no longer meets requirements, delete existing playlist if it exists
+    # Requirements not met - delete any existing playlist
     log_basic(
         f"No Essential playlist created for '{artist_name}' "
-        f"(total={total_tracks}, five★={len(five_star_tracks)})"
+        f"(total={total_tracks}, five-star={len(five_star_tracks)})"
     )
-    # Clean up old playlist if it exists but requirements are no longer met
     _delete_nsp_file(playlist_name)
+
 
 def refresh_all_playlists_from_db():
     """
     Refresh all smart playlists for all artists from DB cache (no track rescans).
     This function pulls distinct artists that have cached tracks and updates their playlists.
     """
-    log_basic("ðŸ”„ Refreshing smart playlists for all artists from DB cache (no track rescans)...")
-    
+    log_basic("Refreshing smart playlists for all artists from DB cache (no track rescans)...")
+
     # Pull distinct artists that have cached tracks
     conn = None
     cursor = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        is_pg = is_postgres_connection(conn)
+        sql_placeholder = "%s" if is_pg else "?"
         cursor.execute("SELECT DISTINCT COALESCE(NULLIF(album_artist, ''), artist) AS artist_name FROM tracks")
         artists = [row['artist_name'] for row in cursor.fetchall()]
-        
+
         if not artists:
-            log_basic("âš ï¸ No cached tracks in DB. Skipping playlist refresh.")
+            log_basic("No cached tracks in DB. Skipping playlist refresh.")
             return
-        
+
         for name in artists:
             cursor.execute(
                 f"""SELECT id, artist, album, title, stars
                    FROM tracks
-                   WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}""",
+                   WHERE COALESCE(NULLIF(album_artist, ''), artist) = {sql_placeholder}""",
                 (name,)
             )
             rows = cursor.fetchall()
-            
+
             if not rows:
-                log_basic(f"âš ï¸ No cached tracks found for '{name}', skipping.")
+                log_basic(f"No cached tracks found for '{name}', skipping.")
                 continue
-            
+
             tracks = [
                 {
-                    "id": r[0],
-                    "artist": r[1],
-                    "album": r[2],
-                    "title": r[3],
-                    "stars": int(r[4]) if r[4] else 0
+                    "id": r['id'],
+                    "artist": r['artist'],
+                    "album": r['album'],
+                    "title": r['title'],
+                    "stars": int(r['stars']) if r['stars'] else 0
                 }
                 for r in rows
             ]
             create_or_update_playlist_for_artist(name, tracks)
-            log_basic(f"✅ Playlist refreshed for '{name}' ({len(tracks)} tracks)")
+            log_basic(f"Playlist refreshed for '{name}' ({len(tracks)} tracks)")
     except Exception as e:
-        log_basic(f"âŒ Error refreshing playlists: {e}")
+        log_basic(f"Error refreshing playlists: {e}")
     finally:
         if cursor:
             cursor.close()
         if conn:
             conn.close()
+
 
 if __name__ == "__main__":
     import argparse

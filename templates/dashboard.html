@@ -46,34 +46,14 @@
             </a>
         </div>
         <div class="card-body">
-            <form id="dashboardAddToQueueForm" onsubmit="dashboardAddToQueue(event)">
-                <div class="row g-2">
-                    <div class="col-md-3">
-                        <input type="text" class="form-control" id="dashQueueArtist" placeholder="Artist *" required>
-                    </div>
-                    <div class="col-md-3">
-                        <input type="text" class="form-control" id="dashQueueTitle" placeholder="Song Title *" required>
-                    </div>
-                    <div class="col-md-3">
-                        <input type="text" class="form-control" id="dashQueueAlbum" placeholder="Album (optional)">
-                    </div>
-                    <div class="col-md-1">
-                        <select class="form-select" id="dashQueueSource">
-                            <option value="soulseek">Soulseek</option>
-                            <option value="qbittorrent">qBittorrent</option>
-                        </select>
-                    </div>
-                    <div class="col-md-1">
-                        <input type="number" class="form-control" id="dashQueuePriority" value="5" min="1" max="10" title="Priority (1=highest)">
-                    </div>
-                    <div class="col-md-1">
-                        <button type="submit" class="btn btn-primary w-100">
-                            <i class="bi bi-plus"></i> Add
-                        </button>
-                    </div>
-                </div>
-                <div id="dashQueueFeedback" class="mt-2" style="display:none"></div>
-            </form>
+            <p class="text-muted small mb-3">Search MusicBrainz for releases by artist, then add them to the download queue.</p>
+            <div class="input-group">
+                <input type="text" class="form-control" id="dashQueueArtist" placeholder="Artist name *"
+                       onkeypress="if(event.key==='Enter') dashboardOpenMbSearch()">
+                <button class="btn btn-primary" onclick="dashboardOpenMbSearch()">
+                    <i class="bi bi-search"></i> Search MusicBrainz
+                </button>
+            </div>
         </div>
     </div>
     
@@ -922,39 +902,19 @@ async function updateFeature(key, value) {
     }
 }
 
-// ===== Dashboard Add to Queue =====
+// ===== Dashboard MusicBrainz Search =====
 
-async function dashboardAddToQueue(event) {
-    event.preventDefault();
+function dashboardOpenMbSearch() {
     const artist = document.getElementById('dashQueueArtist').value.trim();
-    const title = document.getElementById('dashQueueTitle').value.trim();
-    const album = document.getElementById('dashQueueAlbum').value.trim();
-    const source = document.getElementById('dashQueueSource').value;
-    const priority = parseInt(document.getElementById('dashQueuePriority').value) || 5;
-    const feedback = document.getElementById('dashQueueFeedback');
-
-    if (!artist || !title) return;
-
-    try {
-        const resp = await fetch('/api/queue/add', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ artist, title, album, source, priority })
-        });
-        const data = await resp.json();
-        feedback.style.display = 'block';
-        if (data.success || data.queue_id) {
-            feedback.innerHTML = '<span class="text-success"><i class="bi bi-check-circle"></i> Added to queue!</span>';
-            document.getElementById('dashboardAddToQueueForm').reset();
-        } else {
-            feedback.innerHTML = `<span class="text-danger"><i class="bi bi-exclamation-circle"></i> ${escapeHtml(data.error || 'Failed to add to queue')}</span>`;
-        }
-        setTimeout(() => { feedback.style.display = 'none'; }, 3000);
-    } catch (e) {
-        feedback.style.display = 'block';
-        feedback.innerHTML = '<span class="text-danger"><i class="bi bi-exclamation-circle"></i> Error adding to queue</span>';
-        setTimeout(() => { feedback.style.display = 'none'; }, 3000);
+    if (!artist) {
+        document.getElementById('dashQueueArtist').focus();
+        return;
     }
+    searchMusicBrainzRelease(null, artist, '');
 }
 </script>
+
+{% include '_musicbrainz_search_modal.html' %}
+{% include '_musicbrainz_search_functions.html' %}
+
 {% endblock %}
