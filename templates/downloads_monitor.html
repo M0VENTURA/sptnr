@@ -1477,6 +1477,8 @@ async function loadFolderGroups(options = {}) {
           file_path: item.file_path || item.music_file_path || item.matched_file_path || '',
           music_file_path: item.music_file_path || '',
           matched_file_path: item.matched_file_path || '',
+          found_filename: item.found_filename || '',
+          source_file_path: item.source_file_path || '',
           track_number: item.track_number,
           duration: item.duration || 0,
           release_mbid: item.release_mbid || item.release_id || '',
@@ -1549,6 +1551,8 @@ async function loadFolderGroups(options = {}) {
           file_path: item.file_path || item.music_file_path || item.matched_file_path || '',
           music_file_path: item.music_file_path || '',
           matched_file_path: item.matched_file_path || '',
+          found_filename: item.found_filename || '',
+          source_file_path: item.source_file_path || '',
           track_number: item.track_number,
           duration: item.duration || 0,
           release_mbid: item.release_mbid || item.release_id || '',
@@ -1885,10 +1889,11 @@ async function loadFolderGroups(options = {}) {
                 
                 // Per-track actions (move + manual match override)
                 let moveButtonHtml = '';
+                const displayPath = track.file_path || track.matched_file_path || track.music_file_path || track.source_file_path || track.found_filename || track.filename || '';
                 if (isQueueItem) {
                   const queueId = Number(track.id || group.queue_item_id || 0);
                   const queueStatusRow = String(track.status || group.queue_item_status || '').toLowerCase();
-                  const normalizedTrackPath = String(track.file_path || track.matched_file_path || track.music_file_path || '').replace(/\\/g, '/').toLowerCase();
+                  const normalizedTrackPath = String(displayPath).replace(/\\/g, '/').toLowerCase();
                   const isDownloadsBacked = normalizedTrackPath.startsWith('/downloads/') || normalizedTrackPath === '/downloads' || normalizedTrackPath.includes('/downloads/');
                   const artistEnc = encodeInlineArg(track.artist || group.artist || '');
                   const titleEnc = encodeInlineArg(track.title || group.album || '');
@@ -1902,7 +1907,7 @@ async function loadFolderGroups(options = {}) {
                   const inferredArtistEnc = encodeInlineArg(inferredArtist || '');
                   const inferredAlbumEnc = encodeInlineArg(inferredAlbum || '');
                   const showRetry = queueStatusRow === 'failed';
-                  const canMoveToMusic = (queueStatusRow === 'matched' || queueStatusRow === 'completed' || (queueStatusRow === 'in_collection' && isDownloadsBacked)) && queueId > 0;
+                  const canMoveToMusic = (queueStatusRow === 'matched' || queueStatusRow === 'completed' || queueStatusRow === 'pending_match' || (queueStatusRow === 'in_collection' && isDownloadsBacked)) && queueId > 0;
                   const canSendQueried = queueStatusRow === 'queried' && queueId > 0;
                   const canChangeMatch = queueId > 0;
                   const canResetMatch = ['matched', 'completed', 'possible_duplicate', 'unmatched'].includes(queueStatusRow) && queueId > 0;
@@ -1966,7 +1971,7 @@ async function loadFolderGroups(options = {}) {
                         <td>
                           <span style="font-size: 14px;">${escapeHtml(track.title || 'Unknown')}</span>
                           ${mappingHint}
-                          ${(track.file_path || track.matched_file_path || track.music_file_path) ? `<div class="small text-muted mt-1"><i class="bi bi-file-earmark"></i> ${escapeHtml(track.file_path || track.matched_file_path || track.music_file_path)}</div>` : ''}
+                          ${displayPath ? `<div class="small text-muted mt-1"><i class="bi bi-file-earmark"></i> ${escapeHtml(displayPath)}</div>` : ''}
                         </td>
                         <td><span style="font-size: 14px;">${duration}</span></td>
                         ${isQueueItem ? (() => {
