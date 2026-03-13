@@ -603,14 +603,16 @@ def sync_track_tags_to_file(track_id: str) -> bool:
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
         
         # Get file path and all tags in one query
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT id, title, album, artist, album_artist, albumartist, composer, 
                    year, originalyear, track_number, disc_number, genres, 
                    comment, mbid, musicbrainz_album_mbid, file_path
             FROM tracks 
-            WHERE id = ?
+            WHERE id = {placeholder}
         """, (track_id,))
         result = cursor.fetchone()
         conn.close()
@@ -657,13 +659,22 @@ def sync_track_tags_to_file(track_id: str) -> bool:
             'mbid': 'mbid',
             'musicbrainz_album_mbid': 'musicbrainz_album_mbid'
         }
+        result_fields = [
+            'id', 'title', 'album', 'artist', 'album_artist', 'albumartist',
+            'composer', 'year', 'originalyear', 'track_number', 'disc_number',
+            'genres', 'comment', 'mbid', 'musicbrainz_album_mbid', 'file_path'
+        ]
         
         # Extract values from result
-        for idx, field in enumerate(['id', 'title', 'album', 'artist', 'album_artist', 'albumartist', 
-                                      'composer', 'year', 'originalyear', 'track_number', 'disc_number', 
-                                      'genres', 'comment', 'mbid', 'musicbrainz_album_mbid', 'file_path']):
-            if field in field_mapping and idx < len(result):
-                value = result[idx] if not isinstance(result, dict) else result[field]
+        for idx, field in enumerate(result_fields):
+            if field not in field_mapping:
+                continue
+            if isinstance(result, dict):
+                value = result.get(field)
+            else:
+                if idx >= len(result):
+                    continue
+                value = result[idx]
                 if value is not None and str(value).strip():
                     tags[field_mapping[field]] = value
         
