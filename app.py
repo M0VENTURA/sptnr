@@ -18005,37 +18005,61 @@ def api_queue_delete_folder():
         is_pg = _is_postgres_connection(conn)
         placeholder = "%s" if is_pg else "?"
 
-        deleted_queue_items = 0
-        queue_ids_deleted = []
-        if remove_queue_items:
-            like_prefix = folder_abs.rstrip(os.sep) + os.sep + "%"
-            cursor.execute(
-                f"""
-                SELECT id
-                FROM download_queue
-                WHERE (file_path = {placeholder} OR file_path LIKE {placeholder})
-                   OR (matched_file_path = {placeholder} OR matched_file_path LIKE {placeholder})
-                """,
-                (folder_abs, like_prefix, folder_abs, like_prefix)
-            )
-            queue_ids_deleted = [row[0] for row in cursor.fetchall()]
+        like_prefix = folder_abs.rstrip(os.sep) + os.sep + "%"
+        cursor.execute(
+            f"""
+            SELECT id, file_path, matched_file_path
+            FROM download_queue
+            WHERE (file_path = {placeholder} OR file_path LIKE {placeholder})
+               OR (matched_file_path = {placeholder} OR matched_file_path LIKE {placeholder})
+            """,
+            (folder_abs, like_prefix, folder_abs, like_prefix)
+        )
+        queue_rows = cursor.fetchall() or []
 
-            if queue_ids_deleted:
-                if is_pg:
-                    cursor.execute("DELETE FROM download_queue WHERE id = ANY(%s)", (queue_ids_deleted,))
-                else:
-                    in_params = ",".join([placeholder] * len(queue_ids_deleted))
-                    cursor.execute(f"DELETE FROM download_queue WHERE id IN ({in_params})", tuple(queue_ids_deleted))
-                deleted_queue_items = cursor.rowcount
-                # Clean up event logs for deleted queue items
-                clear_queue_events_for_items(queue_ids_deleted)
-                conn.commit()
+        queue_ids_deleted = []
+        candidate_file_paths = set()
+        for row in queue_rows:
+            queue_id = _row_get(row, 'id', 0)
+            if queue_id is not None:
+                queue_ids_deleted.append(queue_id)
+
+            for field_name, field_index in (('file_path', 1), ('matched_file_path', 2)):
+                path_value = _row_get(row, field_name, field_index)
+                if not path_value:
+                    continue
+                path_abs = os.path.abspath(str(path_value))
+                if _is_within_downloads(path_abs):
+                    candidate_file_paths.add(path_abs)
+
+        deleted_queue_items = 0
+        if remove_queue_items and queue_ids_deleted:
+            if is_pg:
+                cursor.execute("DELETE FROM download_queue WHERE id = ANY(%s)", (queue_ids_deleted,))
+            else:
+                in_params = ",".join([placeholder] * len(queue_ids_deleted))
+                cursor.execute(f"DELETE FROM download_queue WHERE id IN ({in_params})", tuple(queue_ids_deleted))
+            deleted_queue_items = cursor.rowcount
+            # Clean up event logs for deleted queue items
+            clear_queue_events_for_items(queue_ids_deleted)
 
         deleted_files = []
         deleted_dirs = []
 
+        # Delete all files referenced by queue items first.
+        for file_path in sorted(candidate_file_paths):
+            if not os.path.isfile(file_path):
+                continue
+            try:
+                os.remove(file_path)
+                if not os.path.exists(file_path):
+                    deleted_files.append(file_path)
+            except Exception as delete_err:
+                logging.warning(f"[QUEUE_FOLDER_DELETE] Failed to delete queued file '{file_path}': {delete_err}")
+
+        # Then remove any leftover files under the target folder.
         if os.path.isdir(folder_abs):
-            for root, dirs, files in os.walk(folder_abs, topdown=False):
+            for root, _dirs, files in os.walk(folder_abs, topdown=False):
                 for filename in files:
                     full_path = os.path.join(root, filename)
                     if not _is_within_downloads(full_path):
@@ -18047,21 +18071,33 @@ def api_queue_delete_folder():
                     except Exception as delete_err:
                         logging.warning(f"[QUEUE_FOLDER_DELETE] Failed to delete '{full_path}': {delete_err}")
 
-                for dirname in dirs:
-                    dir_path = os.path.join(root, dirname)
-                    try:
-                        if os.path.isdir(dir_path) and not os.listdir(dir_path):
-                            os.rmdir(dir_path)
-                            deleted_dirs.append(dir_path)
-                    except Exception:
-                        pass
+        def _prune_empty_dirs(start_dir, stop_dir):
+            current = os.path.abspath(start_dir)
+            stop_abs = os.path.abspath(stop_dir)
+            while current and _is_within_downloads(current):
+                if not os.path.isdir(current):
+                    break
+                try:
+                    if os.listdir(current):
+                        break
+                    os.rmdir(current)
+                    deleted_dirs.append(current)
+                except Exception:
+                    break
 
-            try:
-                if os.path.isdir(folder_abs) and not os.listdir(folder_abs):
-                    os.rmdir(folder_abs)
-                    deleted_dirs.append(folder_abs)
-            except Exception:
-                pass
+                if current == stop_abs:
+                    break
+                parent = os.path.dirname(current)
+                if parent == current:
+                    break
+                current = parent
+
+        # Prune parent directories for deleted files, then ensure the selected folder is pruned.
+        for deleted_file in deleted_files:
+            _prune_empty_dirs(os.path.dirname(deleted_file), folder_abs)
+        _prune_empty_dirs(folder_abs, folder_abs)
+
+        conn.commit()
 
         conn.close()
 
