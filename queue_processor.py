@@ -339,6 +339,40 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
     return combined >= threshold
 
 
+def _filename_matches_queue_item(filename, queue_item):
+    """
+    Conservative filename/path fallback when file metadata is unavailable.
+
+    Returns True if the filename strongly suggests it belongs to the queue item,
+    using artist+title substring checks with a sequence-similarity safety net.
+    """
+    try:
+        filename_test = filename.lower().replace('\\', '/')
+        artist = (queue_item.get('artist') or '').lower().strip()
+        title = (queue_item.get('title') or '').lower().strip()
+
+        if not artist or not title:
+            return False
+
+        artist_in_path = artist in filename_test
+        title_in_path = title in filename_test
+        if artist_in_path and title_in_path:
+            return True
+
+        # Use stricter sequence similarity fallback to avoid cross-track collisions.
+        album = (queue_item.get('album') or '').lower().strip()
+        combined_target = f"{artist} {title} {album}".strip()
+        score = SequenceMatcher(None, combined_target, filename_test).ratio()
+        if score >= 0.60 and (artist_in_path or title_in_path):
+            return True
+
+        return False
+
+    except Exception as e:
+        logger.error(f"Error in filename matching for {filename}: {e}")
+        return False
+
+
 def _file_matches_queue_item(file_path, queue_item, relative_name=None):
     """Match a file to queue metadata, preferring tags and duration over filename alone."""
     metadata_state = _metadata_matches_queue_item(file_path, queue_item)
@@ -349,7 +383,7 @@ def _file_matches_queue_item(file_path, queue_item, relative_name=None):
     if metadata_state is True:
         return True, 'metadata'
 
-    if matches_queue_item(candidate_name, queue_item, file_path=file_path):
+    if _filename_matches_queue_item(candidate_name, queue_item):
         return True, 'filename'
 
     return False, 'filename'
@@ -1089,6 +1123,58 @@ def _delete_confirmed_collection_item(queue_id, queue_item):
                     )
 
 
+def _cleanup_sibling_downloads(queue_item, keep_path):
+    """
+    Delete any audio files in DOWNLOADS_DIR that match the same artist+title as
+    *queue_item* but are NOT the file at *keep_path*.
+
+    This removes stale copies that accumulated during previous failed download
+    attempts (e.g. when a queue item retried several times and left orphaned files).
+
+    Only files whose names contain both the artist and title strings are removed to
+    avoid accidental deletion of unrelated files.
+    """
+    artist = (queue_item.get("artist") or "").lower().strip()
+    title = (queue_item.get("title") or "").lower().strip()
+    if not artist or not title:
+        return
+
+    abs_downloads = os.path.abspath(DOWNLOADS_DIR)
+    keep_abs = os.path.abspath(keep_path) if keep_path else None
+
+    if not os.path.isdir(abs_downloads):
+        return
+
+    removed = 0
+    try:
+        for root, _, files in os.walk(abs_downloads):
+            for fname in files:
+                if not fname.lower().endswith(('.mp3', '.flac', '.m4a', '.ogg', '.wav')):
+                    continue
+                full = os.path.abspath(os.path.join(root, fname))
+                if keep_abs and full == keep_abs:
+                    continue
+                fname_lower = fname.lower()
+                if artist in fname_lower and title in fname_lower:
+                    try:
+                        os.remove(full)
+                        removed += 1
+                        logger.info(
+                            f"[DEDUP] Removed sibling download for "
+                            f"'{queue_item.get('artist')} - {queue_item.get('title')}': {full}"
+                        )
+                    except Exception as rm_err:
+                        logger.warning(f"[DEDUP] Could not remove sibling file '{full}': {rm_err}")
+    except Exception as e:
+        logger.error(f"[DEDUP] Error during sibling download cleanup: {e}")
+
+    if removed:
+        logger.info(
+            f"[DEDUP] Cleaned {removed} sibling download(s) for "
+            f"'{queue_item.get('artist')} - {queue_item.get('title')}'"
+        )
+
+
 def search_and_download(queue_id, queue_item, client):
     """Search Soulseek for queue item and download top result"""
     try:
@@ -1530,6 +1616,9 @@ def check_completed_downloads():
                                 copied_individually_at=datetime.now().isoformat()
                             )
                             logger.info(f"[AUTO_MOVE] Queue {item_id}: verified and imported to {target_path}")
+                            # Remove any other copies of this track left in /downloads
+                            # from previous failed/retried download attempts.
+                            _cleanup_sibling_downloads(item, keep_path=None)
                         else:
                             logger.warning(
                                 f"[AUTO_MOVE] Queue {item_id}: file verification failed after move to {target_path}, keeping as completed"
