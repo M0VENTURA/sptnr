@@ -6810,8 +6810,25 @@ def api_get_similar_artists(artist):
                 "cached": True
             })
         
-        # No cached data - fetch from APIs
-        logging.info(f"[SIMILAR ARTISTS] No cached data for {artist}, fetching from APIs...")
+        # By default, do not perform live network fetches during page load.
+        # This endpoint is called by track/album/artist pages and should return fast.
+        allow_live_fetch = str(request.args.get("allow_live", "0")).strip().lower() in {"1", "true", "yes", "on"}
+        if not allow_live_fetch:
+            conn.close()
+            return jsonify({
+                "success": True,
+                "artist": artist,
+                "similar_artists": {
+                    "lastfm": [],
+                    "listenbrainz": []
+                },
+                "cached": False,
+                "live_fetch_skipped": True,
+                "message": "No cached similar artists yet. Run a popularity scan to populate caches, or call with allow_live=1."
+            })
+
+        # No cached data and live fetch explicitly requested - fetch from APIs
+        logging.info(f"[SIMILAR ARTISTS] No cached data for {artist}, fetching from APIs (allow_live=1)...")
         
         # Fetch from Last.fm
         try:
