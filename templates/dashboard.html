@@ -408,8 +408,21 @@ document.addEventListener('DOMContentLoaded', function() {
 
         // Deduplicate: group scans by (artist, album)
         const groupedScans = {};
-        
+        // Track in-progress entries separately (they always appear at the top)
+        const inProgressEntries = [];
+
         scans.forEach(scan => {
+            if (scan._inProgress) {
+                inProgressEntries.push({
+                    artist: scan.artist,
+                    album: scan.album || '…',
+                    scan_types: [{ type: scan.scan_type, timestamp: scan.scan_timestamp, _inProgress: true }],
+                    latest_timestamp: scan.scan_timestamp,
+                    latest_timestamp_obj: new Date(),
+                    _inProgress: true,
+                });
+                return;
+            }
             const key = `${scan.artist}|${scan.album}`;
             if (!groupedScans[key]) {
                 groupedScans[key] = {
@@ -437,18 +450,24 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
 
-        // Convert to array and sort by latest timestamp
-        const dedupedScans = Object.values(groupedScans)
-            .sort((a, b) => b.latest_timestamp_obj - a.latest_timestamp_obj);
+        // Convert to array and sort by latest timestamp; in-progress always first
+        const dedupedScans = [
+            ...inProgressEntries,
+            ...Object.values(groupedScans).sort((a, b) => b.latest_timestamp_obj - a.latest_timestamp_obj),
+        ];
 
         const rows = dedupedScans.map(group => {
             const artistUrl = `/artist/${encodeURIComponent(group.artist)}`;
-            const albumUrl = `/album/${encodeURIComponent(group.artist)}/${encodeURIComponent(group.album)}`;
+            const albumUrl = group.album && group.album !== '…'
+                ? `/album/${encodeURIComponent(group.artist)}/${encodeURIComponent(group.album)}`
+                : artistUrl;
             
             // Generate scan type badges
             const badges = group.scan_types.map(st => {
                 let badgeHtml = `<span class="badge bg-secondary" title="${st.timestamp}">${st.type}</span>`;
-                if (st.type === 'navidrome') {
+                if (st._inProgress) {
+                    badgeHtml = '<span class="badge bg-primary"><span class="spinner-border spinner-border-sm me-1" style="width:.75em;height:.75em;"></span> Scanning…</span>';
+                } else if (st.type === 'navidrome') {
                     badgeHtml = '<span class="badge bg-primary" title="' + st.timestamp + '"><i class="bi bi-cloud"></i> Navidrome</span>';
                 } else if (st.type === 'popularity') {
                     badgeHtml = '<span class="badge bg-success" title="' + st.timestamp + '"><i class="bi bi-graph-up"></i> Popularity</span>';
@@ -462,13 +481,16 @@ document.addEventListener('DOMContentLoaded', function() {
                 return badgeHtml;
             }).join(' ');
 
+            const rowClass = group._inProgress ? ' class="table-active"' : '';
             return `
-                <tr>
+                <tr${rowClass}>
                     <td>
                         <a href="${artistUrl}">${escapeHtml(group.artist)}</a>
                     </td>
                     <td>
-                        <a href="${albumUrl}">${escapeHtml(group.album)}</a>
+                        ${group.album && group.album !== '…'
+                            ? `<a href="${albumUrl}">${escapeHtml(group.album)}</a>`
+                            : '<span class="text-muted fst-italic">…</span>'}
                     </td>
                     <td>
                         <div class="d-flex flex-wrap gap-2">
@@ -476,12 +498,12 @@ document.addEventListener('DOMContentLoaded', function() {
                         </div>
                     </td>
                     <td class="text-muted text-end">
-                        <small>${group.latest_timestamp}</small>
+                        <small>${group._inProgress ? 'now' : group.latest_timestamp}</small>
                     </td>
                     <td class="text-center">
-                        <a href="${albumUrl}" class="btn btn-sm btn-outline-primary" title="View album">
-                            <i class="bi bi-arrow-right"></i>
-                        </a>
+                        ${!group._inProgress
+                            ? `<a href="${albumUrl}" class="btn btn-sm btn-outline-primary" title="View album"><i class="bi bi-arrow-right"></i></a>`
+                            : ''}
                     </td>
                 </tr>`;
         }).join('');
@@ -489,16 +511,40 @@ document.addEventListener('DOMContentLoaded', function() {
         recentScansBody.innerHTML = rows;
     }
 
+    // Track the last non-empty scan list so we can preserve it if the API returns empty
+    var _lastRecentScansPayload = null;
+    // Track currently scanning info from scan progress
+    var _currentScanningAlbum = null;
+
     function updateRecentScans() {
         const endpoint = '/api/recent-scans';
         fetchJsonOrThrow(`${endpoint}?_ts=${Date.now()}`, { cache: 'no-store' })
             .then(data => {
                 clearApiError(endpoint);
                 const payload = data.scans || [];
-                // Always re-render to ensure new scan entries are shown
-                renderRecentScans(payload);
+                if (payload.length > 0) {
+                    _lastRecentScansPayload = payload;
+                    renderRecentScans(buildRecentScansWithInProgress(payload));
+                } else if (_lastRecentScansPayload && _lastRecentScansPayload.length > 0) {
+                    // API returned empty during scan — preserve previous list with in-progress entry
+                    renderRecentScans(buildRecentScansWithInProgress(_lastRecentScansPayload));
+                } else {
+                    renderRecentScans([]);
+                }
             })
-            .catch(error => logApiError(endpoint, 'Error fetching recent scans', error));
+            .catch(error => {
+                logApiError(endpoint, 'Error fetching recent scans', error);
+                // On error, re-render with previous data + in-progress if available
+                if (_lastRecentScansPayload) {
+                    renderRecentScans(buildRecentScansWithInProgress(_lastRecentScansPayload));
+                }
+            });
+    }
+
+    function buildRecentScansWithInProgress(scans) {
+        if (!_currentScanningAlbum) return scans;
+        // Prepend the in-progress entry at the top (it will get deduplicated if it's already there)
+        return [_currentScanningAlbum, ...scans];
     }
 
     // Render initial recent scans
@@ -568,6 +614,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     if (startBtn) startBtn.disabled = false;
                     if (stopButton) stopButton.style.display = 'none';
                     runningScans.clear();
+                    _currentScanningAlbum = null;
                     return;
                 }
                 
@@ -658,7 +705,24 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (progressPercent) progressPercent.textContent = percent + '%';
                 if (scanName) scanName.textContent = scanDisplayName;
                 if (progressDetails) progressDetails.textContent = details;
-                
+
+                // Track currently-scanning artist for the Recent Scans live indicator
+                if (data.current_artist) {
+                    const scanTypeKey = activeScanType === 'navidrome_scan' ? 'navidrome'
+                        : activeScanType === 'singles_scan' ? 'singles'
+                        : activeScanType === 'combined_scan' ? 'combined'
+                        : 'popularity';
+                    _currentScanningAlbum = {
+                        artist: data.current_artist,
+                        album: data.current_album || '…',
+                        scan_type: scanTypeKey,
+                        scan_timestamp: new Date().toISOString(),
+                        _inProgress: true,
+                    };
+                } else {
+                    _currentScanningAlbum = null;
+                }
+
                 // Disable start button and show stop button
                 if (startBtn) startBtn.disabled = true;
                 if (stopButton) stopButton.style.display = 'block';

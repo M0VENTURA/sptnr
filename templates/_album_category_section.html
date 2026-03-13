@@ -1,7 +1,7 @@
 {% macro render_album_row(album, artist_name, is_missing=False) %}
 {% set safe_artist = artist_name|regex_replace(' +', '_') %}
 {% set safe_album = (album.album or album.title)|regex_replace(' +', '_') %}
-<tr class="album-row" data-year="{{ album.get('album_year') or album.get('first_release_date', '')[:4] or 9999 }}" data-status="{% if album.get('is_downloading') %}downloading{% elif is_missing %}missing{% else %}discovered{% endif %}" data-album="{{ album.album or album.title }}">
+<tr class="album-row" data-year="{{ album.get('album_year') or album.get('first_release_date', '')[:4] or 9999 }}" data-status="{% if album.get('is_downloading') %}downloading{% elif is_missing %}missing{% else %}discovered{% endif %}" data-album="{{ album.album or album.title }}" {% if not is_missing and album.get('musicbrainz_album_mbid') %}data-mb-mbid="{{ album.get('musicbrainz_album_mbid') }}" data-artist="{{ artist_name|e }}" data-album-name="{{ (album.album or album.title)|e }}"{% endif %}>
   <!-- Album Art -->
   <td class="text-center" style="width: 100px; padding: 0.5rem;">
     {% if is_missing %}
@@ -43,6 +43,9 @@
       <span class="badge bg-warning text-dark">Missing</span>
     {% else %}
       <span class="badge bg-success">Available</span>
+      {% if not is_missing and album.get('musicbrainz_album_mbid') %}
+      <span class="badge bg-warning text-dark ms-1 album-missing-tracks-badge" style="display:none;" title="This album has tracks in MusicBrainz that are not in your library"></span>
+      {% endif %}
     {% endif %}
   </td>
   
@@ -81,6 +84,11 @@
         <a class="btn btn-outline-secondary" href="{{ url_for('album_detail', artist=artist_name, album=album.album) }}" title="View album">
           <i class="bi bi-arrow-right"></i>
         </a>
+        {% if not is_missing and album.get('musicbrainz_album_mbid') %}
+        <a class="btn btn-outline-warning album-search-missing-btn" style="display:none;" href="{{ url_for('album_detail', artist=artist_name, album=album.album) }}#missing-tracks" title="Search for missing tracks on album page">
+          <i class="bi bi-search"></i>
+        </a>
+        {% endif %}
       {% endif %}
     </div>
   </td>

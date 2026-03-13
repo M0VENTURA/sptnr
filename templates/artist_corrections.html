@@ -39,10 +39,11 @@
         <h1 class="h3 mb-0">
             <i class="bi bi-tools"></i> Corrections for {{ artist_name }}
         </h1>
-        <div class="d-flex gap-2">
+        <div class="d-flex gap-2 flex-wrap">
             <span class="badge bg-info" id="duplicate-artists-badge" style="display: none;">0 duplicate artists</span>
             <span class="badge bg-danger">{{ duplicate_count }} duplicate rows</span>
             <span class="badge bg-warning text-dark">{{ missing_count }} missing metadata</span>
+            <span class="badge bg-secondary" id="missing-tracks-badge" style="display: none;">checking MB tracks…</span>
         </div>
     </div>
 
@@ -174,7 +175,7 @@
         </div>
     </div>
 
-    <div class="card">
+    <div class="card mb-4">
         <div class="card-header">
             <h5 class="mb-0"><i class="bi bi-exclamation-triangle"></i> Tracks Missing Core Metadata</h5>
         </div>
@@ -210,6 +211,84 @@
                         {% endif %}
                     </tbody>
                 </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Albums with Missing MB Tracks Section (loaded async) -->
+    {% if mb_albums %}
+    <div class="card mb-4" id="mb-missing-tracks-section">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h5 class="mb-0"><i class="bi bi-music-note-list"></i> Albums — Missing MusicBrainz Tracks</h5>
+            <button class="btn btn-sm btn-outline-secondary" id="checkAllMbTracksBtn" onclick="checkAllAlbumsMbTracks()">
+                <i class="bi bi-search"></i> Check All Albums
+            </button>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover mb-0 artist-corrections-table">
+                    <thead>
+                        <tr>
+                            <th>Album</th>
+                            <th class="text-center">Library Tracks</th>
+                            <th class="text-center">MB Total</th>
+                            <th class="text-center">Missing</th>
+                            <th>Missing Tracks</th>
+                        </tr>
+                    </thead>
+                    <tbody id="mb-missing-tracks-tbody">
+                        {% for alb in mb_albums %}
+                        <tr id="mb-album-row-{{ loop.index }}">
+                            <td>
+                                <a href="{{ url_for('album_detail', artist=artist_name, album=alb.album) }}">{{ alb.album }}</a>
+                            </td>
+                            <td class="text-center">{{ alb.track_count }}</td>
+                            <td class="text-center" id="mb-total-{{ loop.index }}">—</td>
+                            <td class="text-center" id="mb-missing-count-{{ loop.index }}">
+                                <span class="spinner-border spinner-border-sm text-secondary" role="status" style="display:none;" id="mb-spinner-{{ loop.index }}"></span>
+                                <span id="mb-missing-badge-{{ loop.index }}">—</span>
+                            </td>
+                            <td id="mb-missing-detail-{{ loop.index }}"></td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Match to Existing Track Modal -->
+<div class="modal fade" id="matchTrackModal" tabindex="-1" aria-labelledby="matchTrackModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="matchTrackModalLabel">Match Missing Track to Existing Song</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted mb-2">
+                    <strong id="matchMbTitle"></strong> (Track <span id="matchMbTrackNum"></span>)
+                    — select an existing track in the library to sync this MB metadata to it.
+                </p>
+                <div class="table-responsive">
+                    <table class="table table-hover table-sm mb-0" id="matchCandidatesTable">
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>Current Title</th>
+                                <th>File</th>
+                                <th class="text-center">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="matchCandidatesTbody">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
             </div>
         </div>
     </div>
@@ -262,17 +341,20 @@
 
 <script>
 const artistName = "{{ artist_name }}";
+const mbAlbums = {{ mb_albums | tojson | safe }};
 
-// Load duplicate artists on page load
+// ── Duplicate Artists ──────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', function() {
     loadDuplicateArtists();
+    if (mbAlbums && mbAlbums.length > 0) {
+        checkAllAlbumsMbTracks();
+    }
 });
 
 async function loadDuplicateArtists() {
     try {
         const response = await fetch(`/api/duplicate-artists/${encodeURIComponent(artistName)}`);
         const data = await response.json();
-        
         if (data.duplicates && data.duplicates.length > 0) {
             displayDuplicateArtists(data.duplicates);
         }
@@ -285,22 +367,15 @@ function displayDuplicateArtists(duplicates) {
     const section = document.getElementById('duplicate-artists-section');
     const tbody = document.getElementById('duplicate-artists-tbody');
     const badge = document.getElementById('duplicate-artists-badge');
-    
-    if (duplicates.length === 0) {
-        section.style.display = 'none';
-        return;
-    }
-    
+    if (duplicates.length === 0) { section.style.display = 'none'; return; }
     tbody.innerHTML = '';
-    
     duplicates.forEach(dup => {
         const totalTracks = Object.values(dup.track_counts).reduce((a, b) => a + b, 0);
         const sourceVariations = dup.variations.filter(v => v.toLowerCase() !== dup.canonical_mb.toLowerCase());
         const affectedTracks = sourceVariations.reduce((sum, v) => sum + (dup.track_counts[v] || 0), 0);
-        const variationsHtml = dup.variations.map(v => 
+        const variationsHtml = dup.variations.map(v =>
             `<span class="badge bg-secondary me-1">${v} (${dup.track_counts[v]})</span>`
         ).join('');
-        
         const row = document.createElement('tr');
         row.innerHTML = `
             <td class="small text-muted">${dup.mbid.substring(0, 8)}...</td>
@@ -311,16 +386,194 @@ function displayDuplicateArtists(duplicates) {
                 <button class="btn btn-sm btn-primary" onclick="showMergeDialog('${dup.mbid}', '${dup.canonical_mb}', ${totalTracks}, ${affectedTracks}, ${JSON.stringify(sourceVariations).replace(/"/g, '&quot;')})">
                     <i class="bi bi-merge"></i> Merge
                 </button>
-            </td>
-        `;
+            </td>`;
         tbody.appendChild(row);
     });
-    
     section.style.display = 'block';
     badge.textContent = `${duplicates.length} duplicate artist${duplicates.length !== 1 ? 's' : ''}`;
     badge.style.display = 'inline-block';
 }
 
+// ── MB Missing Tracks ──────────────────────────────────────────────────────
+// Store album tracks for the match modal
+const _albumTracks = {};
+
+async function checkAllAlbumsMbTracks() {
+    const btn = document.getElementById('checkAllMbTracksBtn');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Checking…'; }
+
+    let totalMissing = 0;
+    const checks = mbAlbums.map((alb, idx) => checkAlbumMbTracks(alb, idx + 1));
+    const results = await Promise.allSettled(checks);
+    results.forEach(r => { if (r.status === 'fulfilled') totalMissing += (r.value || 0); });
+
+    const badge = document.getElementById('missing-tracks-badge');
+    if (badge) {
+        if (totalMissing > 0) {
+            badge.textContent = `${totalMissing} missing MB track${totalMissing !== 1 ? 's' : ''}`;
+            badge.className = 'badge bg-warning text-dark';
+            badge.style.display = 'inline-block';
+        } else {
+            badge.textContent = 'No missing MB tracks';
+            badge.className = 'badge bg-success';
+            badge.style.display = 'inline-block';
+        }
+    }
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Re-check All'; }
+}
+
+async function checkAlbumMbTracks(alb, rowIdx) {
+    const spinner = document.getElementById(`mb-spinner-${rowIdx}`);
+    const badgeEl = document.getElementById(`mb-missing-badge-${rowIdx}`);
+    const totalEl = document.getElementById(`mb-total-${rowIdx}`);
+    const detailEl = document.getElementById(`mb-missing-detail-${rowIdx}`);
+    if (spinner) spinner.style.display = 'inline-block';
+    if (badgeEl) badgeEl.textContent = '';
+
+    try {
+        const url = `/api/album/missing-tracks?artist=${encodeURIComponent(artistName)}&album=${encodeURIComponent(alb.album)}`;
+        const resp = await fetch(url);
+        const data = await resp.json();
+        if (spinner) spinner.style.display = 'none';
+
+        const mbTotal = data.mb_total || 0;
+        const missingCount = data.missing_count || 0;
+        if (totalEl) totalEl.textContent = mbTotal || '—';
+
+        if (missingCount > 0) {
+            if (badgeEl) {
+                badgeEl.innerHTML = `<span class="badge bg-warning text-dark">${missingCount} missing</span>`;
+            }
+            // Build missing track rows with download + match options
+            if (detailEl) {
+                const missingTracks = data.missing_tracks || [];
+                // Fetch library tracks for this album for the match modal
+                await fetchAlbumLibraryTracks(alb.album);
+
+                const rows = missingTracks.map(t => `
+                    <div class="d-flex align-items-center gap-2 py-1 border-bottom">
+                        <span class="text-muted" style="min-width:2rem">${t.track_number || '?'}</span>
+                        <span class="flex-grow-1">${escapeHtml(t.title)}</span>
+                        <button class="btn btn-sm btn-outline-success" title="Add to download queue"
+                            onclick='queueMissingTrackFromCorrections(${JSON.stringify(t)})'>
+                            <i class="bi bi-download"></i>
+                        </button>
+                        <button class="btn btn-sm btn-outline-primary" title="Match to an existing song in the library"
+                            onclick='openMatchModal(${JSON.stringify(t)}, ${JSON.stringify(alb.album)})'>
+                            <i class="bi bi-link-45deg"></i> Match
+                        </button>
+                    </div>`).join('');
+                detailEl.innerHTML = `<div class="px-2 py-1">${rows}</div>`;
+            }
+        } else if (data.reason === 'no_mbid') {
+            if (badgeEl) badgeEl.innerHTML = '<span class="badge bg-secondary">no MBID</span>';
+        } else {
+            if (badgeEl) badgeEl.innerHTML = '<span class="badge bg-success">Complete</span>';
+        }
+        return missingCount;
+    } catch (err) {
+        if (spinner) spinner.style.display = 'none';
+        if (badgeEl) badgeEl.innerHTML = '<span class="badge bg-danger">Error</span>';
+        console.error(`Error checking MB tracks for ${alb.album}:`, err);
+        return 0;
+    }
+}
+
+async function fetchAlbumLibraryTracks(albumName) {
+    if (_albumTracks[albumName]) return;
+    try {
+        const url = `/api/album/library-tracks?artist=${encodeURIComponent(artistName)}&album=${encodeURIComponent(albumName)}`;
+        const resp = await fetch(url);
+        const data = await resp.json();
+        _albumTracks[albumName] = data.tracks || [];
+    } catch (err) {
+        _albumTracks[albumName] = [];
+    }
+}
+
+// ── Match Modal ────────────────────────────────────────────────────────────
+let _currentMbTrack = null;
+
+function openMatchModal(mbTrack, albumName) {
+    _currentMbTrack = mbTrack;
+    document.getElementById('matchMbTitle').textContent = mbTrack.title;
+    document.getElementById('matchMbTrackNum').textContent = mbTrack.track_number || '?';
+
+    const tbody = document.getElementById('matchCandidatesTbody');
+    const candidates = _albumTracks[albumName] || [];
+    if (candidates.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">No tracks found in library for this album.</td></tr>';
+    } else {
+        tbody.innerHTML = candidates.map(c => `
+            <tr>
+                <td class="text-muted">${c.track_number || '—'}</td>
+                <td>${escapeHtml(c.title || '—')}</td>
+                <td class="small text-muted">${escapeHtml(c.file_path || '—')}</td>
+                <td class="text-center">
+                    <button class="btn btn-sm btn-primary" onclick="confirmMatchTrack('${c.id}')">
+                        <i class="bi bi-check-lg"></i> Match
+                    </button>
+                </td>
+            </tr>`).join('');
+    }
+
+    new bootstrap.Modal(document.getElementById('matchTrackModal')).show();
+}
+
+async function confirmMatchTrack(trackId) {
+    if (!_currentMbTrack) return;
+    if (!confirm(`Sync MB metadata to this track?\n\nNew title: "${_currentMbTrack.title}"\n\nThis will update the database and the MP3 file tags.`)) return;
+
+    try {
+        const resp = await fetch('/api/track/match-missing', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                track_id: String(trackId),
+                mb_title: _currentMbTrack.title,
+                mb_track_number: _currentMbTrack.track_number,
+                mb_release_id: _currentMbTrack.release_id,
+            })
+        });
+        const result = await resp.json();
+        bootstrap.Modal.getInstance(document.getElementById('matchTrackModal')).hide();
+        if (result.success) {
+            alert(`✓ Matched!\n"${result.old_title}" → "${result.new_title}"${result.updated_file ? '\nMP3 tags updated.' : ''}`);
+            location.reload();
+        } else {
+            alert(`✗ Error: ${result.error}`);
+        }
+    } catch (err) {
+        alert(`✗ Error: ${err.message}`);
+    }
+}
+
+async function queueMissingTrackFromCorrections(track) {
+    try {
+        const resp = await fetch('/api/queue/add', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                artist: track.album_artist || track.artist,
+                album: track.album,
+                title: track.title,
+                track_number: track.track_number,
+                year: track.year,
+                release_id: track.release_id,
+            })
+        });
+        const result = await resp.json();
+        if (result.success || result.id) {
+            alert(`✓ "${track.title}" added to download queue.`);
+        } else {
+            alert(`Could not queue: ${result.error || 'Unknown error'}`);
+        }
+    } catch (err) {
+        alert(`Error queuing track: ${err.message}`);
+    }
+}
+
+// ── Merge ──────────────────────────────────────────────────────────────────
 function showMergeDialog(mbid, newArtist, totalTracks, affectedTracks, sourceVariations) {
     const oldLabel = (sourceVariations && sourceVariations.length > 0)
         ? sourceVariations.join(', ')
@@ -328,49 +581,29 @@ function showMergeDialog(mbid, newArtist, totalTracks, affectedTracks, sourceVar
     document.getElementById('mergeOldArtist').textContent = oldLabel;
     document.getElementById('mergeNewArtist').textContent = newArtist;
     document.getElementById('mergeTotalTracks').textContent = `${affectedTracks} tracks will be updated`;
-    
-    // Store merge data in button
     document.getElementById('confirmMergeBtn').dataset.mbid = mbid;
     document.getElementById('confirmMergeBtn').dataset.newArtist = newArtist;
     document.getElementById('confirmMergeBtn').dataset.sourceArtists = JSON.stringify(sourceVariations || []);
-    
-    const mergeModal = new bootstrap.Modal(document.getElementById('mergeModal'));
-    mergeModal.show();
+    new bootstrap.Modal(document.getElementById('mergeModal')).show();
 }
 
 document.getElementById('confirmMergeBtn').addEventListener('click', async function() {
     const mbid = this.dataset.mbid;
     const newArtist = this.dataset.newArtist;
     const sourceArtists = JSON.parse(this.dataset.sourceArtists || '[]');
-    
-    // Close merge dialog
     bootstrap.Modal.getInstance(document.getElementById('mergeModal')).hide();
-    
-    // Show progress dialog
     const progressModal = new bootstrap.Modal(document.getElementById('mergeProgressModal'));
     progressModal.show();
-    
     try {
         const response = await fetch('/api/duplicate-artists/merge', {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                new_artist: newArtist,
-                source_artists: sourceArtists,
-                mbid: mbid,
-                dry_run: false
-            })
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ new_artist: newArtist, source_artists: sourceArtists, mbid: mbid, dry_run: false })
         });
-        
         const result = await response.json();
-        
         progressModal.hide();
-        
         if (result.success) {
             alert(`✓ Merge Complete!\n\n${result.message}\n\nDatabase: ${result.updated_db}\nMP3 Tags: ${result.updated_files}\nFiles Moved: ${result.moved_files}`);
-            // Reload the page to refresh data
             location.reload();
         } else {
             alert(`✗ Merge Failed\n\n${result.error}\n\nErrors: ${result.errors.join('\n')}`);
@@ -379,38 +612,28 @@ document.getElementById('confirmMergeBtn').addEventListener('click', async funct
         progressModal.hide();
         alert(`✗ Error: ${error.message}`);
     }
-}
-);
+});
 
 async function deleteDuplicateTrack(trackId, isRecommendedDelete) {
-    const recommendationNote = isRecommendedDelete
-        ? 'This is the recommended duplicate to delete.\n\n'
-        : '';
-
-    if (!confirm(`${recommendationNote}Delete track ${trackId} from database and delete its file from disk if it exists?`)) {
-        return;
-    }
-
+    const recommendationNote = isRecommendedDelete ? 'This is the recommended duplicate to delete.\n\n' : '';
+    if (!confirm(`${recommendationNote}Delete track ${trackId} from database and delete its file from disk if it exists?`)) return;
     try {
         const response = await fetch('/api/artist/corrections/delete-track', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                track_id: String(trackId),
-                delete_file: true
-            })
+            body: JSON.stringify({ track_id: String(trackId), delete_file: true })
         });
-
         const result = await response.json();
-        if (!response.ok || !result.success) {
-            throw new Error(result.error || 'Failed to delete track');
-        }
-
+        if (!response.ok || !result.success) throw new Error(result.error || 'Failed to delete track');
         alert(`Deleted track ${trackId}${result.deleted_file ? ' and file' : ''}.`);
         location.reload();
     } catch (error) {
         alert(`Could not delete track ${trackId}: ${error.message}`);
     }
+}
+
+function escapeHtml(str) {
+    return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 </script>
 {% endblock %}
