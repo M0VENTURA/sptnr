@@ -2545,35 +2545,6 @@ def index():
 def dashboard():
     """Main dashboard with statistics"""
     try:
-        conn = get_db()
-        cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
-
-        cursor.execute("SELECT COUNT(DISTINCT artist) as count FROM tracks")
-        result = cursor.fetchone()
-        artist_count = result['count'] if result else 0
-
-        cursor.execute("SELECT COUNT(DISTINCT album) as count FROM tracks")
-        result = cursor.fetchone()
-        album_count = result['count'] if result else 0
-
-        cursor.execute("SELECT COUNT(*) as count FROM tracks")
-        result = cursor.fetchone()
-        track_count = result['count'] if result else 0
-
-        cursor.execute("SELECT COUNT(*) as count FROM tracks WHERE stars = 5")
-        result = cursor.fetchone()
-        five_star_count = result['count'] if result else 0
-
-        # Handle boolean type in PostgreSQL (is_single is boolean) vs SQLite (is_single is integer)
-        is_pg = _is_postgres_connection(conn)
-        single_query = "SELECT COUNT(*) as count FROM tracks WHERE is_single = TRUE" if is_pg else "SELECT COUNT(*) as count FROM tracks WHERE is_single = 1"
-        cursor.execute(single_query)
-        result = cursor.fetchone()
-        singles_count = result['count'] if result else 0
-
-        conn.close()
-
         # Get recent scans from scan_history table
         from scan_history import get_recent_album_scans
         recent_scans = get_recent_album_scans(limit=10)
@@ -2587,25 +2558,26 @@ def dashboard():
 
         scan_running = web_ui_running or background_running
 
-        # Get Navidrome users from config
+        # Get Navidrome users and feature flags from config
         cfg = get_config()
         nav_users_list = cfg.get("navidrome_users", [])
         if not nav_users_list and cfg.get("navidrome"):
             # Single user mode - convert to list format for consistency
             nav_users_list = [cfg.get("navidrome")]
 
+        features = cfg.get("features", {})
+        perpetual = bool(features.get("perpetual", False))
+        forced = bool(features.get("force", False))
+
         db_path = cfg.get("database", {}).get("path", "/database/sptnr.db")
         dashboard_template = "dashboard_external.html" if db_path != "/database/sptnr.db" else "dashboard.html"
 
         return render_template(dashboard_template,
-                             artist_count=artist_count,
-                             album_count=album_count,
-                             track_count=track_count,
-                             five_star_count=five_star_count,
-                             singles_count=singles_count,
                              recent_scans=recent_scans,
                              scan_running=scan_running,
-                             nav_users=nav_users_list)
+                             nav_users=nav_users_list,
+                             perpetual=perpetual,
+                             forced=forced)
     except Exception as e:
         logging.error(f"Dashboard error: {e}")
         import traceback
@@ -2614,14 +2586,11 @@ def dashboard():
         db_path = cfg.get("database", {}).get("path", "/database/sptnr.db")
         dashboard_template = "dashboard_external.html" if db_path != "/database/sptnr.db" else "dashboard.html"
         return render_template(dashboard_template,
-                             artist_count=0,
-                             album_count=0,
-                             track_count=0,
-                             five_star_count=0,
-                             singles_count=0,
                              recent_scans=[],
                              scan_running=False,
                              nav_users=[],
+                             perpetual=False,
+                             forced=False,
                              error=str(e))
 
 
@@ -10532,6 +10501,46 @@ def config_save_json():
         tb = traceback.format_exc()
         print(f"Config save error: {tb}")  # Log to console for debugging
         return jsonify({"success": False, "error": error_msg}), 400
+
+
+@app.route("/api/features/update", methods=["POST"])
+def api_features_update():
+    """Update individual feature flags (perpetual, force) in config.yaml"""
+    try:
+        data = request.get_json()
+        if data is None:
+            return jsonify({"success": False, "error": "No JSON data provided"}), 400
+
+        config_data, _ = _read_yaml(CONFIG_PATH)
+        if config_data is None:
+            config_data = {}
+
+        features = config_data.get("features", {})
+
+        allowed_keys = {"perpetual", "force"}
+        for key in allowed_keys:
+            if key in data:
+                features[key] = bool(data[key])
+
+        config_data["features"] = features
+
+        yaml_content = yaml.safe_dump(config_data, sort_keys=False, allow_unicode=True, default_flow_style=False)
+        yaml.safe_load(yaml_content)
+
+        cfg_dir = os.path.dirname(CONFIG_PATH)
+        if cfg_dir:
+            os.makedirs(cfg_dir, exist_ok=True)
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            f.write(yaml_content)
+
+        return jsonify({
+            "success": True,
+            "perpetual": features.get("perpetual", False),
+            "force": features.get("force", False),
+        })
+    except Exception as e:
+        logging.error(f"Error updating features: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/config/migrate_postgres", methods=["POST"])
