@@ -909,6 +909,7 @@ def check_track_exists_in_db(queue_item):
                 WHERE LOWER(artist) = LOWER({placeholder})
                   AND LOWER(title) = LOWER({placeholder})
                   AND LOWER(album) = LOWER({placeholder})
+                  AND (file_path IS NULL OR file_path NOT LIKE '__queued_for_download__%')
                 LIMIT 1
                 """,
                 (artist, title, album),
@@ -919,6 +920,7 @@ def check_track_exists_in_db(queue_item):
                 SELECT id, title, artist, album, duration FROM tracks
                 WHERE LOWER(artist) = LOWER({placeholder})
                   AND LOWER(title) = LOWER({placeholder})
+                  AND (file_path IS NULL OR file_path NOT LIKE '__queued_for_download__%')
                 LIMIT 1
                 """,
                 (artist, title),
