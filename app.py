@@ -247,10 +247,11 @@ import sys
 # Diagnostic: Print which start.py is being imported
 import importlib.util
 spec = importlib.util.find_spec("start")
-if spec and spec.origin:
-    print(f"[DIAGNOSTIC] start.py will be imported from: {spec.origin}")
-else:
-    print("[DIAGNOSTIC] start.py module not found in import path!")
+if STARTUP_DIAGNOSTICS:
+    if spec and spec.origin:
+        print(f"[DIAGNOSTIC] start.py will be imported from: {spec.origin}")
+    else:
+        print("[DIAGNOSTIC] start.py module not found in import path!")
 import secrets
 import subprocess
 import threading
@@ -307,6 +308,12 @@ LOG_PATH = os.environ.get("LOG_PATH", "/config/sptnr.log")
 VERBOSE = (
     os.environ.get("SPTNR_VERBOSE_APP") or os.environ.get("SPTNR_VERBOSE") or "0"
 ) == "1"
+STARTUP_DIAGNOSTICS = (
+    os.environ.get("SPTNR_STARTUP_DIAGNOSTICS")
+    or os.environ.get("SPTNR_VERBOSE_APP")
+    or os.environ.get("SPTNR_VERBOSE")
+    or "0"
+) == "1"
 
 def log_basic(msg):
     """Legacy function - logs to info.log"""
@@ -327,18 +334,19 @@ static_folder = os.path.join(app_root, 'static')
 app = Flask(__name__, static_folder=static_folder, static_url_path='/static')
 
 # Debug: Log static folder configuration on startup
-print(f"\n{'='*60}")
-print(f"Flask Static Configuration:")
-print(f"  App Root: {app_root}")
-print(f"  Static Folder: {static_folder}")
-print(f"  Static Folder Exists: {os.path.isdir(static_folder)}")
-if os.path.isdir(static_folder):
-    try:
-        static_files = os.listdir(static_folder)
-        print(f"  Files in static folder: {static_files[:5]}...")  # Show first 5 files
-    except Exception as e:
-        print(f"  Error listing files: {e}")
-print(f"{'='*60}\n")
+if STARTUP_DIAGNOSTICS:
+    print(f"\n{'='*60}")
+    print(f"Flask Static Configuration:")
+    print(f"  App Root: {app_root}")
+    print(f"  Static Folder: {static_folder}")
+    print(f"  Static Folder Exists: {os.path.isdir(static_folder)}")
+    if os.path.isdir(static_folder):
+        try:
+            static_files = os.listdir(static_folder)
+            print(f"  Files in static folder: {static_files[:5]}...")  # Show first 5 files
+        except Exception as e:
+            print(f"  Error listing files: {e}")
+    print(f"{'='*60}\n")
 
 # Add Jinja2 filter to split genres on both backslash and comma
 @app.template_filter('split_genres')
@@ -461,9 +469,10 @@ ensure_queue_mbid_columns()
 
 # Verify the migration worked
 verification = verify_album_artist_column()
-logging.info(f"Album Artist Migration Status: {verification['message']}")
 if not verification["exists"]:
     logging.warning(f"⚠️ Database migration issue: {verification['message']}")
+else:
+    logging.debug(f"Album Artist Migration Status: {verification['message']}")
 
 
 # Initialize complete database schema (all tables now created/verified in update_schema)
@@ -471,7 +480,7 @@ if not verification["exists"]:
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 try:
     update_schema(DB_PATH)
-    logging.info("Database schema initialization complete (all tables created/verified)")
+    logging.debug("Database schema initialization complete (all tables created/verified)")
 except Exception as e:
     logging.error(f"Error initializing database schema: {e}")
 
@@ -1590,7 +1599,7 @@ def _acquire_startup_leader_lock() -> bool:
                 return True
 
             conn.close()
-            logging.info("[BOOT] Startup leader lock already held by another worker")
+            logging.debug("[BOOT] Startup leader lock already held by another worker")
             return False
 
         # Not PostgreSQL; close and continue to file-lock fallback.
@@ -1606,7 +1615,7 @@ def _acquire_startup_leader_lock() -> bool:
         logging.info("[BOOT] Startup lock file acquired in this worker")
         return True
     except FileExistsError:
-        logging.info("[BOOT] Startup lock file already exists; skipping background schedulers")
+        logging.debug("[BOOT] Startup lock file already exists; skipping background schedulers")
         return False
     except Exception as lock_file_err:
         # Fail-open for environments where lock file cannot be created.
@@ -2136,7 +2145,7 @@ if _is_startup_leader_worker:
     except Exception as e:
         logging.error(f"Failed to start daily scheduler: {e}")
 else:
-    logging.info("[BOOT] Non-leader worker: startup background schedulers not started in this process")
+    logging.debug("[BOOT] Non-leader worker: startup background schedulers not started in this process")
 
 def _needs_setup(cfg=None):
     cfg = cfg if cfg is not None else _read_yaml(CONFIG_PATH)[0]
@@ -2336,38 +2345,39 @@ def get_placeholder(conn):
 
 
 # Debug: Log database configuration on startup
-print(f"{'='*60}")
-print(f"Database Configuration:")
 pg_configured = bool(PG_HOST and PG_USER and PG_DATABASE)
-if pg_configured:
-    print(f"  Backend: PostgreSQL (configured)")
-    print(f"  Host: {PG_HOST}")
-    print(f"  Database: {PG_DATABASE}")
-    print(f"  User: {PG_USER}")
-    print(f"  Port: {PG_PORT}")
-    # Try to verify connection
-    try:
-        test_conn = get_db()
-        is_pg = _is_postgres_connection(test_conn)
-        test_conn.close()
-        status = "✓ Connected" if is_pg else "✓ Using SQLite fallback"
-        print(f"  Connection Status: {status}")
-    except Exception as e:
-        print(f"  Connection Status: ✗ Error - {str(e)[:60]}")
-else:
-    print(f"  Backend: SQLite (no PostgreSQL configured)")
-    print(f"  Database Path: {DB_PATH}")
-    print(f"  ⚠️  WARNING: SQLite backend is NOT recommended for production.")
-    print(f"     SQLite has database locking issues with concurrent access.")
-    print(f"     Please configure PostgreSQL for reliable concurrent operations.")
-    # Try to verify connection
-    try:
-        test_conn = get_db()
-        test_conn.close()
-        print(f"  Connection Status: ✓ Connected")
-    except Exception as e:
-        print(f"  Connection Status: ✗ Error - {str(e)[:60]}")
-print(f"{'='*60}\n")
+if STARTUP_DIAGNOSTICS:
+    print(f"{'='*60}")
+    print(f"Database Configuration:")
+    if pg_configured:
+        print(f"  Backend: PostgreSQL (configured)")
+        print(f"  Host: {PG_HOST}")
+        print(f"  Database: {PG_DATABASE}")
+        print(f"  User: {PG_USER}")
+        print(f"  Port: {PG_PORT}")
+        # Try to verify connection
+        try:
+            test_conn = get_db()
+            is_pg = _is_postgres_connection(test_conn)
+            test_conn.close()
+            status = "✓ Connected" if is_pg else "✓ Using SQLite fallback"
+            print(f"  Connection Status: {status}")
+        except Exception as e:
+            print(f"  Connection Status: ✗ Error - {str(e)[:60]}")
+    else:
+        print(f"  Backend: SQLite (no PostgreSQL configured)")
+        print(f"  Database Path: {DB_PATH}")
+        print(f"  ⚠️  WARNING: SQLite backend is NOT recommended for production.")
+        print(f"     SQLite has database locking issues with concurrent access.")
+        print(f"     Please configure PostgreSQL for reliable concurrent operations.")
+        # Try to verify connection
+        try:
+            test_conn = get_db()
+            test_conn.close()
+            print(f"  Connection Status: ✓ Connected")
+        except Exception as e:
+            print(f"  Connection Status: ✗ Error - {str(e)[:60]}")
+    print(f"{'='*60}\n")
 
 
 def _table_exists(cursor, table_name, is_postgres=False):

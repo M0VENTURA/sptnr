@@ -143,7 +143,7 @@ def ensure_album_artist_column():
     
     try:
         db_path = os.environ.get("DB_PATH", "/database/sptnr.db")
-        logging.info(f"Checking album_artist migration for database: {db_path}")
+        logging.debug(f"Checking album_artist migration for database: {db_path}")
         
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -176,7 +176,7 @@ def ensure_album_artist_column():
         # For PostgreSQL, guard with an advisory lock so only one worker
         # performs the migration at a time and use small SKIP LOCKED batches
         # to avoid long-running row lock chains.
-        logging.info("Populating album_artist column from artist data...")
+        logging.debug("Populating album_artist column from artist data...")
         try:
             if is_pg:
                 lock_key = 915317411  # Stable app-specific advisory lock key
@@ -185,7 +185,7 @@ def ensure_album_artist_column():
                 lock_acquired = bool(lock_row.get("acquired")) if isinstance(lock_row, dict) else bool(lock_row[0])
 
                 if not lock_acquired:
-                    logging.info("Another worker is already running album_artist migration; skipping this run")
+                    logging.debug("Another worker is already running album_artist migration; skipping this run")
                     conn.close()
                     return True
 
@@ -217,7 +217,10 @@ def ensure_album_artist_column():
                         if batch_updated == 0:
                             break
 
-                    logging.info(f"✓ Populated album_artist for {total_rows_updated} rows")
+                    if total_rows_updated > 0:
+                        logging.info(f"✓ Populated album_artist for {total_rows_updated} rows")
+                    else:
+                        logging.debug("✓ Populated album_artist for 0 rows")
                 finally:
                     try:
                         cursor.execute("SELECT pg_advisory_unlock(%s)", (lock_key,))
@@ -228,13 +231,16 @@ def ensure_album_artist_column():
                 cursor.execute("UPDATE tracks SET album_artist = artist WHERE album_artist IS NULL")
                 rows_updated = cursor.rowcount
                 conn.commit()
-                logging.info(f"✓ Populated album_artist for {rows_updated} rows")
+                if rows_updated > 0:
+                    logging.info(f"✓ Populated album_artist for {rows_updated} rows")
+                else:
+                    logging.debug("✓ Populated album_artist for 0 rows")
         except Exception as e:
             logging.error(f"✗ Failed to populate album_artist column: {e}")
             conn.close()
             raise
         
-        logging.info("✓ album_artist migration complete")
+        logging.debug("✓ album_artist migration complete")
         conn.close()
         return True
         
