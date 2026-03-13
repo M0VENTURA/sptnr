@@ -107,6 +107,7 @@ def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: in
             conn = get_db_connection()
             is_pg = _is_postgres_connection(conn)
             placeholder = _placeholder(is_pg)
+            cursor = conn.cursor()
 
             if not is_pg:
                 conn.execute("PRAGMA journal_mode=WAL")
@@ -114,7 +115,7 @@ def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: in
             
             # Create table if it doesn't exist
             if is_pg:
-                conn.execute(
+                cursor.execute(
                     """
                     CREATE TABLE IF NOT EXISTS scan_history (
                         id BIGSERIAL PRIMARY KEY,
@@ -129,7 +130,7 @@ def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: in
                     """
                 )
             else:
-                conn.execute(
+                cursor.execute(
                     """
                     CREATE TABLE IF NOT EXISTS scan_history (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -144,18 +145,18 @@ def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: in
                     """
                 )
             
-            conn.execute("""
+            cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_scan_history_timestamp 
                 ON scan_history(scan_timestamp DESC)
             """)
             
-            conn.execute("""
+            cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_scan_history_artist_album 
                 ON scan_history(artist, album)
             """)
             
             # Insert scan record
-            conn.execute("""
+            cursor.execute("""
                 INSERT INTO scan_history (artist, album, scan_type, tracks_processed, status, source)
                 VALUES ({}, {}, {}, {}, {}, {})
             """.format(placeholder, placeholder, placeholder, placeholder, placeholder, placeholder),
