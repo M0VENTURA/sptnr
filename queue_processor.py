@@ -47,6 +47,9 @@ DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 # Similarity thresholds for Navidrome existence checks
 _NAV_TITLE_SIMILARITY_THRESHOLD = 0.85
 _NAV_ARTIST_SIMILARITY_THRESHOLD = 0.75
+# Similarity / tolerance thresholds for confirmed in-collection matching
+_ALBUM_SIMILARITY_THRESHOLD = 0.85
+_CONFIRMED_MATCH_DURATION_TOLERANCE_SECONDS = 10
 
 
 def _is_postgres_connection(conn):
@@ -851,14 +854,14 @@ def check_track_exists_in_db(queue_item):
     Check if a track matching the queue item already exists in the local tracks database.
 
     Returns:
-        tuple: (exists: bool, reason: str)
+        tuple: (exists: bool, reason: str, matched_track: dict|None)
     """
     artist = queue_item.get("artist", "")
     title = queue_item.get("title", "")
     album = queue_item.get("album")
 
     if not artist or not title:
-        return False, ""
+        return False, "", None
 
     try:
         conn = get_db()
@@ -868,7 +871,7 @@ def check_track_exists_in_db(queue_item):
         if album:
             cursor.execute(
                 f"""
-                SELECT id FROM tracks
+                SELECT id, title, artist, album, duration FROM tracks
                 WHERE LOWER(artist) = LOWER({placeholder})
                   AND LOWER(title) = LOWER({placeholder})
                   AND LOWER(album) = LOWER({placeholder})
@@ -879,7 +882,7 @@ def check_track_exists_in_db(queue_item):
         else:
             cursor.execute(
                 f"""
-                SELECT id FROM tracks
+                SELECT id, title, artist, album, duration FROM tracks
                 WHERE LOWER(artist) = LOWER({placeholder})
                   AND LOWER(title) = LOWER({placeholder})
                 LIMIT 1
@@ -891,14 +894,17 @@ def check_track_exists_in_db(queue_item):
         conn.close()
 
         if row:
-            track_id = row["id"] if hasattr(row, "keys") else (row[0] if row else None)
+            matched = dict(row) if hasattr(row, "keys") else {
+                "id": row[0], "title": row[1], "artist": row[2], "album": row[3], "duration": row[4]
+            }
+            track_id = matched.get("id")
             reason = f"Track '{artist} - {title}' already exists in local database (track ID {track_id})"
-            return True, reason
+            return True, reason, matched
 
     except Exception as e:
         logger.debug(f"DB existence check error for '{artist} - {title}': {e}")
 
-    return False, ""
+    return False, "", None
 
 
 def check_track_exists_in_navidrome(queue_item):
@@ -906,18 +912,18 @@ def check_track_exists_in_navidrome(queue_item):
     Check if a track matching the queue item already exists in Navidrome via Subsonic search3 API.
 
     Returns:
-        tuple: (exists: bool, reason: str)
+        tuple: (exists: bool, reason: str, matched_song: dict|None)
     """
     artist = queue_item.get("artist", "")
     title = queue_item.get("title", "")
 
     if not artist or not title:
-        return False, ""
+        return False, "", None
 
     base_url, username, password = _get_navidrome_config()
     if not base_url:
         logger.debug("Navidrome not configured — skipping Navidrome existence check")
-        return False, ""
+        return False, "", None
 
     try:
         auth_params = _build_subsonic_auth_params(username, password)
@@ -937,7 +943,7 @@ def check_track_exists_in_navidrome(queue_item):
         data = response.json()
         if data.get("subsonic-response", {}).get("status") != "ok":
             logger.debug(f"Navidrome search3 returned non-ok status for '{artist} - {title}'")
-            return False, ""
+            return False, "", None
 
         songs = data.get("subsonic-response", {}).get("searchResult3", {}).get("song", [])
         if not isinstance(songs, list):
@@ -957,12 +963,130 @@ def check_track_exists_in_navidrome(queue_item):
                     f"(matched: '{song.get('artist')} - {song.get('title')}', "
                     f"id={song.get('id')})"
                 )
-                return True, reason
+                return True, reason, dict(song)
 
     except Exception as e:
         logger.debug(f"Navidrome existence check error for '{artist} - {title}': {e}")
 
-    return False, ""
+    return False, "", None
+
+
+def _is_confirmed_collection_match(queue_item, matched_data):
+    """
+    Returns True when the matched song/track data is a confirmed full match for the queue
+    item based on all available criteria: title, artist, album name, and song duration.
+
+    A confirmed match means the track in /music is definitively the same as the queued
+    item, allowing safe auto-cleanup of the queue entry and any /downloads file.
+    """
+    if not matched_data:
+        return False
+
+    def _sim(a, b):
+        if not a or not b:
+            return 0.0
+        return SequenceMatcher(None, str(a).lower().strip(), str(b).lower().strip()).ratio()
+
+    # Title must match strongly
+    if _sim(queue_item.get("title", ""), matched_data.get("title", "")) < _NAV_TITLE_SIMILARITY_THRESHOLD:
+        return False
+
+    # Artist must match strongly
+    if _sim(queue_item.get("artist", ""), matched_data.get("artist", "")) < _NAV_ARTIST_SIMILARITY_THRESHOLD:
+        return False
+
+    # Album name must match when both sides have it
+    q_album = (queue_item.get("album") or "").strip()
+    m_album = (matched_data.get("album") or "").strip()
+    if q_album and m_album:
+        if _sim(q_album, m_album) < _ALBUM_SIMILARITY_THRESHOLD:
+            return False
+    elif q_album or m_album:
+        # One side has album info and the other doesn't — cannot confirm
+        return False
+
+    # Duration must match within tolerance when both sides have it
+    q_dur = _normalize_duration_seconds(queue_item.get("duration"))
+    m_dur = _normalize_duration_seconds(matched_data.get("duration"))
+    if q_dur and m_dur:
+        if abs(q_dur - m_dur) > _CONFIRMED_MATCH_DURATION_TOLERANCE_SECONDS:
+            return False
+    elif q_dur or m_dur:
+        # One side has duration and the other doesn't — cannot confirm
+        return False
+
+    return True
+
+
+def _delete_confirmed_collection_item(queue_id, queue_item):
+    """
+    Auto-clean a confirmed in-collection queue item:
+      1. Mark the queue row as 'deleted' in the database.
+      2. Delete any associated file from /downloads.
+
+    This is called when a track in /music fully matches the queue item on all
+    four criteria (title, artist, album, duration), so keeping the entry would
+    only produce spurious 'already in queue' messages.
+    """
+    artist = queue_item.get("artist", "")
+    title = queue_item.get("title", "")
+
+    # 1. Mark as deleted in the database
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = _get_placeholder(conn)
+        cursor.execute(
+            f"UPDATE download_queue SET status = 'deleted', updated_at = CURRENT_TIMESTAMP WHERE id = {placeholder}",
+            (queue_id,),
+        )
+        conn.commit()
+        conn.close()
+        logger.info(
+            f"Queue {queue_id}: ✅ Auto-deleted confirmed in-collection entry for '{artist} - {title}'"
+        )
+    except Exception as e:
+        logger.error(f"Queue {queue_id}: Failed to mark as deleted: {e}")
+
+    # 2. Delete any associated file from /downloads
+    file_path = queue_item.get("file_path") or ""
+    if file_path:
+        abs_file = os.path.abspath(file_path)
+        abs_downloads = os.path.abspath(DOWNLOADS_DIR)
+        try:
+            within_downloads = Path(abs_file).resolve().is_relative_to(Path(abs_downloads))
+        except (AttributeError, ValueError):
+            # Fallback for Python < 3.9 where is_relative_to is unavailable
+            within_downloads = os.path.commonpath([abs_downloads, abs_file]) == abs_downloads
+        if within_downloads and os.path.isfile(abs_file):
+            try:
+                os.remove(abs_file)
+                logger.info(
+                    f"Queue {queue_id}: 🗑️  Deleted /downloads file for confirmed in-collection track: {abs_file}"
+                )
+            except Exception as e:
+                logger.warning(f"Queue {queue_id}: Could not delete /downloads file '{abs_file}': {e}")
+    else:
+        # Also try to find the file by found_filename in /downloads
+        found_fn = queue_item.get("found_filename") or ""
+        if found_fn:
+            candidate_path = os.path.join(DOWNLOADS_DIR, os.path.basename(found_fn))
+            abs_candidate = os.path.abspath(candidate_path)
+            abs_downloads = os.path.abspath(DOWNLOADS_DIR)
+            try:
+                within_downloads = Path(abs_candidate).resolve().is_relative_to(Path(abs_downloads))
+            except (AttributeError, ValueError):
+                within_downloads = os.path.commonpath([abs_downloads, abs_candidate]) == abs_downloads
+            if within_downloads and os.path.isfile(abs_candidate):
+                try:
+                    os.remove(abs_candidate)
+                    logger.info(
+                        f"Queue {queue_id}: 🗑️  Deleted /downloads file for confirmed in-collection track: {abs_candidate}"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Queue {queue_id}: Could not delete /downloads file '{abs_candidate}': {e}"
+                    )
 
 
 def search_and_download(queue_id, queue_item, client):
@@ -973,16 +1097,30 @@ def search_and_download(queue_id, queue_item, client):
         # Pre-download existence checks: skip download if the track already exists
         # in the local database or in Navidrome (catches items indexed there but not
         # yet scanned into the local DB).
-        db_exists, db_reason = check_track_exists_in_db(queue_item)
+        db_exists, db_reason, db_matched = check_track_exists_in_db(queue_item)
         if db_exists:
             logger.info(f"Queue {queue_id}: ⏭️  Skipping download — {db_reason}")
-            update_queue_status(queue_id, 'in_collection', failure_reason=db_reason)
+            if _is_confirmed_collection_match(queue_item, db_matched):
+                logger.info(
+                    f"Queue {queue_id}: 🎯 Confirmed full match in local DB "
+                    f"(title+artist+album+duration) — auto-cleaning queue and /downloads"
+                )
+                _delete_confirmed_collection_item(queue_id, queue_item)
+            else:
+                update_queue_status(queue_id, 'in_collection', failure_reason=db_reason)
             return False
 
-        nav_exists, nav_reason = check_track_exists_in_navidrome(queue_item)
+        nav_exists, nav_reason, nav_matched = check_track_exists_in_navidrome(queue_item)
         if nav_exists:
             logger.info(f"Queue {queue_id}: ⏭️  Skipping download — {nav_reason}")
-            update_queue_status(queue_id, 'in_collection', failure_reason=nav_reason)
+            if _is_confirmed_collection_match(queue_item, nav_matched):
+                logger.info(
+                    f"Queue {queue_id}: 🎯 Confirmed full match in Navidrome "
+                    f"(title+artist+album+duration) — auto-cleaning queue and /downloads"
+                )
+                _delete_confirmed_collection_item(queue_id, queue_item)
+            else:
+                update_queue_status(queue_id, 'in_collection', failure_reason=nav_reason)
             return False
 
         logger.info(f"Queue {queue_id}: Searching for '{search_query}'...")
