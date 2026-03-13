@@ -330,11 +330,18 @@ def get_recent_album_scans(limit: int = 10):
         
         scans = []
         for row in cursor.fetchall():
+            raw_ts = row['scan_timestamp'] if hasattr(row, 'keys') else row[3]
+            # Ensure scan_timestamp is a plain string so it survives JSON serialisation
+            # when PostgreSQL returns a datetime object (Flask 3.0 removed the datetime encoder).
+            if hasattr(raw_ts, 'isoformat'):
+                scan_ts = raw_ts.isoformat()
+            else:
+                scan_ts = str(raw_ts) if raw_ts is not None else ''
             scans.append({
                 'artist': row['artist'] if hasattr(row, 'keys') else row[0],
                 'album': row['album'] if hasattr(row, 'keys') else row[1],
                 'scan_type': row['scan_type'] if hasattr(row, 'keys') else row[2],
-                'scan_timestamp': row['scan_timestamp'] if hasattr(row, 'keys') else row[3],
+                'scan_timestamp': scan_ts,
                 'tracks_processed': row['tracks_processed'] if hasattr(row, 'keys') else row[4],
                 'status': row['status'] if hasattr(row, 'keys') else row[5],
                 'source': (row['source'] if hasattr(row, 'keys') and 'source' in row.keys() else (row[6] if len(row) > 6 else ''))

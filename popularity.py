@@ -6648,6 +6648,7 @@ def popularity_scan(
                                         f"Evidence gate failed (z>1, only {medium_conf_count} medium source) - track_id: {track_id}, "
                                         f"sources: {medium_conf_count}, high_sources: {high_conf_source_count}, zscore: {track_zscore:.2f}"
                                     )
+                                    single_downgrades.append(track_id)
                             elif track_zscore >= 0.0:
                                 # z-score 0-1: requires 2 medium sources OR 1 true high-confidence metadata source.
                                 if medium_conf_count >= 2 or high_conf_source_count >= 1:
@@ -6805,7 +6806,7 @@ def popularity_scan(
                             WHERE id = {placeholder}""",
                             ((single_false_value, "low", track_id) for track_id in set(single_downgrades))
                         )
-                        log_info(f"Downgraded {len(set(single_downgrades))} track(s) to low confidence (medium source gate failed for 0<=z<1)")
+                        log_info(f"Downgraded {len(set(single_downgrades))} track(s) to low confidence (medium source gate failed)")
                         log_debug(f"Downgraded tracks: {list(set(single_downgrades))}")
                     
                     conn.commit()

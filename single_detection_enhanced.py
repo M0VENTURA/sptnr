@@ -1202,10 +1202,13 @@ def determine_final_status(
     """
     Final single status based on source detection and z-score analysis.
     
-    NEW Z-SCORE BASED LOGIC:
-    - Z-score >= 1: Requires only 1 MEDIUM confidence OR 1 HIGH confidence source
-    - Z-score 0-1: Requires 2 MEDIUM confidence sources OR 1 HIGH confidence source  
+    UNIFIED Z-SCORE LOGIC (same evidence required for all z > 0 ranges):
+    - Z-score >= 1: Requires 2 MEDIUM confidence sources OR 1 HIGH confidence source
+    - Z-score 0-1: Requires 2 MEDIUM confidence sources OR 1 HIGH confidence source
     - Z-score < 0: Single detection skipped (handled earlier in pipeline)
+    
+    Z-score is a gate only — it does NOT lower the metadata evidence bar.
+    A high z-score with only 1 medium source (e.g. just MusicBrainz) is NOT enough.
     
     REMASTER EXCEPTION:
     - Remastered-only variants bypass the z<=0 gate and are evaluated as if z is in the
@@ -1295,18 +1298,18 @@ def determine_final_status(
     
     # DETERMINE FINAL STATUS BASED ON Z-SCORE:
     
-    # Z-score >= 1: Still requires 2 medium sources OR 1 high source.
+    # Z-score >= 1: Requires 2 medium sources OR 1 high source — SAME rule as z 0-1.
     # Z-score is a popularity metric, NOT a confidence indicator — it must not
     # substitute for metadata evidence.  A high z-score with only 1 medium source
-    # (e.g. just MusicBrainz or just Last.fm) is 'medium' at best, not 'high'.
+    # (e.g. just MusicBrainz or just Last.fm) is insufficient — 2 sources required.
     if max_z >= 1.0:
         if high_confidence_count >= 1 or medium_confidence_count >= 2:
             log_debug(f"[CONFIDENCE] → RETURNING 'high' (z>=1.0: has high={high_confidence_count}, medium={medium_confidence_count})")
             return 'high'
-        elif medium_confidence_count >= 1:
-            log_debug(f"[CONFIDENCE] → RETURNING 'medium' (z>=1.0: only {medium_confidence_count} medium source, 2 required for high)")
-            return 'medium'
-    
+        # 1 medium source with z >= 1 is NOT enough — fall through to 'none'
+        log_debug(f"[CONFIDENCE] → RETURNING 'none' (z>=1.0: only {medium_confidence_count} medium sources, 2 required)")
+        return 'none'
+
     # Z-score 0-1 (strictly greater than 0): Need 1 high OR 2 medium sources
     elif 0.0 < max_z < 1.0:
         if high_confidence_count >= 1:
@@ -1668,7 +1671,8 @@ def detect_single_enhanced(
     # - z < 0: Skip detection (always), EXCEPT for compilations (every track must be checked)
     #          ALSO EXCEPT for remastered-only variants (see note below)
     # - z 0-1: Require 2 medium OR 1 high confidence sources
-    # - z >= 1: Require 1 medium OR 1 high confidence source
+    # - z >= 1: Same requirement as z 0-1 — 2 medium OR 1 high confidence sources
+    #           (z-score does NOT lower the evidence bar)
     # - z > 2 with NO sources: Mark as "Popular" with 5★ rating (not as single)
     #
     # REMASTER BYPASS: Remastered tracks inherently have lower popularity than the original
