@@ -681,7 +681,7 @@ def detect_greatest_hits_album(album: str, artist: str, conn: sqlite3.Connection
 def detect_and_queue_missing_tracks(artist: str, album: str, album_tracks: list, release_group_mbid: str = None, conn: sqlite3.Connection = None):
     """
     Detect missing tracks from an album by comparing local tracks with MusicBrainz tracklist.
-    Automatically queue any missing tracks for download.
+    Returns a count of missing tracks so UI/workflows can present them for manual action.
     
     Args:
         artist: Artist name
@@ -691,11 +691,10 @@ def detect_and_queue_missing_tracks(artist: str, album: str, album_tracks: list,
         conn: Database connection (optional, will create new connection if not provided)
     
     Returns:
-        Number of missing tracks queued (0 if none or error)
+        Number of missing tracks detected (0 if none or error)
     """
     try:
         from folder_matching_enhancements import get_musicbrainz_release_tracks
-        from download_queue_manager import add_to_queue
         
         # Get release ID if not provided
         if not release_group_mbid:
@@ -784,41 +783,17 @@ def detect_and_queue_missing_tracks(artist: str, album: str, album_tracks: list,
             log_debug(f"All tracks present for '{artist} - {album}'")
             return 0
         
-        # Queue missing tracks
+        # Report missing tracks for manual download workflows
         log_info(f"🔍 Found {len(missing_tracks)} missing track(s) for '{artist} - {album}'")
-        
-        queued_count = 0
-        import_group = f"missing_{artist.replace(' ', '_')}_{album.replace(' ', '_')}"[:100]
-        
+
         for mb_track in missing_tracks:
             track_title = mb_track.get('title', '')
             track_number = mb_track.get('number', '')
-            track_artist = mb_track.get('artist', '') or artist
-            
-            try:
-                log_info(f"  ➕ Queuing missing track: {track_artist} - {track_title}")
-                
-                add_to_queue(
-                    artist=track_artist,
-                    title=track_title,
-                    album=album,
-                    source='soulseek',
-                    priority=7,  # Medium-low priority
-                    import_group=import_group,
-                    import_type='album',
-                    track_number=track_number,
-                    album_artist=artist,
-                    release_id=release_group_mbid,
-                    release_source='musicbrainz'
-                )
-                queued_count += 1
-            except Exception as e:
-                log_debug(f"Failed to queue missing track '{track_title}': {e}")
-        
-        if queued_count > 0:
-            log_info(f"✅ Queued {queued_count} missing track(s) for download: '{artist} - {album}'")
-        
-        return queued_count
+            log_info(f"  • Missing track detected: {artist} - {track_title} (track {track_number})")
+
+        log_info(f"ℹ️ Missing tracks were detected but not auto-queued for '{artist} - {album}'")
+
+        return len(missing_tracks)
         
     except Exception as e:
         log_debug(f"Error detecting missing tracks for '{artist} - {album}': {e}")
@@ -4291,9 +4266,9 @@ def popularity_scan(
                             album_type_from_field = "album"
                         log_info(f'EP override: "{artist} - {album}" has {track_count} tracks (>6), reclassified from "{old_type}" to "{album_type_from_field}"')
 
-                # MISSING TRACK DETECTION AND QUEUEING
+                # MISSING TRACK DETECTION (NO AUTO-QUEUE)
                 # After album type detection, check if any tracks are missing from MusicBrainz release
-                # and automatically queue them for download
+                # and surface them for manual download workflow
                 try:
                     if release_group_mbid:
                         missing_count = detect_and_queue_missing_tracks(
@@ -4304,7 +4279,7 @@ def popularity_scan(
                             conn=conn
                         )
                         if missing_count > 0:
-                            log_info(f'📥 Queued {missing_count} missing track(s) for download')
+                            log_info(f'📋 Detected {missing_count} missing track(s) (manual queue only)')
                     else:
                         log_debug(f'No MusicBrainz release ID available for missing track detection: "{artist} - {album}"')
                 except Exception as e:
