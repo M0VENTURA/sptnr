@@ -605,6 +605,87 @@ def get_queued_items(limit=10):
         logger.error(f"Error getting queued items: {e}")
         return []
 
+
+def promote_stale_queried_items(min_age_seconds=120, limit=200):
+    """
+    Promote stale 'queried' items to 'queued' so they are processed automatically.
+
+    Historically queried items required manual approval via UI. In practice this
+    can leave tracks stuck indefinitely. We auto-promote only after a short age
+    threshold so freshly inserted rows are not immediately flipped in the same
+    write burst.
+
+    Returns:
+        int: number of rows promoted
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = _get_placeholder(conn)
+
+        stale_before = (datetime.now() - timedelta(seconds=max(0, int(min_age_seconds)))).isoformat()
+
+        cursor.execute(
+            """
+            SELECT id
+            FROM download_queue
+            WHERE status = 'queried'
+              AND updated_at < {placeholder}
+            ORDER BY updated_at ASC
+            LIMIT {placeholder}
+            """.format(placeholder=placeholder),
+            (stale_before, int(limit)),
+        )
+        rows = cursor.fetchall() or []
+        if not rows:
+            conn.close()
+            return 0
+
+        row_ids = [r['id'] if hasattr(r, 'keys') else r[0] for r in rows]
+        if not row_ids:
+            conn.close()
+            return 0
+
+        # Update in a single statement to keep churn low.
+        if _is_postgres_connection(conn):
+            cursor.execute(
+                """
+                UPDATE download_queue
+                SET status = 'queued',
+                    updated_at = CURRENT_TIMESTAMP,
+                    failure_reason = COALESCE(failure_reason, 'Auto-promoted from queried by queue processor')
+                WHERE id = ANY(%s)
+                """,
+                (row_ids,),
+            )
+            promoted = cursor.rowcount or 0
+        else:
+            # SQLite fallback path
+            in_params = ",".join([placeholder] * len(row_ids))
+            cursor.execute(
+                f"""
+                UPDATE download_queue
+                SET status = 'queued',
+                    updated_at = CURRENT_TIMESTAMP,
+                    failure_reason = COALESCE(failure_reason, 'Auto-promoted from queried by queue processor')
+                WHERE id IN ({in_params})
+                """,
+                tuple(row_ids),
+            )
+            promoted = cursor.rowcount or 0
+
+        conn.commit()
+        conn.close()
+
+        if promoted > 0:
+            logger.info(f"Auto-promoted {promoted} stale queried item(s) to queued")
+
+        return int(promoted)
+
+    except Exception as e:
+        logger.error(f"Error promoting queried items: {e}")
+        return 0
+
 def update_queue_status(queue_id, status, **kwargs):
     """Update queue item status"""
     try:
@@ -1332,6 +1413,8 @@ def check_completed_downloads():
 def process_queue(client):
     """Process queued download items"""
     try:
+        promote_stale_queried_items(min_age_seconds=120, limit=200)
+
         items = get_queued_items(limit=10)
         processed = 0
         for item in items:
