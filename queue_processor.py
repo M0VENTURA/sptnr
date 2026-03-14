@@ -107,11 +107,39 @@ def resolve_downloads_dir():
 DOWNLOADS_DIR = resolve_downloads_dir()
 
 
+def _strip_track_number_prefix(title):
+    """
+    Remove a leading track-number prefix and/or a trailing Soulseek unique-ID
+    suffix from a title string.  Mirrors the helper in download_queue_manager so
+    that Soulseek candidate filenames are normalised consistently before scoring.
+
+    Leading prefix examples:
+        "05 - CINEMA"          →  "CINEMA"
+        "1-15 - Worms ..."     →  "Worms ..."  (disc-track prefix)
+        "16. Artist - Title"   →  "Artist - Title"
+
+    Trailing Soulseek UID suffix examples:
+        "Song_639091010921933965"  →  "Song"   (12+ digit UID stripped)
+        "Song_123"                 →  unchanged (≤ 11 digits kept)
+    """
+    cleaned = re.sub(r'^\d+(?:\s*-\s*\d+)?\s*[-\.]\s*', '', title).strip()
+    cleaned = re.sub(r'_\d{12,}$', '', cleaned).strip()
+    return cleaned if cleaned else title
+
+
 def _normalize_match_text(value):
-    """Normalize text for conservative filename/metadata matching."""
+    """Normalize text for conservative filename/metadata matching.
+
+    Leading track-number prefixes (e.g. ``07 ``, ``1-15 - ``) and trailing
+    Soulseek unique-ID suffixes (e.g. ``_639091010921933965``) are stripped
+    before the remaining non-alphanumeric characters are replaced with spaces.
+    This improves candidate scoring for Soulseek filenames that embed a track
+    number or a collision-avoidance suffix.
+    """
     if not value:
         return ""
     value = str(value).lower()
+    value = _strip_track_number_prefix(value)
     value = re.sub(r"[^a-z0-9]+", " ", value)
     return " ".join(value.split())
 
@@ -263,9 +291,14 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
             shared_album_tokens = sum(1 for tok in album_tokens if tok in filename_norm)
             token_ratio = shared_album_tokens / len(album_tokens)
 
-            # When we have >=2 meaningful album tokens, require at least 2 matches.
-            # This rejects near misses like "Sword of Power" for "Power of Metal".
-            if len(album_tokens) >= 2 and shared_album_tokens < 2:
+            # When >=2 album tokens appear in the filename but fewer than 2
+            # match, reject the candidate — this blocks near-misses like
+            # "Sword of Power" matching a file tagged "Power of Metal".
+            # When *no* album tokens appear in the filename at all, the album
+            # information is simply absent (common for Soulseek filenames that
+            # only contain the track number and title), so we skip the
+            # disambiguation rather than returning 0.0.
+            if len(album_tokens) >= 2 and 0 < shared_album_tokens < 2:
                 return 0.0
 
             # Reward strong album evidence and penalize weak/partial album alignment.

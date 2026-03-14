@@ -951,5 +951,142 @@ class PrefixTitleFilenameMatchTests(unittest.TestCase):
                       "queue_processor.py should contain the look-ahead regex for prefix-title guard")
 
 
+class DiscTrackFilenameMatchTests(unittest.TestCase):
+    """Tests that filename matching and Soulseek scoring handle common Soulseek
+    filename patterns correctly.
+
+    Soulseek peers frequently name files with:
+      * Disc-track prefixes: "1-15 - Title.mp3"
+      * Simple track prefixes: "07 Title.mp3" (no separator — title is kept intact)
+      * Trailing collision-avoidance UIDs: "16. Artist - Title_639091010921933965.flac"
+    These patterns must not prevent a file from being matched to the correct queue
+    item, and the Soulseek score must remain above the minimum download threshold.
+    """
+
+    def setUp(self):
+        import importlib, sys
+        sys.path.insert(0, ".")
+        try:
+            self._qp = importlib.import_module("queue_processor")
+        except Exception as exc:
+            self.skipTest("queue_processor could not be imported: %s" % exc)
+
+    def _run_filename_match(self, filename, artist, title, album=""):
+        item = {"artist": artist, "title": title, "album": album}
+        return self._qp._filename_matches_queue_item(filename, item)
+
+    def _score(self, filename, artist, title, album="", duration=None):
+        item = {"artist": artist, "title": title, "album": album, "duration": duration}
+        return self._qp._score_soulseek_candidate(filename, item, duration)
+
+    # ------------------------------------------------------------------ #
+    # _filename_matches_queue_item — disc-track prefix                    #
+    # ------------------------------------------------------------------ #
+
+    def test_disc_track_prefix_matches_queue_item(self):
+        """'1-15 - Worms of the Earth.mp3' must match queue item 'Worms of the Earth'."""
+        result = self._run_filename_match(
+            "album/1-15 - Worms of the Earth.mp3",
+            artist="Primordial",
+            title="Worms of the Earth",
+        )
+        self.assertTrue(
+            result,
+            "A disc-track prefixed file must match the bare title queue item",
+        )
+
+    def test_standard_numbered_prefix_matches_queue_item(self):
+        """'16. Cradle Of Filth - Halloween 2.flac' must match the correct queue item."""
+        result = self._run_filename_match(
+            "album/16. Cradle Of Filth - Halloween 2.flac",
+            artist="Cradle Of Filth",
+            title="Halloween 2",
+        )
+        self.assertTrue(result, "Numbered prefix with artist–title stem must match")
+
+    def test_soulseek_uid_suffix_filename_matches_queue_item(self):
+        """File with a long Soulseek UID suffix must still match the queue item."""
+        result = self._run_filename_match(
+            "16. Cradle Of Filth - Halloween 2_639091010921933965.flac",
+            artist="Cradle Of Filth",
+            title="Halloween 2",
+        )
+        self.assertTrue(
+            result,
+            "A file whose stem ends with a Soulseek UID must still match the queue item",
+        )
+
+    # ------------------------------------------------------------------ #
+    # _score_soulseek_candidate — disc-track and UID suffix filenames     #
+    # ------------------------------------------------------------------ #
+
+    def test_disc_track_prefix_score_above_threshold(self):
+        """_score_soulseek_candidate must return > 0.45 for a disc-track filename
+        so that the file is considered for download."""
+        score = self._score(
+            "albumdir/1-15 - Worms of the Earth.mp3",
+            artist="Primordial",
+            title="Worms of the Earth",
+            album="Storm Before Calm",
+        )
+        self.assertGreater(
+            score,
+            0.45,
+            f"Disc-track prefixed filename should score above 0.45, got {score:.3f}",
+        )
+
+    def test_soulseek_uid_suffix_score_above_threshold(self):
+        """_score_soulseek_candidate must return > 0.45 for a file with a
+        Soulseek UID suffix so the file is not rejected during search."""
+        score = self._score(
+            "albumdir/16. Cradle Of Filth - Halloween 2_639091010921933965.flac",
+            artist="Cradle Of Filth",
+            title="Halloween 2",
+        )
+        self.assertGreater(
+            score,
+            0.45,
+            f"Soulseek-UID-suffixed filename should score above 0.45, got {score:.3f}",
+        )
+
+    def test_track_without_separator_score_above_threshold(self):
+        """'07 Optimissed.mp3' — track number with no separator — must score > 0.45."""
+        score = self._score(
+            "07 Optimissed.mp3",
+            artist="Primordial",
+            title="Optimissed",
+        )
+        self.assertGreater(
+            score,
+            0.45,
+            f"Track-number-prefixed filename without separator should score > 0.45, got {score:.3f}",
+        )
+
+    # ------------------------------------------------------------------ #
+    # _strip_track_number_prefix — UID suffix stripping                   #
+    # ------------------------------------------------------------------ #
+
+    def test_strip_prefix_and_uid_suffix(self):
+        """_strip_track_number_prefix must strip both prefix AND trailing UID."""
+        dqm_text = _read("download_queue_manager.py")
+        # Verify the regex for stripping the trailing UID is present
+        self.assertIn(r"_\d{12,}$", dqm_text,
+                      "download_queue_manager.py must strip trailing Soulseek UID suffixes")
+
+    def test_strip_prefix_and_uid_in_queue_processor(self):
+        """queue_processor.py must also strip leading prefix and trailing UID."""
+        qp_text = _read("queue_processor.py")
+        self.assertIn(r"_\d{12,}$", qp_text,
+                      "queue_processor.py must strip trailing Soulseek UID suffixes")
+
+    def test_auto_discover_error_handler_logs_traceback(self):
+        """auto_discover_and_queue_files must log a full traceback on per-file
+        errors so the exact crash location is captured in production."""
+        dqm_text = _read("download_queue_manager.py")
+        self.assertIn("format_exc", dqm_text,
+                      "download_queue_manager.py must call traceback.format_exc() in "
+                      "the per-file error handler")
+
+
 if __name__ == "__main__":
     unittest.main()
