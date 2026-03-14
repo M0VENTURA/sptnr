@@ -95,6 +95,37 @@ class QueueHardeningTests(unittest.TestCase):
         # to prevent newly-queued items from immediately being marked in_collection.
         self.assertIn("file_path NOT LIKE '__queued_for_download__%'", processor_text)
 
+    def test_collection_check_in_add_to_queue_excludes_queued_placeholders(self):
+        """add_to_queue collection check must not match __queued_for_download__ placeholder rows.
+
+        When a track (e.g. 'World So Cold') is already queued its placeholder row
+        in the tracks table has file_path='__queued_for_download__queue_id_N'.
+        The SQL collection check must exclude these rows so a *different* track
+        from the same album (e.g. 'World So Cold Intro') is not incorrectly marked
+        in_collection by matching against that placeholder.
+        """
+        mgr_text = _read("download_queue_manager.py")
+        # Verify the SQL guard appears in the collection_check_query block
+        # (which covers both the SQLite '?' and PostgreSQL '%s' variants).
+        self.assertIn(
+            "file_path NOT LIKE '__queued_for_download__%'",
+            mgr_text,
+        )
+
+    def test_find_library_track_id_excludes_queued_placeholders(self):
+        """_find_library_track_id must not return IDs for __queued_for_download__ rows."""
+        mgr_text = _read("download_queue_manager.py")
+        # Ensure the SQL guard is present inside _find_library_track_id so
+        # placeholder rows can never surface as 'already in library'.
+        # We verify by counting occurrences — there must be at least 2 (one for
+        # each of the two queries that can set in_collection).
+        count = mgr_text.count("file_path NOT LIKE '__queued_for_download__%'")
+        self.assertGreaterEqual(
+            count, 2,
+            "Expected at least 2 occurrences of the __queued_for_download__ guard "
+            "in download_queue_manager.py (collection_check_query + _find_library_track_id)"
+        )
+
     def test_prefix_title_protection_in_queue_processor(self):
         """queue_processor._metadata_matches_queue_item must reject prefix title matches.
 

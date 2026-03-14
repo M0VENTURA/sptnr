@@ -835,12 +835,14 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                 SELECT id, file_path, album, album_artist FROM tracks
                 WHERE LOWER(artist) = LOWER(?) AND LOWER(title) = LOWER(?)
                 AND (release_group_mbid = ? OR suggested_mbid = ?)
+                AND (file_path IS NULL OR file_path NOT LIKE '__queued_for_download__%')
                 ORDER BY id DESC
                 LIMIT 10
             """ if not is_pg else """
                 SELECT id, file_path, album, album_artist FROM tracks
                 WHERE LOWER(artist) = LOWER(%s) AND LOWER(title) = LOWER(%s)
                 AND (release_group_mbid = %s OR suggested_mbid = %s)
+                AND (file_path IS NULL OR file_path NOT LIKE '__queued_for_download__%')
                 ORDER BY id DESC
                 LIMIT 10
             """
@@ -2655,6 +2657,7 @@ def auto_discover_and_queue_files():
                 WHERE LOWER(artist) = LOWER({placeholder})
                   AND LOWER(album) = LOWER({placeholder})
                   AND LOWER(title) = LOWER({placeholder})
+                  AND (file_path IS NULL OR file_path NOT LIKE '__queued_for_download__%')
                 ORDER BY id DESC
                 LIMIT 10
                 """,
