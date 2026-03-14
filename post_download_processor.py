@@ -18,6 +18,7 @@ import shutil
 import sqlite3
 import logging
 import io
+import time
 import requests
 from pathlib import Path
 from datetime import datetime
@@ -107,9 +108,16 @@ def fetch_writer_credits(title, artist):
 def fetch_musicbrainz_release_metadata(release_id):
     """
     Fetch complete release metadata from MusicBrainz including disc numbers and cover art.
-    
+
+    The stored MBID may be either a release MBID or a release group MBID (e.g. when
+    imported from beets which stores ``albums.mb_albumid`` as the release group ID, or
+    for compilation albums whose MBID originates from a different import path).
+    This function first tries a direct release lookup; if that fails it falls back to
+    browsing the releases that belong to the release group with the same ID, and uses
+    the first representative release found.
+
     Args:
-        release_id: MusicBrainz release ID (UUID format)
+        release_id: MusicBrainz release ID or release group ID (UUID format)
     
     Returns:
         dict with keys:
@@ -123,17 +131,50 @@ def fetch_musicbrainz_release_metadata(release_id):
     try:
         from api_clients.musicbrainz import _USER_AGENT
         
-        # Fetch release details with recordings and artist-credits
-        mb_url = f"https://musicbrainz.org/ws/2/release/{release_id}?inc=recordings+artist-credits&fmt=json"
-        
         headers = {
             "User-Agent": _USER_AGENT,
             "Accept": "application/json"
         }
+
+        # ------------------------------------------------------------------
+        # Step 1: Try direct release lookup (release MBID path)
+        # ------------------------------------------------------------------
+        mb_url = f"https://musicbrainz.org/ws/2/release/{release_id}?inc=recordings+artist-credits&fmt=json"
         
         response = requests.get(mb_url, headers=headers, timeout=10)
-        response.raise_for_status()
-        mb_data = response.json()
+
+        if response.status_code == 404:
+            # The stored MBID is likely a release group MBID (e.g. compilation albums
+            # imported from beets use albums.mb_albumid which is the release group ID).
+            # Fall back to browsing releases for this release group.
+            logger.debug(
+                f"[MB_METADATA] Release MBID {release_id} not found (404); "
+                f"attempting release-group browse fallback"
+            )
+            browse_url = "https://musicbrainz.org/ws/2/release"
+            browse_params = {
+                "fmt": "json",
+                "release-group": release_id,
+                "inc": "recordings+artist-credits",
+                "limit": 1,
+            }
+            time.sleep(1)  # Respect MusicBrainz rate limit between requests
+            response = requests.get(browse_url, headers=headers, params=browse_params, timeout=10)
+            response.raise_for_status()
+            browse_data = response.json()
+            releases = browse_data.get("releases", [])
+            if not releases:
+                logger.warning(
+                    f"[MB_METADATA] No releases found for release group {release_id}"
+                )
+                return None
+            mb_data = releases[0]
+            logger.debug(
+                f"[MB_METADATA] Using release {mb_data.get('id')} from release group {release_id}"
+            )
+        else:
+            response.raise_for_status()
+            mb_data = response.json()
         
         release_info = {
             'release_title': mb_data.get('title', 'Unknown Album'),
