@@ -1480,6 +1480,20 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
                             or mb_release.get('year')
                         )
 
+                    # Update album_artist from MusicBrainz release metadata when available.
+                    # This ensures compilations are tagged correctly (e.g. "Various Artists")
+                    # even if the queue item originally lacked a proper album_artist value.
+                    mb_release_artist = mb_release.get('artist', '').strip()
+                    if mb_release_artist:
+                        tag_metadata['album_artist'] = mb_release_artist
+                        # Recompute the folder-level album_artist so the file is organised
+                        # under the correct artist directory.
+                        album_artist = _sanitize_path_component(mb_release_artist)
+                        logger.info(
+                            f"[MOVE] Queue {queue_item_dict.get('id', 'unknown')}: "
+                            f"album_artist updated from MusicBrainz: {mb_release_artist}"
+                        )
+
                     # If the release has only one disc, strip the disc number tag entirely
                     is_single_disc = mb_release.get('disc_count', 1) <= 1
 
@@ -1487,6 +1501,19 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
                         track_title = track.get('title', '').lower().strip()
                         queue_title = title.lower().strip()
                         if track_title and queue_title and track_title == queue_title:
+                            # Update per-track artist from MusicBrainz — critical for
+                            # "Various Artists" compilations where each track has a
+                            # different artist that must appear in the file tags.
+                            mb_track_artist = track.get('artist', '').strip()
+                            if mb_track_artist:
+                                tag_metadata['artist'] = mb_track_artist
+                                # Refresh the artist variable used for the filename so
+                                # the file is named after the correct track artist.
+                                artist = mb_track_artist
+                                logger.info(
+                                    f"[MOVE] Queue {queue_item_dict.get('id', 'unknown')}: "
+                                    f"track artist updated from MusicBrainz: {mb_track_artist}"
+                                )
                             if is_single_disc:
                                 disc_num = None
                                 tag_metadata['disc_number'] = None

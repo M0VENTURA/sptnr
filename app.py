@@ -22392,17 +22392,99 @@ def api_album_musicbrainz_lookup():
             return jsonify({"error": "Invalid JSON in request body"}), 400
         album = data.get("album", "")
         artist = data.get("artist", "")
+        existing_mbid = (data.get("existing_mbid") or "").strip()
         
         if not album or not artist:
             return jsonify({"error": "Missing album or artist"}), 400
         
+        import difflib
+        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
+        results = []
+
+        # ------------------------------------------------------------------
+        # Step 1: If the album has an existing stored MBID, do a direct lookup
+        # for it so the user can see their currently stored release/release-group
+        # and compare it against the text search results.
+        # musicbrainz_album_mbid stores a release MBID (specific pressing), so
+        # try a release lookup first, then fall back to release-group lookup.
+        # ------------------------------------------------------------------
+        if existing_mbid:
+            try:
+                stored_result = None
+                mbid_type = None
+
+                # Try as release MBID first
+                time.sleep(1)
+                rel_resp = requests.get(
+                    f"https://musicbrainz.org/ws/2/release/{existing_mbid}",
+                    params={"fmt": "json", "inc": "artist-credits+release-groups"},
+                    headers=headers,
+                    timeout=10,
+                )
+                if rel_resp.status_code == 200:
+                    rel_data = rel_resp.json()
+                    rel_artist_credits = rel_data.get("artist-credit", [])
+                    rel_artist = _build_artist_credit_string(rel_artist_credits) if rel_artist_credits else artist
+                    rel_date = rel_data.get("date", "")
+                    rg = rel_data.get("release-group") or {}
+                    primary_type = rg.get("primary-type", "Album")
+                    cover_art_url = f"https://coverartarchive.org/release/{existing_mbid}/front-250"
+                    stored_result = {
+                        "mbid": existing_mbid,
+                        "title": rel_data.get("title", album),
+                        "artist": rel_artist,
+                        "primary_type": primary_type,
+                        "first_release_date": rel_date,
+                        "cover_art_url": cover_art_url,
+                        "confidence": 1.0,
+                        "source": "musicbrainz",
+                        "is_stored_mbid": True,
+                        "mbid_type": "release",
+                    }
+                    mbid_type = "release"
+                elif rel_resp.status_code == 404:
+                    # Try as release-group MBID
+                    time.sleep(1)
+                    rg_resp = requests.get(
+                        f"https://musicbrainz.org/ws/2/release-group/{existing_mbid}",
+                        params={"fmt": "json", "inc": "artist-credits"},
+                        headers=headers,
+                        timeout=10,
+                    )
+                    if rg_resp.status_code == 200:
+                        rg_data = rg_resp.json()
+                        rg_artist_credits = rg_data.get("artist-credit", [])
+                        rg_artist = _build_artist_credit_string(rg_artist_credits) if rg_artist_credits else artist
+                        cover_art_url = f"https://coverartarchive.org/release-group/{existing_mbid}/front-250"
+                        stored_result = {
+                            "mbid": existing_mbid,
+                            "title": rg_data.get("title", album),
+                            "artist": rg_artist,
+                            "primary_type": rg_data.get("primary-type", "Album"),
+                            "first_release_date": rg_data.get("first-release-date", ""),
+                            "cover_art_url": cover_art_url,
+                            "confidence": 1.0,
+                            "source": "musicbrainz",
+                            "is_stored_mbid": True,
+                            "mbid_type": "release-group",
+                        }
+                        mbid_type = "release-group"
+
+                if stored_result:
+                    results.append(stored_result)
+                    logging.info(
+                        f"[MB_LOOKUP] Found existing {mbid_type} MBID {existing_mbid}: "
+                        f"{stored_result['title']} by {stored_result['artist']}"
+                    )
+            except Exception as mbid_err:
+                logging.warning(f"[MB_LOOKUP] Could not look up existing MBID {existing_mbid}: {mbid_err}")
+
+        # ------------------------------------------------------------------
+        # Step 2: Text search for release groups
+        # ------------------------------------------------------------------
         # Search MusicBrainz for release groups using shared retry session
         query = f'release:"{album}" AND artist:"{artist}"'
-        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
         
-        # Use shared retry session with built-in retry logic and SSL error handling
-        # The session automatically retries on SSL, connection, and timeout errors
-        # Using context manager to ensure session is properly closed
         with create_retry_session(
             retries=3,
             backoff=1.0,
@@ -22416,25 +22498,28 @@ def api_album_musicbrainz_lookup():
                     timeout=(5, 10)  # (connect_timeout, read_timeout)
                 )
                 resp.raise_for_status()
-                data = resp.json()
-                release_groups = data.get("release-groups", []) or []
+                search_data = resp.json()
+                release_groups = search_data.get("release-groups", []) or []
             except requests.exceptions.RequestException as e:
-                # This catches errors after all retry attempts are exhausted
-                # Use warning level for transient network issues (not critical errors)
                 logger.warning(f"MusicBrainz album lookup unavailable after retries: {e}")
+                if results:
+                    # Return stored MBID result even if text search failed
+                    return jsonify({"results": results}), 200
                 return jsonify({
                     "error": f"MusicBrainz connection failed. Try Discogs instead.",
                     "results": []
                 }), 503
         
-        if not release_groups:
+        if not release_groups and not results:
             return jsonify({"results": [], "message": "No MusicBrainz album matches found"}), 200
         
-        # Format results with similarity scores
-        import difflib
-        results = []
+        # Collect existing MBID values to avoid duplicating the stored result
+        seen_mbids = {r["mbid"] for r in results}
+
         for rg in release_groups:
             rg_id = rg.get("id", "")
+            if rg_id in seen_mbids:
+                continue
             rg_title = rg.get("title", "")
             primary_type = rg.get("primary-type", "Album")
             first_release = rg.get("first-release-date", "")
@@ -22461,13 +22546,16 @@ def api_album_musicbrainz_lookup():
                 "confidence": round(overall_confidence, 3),
                 "title_similarity": round(title_similarity, 3),
                 "artist_similarity": round(artist_similarity, 3),
-                "source": "musicbrainz"
+                "source": "musicbrainz",
+                "is_stored_mbid": False,
             })
         
-        # Sort by confidence
-        results.sort(key=lambda x: x["confidence"], reverse=True)
+        # Sort by confidence; keep stored MBID always first
+        stored = [r for r in results if r.get("is_stored_mbid")]
+        others = sorted([r for r in results if not r.get("is_stored_mbid")], key=lambda x: x["confidence"], reverse=True)
+        results = stored + others
         
-        return jsonify({"results": results[:10]}), 200
+        return jsonify({"results": results[:11]}), 200
             
     except Exception as e:
         logger = logging.getLogger('sptnr')
@@ -25428,6 +25516,29 @@ def api_clear_upcoming_releases():
         return jsonify({"error": str(e)}), 500
 
 
+def _build_artist_credit_string(artist_credit):
+    """
+    Build a display string from a MusicBrainz artist-credit array.
+
+    Uses the ``joinphrase`` field so that multi-artist credits are formatted
+    correctly, e.g. "Simon & Garfunkel" rather than "Simon Garfunkel".
+
+    Args:
+        artist_credit: list of dicts (MusicBrainz artist-credit array)
+
+    Returns:
+        str: Human-readable artist string
+    """
+    result = ''
+    for credit in artist_credit:
+        if isinstance(credit, dict):
+            result += credit.get('name', '')
+            result += credit.get('joinphrase', '')
+        else:
+            result += str(credit)
+    return result.strip()
+
+
 @app.route("/api/upcoming-releases/search-musicbrainz", methods=["POST"])
 def api_search_musicbrainz_release():
     """Search MusicBrainz for a release and return track listings.
@@ -25519,24 +25630,27 @@ def api_search_musicbrainz_release():
                     rel_response.raise_for_status()
                     release = rel_response.json()
 
-                    # Artist from release artist-credit
+                    # Artist from release artist-credit (use joinphrase for correct formatting)
                     rel_artist = release_meta["artist"]
                     ac = release.get("artist-credit", []) or []
                     if ac:
-                        rel_artist = " ".join(
-                            c.get("name", "") for c in ac if isinstance(c, dict)
-                        ).strip() or rel_artist
+                        rel_artist = _build_artist_credit_string(ac) or rel_artist
 
                     media = release.get("media", [])
                     tracks_list = []
                     for disc in media:
                         for t in disc.get("tracks", []):
                             recording = t.get("recording", {})
-                            tracks_list.append({
+                            track_entry = {
                                 "title": recording.get("title", "Unknown"),
                                 "position": t.get("position", ""),
                                 "length": recording.get("length", 0),
-                            })
+                            }
+                            # Include per-track artist for compilation support
+                            rec_credits = recording.get("artist-credit") or []
+                            if rec_credits:
+                                track_entry["artist"] = _build_artist_credit_string(rec_credits)
+                            tracks_list.append(track_entry)
 
                     rg = release.get("release-group") or {}
                     results.append({
@@ -25689,7 +25803,7 @@ def api_search_musicbrainz_release():
                 browse_params = {
                     "fmt": "json",
                     "release-group": rg_id,
-                    "inc": "recordings",
+                    "inc": "recordings+artist-credits",
                     "limit": 1,
                 }
                 browse_response = requests.get(browse_url, headers=headers, params=browse_params, timeout=15)
@@ -25704,22 +25818,30 @@ def api_search_musicbrainz_release():
                 release_id = release.get("id", "")
                 release_date = release.get("date", "")
 
-                # Extract tracks from the inline recordings
+                # Extract tracks from the inline recordings, including per-track artist.
+                # Per-track artist is essential for "Various Artists" compilations where
+                # each track belongs to a different artist.
                 media = release.get("media", [])
                 tracks = []
                 for disc in media:
                     for track in disc.get("tracks", []):
                         recording = track.get("recording", {})
-                        tracks.append({
+                        track_entry = {
                             "title": recording.get("title", "Unknown"),
                             "position": track.get("position", ""),
-                            "length": recording.get("length", 0)
-                        })
+                            "length": recording.get("length", 0),
+                        }
+                        # Include per-track artist when artist-credits are available
+                        rec_credits = recording.get("artist-credit") or []
+                        if rec_credits:
+                            track_entry["artist"] = _build_artist_credit_string(rec_credits)
+                        tracks.append(track_entry)
 
-                # Prefer artist-credit from the release group over the search input when available.
+                # Prefer artist-credit from the release group over the search input when
+                # available, using joinphrase for correct multi-artist formatting.
                 rg_credits = rg.get("artist-credit", []) or []
                 result_artist = (
-                    " ".join(c.get("name", "") for c in rg_credits if isinstance(c, dict)).strip()
+                    _build_artist_credit_string(rg_credits)
                     or artist
                 )
 

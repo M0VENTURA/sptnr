@@ -4268,9 +4268,14 @@ async function downloadMusicBrainzRelease(artist, album, tracks, year, release_i
       releaseYear = yearStr.substring(0, 4);
     }
     
-    // Batch add all tracks in a single API call with MusicBrainz/Discogs metadata
+    // Batch add all tracks in a single API call with MusicBrainz/Discogs metadata.
+    // For "Various Artists" compilations each track can carry its own artist field
+    // (populated by the MusicBrainz search endpoint).  When a per-track artist is
+    // present it is used as the queue item artist so files are tagged and named
+    // correctly, while album_artist always stores the release-level artist (e.g.
+    // "Various Artists") for correct library folder organisation.
     const trackItems = tracks.map(track => ({
-      artist: artist,
+      artist: track.artist || artist,
       title: track.title,
       album: album,
       source: 'soulseek',
