@@ -1313,6 +1313,18 @@ def _write_progress_with_current_artist(path: str, scan_type: str, is_running: b
     _write_progress_file(path, scan_type, is_running, extra)
 
 
+def _log_scan_session_complete(scan_type: str, artist_count: int = 0):
+    """Log a scan-session completion entry to scan_history so the dashboard Recent Scans panel
+    shows a timestamped row for the overall scan, not just per-album rows."""
+    try:
+        from scan_history import log_album_scan
+        # Use _SCAN_SESSION_ as artist marker so the frontend can render it specially
+        label = scan_type
+        log_album_scan('_SCAN_SESSION_', label, scan_type, artist_count, 'completed', source='session_complete')
+    except Exception as _e:
+        logging.debug(f"_log_scan_session_complete({scan_type}): {_e}")
+
+
 def _is_stop_requested_from_progress(path: str) -> bool:
     """Return True when a progress file indicates a user-requested stop."""
     try:
@@ -10058,6 +10070,7 @@ def scan_popularity_route():
                         else:
                             _write_progress_with_current_artist(popularity_progress_file, "singles_scan", False, {"status": "complete", "exit_code": 0})
                             logging.info("Singles scan completed successfully")
+                            _log_scan_session_complete("singles")
                     else:
                         logging.info(f"Starting popularity score scan in background (force={force_rescan}, filter_missing={filter_missing}, resume_from={resume_from_artist})")
                         completed = scan_popularity_func(
@@ -10073,6 +10086,7 @@ def scan_popularity_route():
                         else:
                             _write_progress_with_current_artist(popularity_progress_file, "popularity_scan", False, {"status": "complete", "exit_code": 0})
                             logging.info("Popularity scan completed successfully")
+                            _log_scan_session_complete("popularity")
                 except Exception as e:
                     logging.error(f"Error in popularity scan: {e}", exc_info=True)
                     _write_progress_with_current_artist(popularity_progress_file, "popularity_scan" if not singles_only else "singles_scan", False, {"status": "error", "error": str(e), "exit_code": 1})
@@ -11656,6 +11670,7 @@ def api_scan_from_artist():
                     else:
                         _write_progress_with_current_artist(popularity_progress_file, "popularity_scan", False, {"status": "complete", "exit_code": 0})
                         logging.info(f"Popularity scan from '{artist}' completed successfully")
+                        _log_scan_session_complete("popularity")
                 except Exception as e:
                     logging.error(f"Error in popularity scan from '{artist}': {e}", exc_info=True)
                     _write_progress_with_current_artist(popularity_progress_file, "popularity_scan", False, {"status": "error", "error": str(e), "exit_code": 1})
@@ -12410,6 +12425,7 @@ def scan_navidrome():
                     
                     _write_progress_with_current_artist(nav_progress_file, "navidrome_scan", False, {"status": "complete", "exit_code": 0})
                     logging.info("Navidrome import-only scan completed")
+                    _log_scan_session_complete("navidrome", total)
                 except Exception as e:
                     logging.error(f"Error in Navidrome import-only scan: {e}", exc_info=True)
                     _write_progress_with_current_artist(nav_progress_file, "navidrome_scan", False, {"status": "error", "error": str(e), "exit_code": 1})
@@ -19678,6 +19694,22 @@ def api_queue_processor_restart():
 # Download Monitor Enhancements API
 # ============================================================================
 
+def _delete_queue_entry(queue_id: int) -> bool:
+    """Delete a single download queue entry by ID. Returns True on success."""
+    try:
+        conn_del = get_db()
+        cursor_del = conn_del.cursor()
+        ph = "%s" if _is_postgres_connection(conn_del) else "?"
+        cursor_del.execute(f"DELETE FROM download_queue WHERE id = {ph}", (queue_id,))
+        conn_del.commit()
+        conn_del.close()
+        logging.info(f"[QUEUE_DELETE] Auto-deleted queue entry {queue_id} after successful move to music")
+        return True
+    except Exception as _del_err:
+        logging.warning(f"[QUEUE_DELETE] Could not auto-delete queue entry {queue_id}: {_del_err}")
+        return False
+
+
 @app.route("/api/queue/move-to-music/<int:queue_id>", methods=["POST"])
 def api_queue_move_to_music(queue_id):
     """
@@ -19738,7 +19770,9 @@ def api_queue_move_to_music(queue_id):
             result = move_to_music_collection(queue_id)
             if 'error' in result:
                 return jsonify({"success": False, "error": result['error']}), 400
-            return jsonify({"success": True, "path": result['path'], "message": f"File moved to music collection: {result['path']}"})
+            # Auto-delete the queue entry now that the file is safely in the music collection
+            _delete_queue_entry(queue_id)
+            return jsonify({"success": True, "path": result['path'], "message": f"File moved to music collection: {result['path']}", "deleted": True})
 
         elif item_status in ('completed', 'pending_match', 'in_collection'):
             from download_queue_manager import move_single_track_to_music_dir, update_queue_item
@@ -19793,7 +19827,9 @@ def api_queue_move_to_music(queue_id):
                 update_queue_item(queue_id, status='completed', file_path=target_path)
                 return jsonify({"success": False, "error": f"File moved but verification failed: {verify_result.get('error')}"}), 500
 
-            return jsonify({"success": True, "path": target_path, "message": f"File moved to music collection: {target_path}"})
+            # Auto-delete the queue entry now that the file is confirmed in the music collection
+            _delete_queue_entry(queue_id)
+            return jsonify({"success": True, "path": target_path, "message": f"File moved to music collection: {target_path}", "deleted": True})
 
         else:
             return jsonify({"success": False, "error": f"Track must be matched, completed, pending_match, or downloads-backed in_collection (current status: {item_status})"}), 400
