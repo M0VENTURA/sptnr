@@ -2554,7 +2554,12 @@ def is_match(filename, queue_item):
             return False
 
         artist_in_path = artist in filename_test
-        title_in_path = title in filename_test
+        # Require the title to appear as a complete phrase — not as the leading
+        # portion of a longer title.  "-1" must match "-1.flac" but must NOT
+        # match "-1 intro.flac" (where " intro" makes it a different track).
+        # Both filename_test and title are already lowercased above, so [a-z]
+        # correctly covers all letter characters.
+        title_in_path = bool(re.search(re.escape(title) + r'(?!\s*[a-z])', filename_test))
         if artist_in_path and title_in_path:
             return True
 

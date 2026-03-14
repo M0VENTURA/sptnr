@@ -409,7 +409,14 @@ def _filename_matches_queue_item(filename, queue_item):
             return False
 
         artist_in_path = artist in filename_test
-        title_in_basename = title in basename_test
+        # Require the title to appear as a complete phrase in the basename — it
+        # must not be immediately followed by more alphabetic words that would
+        # make it a different (longer) title.  For example, a queue item titled
+        # "-1" must NOT match a file named "-1 intro.flac", but it SHOULD match
+        # "-1.flac" or "-1 (acoustic).flac" (parenthetical suffix, not a word).
+        # Both basename_test and title are already lowercased above, so [a-z]
+        # correctly covers all letter characters.
+        title_in_basename = bool(re.search(re.escape(title) + r'(?!\s*[a-z])', basename_test))
         if artist_in_path and title_in_basename:
             return True
 
