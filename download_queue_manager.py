@@ -1594,7 +1594,7 @@ def rename_album_files(artist, album, db_conn, music_dir=None):
         # Use COALESCE logic like album_detail to match albums by album_artist
         cursor.execute(f"""
             SELECT id, artist, album, album_artist, title, track_number, disc_number, 
-                   file_path, beets_path, year, release_year
+                   file_path, beets_path, year
             FROM tracks
             WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} 
               AND album = {placeholder}
@@ -1624,12 +1624,11 @@ def rename_album_files(artist, album, db_conn, music_dir=None):
                     track_number = track_row.get('track_number', '00')
                     disc_number = track_row.get('disc_number', 1)
                     file_path = track_row.get('file_path')
-                    year = track_row.get('year') or track_row.get('release_year')
+                    year = track_row.get('year')
                 else:
                     # Tuple format (fallback for SQLite)
                     track_id, track_artist, track_album, track_album_artist, track_title, \
-                    track_number, disc_number, file_path, beets_path, year, release_year = track_row
-                    year = year or release_year
+                    track_number, disc_number, file_path, beets_path, year = track_row
                     track_album_artist = track_album_artist or track_artist
                 
                 # Skip tracks without file paths
