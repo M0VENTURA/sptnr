@@ -2587,22 +2587,36 @@ def is_match(filename, queue_item):
 
 def _strip_track_number_prefix(title):
     """
-    Remove a leading track-number prefix from a title string.
+    Remove a leading track-number prefix and/or a trailing Soulseek unique-ID
+    suffix from a title string.
 
-    Handles common filename conventions such as:
+    Leading prefix examples:
         "05 - CINEMA"           →  "CINEMA"
         "05. CINEMA"            →  "CINEMA"
         "5 - CINEMA"            →  "CINEMA"
         "0108. Artist - Title"  →  "Artist - Title"  (4-digit zero-padded)
         "1-15 - Title"          →  "Title"           (disc-track prefix)
         "05 CINEMA"             →  unchanged  (no separator, avoid stripping real words)
+
+    Trailing suffix examples (Soulseek appends a long numeric ID to avoid
+    filename collisions on the remote peer):
+        "Artist - Song_639091010921933965"  →  "Artist - Song"
+        "Artist - Song_123"                →  unchanged  (≤ 11 digits, not a UID)
     """
+    # 1. Strip a leading track-number prefix.
     # Match an optional disc prefix (digit(s)-), followed by the track number
     # (one or more digits), followed by a separator ('-' or '.') with optional
     # surrounding spaces.  This handles simple formats ("05 - Title"),
     # zero-padded large track numbers ("0108. Artist - Title"), and disc-track
     # prefixes ("1-15 - Title" → strips "1-15 - ").
     cleaned = re.sub(r'^\d+(?:\s*-\s*\d+)?\s*[-\.]\s*', '', title).strip()
+
+    # 2. Strip a trailing Soulseek unique-ID suffix: an underscore followed by
+    # 12 or more consecutive digits at the end of the string.  Sequences that
+    # short (≤ 11 digits) are left intact to avoid stripping legitimate numeric
+    # suffixes that happen to be part of a real title (e.g. "Song_123").
+    cleaned = re.sub(r'_\d{12,}$', '', cleaned).strip()
+
     return cleaned if cleaned else title
 
 
@@ -3104,12 +3118,17 @@ def auto_discover_and_queue_files():
                 )
                 stats['already_in_queue'] += 1
             except Exception as e:
+                import traceback as _tb
                 try:
                     conn.rollback()
                 except Exception:
                     pass
                 error_msg = f"Error processing {file_info['filename']}: {str(e)}"
                 logger.error(error_msg)
+                logger.debug(
+                    f"[AUTO-DISCOVER] Full traceback for {file_info['filename']}:\n"
+                    f"{_tb.format_exc()}"
+                )
                 stats['errors'].append(error_msg)
         
         conn.close()
