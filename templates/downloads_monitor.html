@@ -97,7 +97,7 @@
             <button type="submit" class="btn btn-primary flex-grow-1">
               <i class="bi bi-plus-circle"></i> Add to Queue
             </button>
-            <button type="button" class="btn btn-outline-info" onclick="searchMusicBrainzForQueue()" title="Search MusicBrainz for releases by artist/album and queue tracks">
+            <button type="button" class="btn btn-outline-info" onclick="searchMusicBrainzForQueue()" title="Search MusicBrainz using any combination of artist, album, or song title">
               <i class="bi bi-music-note-list"></i> Search Releases
             </button>
           </div>
@@ -459,13 +459,14 @@ async function addToQueue(event) {
 function searchMusicBrainzForQueue() {
   const artist = document.getElementById('queueArtist').value.trim();
   const album = document.getElementById('queueAlbum').value.trim();
+  const track = document.getElementById('queueTitle').value.trim();
 
-  if (!artist) {
-    alert('Please enter an artist before searching MusicBrainz.');
+  if (!artist && !album && !track) {
+    alert('Please enter at least one field (artist, album, or song title) before searching MusicBrainz.');
     return;
   }
 
-  searchMusicBrainzRelease(null, artist, album);
+  searchMusicBrainzRelease(null, artist, album, track);
 }
 
 async function discoverFiles(clickEvent) {

@@ -47,7 +47,13 @@ def get_musicbrainz_release_tracks(release_id: str, source: str = 'musicbrainz')
 
 
 def _fetch_musicbrainz_tracks(release_id: str) -> List[Dict]:
-    """Fetch tracks from MusicBrainz release."""
+    """Fetch tracks from MusicBrainz release.
+
+    Supports both release MBIDs and release group MBIDs.  When a release group
+    MBID is stored (e.g. imported from beets ``albums.mb_albumid``), the direct
+    release lookup returns 404.  The function then falls back to browsing the
+    releases that belong to the release group and uses the first one found.
+    """
     try:
         base_url = "https://musicbrainz.org/ws/2/"
         headers = {
@@ -63,8 +69,30 @@ def _fetch_musicbrainz_tracks(release_id: str) -> List[Dict]:
             headers=headers,
             timeout=(5, 10)
         )
-        response.raise_for_status()
-        data = response.json()
+
+        if response.status_code == 404:
+            # Stored MBID is likely a release group MBID; browse its releases.
+            logger.debug(
+                f"Release MBID {release_id} not found (404); "
+                f"attempting release-group browse fallback"
+            )
+            time.sleep(1.0)
+            browse_response = requests.get(
+                f"{base_url}release",
+                params={"fmt": "json", "release-group": release_id, "inc": "recordings", "limit": 1},
+                headers=headers,
+                timeout=(5, 10),
+            )
+            browse_response.raise_for_status()
+            releases = browse_response.json().get("releases", [])
+            if not releases:
+                logger.warning(f"No releases found for release group {release_id}")
+                return []
+            data = releases[0]
+            logger.debug(f"Using release {data.get('id')} from release group {release_id}")
+        else:
+            response.raise_for_status()
+            data = response.json()
         
         tracks = []
         media_list = data.get('media', [])

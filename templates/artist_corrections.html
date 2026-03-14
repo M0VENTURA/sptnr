@@ -486,6 +486,8 @@ async function checkAlbumMbTracks(alb, rowIdx) {
             }
         } else if (data.reason === 'no_mbid') {
             if (badgeEl) badgeEl.innerHTML = '<span class="badge bg-secondary">no MBID</span>';
+        } else if (data.reason === 'mb_not_found') {
+            if (badgeEl) badgeEl.innerHTML = '<span class="badge bg-secondary">no MB data</span>';
         } else {
             if (badgeEl) badgeEl.innerHTML = '<span class="badge bg-success">Complete</span>';
         }
