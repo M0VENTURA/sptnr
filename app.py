@@ -3471,7 +3471,7 @@ def artist_genre_management(name):
                 track_number,
                 disc_number,
                 file_path,
-                COALESCE(NULLIF(artist, ''), '') AS artist,
+                COALESCE(artist, '') AS artist,
                 COALESCE(NULLIF(album_artist, ''), artist) AS album_artist,
                 COALESCE(genres, '') AS genres,
                 COALESCE(discogs_genres, '') AS discogs_genres,

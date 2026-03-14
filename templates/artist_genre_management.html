@@ -96,7 +96,7 @@
     <div id="save-status" class="alert d-none mb-3" role="alert"></div>
 
     <div class="mb-3 d-flex gap-2">
-        <button class="btn btn-primary" id="save-btn-top" onclick="saveChanges()">
+        <button class="btn btn-primary" id="save-btn-top">
             <span class="spinner-border spinner-border-sm d-none" id="save-spinner-top" role="status"></span>
             <i class="bi bi-floppy" id="save-icon-top"></i> Save All Changes
         </button>
@@ -246,7 +246,7 @@
     {% endfor %}
 
     <div class="mb-4">
-        <button class="btn btn-primary" id="save-btn-bottom" onclick="saveChanges()">
+        <button class="btn btn-primary" id="save-btn-bottom">
             <span class="spinner-border spinner-border-sm d-none" id="save-spinner-bottom" role="status"></span>
             <i class="bi bi-floppy" id="save-icon-bottom"></i> Save All Changes
         </button>
@@ -256,6 +256,16 @@
 <script>
 (function () {
     "use strict";
+
+    var ARTIST_NAME = {{ artist_name | tojson }};
+
+    // Wire up save buttons via event listeners (not inline handlers)
+    document.addEventListener("DOMContentLoaded", function () {
+        ["save-btn-top", "save-btn-bottom"].forEach(function (id) {
+            var btn = document.getElementById(id);
+            if (btn) btn.addEventListener("click", saveChanges);
+        });
+    });
 
     // Badge visual toggle on checkbox change
     document.addEventListener("change", function (e) {
@@ -298,7 +308,7 @@
         el.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
 
-    window.saveChanges = function () {
+    function saveChanges() {
         // Collect all checked checkboxes
         var checked = document.querySelectorAll(".genre-chk:checked");
         if (!checked.length) {
@@ -340,14 +350,13 @@
         });
 
         var changes = Object.values(changesMap);
-        var artistName = (document.querySelector(".genre-chk") || {}).dataset.artist || "";
 
         setSpinner(true);
 
         fetch("/api/artist/genre-management/save", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ artist: artistName, changes: changes })
+            body: JSON.stringify({ artist: ARTIST_NAME, changes: changes })
         })
         .then(function (res) { return res.json(); })
         .then(function (data) {
@@ -374,7 +383,7 @@
             setSpinner(false);
             showStatus("Network error: " + err, true);
         });
-    };
+    }
 }());
 </script>
 {% endblock %}
