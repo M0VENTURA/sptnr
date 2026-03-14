@@ -590,7 +590,7 @@
                             {% if track.is_missing %}
                             {{ missing_track_row(track) }}
                             {% else %}
-                            <tr class="d-flex flex-column d-md-table-row">
+                            <tr class="d-flex flex-column d-md-table-row" data-track-id="{{ track.id }}">
                                 <td class="d-md-none" style="padding: 0.5rem 0; border: none;">
                                     <div class="d-flex justify-content-between align-items-center gap-2">
                                         <input type="checkbox" class="form-check-input track-checkbox" data-track-id="{{ track.id }}" onchange="updateBulkActionsUI()">
@@ -699,7 +699,7 @@
                         {% if track.is_missing %}
                         {{ missing_track_row(track) }}
                         {% else %}
-                        <tr class="d-flex flex-column d-md-table-row">
+                        <tr class="d-flex flex-column d-md-table-row" data-track-id="{{ track.id }}">
                             <td class="d-md-none" style="padding: 0.5rem 0; border: none;">
                                 <div class="d-flex justify-content-between align-items-center gap-2">
                                     <input type="checkbox" class="form-check-input track-checkbox" data-track-id="{{ track.id }}" onchange="updateBulkActionsUI()">
@@ -1947,13 +1947,283 @@
             updateAlbumGenresDisplay();
         }
         
-        // Show success message
-        alert('✅ Album metadata populated! Review and click "Save to Database & MP3s" to apply.');
-        
-        // Scroll to the form
-        document.getElementById('albumMetadataForm').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        // Scroll to the track list to show the comparison
+        const trackTable = document.querySelector('.table-responsive');
+        if (trackTable) {
+            trackTable.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        // If a MusicBrainz release group MBID is provided, compare MB tracks with library
+        if (mbid) {
+            compareMBTracksWithLibrary(mbid);
+        }
     }
-    
+
+    // ── MusicBrainz Track Comparison ─────────────────────────────────────────
+    let mbComparisonData = null;
+
+    async function compareMBTracksWithLibrary(releaseGroupMbid) {
+        const artist = {{ artist_name|tojson }};
+        const album = {{ album_name|tojson }};
+
+        _showMBCompareBanner(
+            '<span class="spinner-border spinner-border-sm me-2" role="status"></span> Comparing tracks with MusicBrainz…',
+            'info',
+            false
+        );
+
+        try {
+            const resp = await fetch('/api/album/musicbrainz/compare', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ release_group_mbid: releaseGroupMbid, artist: artist, album: album })
+            });
+            const data = await resp.json();
+
+            if (!data.success) {
+                _showMBCompareBanner(
+                    '<i class="bi bi-exclamation-triangle-fill me-2"></i>Could not compare tracks: ' + escapeHtml(data.error || 'Unknown error'),
+                    'warning',
+                    true
+                );
+                return;
+            }
+
+            mbComparisonData = data;
+            _displayMBComparison(data);
+        } catch (err) {
+            _showMBCompareBanner(
+                '<i class="bi bi-x-circle-fill me-2"></i>Network error while comparing tracks: ' + escapeHtml(err.message),
+                'danger',
+                true
+            );
+        }
+    }
+
+    function _getMBCompareBannerContainer() {
+        const tableResponsive = document.querySelector('.table-responsive');
+        if (!tableResponsive) return null;
+        return tableResponsive.parentElement;
+    }
+
+    function _showMBCompareBanner(htmlContent, type, showDismiss) {
+        let banner = document.getElementById('mb-compare-banner');
+        if (!banner) {
+            const container = _getMBCompareBannerContainer();
+            if (!container) return;
+            banner = document.createElement('div');
+            banner.id = 'mb-compare-banner';
+            const tableResponsive = document.querySelector('.table-responsive');
+            container.insertBefore(banner, tableResponsive);
+        }
+        const dismissBtn = showDismiss
+            ? `<button type="button" class="btn-close ms-auto" onclick="clearMBComparison()" aria-label="Dismiss"></button>`
+            : '';
+        banner.innerHTML = `<div class="alert alert-${escapeHtml(type)} d-flex align-items-center mb-2 py-2">${htmlContent}${dismissBtn}</div>`;
+    }
+
+    function _displayMBComparison(data) {
+        // Remove any stale update rows from a previous comparison
+        document.querySelectorAll('.mb-update-row').forEach(el => el.remove());
+
+        const needsUpdate = data.comparison.filter(c => c.needs_update && c.library_track_id);
+
+        if (needsUpdate.length === 0) {
+            _showMBCompareBanner(
+                `<i class="bi bi-check-circle-fill text-success me-2"></i>All ${escapeHtml(String(data.total_tracks))} tracks match MusicBrainz metadata — no updates needed.`,
+                'success',
+                true
+            );
+            return;
+        }
+
+        // Summary banner with "Update All" action
+        let banner = document.getElementById('mb-compare-banner');
+        if (!banner) {
+            const container = _getMBCompareBannerContainer();
+            if (!container) return;
+            banner = document.createElement('div');
+            banner.id = 'mb-compare-banner';
+            const tableResponsive = document.querySelector('.table-responsive');
+            container.insertBefore(banner, tableResponsive);
+        }
+        banner.innerHTML = `
+            <div class="alert alert-warning d-flex align-items-center gap-2 mb-2 py-2 flex-wrap">
+                <i class="bi bi-exclamation-triangle-fill"></i>
+                <div><strong>${escapeHtml(String(needsUpdate.length))} of ${escapeHtml(String(data.total_tracks))} tracks</strong> have metadata that can be updated from MusicBrainz.</div>
+                <button class="btn btn-warning btn-sm ms-auto" onclick="updateAllTracksFromMB()">
+                    <i class="bi bi-arrow-repeat"></i> Update All
+                </button>
+                <button type="button" class="btn-close" onclick="clearMBComparison()" aria-label="Dismiss"></button>
+            </div>`;
+
+        // Inject an update hint row below each matching track row
+        for (const trackComp of data.comparison) {
+            if (!trackComp.needs_update || !trackComp.library_track_id) continue;
+
+            const trackId = String(trackComp.library_track_id);
+            const trackRow = document.querySelector(`[data-track-id="${CSS.escape(trackId)}"]`);
+            if (!trackRow) continue;
+
+            const diffParts = [];
+            if (trackComp.diff_fields.includes('title')) {
+                diffParts.push(`Title: <em>${escapeHtml(trackComp.library_title)}</em> → <strong>${escapeHtml(trackComp.mb_title)}</strong>`);
+            }
+            if (trackComp.diff_fields.includes('track_number')) {
+                diffParts.push(`Track#: ${escapeHtml(String(trackComp.library_track_number))} → ${escapeHtml(String(trackComp.mb_track_number))}`);
+            }
+            if (trackComp.diff_fields.includes('year')) {
+                diffParts.push(`Year: ${escapeHtml(trackComp.library_year || '—')} → ${escapeHtml(String(trackComp.mb_year))}`);
+            }
+
+            const updateRow = document.createElement('tr');
+            updateRow.className = 'mb-update-row';
+            updateRow.dataset.trackId = trackId;
+            // Store comparison data as JSON attribute for later use
+            updateRow.dataset.mbComp = JSON.stringify(trackComp);
+
+            updateRow.innerHTML = `
+                <td colspan="9" style="padding: 0.3rem 0.75rem; border-top: none;">
+                    <div class="d-flex align-items-center gap-2 flex-wrap rounded px-2 py-1"
+                         style="background: rgba(255,193,7,0.12); border: 1px solid rgba(255,193,7,0.35);">
+                        <small class="text-warning-emphasis">
+                            <i class="bi bi-lightning-fill me-1"></i><strong>MusicBrainz update available:</strong>
+                        </small>
+                        <small class="text-muted">${diffParts.join(' &nbsp;·&nbsp; ')}</small>
+                        <button class="btn btn-warning btn-sm ms-auto py-0 px-2"
+                                style="font-size: 0.75rem; white-space: nowrap;"
+                                onclick="updateSingleTrackFromMB(this)">
+                            <i class="bi bi-arrow-repeat"></i> Update
+                        </button>
+                    </div>
+                </td>`;
+
+            trackRow.insertAdjacentElement('afterend', updateRow);
+        }
+    }
+
+    async function updateSingleTrackFromMB(btn) {
+        const updateRow = btn.closest('.mb-update-row');
+        const trackComp = JSON.parse(updateRow.dataset.mbComp || '{}');
+        const trackId = String(trackComp.library_track_id || updateRow.dataset.trackId || '');
+
+        const origHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span>';
+
+        const payload = { track_id: trackId, sync_to_file: true };
+        if (trackComp.diff_fields && trackComp.diff_fields.includes('title'))
+            payload.title = trackComp.mb_title;
+        if (trackComp.diff_fields && trackComp.diff_fields.includes('track_number'))
+            payload.track_number = String(trackComp.mb_track_number);
+        if (trackComp.diff_fields && trackComp.diff_fields.includes('year'))
+            payload.year = String(trackComp.mb_year);
+        if (trackComp.mb_recording_id)
+            payload.mbid = trackComp.mb_recording_id;
+
+        try {
+            const resp = await fetch('/api/track/update-metadata', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const result = await resp.json();
+            if (result.success) {
+                // Remove the update row
+                updateRow.remove();
+                // Update visible title on the page if it changed
+                if (trackComp.diff_fields && trackComp.diff_fields.includes('title')) {
+                    document.querySelectorAll(`.track-title-display-${CSS.escape(trackId)}`).forEach(el => {
+                        el.textContent = trackComp.mb_title;
+                    });
+                }
+                // Check if all update rows have been resolved
+                if (!document.querySelector('.mb-update-row')) {
+                    _showMBCompareBanner(
+                        '<i class="bi bi-check-circle-fill text-success me-2"></i>All tracks updated successfully.',
+                        'success',
+                        true
+                    );
+                }
+            } else {
+                btn.disabled = false;
+                btn.innerHTML = origHtml;
+                alert('Error updating track: ' + (result.error || 'Unknown error'));
+            }
+        } catch (err) {
+            btn.disabled = false;
+            btn.innerHTML = origHtml;
+            alert('Network error: ' + err.message);
+        }
+    }
+
+    async function updateAllTracksFromMB() {
+        if (!mbComparisonData) return;
+        const tracksToUpdate = mbComparisonData.comparison.filter(c => c.needs_update && c.library_track_id);
+        if (tracksToUpdate.length === 0) return;
+        if (!confirm(`Update metadata for ${tracksToUpdate.length} track(s) from MusicBrainz?\n\nThis will update the database and MP3 file tags.`)) return;
+
+        let banner = document.getElementById('mb-compare-banner');
+        if (banner) {
+            banner.innerHTML = `<div class="alert alert-info d-flex align-items-center gap-2 mb-2 py-2">
+                <span class="spinner-border spinner-border-sm me-2" role="status"></span>
+                Updating tracks… <span id="mb-update-progress">0</span> / ${escapeHtml(String(tracksToUpdate.length))}
+            </div>`;
+        }
+
+        let updated = 0, failed = 0;
+        for (const trackComp of tracksToUpdate) {
+            const trackId = String(trackComp.library_track_id);
+            const payload = { track_id: trackId, sync_to_file: true };
+            if (trackComp.diff_fields.includes('title')) payload.title = trackComp.mb_title;
+            if (trackComp.diff_fields.includes('track_number')) payload.track_number = String(trackComp.mb_track_number);
+            if (trackComp.diff_fields.includes('year')) payload.year = String(trackComp.mb_year);
+            if (trackComp.mb_recording_id) payload.mbid = trackComp.mb_recording_id;
+
+            try {
+                const resp = await fetch('/api/track/update-metadata', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const result = await resp.json();
+                if (result.success) {
+                    updated++;
+                    document.querySelectorAll(`.mb-update-row[data-track-id="${CSS.escape(trackId)}"]`).forEach(el => el.remove());
+                    if (trackComp.diff_fields.includes('title')) {
+                        document.querySelectorAll(`.track-title-display-${CSS.escape(trackId)}`).forEach(el => {
+                            el.textContent = trackComp.mb_title;
+                        });
+                    }
+                } else {
+                    failed++;
+                }
+            } catch (_e) {
+                failed++;
+            }
+
+            const progressEl = document.getElementById('mb-update-progress');
+            if (progressEl) progressEl.textContent = updated + failed;
+        }
+
+        const type = failed > 0 ? 'warning' : 'success';
+        const icon = failed > 0 ? 'exclamation-triangle-fill' : 'check-circle-fill';
+        const msg = `Updated ${updated} track(s)` + (failed > 0 ? `, ${failed} failed.` : ' successfully.');
+        _showMBCompareBanner(`<i class="bi bi-${icon} me-2"></i>${escapeHtml(msg)}`, type, true);
+
+        if (updated > 0) {
+            setTimeout(() => location.reload(), 2000);
+        }
+    }
+
+    function clearMBComparison() {
+        document.querySelectorAll('.mb-update-row').forEach(el => el.remove());
+        const banner = document.getElementById('mb-compare-banner');
+        if (banner) banner.remove();
+        mbComparisonData = null;
+    }
+
+
     function populateMajorityArtist() {
         const album = "{{ album_name }}";
         const artist = "{{ artist_name }}";

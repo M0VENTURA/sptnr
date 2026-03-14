@@ -22438,6 +22438,165 @@ def api_album_musicbrainz_lookup():
         logger.error(f"MusicBrainz album lookup error: {e}")
         return jsonify({"error": str(e)}), 500
 
+
+@app.route("/api/album/musicbrainz/compare", methods=["POST"])
+def api_album_musicbrainz_compare():
+    """Compare MusicBrainz release tracks with library tracks to identify metadata that needs updating.
+
+    Accepts a release-group or release MBID alongside the library artist/album names.
+    Returns a per-track comparison showing which fields differ so the UI can offer
+    selective or bulk updates.
+    """
+    try:
+        import difflib as _difflib
+        data = request.get_json(force=True, silent=True) or {}
+        release_group_mbid = (data.get("release_group_mbid") or "").strip()
+        artist = (data.get("artist") or "").strip()
+        album = (data.get("album") or "").strip()
+
+        if not release_group_mbid or not artist or not album:
+            return jsonify({"error": "release_group_mbid, artist, and album are required"}), 400
+
+        # Fetch MusicBrainz release data (handles both release and release-group MBIDs)
+        from post_download_processor import fetch_musicbrainz_release_metadata
+        mb_release = fetch_musicbrainz_release_metadata(release_group_mbid)
+        if not mb_release:
+            return jsonify({"error": "Could not fetch MusicBrainz release data"}), 404
+
+        mb_tracks = mb_release.get("tracks", [])
+        mb_year = mb_release.get("release_year", "")
+        mb_release_title = mb_release.get("release_title", "")
+
+        # Fetch library tracks for this album
+        conn = get_db()
+        cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+
+        cursor.execute(f"""
+            SELECT id, title, track_number, disc_number, artist, year, mbid, file_path
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+              AND album = {placeholder}
+            ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 999)
+        """, (artist, album))
+        library_tracks = [dict(r) for r in cursor.fetchall()]
+        conn.close()
+
+        if not library_tracks:
+            return jsonify({
+                "success": False,
+                "error": "No library tracks found for this album",
+                "comparison": [],
+            }), 404
+
+        # Build lookup maps: (disc, track_num) -> track  and  (disc, norm_title) -> track
+        lib_by_tracknum = {}
+        lib_by_title = {}
+        for t in library_tracks:
+            disc = int(t.get("disc_number") or 1)
+            num = t.get("track_number")
+            if num is not None:
+                try:
+                    lib_by_tracknum[(disc, int(num))] = t
+                except (TypeError, ValueError):
+                    pass
+            norm = re.sub(r"\s+", " ", (t.get("title") or "").lower().strip())
+            lib_by_title[(disc, norm)] = t
+
+        # Compare each MB track with the library
+        comparison = []
+        for mb_track in mb_tracks:
+            disc = int(mb_track.get("disc_number") or 1)
+            mb_num = mb_track.get("track_number")
+            mb_track_title = mb_track.get("title", "")
+            mb_track_artist = mb_track.get("artist", "")
+            mb_recording_id = mb_track.get("recording_mbid", "")
+
+            # 1. Match by track number
+            lib_track = None
+            if mb_num is not None:
+                try:
+                    lib_track = lib_by_tracknum.get((disc, int(mb_num)))
+                except (TypeError, ValueError):
+                    pass
+
+            # 2. Match by exact normalised title
+            if lib_track is None:
+                norm_mb = re.sub(r"\s+", " ", mb_track_title.lower().strip())
+                lib_track = lib_by_title.get((disc, norm_mb))
+
+                # 3. Fuzzy title match (≥80% similarity)
+                if lib_track is None:
+                    best_ratio = 0.0
+                    best_t = None
+                    for t in library_tracks:
+                        lib_norm = re.sub(r"\s+", " ", (t.get("title") or "").lower().strip())
+                        ratio = _difflib.SequenceMatcher(None, norm_mb, lib_norm).ratio()
+                        if ratio > best_ratio and ratio >= 0.80:
+                            best_ratio = ratio
+                            best_t = t
+                    lib_track = best_t
+
+            entry = {
+                "mb_track_number": mb_num,
+                "mb_disc_number": disc,
+                "mb_title": mb_track_title,
+                "mb_artist": mb_track_artist,
+                "mb_recording_id": mb_recording_id,
+                "mb_year": mb_year,
+                "library_track_id": None,
+                "library_title": None,
+                "library_track_number": None,
+                "library_artist": None,
+                "library_year": None,
+                "needs_update": False,
+                "diff_fields": [],
+                "matched": False,
+            }
+
+            if lib_track:
+                entry["matched"] = True
+                entry["library_track_id"] = lib_track.get("id")
+                entry["library_title"] = lib_track.get("title", "")
+                entry["library_track_number"] = lib_track.get("track_number")
+                entry["library_artist"] = lib_track.get("artist", "")
+                entry["library_year"] = str(lib_track.get("year") or "")
+
+                diff_fields = []
+                # Title differs?
+                if mb_track_title and mb_track_title != lib_track.get("title", ""):
+                    diff_fields.append("title")
+                # Track number differs?
+                if mb_num is not None and str(mb_num) != str(lib_track.get("track_number") or ""):
+                    diff_fields.append("track_number")
+                # Year differs?
+                if mb_year and str(mb_year) != str(lib_track.get("year") or ""):
+                    diff_fields.append("year")
+
+                entry["diff_fields"] = diff_fields
+                entry["needs_update"] = len(diff_fields) > 0
+
+            comparison.append(entry)
+
+        tracks_needing_update = sum(1 for c in comparison if c["needs_update"])
+
+        return jsonify({
+            "success": True,
+            "mb_title": mb_release_title,
+            "mb_year": mb_year,
+            "mb_artist": mb_release.get("artist", ""),
+            "release_group_mbid": release_group_mbid,
+            "comparison": comparison,
+            "tracks_needing_update": tracks_needing_update,
+            "total_tracks": len(comparison),
+        }), 200
+
+    except Exception as e:
+        logging.error(f"MusicBrainz compare error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/album/discogs", methods=["POST"])
 def api_album_discogs_lookup():
     """Lookup album on Discogs for better metadata and genres"""
