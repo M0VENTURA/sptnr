@@ -3324,24 +3324,34 @@ def api_album_missing_tracks():
             conn.close()
             return jsonify({"missing_tracks": [], "missing_count": 0, "library_count": library_count, "reason": "no_mbid"})
 
-        # Fetch library tracks for this album
+        # Fetch library tracks for this album (include mbid/beets_mbid for MBID-based matching)
         cursor.execute(f"""
-            SELECT id, title, track_number, disc_number FROM tracks
+            SELECT id, title, track_number, disc_number, mbid, beets_mbid FROM tracks
             WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
         """, (artist, album))
         library_rows = cursor.fetchall()
         conn.close()
 
-        # Build two lookup sets for matching:
-        #   1. (disc, track_number) – preferred; unambiguous when track numbers are present
-        #   2. (disc, normalised_title) – fallback for tracks without a number
+        # Build three lookup structures for matching (most to least reliable):
+        #   1. recording MBID – definitive match when present
+        #   2. (disc, track_number) – position-based; unambiguous when numbers are present
+        #   3. (disc, normalised_title) – name-based fallback
+        library_mbids = set()
         library_by_tracknum = set()
         library_by_title = set()
         for t in library_rows:
-            t_dict = dict(t) if hasattr(t, "keys") else {"id": t[0], "title": t[1], "track_number": t[2], "disc_number": t[3]}
+            if hasattr(t, "keys"):
+                t_dict = dict(t)
+            else:
+                t_dict = {"id": t[0], "title": t[1], "track_number": t[2], "disc_number": t[3], "mbid": t[4], "beets_mbid": t[5]}
             disc = int(t_dict.get("disc_number") or 1)
             track_num = t_dict.get("track_number")
             norm = re.sub(r'\s+', ' ', (t_dict.get("title") or "").lower().strip())
+            # Collect non-empty MBIDs (both beets_mbid and mbid columns)
+            for mbid_field in ("beets_mbid", "mbid"):
+                val = (t_dict.get(mbid_field) or "").strip()
+                if val:
+                    library_mbids.add(val)
             if track_num is not None:
                 try:
                     library_by_tracknum.add((disc, int(track_num)))
@@ -3365,8 +3375,13 @@ def api_album_missing_tracks():
             t_track_num = mb_track.get("track_number")
             t_title = mb_track.get("title", "")
             t_norm = re.sub(r'\s+', ' ', t_title.lower().strip())
-            # Use track-number match first (more reliable); fall back to title match
-            if t_track_num is not None and library_by_tracknum:
+            t_recording_mbid = (mb_track.get("recording_mbid") or "").strip()
+
+            # Determine whether this MB track exists in the library.
+            # Priority: MBID match > track-number match > title match
+            if t_recording_mbid and t_recording_mbid in library_mbids:
+                found = True
+            elif t_track_num is not None and library_by_tracknum:
                 try:
                     found = (t_disc, int(t_track_num)) in library_by_tracknum
                 except (TypeError, ValueError):

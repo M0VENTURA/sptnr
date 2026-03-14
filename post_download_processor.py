@@ -167,6 +167,7 @@ def fetch_musicbrainz_release_metadata(release_id):
                     'title': recording.get('title', 'Unknown'),
                     'artist': '',
                     'duration': int(duration_ms) if duration_ms is not None else None,
+                    'recording_mbid': recording.get('id') or '',
                 }
                 
                 # Get track artist if different
