@@ -399,6 +399,31 @@ document.addEventListener('DOMContentLoaded', function() {
     // Cache previous state to avoid unnecessary DOM updates
     var previousScanStates = {};
 
+    /**
+     * Format an ISO-8601 scan timestamp as a human-readable local date/time.
+     * Returns a relative label (e.g. "2 hours ago") for recency and a full
+     * locale string as the tooltip title attribute.
+     */
+    function formatScanTimestamp(ts) {
+        if (!ts) return '—';
+        var d = new Date(ts);
+        if (isNaN(d.getTime())) return ts; // fallback: show raw string
+        var now = Date.now();
+        var diffMs = now - d.getTime();
+        var diffSec = Math.floor(diffMs / 1000);
+        var diffMin = Math.floor(diffSec / 60);
+        var diffHr  = Math.floor(diffMin / 60);
+        var diffDay = Math.floor(diffHr  / 24);
+        var relative;
+        if (diffSec < 60)       relative = diffSec + 's ago';
+        else if (diffMin < 60)  relative = diffMin + 'm ago';
+        else if (diffHr  < 24)  relative = diffHr  + 'h ago';
+        else if (diffDay < 7)   relative = diffDay + 'd ago';
+        else                    relative = d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+        var full = d.toLocaleString();
+        return `<span title="${full}">${relative}</span>`;
+    }
+
     function renderRecentScans(scans) {
         if (!recentScansBody) return;
         if (!scans || scans.length === 0) {
@@ -498,7 +523,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         </div>
                     </td>
                     <td class="text-muted text-end">
-                        <small>${group._inProgress ? 'now' : group.latest_timestamp}</small>
+                        <small>${group._inProgress ? 'now' : formatScanTimestamp(group.latest_timestamp)}</small>
                     </td>
                     <td class="text-center">
                         ${!group._inProgress

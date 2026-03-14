@@ -159,11 +159,14 @@ def fetch_musicbrainz_release_metadata(release_id):
             disc_number = media_idx
             for track in media.get('tracks', []):
                 recording = track.get('recording', {})
+                # MusicBrainz returns duration in milliseconds; store in ms for consistency
+                duration_ms = recording.get('length') or track.get('length')
                 track_info = {
                     'disc_number': disc_number,
                     'track_number': track.get('position', 0),
                     'title': recording.get('title', 'Unknown'),
                     'artist': '',
+                    'duration': int(duration_ms) if duration_ms is not None else None,
                 }
                 
                 # Get track artist if different

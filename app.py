@@ -3332,12 +3332,22 @@ def api_album_missing_tracks():
         library_rows = cursor.fetchall()
         conn.close()
 
-        library_keys = set()
+        # Build two lookup sets for matching:
+        #   1. (disc, track_number) – preferred; unambiguous when track numbers are present
+        #   2. (disc, normalised_title) – fallback for tracks without a number
+        library_by_tracknum = set()
+        library_by_title = set()
         for t in library_rows:
             t_dict = dict(t) if hasattr(t, "keys") else {"id": t[0], "title": t[1], "track_number": t[2], "disc_number": t[3]}
             disc = int(t_dict.get("disc_number") or 1)
+            track_num = t_dict.get("track_number")
             norm = re.sub(r'\s+', ' ', (t_dict.get("title") or "").lower().strip())
-            library_keys.add((disc, norm))
+            if track_num is not None:
+                try:
+                    library_by_tracknum.add((disc, int(track_num)))
+                except (TypeError, ValueError):
+                    pass
+            library_by_title.add((disc, norm))
 
         # Fetch MusicBrainz release tracklist
         from post_download_processor import fetch_musicbrainz_release_metadata
@@ -3352,18 +3362,31 @@ def api_album_missing_tracks():
         missing = []
         for mb_track in mb_tracks:
             t_disc = int(mb_track.get("disc_number") or 1)
+            t_track_num = mb_track.get("track_number")
             t_title = mb_track.get("title", "")
             t_norm = re.sub(r'\s+', ' ', t_title.lower().strip())
-            if (t_disc, t_norm) not in library_keys:
+            # Use track-number match first (more reliable); fall back to title match
+            if t_track_num is not None and library_by_tracknum:
+                try:
+                    found = (t_disc, int(t_track_num)) in library_by_tracknum
+                except (TypeError, ValueError):
+                    found = (t_disc, t_norm) in library_by_title
+            else:
+                found = (t_disc, t_norm) in library_by_title
+            if not found:
+                # MusicBrainz returns duration in milliseconds; convert to seconds for UI
+                mb_duration_ms = mb_track.get("duration")
+                duration_sec = mb_duration_ms // 1000 if mb_duration_ms else None
                 missing.append({
                     "title": t_title,
-                    "track_number": mb_track.get("track_number"),
+                    "track_number": t_track_num,
                     "disc_number": t_disc,
                     "artist": mb_track.get("artist") or artist,
                     "album": album,
                     "album_artist": artist,
                     "year": mb_year,
                     "release_id": mb_mbid,
+                    "duration": duration_sec,
                     "is_missing": True,
                 })
 
