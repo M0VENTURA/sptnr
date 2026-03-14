@@ -48,12 +48,31 @@
                                 <strong>{{ album_data.spotify_release_date[:4] }}</strong>
                             </div>
                             {% endif %}
-                            {% if album_data and album_data.spotify_album_type %}
                             <div class="col-6">
                                 <small class="text-muted d-block">Album Type</small>
-                                <strong><span class="badge bg-info">{{ album_data.spotify_album_type|title }}</span></strong>
+                                {% if album_data and album_data.spotify_album_type %}
+                                    {% set _atype = album_data.spotify_album_type|lower %}
+                                    {% if 'compilation' in _atype %}
+                                        <strong><span class="badge bg-info">Compilation</span></strong>
+                                    {% elif 'live' in _atype %}
+                                        <strong><span class="badge bg-info">Live</span></strong>
+                                    {% elif 'remix' in _atype %}
+                                        <strong><span class="badge bg-info">Remix</span></strong>
+                                    {% elif 'soundtrack' in _atype %}
+                                        <strong><span class="badge bg-info">Soundtrack</span></strong>
+                                    {% elif 'spokenword' in _atype %}
+                                        <strong><span class="badge bg-info">Spoken Word</span></strong>
+                                    {% elif _atype == 'ep' %}
+                                        <strong><span class="badge bg-info">EP</span></strong>
+                                    {% elif _atype == 'single' %}
+                                        <strong><span class="badge bg-info">Single</span></strong>
+                                    {% else %}
+                                        <strong><span class="badge bg-info">{{ album_data.spotify_album_type|title }}</span></strong>
+                                    {% endif %}
+                                {% else %}
+                                    <strong><span class="badge bg-secondary">Unknown</span></strong>
+                                {% endif %}
                             </div>
-                            {% endif %}
                             {% if album_data and album_data.track_count %}
                             <div class="col-6">
                                 <small class="text-muted d-block">Tracks</small>
