@@ -1623,9 +1623,9 @@ def check_completed_downloads():
                             _cleanup_sibling_downloads(item, keep_path=None)
                         else:
                             logger.warning(
-                                f"[AUTO_MOVE] Queue {item_id}: file verification failed after move to {target_path}, keeping as completed"
+                                f"[AUTO_MOVE] Queue {item_id}: file verification failed after move to {target_path}, updating path"
                             )
-                            update_queue_item(item_id, status='completed', file_path=file_path)
+                            update_queue_item(item_id, status='completed', file_path=target_path)
                     else:
                         logger.warning(
                             f"[AUTO_MOVE] Queue {item_id}: move to music dir failed, keeping as completed"
