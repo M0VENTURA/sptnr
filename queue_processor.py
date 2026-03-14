@@ -54,6 +54,16 @@ _CONFIRMED_MATCH_DURATION_TOLERANCE_SECONDS = 10
 # vs "World So Cold Intro").  See _metadata_matches_queue_item for details.
 _PREFIX_TITLE_MIN = 0.9
 
+# Maximum time (in minutes) a download is allowed to stay in each active slskd
+# transfer state before the queue processor cancels it and retries.
+# Keys match the slskd state strings used by SlskdClient constants.
+_SLSKD_ACTIVE_STATE_TIMEOUT_MINUTES = {
+    "Queued, Remotely": 120,   # Remote peer queued it but never started sending
+    "Requested": 30,            # No response from remote peer after 30 min
+    "Initializing": 30,         # Transfer started to initialise but never progressed
+    "InProgress": 240,          # Active download that has stalled for 4 hours
+}
+
 
 def _is_postgres_connection(conn):
     """Return True when the active DB connection is PostgreSQL."""
@@ -1541,9 +1551,34 @@ def check_completed_downloads():
                                 schedule_retry=True,
                                 retry_delay_minutes=10,
                             )
-                        # Active/unknown transfer states are left untouched —
-                        # the download may still be in progress.  Skip to the
-                        # next item and let it be re-evaluated next cycle.
+                        else:
+                            # Active or unrecognised transfer state. Apply a per-state
+                            # timeout so that downloads stuck indefinitely — e.g. the
+                            # remote peer queued the file but never started sending it —
+                            # are eventually cancelled and retried from a different source.
+                            timeout_minutes = _SLSKD_ACTIVE_STATE_TIMEOUT_MINUTES.get(transfer_state)
+                            if timeout_minutes and _is_stale_queue_item(item, stale_minutes=timeout_minutes):
+                                logger.warning(
+                                    f"Queue {item_id}: Download stuck in '{transfer_state}' state for "
+                                    f">{timeout_minutes}min, cancelling and retrying"
+                                )
+                                transfer_id = transfer.get("id", "")
+                                transfer_username = transfer.get("username", "")
+                                if transfer_id and transfer_username:
+                                    slskd_client.cancel_download(transfer_username, transfer_id, remove=True)
+                                mark_failed(
+                                    item_id,
+                                    f"slskd download timed out in '{transfer_state}' state",
+                                    schedule_retry=True,
+                                    retry_delay_minutes=10,
+                                )
+                            else:
+                                # Download may still be in progress or state is
+                                # unrecognised — skip and re-evaluate next cycle.
+                                continue
+                        # Always advance to the next item after handling a transfer
+                        # match — file matching above already failed so no further
+                        # processing is needed in this iteration.
                         continue
 
                     # Transfer no longer exists in slskd. If the item has been
@@ -1861,6 +1896,42 @@ def maybe_check_missing_moved_files(now_ts, last_run_ts, interval_seconds=300):
 
     return now_ts
 
+def maybe_clear_slskd_completed_downloads(now_ts, last_run_ts, interval_seconds=1800):
+    """
+    Periodically remove all completed and failed download entries from slskd's
+    transfer list.
+
+    Stale entries — especially failed ones — accumulate over time and can
+    interfere with re-downloading the same file from the same peer (slskd may
+    refuse or deduplicate the new request against an existing failed entry).
+    Clearing them every 30 minutes (default) keeps slskd's queue clean and
+    ensures retried downloads start with a fresh slate.
+
+    Args:
+        now_ts: Current time.time() value.
+        last_run_ts: Timestamp of the last cleanup run (None = never run).
+        interval_seconds: Minimum seconds between runs (default 1800 = 30 min).
+
+    Returns:
+        Updated last-run timestamp.
+    """
+    if last_run_ts is not None and (now_ts - last_run_ts) < interval_seconds:
+        return last_run_ts
+
+    try:
+        slskd_client = get_slskd_client()
+        if slskd_client:
+            cleared = slskd_client.clear_completed_downloads()
+            if cleared:
+                logger.info("[SLSKD_CLEANUP] Cleared completed/failed download entries from slskd")
+            else:
+                logger.debug("[SLSKD_CLEANUP] clear_completed_downloads returned False (no entries or API unavailable)")
+    except Exception as e:
+        logger.error(f"[SLSKD_CLEANUP] Error clearing slskd completed downloads: {e}")
+
+    return now_ts
+
+
 def run_processor(interval=30):
     """Run queue processor loop"""
     logger.info("=== Queue Processor Started ===")
@@ -1875,7 +1946,8 @@ def run_processor(interval=30):
     last_mb_check_ts = None
     last_mb_finalize_ts = None
     last_verify_ts = None
-    
+    last_slskd_cleanup_ts = None
+
     try:
         while True:
             try:
@@ -1887,6 +1959,7 @@ def run_processor(interval=30):
                 last_mb_check_ts = maybe_check_musicbrainz_files(now_ts, last_mb_check_ts)
                 last_mb_finalize_ts = maybe_finalize_musicbrainz_releases(now_ts, last_mb_finalize_ts)
                 last_verify_ts = maybe_check_missing_moved_files(now_ts, last_verify_ts)
+                last_slskd_cleanup_ts = maybe_clear_slskd_completed_downloads(now_ts, last_slskd_cleanup_ts)
                 
                 processed = process_queue(client)
                 

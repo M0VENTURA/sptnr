@@ -430,5 +430,84 @@ class PrefixTitleProtectionTests(unittest.TestCase):
         )
 
 
+class SlskdDownloadTimeoutTests(unittest.TestCase):
+    """Tests confirming download timeout and slskd cleanup functionality."""
+
+    def test_active_state_timeout_logic_present(self):
+        """queue_processor must apply timeouts for downloads stuck in active states."""
+        processor_text = _read("queue_processor.py")
+        # Module-level timeout constant must be defined
+        self.assertIn("_SLSKD_ACTIVE_STATE_TIMEOUT_MINUTES", processor_text)
+        # Must cover the key active states
+        self.assertIn("Queued, Remotely", processor_text)
+        self.assertIn("InProgress", processor_text)
+        # The cancellation path must be present
+        self.assertIn("cancel_download", processor_text)
+        self.assertIn("slskd download timed out", processor_text)
+
+    def test_active_state_timeout_uses_stale_check(self):
+        """Timeout detection must use _is_stale_queue_item with per-state limits."""
+        processor_text = _read("queue_processor.py")
+        self.assertIn("_is_stale_queue_item(item, stale_minutes=timeout_minutes)", processor_text)
+
+    def test_active_state_timeout_cancels_transfer(self):
+        """When a timeout is triggered the transfer must be cancelled in slskd."""
+        processor_text = _read("queue_processor.py")
+        self.assertIn("slskd_client.cancel_download(transfer_username, transfer_id, remove=True)", processor_text)
+
+    def test_clear_completed_downloads_method_exists(self):
+        """SlskdClient must expose clear_completed_downloads()."""
+        slskd_text = _read("api_clients/slskd.py")
+        self.assertIn("def clear_completed_downloads", slskd_text)
+        self.assertIn("transfers/downloads/all/completed", slskd_text)
+
+    def test_maybe_clear_slskd_completed_downloads_defined(self):
+        """queue_processor must define a periodic slskd cleanup helper."""
+        processor_text = _read("queue_processor.py")
+        self.assertIn("def maybe_clear_slskd_completed_downloads", processor_text)
+        self.assertIn("clear_completed_downloads()", processor_text)
+        # Must be wired into the main processor loop
+        self.assertIn("last_slskd_cleanup_ts", processor_text)
+        self.assertIn("maybe_clear_slskd_completed_downloads(now_ts, last_slskd_cleanup_ts)", processor_text)
+
+    def test_cleanup_uses_30_minute_interval(self):
+        """Periodic slskd cleanup must default to a 30-minute (1800 second) interval."""
+        processor_text = _read("queue_processor.py")
+        # The default interval_seconds argument must be 1800
+        self.assertIn("interval_seconds=1800", processor_text)
+
+
+class SlskdIsStaleQueueItemTests(unittest.TestCase):
+    """Tests confirming _is_stale_queue_item is wired into the timeout logic."""
+
+    def test_queued_remotely_timeout_is_120_minutes(self):
+        """Timeout for Queued, Remotely must be 120 minutes."""
+        processor_text = _read("queue_processor.py")
+        self.assertIn('"Queued, Remotely": 120', processor_text)
+
+    def test_in_progress_timeout_is_240_minutes(self):
+        """Timeout for InProgress must be 240 minutes."""
+        processor_text = _read("queue_processor.py")
+        self.assertIn('"InProgress": 240', processor_text)
+
+    def test_requested_timeout_is_30_minutes(self):
+        """Timeout for Requested state must be 30 minutes."""
+        processor_text = _read("queue_processor.py")
+        self.assertIn('"Requested": 30', processor_text)
+
+    def test_stale_queue_item_helper_defined(self):
+        """_is_stale_queue_item must be defined in queue_processor."""
+        processor_text = _read("queue_processor.py")
+        self.assertIn("def _is_stale_queue_item", processor_text)
+        # Must check updated_at field
+        self.assertIn("updated_at", processor_text)
+
+    def test_timeout_map_covers_all_active_states(self):
+        """Timeout map must include all known active slskd transfer states."""
+        processor_text = _read("queue_processor.py")
+        for state in ("Queued, Remotely", "Requested", "Initializing", "InProgress"):
+            self.assertIn(state, processor_text, f"Timeout map must include '{state}'")
+
+
 if __name__ == "__main__":
     unittest.main()
