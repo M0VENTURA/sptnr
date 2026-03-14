@@ -1404,7 +1404,102 @@ def _build_release_import_group(artist, album):
     return group.replace(' ', '_')[:100]
 
 
-def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
+def verify_downloaded_file_metadata(file_path, queue_item,
+                                    duration_tolerance_s=10.0,
+                                    title_min_score=0.70):
+    """
+    Verify that a downloaded file's embedded tags are consistent with the
+    queue item that triggered the download.
+
+    Checks performed:
+    - **Title similarity** — SequenceMatcher ratio ≥ *title_min_score* (0.70).
+      Short titles that are exact substrings (e.g. "Creep" vs "Creep Live") are
+      accepted as long as the ratio meets the threshold.
+    - **Duration** — actual file length within ±*duration_tolerance_s* seconds
+      of the queue item's stored duration (only when both values are known).
+
+    Artist checking is intentionally lenient (≥ 0.50) to avoid false failures
+    for tracks with featured artists or alternate name forms.
+
+    Returns:
+        dict:
+          - ``ok`` (bool): True when all checks pass **or** when metadata could
+            not be read (in which case we give the file the benefit of the doubt).
+          - ``reason`` (str): human-readable summary.
+          - ``detail`` (dict): per-check scores / diffs.
+    """
+    from difflib import SequenceMatcher
+
+    try:
+        file_meta = read_mp3_metadata(file_path) or {}
+    except Exception:
+        return {'ok': True, 'reason': 'metadata_unreadable', 'detail': {}}
+
+    detail: dict = {}
+    reasons: list = []
+
+    # ── Title ──────────────────────────────────────────────────────────────
+    file_title = (file_meta.get('title') or '').strip().lower()
+    queue_title = (queue_item.get('title') or '').strip().lower()
+    if file_title and queue_title:
+        title_score = SequenceMatcher(None, file_title, queue_title).ratio()
+        detail['title_score'] = round(title_score, 3)
+        if title_score < title_min_score:
+            reasons.append(f"title_mismatch(score={title_score:.2f})")
+
+    # ── Artist (lenient) ───────────────────────────────────────────────────
+    file_artist = (file_meta.get('artist') or '').strip().lower()
+    queue_artist = (queue_item.get('artist') or '').strip().lower()
+    if file_artist and queue_artist:
+        artist_score = SequenceMatcher(None, file_artist, queue_artist).ratio()
+        detail['artist_score'] = round(artist_score, 3)
+        if artist_score < 0.50:
+            reasons.append(f"artist_mismatch(score={artist_score:.2f})")
+
+    # ── Duration ───────────────────────────────────────────────────────────
+    file_dur_ms = file_meta.get('duration_ms')
+    if file_dur_ms:
+        file_dur_s = file_dur_ms / 1000.0
+        queue_dur = queue_item.get('duration')  # already in seconds
+        if queue_dur:
+            diff = abs(file_dur_s - float(queue_dur))
+            detail['duration_diff_s'] = round(diff, 1)
+            if diff > duration_tolerance_s:
+                reasons.append(f"duration_mismatch(diff={diff:.1f}s)")
+
+    if reasons:
+        return {'ok': False, 'reason': '; '.join(reasons), 'detail': detail}
+    return {'ok': True, 'reason': 'ok', 'detail': detail}
+
+
+def _remove_empty_download_dirs(file_path, downloads_root):
+    """
+    After a file is moved out of /downloads, remove its now-empty parent
+    directories up to (but not including) *downloads_root*.
+
+    Only removes directories that are genuinely empty; leaves any that still
+    contain files or other directories untouched.
+    """
+    try:
+        parent = os.path.dirname(os.path.abspath(file_path))
+        root = os.path.abspath(downloads_root)
+        # Walk upward until we hit the downloads root or a non-empty directory.
+        while True:
+            parent = os.path.normpath(parent)
+            root = os.path.normpath(root)
+            if parent == root or not parent.startswith(root + os.sep):
+                break
+            if os.path.isdir(parent) and not os.listdir(parent):
+                os.rmdir(parent)
+                logger.debug(f"[CLEANUP] Removed empty downloads dir: {parent}")
+                parent = os.path.dirname(parent)
+            else:
+                break
+    except Exception as e:
+        logger.debug(f"[CLEANUP] Could not remove empty dirs for {file_path}: {e}")
+
+
+
     """
     Move a single completed track from /downloads into the /music library tree.
 
@@ -1536,6 +1631,47 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
             except Exception as mb_err:
                 logger.warning(f"[MOVE] Could not fetch MusicBrainz metadata for release {release_id}: {mb_err}")
 
+        # If we still lack a per-track artist/title/number from the release
+        # lookup above, try the recording MBID (more precise: one recording =
+        # one song, whereas a release can have 20+ tracks).
+        recording_mbid = queue_item_dict.get('recording_mbid')
+        if recording_mbid and (
+            not tag_metadata.get('track_number') or tag_metadata['artist'] == queue_item_dict.get('artist')
+        ):
+            try:
+                from api_clients.musicbrainz import _USER_AGENT
+                import requests as _req
+                _headers = {"User-Agent": _USER_AGENT, "Accept": "application/json"}
+                _rec_url = (
+                    f"https://musicbrainz.org/ws/2/recording/{recording_mbid}"
+                    "?inc=artist-credits+releases&fmt=json"
+                )
+                _rec_resp = _req.get(_rec_url, headers=_headers, timeout=10)
+                if _rec_resp.status_code == 200:
+                    _rec = _rec_resp.json()
+                    if _rec.get('artist-credit'):
+                        from post_download_processor import _build_artist_credit_string
+                        rec_artist = _build_artist_credit_string(_rec['artist-credit'])
+                        if rec_artist:
+                            tag_metadata['artist'] = rec_artist
+                            artist = rec_artist
+                    if _rec.get('title'):
+                        tag_metadata['title'] = _rec['title']
+                        title = _rec['title']
+                    # Use duration from MusicBrainz recording when available
+                    rec_dur_ms = _rec.get('length')
+                    if rec_dur_ms and not tag_metadata.get('duration'):
+                        tag_metadata['duration_ms'] = int(rec_dur_ms)
+                    logger.debug(
+                        f"[MOVE] Queue {queue_item_dict.get('id', 'unknown')}: "
+                        f"enriched from recording MBID {recording_mbid}: "
+                        f"{artist} – {title}"
+                    )
+            except Exception as rec_err:
+                logger.debug(
+                    f"[MOVE] recording MBID lookup failed for {recording_mbid}: {rec_err}"
+                )
+
         if not year:
             year = 'Unknown'
         tag_metadata['year'] = year
@@ -1568,6 +1704,8 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
 
         shutil.move(file_path, dest_path)
         logger.info(f"[MOVE] {filename} → {dest_path}")
+        # Remove the (now empty) parent download directory to keep /downloads tidy.
+        _remove_empty_download_dirs(file_path, get_downloads_dir())
         return {'success': True, 'target_path': dest_path, 'error': None}
 
     except Exception as e:
@@ -2698,7 +2836,17 @@ def auto_discover_and_queue_files():
             first = rows[0]
             if isinstance(first, dict):
                 return rows
-            col_names = [d[0] for d in description]
+            # Build column name list safely.  psycopg2 ≥ 2.9 returns Column
+            # namedtuples with a `.name` attribute; older versions return plain
+            # 7-tuples where position 0 is the name.  Either way, guard against
+            # an empty descriptor entry so we never raise "tuple index out of
+            # range" when the cursor is in an unexpected state.
+            col_names = []
+            for d in (description or []):
+                try:
+                    col_names.append(getattr(d, 'name', None) or d[0])
+                except (IndexError, TypeError):
+                    col_names.append(str(d))
             return [dict(zip(col_names, r)) for r in rows]
 
         def _find_library_track_id(artist_value, album_value, title_value, album_artist_value=None):
@@ -2709,7 +2857,7 @@ def auto_discover_and_queue_files():
                 WHERE LOWER(artist) = LOWER({placeholder})
                   AND LOWER(album) = LOWER({placeholder})
                   AND LOWER(title) = LOWER({placeholder})
-                  AND (file_path IS NULL OR file_path NOT LIKE '__queued_for_download__%')
+                  AND (file_path IS NULL OR file_path NOT LIKE E'\\_\\_queued\\_for\\_download\\_\\_%' ESCAPE '\\')
                 ORDER BY id DESC
                 LIMIT 10
                 """,
@@ -2799,6 +2947,15 @@ def auto_discover_and_queue_files():
             return stats
         
         for file_info in discovered_files:
+            # PostgreSQL: use a SAVEPOINT so a per-file DB error can be rolled
+            # back without aborting the entire outer transaction.  This prevents
+            # "InFailedSqlTransaction" cascades from causing every subsequent
+            # file to fail with a confusing error.
+            if is_pg:
+                try:
+                    cursor.execute("SAVEPOINT _adq_file")
+                except Exception:
+                    pass
             try:
                 full_path = file_info['full_path']
                 filename = file_info['filename']
@@ -2895,8 +3052,27 @@ def auto_discover_and_queue_files():
                     logger.debug(f"File already in queue (ID {existing_id}, status {existing_status}): {filename}")
                     continue
                 
-                # Check if track exists in library (case-insensitive)
-                collection_track_id = _find_library_track_id(artist, album, title, album_artist)
+                # Check if track exists in library (case-insensitive).
+                # Wrap in try/except: a failure here (e.g. missing 'tracks'
+                # table column) must not abort processing of every remaining
+                # file.  On error we reset the SAVEPOINT so the cursor is
+                # ready for the next SQL statement.
+                try:
+                    collection_track_id = _find_library_track_id(artist, album, title, album_artist)
+                except Exception as _lib_err:
+                    logger.debug(
+                        f"[AUTO-DISCOVER] Library check failed for {filename}: {_lib_err}"
+                    )
+                    if is_pg:
+                        try:
+                            cursor.execute("ROLLBACK TO SAVEPOINT _adq_file")
+                            cursor.execute("SAVEPOINT _adq_file")
+                        except Exception:
+                            try:
+                                conn.rollback()
+                            except Exception:
+                                pass
+                    collection_track_id = None
                 if collection_track_id is not None:
                     stats['already_in_library'] += 1
                     logger.debug(f"Track already in library: {artist} - {title}")
@@ -3104,28 +3280,53 @@ def auto_discover_and_queue_files():
                     logger.info(f"⚠️  Unmatched [FLAC] [{metadata_status}]: {artist} - {title}")
                 else:
                     logger.info(f"⚠️  Unmatched [{metadata_status}]: {artist} - {title} from {os.path.basename(os.path.dirname(full_path))}/{filename}")
-                
+
+                # Commit file's work and release the SAVEPOINT.
+                if is_pg:
+                    try:
+                        cursor.execute("RELEASE SAVEPOINT _adq_file")
+                    except Exception:
+                        pass
+
             except psycopg2.IntegrityError as e:
                 # A duplicate row was inserted concurrently (race condition between parallel scans).
                 # This is non-fatal: the file is already tracked in the queue.  Roll back, log at
                 # INFO level and count as already-queued rather than as an error.
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
+                if is_pg:
+                    try:
+                        cursor.execute("ROLLBACK TO SAVEPOINT _adq_file")
+                    except Exception:
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
+                else:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
                 logger.info(
                     f"Duplicate skipped during auto-discover for {file_info['filename']}: {e}"
                 )
                 stats['already_in_queue'] += 1
             except Exception as e:
                 import traceback as _tb
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
+                if is_pg:
+                    try:
+                        cursor.execute("ROLLBACK TO SAVEPOINT _adq_file")
+                    except Exception:
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
+                else:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
                 error_msg = f"Error processing {file_info['filename']}: {str(e)}"
                 logger.error(error_msg)
-                logger.debug(
+                logger.error(
                     f"[AUTO-DISCOVER] Full traceback for {file_info['filename']}:\n"
                     f"{_tb.format_exc()}"
                 )
