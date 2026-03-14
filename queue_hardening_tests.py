@@ -430,5 +430,269 @@ class PrefixTitleProtectionTests(unittest.TestCase):
         )
 
 
+class SlskdDownloadTimeoutTests(unittest.TestCase):
+    """Tests confirming download timeout and slskd cleanup functionality."""
+
+    def test_active_state_timeout_logic_present(self):
+        """queue_processor must apply timeouts for downloads stuck in active states."""
+        processor_text = _read("queue_processor.py")
+        # Module-level timeout constant must be defined
+        self.assertIn("_SLSKD_ACTIVE_STATE_TIMEOUT_MINUTES", processor_text)
+        # Must cover the key active states
+        self.assertIn("Queued, Remotely", processor_text)
+        self.assertIn("InProgress", processor_text)
+        # The cancellation path must be present
+        self.assertIn("cancel_download", processor_text)
+        self.assertIn("slskd download timed out", processor_text)
+
+    def test_active_state_timeout_uses_stale_check(self):
+        """Timeout detection must use _is_stale_queue_item with per-state limits."""
+        processor_text = _read("queue_processor.py")
+        self.assertIn("_is_stale_queue_item(item, stale_minutes=timeout_minutes)", processor_text)
+
+    def test_active_state_timeout_cancels_transfer(self):
+        """When a timeout is triggered the transfer must be cancelled in slskd."""
+        processor_text = _read("queue_processor.py")
+        self.assertIn("slskd_client.cancel_download(transfer_username, transfer_id, remove=True)", processor_text)
+
+    def test_clear_completed_downloads_method_exists(self):
+        """SlskdClient must expose clear_completed_downloads()."""
+        slskd_text = _read("api_clients/slskd.py")
+        self.assertIn("def clear_completed_downloads", slskd_text)
+        self.assertIn("transfers/downloads/all/completed", slskd_text)
+
+    def test_maybe_clear_slskd_completed_downloads_defined(self):
+        """queue_processor must define a periodic slskd cleanup helper."""
+        processor_text = _read("queue_processor.py")
+        self.assertIn("def maybe_clear_slskd_completed_downloads", processor_text)
+        self.assertIn("clear_completed_downloads()", processor_text)
+        # Must be wired into the main processor loop
+        self.assertIn("last_slskd_cleanup_ts", processor_text)
+        self.assertIn("maybe_clear_slskd_completed_downloads(now_ts, last_slskd_cleanup_ts)", processor_text)
+
+    def test_cleanup_uses_30_minute_interval(self):
+        """Periodic slskd cleanup must default to a 30-minute (1800 second) interval."""
+        processor_text = _read("queue_processor.py")
+        # The default interval_seconds argument must be 1800
+        self.assertIn("interval_seconds=1800", processor_text)
+
+
+class SlskdIsStaleQueueItemTests(unittest.TestCase):
+    """Tests confirming _is_stale_queue_item is wired into the timeout logic."""
+
+    def test_queued_remotely_timeout_is_120_minutes(self):
+        """Timeout for Queued, Remotely must be 120 minutes."""
+        processor_text = _read("queue_processor.py")
+        self.assertIn('"Queued, Remotely": 120', processor_text)
+
+    def test_in_progress_timeout_is_240_minutes(self):
+        """Timeout for InProgress must be 240 minutes."""
+        processor_text = _read("queue_processor.py")
+        self.assertIn('"InProgress": 240', processor_text)
+
+    def test_requested_timeout_is_30_minutes(self):
+        """Timeout for Requested state must be 30 minutes."""
+        processor_text = _read("queue_processor.py")
+        self.assertIn('"Requested": 30', processor_text)
+
+    def test_stale_queue_item_helper_defined(self):
+        """_is_stale_queue_item must be defined in queue_processor."""
+        processor_text = _read("queue_processor.py")
+        self.assertIn("def _is_stale_queue_item", processor_text)
+        # Must check updated_at field
+        self.assertIn("updated_at", processor_text)
+
+    def test_timeout_map_covers_all_active_states(self):
+        """Timeout map must include all known active slskd transfer states."""
+        processor_text = _read("queue_processor.py")
+        for state in ("Queued, Remotely", "Requested", "Initializing", "InProgress"):
+            self.assertIn(state, processor_text, f"Timeout map must include '{state}'")
+
+
+class MusicBrainzCompareCoreMatchTests(unittest.TestCase):
+    """Tests for the core-title matching logic in api_album_musicbrainz_compare.
+
+    The compare endpoint must recognise that a library track titled 'World So Cold'
+    is the same recording as the MusicBrainz title
+    'World So Cold (live at USANA Amphitheatre, Salt Lake City, UT - August 2003)'.
+    """
+
+    def test_core_title_match_in_app_text(self):
+        """app.py must implement core-title matching (step 4) in the compare endpoint."""
+        app_text = _read("app.py")
+        # Verify the step-4 comment and the regex are present in the compare function.
+        # Find the function body between its def and the next top-level def/route.
+        func_start = app_text.find("def api_album_musicbrainz_compare()")
+        self.assertGreater(func_start, 0, "api_album_musicbrainz_compare not found in app.py")
+        # Grab a generous slice of the function (compare endpoint is ~200 lines)
+        func_body = app_text[func_start:func_start + 8000]
+        self.assertIn("Core-title match", func_body,
+                      "Step-4 comment must be present in api_album_musicbrainz_compare")
+        self.assertIn(r"[\(\[].+$", func_body,
+                      "Core-title stripping regex must be present in api_album_musicbrainz_compare")
+
+    def test_core_title_stripping_logic(self):
+        """Verify the core-title stripping regex works for the reported example."""
+        import re
+        mb_title = "World So Cold (live at USANA Amphitheatre, Salt Lake City, UT - August 2003)"
+        norm_mb = re.sub(r"\s+", " ", mb_title.lower().strip())
+        # Step 4 strips from first ( or [
+        norm_mb_core = re.sub(r"\s*[\(\[].+$", "", norm_mb).strip()
+        self.assertEqual(norm_mb_core, "world so cold")
+        # Core differs from full title, so step 4 should run
+        self.assertNotEqual(norm_mb_core, norm_mb)
+
+    def test_core_title_does_not_strip_plain_suffix_words(self):
+        """Step 4 must NOT run when the MB title has no parenthetical suffix.
+
+        'World So Cold Intro' has no parens/brackets — its core == full title so
+        the step-4 branch is skipped and the title is not erroneously matched.
+        """
+        import re
+        mb_title = "World So Cold Intro"
+        norm_mb = re.sub(r"\s+", " ", mb_title.lower().strip())
+        norm_mb_core = re.sub(r"\s*[\(\[].+$", "", norm_mb).strip()
+        # No stripping happened: core == full
+        self.assertEqual(norm_mb_core, norm_mb)
+
+    def test_core_title_stripping_remaster_example(self):
+        """'Fade to Black (Remastered)' must strip to 'Fade to Black'."""
+        import re
+        mb_title = "Fade to Black (Remastered)"
+        norm_mb = re.sub(r"\s+", " ", mb_title.lower().strip())
+        norm_mb_core = re.sub(r"\s*[\(\[].+$", "", norm_mb).strip()
+        self.assertEqual(norm_mb_core, "fade to black")
+
+
+class AlbumFolderEqualsSongTitleTests(unittest.TestCase):
+    """Tests for the album-folder-equals-song-title false positive in filename matching.
+
+    When a queue item has title "This Is The Sound" and the downloaded album folder
+    is also "This Is The Sound", every file in that folder has the track title in
+    its path — even unrelated tracks like "02. Skindred - You Got This.flac".
+    The filename matcher must require the title to appear in the basename, not
+    merely in the directory component.
+    """
+
+    def _run_filename_match(self, filename, artist, title, album=""):
+        """Import and call _filename_matches_queue_item from queue_processor."""
+        import importlib
+        import sys
+        sys.path.insert(0, ".")
+        try:
+            qp = importlib.import_module("queue_processor")
+        except Exception:
+            self.skipTest("queue_processor could not be imported")
+        item = {"artist": artist, "title": title, "album": album}
+        return qp._filename_matches_queue_item(filename, item)
+
+    def test_bug_case_wrong_track_not_matched(self):
+        """Track 'You Got This' in album folder 'This Is The Sound' must NOT
+        match queue item for song 'This Is The Sound'."""
+        result = self._run_filename_match(
+            "This Is The Sound/02. Skindred - You Got This.flac",
+            artist="Skindred",
+            title="This Is The Sound",
+            album="This Is The Sound",
+        )
+        self.assertFalse(result, "Title in folder only must not trigger a match")
+
+    def test_correct_track_in_album_folder_is_matched(self):
+        """The actual 'This Is The Sound' track inside the same album folder
+        must still be matched correctly (title present in both folder and basename)."""
+        result = self._run_filename_match(
+            "This Is The Sound/01. Skindred - This Is The Sound.flac",
+            artist="Skindred",
+            title="This Is The Sound",
+            album="This Is The Sound",
+        )
+        self.assertTrue(result, "Title in basename must match the correct track")
+
+    def test_another_wrong_track_in_album_folder_not_matched(self):
+        """A third track from the same album must also not match the title-song item."""
+        result = self._run_filename_match(
+            "This Is The Sound/03. Skindred - Tear It Down.flac",
+            artist="Skindred",
+            title="This Is The Sound",
+            album="This Is The Sound",
+        )
+        self.assertFalse(result, "Different track, title only in folder — must not match")
+
+    def test_normal_case_unrelated_album_matches(self):
+        """Normal download where the title appears in the filename must still match."""
+        result = self._run_filename_match(
+            "Black Album/01. Metallica - Enter Sandman.flac",
+            artist="Metallica",
+            title="Enter Sandman",
+            album="The Black Album",
+        )
+        self.assertTrue(result, "Title in basename should match")
+
+    def test_processor_basename_guard_in_source(self):
+        """queue_processor.py must contain the basename guard for title matching."""
+        processor_text = _read("queue_processor.py")
+        self.assertIn("basename_test", processor_text)
+        self.assertIn("title_in_basename", processor_text)
+        # The guard comment explains the album-folder-equals-song-title case
+        self.assertIn("only appears in the directory portion", processor_text)
+
+    def test_score_candidate_does_not_award_folder_only_title_bonus(self):
+        """_score_soulseek_candidate must check title in basename before awarding
+        the title-in-path bonus."""
+        processor_text = _read("queue_processor.py")
+        self.assertIn("basename_norm", processor_text)
+        self.assertIn("title_norm in basename_norm", processor_text)
+
+
+class NavidromeScanTriggerTests(unittest.TestCase):
+    """Tests for the periodic and immediate Navidrome scan-trigger logic.
+
+    After a downloaded file is successfully moved to /music, the queue processor
+    must trigger a Navidrome ``startScan`` so the file appears in Navidrome without
+    waiting for a manual full-import.  A periodic safety-net also fires every
+    5 minutes when recently-imported items are detected.
+    """
+
+    def test_trigger_helper_in_source(self):
+        """queue_processor.py must define _trigger_navidrome_scan()."""
+        processor_text = _read("queue_processor.py")
+        self.assertIn("def _trigger_navidrome_scan(", processor_text)
+        self.assertIn("startScan", processor_text)
+
+    def test_trigger_called_after_auto_move(self):
+        """_trigger_navidrome_scan() must be called in the successful auto-move path."""
+        processor_text = _read("queue_processor.py")
+        # Confirm the call sits in the same neighbourhood as the auto-move success block
+        auto_move_idx = processor_text.find("verified and imported to")
+        trigger_idx = processor_text.find("_trigger_navidrome_scan()", auto_move_idx)
+        self.assertGreater(
+            trigger_idx,
+            auto_move_idx,
+            "_trigger_navidrome_scan() must appear after the auto-move success log line",
+        )
+
+    def test_periodic_function_in_source(self):
+        """queue_processor.py must define maybe_trigger_navidrome_scan_for_new_imports()."""
+        processor_text = _read("queue_processor.py")
+        self.assertIn("def maybe_trigger_navidrome_scan_for_new_imports(", processor_text)
+
+    def test_periodic_function_wired_into_run_processor(self):
+        """run_processor() must call maybe_trigger_navidrome_scan_for_new_imports."""
+        processor_text = _read("queue_processor.py")
+        run_idx = processor_text.find("def run_processor(")
+        self.assertGreater(run_idx, 0)
+        run_body = processor_text[run_idx:]
+        self.assertIn("maybe_trigger_navidrome_scan_for_new_imports", run_body)
+
+    def test_periodic_function_uses_interval(self):
+        """The periodic function must respect its interval_seconds parameter."""
+        processor_text = _read("queue_processor.py")
+        # Confirm that the function compares now_ts against last_run_ts with interval
+        func_idx = processor_text.find("def maybe_trigger_navidrome_scan_for_new_imports(")
+        func_body = processor_text[func_idx:func_idx + 3000]
+        self.assertIn("interval_seconds", func_body)
+        self.assertIn("last_run_ts", func_body)
+
+
 if __name__ == "__main__":
     unittest.main()

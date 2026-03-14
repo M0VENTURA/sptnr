@@ -54,6 +54,16 @@ _CONFIRMED_MATCH_DURATION_TOLERANCE_SECONDS = 10
 # vs "World So Cold Intro").  See _metadata_matches_queue_item for details.
 _PREFIX_TITLE_MIN = 0.9
 
+# Maximum time (in minutes) a download is allowed to stay in each active slskd
+# transfer state before the queue processor cancels it and retries.
+# Keys match the slskd state strings used by SlskdClient constants.
+_SLSKD_ACTIVE_STATE_TIMEOUT_MINUTES = {
+    "Queued, Remotely": 120,   # Remote peer queued it but never started sending
+    "Requested": 30,            # No response from remote peer after 30 min
+    "Initializing": 30,         # Transfer started to initialise but never progressed
+    "InProgress": 240,          # Active download that has stalled for 4 hours
+}
+
 
 def _is_postgres_connection(conn):
     """Return True when the active DB connection is PostgreSQL."""
@@ -230,8 +240,16 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     # Strongly prefer explicit artist/title phrases when present.
     if artist_norm in filename_norm:
         score += 0.18
-    if title_norm in filename_norm:
+    # Award the title-in-path bonus only when the title appears in the actual
+    # filename component, not merely in a parent directory.  When the album
+    # folder is named after a track (e.g. folder "This Is The Sound" and the
+    # file being "02. Skindred - You Got This.flac"), title_norm matches the
+    # path but NOT the filename — so we should not reward it as a strong signal.
+    basename_norm = _normalize_match_text(os.path.basename(filename))
+    if title_norm in filename_norm and title_norm in basename_norm:
         score += 0.25
+    elif title_norm in basename_norm:
+        score += 0.20
 
     # Album disambiguation: prevent "Power"-style partial collisions.
     if album_norm:
@@ -362,6 +380,12 @@ def _filename_matches_queue_item(filename, queue_item):
     """
     try:
         filename_test = filename.lower().replace('\\', '/')
+        # Extract just the basename (without the directory path) for title matching.
+        # This prevents false positives when the album folder name equals the track
+        # title: e.g. queue item "This Is The Sound" must NOT match
+        # "This Is The Sound/02. Skindred - You Got This.flac" because the title
+        # only appears in the directory component, not in the actual filename.
+        basename_test = os.path.basename(filename_test)
         artist = (queue_item.get('artist') or '').lower().strip()
         title = (queue_item.get('title') or '').lower().strip()
 
@@ -369,15 +393,21 @@ def _filename_matches_queue_item(filename, queue_item):
             return False
 
         artist_in_path = artist in filename_test
-        title_in_path = title in filename_test
-        if artist_in_path and title_in_path:
+        title_in_basename = title in basename_test
+        if artist_in_path and title_in_basename:
             return True
 
         # Use stricter sequence similarity fallback to avoid cross-track collisions.
+        # When the title only appears in the directory portion (folder name) and not
+        # in the actual file's basename, skip the fallback: the folder match is an
+        # album-name coincidence, not evidence the file contains this track.
+        if not title_in_basename:
+            return False
+
         album = (queue_item.get('album') or '').lower().strip()
         combined_target = f"{artist} {title} {album}".strip()
         score = SequenceMatcher(None, combined_target, filename_test).ratio()
-        if score >= 0.60 and (artist_in_path or title_in_path):
+        if score >= 0.60 and (artist_in_path or title_in_basename):
             return True
 
         return False
@@ -895,6 +925,37 @@ def _build_subsonic_auth_params(username, password):
         "c": "sptnr",
         "f": "json",
     }
+
+
+def _trigger_navidrome_scan():
+    """Fire a Navidrome library scan so newly moved files are indexed without waiting
+    for the next manually-scheduled import.
+
+    Safe to call repeatedly — Navidrome coalesces concurrent scan requests and the
+    call is fire-and-forget (we do not wait for it to complete).  Returns True when
+    the scan was accepted, False when Navidrome is not configured or the request
+    failed.
+    """
+    base_url, username, password = _get_navidrome_config()
+    if not base_url:
+        return False
+    try:
+        auth = _build_subsonic_auth_params(username, password)
+        resp = requests.get(
+            f"{base_url}/rest/startScan",
+            params=auth,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        status = resp.json().get("subsonic-response", {}).get("status", "")
+        if status == "ok":
+            logger.info("[NAVIDROME] Triggered Navidrome library scan for newly added file")
+            return True
+        logger.debug(f"[NAVIDROME] startScan returned status={status!r}")
+        return False
+    except Exception as e:
+        logger.debug(f"[NAVIDROME] Could not trigger scan: {e}")
+        return False
 
 
 def check_track_exists_in_db(queue_item):
@@ -1541,9 +1602,34 @@ def check_completed_downloads():
                                 schedule_retry=True,
                                 retry_delay_minutes=10,
                             )
-                        # Active/unknown transfer states are left untouched —
-                        # the download may still be in progress.  Skip to the
-                        # next item and let it be re-evaluated next cycle.
+                        else:
+                            # Active or unrecognised transfer state. Apply a per-state
+                            # timeout so that downloads stuck indefinitely — e.g. the
+                            # remote peer queued the file but never started sending it —
+                            # are eventually cancelled and retried from a different source.
+                            timeout_minutes = _SLSKD_ACTIVE_STATE_TIMEOUT_MINUTES.get(transfer_state)
+                            if timeout_minutes and _is_stale_queue_item(item, stale_minutes=timeout_minutes):
+                                logger.warning(
+                                    f"Queue {item_id}: Download stuck in '{transfer_state}' state for "
+                                    f">{timeout_minutes}min, cancelling and retrying"
+                                )
+                                transfer_id = transfer.get("id", "")
+                                transfer_username = transfer.get("username", "")
+                                if transfer_id and transfer_username:
+                                    slskd_client.cancel_download(transfer_username, transfer_id, remove=True)
+                                mark_failed(
+                                    item_id,
+                                    f"slskd download timed out in '{transfer_state}' state",
+                                    schedule_retry=True,
+                                    retry_delay_minutes=10,
+                                )
+                            else:
+                                # Download may still be in progress or state is
+                                # unrecognised — skip and re-evaluate next cycle.
+                                continue
+                        # Always advance to the next item after handling a transfer
+                        # match — file matching above already failed so no further
+                        # processing is needed in this iteration.
                         continue
 
                     # Transfer no longer exists in slskd. If the item has been
@@ -1635,6 +1721,10 @@ def check_completed_downloads():
                             # Remove any other copies of this track left in /downloads
                             # from previous failed/retried download attempts.
                             _cleanup_sibling_downloads(item, keep_path=None)
+                            # Immediately trigger a Navidrome library scan so the newly
+                            # moved file appears in Navidrome without waiting for a manual
+                            # import or scheduled full-scan.
+                            _trigger_navidrome_scan()
                         else:
                             logger.warning(
                                 f"[AUTO_MOVE] Queue {item_id}: file verification failed after move to {target_path}, updating path"
@@ -1861,6 +1951,96 @@ def maybe_check_missing_moved_files(now_ts, last_run_ts, interval_seconds=300):
 
     return now_ts
 
+def maybe_clear_slskd_completed_downloads(now_ts, last_run_ts, interval_seconds=1800):
+    """
+    Periodically remove all completed and failed download entries from slskd's
+    transfer list.
+
+    Stale entries — especially failed ones — accumulate over time and can
+    interfere with re-downloading the same file from the same peer (slskd may
+    refuse or deduplicate the new request against an existing failed entry).
+    Clearing them every 30 minutes (default) keeps slskd's queue clean and
+    ensures retried downloads start with a fresh slate.
+
+    Args:
+        now_ts: Current time.time() value.
+        last_run_ts: Timestamp of the last cleanup run (None = never run).
+        interval_seconds: Minimum seconds between runs (default 1800 = 30 min).
+
+    Returns:
+        Updated last-run timestamp.
+    """
+    if last_run_ts is not None and (now_ts - last_run_ts) < interval_seconds:
+        return last_run_ts
+
+    try:
+        slskd_client = get_slskd_client()
+        if slskd_client:
+            cleared = slskd_client.clear_completed_downloads()
+            if cleared:
+                logger.info("[SLSKD_CLEANUP] Cleared completed/failed download entries from slskd")
+            else:
+                logger.debug("[SLSKD_CLEANUP] clear_completed_downloads returned False (no entries or API unavailable)")
+    except Exception as e:
+        logger.error(f"[SLSKD_CLEANUP] Error clearing slskd completed downloads: {e}")
+
+    return now_ts
+
+
+def maybe_trigger_navidrome_scan_for_new_imports(now_ts, last_run_ts, interval_seconds=300):
+    """Periodically check whether new tracks were recently imported and, when so,
+    trigger a Navidrome library scan so they appear in Navidrome without requiring
+    a manual full-import.
+
+    The check is intentionally lightweight — it queries only the count of queue
+    items that transitioned to 'imported' within the last *interval_seconds* window
+    and only calls Navidrome's ``startScan`` when at least one such item is found.
+
+    This complements the immediate trigger fired in ``check_completed_downloads()``
+    and acts as a safety net for cases where that call was missed (e.g. the service
+    restarted between move and scan).
+
+    Args:
+        now_ts: Current time.time() value.
+        last_run_ts: Timestamp of the last check (None = never run).
+        interval_seconds: Minimum seconds between checks (default 300 = 5 min).
+
+    Returns:
+        Updated last-run timestamp.
+    """
+    if last_run_ts is not None and (now_ts - last_run_ts) < interval_seconds:
+        return last_run_ts
+
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = _get_placeholder(conn)
+        # Look for items imported within twice the check interval to avoid missing
+        # items that fell just outside the previous window.
+        lookback_seconds = interval_seconds * 2
+        cutoff = (datetime.now() - timedelta(seconds=lookback_seconds)).isoformat()
+        cursor.execute(
+            f"""
+            SELECT COUNT(*) FROM download_queue
+            WHERE status = 'imported'
+              AND updated_at >= {placeholder}
+            """,
+            (cutoff,),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        count = row[0] if row else 0
+        if count > 0:
+            logger.debug(f"[NAVIDROME] {count} item(s) recently imported — triggering Navidrome scan")
+            _trigger_navidrome_scan()
+        else:
+            logger.debug("[NAVIDROME] No recent imports; skipping Navidrome scan trigger")
+    except Exception as e:
+        logger.debug(f"[NAVIDROME] Error checking for recent imports: {e}")
+
+    return now_ts
+
+
 def run_processor(interval=30):
     """Run queue processor loop"""
     logger.info("=== Queue Processor Started ===")
@@ -1875,7 +2055,9 @@ def run_processor(interval=30):
     last_mb_check_ts = None
     last_mb_finalize_ts = None
     last_verify_ts = None
-    
+    last_slskd_cleanup_ts = None
+    last_navidrome_scan_ts = None
+
     try:
         while True:
             try:
@@ -1887,6 +2069,8 @@ def run_processor(interval=30):
                 last_mb_check_ts = maybe_check_musicbrainz_files(now_ts, last_mb_check_ts)
                 last_mb_finalize_ts = maybe_finalize_musicbrainz_releases(now_ts, last_mb_finalize_ts)
                 last_verify_ts = maybe_check_missing_moved_files(now_ts, last_verify_ts)
+                last_slskd_cleanup_ts = maybe_clear_slskd_completed_downloads(now_ts, last_slskd_cleanup_ts)
+                last_navidrome_scan_ts = maybe_trigger_navidrome_scan_for_new_imports(now_ts, last_navidrome_scan_ts)
                 
                 processed = process_queue(client)
                 
