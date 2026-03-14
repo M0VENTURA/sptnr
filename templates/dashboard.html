@@ -46,14 +46,24 @@
             </a>
         </div>
         <div class="card-body">
-            <p class="text-muted small mb-3">Search MusicBrainz for releases by artist, then add them to the download queue.</p>
-            <div class="input-group">
-                <input type="text" class="form-control" id="dashQueueArtist" placeholder="Artist name *"
-                       onkeypress="if(event.key==='Enter') dashboardOpenMbSearch()">
-                <button class="btn btn-primary" onclick="dashboardOpenMbSearch()">
-                    <i class="bi bi-search"></i> Search MusicBrainz
-                </button>
+            <p class="text-muted small mb-3">Search MusicBrainz by artist, album, or song name — fill in any combination.</p>
+            <div class="row g-2 mb-2">
+                <div class="col-12 col-md-4">
+                    <input type="text" class="form-control" id="dashQueueArtist" placeholder="Artist name"
+                           onkeypress="if(event.key==='Enter') dashboardOpenMbSearch()">
+                </div>
+                <div class="col-12 col-md-4">
+                    <input type="text" class="form-control" id="dashQueueAlbum" placeholder="Album name"
+                           onkeypress="if(event.key==='Enter') dashboardOpenMbSearch()">
+                </div>
+                <div class="col-12 col-md-4">
+                    <input type="text" class="form-control" id="dashQueueSong" placeholder="Song name"
+                           onkeypress="if(event.key==='Enter') dashboardOpenMbSearch()">
+                </div>
             </div>
+            <button class="btn btn-primary w-100" onclick="dashboardOpenMbSearch()">
+                <i class="bi bi-search"></i> Search MusicBrainz
+            </button>
         </div>
     </div>
     
@@ -482,6 +492,31 @@ document.addEventListener('DOMContentLoaded', function() {
         ];
 
         const rows = dedupedScans.map(group => {
+            // Special rendering for scan-session completion entries
+            if (group.artist === '_SCAN_SESSION_') {
+                const typeName = group.album === 'navidrome' ? 'Navidrome Import'
+                    : group.album === 'popularity' ? 'Popularity Scan'
+                    : group.album === 'singles' ? 'Singles Scan'
+                    : group.album === 'combined' ? 'Combined Scan'
+                    : escapeHtml(group.album);
+                const typeIcon = group.album === 'navidrome' ? 'bi-cloud'
+                    : group.album === 'popularity' ? 'bi-graph-up'
+                    : group.album === 'singles' ? 'bi-star'
+                    : 'bi-lightning-fill';
+                return `
+                    <tr class="table-success bg-opacity-10">
+                        <td colspan="4" class="py-1 ps-3">
+                            <small class="text-success">
+                                <i class="bi bi-check-circle-fill me-1"></i>
+                                <strong>${typeName}</strong> completed
+                                — ${formatScanTimestamp(group.latest_timestamp)}
+                                <span class="badge bg-success ms-2"><i class="bi ${typeIcon}"></i></span>
+                            </small>
+                        </td>
+                        <td></td>
+                    </tr>`;
+            }
+
             const artistUrl = `/artist/${encodeURIComponent(group.artist)}`;
             const albumUrl = group.album && group.album !== '…'
                 ? `/album/${encodeURIComponent(group.artist)}/${encodeURIComponent(group.album)}`
@@ -994,12 +1029,17 @@ async function updateFeature(key, value) {
 // ===== Dashboard MusicBrainz Search =====
 
 function dashboardOpenMbSearch() {
-    const artist = document.getElementById('dashQueueArtist').value.trim();
-    if (!artist) {
-        document.getElementById('dashQueueArtist').focus();
+    const artistEl = document.getElementById('dashQueueArtist');
+    const albumEl  = document.getElementById('dashQueueAlbum');
+    const songEl   = document.getElementById('dashQueueSong');
+    const artist = artistEl ? artistEl.value.trim() : '';
+    const album  = albumEl  ? albumEl.value.trim()  : '';
+    const song   = songEl   ? songEl.value.trim()   : '';
+    if (!artist && !album && !song) {
+        if (artistEl) artistEl.focus();
         return;
     }
-    searchMusicBrainzRelease(null, artist, '');
+    searchMusicBrainzRelease(null, artist, album, song);
 }
 </script>
 
