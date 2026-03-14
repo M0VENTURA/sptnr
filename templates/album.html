@@ -1235,6 +1235,9 @@
     function lookupAlbumMusicBrainz() {
         const album = {{ album_name|tojson }};
         const artist = {{ artist_name|tojson }};
+        // Pass the existing stored MBID (release MBID) so the API can do a direct
+        // lookup for it and include it in results for comparison.
+        const existingMbid = (document.getElementById('musicbrainzReleaseId') || {}).value || '';
         
         const resultsDiv = document.getElementById('albumLookupResults');
         resultsDiv.innerHTML = '<div class="spinner-border spinner-border-sm" role="status"><span class="visually-hidden">Loading...</span></div> Searching MusicBrainz...';
@@ -1242,7 +1245,7 @@
         fetch('/api/album/musicbrainz', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ album: album, artist: artist })
+            body: JSON.stringify({ album: album, artist: artist, existing_mbid: existingMbid || null })
         })
         .then(response => {
             if (!response.ok) {
@@ -1329,9 +1332,12 @@
                 const confidencePercent = (result.confidence * 100).toFixed(1);
                 const confidenceClass = result.confidence > 0.8 ? 'success' : result.confidence > 0.5 ? 'warning' : 'secondary';
                 const year = (result.first_release_date || '').slice(0, 4);
+                const isStoredMbid = result.is_stored_mbid === true;
+                const storedBadge = isStoredMbid ? '<span class="badge bg-dark me-2"><i class="bi bi-bookmark-fill me-1"></i>Currently stored</span>' : '';
+                const itemStyle = isStoredMbid ? 'border-left: 3px solid #6c757d; background: rgba(108,117,125,0.05);' : '';
                 
                 html += `
-                    <div class="list-group-item list-group-item-action" style="cursor: pointer; padding: 1rem;">
+                    <div class="list-group-item list-group-item-action" style="cursor: pointer; padding: 1rem; ${itemStyle}">
                         <div class="d-flex gap-3">
                             ${result.cover_art_url ? `
                                 <img src="${result.cover_art_url}" 
@@ -1342,7 +1348,7 @@
                             <div class="flex-grow-1">
                                 <div class="d-flex justify-content-between align-items-start mb-2">
                                     <div>
-                                        <h6 class="mb-1">${result.title}</h6>
+                                        <h6 class="mb-1">${storedBadge}${result.title}</h6>
                                         <small class="text-muted">by ${result.artist}</small>
                                     </div>
                                     <span class="badge bg-${confidenceClass}">${confidencePercent}% match</span>
@@ -1350,6 +1356,7 @@
                                 <div class="small text-muted mb-2">
                                     <span class="badge bg-info me-1">${result.primary_type || 'Album'}</span>
                                     ${year ? `<span class="badge bg-secondary">${year}</span>` : ''}
+                                    ${isStoredMbid ? `<span class="badge bg-light text-dark border me-1">${result.mbid_type === 'release' ? 'Release ID' : 'Release Group ID'}</span>` : ''}
                                 </div>
                                 <div class="small text-muted mb-2">
                                     <strong>MBID:</strong> <code style="font-size: 0.75rem;">${result.mbid}</code>
