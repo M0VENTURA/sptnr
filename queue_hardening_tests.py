@@ -95,6 +95,25 @@ class QueueHardeningTests(unittest.TestCase):
         # to prevent newly-queued items from immediately being marked in_collection.
         self.assertIn("file_path NOT LIKE '__queued_for_download__%'", processor_text)
 
+    def test_prefix_title_protection_in_queue_processor(self):
+        """queue_processor._metadata_matches_queue_item must reject prefix title matches.
+
+        A file tagged 'World So Cold' must not match a queue item titled
+        'World So Cold Intro' (or vice versa) just because one title is a
+        leading substring of the other.
+        """
+        processor_text = _read("queue_processor.py")
+        # The prefix-protection block must be present
+        self.assertIn("startswith(_title_b)", processor_text)
+        self.assertIn("startswith(_title_a)", processor_text)
+
+    def test_prefix_title_protection_in_queue_manager(self):
+        """download_queue_manager._metadata_matches_queue_item must reject prefix title matches."""
+        mgr_text = _read("download_queue_manager.py")
+        self.assertIn("_PREFIX_TITLE_MIN", mgr_text)
+        self.assertIn("startswith(_title_b)", mgr_text)
+        self.assertIn("startswith(_title_a)", mgr_text)
+
 
 class FilenameMatchLogicTests(unittest.TestCase):
     """Unit tests for _filename_matches_queue_item (no DB/network needed)."""
@@ -268,6 +287,116 @@ class ConfirmedCollectionMatchLogicTests(unittest.TestCase):
         processor_text = _read("queue_processor.py")
         self.assertIn("if not matched_data:", processor_text)
         self.assertIn("return False", processor_text)
+
+
+class PrefixTitleProtectionTests(unittest.TestCase):
+    """Unit tests for the prefix-title false-positive guard in _metadata_matches_queue_item.
+
+    Songs like 'World So Cold' and 'World So Cold Intro' share a high title
+    similarity (~0.81) but are distinct tracks and must not be matched to each
+    other via fuzzy metadata comparison.
+    """
+
+    def _get_proc_fn(self):
+        import sys, os, importlib.util
+        if "queue_processor" in sys.modules:
+            mod = sys.modules["queue_processor"]
+            fn = getattr(mod, "_metadata_matches_queue_item", None)
+            if fn is None:
+                raise unittest.SkipTest("_metadata_matches_queue_item not available")
+            return fn
+        spec = importlib.util.spec_from_file_location(
+            "queue_processor",
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "queue_processor.py"),
+        )
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["queue_processor"] = mod
+        try:
+            spec.loader.exec_module(mod)
+        except Exception as e:
+            raise unittest.SkipTest(f"queue_processor not importable: {e}")
+        fn = getattr(mod, "_metadata_matches_queue_item", None)
+        if fn is None:
+            raise unittest.SkipTest("_metadata_matches_queue_item not available")
+        return fn
+
+    def _call_with_fake_metadata(self, fn, file_title, file_artist, queue_title, queue_artist, album="Weathered"):
+        """Call _metadata_matches_queue_item with patched metadata reading."""
+        from unittest.mock import patch, MagicMock
+
+        # Build a fake audio object with no meaningful duration info
+        fake_audio = MagicMock()
+        fake_audio.tags = None
+        fake_audio.info = None
+
+        fake_meta = {"artist": file_artist, "title": file_title, "album": album}
+
+        queue_item = {"artist": queue_artist, "title": queue_title, "album": album, "duration": None}
+
+        with patch("queue_processor.read_mp3_metadata", return_value=fake_meta), \
+             patch("queue_processor.MutagenFile", return_value=fake_audio):
+            return fn("/fake/path/song.mp3", queue_item)
+
+    def test_prefix_title_no_match(self):
+        """'World So Cold' file must NOT match 'World So Cold Intro' queue item."""
+        fn = self._get_proc_fn()
+        result = self._call_with_fake_metadata(
+            fn,
+            file_title="World So Cold",
+            file_artist="Creed",
+            queue_title="World So Cold Intro",
+            queue_artist="Creed",
+        )
+        self.assertFalse(
+            result,
+            "'World So Cold' should not match 'World So Cold Intro' queue item",
+        )
+
+    def test_prefix_title_reverse_no_match(self):
+        """'World So Cold Intro' file must NOT match 'World So Cold' queue item."""
+        fn = self._get_proc_fn()
+        result = self._call_with_fake_metadata(
+            fn,
+            file_title="World So Cold Intro",
+            file_artist="Creed",
+            queue_title="World So Cold",
+            queue_artist="Creed",
+        )
+        self.assertFalse(
+            result,
+            "'World So Cold Intro' should not match 'World So Cold' queue item",
+        )
+
+    def test_exact_title_still_matches(self):
+        """Exact title match must still succeed after the prefix guard is applied."""
+        fn = self._get_proc_fn()
+        result = self._call_with_fake_metadata(
+            fn,
+            file_title="World So Cold",
+            file_artist="Creed",
+            queue_title="World So Cold",
+            queue_artist="Creed",
+        )
+        self.assertTrue(
+            result,
+            "Exact title 'World So Cold' should match 'World So Cold' queue item",
+        )
+
+    def test_unrelated_titles_still_rejected(self):
+        """Completely different titles must be rejected (control case)."""
+        fn = self._get_proc_fn()
+        result = self._call_with_fake_metadata(
+            fn,
+            file_title="Comfortably Numb",
+            file_artist="Pink Floyd",
+            queue_title="Stairway to Heaven",
+            queue_artist="Led Zeppelin",
+            album="",
+        )
+        self.assertFalse(
+            result,
+            "Unrelated titles should not match",
+        )
 
 
 if __name__ == "__main__":

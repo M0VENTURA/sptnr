@@ -95,6 +95,12 @@ _downloads_check_cache = {
 }
 _DOWNLOADS_CHECK_MIN_INTERVAL_SECONDS = 20
 
+# Minimum title similarity required when one title is a leading substring of
+# another (e.g. "World So Cold" vs "World So Cold Intro").  The general
+# combined threshold of 0.68 is too lenient for these prefix cases because the
+# album similarity boost can push a clearly mismatched pair well above it.
+_PREFIX_TITLE_MIN = 0.9
+
 # In-memory event queue for displaying logs on UI (keep last 200 events)
 _queue_events = []
 _queue_events_lock = threading.Lock()
@@ -2137,6 +2143,17 @@ def _metadata_matches_queue_item(file_meta, queue_item, threshold=0.68, file_pat
     _FIELD_MIN = 0.55
     if artist_score < _FIELD_MIN or title_score < _FIELD_MIN:
         return False
+
+    # Protect against "prefix" false-positives: when one title is merely a
+    # leading substring of the other (e.g. "World So Cold" vs "World So Cold
+    # Intro"), the similarity score is deceptively high (~0.81) even though
+    # these are distinct tracks.  Require a near-exact title match in that
+    # case to avoid incorrectly marking a queue item as matched/completed.
+    _title_a = file_title.lower().strip()
+    _title_b = queue_title.lower().strip()
+    if _title_a != _title_b and (_title_a.startswith(_title_b) or _title_b.startswith(_title_a)):
+        if title_score < _PREFIX_TITLE_MIN:
+            return False
 
     combined = (artist_score + title_score) / 2
 
