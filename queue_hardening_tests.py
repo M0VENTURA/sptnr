@@ -644,5 +644,55 @@ class AlbumFolderEqualsSongTitleTests(unittest.TestCase):
         self.assertIn("title_norm in basename_norm", processor_text)
 
 
+class NavidromeScanTriggerTests(unittest.TestCase):
+    """Tests for the periodic and immediate Navidrome scan-trigger logic.
+
+    After a downloaded file is successfully moved to /music, the queue processor
+    must trigger a Navidrome ``startScan`` so the file appears in Navidrome without
+    waiting for a manual full-import.  A periodic safety-net also fires every
+    5 minutes when recently-imported items are detected.
+    """
+
+    def test_trigger_helper_in_source(self):
+        """queue_processor.py must define _trigger_navidrome_scan()."""
+        processor_text = _read("queue_processor.py")
+        self.assertIn("def _trigger_navidrome_scan(", processor_text)
+        self.assertIn("startScan", processor_text)
+
+    def test_trigger_called_after_auto_move(self):
+        """_trigger_navidrome_scan() must be called in the successful auto-move path."""
+        processor_text = _read("queue_processor.py")
+        # Confirm the call sits in the same neighbourhood as the auto-move success block
+        auto_move_idx = processor_text.find("verified and imported to")
+        trigger_idx = processor_text.find("_trigger_navidrome_scan()", auto_move_idx)
+        self.assertGreater(
+            trigger_idx,
+            auto_move_idx,
+            "_trigger_navidrome_scan() must appear after the auto-move success log line",
+        )
+
+    def test_periodic_function_in_source(self):
+        """queue_processor.py must define maybe_trigger_navidrome_scan_for_new_imports()."""
+        processor_text = _read("queue_processor.py")
+        self.assertIn("def maybe_trigger_navidrome_scan_for_new_imports(", processor_text)
+
+    def test_periodic_function_wired_into_run_processor(self):
+        """run_processor() must call maybe_trigger_navidrome_scan_for_new_imports."""
+        processor_text = _read("queue_processor.py")
+        run_idx = processor_text.find("def run_processor(")
+        self.assertGreater(run_idx, 0)
+        run_body = processor_text[run_idx:]
+        self.assertIn("maybe_trigger_navidrome_scan_for_new_imports", run_body)
+
+    def test_periodic_function_uses_interval(self):
+        """The periodic function must respect its interval_seconds parameter."""
+        processor_text = _read("queue_processor.py")
+        # Confirm that the function compares now_ts against last_run_ts with interval
+        func_idx = processor_text.find("def maybe_trigger_navidrome_scan_for_new_imports(")
+        func_body = processor_text[func_idx:func_idx + 3000]
+        self.assertIn("interval_seconds", func_body)
+        self.assertIn("last_run_ts", func_body)
+
+
 if __name__ == "__main__":
     unittest.main()
