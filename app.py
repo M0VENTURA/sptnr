@@ -3418,6 +3418,252 @@ def api_artist_corrections_albums():
         return jsonify({"error": str(e), "albums": []}), 500
 
 
+# ---------------------------------------------------------------------------
+# Artist Genre Management
+# ---------------------------------------------------------------------------
+
+def _parse_genres_string(s):
+    """Parse a comma/backslash-separated genres string into a list."""
+    if not s:
+        return []
+    return [g.strip() for g in re.split(r'[,\\]+', s) if g.strip()]
+
+
+def _parse_json_genres(col):
+    """Parse a JSON genre column (list of strings or list of dicts with 'name' key)."""
+    if not col:
+        return []
+    try:
+        data = json.loads(col) if isinstance(col, str) else col
+        if not isinstance(data, list):
+            return []
+        result = []
+        for item in data:
+            if isinstance(item, str):
+                result.append(item.strip())
+            elif isinstance(item, dict):
+                name = item.get("name") or item.get("tag") or ""
+                if name:
+                    result.append(str(name).strip())
+        return [g for g in result if g]
+    except Exception:
+        return []
+
+
+@app.route("/artist/<path:name>/genre-management")
+def artist_genre_management(name):
+    """Genre management page — view and edit genres at artist/album/track level."""
+    from urllib.parse import unquote
+
+    artist_name = unquote(name)
+    conn = get_db()
+    cursor = conn.cursor()
+    is_pg = _is_postgres_connection(conn)
+    placeholder = "%s" if is_pg else "?"
+
+    try:
+        cursor.execute(
+            f"""
+            SELECT
+                id,
+                album,
+                title,
+                track_number,
+                disc_number,
+                file_path,
+                COALESCE(NULLIF(artist, ''), '') AS artist,
+                COALESCE(NULLIF(album_artist, ''), artist) AS album_artist,
+                COALESCE(genres, '') AS genres,
+                COALESCE(discogs_genres, '') AS discogs_genres,
+                COALESCE(lastfm_tags, '') AS lastfm_tags,
+                COALESCE(musicbrainz_genres, '') AS musicbrainz_genres
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+            ORDER BY album, disc_number, track_number, title
+            """,
+            (artist_name,),
+        )
+        rows = [dict(r) if hasattr(r, "keys") else {
+            "id": r[0], "album": r[1], "title": r[2], "track_number": r[3],
+            "disc_number": r[4], "file_path": r[5], "artist": r[6],
+            "album_artist": r[7], "genres": r[8], "discogs_genres": r[9],
+            "lastfm_tags": r[10], "musicbrainz_genres": r[11],
+        } for r in cursor.fetchall()]
+    finally:
+        conn.close()
+
+    # Build per-track dicts
+    all_artist_current = set()
+    all_artist_recommended_raw = set()
+
+    albums_map = {}  # album -> {"tracks": [], "all_current": set(), "all_rec_raw": set()}
+    for row in rows:
+        album = row.get("album") or ""
+        current = _parse_genres_string(row.get("genres", ""))
+        current_set = set(g.lower() for g in current)
+
+        rec_raw = (
+            _parse_json_genres(row.get("discogs_genres"))
+            + _parse_json_genres(row.get("lastfm_tags"))
+            + _parse_json_genres(row.get("musicbrainz_genres"))
+        )
+        recommended = [g for g in dict.fromkeys(rec_raw) if g.lower() not in current_set]
+
+        track_dict = {
+            "id": row.get("id"),
+            "title": row.get("title") or "",
+            "album": album,
+            "track_number": row.get("track_number"),
+            "disc_number": row.get("disc_number"),
+            "file_path": row.get("file_path") or "",
+            "artist": row.get("artist") or "",
+            "current_genres": current,
+            "recommended_genres": recommended,
+        }
+
+        if album not in albums_map:
+            albums_map[album] = {"tracks": [], "all_current": set(), "all_rec_raw": set()}
+        albums_map[album]["tracks"].append(track_dict)
+        albums_map[album]["all_current"].update(current)
+        albums_map[album]["all_rec_raw"].update(rec_raw)
+
+        all_artist_current.update(current)
+        all_artist_recommended_raw.update(rec_raw)
+
+    # Build album-level dicts
+    albums = []
+    for album_name, data in albums_map.items():
+        alb_current_set_lower = set(g.lower() for g in data["all_current"])
+        alb_recommended = [
+            g for g in dict.fromkeys(data["all_rec_raw"])
+            if g.lower() not in alb_current_set_lower
+        ]
+        albums.append({
+            "album": album_name,
+            "current_genres": sorted(data["all_current"]),
+            "recommended_genres": alb_recommended,
+            "tracks": data["tracks"],
+        })
+
+    artist_current_lower = set(g.lower() for g in all_artist_current)
+    artist_recommended_genres = [
+        g for g in dict.fromkeys(all_artist_recommended_raw)
+        if g.lower() not in artist_current_lower
+    ]
+
+    return render_template(
+        "artist_genre_management.html",
+        artist_name=artist_name,
+        albums=albums,
+        artist_current_genres=sorted(all_artist_current),
+        artist_recommended_genres=artist_recommended_genres,
+    )
+
+
+@app.route("/api/artist/genre-management/save", methods=["POST"])
+def api_artist_genre_management_save():
+    """Apply genre add/remove changes at artist, album, or track scope."""
+    try:
+        payload = request.get_json(silent=True) or {}
+        artist_name = str(payload.get("artist") or "").strip()
+        changes = payload.get("changes") or []
+
+        if not artist_name:
+            return jsonify({"success": False, "error": "artist is required"}), 400
+
+        conn = get_db()
+        cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+
+        updated = 0
+        failed = 0
+
+        try:
+            for change in changes:
+                scope = str(change.get("scope") or "").strip()
+                add_genres = [str(g).strip() for g in (change.get("add") or []) if g]
+                remove_genres_lower = set(str(g).strip().lower() for g in (change.get("remove") or []) if g)
+
+                if not scope or (not add_genres and not remove_genres_lower):
+                    continue
+
+                # Determine which tracks to update
+                if scope == "artist":
+                    cursor.execute(
+                        f"SELECT id, genres, file_path FROM tracks"
+                        f" WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}",
+                        (artist_name,),
+                    )
+                elif scope == "album":
+                    album = str(change.get("album") or "").strip()
+                    if not album:
+                        continue
+                    cursor.execute(
+                        f"SELECT id, genres, file_path FROM tracks"
+                        f" WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}"
+                        f" AND album = {placeholder}",
+                        (artist_name, album),
+                    )
+                elif scope == "track":
+                    track_id = change.get("track_id")
+                    if track_id is None:
+                        continue
+                    cursor.execute(
+                        f"SELECT id, genres, file_path FROM tracks WHERE id = {placeholder}",
+                        (int(track_id),),
+                    )
+                else:
+                    continue
+
+                track_rows = [
+                    dict(r) if hasattr(r, "keys") else {"id": r[0], "genres": r[1], "file_path": r[2]}
+                    for r in cursor.fetchall()
+                ]
+
+                for tr in track_rows:
+                    tid = tr.get("id")
+                    current = _parse_genres_string(tr.get("genres") or "")
+                    current_lower_map = {g.lower(): g for g in current}
+
+                    # Remove
+                    new_set = {k: v for k, v in current_lower_map.items() if k not in remove_genres_lower}
+
+                    # Add (avoid duplicates)
+                    for g in add_genres:
+                        if g.lower() not in new_set:
+                            new_set[g.lower()] = g
+
+                    new_genres = list(new_set.values())
+                    new_genres_str = ", ".join(new_genres)
+
+                    try:
+                        cursor.execute(
+                            f"UPDATE tracks SET genres = {placeholder} WHERE id = {placeholder}",
+                            (new_genres_str, tid),
+                        )
+                        conn.commit()
+
+                        fp = tr.get("file_path") or ""
+                        if fp and os.path.isfile(fp):
+                            ok, err = update_audio_file_genres(fp, new_genres)
+                            if not ok:
+                                logging.warning(f"[GENRE_SAVE] File tag update failed for {fp}: {err}")
+                        updated += 1
+                    except Exception as track_err:
+                        logging.error(f"[GENRE_SAVE] Failed updating track {tid}: {track_err}")
+                        failed += 1
+
+        finally:
+            conn.close()
+
+        return jsonify({"success": True, "updated": updated, "failed": failed})
+
+    except Exception as e:
+        logging.error(f"[GENRE_SAVE] Error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/track/match-missing", methods=["POST"])
 def api_track_match_missing():
     """Match a MusicBrainz 'missing' track to an existing track in the database.

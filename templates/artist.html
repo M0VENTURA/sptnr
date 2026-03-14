@@ -71,6 +71,11 @@
     </a>
     <span id="artist-missing-tracks-badge" class="badge bg-warning text-dark ms-2" style="display:none;"></span>
   </div>
+  <div class="mb-3">
+    <a href="{{ url_for('artist_genre_management', name=artist_name) }}" class="btn btn-outline-info btn-sm">
+      <i class="bi bi-tags"></i> Genre Management
+    </a>
+  </div>
 
   <div class="card mb-4 sticky-top" style="top: 0.75rem; z-index: 1000;">
     <div class="card-body py-2 px-3">
