@@ -22662,6 +22662,29 @@ def api_album_musicbrainz_compare():
                             best_t = t
                     lib_track = best_t
 
+                # 4. Core-title match: strip parenthetical/bracketed suffixes from the
+                #    MB title (e.g. "World So Cold (live at …)" → "World So Cold") and
+                #    retry exact then fuzzy matching against library titles.  This
+                #    handles recordings where MusicBrainz adds venue/year/version info
+                #    in parentheses that the local library title omits.
+                #    The regex strips greedily from the first ( or [ to end-of-string.
+                #    e.g. "Song (feat. X) (Remix)" → "Song", which correctly matches
+                #    a library entry titled simply "Song".
+                if lib_track is None:
+                    norm_mb_core = re.sub(r"\s*[\(\[].+$", "", norm_mb).strip()
+                    if norm_mb_core and norm_mb_core != norm_mb:
+                        lib_track = lib_by_title.get((disc, norm_mb_core))
+                        if lib_track is None:
+                            best_ratio = 0.0
+                            best_t = None
+                            for t in library_tracks:
+                                lib_norm = re.sub(r"\s+", " ", (t.get("title") or "").lower().strip())
+                                ratio = _difflib.SequenceMatcher(None, norm_mb_core, lib_norm).ratio()
+                                if ratio > best_ratio and ratio >= 0.80:
+                                    best_ratio = ratio
+                                    best_t = t
+                            lib_track = best_t
+
             entry = {
                 "mb_track_number": mb_num,
                 "mb_disc_number": disc,

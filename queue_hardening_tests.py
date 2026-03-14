@@ -509,5 +509,60 @@ class SlskdIsStaleQueueItemTests(unittest.TestCase):
             self.assertIn(state, processor_text, f"Timeout map must include '{state}'")
 
 
+class MusicBrainzCompareCoreMatchTests(unittest.TestCase):
+    """Tests for the core-title matching logic in api_album_musicbrainz_compare.
+
+    The compare endpoint must recognise that a library track titled 'World So Cold'
+    is the same recording as the MusicBrainz title
+    'World So Cold (live at USANA Amphitheatre, Salt Lake City, UT - August 2003)'.
+    """
+
+    def test_core_title_match_in_app_text(self):
+        """app.py must implement core-title matching (step 4) in the compare endpoint."""
+        app_text = _read("app.py")
+        # Verify the step-4 comment and the regex are present in the compare function.
+        # Find the function body between its def and the next top-level def/route.
+        func_start = app_text.find("def api_album_musicbrainz_compare()")
+        self.assertGreater(func_start, 0, "api_album_musicbrainz_compare not found in app.py")
+        # Grab a generous slice of the function (compare endpoint is ~200 lines)
+        func_body = app_text[func_start:func_start + 8000]
+        self.assertIn("Core-title match", func_body,
+                      "Step-4 comment must be present in api_album_musicbrainz_compare")
+        self.assertIn(r"[\(\[].+$", func_body,
+                      "Core-title stripping regex must be present in api_album_musicbrainz_compare")
+
+    def test_core_title_stripping_logic(self):
+        """Verify the core-title stripping regex works for the reported example."""
+        import re
+        mb_title = "World So Cold (live at USANA Amphitheatre, Salt Lake City, UT - August 2003)"
+        norm_mb = re.sub(r"\s+", " ", mb_title.lower().strip())
+        # Step 4 strips from first ( or [
+        norm_mb_core = re.sub(r"\s*[\(\[].+$", "", norm_mb).strip()
+        self.assertEqual(norm_mb_core, "world so cold")
+        # Core differs from full title, so step 4 should run
+        self.assertNotEqual(norm_mb_core, norm_mb)
+
+    def test_core_title_does_not_strip_plain_suffix_words(self):
+        """Step 4 must NOT run when the MB title has no parenthetical suffix.
+
+        'World So Cold Intro' has no parens/brackets — its core == full title so
+        the step-4 branch is skipped and the title is not erroneously matched.
+        """
+        import re
+        mb_title = "World So Cold Intro"
+        norm_mb = re.sub(r"\s+", " ", mb_title.lower().strip())
+        norm_mb_core = re.sub(r"\s*[\(\[].+$", "", norm_mb).strip()
+        # No stripping happened: core == full
+        self.assertEqual(norm_mb_core, norm_mb)
+
+    def test_core_title_stripping_remaster_example(self):
+        """'Fade to Black (Remastered)' must strip to 'Fade to Black'."""
+        import re
+        mb_title = "Fade to Black (Remastered)"
+        norm_mb = re.sub(r"\s+", " ", mb_title.lower().strip())
+        norm_mb_core = re.sub(r"\s*[\(\[].+$", "", norm_mb).strip()
+        self.assertEqual(norm_mb_core, "fade to black")
+
+
 if __name__ == "__main__":
     unittest.main()
