@@ -830,5 +830,126 @@ class SlskdCleanupStartupTests(unittest.TestCase):
         self.assertIn("return now_ts", func_body)
 
 
+class PrefixTitleFilenameMatchTests(unittest.TestCase):
+    """Tests that _filename_matches_queue_item rejects prefix-title false positives.
+
+    An album may contain two tracks whose titles share a common prefix, e.g.
+    "-1" and "-1 intro".  When matching a file named "-1 intro.flac" against the
+    queue item for "-1", the simple ``title in basename`` check would return True
+    because the string "-1" is a substring of "-1 intro.flac".  The fix requires
+    the title match to be a *complete phrase* — not followed by additional
+    alphabetic words — so that "-1" only matches "-1.flac" and not "-1 intro.flac".
+    """
+
+    def _run(self, filename, artist, title, album=""):
+        import sys, importlib
+        sys.path.insert(0, ".")
+        try:
+            qp = importlib.import_module("queue_processor")
+        except Exception:
+            self.skipTest("queue_processor could not be imported")
+        return qp._filename_matches_queue_item(filename, {"artist": artist, "title": title, "album": album})
+
+    # ------------------------------------------------------------------ #
+    # The core bug: "-1 intro" must NOT match "-1" queue item             #
+    # ------------------------------------------------------------------ #
+
+    def test_negative_one_intro_does_not_match_negative_one(self):
+        """-1 intro.flac must NOT match a queue item titled '-1'."""
+        result = self._run(
+            "album/02 - artist - -1 intro.flac",
+            artist="artist",
+            title="-1",
+        )
+        self.assertFalse(
+            result,
+            "A file for '-1 intro' must not match a '-1' queue item",
+        )
+
+    def test_negative_one_matches_negative_one(self):
+        """-1.flac MUST match a queue item titled '-1'."""
+        result = self._run(
+            "album/01 - artist - -1.flac",
+            artist="artist",
+            title="-1",
+        )
+        self.assertTrue(
+            result,
+            "A file for '-1' must match a '-1' queue item",
+        )
+
+    def test_negative_one_interlude_does_not_match_negative_one(self):
+        """-1 interlude.flac must NOT match a queue item titled '-1'."""
+        result = self._run(
+            "album/03 - artist - -1 interlude.flac",
+            artist="artist",
+            title="-1",
+        )
+        self.assertFalse(
+            result,
+            "A file for '-1 interlude' must not match a '-1' queue item",
+        )
+
+    # ------------------------------------------------------------------ #
+    # Adjacent cases: parenthetical suffixes are still accepted           #
+    # ------------------------------------------------------------------ #
+
+    def test_acoustic_version_still_matches(self):
+        """'-1 (acoustic).flac' MUST match a queue item titled '-1'.
+
+        A parenthetical suffix does not start with a bare letter, so the
+        whole-phrase check must not block it.
+        """
+        result = self._run(
+            "album/01 - artist - -1 (acoustic).flac",
+            artist="artist",
+            title="-1",
+        )
+        self.assertTrue(
+            result,
+            "'-1 (acoustic).flac' should still match a '-1' queue item",
+        )
+
+    def test_world_so_cold_does_not_match_world_so_cold_intro(self):
+        """'world so cold intro.flac' must NOT match the 'World So Cold' queue item."""
+        result = self._run(
+            "album/02 - creed - world so cold intro.flac",
+            artist="creed",
+            title="World So Cold",
+        )
+        self.assertFalse(
+            result,
+            "'World So Cold Intro' file should not match 'World So Cold' queue item",
+        )
+
+    def test_mixed_case_filename_does_not_match_intro(self):
+        """Mixed-case '-1 Intro.flac' must NOT match a '-1' queue item.
+
+        Filenames are lowercased before the regex runs, so even when the original
+        file has capital letters in the continuation word the whole-phrase guard
+        still fires correctly.
+        """
+        result = self._run(
+            "album/02 - Artist - -1 Intro.flac",
+            artist="Artist",
+            title="-1",
+        )
+        self.assertFalse(
+            result,
+            "A mixed-case '-1 Intro.flac' file must not match a '-1' queue item",
+        )
+
+    # ------------------------------------------------------------------ #
+    # Source-level guard: the regex must be present in queue_processor.py #
+    # ------------------------------------------------------------------ #
+
+    def test_whole_phrase_guard_in_source(self):
+        """queue_processor.py must contain the whole-phrase title check."""
+        processor_text = _read("queue_processor.py")
+        # The fix replaces `title in basename_test` with a regex look-ahead
+        self.assertIn(r"(?!\s*[a-z])", processor_text,
+                      "queue_processor.py should contain the look-ahead regex for prefix-title guard")
+
+
 if __name__ == "__main__":
     unittest.main()
