@@ -25428,6 +25428,29 @@ def api_clear_upcoming_releases():
         return jsonify({"error": str(e)}), 500
 
 
+def _build_artist_credit_string(artist_credit):
+    """
+    Build a display string from a MusicBrainz artist-credit array.
+
+    Uses the ``joinphrase`` field so that multi-artist credits are formatted
+    correctly, e.g. "Simon & Garfunkel" rather than "Simon Garfunkel".
+
+    Args:
+        artist_credit: list of dicts (MusicBrainz artist-credit array)
+
+    Returns:
+        str: Human-readable artist string
+    """
+    result = ''
+    for credit in artist_credit:
+        if isinstance(credit, dict):
+            result += credit.get('name', '')
+            result += credit.get('joinphrase', '')
+        else:
+            result += str(credit)
+    return result.strip()
+
+
 @app.route("/api/upcoming-releases/search-musicbrainz", methods=["POST"])
 def api_search_musicbrainz_release():
     """Search MusicBrainz for a release and return track listings.
@@ -25519,24 +25542,27 @@ def api_search_musicbrainz_release():
                     rel_response.raise_for_status()
                     release = rel_response.json()
 
-                    # Artist from release artist-credit
+                    # Artist from release artist-credit (use joinphrase for correct formatting)
                     rel_artist = release_meta["artist"]
                     ac = release.get("artist-credit", []) or []
                     if ac:
-                        rel_artist = " ".join(
-                            c.get("name", "") for c in ac if isinstance(c, dict)
-                        ).strip() or rel_artist
+                        rel_artist = _build_artist_credit_string(ac) or rel_artist
 
                     media = release.get("media", [])
                     tracks_list = []
                     for disc in media:
                         for t in disc.get("tracks", []):
                             recording = t.get("recording", {})
-                            tracks_list.append({
+                            track_entry = {
                                 "title": recording.get("title", "Unknown"),
                                 "position": t.get("position", ""),
                                 "length": recording.get("length", 0),
-                            })
+                            }
+                            # Include per-track artist for compilation support
+                            rec_credits = recording.get("artist-credit") or []
+                            if rec_credits:
+                                track_entry["artist"] = _build_artist_credit_string(rec_credits)
+                            tracks_list.append(track_entry)
 
                     rg = release.get("release-group") or {}
                     results.append({
@@ -25689,7 +25715,7 @@ def api_search_musicbrainz_release():
                 browse_params = {
                     "fmt": "json",
                     "release-group": rg_id,
-                    "inc": "recordings",
+                    "inc": "recordings+artist-credits",
                     "limit": 1,
                 }
                 browse_response = requests.get(browse_url, headers=headers, params=browse_params, timeout=15)
@@ -25704,22 +25730,30 @@ def api_search_musicbrainz_release():
                 release_id = release.get("id", "")
                 release_date = release.get("date", "")
 
-                # Extract tracks from the inline recordings
+                # Extract tracks from the inline recordings, including per-track artist.
+                # Per-track artist is essential for "Various Artists" compilations where
+                # each track belongs to a different artist.
                 media = release.get("media", [])
                 tracks = []
                 for disc in media:
                     for track in disc.get("tracks", []):
                         recording = track.get("recording", {})
-                        tracks.append({
+                        track_entry = {
                             "title": recording.get("title", "Unknown"),
                             "position": track.get("position", ""),
-                            "length": recording.get("length", 0)
-                        })
+                            "length": recording.get("length", 0),
+                        }
+                        # Include per-track artist when artist-credits are available
+                        rec_credits = recording.get("artist-credit") or []
+                        if rec_credits:
+                            track_entry["artist"] = _build_artist_credit_string(rec_credits)
+                        tracks.append(track_entry)
 
-                # Prefer artist-credit from the release group over the search input when available.
+                # Prefer artist-credit from the release group over the search input when
+                # available, using joinphrase for correct multi-artist formatting.
                 rg_credits = rg.get("artist-credit", []) or []
                 result_artist = (
-                    " ".join(c.get("name", "") for c in rg_credits if isinstance(c, dict)).strip()
+                    _build_artist_credit_string(rg_credits)
                     or artist
                 )
 

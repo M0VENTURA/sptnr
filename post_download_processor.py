@@ -105,6 +105,30 @@ def fetch_writer_credits(title, artist):
         return {}
 
 
+def _build_artist_credit_string(artist_credit):
+    """
+    Build a display string from a MusicBrainz artist-credit array.
+
+    Correctly handles joinphrases so that e.g. "Simon & Garfunkel" is returned
+    instead of "Simon Garfunkel", and "Various Artists" compilations are not
+    mis-labelled.
+
+    Args:
+        artist_credit: list of dicts (MusicBrainz artist-credit array)
+
+    Returns:
+        str: Human-readable artist string, e.g. "Simon & Garfunkel"
+    """
+    result = ''
+    for credit in artist_credit:
+        if isinstance(credit, dict):
+            result += credit.get('name', '')
+            result += credit.get('joinphrase', '')
+        else:
+            result += str(credit)
+    return result.strip()
+
+
 def fetch_musicbrainz_release_metadata(release_id):
     """
     Fetch complete release metadata from MusicBrainz including disc numbers and cover art.
@@ -185,15 +209,9 @@ def fetch_musicbrainz_release_metadata(release_id):
             'tracks': []
         }
         
-        # Get album artist
+        # Get album artist (use joinphrase for correct multi-artist formatting)
         if mb_data.get('artist-credit'):
-            artist_parts = []
-            for credit in mb_data['artist-credit']:
-                if isinstance(credit, dict):
-                    artist_parts.append(credit.get('name', ''))
-                else:
-                    artist_parts.append(str(credit))
-            release_info['artist'] = ' '.join(artist_parts).strip()
+            release_info['artist'] = _build_artist_credit_string(mb_data['artist-credit'])
         
         # Extract track info from all media (discs)
         for media_idx, media in enumerate(mb_data.get('media', []), 1):
@@ -211,15 +229,9 @@ def fetch_musicbrainz_release_metadata(release_id):
                     'recording_mbid': recording.get('id') or '',
                 }
                 
-                # Get track artist if different
+                # Get track artist (use joinphrase for correct multi-artist formatting)
                 if recording.get('artist-credit'):
-                    artist_parts = []
-                    for credit in recording['artist-credit']:
-                        if isinstance(credit, dict):
-                            artist_parts.append(credit.get('name', ''))
-                        else:
-                            artist_parts.append(str(credit))
-                    track_info['artist'] = ' '.join(artist_parts).strip()
+                    track_info['artist'] = _build_artist_credit_string(recording['artist-credit'])
                 
                 release_info['tracks'].append(track_info)
         
