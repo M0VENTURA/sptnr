@@ -2590,13 +2590,19 @@ def _strip_track_number_prefix(title):
     Remove a leading track-number prefix from a title string.
 
     Handles common filename conventions such as:
-        "05 - CINEMA"  →  "CINEMA"
-        "05. CINEMA"   →  "CINEMA"
-        "5 - CINEMA"   →  "CINEMA"
-        "05 CINEMA"    →  unchanged  (no separator, avoid stripping real words)
+        "05 - CINEMA"           →  "CINEMA"
+        "05. CINEMA"            →  "CINEMA"
+        "5 - CINEMA"            →  "CINEMA"
+        "0108. Artist - Title"  →  "Artist - Title"  (4-digit zero-padded)
+        "1-15 - Title"          →  "Title"           (disc-track prefix)
+        "05 CINEMA"             →  unchanged  (no separator, avoid stripping real words)
     """
-    # Match 1-3 leading digits followed by optional spaces + '-' or '.' + optional spaces
-    cleaned = re.sub(r'^\d{1,3}\s*[-\.]\s*', '', title).strip()
+    # Match an optional disc prefix (digit(s)-), followed by the track number
+    # (one or more digits), followed by a separator ('-' or '.') with optional
+    # surrounding spaces.  This handles simple formats ("05 - Title"),
+    # zero-padded large track numbers ("0108. Artist - Title"), and disc-track
+    # prefixes ("1-15 - Title" → strips "1-15 - ").
+    cleaned = re.sub(r'^\d+(?:\s*-\s*\d+)?\s*[-\.]\s*', '', title).strip()
     return cleaned if cleaned else title
 
 

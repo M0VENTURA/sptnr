@@ -420,17 +420,23 @@ def _filename_matches_queue_item(filename, queue_item):
         if artist_in_path and title_in_basename:
             return True
 
-        # Use stricter sequence similarity fallback to avoid cross-track collisions.
-        # When the title only appears in the directory portion (folder name) and not
-        # in the actual file's basename, skip the fallback: the folder match is an
-        # album-name coincidence, not evidence the file contains this track.
-        if not title_in_basename:
+        # Guard: if the title only appears in the directory portion of the path
+        # (not in the basename at all), skip the fallback — the folder match is
+        # an album-name coincidence, not evidence the file contains this track.
+        if title not in basename_test:
             return False
 
+        # Similarity fallback.  The title appears in the basename as a substring
+        # but not as a complete phrase (the whole-phrase guard above was False).
+        # Use a stricter threshold so that prefix-titled variants like
+        # "World So Cold Intro" do not match "World So Cold", while still
+        # allowing high-confidence hits such as "radiohead creep pablo honey.flac"
+        # matching the queue item for Radiohead – Creep.
         album = (queue_item.get('album') or '').lower().strip()
         combined_target = f"{artist} {title} {album}".strip()
         score = SequenceMatcher(None, combined_target, filename_test).ratio()
-        if score >= 0.60 and (artist_in_path or title_in_basename):
+        threshold = 0.60 if title_in_basename else 0.85
+        if score >= threshold and (artist_in_path or title_in_basename):
             return True
 
         return False
