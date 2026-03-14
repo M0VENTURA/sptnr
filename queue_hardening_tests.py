@@ -564,5 +564,85 @@ class MusicBrainzCompareCoreMatchTests(unittest.TestCase):
         self.assertEqual(norm_mb_core, "fade to black")
 
 
+class AlbumFolderEqualsSongTitleTests(unittest.TestCase):
+    """Tests for the album-folder-equals-song-title false positive in filename matching.
+
+    When a queue item has title "This Is The Sound" and the downloaded album folder
+    is also "This Is The Sound", every file in that folder has the track title in
+    its path — even unrelated tracks like "02. Skindred - You Got This.flac".
+    The filename matcher must require the title to appear in the basename, not
+    merely in the directory component.
+    """
+
+    def _run_filename_match(self, filename, artist, title, album=""):
+        """Import and call _filename_matches_queue_item from queue_processor."""
+        import importlib
+        import sys
+        sys.path.insert(0, ".")
+        try:
+            qp = importlib.import_module("queue_processor")
+        except Exception:
+            self.skipTest("queue_processor could not be imported")
+        item = {"artist": artist, "title": title, "album": album}
+        return qp._filename_matches_queue_item(filename, item)
+
+    def test_bug_case_wrong_track_not_matched(self):
+        """Track 'You Got This' in album folder 'This Is The Sound' must NOT
+        match queue item for song 'This Is The Sound'."""
+        result = self._run_filename_match(
+            "This Is The Sound/02. Skindred - You Got This.flac",
+            artist="Skindred",
+            title="This Is The Sound",
+            album="This Is The Sound",
+        )
+        self.assertFalse(result, "Title in folder only must not trigger a match")
+
+    def test_correct_track_in_album_folder_is_matched(self):
+        """The actual 'This Is The Sound' track inside the same album folder
+        must still be matched correctly (title present in both folder and basename)."""
+        result = self._run_filename_match(
+            "This Is The Sound/01. Skindred - This Is The Sound.flac",
+            artist="Skindred",
+            title="This Is The Sound",
+            album="This Is The Sound",
+        )
+        self.assertTrue(result, "Title in basename must match the correct track")
+
+    def test_another_wrong_track_in_album_folder_not_matched(self):
+        """A third track from the same album must also not match the title-song item."""
+        result = self._run_filename_match(
+            "This Is The Sound/03. Skindred - Tear It Down.flac",
+            artist="Skindred",
+            title="This Is The Sound",
+            album="This Is The Sound",
+        )
+        self.assertFalse(result, "Different track, title only in folder — must not match")
+
+    def test_normal_case_unrelated_album_matches(self):
+        """Normal download where the title appears in the filename must still match."""
+        result = self._run_filename_match(
+            "Black Album/01. Metallica - Enter Sandman.flac",
+            artist="Metallica",
+            title="Enter Sandman",
+            album="The Black Album",
+        )
+        self.assertTrue(result, "Title in basename should match")
+
+    def test_processor_basename_guard_in_source(self):
+        """queue_processor.py must contain the basename guard for title matching."""
+        processor_text = _read("queue_processor.py")
+        self.assertIn("basename_test", processor_text)
+        self.assertIn("title_in_basename", processor_text)
+        # The guard comment explains the album-folder-equals-song-title case
+        self.assertIn("only appears in the directory portion", processor_text)
+
+    def test_score_candidate_does_not_award_folder_only_title_bonus(self):
+        """_score_soulseek_candidate must check title in basename before awarding
+        the title-in-path bonus."""
+        processor_text = _read("queue_processor.py")
+        self.assertIn("basename_norm", processor_text)
+        self.assertIn("title_norm in basename_norm", processor_text)
+
+
 if __name__ == "__main__":
     unittest.main()

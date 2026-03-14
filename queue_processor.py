@@ -240,8 +240,16 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     # Strongly prefer explicit artist/title phrases when present.
     if artist_norm in filename_norm:
         score += 0.18
-    if title_norm in filename_norm:
+    # Award the title-in-path bonus only when the title appears in the actual
+    # filename component, not merely in a parent directory.  When the album
+    # folder is named after a track (e.g. folder "This Is The Sound" and the
+    # file being "02. Skindred - You Got This.flac"), title_norm matches the
+    # path but NOT the filename — so we should not reward it as a strong signal.
+    basename_norm = _normalize_match_text(os.path.basename(filename))
+    if title_norm in filename_norm and title_norm in basename_norm:
         score += 0.25
+    elif title_norm in basename_norm:
+        score += 0.20
 
     # Album disambiguation: prevent "Power"-style partial collisions.
     if album_norm:
@@ -372,6 +380,12 @@ def _filename_matches_queue_item(filename, queue_item):
     """
     try:
         filename_test = filename.lower().replace('\\', '/')
+        # Extract just the basename (without the directory path) for title matching.
+        # This prevents false positives when the album folder name equals the track
+        # title: e.g. queue item "This Is The Sound" must NOT match
+        # "This Is The Sound/02. Skindred - You Got This.flac" because the title
+        # only appears in the directory component, not in the actual filename.
+        basename_test = os.path.basename(filename_test)
         artist = (queue_item.get('artist') or '').lower().strip()
         title = (queue_item.get('title') or '').lower().strip()
 
@@ -379,15 +393,21 @@ def _filename_matches_queue_item(filename, queue_item):
             return False
 
         artist_in_path = artist in filename_test
-        title_in_path = title in filename_test
-        if artist_in_path and title_in_path:
+        title_in_basename = title in basename_test
+        if artist_in_path and title_in_basename:
             return True
 
         # Use stricter sequence similarity fallback to avoid cross-track collisions.
+        # When the title only appears in the directory portion (folder name) and not
+        # in the actual file's basename, skip the fallback: the folder match is an
+        # album-name coincidence, not evidence the file contains this track.
+        if not title_in_basename:
+            return False
+
         album = (queue_item.get('album') or '').lower().strip()
         combined_target = f"{artist} {title} {album}".strip()
         score = SequenceMatcher(None, combined_target, filename_test).ratio()
-        if score >= 0.60 and (artist_in_path or title_in_path):
+        if score >= 0.60 and (artist_in_path or title_in_basename):
             return True
 
         return False
