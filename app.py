@@ -22637,11 +22637,27 @@ def api_album_musicbrainz_compare():
             mb_track_artist = mb_track.get("artist", "")
             mb_recording_id = mb_track.get("recording_mbid", "")
 
-            # 1. Match by track number
+            # 1. Match by track number — only accepted when titles are reasonably similar,
+            #    to avoid false matches on albums where track ordering differs between
+            #    the library and MusicBrainz (e.g. library track 5 is "Intro" but MB
+            #    track 5 is "Symphony No. 5").
+            _TRACK_NUM_TITLE_SIM_MIN = 0.30  # minimum similarity to trust a track-number match
             lib_track = None
             if mb_num is not None:
                 try:
-                    lib_track = lib_by_tracknum.get((disc, int(mb_num)))
+                    candidate = lib_by_tracknum.get((disc, int(mb_num)))
+                    if candidate is not None:
+                        # Accept the track-number match only if the titles are similar
+                        # enough to reduce false positives.
+                        if mb_track_title:
+                            norm_mb_title = re.sub(r"\s+", " ", mb_track_title.lower().strip())
+                            norm_lib_title = re.sub(r"\s+", " ", (candidate.get("title") or "").lower().strip())
+                            sim = _difflib.SequenceMatcher(None, norm_mb_title, norm_lib_title).ratio()
+                            if sim >= _TRACK_NUM_TITLE_SIM_MIN or not norm_lib_title:
+                                lib_track = candidate
+                            # else: fall through to title-based matching below
+                        else:
+                            lib_track = candidate
                 except (TypeError, ValueError):
                     pass
 
@@ -23824,7 +23840,7 @@ def api_track_update_metadata():
         is_pg = _is_postgres_connection(conn)
         placeholder = "%s" if is_pg else "?"
         
-        # Build database update with provided fields - use PostgreSQL format
+        # Build database update with provided fields
         db_updates = {}
         optional_string_fields = ['title', 'artist', 'album', 'album_artist', 'genres', 'year', 
                                    'composer', 'writer', 'arranger', 'mixer', 'producer', 'work',
@@ -23861,10 +23877,10 @@ def api_track_update_metadata():
             conn.close()
             return jsonify({"error": "At least one field required"}), 400
         
-        # Update database using PostgreSQL syntax
-        set_clause = ", ".join([f"{k} = %s" for k in db_updates.keys()])
+        # Update database using the correct placeholder for the DB backend
+        set_clause = ", ".join([f"{k} = {placeholder}" for k in db_updates.keys()])
         values = list(db_updates.values()) + [track_id]
-        cursor.execute(f"UPDATE tracks SET {set_clause} WHERE id = %s", values)
+        cursor.execute(f"UPDATE tracks SET {set_clause} WHERE id = {placeholder}", values)
         conn.commit()
         
         conn.close()
