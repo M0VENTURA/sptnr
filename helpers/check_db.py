@@ -34,6 +34,7 @@ required_columns = {
     "lastfm_track_playcount": "INTEGER",
     "lastfm_artist_playcount": "INTEGER",
     "file_path": "TEXT",
+    "beets_path": "TEXT",                   # Path in beets database (alternative file path)
     "is_single": "BOOLEAN",
     "single_confidence": "TEXT",
     "single_manual_override": "INTEGER",     # ✅ 1 if user manually set is_single (skip auto-detection)
