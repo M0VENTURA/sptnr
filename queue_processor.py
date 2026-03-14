@@ -54,6 +54,11 @@ _CONFIRMED_MATCH_DURATION_TOLERANCE_SECONDS = 10
 # vs "World So Cold Intro").  See _metadata_matches_queue_item for details.
 _PREFIX_TITLE_MIN = 0.9
 
+# Minimum similarity score below which a file's artist/title tags are considered
+# a hard mismatch against the queue item.  Scores this low mean it's a completely
+# different song and filename matching should not be attempted as a fallback.
+_HARD_MISMATCH_FLOOR = 0.35
+
 # Maximum time (in minutes) a download is allowed to stay in each active slskd
 # transfer state before the queue processor cancels it and retries.
 # Keys match the slskd state strings used by SlskdClient constants.
@@ -344,9 +349,20 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
         _normalize_match_text(queue_title),
     ).ratio()
 
-    # Require both core fields to be reasonably close to avoid false-positive imports.
-    if artist_score < 0.55 or title_score < 0.55:
+    # Hard mismatch: scores so low that this is clearly a different file.  Block
+    # all further matching (including the filename fallback in the caller) to avoid
+    # importing completely wrong tracks.
+    if artist_score < _HARD_MISMATCH_FLOOR or title_score < _HARD_MISMATCH_FLOOR:
         return False
+
+    # Soft mismatch: scores are too low for a confident match but not definitively
+    # wrong.  This often happens when the downloaded file has extra information in
+    # its tags that the queue item does not — e.g. the file is tagged
+    # "Creep (Acoustic)" while the queue item has title "Creep", or the artist
+    # field carries featured-artist annotations.  Return None to allow the caller
+    # to fall back to filename matching rather than rejecting the file outright.
+    if artist_score < 0.55 or title_score < 0.55:
+        return None
 
     # Protect against "prefix" false-positives: when one title is merely a
     # leading substring of the other (e.g. "World So Cold" vs "World So Cold
@@ -1962,6 +1978,11 @@ def maybe_clear_slskd_completed_downloads(now_ts, last_run_ts, interval_seconds=
     Clearing them every 30 minutes (default) keeps slskd's queue clean and
     ensures retried downloads start with a fresh slate.
 
+    The first run is intentionally skipped on process startup (when last_run_ts
+    is None) so that check_completed_downloads() has a chance to process any
+    transfers that completed before the processor started, before those entries
+    are removed from slskd's transfer list.
+
     Args:
         now_ts: Current time.time() value.
         last_run_ts: Timestamp of the last cleanup run (None = never run).
@@ -1970,7 +1991,15 @@ def maybe_clear_slskd_completed_downloads(now_ts, last_run_ts, interval_seconds=
     Returns:
         Updated last-run timestamp.
     """
-    if last_run_ts is not None and (now_ts - last_run_ts) < interval_seconds:
+    if last_run_ts is None:
+        # Skip the very first run so that check_completed_downloads() can read
+        # any already-completed transfers from slskd before they are cleared.
+        logger.debug(
+            "[SLSKD_CLEANUP] Startup run skipped; first cleanup in %s seconds", interval_seconds
+        )
+        return now_ts
+
+    if (now_ts - last_run_ts) < interval_seconds:
         return last_run_ts
 
     try:

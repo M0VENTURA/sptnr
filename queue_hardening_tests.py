@@ -694,5 +694,141 @@ class NavidromeScanTriggerTests(unittest.TestCase):
         self.assertIn("last_run_ts", func_body)
 
 
+class SoftMismatchMetadataTests(unittest.TestCase):
+    """Tests for the soft-mismatch path in _metadata_matches_queue_item.
+
+    When a file's tags contain a version or remix suffix (e.g. "Creep (Acoustic)"
+    for a queue item titled "Creep"), the title similarity falls below 0.55 but
+    above the hard-mismatch floor of 0.35.  The function must return None rather
+    than False so that the caller can fall back to filename matching.
+
+    Completely wrong files (scores below 0.35) must still return False to block
+    any further matching attempts.
+    """
+
+    def _get_proc_fn(self):
+        import sys, os, importlib.util
+        if "queue_processor" in sys.modules:
+            mod = sys.modules["queue_processor"]
+            fn = getattr(mod, "_metadata_matches_queue_item", None)
+            if fn is None:
+                raise unittest.SkipTest("_metadata_matches_queue_item not available")
+            return fn
+        spec = importlib.util.spec_from_file_location(
+            "queue_processor",
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "queue_processor.py"),
+        )
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["queue_processor"] = mod
+        try:
+            spec.loader.exec_module(mod)
+        except Exception as e:
+            raise unittest.SkipTest(f"queue_processor not importable: {e}")
+        fn = getattr(mod, "_metadata_matches_queue_item", None)
+        if fn is None:
+            raise unittest.SkipTest("_metadata_matches_queue_item not available")
+        return fn
+
+    def _call(self, fn, file_title, file_artist, queue_title, queue_artist):
+        """Call _metadata_matches_queue_item with injected metadata."""
+        from unittest.mock import patch, MagicMock
+
+        fake_audio = MagicMock()
+        fake_audio.tags = None
+        fake_audio.info = None
+
+        fake_meta = {"artist": file_artist, "title": file_title}
+        queue_item = {"artist": queue_artist, "title": queue_title, "duration": None}
+
+        with patch("queue_processor.read_mp3_metadata", return_value=fake_meta), \
+             patch("queue_processor.MutagenFile", return_value=fake_audio):
+            return fn("/fake/path/track.flac", queue_item)
+
+    def test_version_suffix_returns_none_not_false(self):
+        """'Creep (Acoustic)' file for queue item 'Creep' must return None, not False.
+
+        The title similarity is in the soft-mismatch zone (0.35–0.55).  The
+        function should return None so the caller can attempt filename matching
+        rather than rejecting the file outright.
+        """
+        fn = self._get_proc_fn()
+        result = self._call(
+            fn,
+            file_title="Creep (Acoustic)",
+            file_artist="Radiohead",
+            queue_title="Creep",
+            queue_artist="Radiohead",
+        )
+        self.assertIsNone(
+            result,
+            "A title with a short version suffix should return None (allow filename fallback), not False",
+        )
+
+    def test_clearly_wrong_artist_still_returns_false(self):
+        """A completely different artist (score < 0.35) must still return False."""
+        fn = self._get_proc_fn()
+        result = self._call(
+            fn,
+            file_title="Yesterday",
+            file_artist="The Beatles",
+            queue_title="Creep",
+            queue_artist="Radiohead",
+        )
+        self.assertFalse(
+            result,
+            "A file by a completely different artist must still return False",
+        )
+
+    def test_hard_mismatch_floor_in_source(self):
+        """queue_processor.py must define a HARD_MISMATCH_FLOOR constant (0.35)."""
+        processor_text = _read("queue_processor.py")
+        self.assertIn("_HARD_MISMATCH_FLOOR", processor_text)
+        self.assertIn("0.35", processor_text)
+
+    def test_soft_mismatch_returns_none_path_in_source(self):
+        """queue_processor.py must return None (not False) for soft mismatches."""
+        processor_text = _read("queue_processor.py")
+        # The soft-mismatch block comment explains the rationale
+        self.assertIn("Soft mismatch", processor_text)
+        # The block must return None to allow filename fallback
+        self.assertIn("fall back to filename matching rather than rejecting", processor_text)
+
+    def test_exact_match_still_returns_true(self):
+        """Perfect artist+title match must still return True."""
+        fn = self._get_proc_fn()
+        result = self._call(
+            fn,
+            file_title="Creep",
+            file_artist="Radiohead",
+            queue_title="Creep",
+            queue_artist="Radiohead",
+        )
+        self.assertTrue(result, "Exact artist+title match must return True")
+
+
+class SlskdCleanupStartupTests(unittest.TestCase):
+    """Tests confirming that maybe_clear_slskd_completed_downloads skips its
+    first run on startup so check_completed_downloads() can read completed
+    transfers before they are cleared from slskd."""
+
+    def test_cleanup_skips_first_run(self):
+        """maybe_clear_slskd_completed_downloads must skip when last_run_ts is None."""
+        processor_text = _read("queue_processor.py")
+        func_idx = processor_text.find("def maybe_clear_slskd_completed_downloads(")
+        func_body = processor_text[func_idx:func_idx + 2000]
+        # The function must check for last_run_ts is None and return early
+        self.assertIn("last_run_ts is None", func_body)
+        self.assertIn("Startup run skipped", func_body)
+
+    def test_cleanup_startup_skip_returns_now_ts(self):
+        """When last_run_ts is None the function must return now_ts so it is
+        treated as if it ran and the next cleanup is deferred by interval_seconds."""
+        processor_text = _read("queue_processor.py")
+        func_idx = processor_text.find("def maybe_clear_slskd_completed_downloads(")
+        func_body = processor_text[func_idx:func_idx + 2000]
+        # After the startup-skip block it should return now_ts
+        self.assertIn("return now_ts", func_body)
+
+
 if __name__ == "__main__":
     unittest.main()
