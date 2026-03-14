@@ -8838,14 +8838,18 @@ def _run_artist_scan_pipeline(artist_name: str):
 
 def _auto_detect_album_type(artist_name: str, album_name: str):
     """
-    Auto-detect and update album type based on Discogs format data (primary) or metadata heuristics (fallback).
+    Auto-detect and update album type based on Discogs format data (primary),
+    album name heuristics (secondary), or track count heuristics (fallback).
     
     Priority order:
     1. Discogs format data (most reliable source)
        - If discogs_formats contains "EP" → "ep"
        - If discogs_formats contains "Single" → "single"
        - If discogs_is_single = 1 → "single"
-    2. Metadata & track count heuristics (fallback if Discogs unavailable)
+    2. Album name heuristics (compilation / live keywords)
+       - Album name contains "greatest hits", "best of", "anthology" etc. → "album+compilation"
+       - Album name contains "live at", "in concert", "unplugged" etc. → "album+live"
+    3. Metadata & track count heuristics (fallback if above unavailable)
        - If == 1 track → Single
        - If >= 70% singles with < 5 total tracks → Single
        - If >= 50% singles with 3-6 total tracks → EP  
@@ -8931,7 +8935,29 @@ def _auto_detect_album_type(artist_name: str, album_name: str):
             new_type_from_discogs = True
             classification_reason = "Discogs confirmed as single"
         
-        # ===== PRIORITY 2: Metadata & Track Count Heuristics =====
+        # ===== PRIORITY 2: Album Name Heuristics (compilation / live) =====
+        # These patterns are reliable enough to override track-count heuristics
+        # but not Discogs format data (handled above).
+        if not new_type:
+            album_lower = album_name.lower()
+            compilation_keywords = [
+                "greatest hits", "best of", "the very best", "anthology",
+                "collection", "essential", "retrospective", "hits collection",
+                "platinum", "gold edition", "ultimate collection",
+            ]
+            live_keywords = [
+                "live at", "live in", "live from", "live session",
+                "live recording", "live tour", "in concert", "unplugged",
+                "(live)", "[live]", "- live",
+            ]
+            if any(kw in album_lower for kw in compilation_keywords):
+                new_type = 'album+compilation'
+                classification_reason = "Album name indicates compilation"
+            elif any(kw in album_lower for kw in live_keywords):
+                new_type = 'album+live'
+                classification_reason = "Album name indicates live recording"
+
+        # ===== PRIORITY 3: Metadata & Track Count Heuristics =====
         if not new_type:
             # Calculate singles percentage
             singles_percent = (singles_count / total_tracks * 100) if total_tracks > 0 else 0
