@@ -1398,7 +1398,7 @@ def _build_release_import_group(artist, album):
 
 def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
     """
-    Copy a single completed track from /downloads into the /music library tree.
+    Move a single completed track from /downloads into the /music library tree.
 
     Folder structure: <music_root>/<album_artist>/<year> - <album>/
     (year defaults to 'Unknown' when not available)
@@ -1497,9 +1497,9 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
 
                     if mb_release.get('cover_art'):
                         cover_art_data = mb_release['cover_art']
-                        logger.info(f"[COPY] Queue {queue_item_dict.get('id', 'unknown')}: Using MusicBrainz album art")
+                        logger.info(f"[MOVE] Queue {queue_item_dict.get('id', 'unknown')}: Using MusicBrainz album art")
             except Exception as mb_err:
-                logger.warning(f"[COPY] Could not fetch MusicBrainz metadata for release {release_id}: {mb_err}")
+                logger.warning(f"[MOVE] Could not fetch MusicBrainz metadata for release {release_id}: {mb_err}")
 
         if not year:
             year = 'Unknown'
@@ -1522,21 +1522,21 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
             from post_download_processor import update_file_metadata_with_albumart
             update_file_metadata_with_albumart(file_path, tag_metadata, cover_art_data)
         except Exception as tag_err:
-            logger.warning(f"[COPY] Could not update file tags before copy (non-fatal): {tag_err}")
+            logger.warning(f"[MOVE] Could not update file tags before move (non-fatal): {tag_err}")
 
         filename = _sanitize_path_component(f"{track_num_fmt}. {artist} - {title}{ext}")
         dest_path = os.path.join(dest_folder, filename)
 
         if os.path.exists(dest_path):
-            logger.info(f"[COPY] Destination already exists, skipping copy: {dest_path}")
+            logger.info(f"[MOVE] Destination already exists, skipping move: {dest_path}")
             return {'success': True, 'target_path': dest_path, 'error': None, 'skipped': True}
 
-        shutil.copy2(file_path, dest_path)
-        logger.info(f"[COPY] {filename} → {dest_path}")
+        shutil.move(file_path, dest_path)
+        logger.info(f"[MOVE] {filename} → {dest_path}")
         return {'success': True, 'target_path': dest_path, 'error': None}
 
     except Exception as e:
-        logger.error(f"[COPY] Failed to copy file: {e}")
+        logger.error(f"[MOVE] Failed to move file: {e}")
         return {'success': False, 'target_path': None, 'error': str(e)}
 
 
@@ -2387,20 +2387,20 @@ def check_downloads_folder():
                                 'moved': True
                             })
                         else:
-                            # Verification failed - mark back to completed for retry
+                            # Verification failed - update path to target location since file was moved
                             logger.warning(
                                 f"[MOVE] Queue {queue_item['id']}: verification FAILED ({verify_result.get('error')}), "
-                                f"marking back to 'completed' for retry"
+                                f"updating path to moved location"
                             )
                             update_queue_item(
                                 queue_item['id'],
                                 status='completed',
-                                file_path=match_path  # Keep original path
+                                file_path=target_path  # File was moved to target_path
                             )
                             completed_items.append({
                                 'queue_id': queue_item['id'],
                                 'filename': match_found,
-                                'file_path': match_path,
+                                'file_path': target_path,
                                 'artist': queue_item['artist'],
                                 'title': queue_item['title'],
                                 'album': queue_item['album'],
@@ -2908,7 +2908,7 @@ def auto_discover_and_queue_files():
                                 copied_individually_at=datetime.now().isoformat()
                             )
                             logger.info(
-                                f"[AUTO-DISCOVER] Matched & copied: {artist} - {title} "
+                                f"[AUTO-DISCOVER] Matched & moved: {artist} - {title} "
                                 f"→ {move_result['target_path']}"
                             )
                         else:

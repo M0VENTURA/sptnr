@@ -19790,8 +19790,8 @@ def api_queue_move_to_music(queue_id):
                 )
                 logging.info(f"[MANUAL_MOVE] Queue {queue_id}: verified and imported to {target_path}")
             else:
-                update_queue_item(queue_id, status='completed', file_path=dict(queue_item).get('file_path'))
-                return jsonify({"success": False, "error": f"File copied but verification failed: {verify_result.get('error')}"}), 500
+                update_queue_item(queue_id, status='completed', file_path=target_path)
+                return jsonify({"success": False, "error": f"File moved but verification failed: {verify_result.get('error')}"}), 500
 
             return jsonify({"success": True, "path": target_path, "message": f"File moved to music collection: {target_path}"})
 
