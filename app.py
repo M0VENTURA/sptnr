@@ -23824,7 +23824,7 @@ def api_track_update_metadata():
         is_pg = _is_postgres_connection(conn)
         placeholder = "%s" if is_pg else "?"
         
-        # Build database update with provided fields - use PostgreSQL format
+        # Build database update with provided fields
         db_updates = {}
         optional_string_fields = ['title', 'artist', 'album', 'album_artist', 'genres', 'year', 
                                    'composer', 'writer', 'arranger', 'mixer', 'producer', 'work',
@@ -23861,10 +23861,10 @@ def api_track_update_metadata():
             conn.close()
             return jsonify({"error": "At least one field required"}), 400
         
-        # Update database using PostgreSQL syntax
-        set_clause = ", ".join([f"{k} = %s" for k in db_updates.keys()])
+        # Update database using the correct placeholder for the DB backend
+        set_clause = ", ".join([f"{k} = {placeholder}" for k in db_updates.keys()])
         values = list(db_updates.values()) + [track_id]
-        cursor.execute(f"UPDATE tracks SET {set_clause} WHERE id = %s", values)
+        cursor.execute(f"UPDATE tracks SET {set_clause} WHERE id = {placeholder}", values)
         conn.commit()
         
         conn.close()

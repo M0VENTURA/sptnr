@@ -1224,7 +1224,7 @@
     let currentEditTrackTitle = null;
     if (typeof addGenreModalInstance === 'undefined') {
         var addGenreModalInstance = null;
-    // Removed stray closing brace causing declaration error
+    }
     let currentAlbumGenres = new Set();
 
     function openAlbumLookupModal() {
@@ -2793,12 +2793,7 @@
             }
         });
     });
-    }
 
-    if (typeof addGenreModalInstance === 'undefined') {
-        var addGenreModalInstance = null;
-    }
-    
     function openAddGenreModal(trackId, trackTitle) {
         currentEditTrackId = trackId;
         currentEditTrackTitle = trackTitle;
