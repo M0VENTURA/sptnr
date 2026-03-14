@@ -2745,6 +2745,7 @@ def artists():
                         LOWER(TRIM(title)) AS norm_title,
                         LOWER(TRIM(COALESCE(artist, ''))) AS norm_artist,
                         TRIM(COALESCE(CAST(track_number AS TEXT), '')) AS norm_track_number,
+                        TRIM(COALESCE(CAST(disc_number AS TEXT), '')) AS norm_disc_number,
                         COUNT(*) AS grp_count
                     FROM tracks
                     WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
@@ -2756,7 +2757,8 @@ def artists():
                         album,
                         LOWER(TRIM(title)),
                         LOWER(TRIM(COALESCE(artist, ''))),
-                        TRIM(COALESCE(CAST(track_number AS TEXT), ''))
+                        TRIM(COALESCE(CAST(track_number AS TEXT), '')),
+                        TRIM(COALESCE(CAST(disc_number AS TEXT), ''))
                     HAVING COUNT(*) > 1
                 )
                 SELECT display_name, COALESCE(SUM(grp_count - 1), 0) AS duplicate_count
@@ -2772,6 +2774,7 @@ def artists():
                         LOWER(TRIM(title)) AS norm_title,
                         LOWER(TRIM(COALESCE(artist, ''))) AS norm_artist,
                         TRIM(COALESCE(CAST(track_number AS TEXT), '')) AS norm_track_number,
+                        TRIM(COALESCE(CAST(disc_number AS TEXT), '')) AS norm_disc_number,
                         COUNT(*) AS grp_count
                     FROM tracks
                     WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
@@ -2783,7 +2786,8 @@ def artists():
                         album,
                         LOWER(TRIM(title)),
                         LOWER(TRIM(COALESCE(artist, ''))),
-                        TRIM(COALESCE(CAST(track_number AS TEXT), ''))
+                        TRIM(COALESCE(CAST(track_number AS TEXT), '')),
+                        TRIM(COALESCE(CAST(disc_number AS TEXT), ''))
                     HAVING COUNT(*) > 1
                 )
                 SELECT display_name, IFNULL(SUM(grp_count - 1), 0) AS duplicate_count
@@ -2981,6 +2985,22 @@ def artist_corrections(name):
 
             return base_name
 
+        # Version-variant keywords that indicate a track is a distinct alternate version.
+        # If one track's file path contains such a keyword and another's doesn't, they
+        # are different versions of the same song and must NOT be flagged as duplicates.
+        version_variant_keywords = [
+            "instrumental", "karaoke", "a cappella", "acapella",
+            "acoustic", "demo", "orchestral", "symphonic",
+        ]
+
+        def file_variant_key(file_path):
+            """Return a frozenset of version-variant keywords found in the file name."""
+            name = os.path.basename(str(file_path or "")).lower()
+            return frozenset(
+                kw for kw in version_variant_keywords
+                if re.search(r"\b" + re.escape(kw) + r"\b", name)
+            )
+
         grouped = {}
         for row in candidate_rows:
             group_key = (
@@ -2988,11 +3008,19 @@ def artist_corrections(name):
                 row.get("title") or "",
                 row.get("track_artist") or "",
                 row.get("track_number") or "",
+                row.get("disc_number") or "",
             )
             grouped.setdefault(group_key, []).append(row)
 
-        for (album, title, track_artist, track_number), tracks in grouped.items():
+        for (album, title, track_artist, track_number, disc_number), tracks in grouped.items():
             if len(tracks) < 2:
+                continue
+
+            # Skip groups where tracks differ in version-variant status (e.g., one
+            # has "(Instrumental)" in the file name but another doesn't).  Such tracks
+            # are distinct alternate versions, not true duplicates.
+            variant_keys = [file_variant_key(t.get("file_path", "")) for t in tracks]
+            if len(set(variant_keys)) > 1:
                 continue
 
             mbid_counts = {}
