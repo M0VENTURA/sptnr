@@ -461,10 +461,17 @@ async function checkAlbumMbTracks(alb, rowIdx) {
                     const queueKey = `queue_${rowIdx}_${tIdx}`;
                     _pendingMatchTracks[matchKey] = { mbTrack: t, albumName: alb.album };
                     _pendingQueueTracks[queueKey] = t;
+                    // Format duration from MusicBrainz (seconds)
+                    let durationStr = '';
+                    if (t.duration) {
+                        const mins = Math.floor(t.duration / 60);
+                        const secs = t.duration % 60;
+                        durationStr = `<span class="text-muted ms-2 small">${mins}:${String(secs).padStart(2, '0')}</span>`;
+                    }
                     return `
                     <div class="d-flex align-items-center gap-2 py-1 border-bottom">
                         <span class="text-muted" style="min-width:2rem">${t.track_number || '?'}</span>
-                        <span class="flex-grow-1">${escapeHtml(t.title)}</span>
+                        <span class="flex-grow-1">${escapeHtml(t.title)}${durationStr}</span>
                         <button class="btn btn-sm btn-outline-success" title="Add to download queue"
                             onclick="queueMissingTrackFromCorrections('${queueKey}')">
                             <i class="bi bi-download"></i>

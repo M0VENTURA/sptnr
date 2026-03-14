@@ -331,12 +331,17 @@ def get_recent_album_scans(limit: int = 10):
         scans = []
         for row in cursor.fetchall():
             raw_ts = row['scan_timestamp'] if hasattr(row, 'keys') else row[3]
-            # Ensure scan_timestamp is a plain string so it survives JSON serialisation
-            # when PostgreSQL returns a datetime object (Flask 3.0 removed the datetime encoder).
+            # Ensure scan_timestamp is a plain ISO-8601 string so it survives JSON
+            # serialisation and is reliably parsed by new Date() in all browsers.
+            # PostgreSQL returns datetime objects; SQLite returns strings like
+            # "2024-01-15 10:30:00" (space separator) which Safari/Firefox reject.
             if hasattr(raw_ts, 'isoformat'):
                 scan_ts = raw_ts.isoformat()
+            elif raw_ts is not None:
+                # Normalise SQLite-style "YYYY-MM-DD HH:MM:SS" → "YYYY-MM-DDTHH:MM:SS"
+                scan_ts = str(raw_ts).replace(' ', 'T', 1)
             else:
-                scan_ts = str(raw_ts) if raw_ts is not None else ''
+                scan_ts = ''
             scans.append({
                 'artist': row['artist'] if hasattr(row, 'keys') else row[0],
                 'album': row['album'] if hasattr(row, 'keys') else row[1],

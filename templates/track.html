@@ -61,6 +61,18 @@
                                 <strong>{{ (track.duration|int // 60) }}:{{ '%02d' % (track.duration|int % 60) }}</strong>
                             </div>
                             {% endif %}
+                            {% if track.track_number %}
+                            <div class="col-6">
+                                <small class="text-muted d-block">Track #</small>
+                                <strong>{{ track.track_number }}</strong>
+                            </div>
+                            {% endif %}
+                            {% if track.disc_number and track.disc_number|int > 1 %}
+                            <div class="col-6">
+                                <small class="text-muted d-block">Disc #</small>
+                                <strong>{{ track.disc_number }}</strong>
+                            </div>
+                            {% endif %}
                         </div>
                     </div>
                 </div>
