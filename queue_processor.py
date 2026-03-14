@@ -50,6 +50,9 @@ _NAV_ARTIST_SIMILARITY_THRESHOLD = 0.75
 # Similarity / tolerance thresholds for confirmed in-collection matching
 _ALBUM_SIMILARITY_THRESHOLD = 0.85
 _CONFIRMED_MATCH_DURATION_TOLERANCE_SECONDS = 10
+# Minimum title similarity for prefix-like title pairs (e.g. "World So Cold"
+# vs "World So Cold Intro").  See _metadata_matches_queue_item for details.
+_PREFIX_TITLE_MIN = 0.9
 
 
 def _is_postgres_connection(conn):
@@ -326,6 +329,17 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
     # Require both core fields to be reasonably close to avoid false-positive imports.
     if artist_score < 0.55 or title_score < 0.55:
         return False
+
+    # Protect against "prefix" false-positives: when one title is merely a
+    # leading substring of the other (e.g. "World So Cold" vs "World So Cold
+    # Intro"), the similarity score is deceptively high (~0.81) even though
+    # these are distinct tracks.  Require a near-exact title match in that
+    # case to avoid incorrectly marking a queue item as matched/completed.
+    _title_a = _normalize_match_text(file_title)
+    _title_b = _normalize_match_text(queue_title)
+    if _title_a != _title_b and (_title_a.startswith(_title_b) or _title_b.startswith(_title_a)):
+        if title_score < _PREFIX_TITLE_MIN:
+            return False
 
     expected_duration = _normalize_duration_seconds(queue_item.get('duration'))
     file_duration = None
