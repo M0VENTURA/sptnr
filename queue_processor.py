@@ -54,6 +54,11 @@ _CONFIRMED_MATCH_DURATION_TOLERANCE_SECONDS = 10
 # vs "World So Cold Intro").  See _metadata_matches_queue_item for details.
 _PREFIX_TITLE_MIN = 0.9
 
+# Minimum similarity score below which a file's artist/title tags are considered
+# a hard mismatch against the queue item.  Scores this low mean it's a completely
+# different song and filename matching should not be attempted as a fallback.
+_HARD_MISMATCH_FLOOR = 0.35
+
 # Maximum time (in minutes) a download is allowed to stay in each active slskd
 # transfer state before the queue processor cancels it and retries.
 # Keys match the slskd state strings used by SlskdClient constants.
@@ -347,7 +352,6 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
     # Hard mismatch: scores so low that this is clearly a different file.  Block
     # all further matching (including the filename fallback in the caller) to avoid
     # importing completely wrong tracks.
-    _HARD_MISMATCH_FLOOR = 0.35
     if artist_score < _HARD_MISMATCH_FLOOR or title_score < _HARD_MISMATCH_FLOOR:
         return False
 
@@ -1991,7 +1995,7 @@ def maybe_clear_slskd_completed_downloads(now_ts, last_run_ts, interval_seconds=
         # Skip the very first run so that check_completed_downloads() can read
         # any already-completed transfers from slskd before they are cleared.
         logger.debug(
-            "[SLSKD_CLEANUP] Startup run skipped; first cleanup in %ss", interval_seconds
+            "[SLSKD_CLEANUP] Startup run skipped; first cleanup in %s seconds", interval_seconds
         )
         return now_ts
 
