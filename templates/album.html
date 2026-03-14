@@ -1936,7 +1936,13 @@
             if (normalizedType === 'compilation') {
                 normalizedType = 'album+compilation';
             }
-            document.getElementById('album_type').value = normalizedType;
+            const albumTypeSelect = document.getElementById('album_type');
+            if (albumTypeSelect) {
+                const validValues = Array.from(albumTypeSelect.options).map(o => o.value);
+                if (validValues.includes(normalizedType)) {
+                    albumTypeSelect.value = normalizedType;
+                }
+            }
         }
         if (mbid) {
             document.getElementById('album_mbid').value = mbid;
@@ -3542,7 +3548,13 @@
         const album = btn.dataset.album;
         const trackNumber = btn.dataset.trackNumber || null;
         const year = btn.dataset.year || null;
-        const releaseId = btn.dataset.releaseId || null;
+        // Fall back to the album's currently-assigned MBID when the track row
+        // doesn't carry one (e.g. the user just selected a new release via the
+        // Metadata lookup but hasn't saved yet).
+        const releaseId = btn.dataset.releaseId
+            || (document.getElementById('album_mbid') || {}).value
+            || (document.getElementById('musicbrainzReleaseId') || {}).value
+            || null;
 
         const origHtml = btn.innerHTML;
         btn.disabled = true;
@@ -3560,6 +3572,7 @@
                     track_number: trackNumber,
                     year: year,
                     release_id: releaseId,
+                    release_source: releaseId ? 'musicbrainz' : null,
                     source: 'soulseek'
                 })
             });
