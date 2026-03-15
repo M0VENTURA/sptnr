@@ -215,6 +215,41 @@
         </div>
     </div>
 
+    <!-- Track Title Mismatches Section (loaded async) -->
+    {% if mb_albums %}
+    <div class="card mb-4" id="title-mismatches-section">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h5 class="mb-0"><i class="bi bi-pencil-square"></i> Track Title Mismatches (vs MusicBrainz)</h5>
+            <span class="badge bg-secondary" id="title-mismatches-badge" style="display:none;"></span>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover mb-0 artist-corrections-table">
+                    <thead>
+                        <tr>
+                            <th>Album</th>
+                            <th class="text-center">Track #</th>
+                            <th>Library Title</th>
+                            <th>MusicBrainz Title</th>
+                            <th class="text-center">Library Length</th>
+                            <th class="text-center">MB Length</th>
+                            <th class="text-center">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="title-mismatches-tbody">
+                        <tr id="title-mismatches-loading-row">
+                            <td colspan="7" class="text-center text-muted py-3">
+                                <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+                                Checking MusicBrainz titles…
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
     <!-- Albums with Missing MB Tracks Section (loaded async) -->
     {% if mb_albums %}
     <div class="card mb-4" id="mb-missing-tracks-section">
@@ -347,6 +382,7 @@ const mbAlbums = {{ mb_albums | tojson | safe }};
 document.addEventListener('DOMContentLoaded', function() {
     loadDuplicateArtists();
     if (mbAlbums && mbAlbums.length > 0) {
+        checkAllAlbumsTitleMismatches();
         checkAllAlbumsMbTracks();
     }
 });
@@ -401,6 +437,135 @@ const _albumTracks = {};
 // onclick handlers never embed raw JSON (which breaks on apostrophes in titles).
 const _pendingMatchTracks = {};
 const _pendingQueueTracks = {};
+
+// ── Title Mismatches ───────────────────────────────────────────────────────
+// Lookup for pending rename/queue payloads keyed by safe strings.
+const _pendingRenameTracks = {};
+const _pendingTitleQueueTracks = {};
+
+async function checkAllAlbumsTitleMismatches() {
+    let totalMismatches = 0;
+    const checks = mbAlbums.map((alb) => checkAlbumTitleMismatches(alb));
+    const results = await Promise.allSettled(checks);
+    results.forEach(r => { if (r.status === 'fulfilled') totalMismatches += (r.value || 0); });
+
+    const loadingRow = document.getElementById('title-mismatches-loading-row');
+    if (loadingRow) loadingRow.remove();
+
+    const badge = document.getElementById('title-mismatches-badge');
+    if (badge) {
+        if (totalMismatches > 0) {
+            badge.textContent = `${totalMismatches} title mismatch${totalMismatches !== 1 ? 'es' : ''}`;
+            badge.className = 'badge bg-warning text-dark';
+            badge.style.display = 'inline-block';
+        } else {
+            badge.textContent = 'No title mismatches';
+            badge.className = 'badge bg-success';
+            badge.style.display = 'inline-block';
+        }
+    }
+}
+
+async function checkAlbumTitleMismatches(alb) {
+    try {
+        const url = `/api/album/title-mismatches?artist=${encodeURIComponent(artistName)}&album=${encodeURIComponent(alb.album)}`;
+        const resp = await fetch(url);
+        const data = await resp.json();
+        const mismatches = data.mismatches || [];
+        const tbody = document.getElementById('title-mismatches-tbody');
+        if (!tbody) return mismatches.length;
+
+        mismatches.forEach((m, idx) => {
+            const renameKey = `rename_${encodeURIComponent(alb.album)}_${idx}`;
+            const queueKey = `titlequeue_${encodeURIComponent(alb.album)}_${idx}`;
+            _pendingRenameTracks[renameKey] = m;
+            _pendingTitleQueueTracks[queueKey] = m;
+
+            const isLengthMismatch = m.mismatch_type === 'title_and_length';
+            const libDur = m.library_duration || '—';
+            const mbDur = m.mb_duration || '—';
+
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td class="small">${escapeHtml(alb.album)}</td>
+                <td class="text-center">${m.track_number || '—'}</td>
+                <td>${escapeHtml(m.library_title || '—')}</td>
+                <td class="text-success">${escapeHtml(m.mb_title || '—')}</td>
+                <td class="text-center small ${isLengthMismatch ? 'text-warning' : ''}">${libDur}</td>
+                <td class="text-center small">${mbDur}</td>
+                <td class="text-center">
+                    <button class="btn btn-sm btn-outline-primary me-1" title="Rename to MusicBrainz title"
+                        onclick="renameTitleMismatch('${renameKey}')">
+                        <i class="bi bi-pencil"></i> Rename
+                    </button>
+                    ${isLengthMismatch ? `<button class="btn btn-sm btn-outline-success" title="Add to download queue to replace with correct version"
+                        onclick="queueTitleMismatch('${queueKey}')">
+                        <i class="bi bi-download"></i> Queue
+                    </button>` : ''}
+                </td>`;
+            tbody.appendChild(tr);
+        });
+
+        return mismatches.length;
+    } catch (err) {
+        console.error(`Error checking title mismatches for ${alb.album}:`, err);
+        return 0;
+    }
+}
+
+async function renameTitleMismatch(renameKey) {
+    const m = _pendingRenameTracks[renameKey];
+    if (!m) { alert('Could not find track data — please reload.'); return; }
+    if (!confirm(`Rename track to MusicBrainz title?\n\nCurrent: "${m.library_title}"\nNew:     "${m.mb_title}"\n\nThis will update the database and audio file tags.`)) return;
+    try {
+        const resp = await fetch('/api/track/match-missing', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                track_id: String(m.track_id),
+                mb_title: m.mb_title,
+                mb_track_number: m.track_number,
+                mb_release_id: m.release_id,
+            })
+        });
+        const result = await resp.json();
+        if (result.success) {
+            alert(`✓ Renamed!\n"${result.old_title}" → "${result.new_title}"${result.updated_file ? '\nAudio file tags updated.' : ''}`);
+            location.reload();
+        } else {
+            alert(`✗ Error: ${result.error}`);
+        }
+    } catch (err) {
+        alert(`✗ Error: ${err.message}`);
+    }
+}
+
+async function queueTitleMismatch(queueKey) {
+    const m = _pendingTitleQueueTracks[queueKey];
+    if (!m) { alert('Could not find track data — please reload.'); return; }
+    try {
+        const resp = await fetch('/api/queue/add', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                artist: m.album_artist || m.artist,
+                album: m.album,
+                title: m.mb_title,
+                track_number: m.track_number,
+                year: m.year,
+                release_id: m.release_id,
+            })
+        });
+        const result = await resp.json();
+        if (result.success || result.id) {
+            alert(`✓ "${m.mb_title}" added to download queue.`);
+        } else {
+            alert(`Could not queue: ${result.error || 'Unknown error'}`);
+        }
+    } catch (err) {
+        alert(`✗ Error: ${err.message}`);
+    }
+}
 
 async function checkAllAlbumsMbTracks() {
     const btn = document.getElementById('checkAllMbTracksBtn');
