@@ -762,6 +762,19 @@ def detect_and_queue_missing_tracks(artist: str, album: str, album_tracks: list,
             mb_normalized = mb_normalized.lower().strip()
             mb_normalized = re.sub(r'[^a-z0-9]+', ' ', mb_normalized)
             mb_normalized = ' '.join(mb_normalized.split())
+
+            # Also normalise the canonical recording title (may differ from track
+            # title for live releases where the track adds a venue suffix).
+            # e.g. recording_title "Dig" matches library "Dig" even when
+            # mb_title is "Dig (live at Candlestick Park, ...)".
+            mb_recording_title = mb_track.get('recording_title', '') or ''
+            mb_normalized_recording = ''
+            if mb_recording_title and mb_recording_title != mb_title:
+                mb_normalized_recording = unicodedata.normalize("NFKD", mb_recording_title)
+                mb_normalized_recording = "".join(c for c in mb_normalized_recording if not unicodedata.combining(c))
+                mb_normalized_recording = mb_normalized_recording.lower().strip()
+                mb_normalized_recording = re.sub(r'[^a-z0-9]+', ' ', mb_normalized_recording)
+                mb_normalized_recording = ' '.join(mb_normalized_recording.split())
             
             # Determine MB track number
             mb_number = mb_track.get('number')
@@ -772,8 +785,11 @@ def detect_and_queue_missing_tracks(artist: str, album: str, album_tracks: list,
                 except (ValueError, TypeError):
                     pass
             
-            # Check if track exists locally by title OR track number
-            title_match = mb_normalized in local_tracks_normalized
+            # Check if track exists locally by title (or recording_title) OR track number
+            title_match = (
+                mb_normalized in local_tracks_normalized
+                or (mb_normalized_recording and mb_normalized_recording in local_tracks_normalized)
+            )
             number_match = mb_track_num is not None and mb_track_num in local_track_numbers
             
             if not title_match and not number_match:

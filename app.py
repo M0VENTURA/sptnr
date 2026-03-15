@@ -3407,17 +3407,37 @@ def api_album_missing_tracks():
             t_norm = re.sub(r'\s+', ' ', t_title.lower().strip())
             t_recording_mbid = (mb_track.get("recording_mbid") or "").strip()
 
+            # Normalise the canonical recording title (shorter, no venue suffix)
+            # so we can match library entries stored without venue context.
+            # e.g. recording_title "Dig" matches library title "Dig" even when
+            # the track title is "Dig (live at Candlestick Park, ...)".
+            t_recording_title = mb_track.get("recording_title") or ""
+            t_norm_recording = re.sub(r'\s+', ' ', t_recording_title.lower().strip())
+
+            def _title_found(disc, norm, norm_rec):
+                """Return True if this title (or its recording variant) is in library."""
+                if (disc, norm) in library_by_title:
+                    return True
+                if norm_rec and norm_rec != norm and (disc, norm_rec) in library_by_title:
+                    return True
+                return False
+
             # Determine whether this MB track exists in the library.
-            # Priority: MBID match > track-number match > title match
+            # Priority: recording-MBID match > track-number match (with title
+            # fallback) > title match (checks both track title and recording title)
             if t_recording_mbid and t_recording_mbid in library_mbids:
                 found = True
             elif t_track_num is not None and library_by_tracknum:
                 try:
                     found = (t_disc, int(t_track_num)) in library_by_tracknum
+                    if not found:
+                        # Track numbers can shift when a release has bonus/extra
+                        # tracks; fall through to title matching in that case.
+                        found = _title_found(t_disc, t_norm, t_norm_recording)
                 except (TypeError, ValueError):
-                    found = (t_disc, t_norm) in library_by_title
+                    found = _title_found(t_disc, t_norm, t_norm_recording)
             else:
-                found = (t_disc, t_norm) in library_by_title
+                found = _title_found(t_disc, t_norm, t_norm_recording)
             if not found:
                 # MusicBrainz returns duration in milliseconds; convert to seconds for UI
                 mb_duration_ms = mb_track.get("duration")
