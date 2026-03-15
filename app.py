@@ -61,6 +61,8 @@ from contextlib import closing
 import json
 import yaml
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response, send_file, session, abort
+from werkzeug.exceptions import HTTPException
+import traceback
 from datetime import datetime
 import copy
 from functools import wraps
@@ -447,6 +449,22 @@ def set_cache_headers(response):
         response.headers['Pragma'] = 'no-cache'
         response.headers['Expires'] = '0'
     return response
+
+
+@app.errorhandler(Exception)
+def handle_unhandled_exception(e):
+    """
+    Global handler for any exception that escapes a route's own try/except block.
+    Returns a JSON error response instead of Flask's default HTML 500 page, which
+    caused the client-side 'Server returned non-JSON response (HTTP 500)' error.
+    """
+    # Let Flask handle standard HTTP exceptions (404, 405, etc.) normally so that
+    # their correct status codes and messages are preserved.
+    if isinstance(e, HTTPException):
+        return e
+    logging.error(f"Unhandled exception: {type(e).__name__}: {e}")
+    logging.error(traceback.format_exc())
+    return jsonify({"success": False, "error": "An internal server error occurred. Please try again."}), 500
 
 # Ensure album_artist column exists and is populated on startup
 import logging
@@ -19904,6 +19922,7 @@ def api_queue_matched_releases():
     Return all unique releases currently in the download queue that have a release_mbid set.
     Used to populate the 'current queue' list in the Change Queue Item Match modal.
     """
+    conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
@@ -19920,6 +19939,7 @@ def api_queue_matched_releases():
         """)
         rows = cursor.fetchall()
         conn.close()
+        conn = None
 
         releases = []
         for row in rows:
@@ -19944,6 +19964,11 @@ def api_queue_matched_releases():
 
     except Exception as e:
         logging.error(f"Error fetching matched releases from queue: {e}")
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
         return jsonify({"success": False, "error": str(e)}), 500
 
 
@@ -19998,37 +20023,36 @@ def api_queue_update_album_mbid():
     Update all queue items for an album with new MusicBrainz release ID
     Used when user selects a better MBID match
     """
+    conn = None
     try:
-        data = request.get_json()
-        
+        data = request.get_json(force=True, silent=True) or {}
+
         old_artist = data.get('old_artist', '').strip()
         old_album = data.get('old_album', '').strip()
         new_mbid = data.get('new_mbid', '').strip()
         new_artist = data.get('new_artist', '').strip()
         new_album = data.get('new_album', '').strip()
-        
+
         if not all([old_artist, old_album, new_mbid]):
             return jsonify({"error": "Missing required fields"}), 400
-        
-        # Get MusicBrainz release details
-        from folder_matching_enhancements import get_musicbrainz_release_tracks
-        
-        tracks = get_musicbrainz_release_tracks(new_mbid)
-        
-        if not tracks:
-            return jsonify({"error": "Could not fetch release tracks from MusicBrainz"}), 400
-        
-        # Extract release year from first track
+
+        # Attempt to fetch release year from MusicBrainz (best-effort; update proceeds
+        # even when MusicBrainz is unreachable so the MBID change is never blocked).
         release_year = None
-        if tracks and tracks[0].get('release_date'):
-            release_year = tracks[0]['release_date'][:4]
-        
+        try:
+            from folder_matching_enhancements import get_musicbrainz_release_tracks
+            tracks = get_musicbrainz_release_tracks(new_mbid)
+            if tracks and tracks[0].get('release_date'):
+                release_year = tracks[0]['release_date'][:4]
+        except Exception as mb_err:
+            logging.warning(f"[UPDATE_MBID] Could not fetch MusicBrainz tracks for {new_mbid}: {mb_err}")
+
         # Update existing queue items
         conn = get_db()
         cursor = conn.cursor()
         is_pg = _is_postgres_connection(conn)
         placeholder = "%s" if is_pg else "?"
-        
+
         cursor.execute(
             f"""
             UPDATE download_queue
@@ -20042,22 +20066,28 @@ def api_queue_update_album_mbid():
             """,
             (new_mbid, new_album, new_artist, release_year, old_artist, old_album)
         )
-        
+
         updated_count = cursor.rowcount
         conn.commit()
         conn.close()
-        
+        conn = None
+
         return jsonify({
             "success": True,
             "message": f"Updated {updated_count} queue items with new MBID",
             "updated_count": updated_count,
             "release_mbid": new_mbid
         })
-        
+
     except Exception as e:
         logging.error(f"Error updating album MBID: {e}")
         import traceback
         logging.error(traceback.format_exc())
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
         return jsonify({"success": False, "error": str(e)}), 500
 
 
@@ -20121,8 +20151,9 @@ def api_queue_send_to_download(queue_id):
 @app.route("/api/queue/<int:queue_id>/apply-mbid-match", methods=["POST"])
 def api_queue_apply_mbid_match(queue_id):
     """Apply a MusicBrainz release match to a single queue item and queue all release tracks."""
+    conn = None
     try:
-        data = request.get_json() or {}
+        data = request.get_json(force=True, silent=True) or {}
         new_mbid = (data.get('new_mbid') or '').strip()
         new_artist = (data.get('new_artist') or '').strip()
         new_album = (data.get('new_album') or '').strip()
@@ -20152,6 +20183,7 @@ def api_queue_apply_mbid_match(queue_id):
         row = cursor.fetchone()
         if not row:
             conn.close()
+            conn = None
             return jsonify({"error": "Queue item not found"}), 404
 
         current_artist = row.get('artist') if isinstance(row, dict) else row[0]
@@ -20176,6 +20208,7 @@ def api_queue_apply_mbid_match(queue_id):
 
         conn.commit()
         conn.close()
+        conn = None
 
         # Add all tracks from the MusicBrainz release to the queue so the complete
         # release appears in the folder list (not just the single matched file).
@@ -20222,6 +20255,13 @@ def api_queue_apply_mbid_match(queue_id):
         })
     except Exception as e:
         logging.error(f"Error applying queue MBID match: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
         return jsonify({"success": False, "error": str(e)}), 500
 
 
