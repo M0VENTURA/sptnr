@@ -434,6 +434,38 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
             # excluded so that re-queueing a track whose prior row was cleared to in_collection
             # does not trigger a unique-key conflict.
             try:
+                # First, remove any existing duplicate active rows that would violate the
+                # unique index. Keep the newest row (highest id) per logical identity.
+                cursor.execute(
+                    """
+                    WITH duplicate_groups AS (
+                        SELECT
+                            LOWER(artist) AS artist_key,
+                            LOWER(COALESCE(album, '')) AS album_key,
+                            LOWER(title) AS title_key,
+                            COALESCE(source, '') AS source_key,
+                            MAX(id) AS keep_id,
+                            COUNT(*) AS row_count
+                        FROM download_queue
+                        WHERE status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled', 'in_collection')
+                        GROUP BY LOWER(artist), LOWER(COALESCE(album, '')), LOWER(title), COALESCE(source, '')
+                        HAVING COUNT(*) > 1
+                    )
+                    DELETE FROM download_queue dq
+                    USING duplicate_groups dg
+                    WHERE LOWER(dq.artist) = dg.artist_key
+                      AND LOWER(COALESCE(dq.album, '')) = dg.album_key
+                      AND LOWER(dq.title) = dg.title_key
+                      AND COALESCE(dq.source, '') = dg.source_key
+                      AND dq.status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled', 'in_collection')
+                      AND dq.id <> dg.keep_id
+                    """
+                )
+                removed_dupes = cursor.rowcount or 0
+                if removed_dupes > 0:
+                    logger.info(f"Auto-removed {removed_dupes} duplicate active download_queue row(s) before dedupe index creation")
+                conn.commit()
+
                 # Drop the existing index before recreating to ensure the WHERE clause is
                 # always up-to-date with the current definition.  IF NOT EXISTS on the CREATE
                 # acts as a safety net in case the drop was silently skipped.

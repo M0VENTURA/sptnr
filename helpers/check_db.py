@@ -825,11 +825,11 @@ def update_schema(db_path):
     try:
         cursor.execute("""
             DELETE FROM download_queue
-            WHERE status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled')
+            WHERE status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled', 'in_collection')
             AND id NOT IN (
                 SELECT MAX(id)
                 FROM download_queue
-                WHERE status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled')
+                WHERE status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled', 'in_collection')
                 GROUP BY LOWER(artist), LOWER(COALESCE(album, '')), LOWER(title), source
             )
         """)
