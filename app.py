@@ -18427,12 +18427,17 @@ def api_queue_imported():
         cursor = conn.cursor()
         placeholder = "%s" if _is_postgres_connection(conn) else "?"
         
-        # Get recently organized/imported tracks from download_queue
+        # Get recently organized/imported tracks from download_queue.
+        # Only return items that were explicitly added with a MusicBrainz/Discogs
+        # release ID (release_id IS NOT NULL) so that auto-discovered folder-matched
+        # files are excluded from this list.
         cursor.execute(f"""
             SELECT id, artist, title, album, source, status, 
-                   import_group, import_type, imported_at, file_path, found_filename
+                   import_group, import_type, imported_at, file_path, found_filename,
+                   release_id, release_source
             FROM download_queue 
             WHERE status = 'completed' AND imported_at IS NOT NULL
+              AND release_id IS NOT NULL
             ORDER BY imported_at DESC
             LIMIT {placeholder}
         """, (limit,))
