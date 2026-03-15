@@ -20149,6 +20149,7 @@ def api_queue_matched_releases():
             FROM download_queue
             WHERE release_mbid IS NOT NULL
               AND release_mbid <> ''
+              AND release_source = 'musicbrainz'
               AND status NOT IN ('imported', 'removed', 'cancelled')
             GROUP BY artist, album, release_mbid, release_year
             ORDER BY artist, album

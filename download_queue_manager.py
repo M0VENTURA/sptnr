@@ -86,6 +86,7 @@ _NO_AUDIO_LOG_INTERVAL_SECONDS = 600
 
 _queue_schema_checked = False
 _queue_schema_lock = threading.Lock()
+_queue_columns_cache = None  # populated once; avoids repeated information_schema queries
 
 # Throttle expensive downloads-folder checks triggered by frequent UI polling.
 _downloads_check_lock = threading.Lock()
@@ -1051,38 +1052,45 @@ def get_queue(status=None, source=None, limit=50):
     Returns:
         List of queue items
     """
+    global _queue_schema_checked, _queue_columns_cache
+
     try:
         conn = get_db()
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-        # First ensure required columns exist (PostgreSQL information_schema)
-        cursor.execute("""
-            SELECT column_name FROM information_schema.columns
-            WHERE table_name = 'download_queue' AND table_schema = 'public'
-        """)
-        # RealDictCursor returns dict-like rows, so use key lookup.
-        columns = [row.get('column_name') for row in cursor.fetchall() if row.get('column_name')]
+        # Only run the expensive information_schema check once per process lifetime.
+        if not _queue_schema_checked:
+            with _queue_schema_lock:
+                if not _queue_schema_checked:
+                    cursor.execute("""
+                        SELECT column_name FROM information_schema.columns
+                        WHERE table_name = 'download_queue' AND table_schema = 'public'
+                    """)
+                    columns = [row.get('column_name') for row in cursor.fetchall() if row.get('column_name')]
 
-        # Add missing columns if needed
-        missing_cols = {
-            'source': "TEXT DEFAULT 'soulseek'",
-            'priority': "INTEGER DEFAULT 5",
-            'search_query': "TEXT",
-            'import_group': "TEXT",
-            'import_type': "TEXT DEFAULT 'song'"
-        }
+                    # Add missing columns if needed
+                    missing_cols = {
+                        'source': "TEXT DEFAULT 'soulseek'",
+                        'priority': "INTEGER DEFAULT 5",
+                        'search_query': "TEXT",
+                        'import_group': "TEXT",
+                        'import_type': "TEXT DEFAULT 'song'"
+                    }
+                    for col, col_type in missing_cols.items():
+                        if col not in columns:
+                            logger.warning(f"'{col}' column missing from download_queue, attempting to add it")
+                            try:
+                                cursor.execute(f"ALTER TABLE download_queue ADD COLUMN {col} {col_type};")
+                                conn.commit()
+                                columns.append(col)
+                            except Exception as e:
+                                logger.warning(f"Could not add {col} column: {e}")
 
-        for col, col_type in missing_cols.items():
-            if col not in columns:
-                logger.warning(f"'{col}' column missing from download_queue, attempting to add it")
-                try:
-                    cursor.execute(f"ALTER TABLE download_queue ADD COLUMN {col} {col_type};")
-                    conn.commit()
-                    columns.append(col)
-                except Exception as e:
-                    logger.warning(f"Could not add {col} column: {e}")
+                    _queue_columns_cache = columns
+                    _queue_schema_checked = True
+        else:
+            columns = _queue_columns_cache
 
-        is_pg = True  # PostgreSQL is now required
         placeholder = "%s"
 
         conditions = []
