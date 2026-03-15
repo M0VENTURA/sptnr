@@ -3275,6 +3275,13 @@ def auto_discover_and_queue_files():
                         search_and_update_musicbrainz(inserted_queue_id, artist, title, album)
                 except Exception as mb_err:
                     logger.debug(f"MusicBrainz auto-enrichment skipped for unmatched track: {mb_err}")
+                    # Any SQL error in the block above leaves the PostgreSQL transaction
+                    # in a failed state.  Roll back to allow subsequent files to proceed.
+                    if is_pg:
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
 
                 stats['queued'] += 1
 
@@ -3285,12 +3292,19 @@ def auto_discover_and_queue_files():
                 else:
                     logger.info(f"⚠️  Unmatched [{metadata_status}]: {artist} - {title} from {os.path.basename(os.path.dirname(full_path))}/{filename}")
 
-                # Commit file's work and release the SAVEPOINT.
+                # Release the SAVEPOINT if it still exists.  execute_write_with_retry
+                # calls conn.commit() which ends the transaction and removes the savepoint;
+                # attempting to release a non-existent savepoint raises a SQL error that
+                # leaves the new transaction in a failed state.  Roll back on failure to
+                # keep the connection clean for the next file.
                 if is_pg:
                     try:
                         cursor.execute("RELEASE SAVEPOINT _adq_file")
                     except Exception:
-                        pass
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
 
             except psycopg2.IntegrityError as e:
                 # A duplicate row was inserted concurrently (race condition between parallel scans).
