@@ -18,8 +18,267 @@ from typing import Dict, List, Tuple, Optional, Any
 from difflib import SequenceMatcher
 from database_abstraction import DatabaseQuery
 from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
+from helpers.db_utils import get_db_connection, _is_postgres_connection
 
 logger = logging.getLogger(__name__)
+
+
+def _row_get(row, key, index=None, default=None):
+    if row is None:
+        return default
+    if isinstance(row, dict):
+        return row.get(key, default)
+    if hasattr(row, 'keys'):
+        try:
+            return row[key]
+        except Exception:
+            pass
+    if index is not None:
+        try:
+            return row[index]
+        except Exception:
+            return default
+    return default
+
+
+def _safe_int(value, default=None):
+    try:
+        if value in (None, ''):
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _get_table_columns(cursor, table_name: str, is_pg: bool) -> set:
+    if is_pg:
+        cursor.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = %s AND table_schema = current_schema()",
+            (table_name,),
+        )
+        return {str(_row_get(row, 'column_name', 0, '')) for row in cursor.fetchall() if _row_get(row, 'column_name', 0, '')}
+
+    cursor.execute(f"PRAGMA table_info({table_name})")
+    return {
+        str(_row_get(row, 'name', 1, ''))
+        for row in cursor.fetchall()
+        if _row_get(row, 'name', 1, '')
+    }
+
+
+def _ensure_release_track_cache_columns(cursor, is_pg: bool) -> None:
+    required_columns = {
+        'disc_number': 'INTEGER',
+        'recording_title': 'TEXT',
+        'recording_mbid': 'TEXT',
+    }
+    existing_columns = _get_table_columns(cursor, 'musicbrainz_release_tracks', is_pg)
+    for column_name, column_type in required_columns.items():
+        if column_name in existing_columns:
+            continue
+        cursor.execute(f"ALTER TABLE musicbrainz_release_tracks ADD COLUMN {column_name} {column_type}")
+
+
+def _get_cached_musicbrainz_release_metadata(release_id: str) -> Optional[Dict[str, Any]]:
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+
+        _ensure_release_track_cache_columns(cursor, is_pg)
+
+        cursor.execute(
+            f"""
+            SELECT release_title, artist, release_year, total_tracks
+            FROM musicbrainz_releases
+            WHERE release_id = {placeholder}
+            LIMIT 1
+            """,
+            (release_id,),
+        )
+        release_row = cursor.fetchone()
+
+        cursor.execute(
+            f"""
+            SELECT disc_number, track_number, track_title, track_artist,
+                   duration, isrc, recording_title, recording_mbid
+            FROM musicbrainz_release_tracks
+            WHERE release_id = {placeholder}
+              AND queue_id IS NULL
+            ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 999999), id
+            """,
+            (release_id,),
+        )
+        track_rows = cursor.fetchall()
+
+        if not track_rows:
+            cursor.execute(
+                f"""
+                SELECT MIN(disc_number) AS disc_number,
+                       track_number,
+                       track_title,
+                       track_artist,
+                       MAX(duration) AS duration,
+                       MAX(isrc) AS isrc,
+                       MAX(recording_title) AS recording_title,
+                       MAX(recording_mbid) AS recording_mbid
+                FROM musicbrainz_release_tracks
+                WHERE release_id = {placeholder}
+                GROUP BY track_number, track_title, track_artist
+                ORDER BY COALESCE(MIN(disc_number), 1), COALESCE(track_number, 999999), MIN(id)
+                """,
+                (release_id,),
+            )
+            track_rows = cursor.fetchall()
+
+        tracks = []
+        for row in track_rows:
+            tracks.append({
+                'disc_number': _safe_int(_row_get(row, 'disc_number', 0, 1), 1),
+                'track_number': _safe_int(_row_get(row, 'track_number', 1, None), None),
+                'title': _row_get(row, 'track_title', 2, '') or '',
+                'artist': _row_get(row, 'track_artist', 3, '') or '',
+                'duration': _safe_int(_row_get(row, 'duration', 4, None), None),
+                'isrc': _row_get(row, 'isrc', 5, '') or '',
+                'recording_title': _row_get(row, 'recording_title', 6, '') or '',
+                'recording_mbid': _row_get(row, 'recording_mbid', 7, '') or '',
+            })
+
+        if not release_row and not tracks:
+            return None
+
+        return {
+            'release_title': _row_get(release_row, 'release_title', 0, '') if release_row else '',
+            'artist': _row_get(release_row, 'artist', 1, '') if release_row else '',
+            'release_year': _row_get(release_row, 'release_year', 2, '') if release_row else '',
+            'disc_count': max([track.get('disc_number') or 1 for track in tracks], default=1),
+            'cover_art': None,
+            'tracks': tracks,
+        }
+    except Exception as cache_err:
+        logger.debug(f"Could not read cached MusicBrainz metadata for {release_id}: {cache_err}")
+        return None
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _cache_musicbrainz_release_metadata(release_id: str, metadata: Dict[str, Any]) -> bool:
+    conn = None
+    try:
+        tracks = metadata.get('tracks') or []
+        if not tracks:
+            return False
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+
+        _ensure_release_track_cache_columns(cursor, is_pg)
+
+        release_title = metadata.get('release_title') or 'Unknown Album'
+        release_artist = metadata.get('artist') or ''
+        release_year = _safe_int(metadata.get('release_year'), None)
+        total_tracks = len(tracks)
+
+        if is_pg:
+            cursor.execute(
+                f"""
+                INSERT INTO musicbrainz_releases
+                (release_id, release_title, artist, release_year, total_tracks, status, updated_at)
+                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'cached', CURRENT_TIMESTAMP)
+                ON CONFLICT(release_id) DO UPDATE SET
+                    release_title = EXCLUDED.release_title,
+                    artist = EXCLUDED.artist,
+                    release_year = COALESCE(EXCLUDED.release_year, musicbrainz_releases.release_year),
+                    total_tracks = EXCLUDED.total_tracks,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (release_id, release_title, release_artist, release_year, total_tracks),
+            )
+        else:
+            cursor.execute(
+                f"""
+                INSERT INTO musicbrainz_releases
+                (release_id, release_title, artist, release_year, total_tracks, status, updated_at)
+                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'cached', CURRENT_TIMESTAMP)
+                ON CONFLICT(release_id) DO UPDATE SET
+                    release_title = excluded.release_title,
+                    artist = excluded.artist,
+                    release_year = COALESCE(excluded.release_year, musicbrainz_releases.release_year),
+                    total_tracks = excluded.total_tracks,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (release_id, release_title, release_artist, release_year, total_tracks),
+            )
+
+        cursor.execute(
+            f"DELETE FROM musicbrainz_release_tracks WHERE release_id = {placeholder} AND queue_id IS NULL",
+            (release_id,),
+        )
+
+        for track in tracks:
+            cursor.execute(
+                f"""
+                INSERT INTO musicbrainz_release_tracks
+                (release_id, queue_id, disc_number, track_number, track_title, track_artist,
+                 duration, isrc, recording_title, recording_mbid, status, created_at, updated_at)
+                VALUES ({placeholder}, NULL, {placeholder}, {placeholder}, {placeholder}, {placeholder},
+                        {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'cached', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """,
+                (
+                    release_id,
+                    _safe_int(track.get('disc_number'), 1),
+                    _safe_int(track.get('track_number'), None),
+                    track.get('title') or '',
+                    track.get('artist') or '',
+                    _safe_int(track.get('duration'), None),
+                    track.get('isrc') or '',
+                    track.get('recording_title') or '',
+                    track.get('recording_mbid') or '',
+                ),
+            )
+
+        conn.commit()
+        return True
+    except Exception as cache_err:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        logger.debug(f"Could not cache MusicBrainz metadata for {release_id}: {cache_err}")
+        return False
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def get_musicbrainz_release_metadata(release_id: str) -> Optional[Dict[str, Any]]:
+    cached_metadata = _get_cached_musicbrainz_release_metadata(release_id)
+    if cached_metadata and cached_metadata.get('tracks'):
+        return cached_metadata
+
+    try:
+        from post_download_processor import fetch_musicbrainz_release_metadata
+
+        live_metadata = fetch_musicbrainz_release_metadata(release_id)
+        if live_metadata and live_metadata.get('tracks'):
+            _cache_musicbrainz_release_metadata(release_id, live_metadata)
+        return live_metadata or cached_metadata
+    except Exception as live_err:
+        logger.error(f"Error fetching MusicBrainz release metadata for {release_id}: {live_err}")
+        return cached_metadata
 
 
 def get_musicbrainz_release_tracks(release_id: str, source: str = 'musicbrainz') -> List[Dict]:
@@ -35,7 +294,8 @@ def get_musicbrainz_release_tracks(release_id: str, source: str = 'musicbrainz')
     """
     try:
         if source == 'musicbrainz':
-            return _fetch_musicbrainz_tracks(release_id)
+            metadata = get_musicbrainz_release_metadata(release_id)
+            return metadata.get('tracks', []) if metadata else []
         elif source == 'discogs':
             return _fetch_discogs_tracks(release_id)
         else:

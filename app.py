@@ -3895,9 +3895,9 @@ def api_album_missing_tracks():
                 "mbids": mbids,
             })
 
-        # Fetch MusicBrainz release tracklist
-        from post_download_processor import fetch_musicbrainz_release_metadata
-        mb_release = fetch_musicbrainz_release_metadata(mb_mbid)
+        # Fetch MusicBrainz release tracklist from cache first.
+        from folder_matching_enhancements import get_musicbrainz_release_metadata
+        mb_release = get_musicbrainz_release_metadata(mb_mbid)
         if not mb_release:
             return jsonify({"missing_tracks": [], "missing_count": 0, "library_count": library_count, "reason": "mb_not_found"})
 
@@ -4075,9 +4075,9 @@ def api_album_title_mismatches():
                 except (TypeError, ValueError):
                     pass
 
-        # Fetch MusicBrainz release tracklist
-        from post_download_processor import fetch_musicbrainz_release_metadata
-        mb_release = fetch_musicbrainz_release_metadata(mb_mbid)
+        # Fetch MusicBrainz release tracklist from cache first.
+        from folder_matching_enhancements import get_musicbrainz_release_metadata
+        mb_release = get_musicbrainz_release_metadata(mb_mbid)
         if not mb_release:
             return jsonify({"mismatches": [], "mismatch_count": 0, "library_count": library_count, "reason": "mb_not_found"})
 
@@ -9331,8 +9331,8 @@ def album_detail(artist, album):
         mb_mbid = album_data.get('musicbrainz_album_mbid')
         if mb_mbid:
             try:
-                from post_download_processor import fetch_musicbrainz_release_metadata
-                mb_release = fetch_musicbrainz_release_metadata(mb_mbid)
+                from folder_matching_enhancements import get_musicbrainz_release_metadata
+                mb_release = get_musicbrainz_release_metadata(mb_mbid)
                 if mb_release:
                     # Build a set of (disc, normalised_title) keys already in the library
                     library_keys = set()
@@ -20880,31 +20880,39 @@ def api_queue_cleanup():
 @app.route("/api/queue/matched-releases", methods=["GET"])
 def api_queue_matched_releases():
     """
-    Return all unique releases currently in the download queue that have a release_mbid set.
+    Return all unique MusicBrainz-backed releases currently in the download queue.
     Used to populate the 'current queue' list in the Change Queue Item Match modal.
     """
     conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        release_uuid_expr = "COALESCE(NULLIF(release_mbid, ''), NULLIF(release_id, ''))"
+        release_uuid_length_expr = f"char_length({release_uuid_expr})" if is_pg else f"length({release_uuid_expr})"
 
-        cursor.execute("""
-            SELECT artist, album, release_mbid, release_year,
+        cursor.execute(f"""
+            SELECT COALESCE(NULLIF(album_artist, ''), artist) AS release_artist,
+                   album,
+                   {release_uuid_expr} AS release_uuid,
+                   COALESCE(NULLIF(CAST(release_year AS TEXT), ''), NULLIF(CAST(year AS TEXT), '')) AS resolved_year,
                    COUNT(*) AS track_count
             FROM download_queue
-            WHERE release_mbid IS NOT NULL
-              AND release_mbid <> ''
+            WHERE {release_uuid_expr} IS NOT NULL
               AND (
                     release_source = 'musicbrainz'
                     OR (
                         (release_source IS NULL OR release_source = '')
-                        AND length(release_mbid) = 36
-                        AND release_mbid LIKE '________-____-____-____-____________'
+                        AND {release_uuid_length_expr} = 36
+                        AND {release_uuid_expr} LIKE '________-____-____-____-____________'
                     )
                   )
               AND status NOT IN ('imported', 'removed', 'cancelled')
-            GROUP BY artist, album, release_mbid, release_year
-            ORDER BY artist, album
+            GROUP BY COALESCE(NULLIF(album_artist, ''), artist),
+                     album,
+                     {release_uuid_expr},
+                     COALESCE(NULLIF(CAST(release_year AS TEXT), ''), NULLIF(CAST(year AS TEXT), ''))
+            ORDER BY COALESCE(NULLIF(album_artist, ''), artist), album
         """)
         rows = cursor.fetchall()
         conn.close()
@@ -20914,10 +20922,10 @@ def api_queue_matched_releases():
         for row in rows:
             if isinstance(row, dict):
                 releases.append({
-                    'artist': row.get('artist') or '',
+                    'artist': row.get('release_artist') or '',
                     'album': row.get('album') or '',
-                    'mbid': row.get('release_mbid') or '',
-                    'year': row.get('release_year') or '',
+                    'mbid': row.get('release_uuid') or '',
+                    'year': row.get('resolved_year') or '',
                     'track_count': row.get('track_count') or 0,
                 })
             else:
@@ -21006,16 +21014,15 @@ def api_queue_update_album_mbid():
         if not all([old_artist, old_album, new_mbid]):
             return jsonify({"error": "Missing required fields"}), 400
 
-        # Attempt to fetch release year from MusicBrainz (best-effort; update proceeds
-        # even when MusicBrainz is unreachable so the MBID change is never blocked).
         release_year = None
         try:
-            from folder_matching_enhancements import get_musicbrainz_release_tracks
-            tracks = get_musicbrainz_release_tracks(new_mbid)
-            if tracks and tracks[0].get('release_date'):
-                release_year = tracks[0]['release_date'][:4]
+            from folder_matching_enhancements import get_musicbrainz_release_metadata
+
+            release_metadata = get_musicbrainz_release_metadata(new_mbid) or {}
+            release_year_raw = release_metadata.get('release_year')
+            release_year = str(release_year_raw).strip() if release_year_raw not in (None, '') else None
         except Exception as mb_err:
-            logging.warning(f"[UPDATE_MBID] Could not fetch MusicBrainz tracks for {new_mbid}: {mb_err}")
+            logging.warning(f"[UPDATE_MBID] Could not fetch MusicBrainz metadata for {new_mbid}: {mb_err}")
 
         # Update existing queue items
         conn = get_db()
@@ -21027,6 +21034,8 @@ def api_queue_update_album_mbid():
             f"""
             UPDATE download_queue
             SET release_mbid = {placeholder},
+                release_id = {placeholder},
+                release_source = 'musicbrainz',
                 album = {placeholder},
                 artist = {placeholder},
                 release_year = {placeholder},
@@ -21034,7 +21043,7 @@ def api_queue_update_album_mbid():
             WHERE LOWER(artist) = LOWER({placeholder})
             AND LOWER(album) = LOWER({placeholder})
             """,
-            (new_mbid, new_album, new_artist, release_year, old_artist, old_album)
+            (new_mbid, new_mbid, new_album, new_artist, release_year, old_artist, old_album)
         )
 
         updated_count = cursor.rowcount
@@ -21132,6 +21141,19 @@ def api_queue_apply_mbid_match(queue_id):
             return jsonify({"error": "new_mbid is required"}), 400
 
         release_year = None
+        release_metadata = None
+        try:
+            from folder_matching_enhancements import get_musicbrainz_release_metadata
+
+            release_metadata = get_musicbrainz_release_metadata(new_mbid) or {}
+            release_year_raw = release_metadata.get('release_year')
+            release_year = str(release_year_raw).strip() if release_year_raw not in (None, '') else None
+            if not new_artist:
+                new_artist = (release_metadata.get('artist') or '').strip()
+            if not new_album:
+                new_album = (release_metadata.get('release_title') or '').strip()
+        except Exception as mb_err:
+            logging.debug(f"[QUEUE_MATCH] Could not preload release metadata for {new_mbid}: {mb_err}")
 
         conn = get_db()
         cursor = conn.cursor()
@@ -21158,6 +21180,8 @@ def api_queue_apply_mbid_match(queue_id):
             f"""
             UPDATE download_queue
             SET release_mbid = {placeholder},
+                release_id = {placeholder},
+                release_source = 'musicbrainz',
                 artist = {placeholder},
                 album = {placeholder},
                 release_year = {placeholder},
@@ -21165,7 +21189,7 @@ def api_queue_apply_mbid_match(queue_id):
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = {placeholder}
             """,
-            (new_mbid, target_artist, target_album, release_year, queue_id)
+            (new_mbid, new_mbid, target_artist, target_album, release_year, queue_id)
         )
 
         conn.commit()
@@ -21173,23 +21197,22 @@ def api_queue_apply_mbid_match(queue_id):
         conn = None
 
         # Kick off background enrichment so UI returns quickly.
-        def _expand_release_tracks_async(mbid, artist_name, album_name, qid):
+        def _expand_release_tracks_async(mbid, artist_name, album_name, qid, prefetched_release_metadata=None):
             try:
-                from folder_matching_enhancements import get_musicbrainz_release_tracks
+                from folder_matching_enhancements import get_musicbrainz_release_metadata
                 from download_queue_manager import add_to_queue
 
-                release_tracks = get_musicbrainz_release_tracks(mbid)
+                release_data = prefetched_release_metadata or get_musicbrainz_release_metadata(mbid) or {}
+                release_tracks = release_data.get('tracks', [])
                 added_tracks = 0
-                inferred_year = None
-
-                if release_tracks and release_tracks[0].get('release_date'):
-                    inferred_year = release_tracks[0]['release_date'][:4]
+                inferred_year_raw = release_data.get('release_year')
+                inferred_year = str(inferred_year_raw).strip() if inferred_year_raw not in (None, '') else None
 
                 for track in release_tracks or []:
                     track_title = track.get('title', '')
                     if not track_title:
                         continue
-                    track_number = track.get('number')
+                    track_number = track.get('track_number')
                     track_duration = track.get('duration', 0)
                     if track_duration:
                         track_duration = track_duration // 1000
@@ -21243,7 +21266,7 @@ def api_queue_apply_mbid_match(queue_id):
 
         threading.Thread(
             target=_expand_release_tracks_async,
-            args=(new_mbid, target_artist, target_album, queue_id),
+            args=(new_mbid, target_artist, target_album, queue_id, release_metadata),
             daemon=True,
             name=f"queue-match-expand-{queue_id}",
         ).start()
@@ -23706,9 +23729,9 @@ def api_album_musicbrainz_compare():
         if not release_group_mbid or not artist or not album:
             return jsonify({"error": "release_group_mbid, artist, and album are required"}), 400
 
-        # Fetch MusicBrainz release data (handles both release and release-group MBIDs)
-        from post_download_processor import fetch_musicbrainz_release_metadata
-        mb_release = fetch_musicbrainz_release_metadata(release_group_mbid)
+        # Fetch MusicBrainz release data from cache first (handles release and release-group MBIDs).
+        from folder_matching_enhancements import get_musicbrainz_release_metadata
+        mb_release = get_musicbrainz_release_metadata(release_group_mbid)
         if not mb_release:
             return jsonify({"error": "Could not fetch MusicBrainz release data"}), 404
 

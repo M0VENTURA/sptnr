@@ -1141,11 +1141,14 @@ def update_schema(db_path):
             release_id TEXT NOT NULL,
             queue_id INTEGER,
             
+            disc_number INTEGER,
             track_number INTEGER,
             track_title TEXT,
             track_artist TEXT,
             duration INTEGER,
             isrc TEXT,
+            recording_title TEXT,
+            recording_mbid TEXT,
             
             found_filename TEXT,
             file_path TEXT,
@@ -1207,6 +1210,22 @@ def update_schema(db_path):
     
     if queue_release_columns_added:
         print(f"✅ Added {len(queue_release_columns_added)} release tracking columns to download_queue: {', '.join(queue_release_columns_added)}")
+
+    cursor.execute("PRAGMA table_info(musicbrainz_release_tracks);")
+    existing_mb_track_columns = [row[1] for row in cursor.fetchall()]
+    mb_track_cache_columns = {
+        "disc_number": "INTEGER",
+        "recording_title": "TEXT",
+        "recording_mbid": "TEXT",
+    }
+
+    for col, col_type in mb_track_cache_columns.items():
+        if col not in existing_mb_track_columns:
+            try:
+                cursor.execute(f"ALTER TABLE musicbrainz_release_tracks ADD COLUMN {col} {col_type};")
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" not in str(e).lower():
+                    print(f"⚠ Could not add column {col} to musicbrainz_release_tracks: {e}")
 
     # ✅ Create indexes for musicbrainz_releases
     cursor.execute("""
