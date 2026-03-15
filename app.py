@@ -3466,6 +3466,170 @@ def api_album_missing_tracks():
         return jsonify({"error": str(e), "missing_tracks": [], "missing_count": 0}), 500
 
 
+@app.route("/api/album/title-mismatches")
+def api_album_title_mismatches():
+    """Compare library track titles against the full MusicBrainz release tracklist.
+
+    For each library track that can be matched by track number to its MB counterpart:
+    - If the title doesn't match the MB title → mismatch_type = 'title'
+    - If the title AND the duration both don't match → mismatch_type = 'title_and_length'
+
+    Duration tolerance: tracks whose durations differ by more than 5 seconds are
+    considered a length mismatch.
+    """
+    try:
+        artist = request.args.get("artist", "").strip()
+        album = request.args.get("album", "").strip()
+        if not artist or not album:
+            return jsonify({"error": "artist and album required"}), 400
+
+        conn = get_db()
+        cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+
+        # Get MusicBrainz MBID and library tracks for this album
+        try:
+            cursor.execute(f"""
+                SELECT COUNT(*) as track_count, MAX(musicbrainz_album_mbid) as mb_mbid
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
+            """, (artist, album))
+        except Exception:
+            cursor.execute(f"""
+                SELECT COUNT(*) as track_count, NULL as mb_mbid
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
+            """, (artist, album))
+
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"mismatches": [], "mismatch_count": 0, "library_count": 0})
+
+        row_dict = dict(row) if hasattr(row, "keys") else {"track_count": row[0], "mb_mbid": row[1]}
+        library_count = int(row_dict.get("track_count") or 0)
+        mb_mbid = row_dict.get("mb_mbid")
+
+        if not mb_mbid:
+            conn.close()
+            return jsonify({"mismatches": [], "mismatch_count": 0, "library_count": library_count, "reason": "no_mbid"})
+
+        cursor.execute(f"""
+            SELECT id, title, track_number, disc_number, duration, file_path
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
+        """, (artist, album))
+        library_rows = cursor.fetchall()
+        conn.close()
+
+        def _to_seconds(raw):
+            """Convert a raw duration value (seconds or ms) to seconds, or None."""
+            if raw is None or raw == "":
+                return None
+            try:
+                val = float(raw)
+                if val > 10000:
+                    val = val / 1000.0
+                return val if val > 0 else None
+            except (TypeError, ValueError):
+                return None
+
+        # Build a lookup from (disc, track_number) → library track
+        lib_by_tracknum = {}
+        for t in library_rows:
+            t_dict = dict(t) if hasattr(t, "keys") else {
+                "id": t[0], "title": t[1], "track_number": t[2],
+                "disc_number": t[3], "duration": t[4], "file_path": t[5],
+            }
+            disc = int(t_dict.get("disc_number") or 1)
+            track_num = t_dict.get("track_number")
+            if track_num is not None:
+                try:
+                    lib_by_tracknum[(disc, int(track_num))] = t_dict
+                except (TypeError, ValueError):
+                    pass
+
+        # Fetch MusicBrainz release tracklist
+        from post_download_processor import fetch_musicbrainz_release_metadata
+        mb_release = fetch_musicbrainz_release_metadata(mb_mbid)
+        if not mb_release:
+            return jsonify({"mismatches": [], "mismatch_count": 0, "library_count": library_count, "reason": "mb_not_found"})
+
+        mb_year = mb_release.get("release_year") or ""
+        mismatches = []
+        _DURATION_TOLERANCE_SECONDS = 5
+
+        for mb_track in mb_release.get("tracks", []):
+            t_disc = int(mb_track.get("disc_number") or 1)
+            t_track_num = mb_track.get("track_number")
+            if t_track_num is None:
+                continue
+            try:
+                t_track_num_int = int(t_track_num)
+            except (TypeError, ValueError):
+                continue
+
+            lib_track = lib_by_tracknum.get((t_disc, t_track_num_int))
+            if lib_track is None:
+                continue
+
+            mb_title = (mb_track.get("title") or "").strip()
+            lib_title = (lib_track.get("title") or "").strip()
+
+            # Normalise for comparison: lowercase + collapse whitespace
+            mb_title_norm = re.sub(r"\s+", " ", mb_title.lower())
+            lib_title_norm = re.sub(r"\s+", " ", lib_title.lower())
+
+            if mb_title_norm == lib_title_norm:
+                continue  # titles match — no mismatch
+
+            # Duration comparison (MB duration is in milliseconds)
+            mb_duration_ms = mb_track.get("duration")
+            mb_duration_sec = (mb_duration_ms / 1000.0) if mb_duration_ms else None
+            lib_duration_sec = _to_seconds(lib_track.get("duration"))
+
+            length_mismatch = False
+            if mb_duration_sec is not None and lib_duration_sec is not None:
+                if abs(mb_duration_sec - lib_duration_sec) > _DURATION_TOLERANCE_SECONDS:
+                    length_mismatch = True
+
+            mismatch_type = "title_and_length" if length_mismatch else "title"
+
+            def _fmt_duration(sec):
+                if sec is None:
+                    return None
+                sec = int(round(sec))
+                return f"{sec // 60}:{sec % 60:02d}"
+
+            mismatches.append({
+                "track_id": lib_track.get("id"),
+                "track_number": t_track_num_int,
+                "disc_number": t_disc,
+                "library_title": lib_title,
+                "mb_title": mb_title,
+                "library_duration": _fmt_duration(lib_duration_sec),
+                "mb_duration": _fmt_duration(mb_duration_sec),
+                "mismatch_type": mismatch_type,
+                "file_path": lib_track.get("file_path"),
+                # Fields needed to add to queue
+                "artist": artist,
+                "album": album,
+                "album_artist": artist,
+                "year": mb_year,
+                "release_id": mb_mbid,
+            })
+
+        return jsonify({
+            "mismatches": mismatches,
+            "mismatch_count": len(mismatches),
+            "library_count": library_count,
+        })
+    except Exception as e:
+        logging.error(f"[TITLE_MISMATCHES] Error for {artist}/{album}: {e}")
+        return jsonify({"error": str(e), "mismatches": [], "mismatch_count": 0}), 500
+
+
 @app.route("/api/artist/corrections-albums")
 def api_artist_corrections_albums():
     """Return albums for an artist that have a MusicBrainz MBID, for the corrections page."""
