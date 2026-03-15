@@ -264,10 +264,10 @@ def scan_downloads_grouped_by_folder(downloads_dir, read_mp3_metadata):
             _GROUP_SCAN_LOCK.release()
 
 
-def match_folder_group_with_musicbrainz(folder_path, artist, album, mb_client=None, manual_query=None):
+def match_folder_group_with_musicbrainz(folder_path, artist, album, mb_client=None, manual_query=None, allow_discogs_fallback=True):
     """
     Match a folder group with MusicBrainz and return candidate releases.
-    Falls back to Discogs if MusicBrainz returns no results.
+    Falls back to Discogs if MusicBrainz returns no results when enabled.
     
     Args:
         folder_path: Relative folder path from downloads root
@@ -363,8 +363,8 @@ def match_folder_group_with_musicbrainz(folder_path, artist, album, mb_client=No
         
         releases = data.get('releases', [])
         
-        # If MusicBrainz returns no results, try Discogs as fallback
-        if not releases and not manual_query:
+        # If MusicBrainz returns no results, optionally try Discogs fallback
+        if allow_discogs_fallback and not releases and not manual_query:
             logger.info(f"No MusicBrainz matches, trying Discogs fallback for: {artist} - {album}")
             return try_discogs_match(folder_path, search_artist, search_album)
         
@@ -408,8 +408,8 @@ def match_folder_group_with_musicbrainz(folder_path, artist, album, mb_client=No
         
     except requests.exceptions.RequestException as e:
         logger.error(f"MusicBrainz API request failed: {e}")
-        # Try Discogs fallback on API error
-        if not manual_query:
+        # Optionally try Discogs fallback on API error
+        if allow_discogs_fallback and not manual_query:
             logger.info("Trying Discogs fallback due to API error")
             return try_discogs_match(folder_path, artist, album)
         return {
