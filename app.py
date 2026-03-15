@@ -3865,13 +3865,10 @@ def api_album_missing_tracks():
         library_rows = cursor.fetchall()
         conn.close()
 
-        # Build three lookup structures for matching (most to least reliable):
-        #   1. recording MBID – definitive match when present
-        #   2. (disc, track_number) – position-based; unambiguous when numbers are present
-        #   3. (disc, normalised_title) – name-based fallback
-        library_mbids = set()
-        library_by_tracknum = set()
-        library_by_title = set()
+        # Build a consumable local-track pool so one library row cannot satisfy
+        # multiple MusicBrainz rows. This matters for duplicate titles and for
+        # releases where MusicBrainz flattens a multi-disc set into a single disc.
+        library_entries = []
         for t in library_rows:
             if hasattr(t, "keys"):
                 t_dict = dict(t)
@@ -3880,17 +3877,23 @@ def api_album_missing_tracks():
             disc = int(t_dict.get("disc_number") or 1)
             track_num = t_dict.get("track_number")
             norm = re.sub(r'\s+', ' ', (t_dict.get("title") or "").lower().strip())
-            # Collect non-empty MBIDs (both beets_mbid and mbid columns)
+            track_num_int = None
+            if track_num is not None:
+                try:
+                    track_num_int = int(track_num)
+                except (TypeError, ValueError):
+                    track_num_int = None
+            mbids = set()
             for mbid_field in ("beets_mbid", "mbid"):
                 val = (t_dict.get(mbid_field) or "").strip()
                 if val:
-                    library_mbids.add(val)
-            if track_num is not None:
-                try:
-                    library_by_tracknum.add((disc, int(track_num)))
-                except (TypeError, ValueError):
-                    pass
-            library_by_title.add((disc, norm))
+                    mbids.add(val)
+            library_entries.append({
+                "disc": disc,
+                "track_num": track_num_int,
+                "norm_title": norm,
+                "mbids": mbids,
+            })
 
         # Fetch MusicBrainz release tracklist
         from post_download_processor import fetch_musicbrainz_release_metadata
@@ -3901,6 +3904,25 @@ def api_album_missing_tracks():
         mb_tracks = mb_release.get("tracks", [])
         mb_total = len(mb_tracks)
         mb_year = mb_release.get("release_year") or ""
+
+        remaining_entries = list(library_entries)
+
+        def _pop_matching_entry(predicate):
+            for idx, entry in enumerate(remaining_entries):
+                if predicate(entry):
+                    return remaining_entries.pop(idx)
+            return None
+
+        def _track_matches_title(entry, disc, norm, norm_rec):
+            if entry["disc"] == disc and entry["norm_title"] == norm:
+                return True
+            if norm_rec and entry["disc"] == disc and entry["norm_title"] == norm_rec:
+                return True
+            if entry["norm_title"] == norm:
+                return True
+            if norm_rec and entry["norm_title"] == norm_rec:
+                return True
+            return False
 
         missing = []
         for mb_track in mb_tracks:
@@ -3917,31 +3939,31 @@ def api_album_missing_tracks():
             t_recording_title = mb_track.get("recording_title") or ""
             t_norm_recording = re.sub(r'\s+', ' ', t_recording_title.lower().strip())
 
-            def _title_found(disc, norm, norm_rec):
-                """Return True if this title (or its recording variant) is in library."""
-                if (disc, norm) in library_by_title:
-                    return True
-                if norm_rec and norm_rec != norm and (disc, norm_rec) in library_by_title:
-                    return True
-                return False
+            matched_entry = None
+            if t_recording_mbid:
+                matched_entry = _pop_matching_entry(lambda entry: t_recording_mbid in entry["mbids"])
 
-            # Determine whether this MB track exists in the library.
-            # Priority: recording-MBID match > track-number match (with title
-            # fallback) > title match (checks both track title and recording title)
-            if t_recording_mbid and t_recording_mbid in library_mbids:
-                found = True
-            elif t_track_num is not None and library_by_tracknum:
+            if matched_entry is None:
                 try:
-                    found = (t_disc, int(t_track_num)) in library_by_tracknum
-                    if not found:
-                        # Track numbers can shift when a release has bonus/extra
-                        # tracks; fall through to title matching in that case.
-                        found = _title_found(t_disc, t_norm, t_norm_recording)
+                    t_track_num_int = int(t_track_num) if t_track_num is not None else None
                 except (TypeError, ValueError):
-                    found = _title_found(t_disc, t_norm, t_norm_recording)
-            else:
-                found = _title_found(t_disc, t_norm, t_norm_recording)
-            if not found:
+                    t_track_num_int = None
+
+                if t_track_num_int is not None:
+                    matched_entry = _pop_matching_entry(
+                        lambda entry: (
+                            entry["disc"] == t_disc
+                            and entry["track_num"] == t_track_num_int
+                            and _track_matches_title(entry, t_disc, t_norm, t_norm_recording)
+                        )
+                    )
+
+            if matched_entry is None:
+                matched_entry = _pop_matching_entry(
+                    lambda entry: _track_matches_title(entry, t_disc, t_norm, t_norm_recording)
+                )
+
+            if matched_entry is None:
                 # MusicBrainz returns duration in milliseconds; convert to seconds for UI
                 mb_duration_ms = mb_track.get("duration")
                 duration_sec = mb_duration_ms // 1000 if mb_duration_ms else None

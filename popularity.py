@@ -729,11 +729,12 @@ def detect_and_queue_missing_tracks(artist: str, album: str, album_tracks: list,
         
         log_info(f"MusicBrainz shows {len(mb_tracks)} track(s) for '{artist} - {album}', local library has {len(album_tracks)} track(s)")
         
-        # Create normalized title map and track number set for local tracks
-        local_tracks_normalized = {}
-        local_track_numbers = set()
+        # Build a consumable local-track pool so duplicate titles are matched
+        # one-to-one against MusicBrainz rows instead of via reusable set lookups.
+        local_track_entries = []
         for track in album_tracks:
             track_title = track.get('title', '')
+            normalized = ''
             if track_title:
                 # Normalize: lowercase, remove special chars
                 normalized = unicodedata.normalize("NFKD", track_title)
@@ -741,13 +742,31 @@ def detect_and_queue_missing_tracks(artist: str, album: str, album_tracks: list,
                 normalized = normalized.lower().strip()
                 normalized = re.sub(r'[^a-z0-9]+', ' ', normalized)
                 normalized = ' '.join(normalized.split())
-                local_tracks_normalized[normalized] = track_title
             track_num = track.get('track_number')
+            track_num_int = None
             if track_num is not None:
                 try:
-                    local_track_numbers.add(int(str(track_num).split('/')[0].strip()))
+                    track_num_int = int(str(track_num).split('/')[0].strip())
                 except (ValueError, TypeError):
-                    pass
+                    track_num_int = None
+            disc_num = track.get('disc_number')
+            try:
+                disc_num_int = int(disc_num or 1)
+            except (ValueError, TypeError):
+                disc_num_int = 1
+            local_track_entries.append({
+                'norm_title': normalized,
+                'track_num': track_num_int,
+                'disc_num': disc_num_int,
+            })
+
+        remaining_local_entries = list(local_track_entries)
+
+        def _pop_local_match(predicate):
+            for idx, entry in enumerate(remaining_local_entries):
+                if predicate(entry):
+                    return remaining_local_entries.pop(idx)
+            return None
         
         # Find missing tracks
         missing_tracks = []
@@ -784,15 +803,34 @@ def detect_and_queue_missing_tracks(artist: str, album: str, album_tracks: list,
                     mb_track_num = int(str(mb_number).split('/')[0].strip())
                 except (ValueError, TypeError):
                     pass
+            mb_disc_num = mb_track.get('disc_number')
+            try:
+                mb_disc_num_int = int(mb_disc_num or 1)
+            except (ValueError, TypeError):
+                mb_disc_num_int = 1
             
-            # Check if track exists locally by title (or recording_title) OR track number
-            title_match = (
-                mb_normalized in local_tracks_normalized
-                or (mb_normalized_recording and mb_normalized_recording in local_tracks_normalized)
-            )
-            number_match = mb_track_num is not None and mb_track_num in local_track_numbers
-            
-            if not title_match and not number_match:
+            matched_entry = None
+            if mb_track_num is not None:
+                matched_entry = _pop_local_match(
+                    lambda entry: (
+                        entry['disc_num'] == mb_disc_num_int
+                        and entry['track_num'] == mb_track_num
+                        and (
+                            entry['norm_title'] == mb_normalized
+                            or (mb_normalized_recording and entry['norm_title'] == mb_normalized_recording)
+                        )
+                    )
+                )
+
+            if matched_entry is None:
+                matched_entry = _pop_local_match(
+                    lambda entry: (
+                        entry['norm_title'] == mb_normalized
+                        or (mb_normalized_recording and entry['norm_title'] == mb_normalized_recording)
+                    )
+                )
+
+            if matched_entry is None:
                 missing_tracks.append(mb_track)
         
         if not missing_tracks:
