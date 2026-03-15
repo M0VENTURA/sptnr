@@ -58,6 +58,7 @@ except ImportError:
     ID3 = None
     TagCON = None
 from contextlib import closing
+from collections import OrderedDict
 import json
 import yaml
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response, send_file, session, abort
@@ -335,6 +336,71 @@ static_folder = os.path.join(app_root, 'static')
 
 # Initialize Flask with explicit static folder configuration
 app = Flask(__name__, static_folder=static_folder, static_url_path='/static')
+
+_FLASH_RESULT_STORE: OrderedDict[str, dict] = OrderedDict()
+_FLASH_RESULT_STORE_LOCK = threading.Lock()
+_FLASH_RESULT_STORE_MAX_ITEMS = 128
+_FLASH_RESULT_STORE_TTL_SECONDS = 900
+
+
+def _prune_flash_result_store() -> None:
+    cutoff = time.time() - _FLASH_RESULT_STORE_TTL_SECONDS
+    expired_ids = [
+        key for key, value in _FLASH_RESULT_STORE.items()
+        if value.get("created_at", 0) < cutoff
+    ]
+    for key in expired_ids:
+        _FLASH_RESULT_STORE.pop(key, None)
+
+    while len(_FLASH_RESULT_STORE) > _FLASH_RESULT_STORE_MAX_ITEMS:
+        _FLASH_RESULT_STORE.popitem(last=False)
+
+
+def _store_flash_result_payload(payload: dict) -> str:
+    result_id = secrets.token_urlsafe(12)
+    with _FLASH_RESULT_STORE_LOCK:
+        _prune_flash_result_store()
+        _FLASH_RESULT_STORE[result_id] = {
+            "created_at": time.time(),
+            "payload": payload,
+        }
+    return result_id
+
+
+def resolve_flash_message(message):
+    if isinstance(message, dict) and message.get("kind") == "result_ref":
+        result_id = message.get("id")
+        if not result_id:
+            return None
+        with _FLASH_RESULT_STORE_LOCK:
+            stored = _FLASH_RESULT_STORE.get(result_id)
+        if stored:
+            return stored.get("payload")
+        return {
+            "kind": "result",
+            "title": "Result details expired",
+            "summary": "The detailed result is no longer available. Run the action again if you need the full list.",
+            "sections": [],
+            "stats": [],
+        }
+    return message
+
+
+def flash_result_panel(title, category="info", summary=None, stats=None, sections=None):
+    payload = {
+        "kind": "result",
+        "title": title,
+        "summary": summary,
+        "stats": stats or [],
+        "sections": sections or [],
+    }
+    result_id = _store_flash_result_payload(payload)
+    flash({"kind": "result_ref", "id": result_id}, category)
+
+
+@app.context_processor
+def inject_flash_result_helpers():
+    return {"resolve_flash_message": resolve_flash_message}
 
 # Debug: Log static folder configuration on startup
 if STARTUP_DIAGNOSTICS:
@@ -9865,6 +9931,7 @@ def album_edit(artist, album):
                 tracks_without_path = []
                 tracks_missing_on_disk = []
                 tracks_failed_to_write = []
+                tag_writer_unavailable = False
 
                 if tracks:
                     try:
@@ -9912,44 +9979,68 @@ def album_edit(artist, album):
                                 tracks_failed_to_write.append(f"{track_title} ({file_path})")
                     except ImportError:
                         logging.warning("Tag manager not available for file writing")
+                        tag_writer_unavailable = True
 
-                if files_updated > 0:
-                    if files_missing > 0 or files_failed > 0:
-                        flash(
-                            f"Updated {rows_updated} tracks in database and wrote tags to {files_updated}/{files_with_path} files "
-                            f"({files_missing} missing paths, {files_failed} write failures)",
-                            "warning"
-                        )
-                    else:
-                        flash(f"Updated {rows_updated} tracks in database and wrote tags to {files_updated} audio files", "success")
-                elif files_failed > 0:
-                    flash(f"Updated {rows_updated} tracks in database, but failed to write tags to {files_failed} audio files", "warning")
-                elif files_missing > 0:
-                    flash(
-                        f"Updated {rows_updated} tracks in database, but {files_missing} file paths were missing on disk",
-                        "warning"
-                    )
-                else:
-                    flash(f"Updated {rows_updated} tracks in database", "success")
-
+                result_sections = []
+                if tag_writer_unavailable:
+                    result_sections.append({
+                        "title": "Tag writing unavailable",
+                        "body": "The database update completed, but the tag writer could not be loaded for file updates.",
+                    })
                 if tracks_without_path:
-                    flash(
-                        "Tracks skipped because they do not have a file path: " + "; ".join(tracks_without_path),
-                        "warning"
-                    )
+                    result_sections.append({
+                        "title": "Tracks without file paths",
+                        "items": tracks_without_path,
+                    })
                 if tracks_missing_on_disk:
-                    flash(
-                        "Tracks skipped because the file path was missing on disk: " + "; ".join(tracks_missing_on_disk),
-                        "warning"
-                    )
+                    result_sections.append({
+                        "title": "Tracks missing on disk",
+                        "items": tracks_missing_on_disk,
+                    })
                 if tracks_failed_to_write:
-                    flash(
-                        "Tracks that failed to update: " + "; ".join(tracks_failed_to_write),
-                        "warning"
-                    )
+                    result_sections.append({
+                        "title": "Tracks that failed to update",
+                        "items": tracks_failed_to_write,
+                    })
+
+                result_stats = [
+                    {"label": "DB tracks updated", "value": rows_updated},
+                    {"label": "Files written", "value": f"{files_updated}/{files_with_path}" if files_with_path else files_updated},
+                ]
+                if tracks_without_path:
+                    result_stats.append({"label": "No file path", "value": len(tracks_without_path)})
+                if files_missing:
+                    result_stats.append({"label": "Missing on disk", "value": files_missing})
+                if files_failed:
+                    result_stats.append({"label": "Write failures", "value": files_failed})
+
+                if files_with_path:
+                    result_summary = f"Updated {rows_updated} tracks in the database and wrote tags to {files_updated} of {files_with_path} track files."
+                elif tag_writer_unavailable:
+                    result_summary = f"Updated {rows_updated} tracks in the database, but file tag writing is unavailable."
+                else:
+                    result_summary = f"Updated {rows_updated} tracks in the database. No track file paths were available for tag writing."
+
+                result_category = "warning" if result_sections else "success"
+                flash_result_panel(
+                    "Album metadata update completed",
+                    category=result_category,
+                    summary=result_summary,
+                    stats=result_stats,
+                    sections=result_sections,
+                )
             except Exception as file_update_err:
                 logging.warning(f"Error updating audio files: {file_update_err}")
-                flash(f"Updated {rows_updated} tracks in database", "success")
+                flash_result_panel(
+                    "Album metadata update completed with file update errors",
+                    category="warning",
+                    summary=f"Updated {rows_updated} tracks in the database, but file tag updates hit an error.",
+                    sections=[{
+                        "title": "File update error",
+                        "items": [str(file_update_err)],
+                    }],
+                    stats=[{"label": "DB tracks updated", "value": rows_updated}],
+                )
         else:
             flash("No changes to save", "info")
         
@@ -10546,19 +10637,67 @@ def track_edit(track_id):
                 file_write_success = write_tags_to_file(file_path, tags_to_write)
                 
                 if file_write_success:
-                    flash(f"Track '{title or 'Unknown'}' updated successfully (DB + File)", "success")
+                    flash_result_panel(
+                        "Track metadata update completed",
+                        category="success",
+                        summary=f"Updated '{title or 'Unknown'}' in the database and wrote tags to the audio file.",
+                        stats=[
+                            {"label": "Track", "value": title or 'Unknown'},
+                            {"label": "File updated", "value": "Yes"},
+                        ],
+                    )
                 else:
-                    flash(f"Track '{title or 'Unknown'}' updated in database, but failed to write to audio file", "warning")
+                    flash_result_panel(
+                        "Track metadata update completed with file write failure",
+                        category="warning",
+                        summary=f"Updated '{title or 'Unknown'}' in the database, but the audio file could not be updated.",
+                        stats=[
+                            {"label": "Track", "value": title or 'Unknown'},
+                            {"label": "File updated", "value": "No"},
+                        ],
+                        sections=[{
+                            "title": "Failed file",
+                            "items": [str(file_path)],
+                        }],
+                    )
             except ImportError as e:
                 logging.warning(f"Tag manager import failed: {e}")
-                flash(f"Track '{title or 'Unknown'}' updated successfully (database only - tag writer unavailable)", "info")
+                flash_result_panel(
+                    "Track metadata update completed",
+                    category="info",
+                    summary=f"Updated '{title or 'Unknown'}' in the database. File tag writing is unavailable.",
+                    stats=[
+                        {"label": "Track", "value": title or 'Unknown'},
+                        {"label": "File updated", "value": "Unavailable"},
+                    ],
+                    sections=[{
+                        "title": "Tag writer unavailable",
+                        "items": [str(e)],
+                    }],
+                )
         else:
-            flash(f"Track '{title or 'Unknown'}' updated successfully (database only - no file path found)", "info")
+            flash_result_panel(
+                "Track metadata update completed",
+                category="info",
+                summary=f"Updated '{title or 'Unknown'}' in the database. No file path was available for file tag writing.",
+                stats=[
+                    {"label": "Track", "value": title or 'Unknown'},
+                    {"label": "File updated", "value": "No path"},
+                ],
+            )
             
     except Exception as e:
         conn.rollback()
         logging.error(f"Error updating track: {e}")
-        flash(f"Error updating track: {str(e)}", "danger")
+        flash_result_panel(
+            "Track metadata update failed",
+            category="danger",
+            summary="The track could not be updated.",
+            sections=[{
+                "title": "Error",
+                "items": [str(e)],
+            }],
+        )
     finally:
         conn.close()
     

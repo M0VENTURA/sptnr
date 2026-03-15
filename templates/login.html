@@ -138,15 +138,7 @@
             </div>
 
             {% with messages = get_flashed_messages(with_categories=true) %}
-                {% if messages %}
-                    {% for category, message in messages %}
-                        <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
-                            <i class="bi bi-{% if category == 'danger' %}exclamation-triangle{% elif category == 'success' %}check-circle{% elif category == 'info' %}info-circle{% else %}exclamation-circle{% endif %}"></i>
-                            {{ message }}
-                            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-                        </div>
-                    {% endfor %}
-                {% endif %}
+                {% include '_flash_messages.html' %}
             {% endwith %}
 
             <form method="post" action="{{ url_for('login') }}">

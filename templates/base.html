@@ -319,6 +319,43 @@
       border-left: 4px solid #1db954;
     }
 
+    .flash-result-panel {
+      position: relative;
+    }
+
+    .flash-result-title {
+      font-size: 1rem;
+      line-height: 1.35;
+    }
+
+    .flash-result-summary {
+      line-height: 1.45;
+    }
+
+    .flash-result-stat-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.2rem 0.65rem;
+      border: 1px solid var(--border-color);
+      border-radius: 999px;
+      background: var(--tertiary-bg);
+      font-size: 0.85rem;
+    }
+
+    .flash-result-details summary {
+      cursor: pointer;
+    }
+
+    .flash-result-details[open] summary {
+      margin-bottom: 0.35rem;
+    }
+
+    .flash-result-list {
+      max-height: 16rem;
+      overflow: auto;
+    }
+
     /* Forms */
     .form-control,
     .form-select,
@@ -1129,14 +1166,7 @@
 
   <main class="container-fluid">
     {% with messages = get_flashed_messages(with_categories=true) %}
-      {% if messages %}
-        {% for category, msg in messages %}
-          <div class="alert alert-{{ category if category != 'message' else 'info' }} alert-dismissible fade show" role="alert">
-            {{ msg }}
-            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-          </div>
-        {% endfor %}
-      {% endif %}
+      {% include '_flash_messages.html' %}
     {% endwith %}
 
     {% block content %}{% endblock %}
