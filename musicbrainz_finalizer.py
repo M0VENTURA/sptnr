@@ -223,12 +223,12 @@ class MusicBrainzFinalizer:
             logger.info(f"[FINALIZER] Moved {moved_count}/{len(files)} files to final location")
             
             # Step 4: Update release status
-            cursor.execute("""
+            cursor.execute(f"""
                 UPDATE musicbrainz_releases
                 SET status = 'finalized',
                     finalized_at = CURRENT_TIMESTAMP,
                     updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
+                WHERE id = {placeholder}
             """, (release_db_id,))
             
             # Step 5: Cleanup monitoring folder
