@@ -996,6 +996,16 @@ def should_freeze_mature_track_popularity(track: sqlite3.Row, min_age_years: int
     )
 
 
+def get_mature_track_freeze_cutoff_years(config: dict = None, default_years: int = 2) -> int:
+    """Return the configured age threshold for freezing mature-track popularity refreshes."""
+    try:
+        features_config = config.get('features', {}) if isinstance(config, dict) else {}
+        cutoff_years = int(features_config.get('mature_track_min_age_years', default_years))
+        return max(1, cutoff_years)
+    except (TypeError, ValueError, AttributeError):
+        return default_years
+
+
 def popularity_values_changed(track: sqlite3.Row, new_values: dict) -> bool:
     """Return True when any persisted popularity-related value differs from the current row."""
 
@@ -3474,9 +3484,12 @@ def popularity_scan(
             # If config loading fails, default to Spotify enabled for backward compatibility
             enabled_apis.append("Spotify")
         
+        mature_track_freeze_cutoff_years = get_mature_track_freeze_cutoff_years(config, default_years=2)
+
         if enabled_apis:
             log_unified(f"Popularity Scan - Scanning {', '.join(enabled_apis)} for Metadata")
             log_debug(f"Enabled APIs: {enabled_apis}")
+        log_debug(f"Mature track popularity freeze cutoff: {mature_track_freeze_cutoff_years} year(s)")
         
         for artist, albums in artist_album_tracks.items():
             if _stop_requested():
@@ -3900,9 +3913,35 @@ def popularity_scan(
             similar_artists_lastfm = []
             similar_artists_listenbrainz = []
             similar_artists_json = None
+            similar_artists_cached = False
+
+            try:
+                cursor.execute(f"""
+                    SELECT similar_artists_lastfm, similar_artists_listenbrainz
+                    FROM artists
+                    WHERE id = {placeholder} OR name = {placeholder}
+                    LIMIT 1
+                """, (artist, artist))
+                cached_row = cursor.fetchone()
+                if cached_row:
+                    cached_lastfm_raw = row_get(cached_row, 'similar_artists_lastfm')
+                    cached_listenbrainz_raw = row_get(cached_row, 'similar_artists_listenbrainz')
+                    similar_artists_lastfm = json.loads(cached_lastfm_raw) if cached_lastfm_raw else []
+                    similar_artists_listenbrainz = json.loads(cached_listenbrainz_raw) if cached_listenbrainz_raw else []
+                    similar_artists_cached = bool(similar_artists_lastfm or similar_artists_listenbrainz)
+                    if similar_artists_cached:
+                        log_debug(
+                            f"Using cached similar artists for '{artist}' "
+                            f"(Last.fm: {len(similar_artists_lastfm)}, ListenBrainz: {len(similar_artists_listenbrainz)})"
+                        )
+            except Exception as cache_err:
+                log_debug(f"Could not read cached similar artists for {artist}: {cache_err}")
             
             # Fetch similar artists for all artists (including compilations for recommendation purposes)
             try:
+                if similar_artists_cached:
+                    raise StopIteration
+
                 # Get Last.fm client for similar artists lookup
                 lastfm_config = get_lastfm_config(config)
                 if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
@@ -4035,45 +4074,45 @@ def popularity_scan(
                         log_debug(f"Stored similar artists for '{artist}' in database")
                     except Exception as e:
                         log_debug(f"Failed to store similar artists for '{artist}': {e}")
-                
-                # Fetch and store artist tags from Last.fm
-                try:
-                    lastfm_config = get_lastfm_config(config)
-                    if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
-                        api_key = lastfm_config.get("api_key")
-                        # Skip if placeholder key
-                        if api_key not in ["your_lastfm_api_key", "YOUR_API_KEY", "<your_api_key>", ""]:
-                            from api_clients.lastfm import LastFmClient
-                            lastfm_client = LastFmClient(api_key)
+            except StopIteration:
+                pass
+
+            # Fetch and store artist tags from Last.fm
+            try:
+                lastfm_config = get_lastfm_config(config)
+                if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
+                    api_key = lastfm_config.get("api_key")
+                    # Skip if placeholder key
+                    if api_key not in ["your_lastfm_api_key", "YOUR_API_KEY", "<your_api_key>", ""]:
+                        from api_clients.lastfm import LastFmClient
+                        lastfm_client = LastFmClient(api_key)
+                    
+                    artist_tags = _run_with_timeout(
+                        lastfm_client.get_artist_top_tags,
+                        8,
+                        "Last.fm artist tags lookup timed out after 8s",
+                        artist,
+                        limit=15
+                    )
+                    
+                    if artist_tags:
+                        log_info(f"Found {len(artist_tags)} top tags for '{artist}' from Last.fm")
+                        log_debug(f"Artist tags: {[t.get('name') for t in artist_tags]}")
                         
-                        artist_tags = _run_with_timeout(
-                            lastfm_client.get_artist_top_tags,
-                            8,
-                            "Last.fm artist tags lookup timed out after 8s",
-                            artist,
-                            limit=15
-                        )
-                        
-                        if artist_tags:
-                            log_info(f"Found {len(artist_tags)} top tags for '{artist}' from Last.fm")
-                            log_debug(f"Artist tags: {[t.get('name') for t in artist_tags]}")
-                            
-                            # Store Last.fm tags in database
-                            try:
-                                tags_json = json.dumps([t.get('name') for t in artist_tags])
-                                cursor.execute(
-                                    f"UPDATE artists SET lastfm_artist_tags = {placeholder} WHERE name = {placeholder}",
-                                    (tags_json, artist)
-                                )
-                                log_debug(f"Stored {len(artist_tags)} Last.fm tags for '{artist}'")
-                            except Exception as e:
-                                log_debug(f"Failed to store Last.fm tags for '{artist}': {e}")
-                        else:
-                            log_debug(f"No top tags found for '{artist}' from Last.fm")
-                except Exception as e:
-                    log_debug(f"Last.fm artist tags lookup failed for {artist}: {e}")
+                        # Store Last.fm tags in database
+                        try:
+                            tags_json = json.dumps([t.get('name') for t in artist_tags])
+                            cursor.execute(
+                                f"UPDATE artists SET lastfm_artist_tags = {placeholder} WHERE name = {placeholder}",
+                                (tags_json, artist)
+                            )
+                            log_debug(f"Stored {len(artist_tags)} Last.fm tags for '{artist}'")
+                        except Exception as e:
+                            log_debug(f"Failed to store Last.fm tags for '{artist}': {e}")
+                    else:
+                        log_debug(f"No top tags found for '{artist}' from Last.fm")
             except Exception as e:
-                log_debug(f"Similar artists and tags lookup failed for {artist}: {e}")
+                log_debug(f"Last.fm artist tags lookup failed for {artist}: {e}")
             
             # Fetch missing releases from MusicBrainz and update database
             try:
@@ -5031,7 +5070,7 @@ def popularity_scan(
                     # This avoids all API calls if the final score is still valid
                         use_full_cache = False
                         if not (FORCE_RESCAN or force):
-                            if should_freeze_mature_track_popularity(track):
+                            if should_freeze_mature_track_popularity(track, min_age_years=mature_track_freeze_cutoff_years):
                                 cached_popularity = row_get(track, 'popularity_score', 0)
                                 if cached_popularity > 0:
                                     use_full_cache = True

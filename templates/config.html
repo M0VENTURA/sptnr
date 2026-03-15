@@ -271,6 +271,11 @@
             <small class="d-block text-muted">Monitor downloads folder for completed files</small>
           </div>
         </div>
+        <div class="col-12 col-md-6">
+          <label class="form-label">Mature Track Freeze Cutoff (years)</label>
+          <input type="number" class="form-control" id="mature_track_min_age_years" placeholder="2" value="{{ config.get('features', {}).get('mature_track_min_age_years', 2) }}" min="1" max="50">
+          <div class="form-text">Tracks at or above this age keep their existing Last.fm-backed popularity unless listener data is missing. Default: 2 years.</div>
+        </div>
       </div>
 
       <!-- Retry Scheduler Settings -->
@@ -950,6 +955,7 @@ function buildConfigObject() {
         enabled: getChecked('queue_cleanup_scheduler_enabled', true),
         interval_minutes: parseInt(getValue('queue_cleanup_scheduler_interval_minutes', '60')) || 60
       },
+      mature_track_min_age_years: parseInt(getValue('mature_track_min_age_years', '2')) || 2,
       source_discogs_confidence: getValue('source_discogs_confidence', 'high'),
       source_spotify_confidence: getValue('source_spotify_confidence', 'medium'),
       source_musicbrainz_confidence: getValue('source_musicbrainz_confidence', 'medium'),
