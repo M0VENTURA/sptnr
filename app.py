@@ -12359,11 +12359,94 @@ def api_scan_status():
 def api_recent_scans():
     """Return latest album scan events for dashboard refresh (up to 100 items)."""
     try:
+        def _parse_ts_for_sort(ts):
+            if not ts:
+                return datetime.min
+            try:
+                s = str(ts)
+                if s.endswith('Z'):
+                    s = s[:-1] + '+00:00'
+                return datetime.fromisoformat(s)
+            except Exception:
+                return datetime.min
+
+        def _progress_completion_events():
+            """Build completion events from progress files so dashboard updates in realtime."""
+            db_dir = os.path.dirname(DB_PATH)
+            scan_files = [
+                ("navidrome", os.path.join(db_dir, "navidrome_scan_progress.json")),
+                ("popularity", os.path.join(db_dir, "popularity_scan_progress.json")),
+                ("singles", os.path.join(db_dir, "singles_scan_progress.json")),
+            ]
+            events = []
+            now = datetime.utcnow()
+            for scan_type, path in scan_files:
+                if not os.path.exists(path):
+                    continue
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        state = json.load(f)
+
+                    is_running = bool(state.get("is_running"))
+                    status = str(state.get("status", "")).strip().lower()
+                    exit_code = state.get("exit_code")
+                    if is_running or status != "complete":
+                        continue
+                    if exit_code is not None and int(exit_code) != 0:
+                        continue
+
+                    # Use file mtime as completion timestamp when explicit one isn't persisted.
+                    completed_ts = datetime.utcfromtimestamp(os.path.getmtime(path)).isoformat() + "Z"
+
+                    # Ignore stale completion files to keep results focused on recent runs.
+                    completed_at = _parse_ts_for_sort(completed_ts)
+                    if (now - completed_at).total_seconds() > 7 * 24 * 3600:
+                        continue
+
+                    events.append({
+                        "artist": "_SCAN_SESSION_",
+                        "album": scan_type,
+                        "scan_type": scan_type,
+                        "scan_timestamp": completed_ts,
+                        "tracks_processed": 0,
+                        "status": "completed",
+                        "source": "progress_file",
+                    })
+                except Exception:
+                    continue
+            return events
+
         limit = request.args.get("limit", 100, type=int)
         # Cap at 100 items max
         limit = min(limit, 100)
         from scan_history import get_recent_album_scans
         scans = get_recent_album_scans(limit=limit)
+
+        # Merge in realtime completion events from progress files.
+        progress_events = _progress_completion_events()
+        if progress_events:
+            merged = list(scans)
+            for pe in progress_events:
+                pe_type = pe.get("scan_type")
+                pe_ts = _parse_ts_for_sort(pe.get("scan_timestamp"))
+
+                duplicate = False
+                for existing in scans:
+                    if existing.get("artist") != "_SCAN_SESSION_":
+                        continue
+                    if existing.get("scan_type") != pe_type:
+                        continue
+                    ex_ts = _parse_ts_for_sort(existing.get("scan_timestamp"))
+                    if abs((ex_ts - pe_ts).total_seconds()) <= 180:
+                        duplicate = True
+                        break
+
+                if not duplicate:
+                    merged.append(pe)
+
+            merged.sort(key=lambda row: _parse_ts_for_sort(row.get("scan_timestamp")), reverse=True)
+            scans = merged[:limit]
+
         response = jsonify({
             "scans": scans,
             "fetched_at": datetime.utcnow().isoformat() + "Z",

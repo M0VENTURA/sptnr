@@ -192,12 +192,14 @@ def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: in
                 ON scan_history(artist, album)
             """)
             
-            # Insert scan record
+            # Insert scan record with explicit timestamp so legacy schemas lacking
+            # scan_timestamp defaults still produce valid dashboard times.
+            scan_timestamp = datetime.utcnow().isoformat() + "Z"
             cursor.execute("""
-                INSERT INTO scan_history (artist, album, scan_type, tracks_processed, status, source)
-                VALUES ({}, {}, {}, {}, {}, {})
-            """.format(placeholder, placeholder, placeholder, placeholder, placeholder, placeholder),
-            (artist, album, scan_type, tracks_processed, status, source))
+                INSERT INTO scan_history (artist, album, scan_type, scan_timestamp, tracks_processed, status, source)
+                VALUES ({}, {}, {}, {}, {}, {}, {})
+            """.format(placeholder, placeholder, placeholder, placeholder, placeholder, placeholder, placeholder),
+            (artist, album, scan_type, scan_timestamp, tracks_processed, status, source))
             
             conn.commit()
             conn.close()
