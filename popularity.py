@@ -930,6 +930,79 @@ def get_cache_duration_hours(track_year: int = None) -> int:
         return 24  # Default on error
 
 
+def is_track_older_than_years(track_year: int = None, min_age_years: int = 2) -> bool:
+    """Return True when a track year indicates the release is at least min_age_years old."""
+    if not track_year:
+        return False
+    try:
+        current_year = datetime.now().year
+        return (current_year - int(track_year)) >= min_age_years
+    except (ValueError, TypeError):
+        return False
+
+
+def should_freeze_mature_track_popularity(track: sqlite3.Row, min_age_years: int = 2) -> bool:
+    """
+    Skip popularity refresh for mature releases that already have completed Last.fm data.
+
+    This preserves historical popularity for older albums and avoids repeated refreshes when
+    the scan already has both a stored popularity score and non-zero Last.fm listeners.
+    Tracks with zero/missing Last.fm listeners are still eligible for retry.
+    """
+    if not is_track_older_than_years(row_get(track, 'year'), min_age_years=min_age_years):
+        return False
+
+    return (
+        (row_get(track, 'popularity_score', 0) or 0) > 0
+        and (row_get(track, 'lastfm_track_playcount', 0) or 0) > 0
+    )
+
+
+def popularity_values_changed(track: sqlite3.Row, new_values: dict) -> bool:
+    """Return True when any persisted popularity-related value differs from the current row."""
+
+    def _normalize_number(value):
+        if value is None:
+            return 0.0
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _numbers_equal(left, right, tolerance: float = 0.01) -> bool:
+        return abs(_normalize_number(left) - _normalize_number(right)) < tolerance
+
+    text_fields = (
+        'spotify_genres',
+        'lastfm_tags',
+        'listenbrainz_genres',
+        'discogs_genres',
+        'musicbrainz_genres',
+        'cover_art_url',
+    )
+    numeric_fields = (
+        'popularity_score',
+        'spotify_score',
+        'lastfm_ratio',
+        'lastfm_track_playcount',
+    )
+
+    for field_name in numeric_fields:
+        current_value = row_get(track, field_name)
+        if field_name == 'spotify_score' and current_value is None:
+            current_value = row_get(track, 'spotify_popularity', 0)
+        if not _numbers_equal(current_value, new_values.get(field_name)):
+            return True
+
+    for field_name in text_fields:
+        current_value = row_get(track, field_name)
+        new_value = new_values.get(field_name)
+        if (current_value or None) != (new_value or None):
+            return True
+
+    return False
+
+
 def should_use_cached_score(track: sqlite3.Row, cache_field: str, last_lookup_field: str = 'last_spotify_lookup') -> bool:
     """
     Check if a cached API score should be reused instead of fetching from API.
@@ -3249,9 +3322,10 @@ def popularity_scan(
             sql_params.append(album_filter)
         
         sql = f"""
-            SELECT id, artist, title, album, isrc, duration, spotify_album_type, track_number, mbid, year,
-                   spotify_popularity, lastfm_track_playcount, last_spotify_lookup, popularity_score, album_artist,
-                   writer
+             SELECT id, artist, title, album, isrc, duration, spotify_album_type, track_number, mbid, year,
+                 spotify_popularity, spotify_score, lastfm_track_playcount, lastfm_ratio, last_spotify_lookup,
+                 popularity_score, album_artist, writer, spotify_genres, lastfm_tags,
+                 listenbrainz_genres, discogs_genres, musicbrainz_genres, cover_art_url
             FROM tracks
             {('WHERE ' + ' AND '.join(sql_conditions)) if sql_conditions else ''}
             ORDER BY artist, album, title
@@ -4919,6 +4993,49 @@ def popularity_scan(
                     # This avoids all API calls if the final score is still valid
                         use_full_cache = False
                         if not (FORCE_RESCAN or force):
+                            if should_freeze_mature_track_popularity(track):
+                                cached_popularity = row_get(track, 'popularity_score', 0)
+                                if cached_popularity > 0:
+                                    use_full_cache = True
+                                    cached_spotify_score = row_get(track, 'spotify_score', row_get(track, 'spotify_popularity', 0))
+                                    cached_lastfm_ratio = row_get(track, 'lastfm_ratio', 0)
+                                    cached_lastfm_listeners = row_get(track, 'lastfm_track_playcount', 0)
+                                    log_info(
+                                        f'Keeping existing popularity for older track with completed Last.fm data: {title} '
+                                        f'(year: {row_get(track, "year")}, Last.fm listeners: {cached_lastfm_listeners})'
+                                    )
+                                    track_updates.append((
+                                        cached_popularity,
+                                        cached_spotify_score,
+                                        cached_lastfm_ratio,
+                                        cached_lastfm_listeners,
+                                        None,
+                                        None,
+                                        None,
+                                        None,
+                                        None,
+                                        album_art_url,
+                                        track_id,
+                                    ))
+                                    scanned_count += 1
+                                    album_scanned += 1
+                                    tracks_processed += 1
+
+                                    if tracks_processed == milestone_25 and 25 not in milestones_logged:
+                                        log_unified(f"Popularity Scan - 25% completed - {tracks_processed}/{total_tracks} songs")
+                                        log_debug(f"Progress milestone - 25% completed for album {album}")
+                                        milestones_logged.add(25)
+                                    elif tracks_processed == milestone_50 and 50 not in milestones_logged:
+                                        log_unified(f"Popularity Scan - 50% completed - {tracks_processed}/{total_tracks} songs")
+                                        log_debug(f"Progress milestone - 50% completed for album {album}")
+                                        milestones_logged.add(50)
+                                    elif tracks_processed == milestone_75 and 75 not in milestones_logged:
+                                        log_unified(f"Popularity Scan - 75% completed - {tracks_processed}/{total_tracks} songs")
+                                        log_debug(f"Progress milestone - 75% completed for album {album}")
+                                        milestones_logged.add(75)
+
+                                    continue
+
                             if should_use_cached_score(track, 'popularity_score', 'last_spotify_lookup'):
                                 cached_popularity = row_get(track, 'popularity_score', 0)
                                 if cached_popularity > 0:
@@ -4928,11 +5045,12 @@ def popularity_scan(
                                     log_debug(f'Full score cache hit - skipping all API calls for track {track_id}')
                                 
                                     # Get cached component scores
-                                    cached_spotify_score = row_get(track, 'spotify_score', 0)
+                                    cached_spotify_score = row_get(track, 'spotify_score', row_get(track, 'spotify_popularity', 0))
                                     cached_lastfm_ratio = row_get(track, 'lastfm_ratio', 0)
+                                    cached_lastfm_listeners = row_get(track, 'lastfm_track_playcount', 0)
                                 
                                     # Add to batch update with cached scores (genres remain unchanged when using cache)
-                                    track_updates.append((cached_popularity, cached_spotify_score, cached_lastfm_ratio, None, None, None, None, album_art_url, track_id))
+                                    track_updates.append((cached_popularity, cached_spotify_score, cached_lastfm_ratio, cached_lastfm_listeners, None, None, None, None, None, album_art_url, track_id))
                                     scanned_count += 1
                                     album_scanned += 1
                                     tracks_processed += 1
@@ -5102,6 +5220,7 @@ def popularity_scan(
 
                         # Try to get popularity from Last.fm (using cached data or API)
                         lastfm_score = 0
+                        lastfm_listeners = row_get(track, 'lastfm_track_playcount', 0) or 0
                         skip_lastfm_lookup = skip_spotify_lookup  # Use same filter for Last.fm as Spotify
                     
                         # Check if we can use cached Last.fm listeners
@@ -5109,6 +5228,7 @@ def popularity_scan(
                             if should_use_cached_score(track, 'lastfm_track_playcount', 'last_spotify_lookup'):
                                 cached_listeners = row_get(track, 'lastfm_track_playcount', 0)
                                 if cached_listeners > 0:
+                                    lastfm_listeners = cached_listeners
                                     # Log raw cached Last.fm listener count before calculation
                                     log_debug(f'Last.fm raw cached data for "{title}": listeners={cached_listeners}')
                                     
@@ -5164,6 +5284,7 @@ def popularity_scan(
                                     if lastfm_info and lastfm_info.get("listeners"):
                                         listeners = lastfm_info.get("listeners")
                                         playcount = lastfm_info.get("track_play", 0)
+                                        lastfm_listeners = listeners
                                         
                                         # Log raw Last.fm listener count before calculation
                                         log_debug(f'Last.fm raw data for "{title}": listeners={listeners}, playcount={playcount}')
@@ -5348,7 +5469,7 @@ def popularity_scan(
                             popularity_score = sum(s * w for s, w in zip(scores, weights)) / total_weight
                             
                             # Use weighted popularity score directly (restored to original working method)
-                            track_updates.append((popularity_score, spotify_score, lastfm_score, spotify_genres_json, lastfm_tags_json, listenbrainz_genres_json, discogs_genres_json, musicbrainz_genres_json, album_art_url, track_id))
+                            track_updates.append((popularity_score, spotify_score, lastfm_score, lastfm_listeners, spotify_genres_json, lastfm_tags_json, listenbrainz_genres_json, discogs_genres_json, musicbrainz_genres_json, album_art_url, track_id))
                             scanned_count += 1
                             album_scanned += 1
                             log_info(f'Track scanned successfully: "{title}" (weighted: {popularity_score:.1f})')
@@ -5378,9 +5499,10 @@ def popularity_scan(
                     # Merge tags from album_tags_data into track_updates BEFORE committing
                     # This ensures Last.fm tags and other genre data are saved
                     updated_track_updates = []
+                    track_rows_by_id = {track.get('id'): track for track in album_tracks}
                     for update_tuple in track_updates:
-                        # Unpack: (popularity_score, spotify_score, lastfm_ratio, spotify_genres, lastfm_tags, listenbrainz_genres, discogs_genres, musicbrainz_genres, album_art_url, track_id)
-                        popularity_score, spotify_score, lastfm_ratio, spotify_genres, lastfm_tags, listenbrainz_genres, discogs_genres, musicbrainz_genres, album_art_url, track_id = update_tuple
+                        # Unpack: (popularity_score, spotify_score, lastfm_ratio, lastfm_track_playcount, spotify_genres, lastfm_tags, listenbrainz_genres, discogs_genres, musicbrainz_genres, album_art_url, track_id)
+                        popularity_score, spotify_score, lastfm_ratio, lastfm_track_playcount, spotify_genres, lastfm_tags, listenbrainz_genres, discogs_genres, musicbrainz_genres, album_art_url, track_id = update_tuple
                         
                         # Check if we have tags for this track in album_tags_data
                         if track_id in album_tags_data:
@@ -5408,47 +5530,80 @@ def popularity_scan(
                             except (json.JSONDecodeError, TypeError):
                                 musicbrainz_genres = json.dumps(["Cover"])
                                 log_debug(f'Initialized genres with "Cover" for track: {title}')
+
+                        current_track = track_rows_by_id.get(track_id, {})
+                        proposed_values = {
+                            'popularity_score': popularity_score,
+                            'spotify_score': spotify_score,
+                            'lastfm_ratio': lastfm_ratio,
+                            'lastfm_track_playcount': lastfm_track_playcount,
+                            'spotify_genres': spotify_genres,
+                            'lastfm_tags': lastfm_tags,
+                            'listenbrainz_genres': listenbrainz_genres,
+                            'discogs_genres': discogs_genres,
+                            'musicbrainz_genres': musicbrainz_genres,
+                            'cover_art_url': album_art_url,
+                        }
+
+                        if not popularity_values_changed(current_track, proposed_values):
+                            log_debug(f"Skipping no-op popularity update for track {track_id}: no popularity-related field changes detected")
+                            continue
                         
                         # Append merged tuple
-                        updated_track_updates.append((popularity_score, spotify_score, lastfm_ratio, spotify_genres, lastfm_tags, listenbrainz_genres, discogs_genres, musicbrainz_genres, album_art_url, track_id))
+                        updated_track_updates.append((popularity_score, spotify_score, lastfm_ratio, lastfm_track_playcount, spotify_genres, lastfm_tags, listenbrainz_genres, discogs_genres, musicbrainz_genres, album_art_url, track_id))
                     
-                    try:
-                        cursor.executemany(
-                            f"UPDATE tracks SET popularity_score = {placeholder}, spotify_score = {placeholder}, lastfm_ratio = {placeholder}, spotify_genres = {placeholder}, lastfm_tags = {placeholder}, listenbrainz_genres = {placeholder}, discogs_genres = {placeholder}, musicbrainz_genres = {placeholder}, cover_art_url = {placeholder} WHERE id = {placeholder}",
-                            updated_track_updates
-                        )
-                        conn.commit()
+                    if updated_track_updates:
+                        try:
+                            cursor.executemany(
+                                f"UPDATE tracks SET popularity_score = {placeholder}, spotify_score = {placeholder}, lastfm_ratio = {placeholder}, lastfm_track_playcount = {placeholder}, spotify_genres = {placeholder}, lastfm_tags = {placeholder}, listenbrainz_genres = {placeholder}, discogs_genres = {placeholder}, musicbrainz_genres = {placeholder}, cover_art_url = {placeholder} WHERE id = {placeholder}",
+                                updated_track_updates
+                            )
+                            conn.commit()
 
-                        updated_popularity_by_id = {track_id: popularity_score for popularity_score, _spotify_score, _lastfm_ratio, _spotify_genres, _lastfm_tags, _listenbrainz_genres, _discogs_genres, _musicbrainz_genres, _cover_art_url, track_id in updated_track_updates}
-                        for track in album_tracks:
-                            if track.get("id") in updated_popularity_by_id:
-                                track["popularity_score"] = updated_popularity_by_id[track.get("id")]
-                        
-                        # Periodic WAL checkpoint every 10 albums to ensure data persists (especially important on Windows)
-                        if not is_postgres_connection(conn) and (album_counter % 10 == 0):
+                            updated_popularity_by_id = {
+                                track_id: {
+                                    'popularity_score': popularity_score,
+                                    'spotify_score': updated_spotify_score,
+                                    'lastfm_ratio': updated_lastfm_ratio,
+                                    'lastfm_track_playcount': updated_lastfm_track_playcount,
+                                }
+                                for popularity_score, updated_spotify_score, updated_lastfm_ratio, updated_lastfm_track_playcount, _spotify_genres, _lastfm_tags, _listenbrainz_genres, _discogs_genres, _musicbrainz_genres, _cover_art_url, track_id in updated_track_updates
+                            }
+                            for track in album_tracks:
+                                if track.get("id") in updated_popularity_by_id:
+                                    updated_values = updated_popularity_by_id[track.get("id")]
+                                    track["popularity_score"] = updated_values['popularity_score']
+                                    track["spotify_score"] = updated_values['spotify_score']
+                                    track["lastfm_ratio"] = updated_values['lastfm_ratio']
+                                    track["lastfm_track_playcount"] = updated_values['lastfm_track_playcount']
+
+                            # Periodic WAL checkpoint every 10 albums to ensure data persists (especially important on Windows)
+                            if not is_postgres_connection(conn) and (album_counter % 10 == 0):
+                                try:
+                                    conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                                    log_debug(f"WAL checkpoint performed after {album_counter} albums")
+                                except Exception:
+                                    pass  # Non-critical, full checkpoint will happen at end
+                        except Exception as e:
+                            # PostgreSQL may abort transaction if previous updates failed
+                            log_debug(f"Error batch updating popularity scores: {e}")
                             try:
-                                conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
-                                log_debug(f"WAL checkpoint performed after {album_counter} albums")
-                            except Exception:
-                                pass  # Non-critical, full checkpoint will happen at end
-                    except Exception as e:
-                        # PostgreSQL may abort transaction if previous updates failed
-                        log_debug(f"Error batch updating popularity scores: {e}")
-                        try:
-                            conn.rollback()
-                            log_debug(f"Rolled back failed transaction")
-                        except:
-                            pass
-                        # Try to get fresh connection and continue
-                        try:
-                            from app import get_db
-                            conn = get_db()
-                            cursor = conn.cursor()
-                            log_debug(f"Got fresh database connection after transaction failure")
-                        except Exception as conn_error:
-                            log_debug(f"Failed to get fresh connection: {conn_error}")
-                            raise  # Re-raise if we can't recover
-                    log_debug(f"Batch committed {len(updated_track_updates)} popularity scores and genre sources for album '{album}' with merged tag data")
+                                conn.rollback()
+                                log_debug(f"Rolled back failed transaction")
+                            except:
+                                pass
+                            # Try to get fresh connection and continue
+                            try:
+                                from app import get_db
+                                conn = get_db()
+                                cursor = conn.cursor()
+                                log_debug(f"Got fresh database connection after transaction failure")
+                            except Exception as conn_error:
+                                log_debug(f"Failed to get fresh connection: {conn_error}")
+                                raise  # Re-raise if we can't recover
+                        log_debug(f"Batch committed {len(updated_track_updates)} popularity scores and genre sources for album '{album}' with merged tag data")
+                    else:
+                        log_debug(f"Skipped batch update for album '{album}' because no popularity-related fields changed")
                     if album_art_url:
                         log_info(f"[ALBUM_ART] Album art URL cached for {album}: {album_art_url}")
                     else:
