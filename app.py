@@ -1593,6 +1593,7 @@ def _start_boot_navidrome_import():
             
             _write_progress_file(progress_path, "navidrome_scan", False, {"status": "complete", "exit_code": 0, "source": "boot"})
             logging.info("[BOOT] Navidrome import-only scan completed")
+            _sync_new_navidrome_album_artists_fast(trigger_source="boot_post_import")
         except Exception as e:
             logging.error(f"[BOOT] Error in Navidrome import-only scan: {e}", exc_info=True)
             _write_progress_file(progress_path, "navidrome_scan", False, {"status": "error", "error": str(e), "exit_code": 1, "source": "boot"})
@@ -2036,6 +2037,35 @@ def _run_daily_new_artist_import():
 
     except Exception as exc:
         logging.error(f"[DAILY] _run_daily_new_artist_import error: {exc}", exc_info=True)
+
+
+def _sync_new_navidrome_album_artists_fast(trigger_source: str = "unknown"):
+    """Create missing album-artist records from Navidrome without scanning tracks."""
+    try:
+        from helpers.scan_helpers import pre_import_sync_album_artists
+
+        result = pre_import_sync_album_artists()
+        if not isinstance(result, dict):
+            logging.info(f"[NAV_SYNC:{trigger_source}] pre-sync returned unexpected result type")
+            return {"success": False, "error": "Unexpected result type"}
+
+        if result.get("success"):
+            logging.info(
+                f"[NAV_SYNC:{trigger_source}] album-artist sync complete: "
+                f"new={result.get('new_artists_created', 0)}, "
+                f"unique={result.get('unique_album_artists', 0)}, "
+                f"existing={result.get('existing_artists', 0)}, "
+                f"elapsed_ms={result.get('sync_time_ms', 0)}"
+            )
+        else:
+            logging.warning(
+                f"[NAV_SYNC:{trigger_source}] album-artist sync failed: "
+                f"{result.get('error', 'unknown error')}"
+            )
+        return result
+    except Exception as exc:
+        logging.error(f"[NAV_SYNC:{trigger_source}] unexpected error during album-artist sync: {exc}", exc_info=True)
+        return {"success": False, "error": str(exc)}
 
 
 def _run_daily_missing_releases_scan():
@@ -12653,6 +12683,7 @@ def scan_navidrome():
                     
                     _write_progress_with_current_artist(nav_progress_file, "navidrome_scan", False, {"status": "complete", "exit_code": 0})
                     logging.info("Navidrome import-only scan completed")
+                    _sync_new_navidrome_album_artists_fast(trigger_source="manual_post_import")
                     _log_scan_session_complete("navidrome", total)
                 except Exception as e:
                     logging.error(f"Error in Navidrome import-only scan: {e}", exc_info=True)
