@@ -1385,6 +1385,165 @@ def clear_queue(keep_completed=False):
             "message": f"Error clearing queue: {e}"
         }
 
+def migrate_existing_queue_items_to_grouped_setup(limit=None):
+    """Backfill legacy queue rows so they follow current grouped queue conventions.
+
+    Updates performed:
+    - Normalize `source='slskd'` to `source='soulseek'`
+    - Backfill `release_source='musicbrainz'` when `release_id` looks like an MBID
+    - Backfill `import_type='album'` for rows tied to a release/album, otherwise `song`
+    - Backfill missing `import_group` with stable release/album keys
+
+    Args:
+        limit: Optional maximum number of rows to migrate (most-recent first)
+
+    Returns:
+        Dict with counters and whether migration succeeded.
+    """
+    try:
+        # Try app's DB first (PostgreSQL-aware)
+        is_pg = False
+        try:
+            from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
+            conn = app_get_db()
+            is_pg = bool(app_is_postgres_connection(conn))
+        except Exception:
+            conn = get_db()
+            is_pg = isinstance(conn, psycopg2.extensions.connection)
+
+        cursor = conn.cursor()
+        placeholder = "%s" if is_pg else "?"
+
+        _ensure_download_queue_columns(conn, cursor, is_pg=is_pg)
+
+        fetch_sql = f"""
+            SELECT id, artist, title, album, album_artist, source,
+                   import_group, import_type, release_id, release_source,
+                   track_number, status
+            FROM download_queue
+            ORDER BY created_at DESC, id DESC
+        """
+        params = []
+        if limit is not None:
+            fetch_sql += f" LIMIT {placeholder}"
+            params.append(int(limit))
+
+        cursor.execute(fetch_sql, tuple(params))
+        rows = cursor.fetchall()
+
+        def _row_value(row, key, idx):
+            if hasattr(row, 'get'):
+                return row.get(key)
+            return row[idx]
+
+        source_updated = 0
+        release_source_updated = 0
+        import_type_updated = 0
+        import_group_updated = 0
+        total_updated_rows = 0
+
+        for row in rows:
+            row_id = _row_value(row, 'id', 0)
+            artist = (_row_value(row, 'artist', 1) or '').strip()
+            album = (_row_value(row, 'album', 3) or '').strip()
+            album_artist = (_row_value(row, 'album_artist', 4) or '').strip()
+            source = (_row_value(row, 'source', 5) or '').strip().lower()
+            import_group = (_row_value(row, 'import_group', 6) or '').strip()
+            import_type = (_row_value(row, 'import_type', 7) or '').strip().lower()
+            release_id = (_row_value(row, 'release_id', 8) or '').strip()
+            release_source = (_row_value(row, 'release_source', 9) or '').strip().lower()
+            track_number = (_row_value(row, 'track_number', 10) or '').strip()
+
+            updates = {}
+
+            # Normalize legacy source naming
+            if source == 'slskd':
+                updates['source'] = 'soulseek'
+
+            # If release_id looks like a MusicBrainz UUID, default release_source.
+            is_mbid = bool(re.match(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$', release_id))
+            if release_id and not release_source and is_mbid:
+                updates['release_source'] = 'musicbrainz'
+
+            # Backfill import_type if missing/unknown.
+            if import_type not in {'song', 'album', 'playlist'}:
+                if release_id or album or track_number:
+                    updates['import_type'] = 'album'
+                else:
+                    updates['import_type'] = 'song'
+
+            # Backfill import_group for stable folder/group processing.
+            if not import_group:
+                group_artist = album_artist or artist or 'Unknown Artist'
+                if release_id:
+                    safe_artist = _sanitize_path_component(group_artist)
+                    safe_album = _sanitize_path_component(album or 'Unknown Album')
+                    updates['import_group'] = f"managed_{safe_artist}_{safe_album}_{release_id}".replace(' ', '_')[:100]
+                elif album:
+                    updates['import_group'] = _build_release_import_group(group_artist, album)
+                else:
+                    updates['import_group'] = f"legacy_item_{row_id}"
+
+            if not updates:
+                continue
+
+            set_clauses = []
+            set_params = []
+            for key, value in updates.items():
+                set_clauses.append(f"{key} = {placeholder}")
+                set_params.append(value)
+            set_clauses.append("updated_at = CURRENT_TIMESTAMP")
+            set_params.append(row_id)
+
+            cursor.execute(
+                f"UPDATE download_queue SET {', '.join(set_clauses)} WHERE id = {placeholder}",
+                tuple(set_params),
+            )
+
+            if cursor.rowcount > 0:
+                total_updated_rows += 1
+                if 'source' in updates:
+                    source_updated += 1
+                if 'release_source' in updates:
+                    release_source_updated += 1
+                if 'import_type' in updates:
+                    import_type_updated += 1
+                if 'import_group' in updates:
+                    import_group_updated += 1
+
+        conn.commit()
+        conn.close()
+
+        logger.info(
+            "[QUEUE_MIGRATION] Updated %s rows (source=%s, release_source=%s, import_type=%s, import_group=%s)",
+            total_updated_rows,
+            source_updated,
+            release_source_updated,
+            import_type_updated,
+            import_group_updated,
+        )
+
+        return {
+            "success": True,
+            "updated_rows": total_updated_rows,
+            "source_updated": source_updated,
+            "release_source_updated": release_source_updated,
+            "import_type_updated": import_type_updated,
+            "import_group_updated": import_group_updated,
+            "scanned_rows": len(rows),
+        }
+    except Exception as e:
+        logger.error(f"Error migrating existing queue rows: {e}", exc_info=True)
+        try:
+            conn.rollback()
+            conn.close()
+        except Exception:
+            pass
+        return {
+            "success": False,
+            "error": str(e),
+        }
+
 
 def _sanitize_path_component(value):
     """Remove characters that are invalid in directory/file names."""

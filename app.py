@@ -18577,6 +18577,30 @@ def api_queue_add_batch():
         return jsonify({"error": f"Server error: {type(e).__name__}"}), 500
 
 
+@app.route("/api/queue/migrate-existing", methods=["POST"])
+def api_queue_migrate_existing():
+    """Backfill legacy queue rows into current grouped/source conventions."""
+    try:
+        from download_queue_manager import migrate_existing_queue_items_to_grouped_setup
+
+        data = request.get_json(silent=True) or {}
+        limit = data.get('limit')
+        if limit is not None:
+            try:
+                limit = int(limit)
+                if limit <= 0:
+                    return jsonify({"error": "limit must be a positive integer"}), 400
+            except (TypeError, ValueError):
+                return jsonify({"error": "limit must be an integer"}), 400
+
+        result = migrate_existing_queue_items_to_grouped_setup(limit=limit)
+        status_code = 200 if result.get("success") else 500
+        return jsonify(result), status_code
+    except Exception as e:
+        logging.error(f"Error migrating existing queue rows: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/queue/status", methods=["GET"])
 def api_queue_status():
     """Get queue status and items"""
