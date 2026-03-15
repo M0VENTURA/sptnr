@@ -9862,19 +9862,25 @@ def album_edit(artist, album):
                 files_failed = 0
                 files_missing = 0
                 files_with_path = 0
+                tracks_without_path = []
+                tracks_missing_on_disk = []
+                tracks_failed_to_write = []
 
                 if tracks:
                     try:
                         from helpers.tag_manager import write_tags_to_file
 
                         for track in tracks:
+                            track_title = track.get('title') if hasattr(track, 'get') else track[2]
                             file_path = track.get('file_path') if hasattr(track, 'get') else track[1]
                             if not file_path:
+                                tracks_without_path.append(str(track_title or 'Unknown title'))
                                 continue
 
                             files_with_path += 1
                             if not os.path.exists(str(file_path)):
                                 files_missing += 1
+                                tracks_missing_on_disk.append(f"{track_title} ({file_path})")
                                 continue
 
                             try:
@@ -9899,9 +9905,11 @@ def album_edit(artist, album):
                                         files_updated += 1
                                     else:
                                         files_failed += 1
+                                        tracks_failed_to_write.append(f"{track_title} ({file_path})")
                             except Exception as file_err:
                                 logging.warning(f"Failed to write tags to {file_path}: {file_err}")
                                 files_failed += 1
+                                tracks_failed_to_write.append(f"{track_title} ({file_path})")
                     except ImportError:
                         logging.warning("Tag manager not available for file writing")
 
@@ -9923,6 +9931,22 @@ def album_edit(artist, album):
                     )
                 else:
                     flash(f"Updated {rows_updated} tracks in database", "success")
+
+                if tracks_without_path:
+                    flash(
+                        "Tracks skipped because they do not have a file path: " + "; ".join(tracks_without_path),
+                        "warning"
+                    )
+                if tracks_missing_on_disk:
+                    flash(
+                        "Tracks skipped because the file path was missing on disk: " + "; ".join(tracks_missing_on_disk),
+                        "warning"
+                    )
+                if tracks_failed_to_write:
+                    flash(
+                        "Tracks that failed to update: " + "; ".join(tracks_failed_to_write),
+                        "warning"
+                    )
             except Exception as file_update_err:
                 logging.warning(f"Error updating audio files: {file_update_err}")
                 flash(f"Updated {rows_updated} tracks in database", "success")
