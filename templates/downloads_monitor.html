@@ -2958,9 +2958,7 @@ async function migrateExistingQueueItems(buttonEl) {
     }
 
     const data = await fetchJsonOrThrow('/api/queue/migrate-existing', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({})
+      method: 'POST'
     });
 
     if (data.success) {

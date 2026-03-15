@@ -18584,7 +18584,10 @@ def api_queue_migrate_existing():
         from download_queue_manager import migrate_existing_queue_items_to_grouped_setup
 
         data = request.get_json(silent=True) or {}
-        limit = data.get('limit')
+        # Accept limit from query/form/json so callers can POST without a JSON body.
+        limit = request.values.get('limit')
+        if limit is None:
+            limit = data.get('limit')
         if limit is not None:
             try:
                 limit = int(limit)
