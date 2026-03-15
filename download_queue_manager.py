@@ -1499,7 +1499,7 @@ def _remove_empty_download_dirs(file_path, downloads_root):
         logger.debug(f"[CLEANUP] Could not remove empty dirs for {file_path}: {e}")
 
 
-
+def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
     """
     Move a single completed track from /downloads into the /music library tree.
 
