@@ -9794,7 +9794,7 @@ def album_edit(artist, album):
         
         # If album title or artist changed, update those
         if names_changed:
-            update_fields.extend([f"album = {placeholder}", f"artist = {placeholder}"])
+            update_fields.extend([f"album = {placeholder}", f"album_artist = {placeholder}"])
             update_values.extend([album_title, album_artist])
         
         # Update year if provided
@@ -9835,7 +9835,7 @@ def album_edit(artist, album):
         if update_fields:
             # Validate that update_fields only contains safe column assignments
             # All field assignments should be in the format "column_name = <placeholder>"
-            allowed_columns = {'album', 'artist', 'year', 'spotify_album_type', 'musicbrainz_album_mbid', 'genres', 'composer', 'comment'}
+            allowed_columns = {'album', 'artist', 'album_artist', 'year', 'spotify_album_type', 'musicbrainz_album_mbid', 'genres', 'composer', 'comment'}
             for field in update_fields:
                 column_name = field.split('=')[0].strip()
                 if column_name not in allowed_columns:
@@ -9860,6 +9860,8 @@ def album_edit(artist, album):
 
                 files_updated = 0
                 files_failed = 0
+                files_missing = 0
+                files_with_path = 0
 
                 if tracks:
                     try:
@@ -9867,39 +9869,58 @@ def album_edit(artist, album):
 
                         for track in tracks:
                             file_path = track.get('file_path') if hasattr(track, 'get') else track[1]
-                            if file_path and os.path.exists(str(file_path)):
-                                try:
-                                    tags_to_write = {}
+                            if not file_path:
+                                continue
 
-                                    if track_artist:
-                                        tags_to_write["artist"] = track_artist
-                                    if album_genres:
-                                        tags_to_write["genre"] = album_genres
-                                    if release_year:
-                                        tags_to_write["year"] = release_year
-                                    if track_composer:
-                                        tags_to_write["composer"] = track_composer
-                                    if track_comment:
-                                        tags_to_write["comment"] = track_comment
-                                    if names_changed:
-                                        tags_to_write["album"] = album_title
-                                        tags_to_write["album_artist"] = album_artist
+                            files_with_path += 1
+                            if not os.path.exists(str(file_path)):
+                                files_missing += 1
+                                continue
 
-                                    if tags_to_write:
-                                        if write_tags_to_file(str(file_path), tags_to_write):
-                                            files_updated += 1
-                                        else:
-                                            files_failed += 1
-                                except Exception as file_err:
-                                    logging.warning(f"Failed to write tags to {file_path}: {file_err}")
-                                    files_failed += 1
+                            try:
+                                tags_to_write = {}
+
+                                if track_artist:
+                                    tags_to_write["artist"] = track_artist
+                                if album_genres:
+                                    tags_to_write["genre"] = album_genres
+                                if release_year:
+                                    tags_to_write["year"] = release_year
+                                if track_composer:
+                                    tags_to_write["composer"] = track_composer
+                                if track_comment:
+                                    tags_to_write["comment"] = track_comment
+                                if names_changed:
+                                    tags_to_write["album"] = album_title
+                                    tags_to_write["album_artist"] = album_artist
+
+                                if tags_to_write:
+                                    if write_tags_to_file(str(file_path), tags_to_write):
+                                        files_updated += 1
+                                    else:
+                                        files_failed += 1
+                            except Exception as file_err:
+                                logging.warning(f"Failed to write tags to {file_path}: {file_err}")
+                                files_failed += 1
                     except ImportError:
                         logging.warning("Tag manager not available for file writing")
 
                 if files_updated > 0:
-                    flash(f"Updated {rows_updated} tracks in database and wrote tags to {files_updated} audio files", "success")
+                    if files_missing > 0 or files_failed > 0:
+                        flash(
+                            f"Updated {rows_updated} tracks in database and wrote tags to {files_updated}/{files_with_path} files "
+                            f"({files_missing} missing paths, {files_failed} write failures)",
+                            "warning"
+                        )
+                    else:
+                        flash(f"Updated {rows_updated} tracks in database and wrote tags to {files_updated} audio files", "success")
                 elif files_failed > 0:
                     flash(f"Updated {rows_updated} tracks in database, but failed to write tags to {files_failed} audio files", "warning")
+                elif files_missing > 0:
+                    flash(
+                        f"Updated {rows_updated} tracks in database, but {files_missing} file paths were missing on disk",
+                        "warning"
+                    )
                 else:
                     flash(f"Updated {rows_updated} tracks in database", "success")
             except Exception as file_update_err:
