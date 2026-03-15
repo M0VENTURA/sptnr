@@ -1,5 +1,5 @@
 """
-Navidrome API client module for SPTNR.
+Navidrome API client module for POPULARR.
 Handles all Navidrome library scanning and metadata extraction.
 
 Usage:
@@ -90,7 +90,7 @@ class NavidromeClient:
             "u": self.username,
             "p": self.password,
             "v": "1.16.1",
-            "c": "sptnr",
+            "c": "popularr",
             "f": "json"
         }
         params.update(kwargs)

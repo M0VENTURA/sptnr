@@ -313,7 +313,7 @@ setup_logging("WebUI")
 DISCOGS_RATE_LIMIT_DELAY = 1  # seconds between Discogs API requests
 
 # Legacy compatibility - keep old functions
-LOG_PATH = os.environ.get("LOG_PATH", "/config/sptnr.log")
+LOG_PATH = os.environ.get("LOG_PATH", "/config/popularr.log")
 VERBOSE = (
     os.environ.get("SPTNR_VERBOSE_APP") or os.environ.get("SPTNR_VERBOSE") or "0"
 ) == "1"
@@ -1594,6 +1594,7 @@ def _start_boot_navidrome_import():
             _write_progress_file(progress_path, "navidrome_scan", False, {"status": "complete", "exit_code": 0, "source": "boot"})
             logging.info("[BOOT] Navidrome import-only scan completed")
             _sync_new_navidrome_album_artists_fast(trigger_source="boot_post_import")
+            _maybe_start_post_navidrome_mp3_import(trigger_source="boot_post_import")
         except Exception as e:
             logging.error(f"[BOOT] Error in Navidrome import-only scan: {e}", exc_info=True)
             _write_progress_file(progress_path, "navidrome_scan", False, {"status": "error", "error": str(e), "exit_code": 1, "source": "boot"})
@@ -2068,6 +2069,115 @@ def _sync_new_navidrome_album_artists_fast(trigger_source: str = "unknown"):
         return {"success": False, "error": str(exc)}
 
 
+def _has_valid_local_track_paths_for_mp3_import(sample_size: int = 120):
+    """Quickly validate that Navidrome-imported track paths resolve on this host."""
+    conn = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+
+        cursor.execute(
+            f"""
+            SELECT file_path
+            FROM tracks
+            WHERE file_path IS NOT NULL
+              AND file_path <> ''
+              AND file_path NOT LIKE '__queued_for_download__%'
+            ORDER BY id DESC
+            LIMIT {placeholder}
+            """,
+            (sample_size,)
+        )
+        rows = cursor.fetchall() or []
+
+        if not rows:
+            return False, "No track file paths available in DB"
+
+        checked = 0
+        existing = 0
+        for row in rows:
+            file_path = (row.get("file_path") if isinstance(row, dict) else row[0]) or ""
+            file_path = str(file_path).strip()
+            if not file_path:
+                continue
+
+            checked += 1
+            if os.path.exists(file_path):
+                existing += 1
+
+        if checked == 0:
+            return False, "No usable file paths to validate"
+        if existing == 0:
+            return False, f"0/{checked} sampled file paths exist on this host"
+
+        return True, f"{existing}/{checked} sampled file paths exist"
+    except Exception as exc:
+        return False, f"Path validation error: {exc}"
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _maybe_start_post_navidrome_mp3_import(trigger_source: str = "unknown"):
+    """Run MP3 import after Navidrome sync only when local file paths are valid."""
+    global scan_process_mp3_import
+
+    try:
+        is_running = False
+        if scan_process_mp3_import is not None:
+            try:
+                if hasattr(scan_process_mp3_import, "is_alive"):
+                    is_running = scan_process_mp3_import.is_alive()
+                elif hasattr(scan_process_mp3_import, "poll"):
+                    is_running = scan_process_mp3_import.poll() is None
+            except Exception:
+                is_running = False
+
+        if is_running:
+            log_unified(f"[NAV_SYNC:{trigger_source}] Skipping post-sync MP3 import: a MP3 import scan is already running")
+            return {"success": False, "skipped": True, "reason": "mp3_import_running"}
+
+        valid_paths, detail = _has_valid_local_track_paths_for_mp3_import()
+        if not valid_paths:
+            warning_msg = (
+                "Incorrect file path being given, please go into Navidrome under "
+                "User Settings > Players, search for popularr and enable Report Real Path"
+            )
+            log_unified(f"[NAV_SYNC:{trigger_source}] {warning_msg} ({detail})")
+            logging.warning(f"[NAV_SYNC:{trigger_source}] Post-sync MP3 import skipped: {detail}")
+            return {"success": False, "skipped": True, "reason": "invalid_paths", "detail": detail}
+
+        from scan_mp3_import import MP3ImportScanner
+
+        scanner = MP3ImportScanner(directory=None, dry_run=False, verbose=True, mode="database")
+
+        def run_scan():
+            global scan_process_mp3_import
+            try:
+                results = scanner.scan()
+                logging.info(f"[NAV_SYNC:{trigger_source}] Post-sync MP3 import completed: {results}")
+                log_unified(f"[NAV_SYNC:{trigger_source}] Post-sync MP3 import completed")
+            except Exception as exc:
+                logging.error(f"[NAV_SYNC:{trigger_source}] Post-sync MP3 import failed: {exc}", exc_info=True)
+                log_unified(f"[NAV_SYNC:{trigger_source}] Post-sync MP3 import failed: {exc}")
+            finally:
+                scan_process_mp3_import = None
+
+        scan_thread = threading.Thread(target=run_scan, daemon=True, name=f"mp3-import-post-nav-{trigger_source}")
+        scan_thread.start()
+        scan_process_mp3_import = scan_thread
+        log_unified(f"[NAV_SYNC:{trigger_source}] Post-sync MP3 import started")
+        return {"success": True, "started": True}
+    except Exception as exc:
+        logging.error(f"[NAV_SYNC:{trigger_source}] Unable to start post-sync MP3 import: {exc}", exc_info=True)
+        log_unified(f"[NAV_SYNC:{trigger_source}] Unable to start post-sync MP3 import: {exc}")
+        return {"success": False, "error": str(exc)}
+
+
 def _run_daily_missing_releases_scan():
     """Check every album artist in the catalogue for missing releases.
 
@@ -2252,7 +2362,7 @@ def _authenticate_navidrome(username, password):
                         import hashlib
                         salt = "sptnr-auth"
                         token = hashlib.md5((password + salt).encode()).hexdigest()
-                        auth_url = f"{base_url}/rest/ping?u={nav_user}&t={token}&s={salt}&v=1.16.0&c=sptnr"
+                        auth_url = f"{base_url}/rest/ping?u={nav_user}&t={token}&s={salt}&v=1.16.0&c=popularr"
                         resp = requests.get(auth_url, timeout=5)
                         if resp.status_code == 200 and "ok" in resp.text.lower():
                             return True
@@ -2270,7 +2380,7 @@ def _authenticate_navidrome(username, password):
             base_url = nav.get("base_url", "")
             salt = "sptnr-auth"
             token = hashlib.md5((password + salt).encode()).hexdigest()
-            auth_url = f"{base_url}/rest/ping?u={username}&t={token}&s={salt}&v=1.16.0&c=sptnr"
+            auth_url = f"{base_url}/rest/ping?u={username}&t={token}&s={salt}&v=1.16.0&c=popularr"
             resp = requests.get(auth_url, timeout=5)
             if resp.status_code == 200 and "ok" in resp.text.lower():
                 return True
@@ -8002,7 +8112,7 @@ def api_album_search_art():
             discogs_token = discogs_config.get("token", "")
             
             session = _get_discogs_session()
-            headers = {"User-Agent": "Sptnr/1.0"}
+            headers = {"User-Agent": "Popularr/1.0"}
             if discogs_token:
                 headers["Authorization"] = f"Discogs token={discogs_token}"
             
@@ -12684,6 +12794,7 @@ def scan_navidrome():
                     _write_progress_with_current_artist(nav_progress_file, "navidrome_scan", False, {"status": "complete", "exit_code": 0})
                     logging.info("Navidrome import-only scan completed")
                     _sync_new_navidrome_album_artists_fast(trigger_source="manual_post_import")
+                    _maybe_start_post_navidrome_mp3_import(trigger_source="manual_post_import")
                     _log_scan_session_complete("navidrome", total)
                 except Exception as e:
                     logging.error(f"Error in Navidrome import-only scan: {e}", exc_info=True)
@@ -15924,7 +16035,7 @@ def api_album_art(artist, album):
                         params = {
                             'u': username,
                             'p': password,
-                            'c': 'sptnr',
+                            'c': 'popularr',
                             'v': '1.12.0',
                             'f': 'json'
                         }
@@ -15949,7 +16060,7 @@ def api_album_art(artist, album):
                                         cover_params = {
                                             'u': username,
                                             'p': password,
-                                            'c': 'sptnr',
+                                            'c': 'popularr',
                                             'id': album_id,
                                             'size': '300'
                                         }
@@ -22323,7 +22434,7 @@ def api_track_discogs_lookup():
         # Search Discogs API using the shared session with retry logic
         headers = {
             "Authorization": f"Discogs token={token}",
-            "User-Agent": "sptnr-cli/1.0 +https://github.com/M0VENTURA/sptnr"
+            "User-Agent": "popularr-cli/1.0 +https://github.com/M0VENTURA/popularr"
         }
         
         import time
@@ -23151,7 +23262,7 @@ def api_album_discogs_lookup():
         
         # Search Discogs with multiple query strategies
         session = _get_discogs_session()
-        headers = {"User-Agent": "Sptnr/1.0"}
+        headers = {"User-Agent": "Popularr/1.0"}
         if discogs_token:
             headers["Authorization"] = f"Discogs token={discogs_token}"
         
@@ -24611,7 +24722,7 @@ def api_playlist_list():
         try:
             playlists_response = req.get(
                 f"{base_url}/rest/getPlaylists.view",
-                params={"u": user, "p": password, "c": "sptnr", "f": "json"},
+                params={"u": user, "p": password, "c": "popularr", "f": "json"},
                 timeout=10
             )
             playlists_data = playlists_response.json()
@@ -24683,7 +24794,7 @@ def api_playlist_load():
         try:
             playlist_response = req.get(
                 f"{base_url}/rest/getPlaylist.view",
-                params={"u": user, "p": password, "c": "sptnr", "f": "json", "id": playlist_id},
+                params={"u": user, "p": password, "c": "popularr", "f": "json", "id": playlist_id},
                 timeout=10
             )
             playlist_data = playlist_response.json().get("subsonic-response", {}).get("playlist", {})
@@ -24765,7 +24876,7 @@ def api_playlist_search_songs():
         # Build token auth if password available
         params = {
             "u": user,
-            "c": "sptnr",
+            "c": "popularr",
             "f": "json",
             "v": "1.16.0",
             "query": query,
@@ -24906,7 +25017,7 @@ def api_playlist_create_custom():
             params={
                 "u": user,
                 "p": password,
-                "c": "sptnr",
+                "c": "popularr",
                 "f": "json",
                 "name": name,
                 "comment": description,
@@ -24928,7 +25039,7 @@ def api_playlist_create_custom():
                 params={
                     "u": user,
                     "p": password,
-                    "c": "sptnr",
+                    "c": "popularr",
                     "f": "json",
                     "playlistId": playlist_id,
                     "songIdToAdd": song.get("id")
@@ -25129,7 +25240,7 @@ def _normalize_listenbrainz_recommendation(rec, source):
 
 def _fetch_listenbrainz_feed_tracks(listenbrainz_username, rec_type, lb_token=None):
     request_headers = {
-        "User-Agent": "sptnr/1.0 (+https://github.com/krestaino/sptnr)",
+        "User-Agent": "popularr/1.0 (+https://github.com/krestaino/popularr)",
         "Accept": "application/rss+xml, application/atom+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.1",
     }
     for url in _listenbrainz_rss_candidates(listenbrainz_username, rec_type):

@@ -519,7 +519,7 @@ async function downloadMusicBrainzRelease(artist, album, tracks, year, release_i
       // Notify other tabs/windows to refresh
       try {
         const timestamp = Date.now();
-        localStorage.setItem('sptnr_queue_updated', timestamp.toString());
+        localStorage.setItem('popularr_queue_updated', timestamp.toString());
       } catch (e) {
         console.warn('Could not update localStorage:', e);
       }
