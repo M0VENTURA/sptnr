@@ -177,6 +177,9 @@
         <button class="btn btn-sm btn-outline-warning" onclick="runQueueCleanup()" title="Remove expired duplicates and fully completed albums from queue">
           <i class="bi bi-broom"></i> Cleanup
         </button>
+        <button class="btn btn-sm btn-outline-primary" onclick="migrateExistingQueueItems(this)" title="Backfill existing queue rows to grouped/source setup">
+          <i class="bi bi-arrow-repeat"></i> Migrate Existing
+        </button>
       </div>
     </div>
     <div class="card-body p-0">
@@ -2937,6 +2940,53 @@ async function runQueueCleanup() {
   } catch (error) {
     console.error('Error running queue cleanup:', error);
     alert('❌ Network error: ' + error.message);
+  }
+}
+
+async function migrateExistingQueueItems(buttonEl) {
+  if (!confirm('Migrate existing queue rows to the grouped setup now? This is safe to run multiple times.')) {
+    return;
+  }
+
+  const button = buttonEl || null;
+  const previousHtml = button ? button.innerHTML : '';
+
+  try {
+    if (button) {
+      button.disabled = true;
+      button.innerHTML = '<i class="bi bi-hourglass-split"></i> Migrating...';
+    }
+
+    const data = await fetchJsonOrThrow('/api/queue/migrate-existing', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+
+    if (data.success) {
+      alert(
+        '✅ Queue migration complete\n\n' +
+        `Rows updated: ${data.updated_rows || 0}\n` +
+        `Source normalized: ${data.source_updated || 0}\n` +
+        `Release source set: ${data.release_source_updated || 0}\n` +
+        `Import type set: ${data.import_type_updated || 0}\n` +
+        `Import group set: ${data.import_group_updated || 0}`
+      );
+
+      queuePageOffset = 0;
+      await loadQueueStatus();
+      await loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true });
+    } else {
+      alert('❌ Error: ' + (data.error || 'Queue migration failed'));
+    }
+  } catch (error) {
+    console.error('Error migrating existing queue rows:', error);
+    alert('❌ Network error: ' + error.message);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.innerHTML = previousHtml || '<i class="bi bi-arrow-repeat"></i> Migrate Existing';
+    }
   }
 }
 
