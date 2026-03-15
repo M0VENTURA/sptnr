@@ -19893,6 +19893,55 @@ def api_queue_cleanup():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route("/api/queue/matched-releases", methods=["GET"])
+def api_queue_matched_releases():
+    """
+    Return all unique releases currently in the download queue that have a release_mbid set.
+    Used to populate the 'current queue' list in the Change Queue Item Match modal.
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT artist, album, release_mbid, release_year,
+                   COUNT(*) AS track_count
+            FROM download_queue
+            WHERE release_mbid IS NOT NULL
+              AND release_mbid <> ''
+              AND status NOT IN ('imported', 'removed', 'cancelled')
+            GROUP BY artist, album, release_mbid, release_year
+            ORDER BY artist, album
+        """)
+        rows = cursor.fetchall()
+        conn.close()
+
+        releases = []
+        for row in rows:
+            if isinstance(row, dict):
+                releases.append({
+                    'artist': row.get('artist') or '',
+                    'album': row.get('album') or '',
+                    'mbid': row.get('release_mbid') or '',
+                    'year': row.get('release_year') or '',
+                    'track_count': row.get('track_count') or 0,
+                })
+            else:
+                releases.append({
+                    'artist': row[0] or '',
+                    'album': row[1] or '',
+                    'mbid': row[2] or '',
+                    'year': row[3] or '',
+                    'track_count': row[4] or 0,
+                })
+
+        return jsonify({"success": True, "releases": releases})
+
+    except Exception as e:
+        logging.error(f"Error fetching matched releases from queue: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/musicbrainz/search/releases", methods=["GET"])
 def api_musicbrainz_search_releases():
     """
