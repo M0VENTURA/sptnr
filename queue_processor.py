@@ -1818,7 +1818,7 @@ def check_completed_downloads():
                                 'year': item.get('year'),
                                 'track_number': item.get('track_number'),
                             }
-                            update_file_metadata_with_albumart(file_path, stored_metadata)
+                            update_file_metadata_with_albumart(file_path, stored_metadata, clear_existing_tags=True)
                             logger.info(
                                 f"[AUTO_MOVE] Queue {item_id}: applied stored MusicBrainz metadata to file"
                             )

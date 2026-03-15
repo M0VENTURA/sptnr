@@ -13268,6 +13268,9 @@ def api_musicbrainz_download():
         tracking_id = cursor.lastrowid
         
         # Add all tracks to download_queue to ensure they're tracked
+        # under a single import_group (queue folder) for this release request.
+        import_group = f"mb_{artist}_{release_title}_{release_id}".replace(' ', '_')[:100]
+        queue_source = 'soulseek' if method == 'slskd' else 'qbittorrent'
         queue_ids = []
         track_count = 0
         if 'releases' in mb_data:
@@ -13296,21 +13299,23 @@ def api_musicbrainz_download():
                             cursor.execute(f"""
                                 INSERT INTO download_queue
                                 (artist, album, title, search_query, source, status,
+                                 import_group, import_type,
                                  release_id, release_source, track_number, album_artist, year, created_at, updated_at)
-                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'soulseek', 'queued', {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder},
+                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued', {placeholder}, 'album', {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder},
                                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                                 RETURNING id
-                            """, (track_artist, release_title, track_title, search_query, release_id, 'musicbrainz', track_number, artist, release_year))
+                            """, (track_artist, release_title, track_title, search_query, queue_source, import_group, release_id, 'musicbrainz', track_number, artist, release_year))
                             queue_row = cursor.fetchone()
                             queue_id = queue_row[0] if queue_row else None
                         else:
                             cursor.execute(f"""
                                 INSERT INTO download_queue
                                 (artist, album, title, search_query, source, status,
+                                 import_group, import_type,
                                  release_id, release_source, track_number, album_artist, year, created_at, updated_at)
-                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'soulseek', 'queued', {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder},
+                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued', {placeholder}, 'album', {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder},
                                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                            """, (track_artist, release_title, track_title, search_query, release_id, 'musicbrainz', track_number, artist, release_year))
+                            """, (track_artist, release_title, track_title, search_query, queue_source, import_group, release_id, 'musicbrainz', track_number, artist, release_year))
                             queue_id = cursor.lastrowid
                         
                         if queue_id:

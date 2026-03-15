@@ -1517,10 +1517,9 @@ def _remove_empty_download_dirs(file_path, downloads_root):
 
 def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
     """
-    Move a single completed track from /downloads into the /music library tree.
+    Move a single completed track from /downloads into /music using configured naming format.
 
-    Folder structure: <music_root>/<album_artist>/<year> - <album>/
-    (year defaults to 'Unknown' when not available)
+    The destination path uses downloads.file_name_format from config, with a safe fallback.
     """
     import re
     import shutil
@@ -1692,9 +1691,6 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
             year = 'Unknown'
         tag_metadata['year'] = year
 
-        dest_folder = os.path.join(music_root, album_artist, f"{year} - {album}")
-        os.makedirs(dest_folder, exist_ok=True)
-
         try:
             track_num_int = int(str(track_num).split('/')[0]) if track_num else 0
             disc_num_int = int(str(disc_num).split('/')[0]) if disc_num else 1
@@ -1711,8 +1707,47 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
         except Exception as tag_err:
             logger.warning(f"[MOVE] Could not update file tags before move (non-fatal): {tag_err}")
 
-        filename = _sanitize_path_component(f"{track_num_fmt}. {artist} - {title}{ext}")
-        dest_path = os.path.join(dest_folder, filename)
+        # Build destination path from Queue File Name Format config with a safe fallback.
+        file_name_format = _read_track_file_name_format()
+        format_vars = {
+            'track_number': track_num_fmt,
+            'artist': _sanitize_path_component(artist) or 'Unknown Artist',
+            'album_artist': _sanitize_path_component(album_artist) or 'Unknown Artist',
+            'title': _sanitize_path_component(title) or 'Unknown Title',
+            'album': _sanitize_path_component(album) or 'Unknown Album',
+            'year': str(year)[:4] if year and str(year) != 'Unknown' else 'Unknown',
+        }
+        fallback_rel = (
+            f"{format_vars['album_artist']}/{format_vars['year']} - {format_vars['album']}/"
+            f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}"
+        )
+        try:
+            relative_path = file_name_format.format(**format_vars)
+        except Exception:
+            relative_path = fallback_rel
+        if not isinstance(relative_path, str) or not relative_path.strip():
+            relative_path = fallback_rel
+
+        relative_path = relative_path.strip().replace('\\', '/').lstrip('/').lstrip('\\')
+        path_parts = []
+        for part in relative_path.split('/'):
+            clean_part = _sanitize_path_component(part)
+            if clean_part and clean_part not in ('.', '..'):
+                path_parts.append(clean_part)
+        if not path_parts:
+            path_parts = [
+                format_vars['album_artist'],
+                _sanitize_path_component(f"{format_vars['year']} - {format_vars['album']}") or 'Unknown Album',
+                f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}",
+            ]
+
+        rel_safe = os.path.join(*path_parts)
+        rel_root, rel_ext = os.path.splitext(rel_safe)
+        if rel_ext:
+            dest_path = os.path.join(music_root, rel_safe)
+        else:
+            dest_path = os.path.join(music_root, f"{rel_safe}{ext}")
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
 
         if os.path.exists(dest_path):
             logger.info(f"[MOVE] Destination already exists, skipping move: {dest_path}")
@@ -2964,6 +2999,7 @@ def auto_discover_and_queue_files():
         # Get all audio files from downloads folder and subdirectories
         audio_extensions = {'.mp3', '.flac', '.m4a', '.ogg', '.wav'}
         discovered_files = []
+        folder_audio_counts = {}
         
         try:
             for root, dirs, files in os.walk(downloads_dir):
@@ -2973,6 +3009,7 @@ def auto_discover_and_queue_files():
                     if file_ext in audio_extensions:
                         full_path = os.path.join(root, filename)
                         rel_path = os.path.relpath(full_path, downloads_dir)
+                        folder_audio_counts[root] = folder_audio_counts.get(root, 0) + 1
                         discovered_files.append({
                             'filename': filename,
                             'full_path': full_path,
@@ -2985,24 +3022,37 @@ def auto_discover_and_queue_files():
             stats['errors'].append(error_msg)
             return stats
         
-        stats['scanned'] = len(discovered_files)
-        logger.info(f"[AUTO-DISCOVER] Scanning {len(discovered_files)} audio files in {downloads_dir}")
+        # Only queue entries from folders with more than 4 audio files.
+        filtered_discovered_files = []
+        skipped_by_folder_threshold = 0
+        for file_info in discovered_files:
+            folder_path = os.path.dirname(file_info['full_path'])
+            if folder_audio_counts.get(folder_path, 0) > 4:
+                filtered_discovered_files.append(file_info)
+            else:
+                skipped_by_folder_threshold += 1
+
+        stats['scanned'] = len(filtered_discovered_files)
+        logger.info(
+            f"[AUTO-DISCOVER] Scanning {len(filtered_discovered_files)} audio files in {downloads_dir} "
+            f"(skipped {skipped_by_folder_threshold} in folders with <=4 files)"
+        )
         
-        if len(discovered_files) == 0:
+        if len(filtered_discovered_files) == 0:
             global _last_no_audio_log_at
             now_ts = time.time()
             if (now_ts - _last_no_audio_log_at) >= _NO_AUDIO_LOG_INTERVAL_SECONDS:
                 logger.info(
-                    f"[AUTO-DISCOVER] No audio files found in {downloads_dir} "
-                    f"(this message is throttled to once every {_NO_AUDIO_LOG_INTERVAL_SECONDS}s)"
+                    f"[AUTO-DISCOVER] No eligible audio files found in {downloads_dir} "
+                    f"(requires folders with >4 files; log throttled to once every {_NO_AUDIO_LOG_INTERVAL_SECONDS}s)"
                 )
                 _last_no_audio_log_at = now_ts
             else:
-                logger.debug(f"[AUTO-DISCOVER] No audio files found in {downloads_dir}")
+                logger.debug(f"[AUTO-DISCOVER] No eligible audio files found in {downloads_dir}")
             update_scan_progress(scanning=False)
             return stats
         
-        for file_info in discovered_files:
+        for file_info in filtered_discovered_files:
             # PostgreSQL: use a SAVEPOINT so a per-file DB error can be rolled
             # back without aborting the entire outer transaction.  This prevents
             # "InFailedSqlTransaction" cascades from causing every subsequent
