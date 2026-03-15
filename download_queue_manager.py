@@ -3186,7 +3186,8 @@ def auto_discover_and_queue_files():
                         break
 
                 if matched_pending:
-                    # File belongs to an existing queue item - update it
+                    # File belongs to an existing queue item - update it and
+                    # move to /music if the item is MusicBrainz-backed.
                     item_for_move = dict(matched_pending)
                     item_for_move['file_path'] = full_path
                     # Enrich with discovered file's metadata where queue item is sparse

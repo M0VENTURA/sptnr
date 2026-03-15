@@ -8,9 +8,17 @@ Reference: https://docs.mp3tag.de/mapping/
 import os
 import sqlite3
 from pathlib import Path
-from mutagen.id3 import ID3
-from mutagen.easyid3 import EasyID3
-from mutagen.mp3 import MP3
+
+try:
+    from mutagen.id3 import ID3
+    from mutagen.easyid3 import EasyID3
+    from mutagen.mp3 import MP3
+    _MUTAGEN_AVAILABLE = True
+except ImportError:  # pragma: no cover – mutagen not installed in test envs
+    ID3 = None       # type: ignore[assignment]
+    EasyID3 = None   # type: ignore[assignment]
+    MP3 = None       # type: ignore[assignment]
+    _MUTAGEN_AVAILABLE = False
 
 def _is_postgres_connection(conn):
     """Detect if connection is PostgreSQL."""
