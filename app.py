@@ -2536,6 +2536,57 @@ def _get_auto_boot_import_setting():
 
 AUTO_BOOT_ND_IMPORT = _get_auto_boot_import_setting()
 
+
+def _schedule_configured_startup_scan_launch():
+    """Launch configured scan set after reboot when enabled in feature settings."""
+    def _worker():
+        try:
+            # Delay until module routes are fully loaded.
+            time.sleep(15)
+
+            cfg = get_config() or {}
+            features = cfg.get("features", {}) if isinstance(cfg, dict) else {}
+            if not bool(features.get("launch_on_startup", False)):
+                return
+
+            if not os.path.exists(_navidrome_first_full_import_marker_path()):
+                logging.info("[BOOT] Startup scan launch is locked until first full Navidrome import completes")
+                return
+
+            scan_type = str(features.get("startup_scan_type", "navidrome") or "navidrome").strip().lower()
+            restart = bool(features.get("startup_scan_restart", True))
+
+            mapping = {
+                "navidrome": ("scan_navidrome", "/scan/navidrome"),
+                "metadata": ("scan_mp3_import", "/scan/mp3-import"),
+                "popularity": ("scan_popularity_route", "/scan/popularity"),
+                "combined": ("scan_combined", "/scan/combined"),
+            }
+            handler_name, base_path = mapping.get(scan_type, ("scan_navidrome", "/scan/navidrome"))
+
+            params = []
+            if scan_type != "metadata":
+                params.append("mode=force" if restart else "mode=all")
+            if scan_type == "navidrome":
+                params.append("restart=1" if restart else "restart=0")
+
+            request_path = base_path + (("?" + "&".join(params)) if params else "")
+            handler = globals().get(handler_name)
+            if not callable(handler):
+                logging.warning(f"[BOOT] Startup scan launch skipped: handler '{handler_name}' not available")
+                return
+
+            log_unified(
+                f"[BOOT] Launch on startup: starting {scan_type} "
+                f"({'restart' if restart else 'normal'})"
+            )
+            with app.test_request_context(request_path, method="POST"):
+                handler()
+        except Exception as exc:
+            logging.error(f"[BOOT] Startup scan launch failed: {exc}", exc_info=True)
+
+    threading.Thread(target=_worker, daemon=True, name="startup-scan-launch").start()
+
 # Leader election for startup jobs under multi-worker servers (gunicorn).
 _is_startup_leader_worker = _acquire_startup_leader_lock()
 
@@ -2552,6 +2603,11 @@ if _is_startup_leader_worker:
         _start_navidrome_incremental_scheduler()
     except Exception as e:
         logging.error(f"Failed to start Navidrome incremental scheduler: {e}")
+
+    try:
+        _schedule_configured_startup_scan_launch()
+    except Exception as e:
+        logging.error(f"Failed to schedule startup scan launch: {e}")
 
     try:
         _start_daily_scheduler()
@@ -2977,6 +3033,8 @@ def dashboard():
         features = cfg.get("features", {})
         perpetual = bool(features.get("perpetual", False))
         forced = bool(features.get("force", False))
+        launch_on_startup = bool(features.get("launch_on_startup", False))
+        first_full_scan_done = os.path.exists(_navidrome_first_full_import_marker_path())
 
         db_path = cfg.get("database", {}).get("path", "/database/sptnr.db")
         dashboard_template = "dashboard_external.html" if db_path != "/database/sptnr.db" else "dashboard.html"
@@ -2986,7 +3044,9 @@ def dashboard():
                              scan_running=scan_running,
                              nav_users=nav_users_list,
                              perpetual=perpetual,
-                             forced=forced)
+                             forced=forced,
+                             launch_on_startup=launch_on_startup,
+                             first_full_scan_done=first_full_scan_done)
     except Exception as e:
         logging.error(f"Dashboard error: {e}")
         import traceback
@@ -3000,6 +3060,8 @@ def dashboard():
                              nav_users=[],
                              perpetual=False,
                              forced=False,
+                             launch_on_startup=False,
+                             first_full_scan_done=False,
                              error=str(e))
 
 
@@ -11711,7 +11773,7 @@ def config_save_json():
 
 @app.route("/api/features/update", methods=["POST"])
 def api_features_update():
-    """Update individual feature flags (perpetual, force) in config.yaml"""
+    """Update individual feature flags and startup-scan preferences in config.yaml."""
     try:
         data = request.get_json()
         if data is None:
@@ -11723,10 +11785,15 @@ def api_features_update():
 
         features = config_data.get("features", {})
 
-        allowed_keys = {"perpetual", "force"}
-        for key in allowed_keys:
+        allowed_bool_keys = {"perpetual", "force", "launch_on_startup", "startup_scan_restart"}
+        for key in allowed_bool_keys:
             if key in data:
                 features[key] = bool(data[key])
+
+        if "startup_scan_type" in data:
+            scan_type = str(data.get("startup_scan_type") or "").strip().lower()
+            if scan_type in {"navidrome", "metadata", "popularity", "combined"}:
+                features["startup_scan_type"] = scan_type
 
         config_data["features"] = features
 
@@ -11743,6 +11810,9 @@ def api_features_update():
             "success": True,
             "perpetual": features.get("perpetual", False),
             "force": features.get("force", False),
+            "launch_on_startup": features.get("launch_on_startup", False),
+            "startup_scan_type": features.get("startup_scan_type", "navidrome"),
+            "startup_scan_restart": features.get("startup_scan_restart", True),
         })
     except Exception as e:
         logging.error(f"Error updating features: {e}")
@@ -13017,6 +13087,7 @@ def scan_navidrome():
     
     # Get scan mode from query parameters (default: "all")
     mode = request.args.get('mode', 'all')  # all, force, missing, resume, resume_force
+    restart_requested = str(request.args.get('restart', '0')).strip().lower() in ('1', 'true', 'yes', 'on')
     
     with scan_lock:
         if scan_process_navidrome is not None:
@@ -13042,6 +13113,13 @@ def scan_navidrome():
 
                     logging.info(f"Starting Navidrome import-only scan (mode={mode})")
                     checkpoint_path = os.path.join(os.path.dirname(DB_PATH), "navidrome_scan_checkpoint.json")
+
+                    if restart_requested and os.path.exists(checkpoint_path):
+                        try:
+                            os.remove(checkpoint_path)
+                            logging.info("Restart requested: cleared Navidrome checkpoint to start from beginning")
+                        except Exception as checkpoint_err:
+                            logging.warning(f"Restart requested but failed to clear checkpoint: {checkpoint_err}")
                     
                     artist_map = build_artist_index()
                     artists = list(artist_map.items())
@@ -13058,7 +13136,7 @@ def scan_navidrome():
                         if last_scanned_artist:
                             logging.info(f"Resume mode: Found last scanned artist '{last_scanned_artist}'")
                     # Otherwise check checkpoint file
-                    elif os.path.exists(checkpoint_path):
+                    elif (not restart_requested) and os.path.exists(checkpoint_path):
                         try:
                             with open(checkpoint_path, 'r') as f:
                                 checkpoint = json.load(f)
@@ -20610,7 +20688,14 @@ def api_queue_matched_releases():
             FROM download_queue
             WHERE release_mbid IS NOT NULL
               AND release_mbid <> ''
-              AND release_source = 'musicbrainz'
+              AND (
+                    release_source = 'musicbrainz'
+                    OR (
+                        (release_source IS NULL OR release_source = '')
+                        AND length(release_mbid) = 36
+                        AND release_mbid LIKE '________-____-____-____-____________'
+                    )
+                  )
               AND status NOT IN ('imported', 'removed', 'cancelled')
             GROUP BY artist, album, release_mbid, release_year
             ORDER BY artist, album

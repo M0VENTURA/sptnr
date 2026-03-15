@@ -97,6 +97,11 @@
             </h5>
         </div>
         <div class="card-body">
+            <div class="mb-2">
+                <small class="text-muted">
+                    Select your scan type from the dropdown list below and select start. These are locked out until after the first full scan. For more information, please read the Help option at the top of the page.
+                </small>
+            </div>
             <!-- Unified Progress Bar -->
             <div id="unified-progress-container" class="mb-3">
                 <div class="d-flex justify-content-between mb-2">
@@ -116,14 +121,25 @@
             <div class="d-flex flex-wrap align-items-center gap-3">
                 <!-- Start Scan Dropdown -->
                 <div class="d-flex align-items-center gap-2">
-                    <select id="scanTypeSelect" class="form-select form-select-sm" style="min-width: 210px;">
+                    <select id="scanTypeSelect" class="form-select form-select-sm" style="min-width: 210px;" {{ '' if first_full_scan_done else 'disabled' }}>
                         <option value="navidrome">Navidrome Import</option>
                         <option value="metadata">Metadata Import</option>
                         <option value="popularity">Popularity and Single Scan</option>
                         <option value="combined">Combined Scan</option>
                     </select>
-                    <button id="startScanBtn" class="btn btn-primary btn-sm" onclick="startSelectedScan()">
+                    <button id="startScanBtn" class="btn btn-primary btn-sm" onclick="startSelectedScan(false)" {{ '' if first_full_scan_done else 'disabled' }}>
                         <i class="bi bi-play-fill"></i> Start Scan
+                    </button>
+                    <button id="restartScanBtn" class="btn btn-outline-info btn-sm" onclick="startSelectedScan(true)" title="Restart selected scan from beginning" {{ '' if first_full_scan_done else 'disabled' }}>
+                        <i class="bi bi-arrow-clockwise"></i> Restart
+                    </button>
+                    <button id="launchStartupBtn"
+                            class="btn btn-sm {{ 'btn-success' if launch_on_startup else 'btn-outline-success' }}"
+                            data-enabled="{{ 'true' if launch_on_startup else 'false' }}"
+                            onclick="toggleLaunchOnStartup()"
+                            title="Automatically launch selected scan set on startup"
+                            {{ '' if first_full_scan_done else 'disabled' }}>
+                        <i class="bi bi-power"></i> Launch on startup
                     </button>
                 </div>
 
@@ -975,14 +991,34 @@ document.addEventListener('DOMContentLoaded', function() {
     if (savedUser && document.getElementById('userSelector')) {
         document.getElementById('userSelector').value = savedUser;
     }
+
+    _renderLaunchStartupButton({{ 'true' if launch_on_startup else 'false' }});
+
+    if (!firstFullScanDone) {
+        const lockMessage = 'Locked until first full Navidrome scan completes';
+        ['scanTypeSelect', 'startScanBtn', 'restartScanBtn', 'launchStartupBtn'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) {
+                el.disabled = true;
+                el.title = lockMessage;
+            }
+        });
+    }
 });
 
 // ===== Scan Controls =====
 
-function startSelectedScan() {
+const firstFullScanDone = {{ 'true' if first_full_scan_done else 'false' }};
+
+function startSelectedScan(restart = false) {
+    if (!firstFullScanDone) {
+        alert('This scan control is locked until after the first full Navidrome import completes.');
+        return;
+    }
+
     const scanType = document.getElementById('scanTypeSelect').value;
     const forced = document.getElementById('forcedCheck').checked;
-    const mode = forced ? 'force' : 'all';
+    const mode = (forced || restart) ? 'force' : 'all';
 
     var actionUrl = '';
     if (scanType === 'navidrome') {
@@ -999,12 +1035,67 @@ function startSelectedScan() {
     if (scanType !== 'metadata') {
         url.searchParams.append('mode', mode);
     }
+    if (scanType === 'navidrome') {
+        url.searchParams.append('restart', restart ? '1' : '0');
+    }
+
+    // Keep startup scan type aligned with the latest user selection when launch-on-startup is enabled.
+    const launchBtn = document.getElementById('launchStartupBtn');
+    if (launchBtn && launchBtn.dataset.enabled === 'true') {
+        updateStartupLaunchFeature(true).catch(() => {});
+    }
 
     var form = document.createElement('form');
     form.method = 'POST';
     form.action = url.toString();
     document.body.appendChild(form);
     form.submit();
+}
+
+function _renderLaunchStartupButton(enabled) {
+    const btn = document.getElementById('launchStartupBtn');
+    if (!btn) return;
+    btn.dataset.enabled = enabled ? 'true' : 'false';
+    btn.classList.remove('btn-success', 'btn-outline-success');
+    btn.classList.add(enabled ? 'btn-success' : 'btn-outline-success');
+    btn.innerHTML = `<i class="bi bi-power"></i> Launch on startup${enabled ? ' On' : ''}`;
+}
+
+async function updateStartupLaunchFeature(enabled) {
+    const scanType = (document.getElementById('scanTypeSelect') || {}).value || 'navidrome';
+    const payload = {
+        launch_on_startup: !!enabled,
+        startup_scan_type: scanType,
+        startup_scan_restart: true,
+    };
+
+    const resp = await fetch('/api/features/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+
+    if (!resp.ok) {
+        throw new Error('Failed to update startup launch setting');
+    }
+
+    _renderLaunchStartupButton(!!enabled);
+}
+
+async function toggleLaunchOnStartup() {
+    if (!firstFullScanDone) {
+        alert('Launch on startup is locked until after the first full Navidrome import completes.');
+        return;
+    }
+    const btn = document.getElementById('launchStartupBtn');
+    if (!btn) return;
+    const currentlyEnabled = btn.dataset.enabled === 'true';
+    try {
+        await updateStartupLaunchFeature(!currentlyEnabled);
+    } catch (e) {
+        console.error('Error updating launch-on-startup setting:', e);
+        alert('Could not update Launch on startup setting.');
+    }
 }
 
 // ===== Feature Flag Toggles =====
