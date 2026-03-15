@@ -2148,7 +2148,10 @@ def detect_single_for_track(
     zscore_threshold: float = 1.0,
     # New parameters for conditional z-score detection
     album_is_underperforming: bool = False,
-    artist_median_popularity: float = 0.0
+    artist_median_popularity: float = 0.0,
+    lastfm_client=None,
+    existing_conn=None,
+    persist_result: bool = True,
 ) -> dict:
     """
     Detect if a track is a single using multiple data sources.
@@ -2199,10 +2202,11 @@ def detect_single_for_track(
     if use_advanced_detection and track_id and album:
         log_info(f"✅ [SINGLE DETECTION] Using ADVANCED detection path for: {title}")
         conn = None
+        owns_connection = existing_conn is None
         try:
             from single_detection_enhanced import detect_single_enhanced, store_single_detection_result
             # get_db_connection is already available in this module
-            conn = get_db_connection()
+            conn = existing_conn or get_db_connection()
             
             # Get Spotify results if cached
             spotify_search_results = None
@@ -2225,7 +2229,7 @@ def detect_single_for_track(
                 musicbrainz_client = _get_timeout_safe_musicbrainz_client()
             
             # Get Last.fm client
-            lastfm_client = get_lastfm_client()
+            detection_lastfm_client = lastfm_client or get_lastfm_client()
             
             # Run enhanced detection
             log_info(f"🔍 [SINGLE DETECTION] Starting enhanced detection for: {title}")
@@ -2244,7 +2248,7 @@ def detect_single_for_track(
                 spotify_results=spotify_search_results,
                 discogs_client=discogs_client,
                 musicbrainz_client=musicbrainz_client,
-                lastfm_client=lastfm_client,
+                lastfm_client=detection_lastfm_client,
                 verbose=verbose,
                 album_type=album_type,
                 album_is_underperforming=album_is_underperforming,
@@ -2254,20 +2258,21 @@ def detect_single_for_track(
             log_info(f"✅ [SINGLE DETECTION] Enhanced detection complete for: {title}")
             log_debug(f"[SINGLE DETECTION] Result: is_single={result.get('is_single')}, confidence={result.get('single_confidence')}, sources={result.get('single_sources')}")
             
-            # CRITICAL: Close the read connection before storing results.
-            # detect_single_enhanced() creates multiple cursors and may leave read locks open.
-            # Close the read connection, then use a fresh connection for writes.
-            try:
-                if conn is not None:
-                    conn.close()
-                    conn = None
-                write_conn = get_db_connection()  # Get fresh connection for write operations
-                store_single_detection_result(write_conn, track_id, result)
-                write_conn.close()
-            except Exception as write_error:
-                log_debug(f"Warning: Could not write single detection result for {track_id}: {write_error}")
-                import traceback
-                log_debug(f"Write error: {traceback.format_exc()}")
+            if persist_result:
+                # CRITICAL: Close owned read connection before storing results.
+                # detect_single_enhanced() creates multiple cursors and may leave read locks open.
+                # Close the read connection, then use a fresh connection for writes.
+                try:
+                    if owns_connection and conn is not None:
+                        conn.close()
+                        conn = None
+                    write_conn = get_db_connection()  # Get fresh connection for write operations
+                    store_single_detection_result(write_conn, track_id, result)
+                    write_conn.close()
+                except Exception as write_error:
+                    log_debug(f"Warning: Could not write single detection result for {track_id}: {write_error}")
+                    import traceback
+                    log_debug(f"Write error: {traceback.format_exc()}")
             
             # Return in expected format
             # CRITICAL: Deduplicate sources to prevent same source appearing twice
@@ -2291,7 +2296,7 @@ def detect_single_for_track(
                 log_unified(f"   Error details: {traceback.format_exc()}")
             # Fall through to standard detection
         finally:
-            if conn is not None:
+            if owns_connection and conn is not None:
                 conn.close()
     else:
         # Advanced detection skipped
@@ -5413,6 +5418,11 @@ def popularity_scan(
                             updated_track_updates
                         )
                         conn.commit()
+
+                        updated_popularity_by_id = {track_id: popularity_score for popularity_score, _spotify_score, _lastfm_ratio, _spotify_genres, _lastfm_tags, _listenbrainz_genres, _discogs_genres, _musicbrainz_genres, _cover_art_url, track_id in updated_track_updates}
+                        for track in album_tracks:
+                            if track.get("id") in updated_popularity_by_id:
+                                track["popularity_score"] = updated_popularity_by_id[track.get("id")]
                         
                         # Periodic WAL checkpoint every 10 albums to ensure data persists (especially important on Windows)
                         if not is_postgres_connection(conn) and (album_counter % 10 == 0):
@@ -5671,35 +5681,13 @@ def popularity_scan(
                     # Continue with single detection even if bulk tag lookup fails
                 # --- End bulk tag lookup section ---
 
-                # CRITICAL FIX: Close the connection BEFORE single detection to prevent lock contention
-                # The original cursor from line ~1949 holds a READ lock on the database.
-                # When detect_single_for_track() creates NEW connections to WRITE, those need to acquire
-                # a WRITE lock, which SQLite cannot grant while a connection with a READ lock is open.
-                # This causes "Database is locked" errors in store_single_detection_result().
-                # Solution: Close the entire connection (not just cursor) to fully release all locks.
-                # We'll reopen it after single detection completes.
-                try:
-                    if cursor is not None:
-                        try:
-                            cursor.close()
-                        except:
-                            pass  # Cursor might already be closed, that's OK
-                    cursor = None
-                    
-                    if conn is not None:
-                        try:
-                            conn.close()
-                        except:
-                            pass  # Connection might have issues, that's OK
-                    conn = None
-                    log_debug(f"Closed connection before single detection to prevent lock contention")
-                except Exception as e:
-                    log_debug(f"Warning: Failed to close connection before single detection: {e}")
-                    cursor = None
-                    conn = None
-
                 # Perform singles detection for album tracks
                 log_info(f'Starting singles detection for "{artist} - {album}"')
+                try:
+                    from single_detection_enhanced import clear_artist_stats_cache
+                    clear_artist_stats_cache()
+                except Exception as cache_clear_error:
+                    log_debug(f"Could not clear single detection stats cache before album scan: {cache_clear_error}")
                 
                 # Use album type already detected at the start of scan (no need to re-fetch from Music Brainz)
                 # The album_type_from_field was set at scan start with MusicBrainz lookup + auto-detection
@@ -5773,6 +5761,12 @@ def popularity_scan(
                 if artist_stats['track_count'] > 0:
                     log_info(f"Artist-level stats: avg={artist_stats['avg_popularity']:.1f}, median={artist_median:.1f}")
                     log_debug(f"Artist statistics - track_count: {artist_stats['track_count']}, avg: {artist_stats['avg_popularity']}, median: {artist_median}, stddev: {artist_stats.get('stddev_popularity', 0)}")
+
+                single_detection_lastfm_client = None
+                try:
+                    single_detection_lastfm_client = lastfm_client if 'lastfm_client' in locals() and lastfm_client else get_lastfm_client()
+                except Exception as lastfm_client_error:
+                    log_debug(f"Could not prepare shared Last.fm client for single detection: {lastfm_client_error}")
                 
                 # Capture user-set singles before running automated detection
                 # User-marked singles (is_single=1 with no/empty sources) should be preserved
@@ -5796,6 +5790,7 @@ def popularity_scan(
                 
                 # Batch updates for singles detection
                 singles_updates = []
+                single_detection_timestamp_updates = []
                 
                 # Get album track count for context-based confidence adjustment
                 album_track_count = len(album_tracks)
@@ -6023,23 +6018,9 @@ def popularity_scan(
                             singles_processed += 1
                             continue
                     
-                    # Get the popularity score for this track (may have been calculated earlier)
-                    # Open a fresh short-lived connection (conn was closed before this loop to release locks)
-                    track_popularity = 0.0
-                    try:
-                        temp_conn = get_db_connection()
-                        temp_cursor = temp_conn.cursor()
-                        temp_is_pg = is_postgres_connection(temp_conn)
-                        temp_placeholder = "%s" if temp_is_pg else "?"
-                        temp_cursor.execute(f"SELECT popularity_score FROM tracks WHERE id = {temp_placeholder}", (track_id,))
-                        pop_row = temp_cursor.fetchone()
-                        if pop_row and pop_row['popularity_score']:
-                            track_popularity = pop_row['popularity_score']
-                        temp_cursor.close()
-                        temp_conn.close()
-                    except Exception as e:
-                        log_debug(f"Could not fetch popularity for {track_id}: {e}")
-                        track_popularity = 0.0
+                    # Use the in-memory track score for single detection.
+                    # The album popularity phase updates these values before singles detection begins.
+                    track_popularity = row_get(track, "popularity_score", 0.0) or 0.0
                     
                     log_info(f"🔍 Running single detection for: {title}")
                     log_debug(f"Single detection params - track: {title}, isrc: {track_isrc}, duration: {track_duration}, popularity: {track_popularity}, album_type: {track_album_type}")
@@ -6082,7 +6063,10 @@ def popularity_scan(
                         zscore_threshold=0.20,
                         # Conditional z-score detection parameters
                         album_is_underperforming=album_is_underperforming,
-                        artist_median_popularity=artist_median
+                        artist_median_popularity=artist_median,
+                        lastfm_client=single_detection_lastfm_client,
+                        existing_conn=conn,
+                        persist_result=False,
                     )
                     
                     single_sources = detection_result["sources"]
@@ -6095,23 +6079,7 @@ def popularity_scan(
                         log_info(f"❌ Not a single: '{title}' - confidence: {single_confidence}, sources: {single_sources}")
                     log_debug(f"Single detection result - is_single: {is_single}, confidence: {single_confidence}, sources: {single_sources}")
                     
-                    # Update single detection timestamp after running detection
-                    # Use a fresh short-lived connection (conn was closed before this loop to release locks)
-                    try:
-                        timestamp_conn = get_db_connection()
-                        timestamp_is_pg = is_postgres_connection(timestamp_conn)
-                        timestamp_placeholder = "%s" if timestamp_is_pg else "?"
-                        timestamp_cursor = timestamp_conn.cursor()
-                        timestamp_cursor.execute(f"""
-                            UPDATE tracks 
-                            SET single_detection_last_updated = {timestamp_placeholder}
-                            WHERE id = {timestamp_placeholder}
-                        """, (datetime.now().isoformat(), track_id))
-                        timestamp_conn.commit()
-                        timestamp_cursor.close()
-                        timestamp_conn.close()
-                    except Exception as e:
-                        log_debug(f"Could not update detection timestamp for {track_id}: {e}")
+                    single_detection_timestamp_updates.append((datetime.now().isoformat(), track_id))
                     
                     # Preserve user-set singles: if track was user-marked and detection found nothing, keep it marked
                     if track_id in user_set_singles and not is_single:
@@ -6185,21 +6153,6 @@ def popularity_scan(
                         log_debug(f"Progress milestone - 75% completed for singles detection in album {album}")
                         singles_milestones_logged.add(75)
                 
-                # REOPEN CONNECTION: Single detection completed, need to reconnect for batch updates
-                # We closed the connection before single detection to prevent lock contention.
-                # Now we need to reopen it to perform batch updates of the singles detection results.
-                try:
-                    if conn is None:
-                        conn = get_db_connection()
-                        log_debug(f"Reopened connection after singles detection for batch updates")
-                    if cursor is not None and not cursor._closed:
-                        cursor.close()
-                    cursor = conn.cursor()
-                    log_debug(f"Reset cursor after single detection loop for batch updates")
-                except Exception as e:
-                    log_debug(f"Warning: Failed to reset cursor after singles: {e}")
-                    # Continue anyway, the connection will still work
-                
                 # Batch update all singles detection results for this album in one commit
                 if singles_updates:
                     # Update with conditional stars setting - only set stars if value is provided (detected singles)
@@ -6220,8 +6173,20 @@ def popularity_scan(
                                 WHERE id = {placeholder}""",
                                 (is_single, single_confidence, single_sources, track_id)
                             )
+                    if single_detection_timestamp_updates:
+                        cursor.executemany(
+                            f"UPDATE tracks SET single_detection_last_updated = {placeholder} WHERE id = {placeholder}",
+                            single_detection_timestamp_updates
+                        )
                     conn.commit()
                     log_debug(f"Batch committed {len(singles_updates)} singles detection results for album '{album}'")
+                elif single_detection_timestamp_updates:
+                    cursor.executemany(
+                        f"UPDATE tracks SET single_detection_last_updated = {placeholder} WHERE id = {placeholder}",
+                        single_detection_timestamp_updates
+                    )
+                    conn.commit()
+                    log_debug(f"Batch committed {len(single_detection_timestamp_updates)} single detection timestamp update(s) for album '{album}'")
                 
                 # COVER DETECTION: Detect and mark cover songs based on writer/lyricist uniqueness
                 if HAVE_COVER_DETECTOR and not singles_only:

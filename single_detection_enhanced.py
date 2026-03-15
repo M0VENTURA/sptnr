@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 # Cache artist stats to avoid recalculating for each track
 # This improves performance from O(n×m×k) to O(n) where k = tracks per artist
 _artist_stats_cache = {}
+_album_stats_cache = {}
 
 
 def get_cached_artist_stats(conn, artist: str) -> Tuple[float, float, int]:
@@ -52,9 +53,28 @@ def get_cached_artist_stats(conn, artist: str) -> Tuple[float, float, int]:
 
 
 def clear_artist_stats_cache():
-    """Clear the artist stats cache. Call between scan runs."""
-    global _artist_stats_cache
+    """Clear cached detection stats. Call between albums/scan runs."""
+    global _artist_stats_cache, _album_stats_cache
     _artist_stats_cache.clear()
+    _album_stats_cache.clear()
+
+
+def get_cached_album_stats(conn, artist: str, album: str) -> Tuple[float, float, float, int]:
+    """
+    Get album stats from cache, or calculate and cache if not present.
+
+    Args:
+        conn: Database connection
+        artist: Artist name
+        album: Album title
+
+    Returns:
+        Tuple of (mean, stddev, median, count)
+    """
+    cache_key = (artist, album)
+    if cache_key not in _album_stats_cache:
+        _album_stats_cache[cache_key] = calculate_album_stats(conn, artist, album)
+    return _album_stats_cache[cache_key]
 
 
 # ============================================================================
@@ -1537,7 +1557,7 @@ def detect_single_enhanced(
         artist_mean, artist_stddev, artist_track_count = 0.0, 0.0, 0
     
     # Get album statistics for album-level filtering (two-stage approach)
-    album_mean, album_stddev, album_median, album_track_count = calculate_album_stats(conn, artist, album)
+    album_mean, album_stddev, album_median, album_track_count = get_cached_album_stats(conn, artist, album)
     log_debug(f"[ALBUM_STATS] Mean: {album_mean:.1f}, Median: {album_median:.1f}, StdDev: {album_stddev:.1f}, Tracks: {album_track_count}")
     
     # VALIDATION: Check album stats integrity
