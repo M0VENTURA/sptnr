@@ -1088,5 +1088,101 @@ class DiscTrackFilenameMatchTests(unittest.TestCase):
                       "the per-file error handler")
 
 
+class MusicBrainzFileMatcherFreezeTests(unittest.TestCase):
+    """Tests that verify the container-freeze fix in musicbrainz_file_matcher.py."""
+
+    def _read_matcher(self):
+        return _read("musicbrainz_file_matcher.py")
+
+    def _read_finalizer(self):
+        return _read("musicbrainz_finalizer.py")
+
+    def test_check_and_trigger_uses_database_query(self):
+        """check_and_trigger_auto_ready_and_transfer must use DatabaseQuery, not raw
+        cursor, so that the correct placeholder (?/%s) is chosen for each backend."""
+        matcher_text = self._read_matcher()
+        self.assertIn(
+            "db_query = DatabaseQuery(conn)",
+            matcher_text,
+            "check_and_trigger_auto_ready_and_transfer must use DatabaseQuery for "
+            "portable SQLite/PostgreSQL placeholder handling",
+        )
+
+    def test_check_and_trigger_no_raw_percent_s_placeholder(self):
+        """check_and_trigger_auto_ready_and_transfer must not contain hardcoded %s
+        SQL placeholders; these crash on SQLite causing a connection leak."""
+        import re
+        matcher_text = self._read_matcher()
+        # Extract only the function body
+        start = matcher_text.find("def check_and_trigger_auto_ready_and_transfer")
+        # Find the next top-level def after the function
+        next_def = matcher_text.find("\n    def ", start + 1)
+        func_body = matcher_text[start:] if next_def == -1 else matcher_text[start:next_def]
+        # Should not contain %s used as SQL placeholder inside execute calls
+        self.assertNotIn(
+            'WHERE release_id = %s',
+            func_body,
+            "check_and_trigger_auto_ready_and_transfer must not use %s SQL placeholders "
+            "directly — use DatabaseQuery with ? instead",
+        )
+
+    def test_check_and_trigger_calls_finalize_release_not_organize_folder(self):
+        """check_and_trigger_auto_ready_and_transfer must call finalize_release(),
+        not the non-existent organize_folder_to_music() method."""
+        matcher_text = self._read_matcher()
+        start = matcher_text.find("def check_and_trigger_auto_ready_and_transfer")
+        next_def = matcher_text.find("\n    def ", start + 1)
+        func_body = matcher_text[start:] if next_def == -1 else matcher_text[start:next_def]
+        self.assertIn(
+            "finalize_release(",
+            func_body,
+            "check_and_trigger_auto_ready_and_transfer must call finalizer.finalize_release()",
+        )
+        self.assertNotIn(
+            "organize_folder_to_music(",
+            func_body,
+            "check_and_trigger_auto_ready_and_transfer must not call the non-existent "
+            "organize_folder_to_music() method on MusicBrainzFinalizer",
+        )
+
+    def test_check_and_trigger_closes_connection_in_finally(self):
+        """check_and_trigger_auto_ready_and_transfer must close the DB connection in a
+        finally block to prevent connection leaks on exception."""
+        matcher_text = self._read_matcher()
+        start = matcher_text.find("def check_and_trigger_auto_ready_and_transfer")
+        next_def = matcher_text.find("\n    def ", start + 1)
+        func_body = matcher_text[start:] if next_def == -1 else matcher_text[start:next_def]
+        self.assertIn(
+            "finally:",
+            func_body,
+            "check_and_trigger_auto_ready_and_transfer must have a finally block",
+        )
+        self.assertIn(
+            "conn.close()",
+            func_body,
+            "check_and_trigger_auto_ready_and_transfer must close conn in the finally block",
+        )
+
+    def test_finalizer_finalize_release_uses_placeholder_variable(self):
+        """finalize_release() must use the dynamic placeholder variable for the release
+        status UPDATE so the query works on both SQLite and PostgreSQL."""
+        finalizer_text = self._read_finalizer()
+        start = finalizer_text.find("def finalize_release(")
+        next_def = finalizer_text.find("\n    def ", start + 1)
+        func_body = finalizer_text[start:] if next_def == -1 else finalizer_text[start:next_def]
+        # The status update should use {placeholder}, not a hardcoded '?'
+        self.assertIn(
+            "WHERE id = {placeholder}",
+            func_body,
+            "finalize_release must use the dynamic {placeholder} in the status UPDATE "
+            "query so it works on both SQLite (?) and PostgreSQL (%s)",
+        )
+        self.assertNotIn(
+            "WHERE id = ?",
+            func_body,
+            "finalize_release must not use a hardcoded '?' in the status UPDATE query",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
