@@ -1216,6 +1216,14 @@ download_queue_cleanup_scheduler = {
 }
 download_queue_cleanup_scheduler_lock = threading.Lock()
 
+# Incremental Navidrome sync scheduler (checks for newly added files).
+navidrome_incremental_scheduler = {
+    "thread": None,
+    "running": False,
+    "stop_event": None,
+}
+navidrome_incremental_scheduler_lock = threading.Lock()
+
 # Optional auto-import toggle placeholder (will be set after config functions are defined)
 AUTO_BOOT_ND_IMPORT = None
 
@@ -1593,6 +1601,7 @@ def _start_boot_navidrome_import():
             
             _write_progress_file(progress_path, "navidrome_scan", False, {"status": "complete", "exit_code": 0, "source": "boot"})
             logging.info("[BOOT] Navidrome import-only scan completed")
+            _mark_navidrome_first_full_import_complete(scan_source="boot")
             _sync_new_navidrome_album_artists_fast(trigger_source="boot_post_import")
             _maybe_start_post_navidrome_mp3_import(trigger_source="boot_post_import")
         except Exception as e:
@@ -2074,7 +2083,12 @@ def _has_valid_local_track_paths_for_mp3_import(sample_size: int = 120):
     conn = None
     try:
         conn = get_db()
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        if _is_postgres_connection(conn):
+            cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            placeholder = "%s"
+        else:
+            cursor = conn.cursor()
+            placeholder = "?"
         placeholder = "%s" if _is_postgres_connection(conn) else "?"
 
         cursor.execute(
@@ -2176,6 +2190,222 @@ def _maybe_start_post_navidrome_mp3_import(trigger_source: str = "unknown"):
         logging.error(f"[NAV_SYNC:{trigger_source}] Unable to start post-sync MP3 import: {exc}", exc_info=True)
         log_unified(f"[NAV_SYNC:{trigger_source}] Unable to start post-sync MP3 import: {exc}")
         return {"success": False, "error": str(exc)}
+
+
+def _navidrome_first_full_import_marker_path() -> str:
+    return os.path.join(os.path.dirname(DB_PATH), "navidrome_first_full_import_done.json")
+
+
+def _mark_navidrome_first_full_import_complete(scan_source: str = "unknown"):
+    """Persist a marker after the first successful full Navidrome import."""
+    marker_path = _navidrome_first_full_import_marker_path()
+    if os.path.exists(marker_path):
+        return
+    try:
+        payload = {
+            "completed_at": datetime.utcnow().isoformat() + "Z",
+            "source": scan_source,
+        }
+        with open(marker_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        logging.info(f"[NAV_INCREMENTAL] First full Navidrome import marker created ({scan_source})")
+        log_unified("[NAV_INCREMENTAL] First full Navidrome import complete; 15-minute incremental checks enabled")
+    except Exception as exc:
+        logging.warning(f"[NAV_INCREMENTAL] Could not write first-import marker: {exc}")
+
+
+def _is_scan_currently_running(proc_ref) -> bool:
+    if proc_ref is None:
+        return False
+    try:
+        if isinstance(proc_ref, dict):
+            t = proc_ref.get("thread")
+            return bool(t and hasattr(t, "is_alive") and t.is_alive())
+        if hasattr(proc_ref, "is_alive"):
+            return bool(proc_ref.is_alive())
+        if hasattr(proc_ref, "poll"):
+            return proc_ref.poll() is None
+    except Exception:
+        return False
+    return False
+
+
+def _scan_new_navidrome_files_since_last_import(max_newest_albums: int = 80):
+    """Detect likely new files from newest Navidrome albums and import missing artists/tracks."""
+    from api_clients.navidrome import NavidromeClient
+
+    cfg = get_config() or {}
+    nav_users = cfg.get("navidrome_users", []) or []
+    if not nav_users:
+        nav_cfg = cfg.get("navidrome", {}) or {}
+        if nav_cfg.get("base_url"):
+            nav_users = [nav_cfg]
+
+    if not nav_users:
+        return {"success": False, "error": "No Navidrome configuration"}
+
+    conn = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        artists_to_rescan = {}
+        candidate_tracks = 0
+        missing_track_count = 0
+
+        for user_cfg in nav_users:
+            client = NavidromeClient(
+                base_url=user_cfg.get("base_url", ""),
+                username=user_cfg.get("user", ""),
+                password=user_cfg.get("pass", ""),
+            )
+
+            try:
+                url = f"{client.base_url}/rest/getAlbumList2.view"
+                params = client._build_params(type="newest", size=max_newest_albums)
+                response = client.session.get(url, params=params, timeout=20)
+                response.raise_for_status()
+                newest_albums = response.json().get("subsonic-response", {}).get("albumList2", {}).get("album", []) or []
+            except Exception as exc:
+                logging.warning(f"[NAV_INCREMENTAL] Failed newest-album fetch for {user_cfg.get('base_url', '')}: {exc}")
+                continue
+
+            for album in newest_albums:
+                album_id = album.get("id")
+                if not album_id:
+                    continue
+
+                album_data = client.fetch_album_tracks(album_id)
+                tracks = album_data.get("tracks", []) if isinstance(album_data, dict) else []
+                if not tracks:
+                    continue
+
+                artist_name = (album_data.get("artist") if isinstance(album_data, dict) else None) or album.get("artist") or ""
+                artist_id = (album_data.get("artistId") if isinstance(album_data, dict) else None) or album.get("artistId")
+
+                track_ids = [str(t.get("id")) for t in tracks if t.get("id")]
+                candidate_tracks += len(track_ids)
+                if not track_ids:
+                    continue
+
+                placeholders = ", ".join([placeholder] * len(track_ids))
+                cursor.execute(f"SELECT id FROM tracks WHERE id IN ({placeholders})", tuple(track_ids))
+                existing_ids = set()
+                for row in (cursor.fetchall() or []):
+                    if isinstance(row, dict):
+                        row_id = row.get("id")
+                    elif hasattr(row, "keys"):
+                        row_id = row["id"]
+                    else:
+                        row_id = row[0] if row else None
+                    if row_id:
+                        existing_ids.add(str(row_id))
+
+                missing_in_db = [tid for tid in track_ids if tid not in existing_ids]
+                if missing_in_db and artist_name and artist_id:
+                    missing_track_count += len(missing_in_db)
+                    artists_to_rescan[artist_name] = artist_id
+
+        if not artists_to_rescan:
+            return {
+                "success": True,
+                "rescanned_artists": 0,
+                "missing_tracks_detected": 0,
+                "candidate_tracks_checked": candidate_tracks,
+            }
+
+        for artist_name, artist_id in artists_to_rescan.items():
+            try:
+                scan_artist_to_db(artist_name, artist_id, verbose=False, force=False)
+            except Exception as exc:
+                logging.warning(f"[NAV_INCREMENTAL] Artist rescan failed for {artist_name}: {exc}")
+
+        return {
+            "success": True,
+            "rescanned_artists": len(artists_to_rescan),
+            "missing_tracks_detected": missing_track_count,
+            "candidate_tracks_checked": candidate_tracks,
+        }
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _start_navidrome_incremental_scheduler():
+    """Start 15-minute incremental Navidrome sync checks after first full import."""
+    global navidrome_incremental_scheduler
+
+    with navidrome_incremental_scheduler_lock:
+        existing_thread = navidrome_incremental_scheduler.get("thread")
+        if existing_thread and hasattr(existing_thread, "is_alive") and existing_thread.is_alive():
+            navidrome_incremental_scheduler["running"] = True
+            return
+
+        stop_event = threading.Event()
+        navidrome_incremental_scheduler["stop_event"] = stop_event
+
+        def scheduler_worker():
+            try:
+                time.sleep(20)
+                interval_seconds = 15 * 60
+
+                while not stop_event.is_set():
+                    marker_path = _navidrome_first_full_import_marker_path()
+                    if not os.path.exists(marker_path):
+                        try:
+                            progress_path = os.path.join(os.path.dirname(DB_PATH), "navidrome_scan_progress.json")
+                            if os.path.exists(progress_path):
+                                with open(progress_path, "r", encoding="utf-8") as pf:
+                                    state = json.load(pf)
+                                if state.get("status") == "complete" and int(state.get("exit_code", 0)) == 0:
+                                    _mark_navidrome_first_full_import_complete(scan_source="progress_file_detected")
+                        except Exception:
+                            pass
+
+                        if stop_event.wait(timeout=interval_seconds):
+                            break
+                        continue
+
+                    # Don't run incremental checks during active long scans.
+                    if _is_scan_currently_running(scan_process_navidrome) or _is_scan_currently_running(scan_process_combined):
+                        if stop_event.wait(timeout=120):
+                            break
+                        continue
+
+                    result = _scan_new_navidrome_files_since_last_import()
+                    if result.get("success"):
+                        if result.get("missing_tracks_detected", 0) > 0:
+                            log_unified(
+                                f"[NAV_INCREMENTAL] Imported missing tracks from new files: "
+                                f"tracks={result.get('missing_tracks_detected', 0)}, "
+                                f"artists={result.get('rescanned_artists', 0)}"
+                            )
+                        else:
+                            logging.info(
+                                "[NAV_INCREMENTAL] No new files detected (checked=%s)",
+                                result.get("candidate_tracks_checked", 0),
+                            )
+                    else:
+                        logging.warning(f"[NAV_INCREMENTAL] Incremental check failed: {result.get('error', 'unknown error')}")
+
+                    if stop_event.wait(timeout=interval_seconds):
+                        break
+            except Exception as worker_exc:
+                logging.error(f"[NAV_INCREMENTAL] Scheduler worker error: {worker_exc}")
+            finally:
+                with navidrome_incremental_scheduler_lock:
+                    navidrome_incremental_scheduler["running"] = False
+
+        thread = threading.Thread(target=scheduler_worker, daemon=True, name="navidrome-incremental-scheduler")
+        thread.start()
+        navidrome_incremental_scheduler["thread"] = thread
+        navidrome_incremental_scheduler["running"] = True
+        logging.info("[NAV_INCREMENTAL] Scheduler started (interval=15m, waits for first full import marker)")
 
 
 def _run_daily_missing_releases_scan():
@@ -2317,6 +2547,11 @@ if _is_startup_leader_worker:
             _start_boot_navidrome_import()
         except Exception as e:
             logging.error(f"Failed to start boot Navidrome import: {e}")
+
+    try:
+        _start_navidrome_incremental_scheduler()
+    except Exception as e:
+        logging.error(f"Failed to start Navidrome incremental scheduler: {e}")
 
     try:
         _start_daily_scheduler()
@@ -12793,6 +13028,7 @@ def scan_navidrome():
                     
                     _write_progress_with_current_artist(nav_progress_file, "navidrome_scan", False, {"status": "complete", "exit_code": 0})
                     logging.info("Navidrome import-only scan completed")
+                    _mark_navidrome_first_full_import_complete(scan_source="manual")
                     _sync_new_navidrome_album_artists_fast(trigger_source="manual_post_import")
                     _maybe_start_post_navidrome_mp3_import(trigger_source="manual_post_import")
                     _log_scan_session_complete("navidrome", total)
