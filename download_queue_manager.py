@@ -2850,6 +2850,10 @@ def auto_discover_and_queue_files():
             return [dict(zip(col_names, r)) for r in rows]
 
         def _find_library_track_id(artist_value, album_value, title_value, album_artist_value=None):
+            # psycopg2 treats bare '%' in a query string as a parameter
+            # placeholder; use '%%' so it becomes a literal '%' after
+            # parameter substitution.  SQLite does not apply this escaping.
+            like_pct = '%%' if is_pg else '%'
             cursor.execute(
                 f"""
                 SELECT id, file_path, album, album_artist
@@ -2857,7 +2861,7 @@ def auto_discover_and_queue_files():
                 WHERE LOWER(artist) = LOWER({placeholder})
                   AND LOWER(album) = LOWER({placeholder})
                   AND LOWER(title) = LOWER({placeholder})
-                  AND (file_path IS NULL OR file_path NOT LIKE E'\\_\\_queued\\_for\\_download\\_\\_%' ESCAPE '\\')
+                  AND (file_path IS NULL OR file_path NOT LIKE E'\\_\\_queued\\_for\\_download\\_\\_{like_pct}' ESCAPE '\\')
                 ORDER BY id DESC
                 LIMIT 10
                 """,
