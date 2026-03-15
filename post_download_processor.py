@@ -220,10 +220,19 @@ def fetch_musicbrainz_release_metadata(release_id):
                 recording = track.get('recording', {})
                 # MusicBrainz returns duration in milliseconds; store in ms for consistency
                 duration_ms = recording.get('length') or track.get('length')
+                # Use track-level title as the primary display title; it is
+                # release-specific and may include venue context for live albums
+                # (e.g. "Dig (live at Candlestick Park, San Francisco, CA - August 2003)").
+                # The recording title (canonical, usually shorter) is stored
+                # separately so the missing-track comparison can match it against
+                # the simpler titles typically stored in the library.
+                track_title = track.get('title') or recording.get('title', 'Unknown')
+                recording_title = recording.get('title', '')
                 track_info = {
                     'disc_number': disc_number,
                     'track_number': track.get('position', 0),
-                    'title': recording.get('title', 'Unknown'),
+                    'title': track_title,
+                    'recording_title': recording_title,
                     'artist': '',
                     'duration': int(duration_ms) if duration_ms is not None else None,
                     'recording_mbid': recording.get('id') or '',
