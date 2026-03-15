@@ -1743,92 +1743,127 @@ def check_completed_downloads():
                     )
                 update_queue_status(item_id, 'completed', file_path=file_path, found_filename=match_found)
 
-                # Immediately move the file to /music
-                try:
-                    from download_queue_manager import (
-                        move_single_track_to_music_dir,
-                        update_queue_item,
-                        verify_downloaded_file_metadata,
+                # Only auto-move items that were explicitly added via the MusicBrainz
+                # search UI.  Fuzzy-matched downloads without MusicBrainz backing must
+                # wait for the user to approve them in the Downloads UI.
+                if not _is_musicbrainz_backed(item):
+                    logger.info(
+                        f"[AUTO_MOVE] Queue {item_id}: not from MusicBrainz search — "
+                        f"leaving as completed for manual approval"
                     )
-                    from download_file_verification import verify_file_in_music, mark_queue_item_moved
-
-                    # ── Step 1: Extract duration from file and persist it ──────────
-                    # We do this before verification so the queue item's duration
-                    # is populated for the metadata check below.
-                    if not item.get('duration') and MutagenFile is not None:
-                        try:
-                            audio = MutagenFile(file_path)
-                            if audio is not None and audio.info and hasattr(audio.info, 'length'):
-                                file_duration = _normalize_duration_seconds(audio.info.length)
-                                if file_duration:
-                                    update_queue_item(item_id, duration=file_duration)
-                                    # Refresh item dict so the verification step sees the
-                                    # newly-stored duration.
-                                    item = dict(item)
-                                    item['duration'] = file_duration
-                                    logger.debug(
-                                        f"Queue {item_id}: updated duration from file to {file_duration}s"
-                                    )
-                        except Exception as dur_err:
-                            logger.debug(f"Queue {item_id}: could not extract duration from file: {dur_err}")
-
-                    # ── Step 2: Verify file metadata matches the queue item ────────
-                    # A mismatch is a warning, not a hard block — we still move the
-                    # file so it doesn't sit in /downloads forever, but we log the
-                    # discrepancy prominently so it can be investigated.
+                else:
+                    # Immediately move the file to /music
                     try:
-                        meta_check = verify_downloaded_file_metadata(file_path, item)
-                        if not meta_check['ok']:
-                            logger.warning(
-                                f"[AUTO_MOVE] Queue {item_id}: metadata verification "
-                                f"WARNING — {meta_check['reason']} "
-                                f"(detail={meta_check['detail']}) — proceeding with move"
-                            )
-                        else:
-                            logger.debug(
-                                f"[AUTO_MOVE] Queue {item_id}: metadata OK "
-                                f"(detail={meta_check['detail']})"
-                            )
-                    except Exception as verify_err:
-                        logger.debug(f"[AUTO_MOVE] Queue {item_id}: metadata check skipped: {verify_err}")
-
-                    # ── Step 3: Move file to /music, apply MusicBrainz tags ───────
-                    item_for_move = dict(item)
-                    item_for_move['file_path'] = file_path
-                    move_result = move_single_track_to_music_dir(item_for_move)
-                    if move_result['success']:
-                        target_path = move_result['target_path']
-
-                        # ── Step 4: Verify the file arrived at the destination ────
-                        verify_result = verify_file_in_music(item_id, target_path)
-                        if verify_result['success']:
-                            mark_queue_item_moved(item_id, target_path)
-                            update_queue_item(
-                                item_id,
-                                status='imported',
-                                file_path=target_path,
-                                copied_individually=1,
-                                copied_individually_at=datetime.now().isoformat()
-                            )
-                            logger.info(f"[AUTO_MOVE] Queue {item_id}: verified and imported to {target_path}")
-
-                            # ── Step 5: Remove siblings and trigger Navidrome ─────
-                            # _cleanup_sibling_downloads removes other downloads of
-                            # the same track that accumulated across retries.
-                            _cleanup_sibling_downloads(item, keep_path=None)
-                            _trigger_navidrome_scan()
-                        else:
-                            logger.warning(
-                                f"[AUTO_MOVE] Queue {item_id}: file verification failed after move to {target_path}, updating path"
-                            )
-                            update_queue_item(item_id, status='completed', file_path=target_path)
-                    else:
-                        logger.warning(
-                            f"[AUTO_MOVE] Queue {item_id}: move to music dir failed, keeping as completed"
+                        from download_queue_manager import (
+                            move_single_track_to_music_dir,
+                            update_queue_item,
+                            verify_downloaded_file_metadata,
                         )
-                except Exception as e:
-                    logger.error(f"[AUTO_MOVE] Queue {item_id}: error during auto-move: {e}")
-                    update_queue_item(item_id, status='completed', file_path=file_path)
+                        from download_file_verification import verify_file_in_music, mark_queue_item_moved
+
+                        # ── Step 1: Extract duration from file and persist it ──────────
+                        # We do this before verification so the queue item's duration
+                        # is populated for the metadata check below.
+                        if not item.get('duration') and MutagenFile is not None:
+                            try:
+                                audio = MutagenFile(file_path)
+                                if audio is not None and audio.info and hasattr(audio.info, 'length'):
+                                    file_duration = _normalize_duration_seconds(audio.info.length)
+                                    if file_duration:
+                                        update_queue_item(item_id, duration=file_duration)
+                                        # Refresh item dict so the verification step sees the
+                                        # newly-stored duration.
+                                        item = dict(item)
+                                        item['duration'] = file_duration
+                                        logger.debug(
+                                            f"Queue {item_id}: updated duration from file to {file_duration}s"
+                                        )
+                            except Exception as dur_err:
+                                logger.debug(f"Queue {item_id}: could not extract duration from file: {dur_err}")
+
+                        # ── Step 2: Verify file metadata matches the queue item ────────
+                        # A mismatch is a warning, not a hard block — we still move the
+                        # file so it doesn't sit in /downloads forever, but we log the
+                        # discrepancy prominently so it can be investigated.
+                        try:
+                            meta_check = verify_downloaded_file_metadata(file_path, item)
+                            if not meta_check['ok']:
+                                logger.warning(
+                                    f"[AUTO_MOVE] Queue {item_id}: metadata verification "
+                                    f"WARNING — {meta_check['reason']} "
+                                    f"(detail={meta_check['detail']}) — proceeding with move"
+                                )
+                            else:
+                                logger.debug(
+                                    f"[AUTO_MOVE] Queue {item_id}: metadata OK "
+                                    f"(detail={meta_check['detail']})"
+                                )
+                        except Exception as verify_err:
+                            logger.debug(f"[AUTO_MOVE] Queue {item_id}: metadata check skipped: {verify_err}")
+
+                        # ── Step 3: Write stored MusicBrainz metadata to file tags ────
+                        # Apply the metadata captured at queue-creation time (track
+                        # number, artist, album, year, etc.) to the file before it is
+                        # moved.  move_single_track_to_music_dir will further enrich
+                        # the tags (cover art, per-track artist from MB release) on top
+                        # of this baseline, but we guarantee the stored metadata is
+                        # written even if the live MB fetch below fails.
+                        try:
+                            from post_download_processor import update_file_metadata_with_albumart
+                            stored_metadata = {
+                                'title': item.get('title'),
+                                'artist': item.get('artist'),
+                                'album_artist': item.get('album_artist') or item.get('artist'),
+                                'album': item.get('album'),
+                                'year': item.get('year'),
+                                'track_number': item.get('track_number'),
+                            }
+                            update_file_metadata_with_albumart(file_path, stored_metadata)
+                            logger.info(
+                                f"[AUTO_MOVE] Queue {item_id}: applied stored MusicBrainz metadata to file"
+                            )
+                        except Exception as meta_err:
+                            logger.warning(
+                                f"[AUTO_MOVE] Queue {item_id}: could not apply stored metadata before move: {meta_err}"
+                            )
+
+                        # ── Step 4: Move file to /music, enrich tags via live MB API ──
+                        item_for_move = dict(item)
+                        item_for_move['file_path'] = file_path
+                        move_result = move_single_track_to_music_dir(item_for_move)
+                        if move_result['success']:
+                            target_path = move_result['target_path']
+
+                            # ── Step 5: Verify the file arrived at the destination ────
+                            verify_result = verify_file_in_music(item_id, target_path)
+                            if verify_result['success']:
+                                mark_queue_item_moved(item_id, target_path)
+                                update_queue_item(
+                                    item_id,
+                                    status='imported',
+                                    file_path=target_path,
+                                    copied_individually=1,
+                                    copied_individually_at=datetime.now().isoformat()
+                                )
+                                logger.info(f"[AUTO_MOVE] Queue {item_id}: verified and imported to {target_path}")
+
+                                # ── Step 6: Remove siblings and trigger Navidrome ─────
+                                # _cleanup_sibling_downloads removes other downloads of
+                                # the same track that accumulated across retries.
+                                _cleanup_sibling_downloads(item, keep_path=None)
+                                _trigger_navidrome_scan()
+                            else:
+                                logger.warning(
+                                    f"[AUTO_MOVE] Queue {item_id}: file verification failed after move to {target_path}, updating path"
+                                )
+                                update_queue_item(item_id, status='completed', file_path=target_path)
+                        else:
+                            logger.warning(
+                                f"[AUTO_MOVE] Queue {item_id}: move to music dir failed, keeping as completed"
+                            )
+                    except Exception as e:
+                        logger.error(f"[AUTO_MOVE] Queue {item_id}: error during auto-move: {e}")
+                        update_queue_item(item_id, status='completed', file_path=file_path)
 
         conn.close()
     except Exception as e:

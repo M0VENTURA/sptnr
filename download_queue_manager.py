@@ -1396,6 +1396,22 @@ def _sanitize_path_component(value):
     return value.strip('. ')
 
 
+def _is_musicbrainz_backed(queue_item):
+    """Return True when a queue item was explicitly tied to a MusicBrainz release.
+
+    Only items with MusicBrainz identifiers (or release_source='musicbrainz') are
+    eligible for automatic file moves.  Fuzzy-matched items that have no MusicBrainz
+    anchor must be approved manually in the Downloads UI.
+    """
+    return bool(
+        queue_item.get('release_id')
+        or queue_item.get('release_mbid')
+        or queue_item.get('recording_mbid')
+        or queue_item.get('isrc')
+        or str(queue_item.get('release_source') or '').strip().lower() == 'musicbrainz'
+    )
+
+
 def _build_release_import_group(artist, album):
     """Create a stable import_group key for discovered release grouping."""
     safe_artist = _sanitize_path_component((artist or 'Unknown Artist').strip())
@@ -2538,63 +2554,12 @@ def check_downloads_folder():
                 )
 
                 if updated_item:
-                    # Immediately move the file to /music
-                    item_for_move = dict(queue_item)
-                    item_for_move['file_path'] = match_path
-                    move_result = move_single_track_to_music_dir(item_for_move)
-                    if move_result['success']:
-                        target_path = move_result['target_path']
-                        
-                        # Verify file exists at new location before marking as imported
-                        verify_result = verify_file_in_music(queue_item['id'], target_path)
-                        
-                        if verify_result['success']:
-                            # File verified - mark as moved and imported
-                            mark_queue_item_moved(queue_item['id'], target_path)
-                            update_queue_item(
-                                queue_item['id'],
-                                status='imported',
-                                file_path=target_path,
-                                copied_individually=1,
-                                copied_individually_at=datetime.now().isoformat()
-                            )
-                            logger.info(
-                                f"[MOVE] Queue {queue_item['id']}: verified and imported to {target_path}"
-                            )
-                            completed_items.append({
-                                'queue_id': queue_item['id'],
-                                'filename': match_found,
-                                'file_path': target_path,
-                                'artist': queue_item['artist'],
-                                'title': queue_item['title'],
-                                'album': queue_item['album'],
-                                'moved': True
-                            })
-                        else:
-                            # Verification failed - update path to target location since file was moved
-                            logger.warning(
-                                f"[MOVE] Queue {queue_item['id']}: verification FAILED ({verify_result.get('error')}), "
-                                f"updating path to moved location"
-                            )
-                            update_queue_item(
-                                queue_item['id'],
-                                status='completed',
-                                file_path=target_path  # File was moved to target_path
-                            )
-                            completed_items.append({
-                                'queue_id': queue_item['id'],
-                                'filename': match_found,
-                                'file_path': target_path,
-                                'artist': queue_item['artist'],
-                                'title': queue_item['title'],
-                                'album': queue_item['album'],
-                                'moved': False,
-                                'verification_failed': True
-                            })
-                    else:
-                        logger.warning(
-                            f"[MOVE] Queue {queue_item['id']}: could not move file "
-                            f"({move_result.get('error')}), keeping as 'completed'"
+                    # Only auto-move items that were explicitly added via the
+                    # MusicBrainz search UI.  Others wait for manual approval.
+                    if not _is_musicbrainz_backed(queue_item):
+                        logger.info(
+                            f"[MOVE] Queue {queue_item['id']}: not from MusicBrainz search — "
+                            f"leaving as completed for manual approval"
                         )
                         completed_items.append({
                             'queue_id': queue_item['id'],
@@ -2605,6 +2570,93 @@ def check_downloads_folder():
                             'album': queue_item['album'],
                             'moved': False
                         })
+                    else:
+                        # Immediately move the file to /music
+                        item_for_move = dict(queue_item)
+                        item_for_move['file_path'] = match_path
+                        # Apply the stored MusicBrainz metadata to the file before moving.
+                        try:
+                            from post_download_processor import update_file_metadata_with_albumart
+                            stored_metadata = {
+                                'title': queue_item.get('title'),
+                                'artist': queue_item.get('artist'),
+                                'album_artist': queue_item.get('album_artist') or queue_item.get('artist'),
+                                'album': queue_item.get('album'),
+                                'year': queue_item.get('year'),
+                                'track_number': queue_item.get('track_number'),
+                            }
+                            update_file_metadata_with_albumart(match_path, stored_metadata)
+                            logger.info(
+                                f"[MOVE] Queue {queue_item['id']}: applied stored MusicBrainz metadata to file"
+                            )
+                        except Exception as meta_err:
+                            logger.warning(
+                                f"[MOVE] Queue {queue_item['id']}: could not apply stored metadata before move: {meta_err}"
+                            )
+                        move_result = move_single_track_to_music_dir(item_for_move)
+                        if move_result['success']:
+                            target_path = move_result['target_path']
+                            
+                            # Verify file exists at new location before marking as imported
+                            verify_result = verify_file_in_music(queue_item['id'], target_path)
+                            
+                            if verify_result['success']:
+                                # File verified - mark as moved and imported
+                                mark_queue_item_moved(queue_item['id'], target_path)
+                                update_queue_item(
+                                    queue_item['id'],
+                                    status='imported',
+                                    file_path=target_path,
+                                    copied_individually=1,
+                                    copied_individually_at=datetime.now().isoformat()
+                                )
+                                logger.info(
+                                    f"[MOVE] Queue {queue_item['id']}: verified and imported to {target_path}"
+                                )
+                                completed_items.append({
+                                    'queue_id': queue_item['id'],
+                                    'filename': match_found,
+                                    'file_path': target_path,
+                                    'artist': queue_item['artist'],
+                                    'title': queue_item['title'],
+                                    'album': queue_item['album'],
+                                    'moved': True
+                                })
+                            else:
+                                # Verification failed - update path to target location since file was moved
+                                logger.warning(
+                                    f"[MOVE] Queue {queue_item['id']}: verification FAILED ({verify_result.get('error')}), "
+                                    f"updating path to moved location"
+                                )
+                                update_queue_item(
+                                    queue_item['id'],
+                                    status='completed',
+                                    file_path=target_path  # File was moved to target_path
+                                )
+                                completed_items.append({
+                                    'queue_id': queue_item['id'],
+                                    'filename': match_found,
+                                    'file_path': target_path,
+                                    'artist': queue_item['artist'],
+                                    'title': queue_item['title'],
+                                    'album': queue_item['album'],
+                                    'moved': False,
+                                    'verification_failed': True
+                                })
+                        else:
+                            logger.warning(
+                                f"[MOVE] Queue {queue_item['id']}: could not move file "
+                                f"({move_result.get('error')}), keeping as 'completed'"
+                            )
+                            completed_items.append({
+                                'queue_id': queue_item['id'],
+                                'filename': match_found,
+                                'file_path': match_path,
+                                'artist': queue_item['artist'],
+                                'title': queue_item['title'],
+                                'album': queue_item['album'],
+                                'moved': False
+                            })
                 else:
                     logger.debug(f"Could not update queue item {queue_item['id']} - item may have been processed already")
             else:
@@ -3119,7 +3171,8 @@ def auto_discover_and_queue_files():
                     'album': album,
                 }
                 cursor.execute(f"""
-                    SELECT id, artist, title, album, album_artist, year, track_number, disc_number
+                    SELECT id, artist, title, album, album_artist, year, track_number, disc_number,
+                           release_id, release_mbid, recording_mbid, release_source
                     FROM download_queue
                     WHERE status IN ('queued', 'searching', 'downloading')
                 """)
@@ -3133,7 +3186,8 @@ def auto_discover_and_queue_files():
                         break
 
                 if matched_pending:
-                    # File belongs to an existing queue item - update it and move to /music
+                    # File belongs to an existing queue item - update it and
+                    # move to /music if the item is MusicBrainz-backed.
                     item_for_move = dict(matched_pending)
                     item_for_move['file_path'] = full_path
                     # Enrich with discovered file's metadata where queue item is sparse
@@ -3150,24 +3204,51 @@ def auto_discover_and_queue_files():
                         imported_at=datetime.now().isoformat()
                     )
                     if updated:
-                        move_result = move_single_track_to_music_dir(item_for_move)
-                        if move_result['success']:
-                            update_queue_item(
-                                matched_pending['id'],
-                                status='imported',
-                                file_path=move_result['target_path'],
-                                copied_individually=1,
-                                copied_individually_at=datetime.now().isoformat()
-                            )
+                        # Only auto-move items that were explicitly added via the
+                        # MusicBrainz search UI.  Others wait for manual approval.
+                        if not _is_musicbrainz_backed(matched_pending):
                             logger.info(
-                                f"[AUTO-DISCOVER] Matched & moved: {artist} - {title} "
-                                f"→ {move_result['target_path']}"
+                                f"[AUTO-DISCOVER] Queue {matched_pending['id']}: not from MusicBrainz search — "
+                                f"leaving as completed for manual approval"
                             )
                         else:
-                            logger.warning(
-                                f"[AUTO-DISCOVER] Matched but could not move {filename}: "
-                                f"{move_result.get('error')}"
-                            )
+                            # Apply the stored MusicBrainz metadata to the file before moving.
+                            try:
+                                from post_download_processor import update_file_metadata_with_albumart
+                                stored_metadata = {
+                                    'title': item_for_move.get('title'),
+                                    'artist': item_for_move.get('artist'),
+                                    'album_artist': item_for_move.get('album_artist') or item_for_move.get('artist'),
+                                    'album': item_for_move.get('album'),
+                                    'year': item_for_move.get('year'),
+                                    'track_number': item_for_move.get('track_number'),
+                                }
+                                update_file_metadata_with_albumart(full_path, stored_metadata)
+                                logger.info(
+                                    f"[AUTO-DISCOVER] Queue {matched_pending['id']}: applied stored MusicBrainz metadata to file"
+                                )
+                            except Exception as meta_err:
+                                logger.warning(
+                                    f"[AUTO-DISCOVER] Queue {matched_pending['id']}: could not apply stored metadata before move: {meta_err}"
+                                )
+                            move_result = move_single_track_to_music_dir(item_for_move)
+                            if move_result['success']:
+                                update_queue_item(
+                                    matched_pending['id'],
+                                    status='imported',
+                                    file_path=move_result['target_path'],
+                                    copied_individually=1,
+                                    copied_individually_at=datetime.now().isoformat()
+                                )
+                                logger.info(
+                                    f"[AUTO-DISCOVER] Matched & moved: {artist} - {title} "
+                                    f"→ {move_result['target_path']}"
+                                )
+                            else:
+                                logger.warning(
+                                    f"[AUTO-DISCOVER] Matched but could not move {filename}: "
+                                    f"{move_result.get('error')}"
+                                )
                     stats['queued'] += 1
                     continue
 
