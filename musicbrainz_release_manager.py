@@ -27,6 +27,20 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 DOWNLOADS_MUSIC_DIR = "/downloads/Music"
+
+
+def _build_artist_credit_string(artist_credit):
+    """Build a display string from a MusicBrainz artist-credit array."""
+    result = ''
+    for credit in artist_credit:
+        if isinstance(credit, dict):
+            result += credit.get('name', '')
+            result += credit.get('joinphrase', '')
+        else:
+            result += str(credit)
+    return result.strip()
+
+
 MUSIC_LIBRARY_DIR = "/music"
 MB_API_URL = "https://musicbrainz.org/ws/2"
 DB_FILE = "sptnr.db"
@@ -251,7 +265,7 @@ class MusicBrainzReleaseManager:
             url = f"{MB_API_URL}/release/{release_id}"
             params = {
                 "fmt": "json",
-                "inc": "recordings"
+                "inc": "recordings+artist-credits"
             }
             
             response = requests.get(url, headers=headers, params=params, timeout=10)
@@ -420,7 +434,13 @@ class MusicBrainzReleaseManager:
                         
                         track_number = track.get('number', track_count)
                         track_title = recording.get('title', 'Unknown Track')
-                        track_artist = artist  # Use main artist for search
+                        # Use per-track artist from recording's artist-credit when available;
+                        # fall back to the album artist for non-VA releases.
+                        rec_credits = recording.get('artist-credit') or track.get('artist-credit') or []
+                        if rec_credits:
+                            track_artist = _build_artist_credit_string(rec_credits) or artist
+                        else:
+                            track_artist = artist
                         duration = recording.get('length', 0) // 1000 if recording.get('length') else 0  # Convert ms to seconds
                         isrc = None
                         
