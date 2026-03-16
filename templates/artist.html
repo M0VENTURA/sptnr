@@ -3693,7 +3693,22 @@ async function loadArtistCoveredBy(artistName) {
 
   try {
     const resp = await fetch('/api/artist/covered-by?artist=' + encodeURIComponent(artistName));
-    const data = await resp.json();
+    const raw = await resp.text();
+    let data = {};
+
+    try {
+      data = raw ? JSON.parse(raw) : {};
+    } catch (_) {
+      const contentType = (resp.headers.get('content-type') || '').toLowerCase();
+      if (contentType.includes('text/html') || raw.trim().startsWith('<!DOCTYPE') || raw.trim().startsWith('<html')) {
+        throw new Error(`Server returned HTML instead of JSON (HTTP ${resp.status})`);
+      }
+      throw new Error(`Server returned non-JSON response (HTTP ${resp.status})`);
+    }
+
+    if (!resp.ok) {
+      throw new Error(data.error || `HTTP ${resp.status}: ${resp.statusText}`);
+    }
 
     const covers = data.covers || [];
 
