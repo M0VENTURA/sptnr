@@ -172,6 +172,9 @@ features:
   # Strict Spotify matching - only include exact matches
   strict_spotify_matching: true  # When enabled, only include exact title matches with ±2s duration and ISRC validation
   spotify_duration_tolerance: 2  # Maximum duration difference in seconds (default: 2)
+  downloads_duplicate_cleanup:
+    delete_duplicate_files: true
+    prune_empty_folders: true
 
 single_detection:
   zscore_medium_threshold: 0.6

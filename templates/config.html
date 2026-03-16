@@ -226,6 +226,20 @@
           <input type="text" class="form-control" id="downloads_file_name_format" placeholder="{album_artist}/{year} - {album}/{track_number}. {artist} - {title}" value="{{ config.get('downloads', {}).get('file_name_format', '{album_artist}/{year} - {album}/{track_number}. {artist} - {title}') }}">
           <div class="form-text">Used when organizing queue items into your music library under MUSIC_ROOT (for example /music). This format is a relative path. Available placeholders: {track_number}, {artist}, {album_artist}, {title}, {album}, {year}</div>
         </div>
+        <div class="col-12 col-md-6">
+          <div class="form-check form-switch mb-2">
+            <input class="form-check-input" type="checkbox" id="downloads_delete_duplicate_files" {% if config.get('features', {}).get('downloads_duplicate_cleanup', {}).get('delete_duplicate_files', True) %}checked{% endif %}>
+            <label class="form-check-label" for="downloads_delete_duplicate_files"><strong>Auto-delete Duplicate Files in Downloads</strong></label>
+            <small class="d-block text-muted">When enabled, duplicate/false-match files are deleted from the configured Downloads folder only, never from your music library.</small>
+          </div>
+        </div>
+        <div class="col-12 col-md-6">
+          <div class="form-check form-switch mb-2">
+            <input class="form-check-input" type="checkbox" id="downloads_prune_empty_folders" {% if config.get('features', {}).get('downloads_duplicate_cleanup', {}).get('prune_empty_folders', True) %}checked{% endif %}>
+            <label class="form-check-label" for="downloads_prune_empty_folders"><strong>Prune Empty Downloads Folders During Scan</strong></label>
+            <small class="d-block text-muted">Removes empty folders left behind after duplicate cleanup in Downloads.</small>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -954,6 +968,10 @@ function buildConfigObject() {
       download_queue_cleanup_scheduler: {
         enabled: getChecked('queue_cleanup_scheduler_enabled', true),
         interval_minutes: parseInt(getValue('queue_cleanup_scheduler_interval_minutes', '60')) || 60
+      },
+      downloads_duplicate_cleanup: {
+        delete_duplicate_files: getChecked('downloads_delete_duplicate_files', true),
+        prune_empty_folders: getChecked('downloads_prune_empty_folders', true)
       },
       mature_track_min_age_years: parseInt(getValue('mature_track_min_age_years', '2')) || 2,
       source_discogs_confidence: getValue('source_discogs_confidence', 'high'),

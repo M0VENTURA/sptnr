@@ -4747,7 +4747,7 @@ def artist_detail(name):
                     MAX(last_scanned) as last_updated,
                     MIN(year) as album_year,
                     MAX(spotify_album_type) as album_type,
-                    MAX(album_artist) as album_artist,
+                    MAX(COALESCE(NULLIF(album_artist, ''), artist)) as album_artist,
                     MAX(musicbrainz_album_mbid) as musicbrainz_album_mbid,
                     MAX(discogs_release_id) as discogs_release_id
                 FROM tracks
@@ -4765,7 +4765,7 @@ def artist_detail(name):
                     MAX(last_scanned) as last_updated,
                     MIN(year) as album_year,
                     MAX(spotify_album_type) as album_type,
-                    MAX(album_artist) as album_artist,
+                    MAX(COALESCE(NULLIF(album_artist, ''), artist)) as album_artist,
                     MAX(musicbrainz_album_mbid) as musicbrainz_album_mbid,
                     MAX(discogs_release_id) as discogs_release_id
                 FROM tracks
@@ -5053,7 +5053,7 @@ def artist_detail(name):
                     MAX(last_scanned) as last_updated,
                     MIN(year) as album_year,
                     MAX(spotify_album_type) as album_type,
-                    MAX(album_artist) as album_artist,
+                    MAX(COALESCE(NULLIF(album_artist, ''), artist)) as album_artist,
                     MAX(is_compilation) as is_compilation
                 FROM tracks
                 WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
@@ -5070,7 +5070,7 @@ def artist_detail(name):
                     MAX(last_scanned) as last_updated,
                     MIN(year) as album_year,
                     MAX(spotify_album_type) as album_type,
-                    MAX(album_artist) as album_artist,
+                    MAX(COALESCE(NULLIF(album_artist, ''), artist)) as album_artist,
                     MAX(is_compilation) as is_compilation
                 FROM tracks
                 WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
@@ -5145,15 +5145,29 @@ def artist_detail(name):
         except Exception as e:
             logging.debug(f"Error fetching band members for artist page: {e}")
 
-        # Convert all Row objects to dicts BEFORE closing connection
+        # Convert all Row objects to dicts while connection is still open.
         # This is critical because Row objects become invalid after connection closes
         albums_data_dicts = [dict(album) for album in albums_data]
         missing_releases_dicts = [dict(release) for release in missing_releases_data]
         appears_on_dicts = [dict(album) for album in appears_on_albums]
         top_tracks_dicts = [dict(track) for track in top_tracks]
         potential_albums_dicts = [dict(album) for album in potential_albums]
-        
-        conn.close()
+
+        album_download_counts = {}
+        try:
+            cursor.execute(f"""
+                SELECT LOWER(COALESCE(album, '')) AS album_key,
+                       COUNT(*) AS downloading_count
+                FROM download_queue
+                WHERE LOWER(COALESCE(artist, '')) = LOWER({placeholder})
+                  AND status IN ('queued', 'searching', 'downloading')
+                GROUP BY LOWER(COALESCE(album, ''))
+            """, (name,))
+            for row in cursor.fetchall():
+                row_dict = dict(row)
+                album_download_counts[row_dict.get('album_key', '')] = int(row_dict.get('downloading_count', 0) or 0)
+        except Exception as e:
+            logging.debug(f"Could not preload album download status for {name}: {e}")
         
         # Convert Row to dict for template access with defaults
         if artist_stats:
@@ -5194,31 +5208,10 @@ def artist_detail(name):
             album_dict['is_missing'] = False  # Mark as discovered
             album_name = album_dict.get("album", "")
             
-            # Check download queue status for this album
-            try:
-                queue_conn = get_db()
-                queue_cursor = queue_conn.cursor()
-                queue_placeholder = "%s" if is_pg else "?"
-                
-                queue_cursor.execute(f"""
-                    SELECT COUNT(*) as cnt, status 
-                    FROM download_queue 
-                    WHERE LOWER(artist) = LOWER({queue_placeholder}) 
-                    AND LOWER(album) = LOWER({queue_placeholder})
-                    AND status IN ('queued', 'searching', 'downloading')
-                    GROUP BY status
-                """, (name, album_name))
-                
-                queue_results = queue_cursor.fetchall()
-                queue_conn.close()
-                
-                total_downloading = sum(row['cnt'] for row in queue_results)
-                album_dict['is_downloading'] = total_downloading > 0
-                album_dict['downloading_count'] = total_downloading
-            except Exception as e:
-                logging.debug(f"Could not check download status for {album_name}: {e}")
-                album_dict['is_downloading'] = False
-                album_dict['downloading_count'] = 0
+            album_key = str(album_name or '').lower()
+            total_downloading = int(album_download_counts.get(album_key, 0) or 0)
+            album_dict['is_downloading'] = total_downloading > 0
+            album_dict['downloading_count'] = total_downloading
             
             album_type = (album_dict.get("album_type") or "").lower()
             track_count = album_dict.get("track_count", 0)
@@ -5483,6 +5476,8 @@ def artist_detail(name):
                     similar_artists_data["listenbrainz"] = _annotate_in_collection(similar_listenbrainz, in_collection)
         except Exception as e:
             logging.debug(f"Error loading similar artists for artist page: {e}")
+
+        conn.close()
         
         # Get qBittorrent and slskd configs
         cfg = get_config()
@@ -11868,6 +11863,7 @@ def config_editor():
     # Ensure nested structures used by config.html are also dicts.
     config['features']['retry_scheduler'] = _as_dict(config['features'].get('retry_scheduler'))
     config['features']['download_queue_cleanup_scheduler'] = _as_dict(config['features'].get('download_queue_cleanup_scheduler'))
+    config['features']['downloads_duplicate_cleanup'] = _as_dict(config['features'].get('downloads_duplicate_cleanup'))
 
     # Keep navidrome_users predictable for setup checks and template iteration.
     config['navidrome_users'] = _as_list_of_dicts(config.get('navidrome_users'))
@@ -16580,20 +16576,23 @@ def api_album_art(artist, album):
         artist = unquote(artist)
         album = unquote(album)
         
-        log_info(f"Album art request: {artist} - {album}")
+        log_debug(f"Album art request: {artist} - {album}")
         
-        # 0. First, check local album_art table for stored images
+        # 0. First, check local album_art table for stored images.
         try:
             conn = get_db()
             cursor = conn.cursor()
             placeholder = get_placeholder(conn)
             cursor.execute(f"""
-                SELECT image_data, image_mime_type FROM album_art 
-                WHERE artist_name = {placeholder} AND album_name = {placeholder}
+                SELECT image_data, image_mime_type
+                FROM album_art
+                WHERE LOWER(COALESCE(artist_name, '')) = LOWER({placeholder})
+                  AND LOWER(COALESCE(album_name, '')) = LOWER({placeholder})
+                LIMIT 1
             """, (artist, album))
             result = cursor.fetchone()
             conn.close()
-            
+
             if result and result[0]:
                 image_data = result[0]
                 mime_type = result[1] or 'image/jpeg'
@@ -16604,61 +16603,60 @@ def api_album_art(artist, album):
                 )
         except Exception as e:
             log_debug(f"Error fetching local album art: {e}")
-        
-        # 1. Check if we have cover_art_url or spotify_album_art_url in database
-        cover_art_url = None  # Initialize to ensure it's always defined
+
+        # 1. Check if we have cover_art_url or spotify_album_art_url in tracks.
+        cover_art_url = None
         try:
             conn = get_db()
             cursor = conn.cursor()
             placeholder = get_placeholder(conn)
-            
-            # Try multiple strategies to find the album
-            # Strategy 1: Try matching by album_artist first
+
+            # Strategy 1: Match by effective album artist.
             try:
                 cursor.execute(f"""
-                    SELECT cover_art_url, spotify_album_art_url FROM tracks 
-                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder} 
+                    SELECT cover_art_url, spotify_album_art_url
+                    FROM tracks
+                    WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER({placeholder})
+                      AND LOWER(COALESCE(album, '')) = LOWER({placeholder})
                     LIMIT 1
                 """, (artist, album))
                 result = cursor.fetchone()
                 if result:
-                    # Prefer cover_art_url, fall back to spotify_album_art_url
                     cover_art_url = result[0] if result[0] else result[1]
-            except:
+            except Exception:
                 pass
-            
-            # Strategy 2: If not found, try matching by artist alone (for backwards compat)
+
+            # Strategy 2: Backward compatibility for old artist links.
             if not cover_art_url:
                 try:
                     cursor.execute(f"""
-                        SELECT cover_art_url, spotify_album_art_url FROM tracks 
-                        WHERE artist = {placeholder} AND album = {placeholder} 
+                        SELECT cover_art_url, spotify_album_art_url
+                        FROM tracks
+                        WHERE LOWER(COALESCE(artist, '')) = LOWER({placeholder})
+                          AND LOWER(COALESCE(album, '')) = LOWER({placeholder})
                         LIMIT 1
                     """, (artist, album))
                     result = cursor.fetchone()
                     if result:
                         cover_art_url = result[0] if result[0] else result[1]
-                except:
+                except Exception:
                     pass
-            
+
             conn.close()
-            
+
             if cover_art_url:
                 try:
                     log_debug(f"Attempting to fetch from database URL: {cover_art_url[:50]}...")
                     resp = requests.get(cover_art_url, timeout=5)
                     if resp.status_code == 200:
-                        # Save to database for future access
                         _save_album_art_to_db(artist, album, resp.content, source="musicbrainz")
                         return send_file(
                             io.BytesIO(resp.content),
                             mimetype='image/jpeg'
                         )
-                    else:
-                        log_debug(f"Database URL returned {resp.status_code}")
+                    log_debug(f"Database URL returned {resp.status_code}")
                 except Exception as e:
                     log_debug(f"Failed to fetch cover_art_url from database: {e}")
-                    pass  # Fall through to other methods
         except Exception as e:
             log_debug(f"Error checking database for album art: {e}")
         

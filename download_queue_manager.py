@@ -235,6 +235,28 @@ def resolve_downloads_dir():
     return "/downloads/Music"
 
 
+def get_downloads_duplicate_cleanup_settings():
+    """Read duplicate cleanup behavior from config with safe defaults."""
+    settings = {
+        "delete_duplicate_files": True,
+        "prune_empty_folders": True,
+    }
+    config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+    try:
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            features = cfg.get("features") if isinstance(cfg.get("features"), dict) else {}
+            cleanup_cfg = features.get("downloads_duplicate_cleanup") if isinstance(features.get("downloads_duplicate_cleanup"), dict) else {}
+            if "delete_duplicate_files" in cleanup_cfg:
+                settings["delete_duplicate_files"] = bool(cleanup_cfg.get("delete_duplicate_files"))
+            if "prune_empty_folders" in cleanup_cfg:
+                settings["prune_empty_folders"] = bool(cleanup_cfg.get("prune_empty_folders"))
+    except Exception as e:
+        logger.debug(f"Could not read downloads duplicate cleanup settings: {e}")
+    return settings
+
+
 def resolve_music_dir():
     """Resolve music library root from config/env with robust fallback."""
     config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
@@ -2688,8 +2710,10 @@ def check_downloads_folder():
             logger.warning(f"Downloads folder not found: {downloads_dir}")
             return []
 
-        # Keep /downloads tidy each scan pass.
-        _prune_empty_download_folders(downloads_dir)
+        cleanup_settings = get_downloads_duplicate_cleanup_settings()
+        if cleanup_settings.get("prune_empty_folders", True):
+            # Keep /downloads tidy each scan pass.
+            _prune_empty_download_folders(downloads_dir)
         
         completed_items = []
         conn = get_db()
@@ -3223,8 +3247,11 @@ def auto_discover_and_queue_files():
             update_scan_progress(scanning=False)
             return stats
 
+        cleanup_settings = get_downloads_duplicate_cleanup_settings()
+
         # Remove leftover empty folders before scanning files.
-        stats['empty_folders_deleted'] += _prune_empty_download_folders(downloads_dir)
+        if cleanup_settings.get("prune_empty_folders", True):
+            stats['empty_folders_deleted'] += _prune_empty_download_folders(downloads_dir)
         
         # Clean up queue items for files that no longer exist
         cleanup_stats = cleanup_missing_files()
@@ -3673,11 +3700,13 @@ def auto_discover_and_queue_files():
 
                 if duplicate_existing:
                     existing_id = _row_get(duplicate_existing, 'id', 0, None)
-                    deleted_file = _safe_delete_downloads_file(
-                        full_path,
-                        downloads_dir,
-                        reason="auto_discover duplicate entry",
-                    )
+                    deleted_file = False
+                    if cleanup_settings.get("delete_duplicate_files", True):
+                        deleted_file = _safe_delete_downloads_file(
+                            full_path,
+                            downloads_dir,
+                            reason="auto_discover duplicate entry",
+                        )
                     if deleted_file:
                         stats['duplicate_files_deleted'] += 1
 
@@ -3895,7 +3924,8 @@ def auto_discover_and_queue_files():
                            f"{album_stats['duplicates_found']} marked as duplicates")
 
         # Final empty-folder pruning after duplicate cleanup/deletes.
-        stats['empty_folders_deleted'] += _prune_empty_download_folders(downloads_dir)
+        if cleanup_settings.get("prune_empty_folders", True):
+            stats['empty_folders_deleted'] += _prune_empty_download_folders(downloads_dir)
         
         return stats
         
@@ -5302,6 +5332,7 @@ def process_complete_albums():
         'exact_matches': 0,
         'errors': []
     }
+    cleanup_settings = get_downloads_duplicate_cleanup_settings()
 
     try:
         conn = get_db()
@@ -5344,12 +5375,13 @@ def process_complete_albums():
                     downloads_root = get_downloads_dir()
                     for track in completion['tracks']:
                         file_path = track.get('file_path')
-                        if _safe_delete_downloads_file(
-                            file_path,
-                            downloads_root,
-                            reason="complete_album already in library",
-                        ):
-                            stats['duplicate_files_deleted'] += 1
+                        if cleanup_settings.get("delete_duplicate_files", True):
+                            if _safe_delete_downloads_file(
+                                file_path,
+                                downloads_root,
+                                reason="complete_album already in library",
+                            ):
+                                stats['duplicate_files_deleted'] += 1
 
                         from app import _is_postgres_connection as app_is_postgres_connection
                         is_pg = bool(app_is_postgres_connection(conn))
@@ -5365,7 +5397,8 @@ def process_complete_albums():
                     conn.commit()
                     conn.close()
 
-                    stats['empty_folders_deleted'] += _prune_empty_download_folders(downloads_root)
+                    if cleanup_settings.get("prune_empty_folders", True):
+                        stats['empty_folders_deleted'] += _prune_empty_download_folders(downloads_root)
                     stats['duplicates_found'] += 1
                     logger.warning(
                         f"Album already exists in library (deleted duplicate queue rows/files from downloads): "
