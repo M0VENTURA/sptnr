@@ -109,6 +109,14 @@ def resolve_downloads_dir():
 
 DOWNLOADS_DIR = resolve_downloads_dir()
 
+# Soulseek queue downloads are intentionally restricted to these formats.
+_SLSKD_ALLOWED_EXTENSIONS = ('.mp3', '.flac')
+
+# Cache album-search response snapshots briefly so sibling tracks in the same
+# queued release can reuse results instead of re-querying Soulseek each time.
+_ALBUM_SEARCH_CACHE_TTL_SECONDS = 600
+_album_search_cache = {}
+
 
 def _strip_track_number_prefix(title):
     """
@@ -329,6 +337,155 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
             score -= 0.05
 
     return max(0.0, min(1.0, score))
+
+
+def _extract_response_files(response):
+    """Return iterable of file entries from a Soulseek response row."""
+    if hasattr(response, 'files') and response.files:
+        return response.files
+    if isinstance(response, dict):
+        files = response.get('files')
+        if isinstance(files, list):
+            return files
+    return []
+
+
+def _candidate_filename(file_info):
+    if isinstance(file_info, dict):
+        return file_info.get('filename', '') or ''
+    return getattr(file_info, 'filename', '') or ''
+
+
+def _candidate_size(file_info):
+    if isinstance(file_info, dict):
+        return file_info.get('size', 0) or 0
+    return getattr(file_info, 'size', 0) or 0
+
+
+def _is_allowed_download_extension(filename):
+    return str(filename or '').lower().endswith(_SLSKD_ALLOWED_EXTENSIONS)
+
+
+def _pick_best_candidate_from_responses(responses, queue_item):
+    """Select the best allowed Soulseek candidate for a queue item."""
+    best_result = None
+    best_score = 0.0
+
+    for resp_idx, resp in enumerate(responses or []):
+        resp_files = _extract_response_files(resp)
+        if not resp_files:
+            logger.debug(
+                f"Queue {queue_item.get('id', 'unknown')}: Response {resp_idx} has no files"
+            )
+            continue
+
+        resp_username = getattr(resp, 'username', None)
+        if not resp_username and isinstance(resp, dict):
+            resp_username = resp.get('username')
+        resp_username = resp_username or 'unknown'
+
+        for file_info in resp_files:
+            filename = _candidate_filename(file_info)
+            if not _is_allowed_download_extension(filename):
+                continue
+
+            size = _candidate_size(file_info)
+            candidate_length = _extract_candidate_length_seconds(file_info)
+            candidate_score = _score_soulseek_candidate(filename, queue_item, candidate_length)
+            if candidate_score > best_score:
+                best_score = candidate_score
+                best_result = {
+                    "username": resp_username,
+                    "filename": filename,
+                    "size": size,
+                    "length": candidate_length,
+                    "score": candidate_score,
+                }
+
+    return best_result, best_score
+
+
+def _poll_search_responses(client, search_id, max_poll_attempts=45):
+    """Poll Soulseek search and return all gathered responses."""
+    gathered = []
+    for _ in range(max_poll_attempts):
+        time.sleep(1)
+        try:
+            responses, _state, is_complete = client.get_search_results(search_id)
+            if responses:
+                gathered = responses
+            if is_complete and gathered:
+                break
+        except Exception as e:
+            logger.debug(f"Soulseek poll error for search_id={search_id}: {e}")
+    return gathered
+
+
+def _get_album_search_query(queue_item):
+    album = (queue_item.get('album') or '').strip()
+    if not album or album.lower() in ('unknown', 'unknown album'):
+        return None
+
+    album_artist = (
+        queue_item.get('album_artist')
+        or queue_item.get('artist')
+        or ''
+    ).strip()
+    if album_artist:
+        return f"{album_artist} - {album}"
+    return album
+
+
+def _get_album_queue_titles(queue_item):
+    """Return normalized title set for currently queued tracks in this album/import group."""
+    import_group = (queue_item.get('import_group') or '').strip()
+    album = (queue_item.get('album') or '').strip()
+    album_artist = (
+        queue_item.get('album_artist')
+        or queue_item.get('artist')
+        or ''
+    ).strip()
+
+    if not import_group and (not album or not album_artist):
+        return set()
+
+    titles = set()
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = _get_placeholder(conn)
+
+        if import_group:
+            cursor.execute(
+                f"""
+                SELECT title FROM download_queue
+                WHERE import_group = {placeholder}
+                  AND status IN ('queued', 'searching', 'downloading')
+                """,
+                (import_group,),
+            )
+        else:
+            cursor.execute(
+                f"""
+                SELECT title FROM download_queue
+                WHERE LOWER(COALESCE(album, '')) = LOWER({placeholder})
+                  AND LOWER(COALESCE(album_artist, artist, '')) = LOWER({placeholder})
+                  AND status IN ('queued', 'searching', 'downloading')
+                """,
+                (album, album_artist),
+            )
+
+        rows = cursor.fetchall() or []
+        for row in rows:
+            title = row.get('title') if hasattr(row, 'get') else (row[0] if row else None)
+            title_norm = _normalize_match_text(title)
+            if title_norm:
+                titles.add(title_norm)
+        conn.close()
+    except Exception as e:
+        logger.debug(f"Could not fetch queued album titles for album-first search: {e}")
+
+    return titles
 
 
 def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
@@ -1401,80 +1558,57 @@ def search_and_download(queue_id, queue_item, client):
 
         logger.info(f"Queue {queue_id}: Searching for '{search_query}'...")
         update_queue_status(queue_id, 'searching')
-        
-        # Start search
-        search_id = client.start_search(search_query)
-        if not search_id:
-            logger.warning(f"Queue {queue_id}: Failed to start search")
-            mark_failed(queue_id, "Failed to start Soulseek search", schedule_retry=True)
-            return False
-        
-        # Poll for results (up to MAX_POLL_ATTEMPTS seconds with 1 second intervals)
-        # Increased timeout to 45 seconds to handle slow Soulseek peer responses
-        MAX_POLL_ATTEMPTS = 45
+
         best_result = None
         best_score = 0.0
         poll_start_time = datetime.now()
-        
-        for poll_attempt in range(MAX_POLL_ATTEMPTS):
-            time.sleep(1)
-            
-            try:
-                responses, state, is_complete = client.get_search_results(search_id)
-                
-                logger.debug(f"Queue {queue_id}: Poll {poll_attempt+1}/{MAX_POLL_ATTEMPTS} - Got {len(responses)} responses, state={state}")
-                
-                if responses:
-                    # Score all available files and choose the strongest semantic match.
-                    for resp_idx, resp in enumerate(responses):
-                        if not (hasattr(resp, 'files') and resp.files and len(resp.files) > 0):
-                            logger.debug(
-                                f"Queue {queue_id}: Response {resp_idx} from "
-                                f"{getattr(resp, 'username', 'unknown')} has no files or empty files list"
-                            )
-                            continue
 
-                        logger.debug(f"Queue {queue_id}: Response {resp_idx} from {resp.username} has {len(resp.files)} files")
-                        for file_info in resp.files:
-                            filename = (
-                                getattr(file_info, 'filename', file_info.get('filename', ''))
-                                if isinstance(file_info, dict)
-                                else getattr(file_info, 'filename', '')
-                            )
-                            size = (
-                                getattr(file_info, 'size', file_info.get('size', 0))
-                                if isinstance(file_info, dict)
-                                else getattr(file_info, 'size', 0)
-                            )
-                            candidate_length = _extract_candidate_length_seconds(file_info)
+        # Pass 1: album-level search first (when album metadata exists), then
+        # choose a file that matches this queued track. This reduces repeated
+        # per-track queries for album imports.
+        album_query = _get_album_search_query(queue_item)
+        album_titles = _get_album_queue_titles(queue_item)
+        if album_query and album_titles:
+            cache_key = f"album::{_normalize_match_text(album_query)}"
+            cached = _album_search_cache.get(cache_key)
+            album_responses = None
 
-                            candidate_score = _score_soulseek_candidate(filename, queue_item, candidate_length)
-                            if candidate_score > best_score:
-                                best_score = candidate_score
-                                best_result = {
-                                    "username": resp.username,
-                                    "filename": filename,
-                                    "size": size,
-                                    "length": candidate_length,
-                                    "score": candidate_score,
-                                }
+            if cached and (time.time() - cached.get('timestamp', 0)) <= _ALBUM_SEARCH_CACHE_TTL_SECONDS:
+                album_responses = cached.get('responses') or []
+            else:
+                try:
+                    logger.info(f"Queue {queue_id}: Album-first search '{album_query}'")
+                    album_search_id = client.start_search(album_query)
+                    if album_search_id:
+                        album_responses = _poll_search_responses(client, album_search_id, max_poll_attempts=30)
+                        _album_search_cache[cache_key] = {
+                            'timestamp': time.time(),
+                            'responses': album_responses or [],
+                        }
+                except Exception as album_search_err:
+                    logger.debug(f"Queue {queue_id}: album-first search failed: {album_search_err}")
 
-                    # If we already have a strong candidate, no need to keep polling.
-                    if best_result and best_score >= 0.72:
-                        logger.info(
-                            f"Queue {queue_id}: ✓ Found high-confidence match after {poll_attempt+1}s "
-                            f"(score={best_score:.2f})"
-                        )
-                        break
-                
-                # Exit early if search is complete and we have results
-                if is_complete and best_result:
-                    logger.info(f"Queue {queue_id}: Search complete with results, stopping polling")
-                    break
-                    
-            except Exception as e:
-                logger.warning(f"Queue {queue_id}: Error polling results (attempt {poll_attempt+1}): {e}")
-                logger.debug(traceback.format_exc())
+            if album_responses:
+                best_album_result, best_album_score = _pick_best_candidate_from_responses(album_responses, queue_item)
+                if best_album_result and best_album_score >= 0.45:
+                    best_result = best_album_result
+                    best_score = best_album_score
+                    logger.info(
+                        f"Queue {queue_id}: Album-first match selected "
+                        f"(score={best_album_score:.2f})"
+                    )
+
+        # Pass 2: fallback to per-track search when album pass was inconclusive.
+        if not best_result:
+            search_id = client.start_search(search_query)
+            if not search_id:
+                logger.warning(f"Queue {queue_id}: Failed to start Soulseek search")
+                mark_failed(queue_id, "Failed to start Soulseek search", schedule_retry=True)
+                return False
+
+            # Increased timeout to 45 seconds to handle slow Soulseek peer responses
+            responses = _poll_search_responses(client, search_id, max_poll_attempts=45)
+            best_result, best_score = _pick_best_candidate_from_responses(responses, queue_item)
         
         if not best_result:
             elapsed = (datetime.now() - poll_start_time).total_seconds()
@@ -1610,7 +1744,7 @@ def check_completed_downloads():
             try:
                 for root, _, root_files in os.walk(DOWNLOADS_DIR):
                     for f in root_files:
-                        if f.lower().endswith(('.mp3', '.flac', '.m4a')):
+                        if f.lower().endswith(('.mp3', '.flac')):
                             fs_files.append(os.path.relpath(os.path.join(root, f), DOWNLOADS_DIR))
                 if fs_files:
                     logger.debug(f"Filesystem walk: {len(fs_files)} audio files in {DOWNLOADS_DIR}")
