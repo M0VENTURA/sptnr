@@ -826,9 +826,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
     function updateUnifiedLog() {
         if (logPaused) return;
-        fetchJsonOrThrow('/api/unified-log?lines=400')
+        fetchJsonOrThrow('/api/unified-log?lines=150')
             .then(data => {
-                clearApiError('/api/unified-log?lines=400');
+                clearApiError('/api/unified-log?lines=150');
                 const logEl = document.getElementById('unifiedLog');
                 if (logEl && data && data.lines) {
                     // textContent handles HTML escaping safely - no manual escaping needed
@@ -836,22 +836,25 @@ document.addEventListener('DOMContentLoaded', function() {
                     logEl.scrollTop = logEl.scrollHeight;
                 }
             })
-            .catch(error => logApiError('/api/unified-log?lines=400', 'Error fetching unified log', error));
+            .catch(error => logApiError('/api/unified-log?lines=150', 'Error fetching unified log', error));
     }
 
     // Combined update function to reduce API calls
     function updateAll() {
         updateScanStatus();
         updateIndividualScanProgress();
-        updateUnifiedLog();
         updateRecentScans();
     }
     
     // Initial update
     updateAll();
     
-    // Poll every 5 seconds to reduce dashboard load while keeping updates responsive
+    // Poll every 5 seconds for scan/status updates.
     setInterval(updateAll, 5000);
+
+    // Unified log is heavier, so refresh less frequently.
+    updateUnifiedLog();
+    setInterval(updateUnifiedLog, 10000);
 });
 
 const dashboardApiErrorState = new Map();
@@ -978,7 +981,13 @@ async function loadUpcomingReleasesBanner() {
         });
         
         html += '</div>';
-        document.getElementById('upcomingBannerContent').innerHTML = html;
+        const target = document.getElementById('upcomingBannerContent');
+        if (target) {
+            target.innerHTML = html;
+            try {
+                sessionStorage.setItem('dashboardUpcomingBannerHtml', html);
+            } catch (_) {}
+        }
         
     } catch (error) {
         logApiError('/api/upcoming-releases?collection=true', 'Error loading upcoming releases', error);
@@ -989,7 +998,17 @@ async function loadUpcomingReleasesBanner() {
 }
 
 document.addEventListener('DOMContentLoaded', function() {
-    loadUpcomingReleasesBanner();
+    const bannerTarget = document.getElementById('upcomingBannerContent');
+    if (bannerTarget) {
+        try {
+            const cached = sessionStorage.getItem('dashboardUpcomingBannerHtml');
+            if (cached) {
+                bannerTarget.innerHTML = cached;
+            }
+        } catch (_) {}
+    }
+
+    setTimeout(loadUpcomingReleasesBanner, 200);
     // Refresh every 30 minutes
     setInterval(loadUpcomingReleasesBanner, 30 * 60 * 1000);
 });

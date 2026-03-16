@@ -533,6 +533,10 @@ async function clearUpcomingReleasesMonitor() {
   const errorEl = document.getElementById('upcomingErrorMonitor');
   const container = document.getElementById('upcomingReleasesMonitor');
 
+  if (!statusEl || !statusText || !errorEl || !container) {
+    return;
+  }
+
   statusEl.style.display = 'block';
   errorEl.style.display = 'none';
   statusText.textContent = 'Clearing database...';
@@ -573,6 +577,10 @@ async function scrapeUpcomingReleasesMonitor() {
   const statusText = document.getElementById('upcomingStatusTextMonitor');
   const errorEl = document.getElementById('upcomingErrorMonitor');
 
+  if (!statusEl || !statusText || !errorEl) {
+    return;
+  }
+
   statusEl.style.display = 'block';
   errorEl.style.display = 'none';
   statusText.textContent = 'Scraping Wikipedia for upcoming releases...';
@@ -606,6 +614,9 @@ async function scrapeUpcomingReleasesMonitor() {
 
 async function refreshUpcomingReleasesMonitor() {
   const container = document.getElementById('upcomingReleasesMonitor');
+  if (!container) {
+    return;
+  }
   const filterCollection = document.getElementById('upcomingFilterCollectionMonitor')?.checked || false;
 
   container.innerHTML = `
@@ -2440,6 +2451,22 @@ async function loadFolderGroups(options = {}) {
     lastFolderGroupsRenderSignature = nextSignature;
   } catch (error) {
     console.error('Error loading folder groups:', error);
+    const section = document.getElementById('folderGroupsSection');
+    const list = document.getElementById('folderGroupsList');
+    const badge = document.getElementById('folderGroupsBadge');
+    if (section) {
+      section.style.display = 'block';
+    }
+    if (badge) {
+      badge.textContent = '0 items';
+    }
+    if (list) {
+      list.innerHTML = `
+        <div class="alert alert-warning m-3 mb-0">
+          <i class="bi bi-exclamation-triangle"></i>
+          Could not load queue groups right now. Please click Refresh and try again.
+        </div>`;
+    }
   } finally {
     folderGroupsRequestInFlight = false;
   }
