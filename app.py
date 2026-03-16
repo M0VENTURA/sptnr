@@ -2653,12 +2653,75 @@ def _schedule_configured_startup_scan_launch():
 
     threading.Thread(target=_worker, daemon=True, name="startup-scan-launch").start()
 
+
+def _find_queue_processor_process():
+    """Return an active queue_processor process if present, else None."""
+    try:
+        import psutil  # type: ignore
+        for proc in psutil.process_iter(['pid', 'cmdline']):
+            try:
+                cmdline = proc.info.get('cmdline') or []
+                if cmdline and 'queue_processor.py' in ' '.join(cmdline):
+                    return proc
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+    except Exception:
+        return None
+    return None
+
+
+def _start_queue_processor_if_needed(force_restart: bool = False) -> bool:
+    """Start queue_processor.py immediately unless it's already running.
+
+    Returns True when a new process was started.
+    """
+    existing = _find_queue_processor_process()
+    if existing and not force_restart:
+        return False
+
+    if existing and force_restart:
+        try:
+            existing.terminate()
+            try:
+                existing.wait(timeout=5)
+            except Exception:
+                existing.kill()
+        except Exception as stop_err:
+            logging.warning(f"[QUEUE_PROCESSOR] Could not stop existing process before restart: {stop_err}")
+
+    try:
+        cfg = get_config() or {}
+        features = cfg.get("features", {}) if isinstance(cfg, dict) else {}
+        interval = int(features.get("queue_processor_interval_seconds", 30) or 30)
+        if interval < 5:
+            interval = 5
+    except Exception:
+        interval = 30
+
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    python_bin = sys.executable or "python"
+
+    subprocess.Popen(
+        [python_bin, "queue_processor.py", str(interval)],
+        cwd=app_dir,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    logging.info(f"[QUEUE_PROCESSOR] Started queue_processor.py with interval={interval}s")
+    return True
+
 # Leader election for startup jobs under multi-worker servers (gunicorn).
 _is_startup_leader_worker = _acquire_startup_leader_lock()
 
 
 # Kick off startup background tasks only in the elected leader worker.
 if _is_startup_leader_worker:
+    try:
+        _start_queue_processor_if_needed(force_restart=False)
+    except Exception as e:
+        logging.error(f"Failed to start queue processor on boot: {e}")
+
     if AUTO_BOOT_ND_IMPORT:
         try:
             _start_boot_navidrome_import()
@@ -20550,35 +20613,21 @@ def api_queue_organize_group():
 def api_queue_processor_status():
     """Get queue processor status"""
     try:
-        import subprocess
-        import psutil
-        
         # Try to find the queue processor process
         processor_running = False
         processor_pid = None
         processor_memory = 0
         processor_uptime = None
-        
-        try:
-            # Check if queue_processor.py is running
-            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-                try:
-                    if proc.info['cmdline'] and len(proc.info['cmdline']) > 1:
-                        if 'queue_processor.py' in ' '.join(proc.info['cmdline']):
-                            processor_running = True
-                            processor_pid = proc.info['pid']
-                            processor_memory = proc.memory_info().rss / 1024 / 1024  # Convert to MB
-                            processor_uptime = datetime.now() - datetime.fromtimestamp(proc.create_time())
-                            break
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                    pass
-        except ImportError:
-            # psutil not installed, try ps command
+
+        proc = _find_queue_processor_process()
+        if proc:
             try:
-                result = subprocess.run(['ps', 'aux'], capture_output=True, text=True, timeout=5)
-                processor_running = 'queue_processor.py' in result.stdout
-            except:
-                pass
+                processor_running = True
+                processor_pid = proc.pid
+                processor_memory = proc.memory_info().rss / 1024 / 1024  # Convert to MB
+                processor_uptime = datetime.now() - datetime.fromtimestamp(proc.create_time())
+            except Exception:
+                processor_running = True
         
         # Check queue status via a single aggregate query (cheap, no schema checks).
         conn = get_db()
@@ -20629,68 +20678,26 @@ def api_queue_processor_status():
 def api_queue_processor_restart():
     """Restart queue processor"""
     try:
-        import subprocess
-        import psutil
-        import signal
-        
-        # Try to kill existing process
-        killed = False
-        try:
-            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-                try:
-                    if proc.info['cmdline'] and len(proc.info['cmdline']) > 1:
-                        if 'queue_processor.py' in ' '.join(proc.info['cmdline']):
-                            logging.info(f"Killing queue processor (PID: {proc.info['pid']})")
-                            proc.send_signal(signal.SIGTERM)
-                            killed = True
-                            # Wait up to 5 seconds for process to terminate
-                            try:
-                                proc.wait(timeout=5)
-                            except psutil.TimeoutExpired:
-                                proc.kill()
-                            break
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                    pass
-        except ImportError:
-            # psutil not installed, try killall
-            subprocess.run(['killall', 'queue_processor.py'], capture_output=True)
-            killed = True
-        
-        # Wait a bit for process to fully terminate
-        import time
+        had_existing = _find_queue_processor_process() is not None
+        started = _start_queue_processor_if_needed(force_restart=True)
+
+        # Verify process became visible after restart request.
         time.sleep(1)
-        
-        # Try to start new process
-        try:
-            # Change to app directory
-            app_dir = os.path.dirname(os.path.abspath(__file__))
-            
-            # Start queue processor
-            subprocess.Popen(
-                ['python3', 'queue_processor.py', '30'],
-                cwd=app_dir,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True
-            )
-            
+        running_now = _find_queue_processor_process() is not None
+
+        if started and running_now:
             logging.info("Queue processor restarted successfully")
-            
-            time.sleep(2)  # Wait for process to start
-            
             return jsonify({
                 "success": True,
                 "message": "Queue processor restarted successfully",
-                "killed_previous": killed
+                "killed_previous": had_existing,
             })
-        except Exception as e:
-            logging.error(f"Error starting queue processor: {e}")
-            return jsonify({
-                "success": False,
-                "message": "Failed to start queue processor",
-                "error": str(e),
-                "killed_previous": killed
-            }), 500
+
+        return jsonify({
+            "success": False,
+            "message": "Failed to start queue processor",
+            "killed_previous": had_existing,
+        }), 500
             
     except Exception as e:
         logging.error(f"Error restarting queue processor: {e}")
