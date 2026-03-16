@@ -106,6 +106,58 @@
     </div>
   </div>
 
+  <!-- Upcoming Releases Section -->
+  <div class="card mb-4" id="upcomingReleasesMonitorCard">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <h5 class="card-title mb-0">
+        <i class="bi bi-calendar-event"></i> Upcoming Album Releases
+      </h5>
+      <div class="d-flex align-items-center gap-2 flex-wrap">
+        <button class="btn btn-sm btn-primary" onclick="scrapeUpcomingReleasesMonitor()">
+          <i class="bi bi-download"></i> Update from Wikipedia
+        </button>
+        <button class="btn btn-sm btn-outline-primary" onclick="refreshUpcomingReleasesMonitor()">
+          <i class="bi bi-arrow-clockwise"></i> Refresh
+        </button>
+        <button class="btn btn-sm btn-outline-danger" onclick="clearUpcomingReleasesMonitor()" title="Clear old entries and start fresh">
+          <i class="bi bi-trash"></i> Clear Database
+        </button>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="row g-2 mb-3">
+        <div class="col-12">
+          <label class="form-check mb-0">
+            <input class="form-check-input" type="checkbox" id="upcomingFilterCollectionMonitor" onchange="refreshUpcomingReleasesMonitor()">
+            <span class="form-check-label">Only show releases from artists in my collection</span>
+          </label>
+        </div>
+      </div>
+
+      <div id="upcomingStatusMonitor" class="alert alert-info" style="display:none;">
+        <div class="d-flex">
+          <div class="spinner-border spinner-border-sm me-2" role="status">
+            <span class="visually-hidden">Loading...</span>
+          </div>
+          <div>
+            <span id="upcomingStatusTextMonitor">Loading upcoming releases...</span>
+          </div>
+        </div>
+      </div>
+
+      <div id="upcomingErrorMonitor" class="alert alert-danger" style="display:none;"></div>
+
+      <div id="upcomingReleasesMonitor">
+        <div class="text-center py-3">
+          <div class="spinner-border text-primary spinner-border-sm" role="status">
+            <span class="visually-hidden">Loading...</span>
+          </div>
+          <p class="mt-2 small text-muted mb-0">Loading upcoming releases...</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Auto-Discovery Section -->
   <div class="card mb-4">
     <div class="card-header">
@@ -456,6 +508,231 @@ async function addToQueue(event) {
   } catch (error) {
     console.error('Error adding to queue:', error);
     alert('❌ Network error: ' + error.message);
+  }
+}
+
+// ===== Upcoming Releases (Embedded) =====
+
+function searchUpcomingReleaseFromEncoded(artistEnc, albumEnc) {
+  const artist = decodeInlineArg(artistEnc, '');
+  const album = decodeInlineArg(albumEnc, '');
+  if (!artist || !album) {
+    alert('Missing artist or album information for this release.');
+    return;
+  }
+  searchMusicBrainzRelease(null, artist, album);
+}
+
+async function clearUpcomingReleasesMonitor() {
+  if (!confirm('Are you sure you want to clear all upcoming releases from the database? This cannot be undone.')) {
+    return;
+  }
+
+  const statusEl = document.getElementById('upcomingStatusMonitor');
+  const statusText = document.getElementById('upcomingStatusTextMonitor');
+  const errorEl = document.getElementById('upcomingErrorMonitor');
+  const container = document.getElementById('upcomingReleasesMonitor');
+
+  statusEl.style.display = 'block';
+  errorEl.style.display = 'none';
+  statusText.textContent = 'Clearing database...';
+
+  try {
+    const response = await fetch('/api/upcoming-releases/clear', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to clear database');
+    }
+
+    statusText.textContent = `✓ ${data.message}`;
+    setTimeout(() => {
+      statusEl.style.display = 'none';
+      container.innerHTML = `
+        <div class="text-center py-4">
+          <p class="text-muted mb-0">Database cleared. Click "Update from Wikipedia" to load new release data.</p>
+        </div>
+      `;
+    }, 1500);
+  } catch (error) {
+    console.error('Error clearing upcoming releases:', error);
+    statusEl.style.display = 'none';
+    errorEl.style.display = 'block';
+    errorEl.innerHTML = `
+      <i class="bi bi-exclamation-triangle"></i>
+      <strong>Error clearing database:</strong> ${escapeHtml(error.message)}
+    `;
+  }
+}
+
+async function scrapeUpcomingReleasesMonitor() {
+  const statusEl = document.getElementById('upcomingStatusMonitor');
+  const statusText = document.getElementById('upcomingStatusTextMonitor');
+  const errorEl = document.getElementById('upcomingErrorMonitor');
+
+  statusEl.style.display = 'block';
+  errorEl.style.display = 'none';
+  statusText.textContent = 'Scraping Wikipedia for upcoming releases...';
+
+  try {
+    const response = await fetch('/api/upcoming-releases/scrape', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to scrape releases');
+    }
+
+    statusText.textContent = `✓ ${data.message}`;
+    setTimeout(() => {
+      statusEl.style.display = 'none';
+      refreshUpcomingReleasesMonitor();
+    }, 1500);
+  } catch (error) {
+    console.error('Error scraping upcoming releases:', error);
+    statusEl.style.display = 'none';
+    errorEl.style.display = 'block';
+    errorEl.innerHTML = `
+      <i class="bi bi-exclamation-triangle"></i>
+      <strong>Error scraping Wikipedia:</strong> ${escapeHtml(error.message)}
+    `;
+  }
+}
+
+async function refreshUpcomingReleasesMonitor() {
+  const container = document.getElementById('upcomingReleasesMonitor');
+  const filterCollection = document.getElementById('upcomingFilterCollectionMonitor')?.checked || false;
+
+  container.innerHTML = `
+    <div class="text-center py-4">
+      <div class="spinner-border text-primary spinner-border-sm" role="status">
+        <span class="visually-hidden">Loading...</span>
+      </div>
+      <p class="mt-2 small mb-0">Loading upcoming releases...</p>
+    </div>
+  `;
+
+  try {
+    const response = await fetch(`/api/upcoming-releases?collection=${filterCollection}`);
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to load releases');
+    }
+
+    if (!Array.isArray(data.releases) || data.releases.length === 0) {
+      container.innerHTML = `
+        <div class="text-center py-4">
+          <p class="text-muted mb-0">No upcoming releases found. Click "Update from Wikipedia" to load release data.</p>
+        </div>
+      `;
+      return;
+    }
+
+    let releases = data.releases;
+    if (filterCollection) {
+      releases = releases.filter(r => !r.album_in_collection);
+      if (releases.length === 0) {
+        container.innerHTML = `
+          <div class="text-center py-4">
+            <p class="text-muted mb-0"><i class="bi bi-check-circle"></i> You have all upcoming releases from artists in your collection.</p>
+          </div>
+        `;
+        return;
+      }
+    }
+
+    const grouped = {};
+    releases.forEach((release) => {
+      const date = release.release_date || 'Unknown Date';
+      const month = date.substring(0, 7);
+      if (!grouped[month]) {
+        grouped[month] = [];
+      }
+      grouped[month].push(release);
+    });
+
+    const sortedMonths = Object.keys(grouped).sort();
+    let html = '<div class="accordion" id="upcomingReleaseAccordionMonitor">';
+
+    sortedMonths.forEach((month, idx) => {
+      const monthReleases = grouped[month];
+      const monthLabel = new Date(month + '-01').toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'long'
+      });
+
+      html += `
+        <div class="accordion-item">
+          <h2 class="accordion-header" id="upcomingHeadingMonitor${idx}">
+            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
+              data-bs-target="#upcomingCollapseMonitor${idx}" aria-expanded="false" aria-controls="upcomingCollapseMonitor${idx}">
+              <strong>${escapeHtml(monthLabel)}</strong>
+              <span class="badge bg-primary ms-2">${monthReleases.length}</span>
+            </button>
+          </h2>
+          <div id="upcomingCollapseMonitor${idx}" class="accordion-collapse collapse">
+            <div class="accordion-body p-0">
+              <div class="table-responsive">
+                <table class="table table-hover table-striped table-dark table-sm mb-0">
+                  <thead>
+                    <tr>
+                      <th>Artist</th>
+                      <th>Album</th>
+                      <th>Date</th>
+                      <th style="width: 120px;">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+      `;
+
+      monthReleases.forEach((release) => {
+        const albumStatus = release.album_in_collection
+          ? ' <span class="badge bg-success ms-1">In Collection</span>'
+          : '';
+        const artistEnc = encodeInlineArg(release.artist_name || '');
+        const albumEnc = encodeInlineArg(release.album_name || '');
+
+        html += `
+          <tr>
+            <td>${escapeHtml(release.artist_name || '')}</td>
+            <td>${escapeHtml(release.album_name || '')}${albumStatus}</td>
+            <td><small>${escapeHtml(release.release_date || 'TBA')}</small></td>
+            <td>
+              <button type="button" class="btn btn-sm btn-outline-primary" title="Search on MusicBrainz"
+                onclick="searchUpcomingReleaseFromEncoded('${artistEnc}', '${albumEnc}')">
+                <i class="bi bi-search"></i> Search
+              </button>
+            </td>
+          </tr>
+        `;
+      });
+
+      html += `
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    });
+
+    html += '</div>';
+    container.innerHTML = html;
+  } catch (error) {
+    console.error('Error loading upcoming releases:', error);
+    container.innerHTML = `
+      <div class="alert alert-danger mb-0">
+        <i class="bi bi-exclamation-triangle"></i>
+        <strong>Error loading releases:</strong> ${escapeHtml(error.message)}
+      </div>
+    `;
   }
 }
 
@@ -4331,6 +4608,7 @@ document.addEventListener('DOMContentLoaded', function() {
   }
   
   setTimeout(loadBothAsync, 500);
+  refreshUpcomingReleasesMonitor();
   loadQueueLog();
   // Refresh both together every 5 seconds to keep them synchronized
   setInterval(loadBothAsync, 5000);
