@@ -2578,7 +2578,7 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
             return {'success': False, 'target_path': None, 'error': transfer_result.get('error')}
 
         final_target = transfer_result.get('target_path')
-        logger.info(f"[MOVE] {filename} → {final_target}")
+        logger.info(f"[MOVE] {file_path} → {final_target}")
         # Remove the (now empty) parent download directory to keep /downloads tidy.
         _remove_empty_download_dirs(file_path, get_downloads_dir())
         return {
