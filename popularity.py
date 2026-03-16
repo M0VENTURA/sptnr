@@ -3345,16 +3345,19 @@ def popularity_scan(
 
         # Build SQL query with optional filters
         sql_conditions = []
+        sql_params = []
 
         # Never scan placeholder queue rows created before files are imported.
-        sql_conditions.append("COALESCE(file_path, '') NOT LIKE '__queued_for_download__%'")
-        sql_conditions.append("CAST(id AS TEXT) NOT LIKE 'queue_%'")
+        # Use placeholders so PostgreSQL does not misinterpret raw '%' characters
+        # when parameters are bound.
+        sql_conditions.append(f"COALESCE(file_path, '') NOT LIKE {placeholder}")
+        sql_params.append('__queued_for_download__%')
+        sql_conditions.append(f"CAST(id AS TEXT) NOT LIKE {placeholder}")
+        sql_params.append('queue_%')
         
         # Only filter by popularity_score if not forcing rescan
         if not (FORCE_RESCAN or force):
             sql_conditions.append("(popularity_score IS NULL OR popularity_score = 0)")
-        
-        sql_params = []
         
         if artist_filter:
             # Artist scans should only include albums owned by that album artist.

@@ -2111,14 +2111,105 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
         return m.group(0) if m else None
 
     try:
-        file_path = queue_item_dict.get('file_path')
-        if not file_path:
-            queue_id = queue_item_dict.get('id', 'unknown')
-            return {'success': False, 'target_path': None, 'error': f'Queue item {queue_id} has no file_path (may not be completed yet)'}
-        if not os.path.exists(file_path):
-            return {'success': False, 'target_path': None, 'error': f'File not found: {file_path}'}
-
         music_root = music_dir or resolve_music_dir()
+
+        def _resolve_existing_source_path(path_value, downloads_root, music_root_value):
+            if not path_value:
+                return None
+
+            raw = str(path_value).strip()
+            if not raw:
+                return None
+
+            normalized = os.path.normpath(raw)
+            if os.path.isabs(normalized) and os.path.isfile(normalized):
+                return normalized
+
+            rel = raw.replace('\\', '/').lstrip('/')
+            candidates = [
+                os.path.join(downloads_root, rel),
+                os.path.join(music_root_value, rel),
+            ]
+
+            low_rel = rel.lower()
+            if low_rel.startswith('downloads/music/'):
+                candidates.append(os.path.join(downloads_root, rel[len('downloads/music/'):]))
+            elif low_rel.startswith('downloads/'):
+                candidates.append(os.path.join(downloads_root, rel[len('downloads/'):]))
+            elif low_rel.startswith('music/'):
+                candidates.append(os.path.join(downloads_root, rel[len('music/'):]))
+
+            if low_rel.startswith('/downloads/music/'):
+                candidates.append(os.path.join(downloads_root, rel[len('/downloads/music/'):]))
+            elif low_rel.startswith('/downloads/'):
+                candidates.append(os.path.join(downloads_root, rel[len('/downloads/'):]))
+            elif low_rel.startswith('/music/'):
+                candidates.append(os.path.join(music_root_value, rel[len('/music/'):]))
+
+            seen = set()
+            for candidate in candidates:
+                abs_candidate = os.path.abspath(os.path.normpath(candidate))
+                if abs_candidate in seen:
+                    continue
+                seen.add(abs_candidate)
+                if os.path.isfile(abs_candidate):
+                    return abs_candidate
+
+            return None
+
+        try:
+            downloads_root = get_downloads_dir()
+        except Exception:
+            downloads_root = os.environ.get('DOWNLOADS_DIR', '/downloads')
+
+        queue_id = queue_item_dict.get('id', 'unknown')
+        candidate_paths = [
+            queue_item_dict.get('file_path'),
+            queue_item_dict.get('matched_file_path'),
+            queue_item_dict.get('music_file_path'),
+            queue_item_dict.get('found_filename'),
+        ]
+        file_path = None
+        for candidate in candidate_paths:
+            resolved = _resolve_existing_source_path(candidate, downloads_root, music_root)
+            if resolved:
+                file_path = resolved
+                break
+
+        if not file_path:
+            # Last-resort basename search under downloads, then music root.
+            basenames = []
+            for candidate in candidate_paths:
+                if candidate:
+                    base = os.path.basename(str(candidate).strip())
+                    if base:
+                        basenames.append(base)
+
+            for root_dir in (downloads_root, music_root):
+                if file_path or not os.path.isdir(root_dir):
+                    continue
+                for root, _, files in os.walk(root_dir):
+                    matched = next((name for name in basenames if name in files), None)
+                    if matched:
+                        file_path = os.path.join(root, matched)
+                        break
+
+        if not file_path:
+            display_path = next((p for p in candidate_paths if p), '')
+            if not display_path:
+                return {'success': False, 'target_path': None, 'error': f'Queue item {queue_id} has no file_path (may not be completed yet)'}
+            return {'success': False, 'target_path': None, 'error': f'File not found: {display_path}'}
+
+        # Keep queue item in sync with the resolved source path.
+        queue_item_dict['file_path'] = file_path
+
+        if _is_path_within_root(file_path, music_root):
+            return {
+                'success': True,
+                'target_path': file_path,
+                'error': None,
+                'message': 'File already exists in music directory'
+            }
 
         album_artist = _sanitize_path_component(
             _normalize_album_artist_for_path(
