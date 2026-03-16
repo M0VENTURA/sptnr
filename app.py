@@ -14178,13 +14178,21 @@ def api_musicbrainz_download():
                         duration = track.get('length', 0)
                         isrc = track.get('isrc', None)
                         
-                        # Use provided artist or extract from track data
-                        track_artist = artist
-                        if 'artist-credit' in track:
-                            try:
-                                track_artist = track['artist-credit'][0].get('name', artist) if track['artist-credit'] else artist
-                            except:
-                                pass
+                        # Use provided artist or extract from track/recording data.
+                        # With inc=recordings+artist-credits the per-track artist
+                        # is available on the recording object; fall back to the
+                        # album artist for non-VA releases where artist-credit is
+                        # absent.
+                        recording = track.get('recording', {})
+                        rec_credits = (
+                            recording.get('artist-credit')
+                            or track.get('artist-credit')
+                            or []
+                        )
+                        if rec_credits:
+                            track_artist = _build_artist_credit_string(rec_credits) or artist
+                        else:
+                            track_artist = artist
                         
                         # Create search query for individual track (artist - title format, no album)
                         search_query = f"{track_artist} - {track_title}".strip()

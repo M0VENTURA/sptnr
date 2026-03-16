@@ -1987,8 +1987,16 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
 
                     for track in mb_release.get('tracks', []):
                         track_title = track.get('title', '').lower().strip()
+                        # recording_title is the canonical, shorter title used when
+                        # the release-specific title (track_title) differs from what
+                        # was stored in the queue (e.g. "Song Title (Live at ...)" vs
+                        # "Song Title").
+                        recording_title = track.get('recording_title', '').lower().strip()
                         queue_title = title.lower().strip()
-                        if track_title and queue_title and track_title == queue_title:
+                        if track_title and queue_title and (
+                            track_title == queue_title
+                            or recording_title == queue_title
+                        ):
                             # Update per-track artist from MusicBrainz — critical for
                             # "Various Artists" compilations where each track has a
                             # different artist that must appear in the file tags.
