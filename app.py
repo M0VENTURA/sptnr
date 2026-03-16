@@ -576,7 +576,18 @@ def api_unified_log():
     lines = int(request.args.get("lines", 400))
     lines = max(1, min(lines, 2000))
     verbose = request.args.get("verbose", "0") == "1"
-    unified_log_path = "/config/unified_scan.log"
+    configured_env_path = os.environ.get("UNIFIED_SCAN_LOG_PATH", "").strip()
+    # Resolve active unified log path from logging config first, then env override,
+    # then legacy /config fallback for backward compatibility.
+    path_candidates = [
+        UNIFIED_LOG_PATH,
+        configured_env_path,
+        "/config/unified_scan.log",
+    ]
+    unified_log_path = next((p for p in path_candidates if p and os.path.exists(p)), None)
+    if not unified_log_path:
+        # Prefer the configured path as the canonical error reference.
+        unified_log_path = UNIFIED_LOG_PATH or configured_env_path or "/config/unified_scan.log"
 
     def _read_last_lines(path, max_lines, chunk_size=65536, max_bytes=4 * 1024 * 1024):
         """Read only the tail of a text file to avoid loading large logs into memory."""
