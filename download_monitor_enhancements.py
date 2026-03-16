@@ -252,11 +252,31 @@ def move_to_music_collection(queue_id):
                     return match.group(0)
             return None
 
-        # Build destination path using album structure
-        album_artist = _normalize_album_artist_for_path(
-            queue_item.get('album_artist') or queue_item['artist']
-        )
+        # Build destination path using album structure.
+        # Prefer release-level artist from MusicBrainz metadata (important for compilations).
         album = queue_item.get('album') or 'Unknown Album'
+        release_artist = None
+        release_mbid = queue_item.get('release_mbid') or queue_item.get('release_id')
+        if release_mbid:
+            try:
+                from folder_matching_enhancements import get_musicbrainz_release_metadata
+
+                release_meta = get_musicbrainz_release_metadata(release_mbid) or {}
+                release_artist = (release_meta.get('artist') or '').strip() or None
+
+                if release_artist:
+                    queue_item['album_artist'] = release_artist
+                    logger.info(
+                        f"[MOVE] Queue {queue_id}: album artist from release metadata: {release_artist}"
+                    )
+            except Exception as rel_err:
+                logger.debug(
+                    f"[MOVE] Queue {queue_id}: could not load release artist for {release_mbid}: {rel_err}"
+                )
+
+        album_artist = _normalize_album_artist_for_path(
+            release_artist or queue_item.get('album_artist') or queue_item['artist']
+        )
         year = _extract_year(
             queue_item.get('year')
             or queue_item.get('release_year')
