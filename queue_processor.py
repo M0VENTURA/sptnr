@@ -1636,21 +1636,53 @@ def check_completed_downloads():
             # 1. Exact match via slskd localFilePath (most reliable)
             if found_fn:
                 found_norm = _normalize_transfer_key(found_fn)
-                abs_path = slskd_completed.get(found_norm) or slskd_completed.get(os.path.basename(found_norm))
+                # Distinguish full-path vs basename-only hits so we can apply
+                # different trust levels below.
+                abs_path_full = slskd_completed.get(found_norm)
+                abs_path = abs_path_full or slskd_completed.get(os.path.basename(found_norm))
             else:
+                abs_path_full = None
                 abs_path = None
 
             if abs_path:
                 candidate_rel = os.path.relpath(abs_path, DOWNLOADS_DIR)
-                is_match, match_source = _file_matches_queue_item(abs_path, item, candidate_rel)
-                if is_match:
-                    match_found = candidate_rel
-                    match_meta_state = match_source
-                    logger.debug(f"Queue {item_id}: matched via slskd localFilePath: {abs_path}")
-                else:
-                    logger.info(
-                        f"Queue {item_id}: rejecting slskd-completed file due to queue mismatch: {candidate_rel}"
+                # Guard: if slskd's download root differs from DOWNLOADS_DIR the
+                # relative path would escape with "..".  Skip and let the
+                # filesystem walk handle it.
+                if candidate_rel.startswith('..'):
+                    logger.warning(
+                        f"Queue {item_id}: slskd localFilePath is outside DOWNLOADS_DIR, "
+                        f"skipping: {abs_path}"
                     )
+                elif abs_path is abs_path_full and abs_path_full:
+                    # Full remote-path match: abs_path came directly from the
+                    # full-path lookup, meaning the found_filename stored for this
+                    # queue item matches the filename in slskd's completed-transfer
+                    # record exactly.  slskd is telling us this specific file was
+                    # downloaded for this queue item — trust it unconditionally.
+                    # Metadata/filename matching can incorrectly reject valid files
+                    # when the downloaded track lacks embedded tags or has a minimal
+                    # filename (e.g. just a track number like "01.mp3").
+                    match_found = candidate_rel
+                    match_meta_state = 'slskd_localpath'
+                    logger.debug(
+                        f"Queue {item_id}: matched via slskd localFilePath (full path): {abs_path}"
+                    )
+                else:
+                    # Basename-only match: weaker signal — multiple downloads can
+                    # share the same basename, so verify with metadata/filename to
+                    # avoid false positives.
+                    is_match, match_source = _file_matches_queue_item(abs_path, item, candidate_rel)
+                    if is_match:
+                        match_found = candidate_rel
+                        match_meta_state = match_source
+                        logger.debug(
+                            f"Queue {item_id}: matched via slskd localFilePath (basename): {abs_path}"
+                        )
+                    else:
+                        logger.info(
+                            f"Queue {item_id}: rejecting slskd-completed file due to queue mismatch: {candidate_rel}"
+                        )
 
             # 2. Exact filename match against filesystem files
             if match_found is None and found_fn:

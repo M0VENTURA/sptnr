@@ -1184,5 +1184,85 @@ class MusicBrainzFileMatcherFreezeTests(unittest.TestCase):
         )
 
 
+class SlskdLocalFilePathTrustTests(unittest.TestCase):
+    """Tests confirming that check_completed_downloads trusts slskd's
+    localFilePath for full-path matches without requiring metadata/filename
+    matching to pass (fixing the case where files lack tags or have minimal
+    filenames like '01.mp3')."""
+
+    def test_full_path_match_trusted_without_file_matches(self):
+        """queue_processor must accept slskd localFilePath when the full remote
+        path matches found_filename, even if _file_matches_queue_item would fail.
+
+        The key structural change: abs_path_full is set separately so that the
+        full-path hit skips _file_matches_queue_item entirely.
+        """
+        processor_text = _read("queue_processor.py")
+        # The fix distinguishes full-path hits from basename-only hits.
+        self.assertIn("abs_path_full = slskd_completed.get(found_norm)", processor_text)
+        self.assertIn("abs_path = abs_path_full or slskd_completed.get(os.path.basename(found_norm))", processor_text)
+
+    def test_full_path_match_sets_slskd_localpath_meta_state(self):
+        """When a full-path match is accepted the meta state must be 'slskd_localpath'
+        so the downstream logging correctly identifies the source."""
+        processor_text = _read("queue_processor.py")
+        self.assertIn("match_meta_state = 'slskd_localpath'", processor_text)
+
+    def test_full_path_match_does_not_run_file_matches_queue_item(self):
+        """The full-path branch must NOT call _file_matches_queue_item — that
+        check is reserved for the weaker basename-only case."""
+        processor_text = _read("queue_processor.py")
+        # Locate the step-1 block by finding the 'abs_path_full' variable
+        step1_start = processor_text.find("abs_path_full = slskd_completed.get(found_norm)")
+        step2_start = processor_text.find("# 2. Exact filename match against filesystem files")
+        step1_block = processor_text[step1_start:step2_start]
+        # The full-path branch is introduced by the identity + truthy check.
+        full_branch_marker = "abs_path is abs_path_full and abs_path_full"
+        self.assertIn(
+            full_branch_marker,
+            step1_block,
+            "Full-path branch must use identity check 'abs_path is abs_path_full and abs_path_full'",
+        )
+        # Find the region from the full-path branch up to the 'else:' (basename branch).
+        full_branch_start = step1_block.find(full_branch_marker)
+        basename_branch_start = step1_block.find(
+            "# Basename-only match:", full_branch_start
+        )
+        full_branch = step1_block[full_branch_start:basename_branch_start]
+        self.assertNotIn(
+            "_file_matches_queue_item",
+            full_branch,
+            "Full-path slskd match must not call _file_matches_queue_item",
+        )
+
+    def test_basename_only_match_still_uses_file_matches(self):
+        """The basename-only fallback must still call _file_matches_queue_item
+        to avoid false positives when multiple downloads share the same basename."""
+        processor_text = _read("queue_processor.py")
+        step1_start = processor_text.find("abs_path_full = slskd_completed.get(found_norm)")
+        step2_start = processor_text.find("# 2. Exact filename match against filesystem files")
+        step1_block = processor_text[step1_start:step2_start]
+        # The else (basename) branch starts with this unique comment.
+        basename_comment = "# Basename-only match:"
+        basename_branch_start = step1_block.find(basename_comment)
+        self.assertGreater(
+            basename_branch_start, 0,
+            "step-1 block must contain the '# Basename-only match:' comment",
+        )
+        else_branch = step1_block[basename_branch_start:]
+        self.assertIn(
+            "_file_matches_queue_item",
+            else_branch,
+            "Basename-only slskd match must verify with _file_matches_queue_item",
+        )
+
+    def test_outside_downloads_dir_guard_present(self):
+        """When slskd's localFilePath is outside DOWNLOADS_DIR the match must be
+        skipped to avoid path-traversal style issues with os.path.relpath."""
+        processor_text = _read("queue_processor.py")
+        self.assertIn("candidate_rel.startswith('..')", processor_text)
+        self.assertIn("slskd localFilePath is outside DOWNLOADS_DIR", processor_text)
+
+
 if __name__ == "__main__":
     unittest.main()
