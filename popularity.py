@@ -1889,19 +1889,26 @@ def sync_track_rating_to_navidrome(track_id: str, stars: int) -> bool:
         log_basic(f"Failed to sync rating to Navidrome for track {track_id}: {e}")
         return False
 
-def save_popularity_progress(processed_artists: int, total_artists: int, current_artist: str = None):
+def save_popularity_progress(
+    processed_artists: int,
+    total_artists: int,
+    current_artist: str = None,
+    progress_file: str = None,
+    scan_type: str = "popularity_scan",
+):
     """Save popularity scan progress to file"""
     try:
+        target_progress_file = progress_file or POPULARITY_PROGRESS_FILE
         progress_data = {
             "is_running": True,
-            "scan_type": "popularity_scan",
+            "scan_type": scan_type,
             "processed_artists": processed_artists,
             "total_artists": total_artists,
             "percent_complete": int((processed_artists / total_artists * 100)) if total_artists > 0 else 0,
             "current_artist": current_artist,
             "last_updated": datetime.now().isoformat()
         }
-        with open(POPULARITY_PROGRESS_FILE, 'w') as f:
+        with open(target_progress_file, 'w') as f:
             json.dump(progress_data, f)
     except Exception as e:
         log_basic(f"Error saving popularity progress: {e}")
@@ -3236,6 +3243,10 @@ def popularity_scan(
             return (state.get("status") == "stopped") and (not bool(state.get("is_running", False)))
         except Exception:
             return False
+
+    progress_scan_type = "singles_scan" if singles_only else "popularity_scan"
+    progress_file_path = stop_progress_file or POPULARITY_PROGRESS_FILE
+
     if not skip_header:
         log_unified("Popularity Scan - Starting Popularity Scan")
         log_info("=" * 60)
@@ -7266,7 +7277,13 @@ def popularity_scan(
             # progress visibility while reducing file I/O by orders of magnitude.
             # If scan is interrupted, it can resume from the last completed artist.
             processed_artists += 1
-            save_popularity_progress(processed_artists, total_artists, current_artist=artist)
+            save_popularity_progress(
+                processed_artists,
+                total_artists,
+                current_artist=artist,
+                progress_file=progress_file_path,
+                scan_type=progress_scan_type,
+            )
             log_debug(f"Progress saved - {processed_artists}/{total_artists} artists processed (current: {artist})")
 
         log_debug("Committing final changes to database")
@@ -7289,15 +7306,15 @@ def popularity_scan(
         try:
             progress_data = {
                 "is_running": False,
-                "scan_type": "popularity_scan",
+                "scan_type": progress_scan_type,
                 "processed_artists": total_artists,
                 "total_artists": total_artists,
                 "percent_complete": 100,
                 "current_artist": None  # Clear current artist when scan completes
             }
-            with open(POPULARITY_PROGRESS_FILE, 'w') as f:
+            with open(progress_file_path, 'w') as f:
                 json.dump(progress_data, f)
-            log_debug(f"Final progress state written to {POPULARITY_PROGRESS_FILE}")
+            log_debug(f"Final progress state written to {progress_file_path}")
         except Exception as e:
             log_info(f"Error writing final progress state: {e}")
             log_debug(f"Progress file error details: {type(e).__name__}: {str(e)}")
