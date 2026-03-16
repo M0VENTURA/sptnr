@@ -2089,6 +2089,15 @@ def detect_single_enhanced(
                 log_debug(f"[DISCOGS_VIDEO] Client disabled")
                 log_info(f"   ⓘ Discogs client is disabled")
                 log_debug(f"   Discogs: Client is disabled in configuration")
+
+    # Preserve first-pass medium-source confirmations and disable the duplicated
+    # second metadata pipeline below to avoid duplicate external calls/sources.
+    primary_musicbrainz_confirmed = musicbrainz_confirmed
+    primary_discogs_video_confirmed = discogs_video_confirmed
+    primary_lastfm_single_confirmed = lastfm_single_confirmed
+    musicbrainz_client = None
+    discogs_client = None
+    lastfm_client = None
     
     # STAGE 4: MusicBrainz (Tertiary Source)
     musicbrainz_confirmed = False
@@ -2408,6 +2417,15 @@ def detect_single_enhanced(
         log_debug(f"[LASTFM] SKIPPED - HIGH confidence already achieved")
         lastfm_single_confirmed = False
     
+    # Restore first-pass confirmations after the disabled duplicate pass.
+    musicbrainz_confirmed = primary_musicbrainz_confirmed
+    discogs_video_confirmed = primary_discogs_video_confirmed
+    lastfm_single_confirmed = primary_lastfm_single_confirmed
+
+    # Keep source lists stable even if any repeated append paths were hit.
+    result['single_sources'] = list(dict.fromkeys(result['single_sources']))
+    result['single_sources_used'] = list(dict.fromkeys(result['single_sources_used']))
+
     # STAGE 5: Popularity-Based Inference (including version count)
     # NOTE: Z-scores were already calculated in STAGE 2 using median+MAD
     # Reuse those values here for consistency
