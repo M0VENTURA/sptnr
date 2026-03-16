@@ -352,6 +352,21 @@ When implementing or extending integrations, use these official API method famil
 - `/transfers/downloads/{username}/{transfer_id}`
 - `/transfers/downloads/all/completed`
 
+### 7.2 Queue match UX rules
+
+- Folder queue matching must follow the same flow as single-item matching.
+- Show `Current Queue Releases` first, with optional online MusicBrainz search collapsed below.
+- Folder apply action must use one batch API call and merge all folder queue rows to the selected release.
+- Batch merge must keep queue rows under a shared `import_group` (`mbid_<release_mbid>`).
+
+### 7.3 Soulseek reliability rules
+
+- For cancel/retry, use slskd transfer identifiers (`username + transfer_id`), not filename URLs.
+- If only filename is known, resolve `transfer_id` from `get_active_downloads()` before cancel.
+- Polling loops must exit as soon as search state is complete, even when zero results are returned.
+- Keep Soulseek format policy consistent across automatic queue flows (`.mp3`/`.flac` only unless explicitly configured otherwise).
+- Prefer shared helper logic for candidate scoring/filtering across queue and managed download paths.
+
 #### Navidrome / Subsonic REST (supported command families)
 
 - `ping`

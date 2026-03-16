@@ -414,7 +414,7 @@ def _poll_search_responses(client, search_id, max_poll_attempts=45):
             responses, _state, is_complete = client.get_search_results(search_id)
             if responses:
                 gathered = responses
-            if is_complete and gathered:
+            if is_complete:
                 break
         except Exception as e:
             logger.debug(f"Soulseek poll error for search_id={search_id}: {e}")

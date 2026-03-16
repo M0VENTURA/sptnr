@@ -13748,29 +13748,47 @@ def slskd_cancel():
     if not slskd_config.get("enabled"):
         return jsonify({"error": "slskd integration not enabled"}), 400
     
-    username = request.json.get("username", "")
-    filename = request.json.get("filename", "")
-    
-    if not username or not filename:
-        return jsonify({"error": "Username and filename required"}), 400
+    payload = request.json or {}
+    username = payload.get("username", "")
+    filename = payload.get("filename", "")
+    transfer_id = payload.get("transfer_id") or payload.get("remoteToken") or payload.get("id")
+
+    if not username:
+        return jsonify({"error": "Username required"}), 400
+    if not transfer_id and not filename:
+        return jsonify({"error": "Either transfer_id (or remoteToken) or filename is required"}), 400
     
     web_url = slskd_config.get("web_url", "http://localhost:5030")
     api_key = slskd_config.get("api_key", "")
     
     try:
-        import requests as req
-        
-        headers = {"X-API-Key": api_key} if api_key else {}
-        
-        # Cancel download - DELETE request to the specific download
-        cancel_url = f"{web_url}/api/v0/transfers/downloads/{username}/{filename}"
-        
-        resp = req.delete(cancel_url, headers=headers, timeout=10)
-        
-        if resp.status_code in [200, 204]:
-            return jsonify({"success": True, "message": "Download cancelled successfully"})
-        else:
-            return jsonify({"error": f"Failed to cancel download: {resp.status_code}"}), 500
+        client = SlskdClient(web_url, api_key, enabled=True)
+
+        if not transfer_id and filename:
+            try:
+                transfers = client.get_active_downloads(timeout=10)
+                target_name = str(filename).strip().replace('\\', '/').lower()
+                target_base = os.path.basename(target_name)
+                for transfer in transfers:
+                    transfer_user = str(transfer.get("username") or "")
+                    if transfer_user != username:
+                        continue
+                    transfer_name = str(transfer.get("filename") or "").strip().replace('\\', '/').lower()
+                    transfer_base = os.path.basename(transfer_name)
+                    if transfer_name == target_name or transfer_base == target_base:
+                        transfer_id = transfer.get("id")
+                        break
+            except Exception as resolve_err:
+                logging.debug(f"[SLSKD] Could not resolve transfer ID from filename: {resolve_err}")
+
+        if not transfer_id:
+            return jsonify({"error": "Could not resolve transfer_id for this download"}), 404
+
+        success = client.cancel_download(username, str(transfer_id), remove=True)
+
+        if success:
+            return jsonify({"success": True, "message": "Download cancelled successfully", "transfer_id": str(transfer_id)})
+        return jsonify({"error": "Failed to cancel download in slskd"}), 500
             
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -13785,10 +13803,12 @@ def slskd_retry():
     if not slskd_config.get("enabled"):
         return jsonify({"error": "slskd integration not enabled"}), 400
     
-    username = request.json.get("username", "")
-    filename = request.json.get("filename", "")
-    size = request.json.get("size", 0)
-    
+    payload = request.json or {}
+    username = payload.get("username", "")
+    filename = payload.get("filename", "")
+    size = payload.get("size", 0)
+    transfer_id = payload.get("transfer_id") or payload.get("remoteToken") or payload.get("id")
+
     if not username or not filename:
         return jsonify({"error": "Username and filename required"}), 400
     
@@ -13796,19 +13816,37 @@ def slskd_retry():
     api_key = slskd_config.get("api_key", "")
     
     try:
-        import requests as req_module
-        
-        # First cancel the existing download
-        headers = {"X-API-Key": api_key} if api_key else {}
-        cancel_url = f"{web_url}/api/v0/transfers/downloads/{username}/{filename}"
-        req_module.delete(cancel_url, headers=headers, timeout=10)
-        
-        # Then re-queue it
         client = SlskdClient(web_url, api_key, enabled=True)
+
+        # First cancel the existing transfer (best-effort).
+        if not transfer_id and filename:
+            try:
+                transfers = client.get_active_downloads(timeout=10)
+                target_name = str(filename).strip().replace('\\', '/').lower()
+                target_base = os.path.basename(target_name)
+                for transfer in transfers:
+                    transfer_user = str(transfer.get("username") or "")
+                    if transfer_user != username:
+                        continue
+                    transfer_name = str(transfer.get("filename") or "").strip().replace('\\', '/').lower()
+                    transfer_base = os.path.basename(transfer_name)
+                    if transfer_name == target_name or transfer_base == target_base:
+                        transfer_id = transfer.get("id")
+                        break
+            except Exception as resolve_err:
+                logging.debug(f"[SLSKD] Could not resolve transfer ID for retry: {resolve_err}")
+
+        if transfer_id:
+            try:
+                client.cancel_download(username, str(transfer_id), remove=True, timeout=10)
+            except Exception as cancel_err:
+                logging.debug(f"[SLSKD] Retry cancel step warning: {cancel_err}")
+
+        # Then re-queue it.
         success = client.download_file(username, filename, int(size))
         
         if success:
-            return jsonify({"success": True, "message": f"Download retry queued for {filename}"})
+            return jsonify({"success": True, "message": f"Download retry queued for {filename}", "transfer_id": str(transfer_id or "")})
         else:
             return jsonify({"error": "Failed to re-queue download"}), 500
             

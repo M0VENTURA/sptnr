@@ -3369,15 +3369,14 @@ def popularity_scan(
             sql_conditions.append(f"album = {placeholder}")
             sql_params.append(album_filter)
         
-        sql = f"""
-             SELECT id, artist, title, album, isrc, duration, spotify_album_type, track_number, mbid, year,
-                 spotify_popularity, spotify_score, lastfm_track_playcount, lastfm_ratio, last_spotify_lookup,
-                 popularity_score, album_artist, writer, spotify_genres, lastfm_tags,
-                 listenbrainz_genres, discogs_genres, musicbrainz_genres, cover_art_url
-            FROM tracks
-            {('WHERE ' + ' AND '.join(sql_conditions)) if sql_conditions else ''}
-            ORDER BY artist, album, title
-        """
+        select_clause = (
+            "SELECT id, artist, title, album, isrc, duration, spotify_album_type, track_number, mbid, year, "
+            "spotify_popularity, spotify_score, lastfm_track_playcount, lastfm_ratio, last_spotify_lookup, "
+            "popularity_score, album_artist, writer, spotify_genres, lastfm_tags, "
+            "listenbrainz_genres, discogs_genres, musicbrainz_genres, cover_art_url"
+        )
+        where_clause = f" WHERE {' AND '.join(sql_conditions)}" if sql_conditions else ""
+        sql = f"{select_clause} FROM tracks{where_clause} ORDER BY artist, album, title"
         
         log_debug(f"Executing SQL: {sql.strip()} with params: {sql_params}")
         cursor.execute(sql, sql_params)
