@@ -6897,6 +6897,50 @@ def api_artist_covered_by():
         return jsonify({"success": False, "error": str(e), "covers": []}), 500
 
 
+def _is_bookmarks_null_id_error(error):
+    msg = str(error or "")
+    return 'null value in column "id"' in msg and 'relation "bookmarks"' in msg
+
+
+def _repair_postgres_bookmarks_id_default(conn):
+    """Ensure PostgreSQL bookmarks.id has a working sequence-backed default."""
+    if not _is_postgres_connection(conn):
+        return False
+
+    cursor = conn.cursor()
+    cursor.execute("CREATE SEQUENCE IF NOT EXISTS bookmarks_id_seq")
+    cursor.execute(
+        "SELECT setval('bookmarks_id_seq', COALESCE((SELECT MAX(id) FROM bookmarks), 0) + 1, false)"
+    )
+    cursor.execute(
+        "ALTER TABLE bookmarks ALTER COLUMN id SET DEFAULT nextval('bookmarks_id_seq')"
+    )
+    try:
+        cursor.execute("ALTER SEQUENCE bookmarks_id_seq OWNED BY bookmarks.id")
+    except Exception:
+        # Ownership may already be set or unavailable in some environments.
+        pass
+    conn.commit()
+    return True
+
+
+def _insert_bookmark_resilient(conn, query, params):
+    """Execute bookmark insert and auto-repair missing PG id default if needed."""
+    cursor = conn.cursor()
+    try:
+        cursor.execute(query, params)
+        return cursor
+    except Exception as insert_err:
+        if _is_postgres_connection(conn) and _is_bookmarks_null_id_error(insert_err):
+            logging.warning("[BOOKMARKS] Detected missing bookmarks.id default; attempting auto-repair")
+            conn.rollback()
+            _repair_postgres_bookmarks_id_default(conn)
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            return cursor
+        raise
+
+
 @app.route("/api/artist/favourite", methods=["GET", "POST", "DELETE"])
 def api_artist_favourite():
     """Check, add, or remove an artist from favourites.
@@ -6939,7 +6983,8 @@ def api_artist_favourite():
                 conn.close()
                 return jsonify({"error": "Artist name required"}), 400
             if is_pg:
-                cursor.execute(
+                _insert_bookmark_resilient(
+                    conn,
                     f"""
                     INSERT INTO bookmarks (type, name)
                     VALUES ({placeholder}, {placeholder})
@@ -11755,7 +11800,7 @@ def api_bookmarks():
                 return jsonify({"success": False, "error": "Missing required fields"}), 400
             
             if is_pg:
-                cursor.execute(f"""
+                _insert_bookmark_resilient(conn, f"""
                     INSERT INTO bookmarks (type, name, artist, album, track_id)
                     VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
                     ON CONFLICT DO NOTHING
@@ -13151,7 +13196,8 @@ def api_track_favourite():
                 return jsonify({"error": "Track ID required"}), 400
             
             if is_pg:
-                cursor.execute(
+                _insert_bookmark_resilient(
+                    conn,
                     f"INSERT INTO bookmarks (type, track_id) VALUES ({placeholder}, {placeholder}) ON CONFLICT DO NOTHING",
                     ("track_favourite", track_id),
                 )
@@ -13225,7 +13271,8 @@ def api_album_favourite():
                 return jsonify({"error": "Artist and album required"}), 400
             
             if is_pg:
-                cursor.execute(
+                _insert_bookmark_resilient(
+                    conn,
                     f"INSERT INTO bookmarks (type, artist, album) VALUES ({placeholder}, {placeholder}, {placeholder}) ON CONFLICT DO NOTHING",
                     ("album_favourite", artist, album),
                 )
