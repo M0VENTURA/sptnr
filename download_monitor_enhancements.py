@@ -120,7 +120,7 @@ def search_and_update_musicbrainz(queue_id, artist, title, album):
         if not releases:
             logger.info(f"No MusicBrainz match for unmatched file (queue_id={queue_id}): {artist} - {album}")
             return
-        
+
         # Take the best valid MusicBrainz release candidate.
         release = None
         release_mbid = None
@@ -140,65 +140,90 @@ def search_and_update_musicbrainz(queue_id, artist, title, album):
             return
 
         release_year = release.get('date', '')[:4] if release.get('date') else None
-        
+        release_artist = release.get('artist') or artist
+        cover_art_url = release.get('cover_art_url') or release.get('cover_art')
+
+        if not cover_art_url:
+            try:
+                from api_clients.coverartarchive import get_release_image_from_caa
+                cover_art_url = get_release_image_from_caa(release_mbid) or None
+            except Exception:
+                cover_art_url = None
+
         logger.info(f"Found MusicBrainz match: {release.get('title')} (MBID: {release_mbid})")
-        
-        # Update original queue item with MBID
+
+        # Update original queue item with release-level metadata.
         conn = get_db()
         cursor = conn.cursor()
-        
-        cursor.execute("""
+        cursor.execute(
+            """
             UPDATE download_queue
             SET release_mbid = %s,
+                release_id = %s,
+                release_source = 'musicbrainz',
                 release_year = %s,
                 album_artist = %s,
+                cover_art_url = COALESCE(%s, cover_art_url),
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
-        """, (release_mbid, release_year, release.get('artist', artist), queue_id))
-        
+            """,
+            (release_mbid, release_mbid, release_year, release_artist, cover_art_url, queue_id),
+        )
         conn.commit()
-        
-        # Fetch full tracklist
+
+        # Fetch full tracklist and add missing album tracks as queried.
         tracks = get_musicbrainz_release_tracks(release_mbid)
-        
         if not tracks:
             logger.warning(f"No tracks found for release {release_mbid}")
             conn.close()
             return
-        
-        # Add remaining tracks as 'queried' (skip if this track title already exists)
+
         from download_queue_manager import add_to_queue
-        
+
         added_count = 0
         for track in tracks:
-            # Skip the track that's already in queue
-            if track['title'].lower() == title.lower():
+            track_title = (track.get('title') or '').strip()
+            if not track_title:
                 continue
-            
-            # Check if track already exists in queue for this album
-            cursor.execute("""
+
+            # Skip the original unmatched track to avoid duplicate queue rows.
+            if track_title.lower() == (title or '').lower():
+                continue
+
+            track_artist = (track.get('artist') or artist or '').strip() or artist
+
+            cursor.execute(
+                """
                 SELECT id FROM download_queue
-                WHERE LOWER(artist) = LOWER(%s) AND LOWER(album) = LOWER(%s) AND LOWER(title) = LOWER(%s)
+                WHERE LOWER(artist) = LOWER(%s) AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(%s, '')) AND LOWER(title) = LOWER(%s)
                 LIMIT 1
-            """, (track['artist'], album, track['title']))
-            
+                """,
+                (track_artist, album, track_title),
+            )
             if cursor.fetchone():
-                continue  # Already in queue
-            
-            # Add as 'queried' status
+                continue
+
             add_to_queue(
-                artist=track.get('artist') or artist,
-                title=track.get('title', ''),
+                artist=track_artist,
+                title=track_title,
                 album=album,
                 status='queried',
-                track_number=track.get('number'),
+                track_number=track.get('number') or track.get('track_number'),
+                disc_number=track.get('disc_number'),
+                album_artist=release_artist,
                 year=release_year,
+                release_id=release_mbid,
+                release_source='musicbrainz',
                 release_mbid=release_mbid,
-                recording_mbid=None,
-                duration=track.get('duration')
+                recording_mbid=track.get('recording_mbid') or track.get('recording_id'),
+                duration=track.get('duration'),
+                isrc=track.get('isrc'),
+                composer=track.get('composer'),
+                genres=track.get('genres'),
+                cover_art_url=cover_art_url,
             )
             added_count += 1
-        
+
         conn.close()
         logger.info(f"Added {added_count} queried tracks for album: {album}")
         
@@ -465,9 +490,9 @@ def update_music_tags(file_path, queue_item):
     """
     try:
         import mutagen
-        from mutagen.id3 import ID3, TIT2, TPE1, TALB, TDRC, TRCK, TPE2, TXXX, UFID
-        from mutagen.flac import FLAC
-        from mutagen.mp4 import MP4
+        from mutagen.id3 import ID3, TIT2, TPE1, TALB, TDRC, TRCK, TPE2, TXXX, UFID, APIC, TCON, TCOM, TSRC
+        from mutagen.flac import FLAC, Picture
+        from mutagen.mp4 import MP4, MP4Cover
     except ImportError:
         logger.warning("mutagen library not installed - skipping tag update")
         logger.warning("Install with: pip install mutagen")
@@ -476,6 +501,21 @@ def update_music_tags(file_path, queue_item):
     ext = os.path.splitext(file_path)[1].lower()
     
     try:
+        cover_art_data = None
+        cover_art_mime = 'image/jpeg'
+        cover_art_url = queue_item.get('cover_art_url')
+        if cover_art_url:
+            try:
+                import requests
+                art_resp = requests.get(cover_art_url, timeout=10)
+                if art_resp.status_code == 200 and art_resp.content:
+                    cover_art_data = art_resp.content
+                    cover_art_mime = art_resp.headers.get('Content-Type', cover_art_mime) or cover_art_mime
+            except Exception as art_err:
+                logger.debug(f"Could not fetch cover art for tag embedding: {art_err}")
+
+        release_year = queue_item.get('release_year') or queue_item.get('year')
+
         if ext == '.mp3':
             try:
                 audio = ID3(file_path)
@@ -495,8 +535,8 @@ def update_music_tags(file_path, queue_item):
             if queue_item.get('album_artist'):
                 audio.add(TPE2(encoding=3, text=queue_item['album_artist']))
             
-            if queue_item.get('release_year'):
-                audio.add(TDRC(encoding=3, text=str(queue_item['release_year'])))
+            if release_year:
+                audio.add(TDRC(encoding=3, text=str(release_year)))
             
             if queue_item.get('track_number'):
                 audio.add(TRCK(encoding=3, text=str(queue_item['track_number'])))
@@ -507,6 +547,27 @@ def update_music_tags(file_path, queue_item):
             
             if queue_item.get('recording_mbid'):
                 audio.add(UFID(owner='http://musicbrainz.org', data=queue_item['recording_mbid'].encode()))
+
+            if queue_item.get('genres'):
+                genre_text = queue_item['genres']
+                if isinstance(genre_text, (list, tuple)):
+                    genre_text = ', '.join(str(g) for g in genre_text if g)
+                audio.add(TCON(encoding=3, text=[str(genre_text)]))
+
+            if queue_item.get('composer'):
+                audio.add(TCOM(encoding=3, text=[str(queue_item['composer'])]))
+
+            if queue_item.get('isrc'):
+                audio.add(TSRC(encoding=3, text=[str(queue_item['isrc'])]))
+
+            if cover_art_data:
+                audio.add(APIC(
+                    encoding=3,
+                    mime=cover_art_mime,
+                    type=3,
+                    desc='Cover',
+                    data=cover_art_data,
+                ))
             
             audio.save(file_path)
             
@@ -523,8 +584,8 @@ def update_music_tags(file_path, queue_item):
             if queue_item.get('album_artist'):
                 audio['ALBUMARTIST'] = queue_item['album_artist']
             
-            if queue_item.get('release_year'):
-                audio['DATE'] = str(queue_item['release_year'])
+            if release_year:
+                audio['DATE'] = str(release_year)
             
             if queue_item.get('track_number'):
                 audio['TRACKNUMBER'] = str(queue_item['track_number'])
@@ -534,6 +595,27 @@ def update_music_tags(file_path, queue_item):
             
             if queue_item.get('recording_mbid'):
                 audio['MUSICBRAINZ_TRACKID'] = queue_item['recording_mbid']
+
+            if queue_item.get('genres'):
+                genre_text = queue_item['genres']
+                if isinstance(genre_text, (list, tuple)):
+                    genre_text = ', '.join(str(g) for g in genre_text if g)
+                audio['GENRE'] = str(genre_text)
+
+            if queue_item.get('composer'):
+                audio['COMPOSER'] = str(queue_item['composer'])
+
+            if queue_item.get('isrc'):
+                audio['ISRC'] = str(queue_item['isrc'])
+
+            if cover_art_data:
+                picture = Picture()
+                picture.type = 3
+                picture.mime = cover_art_mime
+                picture.desc = 'Cover'
+                picture.data = cover_art_data
+                audio.clear_pictures()
+                audio.add_picture(picture)
             
             audio.save()
             
@@ -550,11 +632,24 @@ def update_music_tags(file_path, queue_item):
             if queue_item.get('album_artist'):
                 audio['aART'] = queue_item['album_artist']
             
-            if queue_item.get('release_year'):
-                audio['\xa9day'] = str(queue_item['release_year'])
+            if release_year:
+                audio['\xa9day'] = str(release_year)
             
             if queue_item.get('track_number'):
                 audio['trkn'] = [(int(queue_item['track_number']), 0)]
+
+            if queue_item.get('genres'):
+                genre_text = queue_item['genres']
+                if isinstance(genre_text, (list, tuple)):
+                    genre_text = ', '.join(str(g) for g in genre_text if g)
+                audio['\xa9gen'] = [str(genre_text)]
+
+            if queue_item.get('composer'):
+                audio['\xa9wrt'] = [str(queue_item['composer'])]
+
+            if cover_art_data:
+                fmt = MP4Cover.FORMAT_PNG if 'png' in cover_art_mime.lower() else MP4Cover.FORMAT_JPEG
+                audio['covr'] = [MP4Cover(cover_art_data, imageformat=fmt)]
             
             audio.save()
         

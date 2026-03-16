@@ -139,8 +139,21 @@ def update_file_metadata(file_path, metadata):
     try:
         ext = os.path.splitext(file_path)[1].lower()
         
+        cover_art_data = None
+        cover_art_mime = 'image/jpeg'
+        cover_art_url = metadata.get('cover_art_url')
+        if cover_art_url:
+            try:
+                import requests
+                art_resp = requests.get(cover_art_url, timeout=10)
+                if art_resp.status_code == 200 and art_resp.content:
+                    cover_art_data = art_resp.content
+                    cover_art_mime = art_resp.headers.get('Content-Type', cover_art_mime) or cover_art_mime
+            except Exception as art_err:
+                logger.debug(f"Could not fetch cover art for metadata update: {art_err}")
+
         if ext == '.mp3':
-            from mutagen.id3 import ID3, TIT2, TPE1, TPE2, TALB, TDRC, TRCK, TPOS
+            from mutagen.id3 import ID3, TIT2, TPE1, TPE2, TALB, TDRC, TRCK, TPOS, TCON, TCOM, TSRC, APIC
             from mutagen.mp3 import MP3
             
             audio = MP3(file_path, ID3=ID3)
@@ -167,13 +180,31 @@ def update_file_metadata(file_path, metadata):
             
             if metadata.get('disc_number'):
                 audio.tags['TPOS'] = TPOS(encoding=3, text=[str(metadata['disc_number'])])
+
+            if metadata.get('genre'):
+                audio.tags['TCON'] = TCON(encoding=3, text=[str(metadata['genre'])])
+
+            if metadata.get('composer'):
+                audio.tags['TCOM'] = TCOM(encoding=3, text=[str(metadata['composer'])])
+
+            if metadata.get('isrc'):
+                audio.tags['TSRC'] = TSRC(encoding=3, text=[str(metadata['isrc'])])
+
+            if cover_art_data:
+                audio.tags['APIC'] = APIC(
+                    encoding=3,
+                    mime=cover_art_mime,
+                    type=3,
+                    desc='Cover',
+                    data=cover_art_data,
+                )
             
             audio.save()
             logger.info(f"✅ Updated MP3 metadata: {file_path}")
             return True
         
         elif ext == '.flac':
-            from mutagen.flac import FLAC
+            from mutagen.flac import FLAC, Picture
             
             audio = FLAC(file_path)
             
@@ -197,6 +228,24 @@ def update_file_metadata(file_path, metadata):
             
             if metadata.get('disc_number'):
                 audio['discnumber'] = [str(metadata['disc_number'])]
+
+            if metadata.get('genre'):
+                audio['genre'] = [str(metadata['genre'])]
+
+            if metadata.get('composer'):
+                audio['composer'] = [str(metadata['composer'])]
+
+            if metadata.get('isrc'):
+                audio['isrc'] = [str(metadata['isrc'])]
+
+            if cover_art_data:
+                picture = Picture()
+                picture.type = 3
+                picture.mime = cover_art_mime
+                picture.desc = 'Cover'
+                picture.data = cover_art_data
+                audio.clear_pictures()
+                audio.add_picture(picture)
             
             audio.save()
             logger.info(f"✅ Updated FLAC metadata: {file_path}")
@@ -256,6 +305,13 @@ def prepare_filename_and_path(music_dir, metadata):
         
         # Build filename
         ext = metadata.get('ext', '.mp3')
+        if not ext or not ext.startswith('.'):
+            orig_path = metadata.get('source_file_path')
+            if orig_path:
+                ext = os.path.splitext(orig_path)[1].lower() or '.mp3'
+            else:
+                ext = '.mp3'
+            logger.warning(f"[FILENAME] Missing or invalid extension, defaulting to {ext}")
         filename = sanitize_filename(f"{track_num}. {artist} - {title}{ext}")
         target_path = os.path.join(album_dir, filename)
         
@@ -309,7 +365,12 @@ def copy_file_to_music(source_file_path, queue_item, music_dir):
             'year': queue_item.get('year', 'Unknown'),
             'track_number': queue_item.get('track_number'),
             'disc_number': queue_item.get('disc_number'),
-            'ext': os.path.splitext(source_file_path)[1].lower()
+            'genre': queue_item.get('genres') or queue_item.get('genre'),
+            'composer': queue_item.get('composer'),
+            'isrc': queue_item.get('isrc'),
+            'cover_art_url': queue_item.get('cover_art_url'),
+            'ext': os.path.splitext(source_file_path)[1].lower(),
+            'source_file_path': source_file_path
         }
         
         # Update file metadata

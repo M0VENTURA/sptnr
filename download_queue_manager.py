@@ -499,6 +499,9 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                 'release_source': "TEXT",
                 'release_mbid': "TEXT",
                 'recording_mbid': "TEXT",
+                'isrc': "TEXT",
+                'composer': "TEXT",
+                'genres': "TEXT",
                 'release_year': "INTEGER",
                 'duration': "INTEGER",
                 'matched_file_path': "TEXT",
@@ -828,7 +831,7 @@ def _add_queue_item_to_tracks_table(conn, cursor, is_pg, artist, title, album, a
 def add_to_queue(artist, title, album=None, source='soulseek', priority=5, import_group=None, import_type='song',
                  track_number=None, album_artist=None, year=None, release_id=None, release_source=None,
                  duration=None, disc_number=None, release_mbid=None, recording_mbid=None, status=None,
-                 matched_file_path=None, cover_art_url=None):
+                 matched_file_path=None, cover_art_url=None, isrc=None, composer=None, genres=None):
     """
     Add a song to the download queue with comprehensive metadata and duplicate detection
     
@@ -852,6 +855,9 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         status: Initial status (optional, defaults to 'queued' or detected duplicate/collection status)
         matched_file_path: File path if already matched (for unmatched files workflow)
         cover_art_url: URL to album art image for future metadata embedding (optional)
+        isrc: ISRC code from MusicBrainz (optional)
+        composer: Composer credit text (optional)
+        genres: Genre list/text from MusicBrainz (optional)
     
     Returns:
         Queue item dict or None if failed
@@ -1018,12 +1024,12 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                     INSERT INTO download_queue 
                     (artist, title, album, search_query, source, status, priority, file_path, import_group, import_type, 
                      track_number, album_artist, year, release_id, release_source,
-                     duration, disc_number, release_mbid, recording_mbid, release_year, matched_file_path,
+                         duration, disc_number, release_mbid, recording_mbid, isrc, composer, genres, release_year, matched_file_path,
                      in_collection, collection_track_id, collection_matched_at,
                      cover_art_url,
                      created_at, updated_at)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, %s, %s, %s, %s,
-                            %s, %s, %s, %s, %s, %s,
+                            %s, %s, %s, %s, %s, %s, %s, %s,
                             %s, %s, %s,
                             %s,
                             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
@@ -1031,7 +1037,7 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                     """,
                     (artist, title, album, search_query, source, initial_status, priority, import_group, import_type,
                      track_number, album_artist, year, release_id, release_source,
-                     duration, disc_number, release_mbid, recording_mbid, release_year, matched_file_path,
+                         duration, disc_number, release_mbid, recording_mbid, isrc, composer, genres, release_year, matched_file_path,
                      1 if in_collection else 0, collection_track_id,
                      datetime.now().isoformat() if in_collection else None,
                      cover_art_url),
@@ -1049,19 +1055,19 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                     INSERT INTO download_queue 
                     (artist, title, album, search_query, source, status, priority, file_path, import_group, import_type, 
                      track_number, album_artist, year, release_id, release_source,
-                     duration, disc_number, release_mbid, recording_mbid, release_year, matched_file_path,
+                         duration, disc_number, release_mbid, recording_mbid, isrc, composer, genres, release_year, matched_file_path,
                      in_collection, collection_track_id, collection_matched_at,
                      cover_art_url,
                      created_at, updated_at)
                     VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, NULL, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder},
-                            {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder},
+                            {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder},
                             {placeholder}, {placeholder}, {placeholder},
                             {placeholder},
                             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """,
                     (artist, title, album, search_query, source, initial_status, priority, import_group, import_type,
                      track_number, album_artist, year, release_id, release_source,
-                     duration, disc_number, release_mbid, recording_mbid, release_year, matched_file_path,
+                         duration, disc_number, release_mbid, recording_mbid, isrc, composer, genres, release_year, matched_file_path,
                      1 if in_collection else 0, collection_track_id,
                      datetime.now().isoformat() if in_collection else None,
                      cover_art_url),
