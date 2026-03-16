@@ -3893,7 +3893,8 @@ async function loadCurrentQueueReleases(queueId, currentArtist, currentAlbum) {
   if (!container) return;
 
   try {
-    const data = await fetchJsonOrThrow('/api/queue/matched-releases');
+    const apiUrl = `/api/queue/matched-releases?artist=${encodeURIComponent(currentArtist || '')}&album=${encodeURIComponent(currentAlbum || '')}&limit=80`;
+    const data = await fetchJsonOrThrow(apiUrl);
     const releases = data.releases || [];
 
     if (!releases.length) {

@@ -20968,15 +20968,49 @@ def api_queue_matched_releases():
         conn = get_db()
         cursor = conn.cursor()
         is_pg = _is_postgres_connection(conn)
+
+        artist_filter = (request.args.get('artist') or '').strip()
+        album_filter = (request.args.get('album') or '').strip()
+        try:
+            requested_limit = int(request.args.get('limit', 80))
+        except Exception:
+            requested_limit = 80
+        limit = max(10, min(requested_limit, 250))
+
         release_uuid_expr = "COALESCE(NULLIF(release_mbid, ''), NULLIF(release_id, ''))"
         release_uuid_length_expr = f"char_length({release_uuid_expr})" if is_pg else f"length({release_uuid_expr})"
+        placeholder = "%s" if is_pg else "?"
+
+        active_statuses = (
+            'queued', 'searching', 'downloading',
+            'matched', 'completed',
+            'unmatched', 'queried',
+            'discovered', 'pending_match',
+            'possible_duplicate', 'duplicate'
+        )
+        status_placeholders = ", ".join([placeholder] * len(active_statuses))
 
         cursor.execute(f"""
-            SELECT COALESCE(NULLIF(album_artist, ''), artist) AS release_artist,
-                   album,
-                   {release_uuid_expr} AS release_uuid,
-                   COALESCE(NULLIF(CAST(release_year AS TEXT), ''), NULLIF(CAST(year AS TEXT), '')) AS resolved_year,
-                   COUNT(*) AS track_count
+            SELECT
+                {release_uuid_expr} AS mbid,
+                MAX(COALESCE(NULLIF(album_artist, ''), artist)) AS release_artist,
+                MAX(COALESCE(NULLIF(album, ''), '')) AS release_album,
+                MAX(COALESCE(NULLIF(CAST(release_year AS TEXT), ''), NULLIF(CAST(year AS TEXT), ''))) AS resolved_year,
+                COUNT(*) AS track_count,
+                MAX(
+                    CASE
+                        WHEN {placeholder} <> ''
+                         AND LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER({placeholder})
+                        THEN 1 ELSE 0
+                    END
+                ) AS artist_match,
+                MAX(
+                    CASE
+                        WHEN {placeholder} <> ''
+                         AND LOWER(COALESCE(NULLIF(album, ''), '')) = LOWER({placeholder})
+                        THEN 1 ELSE 0
+                    END
+                ) AS album_match
             FROM download_queue
             WHERE {release_uuid_expr} IS NOT NULL
               AND (
@@ -20987,13 +21021,15 @@ def api_queue_matched_releases():
                         AND {release_uuid_expr} LIKE '________-____-____-____-____________'
                     )
                   )
-              AND status NOT IN ('imported', 'removed', 'cancelled')
-            GROUP BY COALESCE(NULLIF(album_artist, ''), artist),
-                     album,
-                     {release_uuid_expr},
-                     COALESCE(NULLIF(CAST(release_year AS TEXT), ''), NULLIF(CAST(year AS TEXT), ''))
-            ORDER BY COALESCE(NULLIF(album_artist, ''), artist), album
-        """)
+              AND status IN ({status_placeholders})
+            GROUP BY {release_uuid_expr}
+            ORDER BY artist_match DESC,
+                     album_match DESC,
+                     track_count DESC,
+                     LOWER(MAX(COALESCE(NULLIF(album_artist, ''), artist))),
+                     LOWER(MAX(COALESCE(NULLIF(album, ''), '')))
+            LIMIT {placeholder}
+        """, (artist_filter, artist_filter, album_filter, album_filter, *active_statuses, limit))
         rows = cursor.fetchall()
         conn.close()
         conn = None
@@ -21003,65 +21039,19 @@ def api_queue_matched_releases():
             if isinstance(row, dict):
                 releases.append({
                     'artist': row.get('release_artist') or '',
-                    'album': row.get('album') or '',
-                    'mbid': row.get('release_uuid') or '',
+                    'album': row.get('release_album') or '',
+                    'mbid': row.get('mbid') or '',
                     'year': row.get('resolved_year') or '',
                     'track_count': row.get('track_count') or 0,
                 })
             else:
                 releases.append({
-                    'artist': row[0] or '',
-                    'album': row[1] or '',
-                    'mbid': row[2] or '',
+                    'mbid': row[0] or '',
+                    'artist': row[1] or '',
+                    'album': row[2] or '',
                     'year': row[3] or '',
                     'track_count': row[4] or 0,
                 })
-
-        # Merge duplicate rows that share the same MBID. Queue rows can differ in
-        # album/year text while still pointing to the same MusicBrainz release.
-        merged_by_mbid = {}
-        for release in releases:
-            mbid = str(release.get('mbid') or '').strip()
-            if not mbid:
-                continue
-
-            key = mbid.lower()
-            existing = merged_by_mbid.get(key)
-            if not existing:
-                merged_by_mbid[key] = {
-                    'artist': release.get('artist') or '',
-                    'album': release.get('album') or '',
-                    'mbid': mbid,
-                    'year': str(release.get('year') or '').strip(),
-                    'track_count': int(release.get('track_count') or 0),
-                }
-                continue
-
-            existing['track_count'] += int(release.get('track_count') or 0)
-
-            # Prefer values that look more complete when duplicates disagree.
-            candidate_artist = str(release.get('artist') or '').strip()
-            if candidate_artist and len(candidate_artist) > len(str(existing.get('artist') or '').strip()):
-                existing['artist'] = candidate_artist
-
-            candidate_album = str(release.get('album') or '').strip()
-            if candidate_album and len(candidate_album) > len(str(existing.get('album') or '').strip()):
-                existing['album'] = candidate_album
-
-            candidate_year = str(release.get('year') or '').strip()
-            current_year = str(existing.get('year') or '').strip()
-            # Prefer a strict YYYY value when available.
-            if candidate_year and (not current_year or (len(candidate_year) == 4 and len(current_year) != 4)):
-                existing['year'] = candidate_year
-
-        releases = sorted(
-            merged_by_mbid.values(),
-            key=lambda item: (
-                str(item.get('artist') or '').lower(),
-                str(item.get('album') or '').lower(),
-                str(item.get('mbid') or '').lower(),
-            )
-        )
 
         return jsonify({"success": True, "releases": releases})
 
