@@ -327,6 +327,28 @@ def resolve_music_dir():
     )
 
 
+def _resolve_existing_track_path(file_path, music_root=None):
+    """Resolve stored track path to an existing on-disk file path when possible."""
+    if not file_path:
+        return None
+
+    raw_path = str(file_path).strip()
+    if not raw_path:
+        return None
+
+    # First honor absolute paths as-is.
+    if os.path.isabs(raw_path) and os.path.exists(raw_path):
+        return raw_path
+
+    base_music_root = os.path.normpath(music_root or resolve_music_dir())
+    rel_path = raw_path.replace("\\", "/").lstrip("/")
+    candidate = os.path.normpath(os.path.join(base_music_root, rel_path))
+    if os.path.exists(candidate):
+        return candidate
+
+    return raw_path if os.path.exists(raw_path) else None
+
+
 def _normalize_path_for_compare(path_value):
     if not path_value:
         return ""
@@ -2218,8 +2240,8 @@ def rename_album_files(artist, album, db_conn, music_dir=None):
                     logger.debug(f"[RENAME] Skipping track {track_id} - no file path or queued")
                     continue
                 
-                # Check file exists
-                if not os.path.exists(file_path):
+                resolved_file_path = _resolve_existing_track_path(file_path, music_root=music_root)
+                if not resolved_file_path:
                     error_msg = f"File not found: {file_path} (track: {track_artist} - {track_title})"
                     logger.warning(f"[RENAME] {error_msg}")
                     result['errors'].append(error_msg)
@@ -2257,12 +2279,12 @@ def rename_album_files(artist, album, db_conn, music_dir=None):
                     track_num_fmt = "00"
                 
                 # Build new filename
-                ext = os.path.splitext(file_path)[1].lower()
+                ext = os.path.splitext(resolved_file_path)[1].lower()
                 filename = _sanitize_path_component(f"{track_num_fmt}. {track_artist} - {track_title}{ext}")
                 new_path = os.path.join(dest_folder, filename)
                 
                 # Handle conflicts with counter
-                if os.path.exists(new_path) and new_path != file_path:
+                if os.path.exists(new_path) and new_path != resolved_file_path:
                     base, ext_only = os.path.splitext(filename)
                     counter = 1
                     while os.path.exists(os.path.join(dest_folder, f"{base}_{counter}{ext_only}")):
@@ -2270,10 +2292,10 @@ def rename_album_files(artist, album, db_conn, music_dir=None):
                     new_path = os.path.join(dest_folder, f"{base}_{counter}{ext_only}")
                 
                 # Only move if path changed
-                if new_path != file_path:
+                if new_path != resolved_file_path:
                     # Move the file
-                    shutil.move(file_path, new_path)
-                    logger.info(f"[RENAME] {os.path.basename(file_path)} → {os.path.basename(new_path)}")
+                    shutil.move(resolved_file_path, new_path)
+                    logger.info(f"[RENAME] {os.path.basename(resolved_file_path)} → {os.path.basename(new_path)}")
                     result['renamed_count'] += 1
                     
                     # Update database
@@ -2290,7 +2312,7 @@ def rename_album_files(artist, album, db_conn, music_dir=None):
                         result['details'].append({
                             'track_id': track_id,
                             'track': f"{track_artist} - {track_title}",
-                            'old_path': file_path,
+                            'old_path': resolved_file_path,
                             'new_path': new_path
                         })
                     except Exception as db_err:
@@ -2420,11 +2442,12 @@ def rename_track_file(track_id, db_conn, music_dir=None):
             result["error"] = "Track has no file path (may be a queued placeholder)"
             return result
 
-        if not os.path.exists(file_path):
+        music_root = music_dir or resolve_music_dir()
+        resolved_file_path = _resolve_existing_track_path(file_path, music_root=music_root)
+        if not resolved_file_path:
             result["error"] = f"File not found on disk: {file_path}"
             return result
 
-        music_root = music_dir or resolve_music_dir()
         file_name_format = _read_track_file_name_format()
 
         # Extract year (handle full date strings)
@@ -2472,7 +2495,7 @@ def rename_track_file(track_id, db_conn, music_dir=None):
             result["error"] = "Could not build a valid target path from format"
             return result
 
-        ext = os.path.splitext(file_path)[1].lower()
+        ext = os.path.splitext(resolved_file_path)[1].lower()
         relative_joined = os.path.join(*parts)
         base_name, ext_from_format = os.path.splitext(relative_joined)
         if not ext_from_format:
@@ -2483,7 +2506,7 @@ def rename_track_file(track_id, db_conn, music_dir=None):
         os.makedirs(new_dir, exist_ok=True)
 
         # Handle filename conflict (path changed AND target already occupied by a different file)
-        if os.path.exists(new_path) and os.path.abspath(new_path) != os.path.abspath(file_path):
+        if os.path.exists(new_path) and os.path.abspath(new_path) != os.path.abspath(resolved_file_path):
             stem, file_ext = os.path.splitext(new_path)
             counter = 1
             while os.path.exists(f"{stem}_{counter}{file_ext}"):
@@ -2492,14 +2515,14 @@ def rename_track_file(track_id, db_conn, music_dir=None):
 
         result["new_path"] = new_path
 
-        if os.path.abspath(new_path) == os.path.abspath(file_path):
+        if os.path.abspath(new_path) == os.path.abspath(resolved_file_path):
             result["success"] = True
             result["renamed"] = False
             result["message"] = "File is already at the correct path"
             return result
 
-        _shutil.move(file_path, new_path)
-        logger.info(f"[RENAME] Moved: {file_path!r} -> {new_path!r}")
+        _shutil.move(resolved_file_path, new_path)
+        logger.info(f"[RENAME] Moved: {resolved_file_path!r} -> {new_path!r}")
 
         cursor.execute(
             f"UPDATE tracks SET file_path = {placeholder}, beets_path = {placeholder} "
