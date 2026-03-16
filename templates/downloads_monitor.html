@@ -1454,6 +1454,71 @@ function buildQueueTrackStatusDetail(track, group) {
   return parts.length > 0 ? parts.join(' | ') : 'No additional status details.';
 }
 
+function classifyTrackPath(pathValue, fieldName) {
+  const raw = String(pathValue || '').trim();
+  if (!raw) return { kind: 'unknown', label: 'Path' };
+
+  const normalized = raw.replace(/\\/g, '/').toLowerCase();
+  const sourceField = String(fieldName || '').toLowerCase();
+
+  if (sourceField === 'source_file_path') {
+    return { kind: 'remote', label: 'Remote path' };
+  }
+
+  if (/^(https?|ftp|smb):\/\//i.test(raw) || raw.startsWith('\\\\')) {
+    return { kind: 'remote', label: 'Remote path' };
+  }
+
+  if (normalized.startsWith('/music/') || normalized.includes('/music/')) {
+    return { kind: 'local', label: 'Local music path' };
+  }
+
+  if (normalized.startsWith('/downloads/') || normalized.includes('/downloads/')) {
+    return { kind: 'local', label: 'Local downloads path' };
+  }
+
+  if (/^[a-z]:\//i.test(normalized)) {
+    return { kind: 'local', label: 'Local path' };
+  }
+
+  return { kind: 'unknown', label: 'Path' };
+}
+
+function buildTrackPathDetailsHtml(track) {
+  const candidates = [
+    { field: 'music_file_path', value: track?.music_file_path },
+    { field: 'matched_file_path', value: track?.matched_file_path },
+    { field: 'file_path', value: track?.file_path },
+    { field: 'source_file_path', value: track?.source_file_path }
+  ];
+
+  const seen = new Set();
+  const rows = [];
+
+  candidates.forEach(candidate => {
+    const value = String(candidate.value || '').trim();
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+
+    const meta = classifyTrackPath(value, candidate.field);
+    const colorClass = meta.kind === 'local'
+      ? 'text-success'
+      : (meta.kind === 'remote' ? 'text-warning' : 'text-muted');
+
+    rows.push(
+      `<div class="small ${colorClass} mt-1"><i class="bi bi-file-earmark"></i> <strong>${escapeHtml(meta.label)}:</strong> ${escapeHtml(value)}</div>`
+    );
+  });
+
+  if (rows.length === 0) {
+    const fallbackName = String(track?.found_filename || track?.filename || '').trim();
+    if (!fallbackName) return '';
+    return `<div class="small text-muted mt-1"><i class="bi bi-file-earmark"></i> <strong>Name:</strong> ${escapeHtml(fallbackName)}</div>`;
+  }
+
+  return rows.join('');
+}
+
 async function loadFolderGroups(options = {}) {
   // Load and display folder groups from downloads folder plus queue items ready to organize.
   const forceRender = options.forceRender === true;
@@ -1956,6 +2021,7 @@ async function loadFolderGroups(options = {}) {
                 let moveButtonHtml = '';
                 let statusDetail = '';
                 const displayPath = track.file_path || track.matched_file_path || track.music_file_path || track.source_file_path || track.found_filename || track.filename || '';
+                const trackPathDetailsHtml = buildTrackPathDetailsHtml(track);
                 if (isQueueItem) {
                   const queueId = Number(track.id || group.queue_item_id || 0);
                   const queueStatusRow = String(track.status || group.queue_item_status || '').toLowerCase();
@@ -2039,7 +2105,7 @@ async function loadFolderGroups(options = {}) {
                           <span style="font-size: 14px;">${escapeHtml(track.title || 'Unknown')}</span>
                           ${mappingHint}
                           ${isQueueItem ? `<div class="small text-muted mt-1"><i class="bi bi-info-circle"></i> ${escapeHtml(statusDetail)}</div>` : ''}
-                          ${displayPath ? `<div class="small text-muted mt-1"><i class="bi bi-file-earmark"></i> ${escapeHtml(displayPath)}</div>` : ''}
+                          ${trackPathDetailsHtml || (displayPath ? `<div class="small text-muted mt-1"><i class="bi bi-file-earmark"></i> ${escapeHtml(displayPath)}</div>` : '')}
                         </td>
                         <td><span style="font-size: 14px;">${duration}</span></td>
                         ${isQueueItem ? (() => {
