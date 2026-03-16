@@ -735,6 +735,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 let percent = 0;
                 let details = 'Processing...';
                 let barColor = 'bg-primary';
+                const activeScans = Array.isArray(data.active_scans) ? data.active_scans : [];
                 
                 // Calculate progress based on data fields
                 if (activeScanType === 'navidrome_scan' && (data.scanned_albums !== undefined || data.processed_artists !== undefined)) {
@@ -769,6 +770,10 @@ document.addEventListener('DOMContentLoaded', function() {
                     }
                     barColor = 'bg-warning';
                 }
+
+                if (activeScans.length > 1) {
+                    details += ` · ${activeScans.length} scans active`;
+                }
                 
                 // Update unified progress bar
                 if (progressBar) {
@@ -783,14 +788,17 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (progressDetails) progressDetails.textContent = details;
 
                 // Track currently-scanning artist for the Recent Scans live indicator
-                if (data.current_artist) {
+                const firstActiveWithArtist = activeScans.find(s => s && s.current_artist);
+                const currentArtist = data.current_artist || (firstActiveWithArtist ? firstActiveWithArtist.current_artist : null);
+                const currentAlbum = data.current_album || (firstActiveWithArtist ? firstActiveWithArtist.current_album : null);
+                if (currentArtist) {
                     const scanTypeKey = activeScanType === 'navidrome_scan' ? 'navidrome'
                         : activeScanType === 'singles_scan' ? 'singles'
                         : activeScanType === 'combined_scan' ? 'combined'
                         : 'popularity';
                     _currentScanningAlbum = {
-                        artist: data.current_artist,
-                        album: data.current_album || '…',
+                        artist: currentArtist,
+                        album: currentAlbum || '…',
                         scan_type: scanTypeKey,
                         scan_timestamp: new Date().toISOString(),
                         _inProgress: true,
