@@ -95,6 +95,92 @@ class NavidromeClient:
         }
         params.update(kwargs)
         return params
+
+    def get_artists(self, artist_ids: list[str] | None = None) -> list[dict]:
+        """Return flattened artist rows from getArtists, optionally filtered by IDs."""
+        url = f"{self.base_url}/rest/getArtists.view"
+        params = self._build_params()
+        try:
+            res = self.session.get(url, params=params)
+            res.raise_for_status()
+            index_groups = res.json().get("subsonic-response", {}).get("artists", {}).get("index", [])
+            artists = []
+            filter_ids = set(artist_ids or [])
+            for group in index_groups:
+                for artist in group.get("artist", []) or []:
+                    artist_id = artist.get("id")
+                    if filter_ids and artist_id not in filter_ids:
+                        continue
+                    artists.append(artist)
+            return artists
+        except Exception as e:
+            logger.error(f"❌ Failed to fetch artists: {e}")
+            return []
+
+    def get_albums(self, artist_id: str | None = None, page_size: int = 500) -> list[dict]:
+        """
+        Return albums from Navidrome.
+
+        - When artist_id is provided, uses getArtist for that artist.
+        - Otherwise, pages through getAlbumList2 to fetch all albums.
+        """
+        if artist_id:
+            return self.fetch_artist_albums(artist_id)
+
+        albums = []
+        offset = 0
+        size = max(50, min(int(page_size or 500), 500))
+        url = f"{self.base_url}/rest/getAlbumList2.view"
+
+        while True:
+            params = self._build_params(type="alphabeticalByName", size=size, offset=offset)
+            try:
+                res = self.session.get(url, params=params, timeout=30)
+                res.raise_for_status()
+                page = res.json().get("subsonic-response", {}).get("albumList2", {}).get("album", []) or []
+                if not page:
+                    break
+                albums.extend(page)
+                if len(page) < size:
+                    break
+                offset += size
+            except Exception as e:
+                logger.error(f"❌ Failed to fetch album list page at offset={offset}: {e}")
+                break
+
+        return albums
+
+    def build_artist_index_from_albums(self, page_size: int = 500) -> dict:
+        """
+        Build artist index by scanning album list first.
+
+        This favors album-backed artists for import workflows and avoids relying
+        solely on the artist index tree.
+        """
+        albums = self.get_albums(artist_id=None, page_size=page_size)
+        if not albums:
+            return {}
+
+        artist_map = {}
+        for album in albums:
+            artist_name = (album.get("artist") or "").strip()
+            artist_id = (album.get("artistId") or "").strip()
+            if not artist_name or not artist_id:
+                continue
+
+            if artist_name not in artist_map:
+                artist_map[artist_name] = {
+                    "id": artist_id,
+                    "album_count": 0,
+                    "track_count": 0,
+                    "last_updated": None,
+                }
+
+            artist_map[artist_name]["album_count"] += 1
+            artist_map[artist_name]["track_count"] += int(album.get("songCount", 0) or 0)
+
+        logger.info(f"✅ Built album-derived index for {len(artist_map)} artists from Navidrome")
+        return artist_map
     
     def fetch_artist_albums(self, artist_id: str) -> list:
         """
@@ -179,13 +265,19 @@ class NavidromeClient:
         Returns:
             Dict mapping artist names to their Navidrome IDs
         """
+        # Preferred: derive artists from full album list for scan relevance.
+        artist_map = self.build_artist_index_from_albums(page_size=500)
+        if artist_map:
+            return artist_map
+
+        # Fallback: legacy getArtists index traversal.
         url = f"{self.base_url}/rest/getArtists.view"
         params = self._build_params()
         try:
             res = self.session.get(url, params=params)
             res.raise_for_status()
             index = res.json().get("subsonic-response", {}).get("artists", {}).get("index", [])
-            
+
             artist_map = {}
             for group in index:
                 for a in group.get("artist", []):
@@ -198,8 +290,8 @@ class NavidromeClient:
                             "track_count": 0,
                             "last_updated": None
                         }
-            
-            logger.info(f"✅ Built index for {len(artist_map)} artists from Navidrome")
+
+            logger.info(f"✅ Built fallback index for {len(artist_map)} artists from getArtists")
             return artist_map
         except Exception as e:
             logger.error(f"❌ Failed to build artist index: {e}")

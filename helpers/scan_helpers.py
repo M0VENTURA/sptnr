@@ -532,10 +532,14 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
 
 def pre_import_sync_album_artists(artist_id: str = None) -> dict:
     """
-    Pre-import sync: Batch fetch unique album artists from Navidrome and ensure they exist in database.
+    Pre-import sync: Batch fetch album list metadata from Navidrome and ensure
+    discovered album artists exist in database.
     
     This is called before the main Navidrome import to quickly identify and insert any new
-    album artists in a single pass, avoiding the need to check one-by-one during track import.
+    album artists in a single pass, avoiding one-by-one checks during track import.
+
+    Important: This stage only reads album metadata (artist/album-level fields).
+    Track-level payloads are still fetched in the normal artist scan step.
     
     Args:
         artist_id: Single artist ID to sync (optional). If None, syncs all artists.
@@ -574,43 +578,30 @@ def pre_import_sync_album_artists(artist_id: str = None) -> dict:
                 existing_artists.add(key)
         logging.debug(f"Found {len(existing_artists)} existing artists in database")
         
-        # Fetch all artists from Navidrome
+        # Fetch album list first (single API family) and derive album artists.
+        # This avoids per-artist album requests during pre-sync.
         if artist_id:
-            # Single artist sync
-            artist_info = nav_client.get_artists([artist_id])
-            artists_to_sync = artist_info if isinstance(artist_info, list) else [artist_info]
+            albums_to_sync = nav_client.get_albums(artist_id=artist_id)
+            logging.info(f"Pre-import sync: Scanning {len(albums_to_sync)} album(s) for artist_id={artist_id}")
         else:
-            # All artists
-            artists_to_sync = nav_client.get_artists()
-        
-        logging.info(f"Pre-import sync: Scanning {len(artists_to_sync)} artist(s) from Navidrome")
-        
-        # Extract unique album artists from all albums of all artists
+            albums_to_sync = nav_client.get_albums()
+            logging.info(f"Pre-import sync: Scanning {len(albums_to_sync)} album(s) from Navidrome")
+
+        # Extract unique album artists from album list
         unique_album_artists = {}  # normalized_key -> {'original': str, 'count': int}
-        
-        for artist_data in artists_to_sync:
-            artist_name = artist_data.get('name', '')
-            if not artist_name:
+
+        for album in albums_to_sync:
+            album_artist = (album.get('artist') or '').strip()
+            if not album_artist:
                 continue
-            
-            artist_id_val = artist_data.get('id', '')
-            
-            # Fetch albums for this artist
-            try:
-                albums = nav_client.get_albums(artist_id=artist_id_val)
-                for album in albums:
-                    album_artist = album.get('artist', '').strip()
-                    if album_artist:
-                        cleaned_album_artist = _clean_artist_name_for_storage(album_artist) or album_artist
-                        key = _normalize_artist_key(cleaned_album_artist)
-                        if not key:
-                            continue
-                        if key not in unique_album_artists:
-                            unique_album_artists[key] = {'original': cleaned_album_artist, 'count': 0}
-                        unique_album_artists[key]['count'] += 1
-            except Exception as e:
-                logging.debug(f"Error fetching albums for artist {artist_name}: {e}")
+
+            cleaned_album_artist = _clean_artist_name_for_storage(album_artist) or album_artist
+            key = _normalize_artist_key(cleaned_album_artist)
+            if not key:
                 continue
+            if key not in unique_album_artists:
+                unique_album_artists[key] = {'original': cleaned_album_artist, 'count': 0}
+            unique_album_artists[key]['count'] += 1
         
         logging.info(f"Pre-import sync: Found {len(unique_album_artists)} unique album artists across all albums")
         
