@@ -120,6 +120,24 @@
       transition: all 0.3s ease;
       position: relative;
       padding-bottom: 0.5rem !important;
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      white-space: nowrap;
+    }
+
+    .navbar .navbar-nav {
+      align-items: center;
+      flex-wrap: nowrap;
+      gap: 0.25rem;
+    }
+
+    .navbar .navbar-collapse {
+      justify-content: flex-end;
+    }
+
+    #navSearchForm .input-group {
+      width: min(22vw, 220px) !important;
     }
 
     .nav-link:hover {
@@ -831,6 +849,12 @@
       }
     }
 
+    @media (min-width: 992px) and (max-width: 1320px) {
+      #navSearchForm .input-group {
+        width: 170px !important;
+      }
+    }
+
     /* Touch-friendly interactions */
     @media (hover: none) {
       .card:hover {
@@ -1094,6 +1118,7 @@
                 <i class="bi bi-cloud-download"></i> Import
               </a></li>
             </ul>
+          </li>
           {% if custom_bookmark_links and custom_bookmark_links|length > 0 %}
           <li class="nav-item dropdown">
             <a class="nav-link dropdown-toggle" href="#" id="bookmarksDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
