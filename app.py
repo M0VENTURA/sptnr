@@ -20018,8 +20018,14 @@ def _queue_sanitize_component(value):
 
 def _queue_normalize_album_artist(value):
     normalized = str(value or '').strip()
-    key = normalized.lower()
-    if key in ('various', 'various artist', 'various artists', 'va', 'v/a'):
+    key = normalized.lower().replace('-', ' ').replace('_', ' ').replace('.', ' ')
+    key = ' '.join(key.split())
+    if (
+        key in ('various', 'various artist', 'various artists', 'va', 'v/a')
+        or key.startswith('various artists ')
+        or key.startswith('various artist ')
+        or key.startswith('various ')
+    ):
         return 'Various Artists'
     return normalized
 

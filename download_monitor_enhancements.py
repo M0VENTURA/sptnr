@@ -345,8 +345,14 @@ def sanitize_filename(name):
 def _normalize_album_artist_for_path(value):
     """Normalize shorthand compilation artist names to a stable folder name."""
     normalized = str(value or '').strip()
-    key = normalized.lower()
-    if key in ('various', 'various artist', 'various artists', 'va', 'v/a'):
+    key = normalized.lower().replace('-', ' ').replace('_', ' ').replace('.', ' ')
+    key = ' '.join(key.split())
+    if (
+        key in ('various', 'various artist', 'various artists', 'va', 'v/a')
+        or key.startswith('various artists ')
+        or key.startswith('various artist ')
+        or key.startswith('various ')
+    ):
         return 'Various Artists'
     return normalized
 
