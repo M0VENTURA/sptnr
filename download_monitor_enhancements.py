@@ -143,18 +143,107 @@ def search_and_update_musicbrainz(queue_id, artist, title, album):
         release_artist = release.get('artist') or artist
         cover_art_url = release.get('cover_art_url') or release.get('cover_art')
 
+        logger.info(f"Found MusicBrainz match: {release.get('title')} (MBID: {release_mbid})")
+
+        # Open DB connection before fallback chain so we can reuse stored art URLs.
+        conn = get_db()
+        cursor = conn.cursor()
+
+        # Album art fallback chain:
+        # 1) Cover Art Archive by release MBID
+        # 2) AudioDB by album artist + album name
+        # 3) Stored cover_art_url reuse from queue/tracks for same release/album
         if not cover_art_url:
             try:
                 from api_clients.coverartarchive import get_release_image_from_caa
                 cover_art_url = get_release_image_from_caa(release_mbid) or None
-            except Exception:
-                cover_art_url = None
+                if cover_art_url:
+                    logger.info(
+                        f"[MB_ENRICH] Queue {queue_id}: using cover art from Cover Art Archive"
+                    )
+            except Exception as caa_err:
+                logger.debug(
+                    f"[MB_ENRICH] Queue {queue_id}: Cover Art Archive lookup failed: {caa_err}"
+                )
 
-        logger.info(f"Found MusicBrainz match: {release.get('title')} (MBID: {release_mbid})")
+        if not cover_art_url:
+            try:
+                from api_clients.audiodb import get_album_artwork
+                cover_art_url = get_album_artwork(release_artist, album) or None
+                if cover_art_url:
+                    logger.info(
+                        f"[MB_ENRICH] Queue {queue_id}: using cover art from AudioDB"
+                    )
+            except Exception as audiodb_err:
+                logger.debug(
+                    f"[MB_ENRICH] Queue {queue_id}: AudioDB lookup failed: {audiodb_err}"
+                )
+
+        if not cover_art_url:
+            try:
+                cursor.execute(
+                    """
+                    SELECT cover_art_url
+                    FROM download_queue
+                    WHERE cover_art_url IS NOT NULL
+                      AND cover_art_url <> ''
+                      AND (
+                        release_mbid = %s
+                        OR release_id = %s
+                        OR (
+                            LOWER(COALESCE(album_artist, artist, '')) = LOWER(COALESCE(%s, ''))
+                            AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(%s, ''))
+                        )
+                      )
+                    ORDER BY updated_at DESC NULLS LAST, id DESC
+                    LIMIT 1
+                    """,
+                    (release_mbid, release_mbid, release_artist, album),
+                )
+                existing_q = cursor.fetchone()
+                if existing_q and existing_q[0]:
+                    cover_art_url = existing_q[0]
+                    logger.info(
+                        f"[MB_ENRICH] Queue {queue_id}: reused existing queue cover_art_url"
+                    )
+            except Exception as queue_art_err:
+                logger.debug(
+                    f"[MB_ENRICH] Queue {queue_id}: queue cover art reuse failed: {queue_art_err}"
+                )
+
+        if not cover_art_url:
+            try:
+                cursor.execute(
+                    """
+                    SELECT cover_art_url
+                    FROM tracks
+                    WHERE cover_art_url IS NOT NULL
+                      AND cover_art_url <> ''
+                      AND (
+                        release_group_mbid = %s
+                        OR suggested_mbid = %s
+                        OR (
+                            LOWER(COALESCE(album_artist, artist, '')) = LOWER(COALESCE(%s, ''))
+                            AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(%s, ''))
+                        )
+                      )
+                    ORDER BY last_scanned DESC NULLS LAST, id DESC
+                    LIMIT 1
+                    """,
+                    (release_mbid, release_mbid, release_artist, album),
+                )
+                existing_t = cursor.fetchone()
+                if existing_t and existing_t[0]:
+                    cover_art_url = existing_t[0]
+                    logger.info(
+                        f"[MB_ENRICH] Queue {queue_id}: reused existing track cover_art_url"
+                    )
+            except Exception as track_art_err:
+                logger.debug(
+                    f"[MB_ENRICH] Queue {queue_id}: track cover art reuse failed: {track_art_err}"
+                )
 
         # Update original queue item with release-level metadata.
-        conn = get_db()
-        cursor = conn.cursor()
         cursor.execute(
             """
             UPDATE download_queue
