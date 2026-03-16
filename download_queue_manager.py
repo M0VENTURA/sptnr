@@ -3156,6 +3156,174 @@ def check_downloads_folder():
                 pass
 
 
+def reconcile_album_files_with_queue(artist, album, release_mbid=None, delete_unmatched=False):
+    """Reconcile already-downloaded album files with queue rows.
+
+    Attempts local matching only (no external API calls). Optionally deletes
+    unmatched files from /downloads when requested by caller.
+    """
+    result = {
+        'success': False,
+        'queue_items_considered': 0,
+        'files_considered': 0,
+        'matched_count': 0,
+        'unmatched_files': [],
+        'deleted_unmatched_count': 0,
+    }
+
+    conn = None
+    try:
+        artist = (artist or '').strip()
+        album = (album or '').strip()
+        mbid = (release_mbid or '').strip()
+        if not artist or not album:
+            result['error'] = 'artist and album are required'
+            return result
+
+        conn = get_db()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        placeholder = '%s'
+
+        if mbid:
+            cursor.execute(
+                f"""
+                SELECT *
+                FROM download_queue
+                WHERE status NOT IN ('imported', 'cancelled')
+                  AND (
+                    COALESCE(NULLIF(release_mbid, ''), NULLIF(release_id, '')) = {placeholder}
+                    OR (LOWER(COALESCE(artist, '')) = LOWER({placeholder})
+                        AND LOWER(COALESCE(album, '')) = LOWER({placeholder}))
+                  )
+                ORDER BY created_at ASC
+                """,
+                (mbid, artist, album),
+            )
+        else:
+            cursor.execute(
+                f"""
+                SELECT *
+                FROM download_queue
+                WHERE status NOT IN ('imported', 'cancelled')
+                  AND LOWER(COALESCE(artist, '')) = LOWER({placeholder})
+                  AND LOWER(COALESCE(album, '')) = LOWER({placeholder})
+                ORDER BY created_at ASC
+                """,
+                (artist, album),
+            )
+
+        queue_items = cursor.fetchall() or []
+        result['queue_items_considered'] = len(queue_items)
+        if not queue_items:
+            result['success'] = True
+            return result
+
+        downloads_root = get_downloads_dir()
+        abs_downloads_root = os.path.abspath(downloads_root)
+
+        def _resolve_download_candidate(path_value):
+            if not path_value:
+                return None
+            raw = str(path_value).strip()
+            if not raw:
+                return None
+
+            # Absolute path as stored.
+            if os.path.isabs(raw) and os.path.isfile(raw):
+                return raw
+
+            # Relative path under downloads root.
+            rel = raw.replace('\\', '/').lstrip('/')
+            candidate = os.path.abspath(os.path.join(downloads_root, rel))
+            if os.path.isfile(candidate):
+                try:
+                    if os.path.commonpath([candidate, abs_downloads_root]) == abs_downloads_root:
+                        return candidate
+                except Exception:
+                    return None
+            return None
+
+        candidate_files = {}
+        for queue_item in queue_items:
+            candidate = _resolve_download_candidate(queue_item.get('file_path'))
+            if candidate:
+                candidate_files[candidate] = True
+                continue
+
+            found_filename = (queue_item.get('found_filename') or '').strip()
+            if found_filename:
+                candidate = _resolve_download_candidate(found_filename)
+                if candidate:
+                    candidate_files[candidate] = True
+
+        files = list(candidate_files.keys())
+        result['files_considered'] = len(files)
+        if not files:
+            result['success'] = True
+            return result
+
+        matched_queue_ids = set()
+        unmatched_files = []
+
+        for file_path in files:
+            best_item = None
+            try:
+                file_meta = read_mp3_metadata(file_path) or {}
+            except Exception:
+                file_meta = {}
+
+            for queue_item in queue_items:
+                qid = queue_item.get('id')
+                if not qid or qid in matched_queue_ids:
+                    continue
+
+                meta_match = _metadata_matches_queue_item(file_meta, queue_item, file_path=file_path)
+                if meta_match is False:
+                    continue
+
+                if meta_match is True or is_match(os.path.basename(file_path), queue_item):
+                    best_item = queue_item
+                    break
+
+            if not best_item:
+                unmatched_files.append(file_path)
+                continue
+
+            qid = best_item.get('id')
+            updated = update_queue_item(
+                qid,
+                status='completed',
+                found_filename=os.path.basename(file_path),
+                file_path=file_path,
+                imported_at=datetime.now().isoformat(),
+            )
+            if updated:
+                matched_queue_ids.add(qid)
+                result['matched_count'] += 1
+
+        result['unmatched_files'] = unmatched_files
+
+        if delete_unmatched and unmatched_files:
+            deleted_count = 0
+            for unmatched in unmatched_files:
+                if _safe_delete_downloads_file(unmatched, downloads_root, reason='unmatched after MBID assignment'):
+                    deleted_count += 1
+            result['deleted_unmatched_count'] = deleted_count
+
+        result['success'] = True
+        return result
+    except Exception as e:
+        logger.error(f"[RECONCILE] Error reconciling album files for '{artist} - {album}': {e}")
+        result['error'] = str(e)
+        return result
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 def is_match(filename, queue_item):
     """
     Conservative filename/path fallback when metadata is unavailable.

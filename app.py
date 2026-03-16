@@ -21193,21 +21193,15 @@ def api_queue_update_album_mbid():
         if not all([old_artist, old_album, new_mbid]):
             return jsonify({"error": "Missing required fields"}), 400
 
+        # Keep this endpoint fast: do not block on external metadata fetches.
         release_year = None
-        try:
-            from folder_matching_enhancements import get_musicbrainz_release_metadata
-
-            release_metadata = get_musicbrainz_release_metadata(new_mbid) or {}
-            release_year_raw = release_metadata.get('release_year')
-            release_year = str(release_year_raw).strip() if release_year_raw not in (None, '') else None
-        except Exception as mb_err:
-            logging.warning(f"[UPDATE_MBID] Could not fetch MusicBrainz metadata for {new_mbid}: {mb_err}")
 
         # Update existing queue items
         conn = get_db()
         cursor = conn.cursor()
         is_pg = _is_postgres_connection(conn)
         placeholder = "%s" if is_pg else "?"
+        mbid_import_group = f"mbid_{new_mbid}"
 
         cursor.execute(
             f"""
@@ -21217,24 +21211,63 @@ def api_queue_update_album_mbid():
                 release_source = 'musicbrainz',
                 album = {placeholder},
                 artist = {placeholder},
+                import_group = {placeholder},
                 release_year = {placeholder},
                 updated_at = CURRENT_TIMESTAMP
             WHERE LOWER(artist) = LOWER({placeholder})
             AND LOWER(album) = LOWER({placeholder})
             """,
-            (new_mbid, new_mbid, new_album, new_artist, release_year, old_artist, old_album)
+            (new_mbid, new_mbid, new_album, new_artist, mbid_import_group, release_year, old_artist, old_album)
         )
 
-        updated_count = cursor.rowcount
+        updated_count = cursor.rowcount or 0
+
+        # Merge any existing queue rows for this MBID under the same import_group so
+        # the monitor collapses them into one folder/group.
+        cursor.execute(
+            f"""
+            UPDATE download_queue
+            SET import_group = {placeholder},
+                release_source = 'musicbrainz',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE COALESCE(NULLIF(release_mbid, ''), NULLIF(release_id, '')) = {placeholder}
+            """,
+            (mbid_import_group, new_mbid),
+        )
+        merged_count = cursor.rowcount or 0
+
         conn.commit()
         conn.close()
         conn = None
+
+        # Local-only reconciliation: match existing album files to queue rows.
+        # If a file does not match any queue row, remove it from /downloads.
+        reconcile_summary = {
+            "success": False,
+            "queue_items_considered": 0,
+            "files_considered": 0,
+            "matched_count": 0,
+            "deleted_unmatched_count": 0,
+            "unmatched_files": [],
+        }
+        try:
+            from download_queue_manager import reconcile_album_files_with_queue
+            reconcile_summary = reconcile_album_files_with_queue(
+                artist=new_artist,
+                album=new_album,
+                release_mbid=new_mbid,
+                delete_unmatched=True,
+            )
+        except Exception as reconcile_err:
+            logging.warning(f"[UPDATE_MBID] Reconcile pass failed for {new_artist} - {new_album}: {reconcile_err}")
 
         return jsonify({
             "success": True,
             "message": f"Updated {updated_count} queue items with new MBID",
             "updated_count": updated_count,
-            "release_mbid": new_mbid
+            "merged_count": merged_count,
+            "release_mbid": new_mbid,
+            "reconcile": reconcile_summary,
         })
 
     except Exception as e:
