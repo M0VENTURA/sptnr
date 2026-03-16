@@ -1409,6 +1409,51 @@ function setFolderGroupFilter(filter) {
   loadFolderGroups({ forceRender: true });
 }
 
+function buildQueueTrackStatusDetail(track, group) {
+  const status = String(track?.status || group?.queue_item_status || '').toLowerCase();
+  const queueId = Number(track?.id || 0);
+  const source = String(track?.source || '').trim();
+  const mbid = String(track?.release_mbid || group?.release_id || '').trim();
+  const filePath = String(
+    track?.file_path || track?.matched_file_path || track?.music_file_path || track?.source_file_path || ''
+  ).trim();
+
+  const statusMessages = {
+    queued: 'Waiting in queue for processing.',
+    searching: 'Searching configured providers for this track.',
+    downloading: 'Download is currently in progress.',
+    matched: 'Match confirmed and ready to move to music.',
+    completed: 'Processing completed successfully.',
+    duplicate: 'Likely duplicate of existing queue or library content.',
+    possible_duplicate: 'Potential duplicate detected; review before moving.',
+    unmatched: 'No confident metadata match yet.',
+    queried: 'Metadata query finished; can be sent to queue.',
+    in_collection: 'Already exists in the library.',
+    discovered: 'Discovered in downloads and pending review.',
+    pending_match: 'Pending metadata match selection.',
+    failed: 'Processing failed; retry is available.'
+  };
+
+  const parts = [];
+  if (statusMessages[status]) {
+    parts.push(statusMessages[status]);
+  }
+  if (queueId > 0) {
+    parts.push(`Queue ID ${queueId}`);
+  }
+  if (source) {
+    parts.push(`Source ${source}`);
+  }
+  if (mbid) {
+    parts.push(`MBID ${mbid}`);
+  }
+  if (filePath) {
+    parts.push('File path detected');
+  }
+
+  return parts.length > 0 ? parts.join(' | ') : 'No additional status details.';
+}
+
 async function loadFolderGroups(options = {}) {
   // Load and display folder groups from downloads folder plus queue items ready to organize.
   const forceRender = options.forceRender === true;
@@ -1768,6 +1813,10 @@ async function loadFolderGroups(options = {}) {
            <div class="small text-info"><strong>Mapped:</strong> ${mappedCount}/${group.tracks.length} folder tracks aligned to release tracklist</div>`
         : '';
       const groupMbid = group.release_id || '';
+      const groupQueueIds = (group.tracks || [])
+        .map(t => Number(t.id || 0))
+        .filter(id => id > 0);
+      const groupQueueIdsEnc = encodeInlineArg(groupQueueIds);
       const mbidBadge = groupMbid
         ? `<span class="badge bg-dark text-info ms-2" title="MusicBrainz Release ID">MBID: ${escapeHtml(groupMbid)}</span>
            <button class="btn btn-sm btn-outline-info ms-1" onclick="openBetterMatchModal('${artistEnc}','${albumEnc}','${encodeInlineArg(groupMbid)}')" title="Search for a better MusicBrainz match">
@@ -1829,6 +1878,13 @@ async function loadFolderGroups(options = {}) {
                           onclick="deleteFolderAndQueueItemsFromEncoded('${encodeInlineArg(group.matched_folder_path)}')"
                           title="Delete all files in this folder and remove linked queue items">
                     <i class="bi bi-trash"></i> Delete Folder
+                  </button>
+                ` : ''}
+                ${(isQueueItem && groupQueueIds.length > 0) ? `
+                  <button class="btn btn-sm btn-outline-primary me-2"
+                          onclick="openFolderQueueMatchModalFromEncoded('${folderPathEnc}', '${artistEnc}', '${albumEnc}', '${encodeInlineArg(groupMbid)}', '${groupQueueIdsEnc}')"
+                          title="Change MusicBrainz match for all queue tracks in this folder">
+                    <i class="bi bi-arrow-left-right"></i> Change Queue Match
                   </button>
                 ` : ''}
                 <button class="btn btn-sm btn-outline-secondary ms-2" 
@@ -1898,10 +1954,12 @@ async function loadFolderGroups(options = {}) {
                 
                 // Per-track actions (move + manual match override)
                 let moveButtonHtml = '';
+                let statusDetail = '';
                 const displayPath = track.file_path || track.matched_file_path || track.music_file_path || track.source_file_path || track.found_filename || track.filename || '';
                 if (isQueueItem) {
                   const queueId = Number(track.id || group.queue_item_id || 0);
                   const queueStatusRow = String(track.status || group.queue_item_status || '').toLowerCase();
+                  statusDetail = buildQueueTrackStatusDetail(track, group);
                   const normalizedTrackPath = String(displayPath).replace(/\\/g, '/').toLowerCase();
                   const isDownloadsBacked = normalizedTrackPath.startsWith('/downloads/') || normalizedTrackPath === '/downloads' || normalizedTrackPath.includes('/downloads/');
                   const artistEnc = encodeInlineArg(track.artist || group.artist || '');
@@ -1980,6 +2038,7 @@ async function loadFolderGroups(options = {}) {
                         <td>
                           <span style="font-size: 14px;">${escapeHtml(track.title || 'Unknown')}</span>
                           ${mappingHint}
+                          ${isQueueItem ? `<div class="small text-muted mt-1"><i class="bi bi-info-circle"></i> ${escapeHtml(statusDetail)}</div>` : ''}
                           ${displayPath ? `<div class="small text-muted mt-1"><i class="bi bi-file-earmark"></i> ${escapeHtml(displayPath)}</div>` : ''}
                         </td>
                         <td><span style="font-size: 14px;">${duration}</span></td>
@@ -2064,6 +2123,202 @@ function toggleTrackList(groupId, stateKey, button) {
     button.innerHTML = isCurrentlyHidden
       ? '<i class="bi bi-chevron-up"></i> Hide Tracks'
       : '<i class="bi bi-chevron-down"></i> Show Tracks';
+  }
+}
+
+function openFolderQueueMatchModalFromEncoded(folderPathEnc, artistEnc, albumEnc, currentMbidEnc, queueIdsEnc) {
+  const folderPath = decodeInlineArg(folderPathEnc, '');
+  const artist = decodeInlineArg(artistEnc, '');
+  const album = decodeInlineArg(albumEnc, '');
+  const currentMbid = decodeInlineArg(currentMbidEnc, '');
+  const queueIds = decodeInlineArg(queueIdsEnc, []);
+  return openFolderQueueMatchModal(folderPath, artist, album, currentMbid, queueIds);
+}
+
+function openFolderQueueMatchModal(folderPath, artist, album, currentMbid, queueIds) {
+  const safeQueueIds = Array.isArray(queueIds)
+    ? queueIds.map(id => Number(id)).filter(id => Number.isFinite(id) && id > 0)
+    : [];
+
+  if (safeQueueIds.length === 0) {
+    alert('No queue items available in this folder group.');
+    return;
+  }
+
+  const existing = document.getElementById('folderQueueMatchModal');
+  if (existing) existing.remove();
+
+  const modalHtml = `
+    <div class="modal fade" id="folderQueueMatchModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content bg-dark text-light">
+          <div class="modal-header border-secondary">
+            <h5 class="modal-title">Change Queue Match For Folder</h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div class="small text-muted mb-2">Folder: ${escapeHtml(folderPath || '(queue group)')}</div>
+            <div class="small text-muted mb-2">Queue items affected: ${safeQueueIds.length}</div>
+            <div class="small text-muted mb-3">Current MBID: ${escapeHtml(currentMbid || 'None')}</div>
+            <div class="row g-2">
+              <div class="col-md-6">
+                <label class="form-label">Artist</label>
+                <input type="text" id="folderQueueMatchArtist" class="form-control" value="${escapeHtml(artist)}" placeholder="Artist name">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">Album</label>
+                <input type="text" id="folderQueueMatchAlbum" class="form-control" value="${escapeHtml(album)}" placeholder="Album name">
+              </div>
+            </div>
+            <div class="mt-3">
+              <button class="btn btn-primary" onclick="searchFolderQueueMusicBrainzMatch('${encodeInlineArg(safeQueueIds)}')">
+                <i class="bi bi-search"></i> Search MusicBrainz
+              </button>
+            </div>
+            <div id="folderQueueMatchResults" class="mt-3"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+  const modal = new bootstrap.Modal(document.getElementById('folderQueueMatchModal'));
+  modal.show();
+}
+
+async function searchFolderQueueMusicBrainzMatch(queueIdsEnc) {
+  const artistInput = document.getElementById('folderQueueMatchArtist');
+  const albumInput = document.getElementById('folderQueueMatchAlbum');
+  const results = document.getElementById('folderQueueMatchResults');
+
+  if (!artistInput || !albumInput || !results) return;
+
+  const artist = (artistInput.value || '').trim();
+  const album = (albumInput.value || '').trim();
+
+  if (!artist || !album) {
+    alert('Artist and album are required');
+    return;
+  }
+
+  results.innerHTML = '<div class="text-muted">Searching...</div>';
+
+  try {
+    const url = `/api/musicbrainz/search/releases?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`;
+    const data = await fetchJsonOrThrow(url);
+    const releases = data.releases || [];
+
+    if (!releases.length) {
+      results.innerHTML = '<div class="alert alert-warning mb-0">No matches found.</div>';
+      return;
+    }
+
+    const rows = releases.map(rel => {
+      const relArtist = rel.artist || artist;
+      const relTitle = rel.title || album;
+      const relMbid = rel.id || '';
+      const relYear = rel.year || '';
+      const relTracks = rel.tracks || 0;
+
+      return `
+        <tr>
+          <td>${escapeHtml(relArtist)}</td>
+          <td>${escapeHtml(relTitle)}</td>
+          <td>${escapeHtml(relYear)}</td>
+          <td>${escapeHtml(relTracks)}</td>
+          <td><small class="text-info">${escapeHtml(relMbid)}</small></td>
+          <td>
+            <button class="btn btn-sm btn-success" onclick="applyFolderQueueMusicBrainzMatch('${queueIdsEnc}', '${encodeInlineArg(relArtist)}', '${encodeInlineArg(relTitle)}', '${encodeInlineArg(relMbid)}')">
+              Select
+            </button>
+          </td>
+        </tr>
+      `;
+    }).join('');
+
+    results.innerHTML = `
+      <div class="table-responsive">
+        <table class="table table-sm table-dark table-striped mb-0">
+          <thead>
+            <tr>
+              <th>Artist</th>
+              <th>Album</th>
+              <th>Year</th>
+              <th>Tracks</th>
+              <th>MBID</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    `;
+  } catch (error) {
+    console.error('Error searching folder queue MusicBrainz match:', error);
+    results.innerHTML = `<div class="alert alert-danger mb-0">${escapeHtml(error.message)}</div>`;
+  }
+}
+
+async function applyFolderQueueMusicBrainzMatch(queueIdsEnc, newArtistEnc, newAlbumEnc, mbidEnc) {
+  const queueIds = decodeInlineArg(queueIdsEnc, []);
+  const newArtist = decodeInlineArg(newArtistEnc, '');
+  const newAlbum = decodeInlineArg(newAlbumEnc, '');
+  const newMbid = decodeInlineArg(mbidEnc, '');
+
+  const safeIds = Array.isArray(queueIds)
+    ? queueIds.map(id => Number(id)).filter(id => Number.isFinite(id) && id > 0)
+    : [];
+
+  if (safeIds.length === 0) {
+    alert('No valid queue IDs found for folder update.');
+    return;
+  }
+
+  if (!newMbid) {
+    alert('Selected match is missing MBID.');
+    return;
+  }
+
+  try {
+    let updated = 0;
+    let failed = 0;
+
+    for (const queueId of safeIds) {
+      try {
+        const data = await fetchJsonOrThrow(`/api/queue/${queueId}/apply-mbid-match`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            new_mbid: newMbid,
+            new_artist: newArtist,
+            new_album: newAlbum
+          })
+        });
+
+        if (data.success) {
+          updated += 1;
+        } else {
+          failed += 1;
+        }
+      } catch (err) {
+        console.warn(`Failed to update queue item ${queueId}:`, err);
+        failed += 1;
+      }
+    }
+
+    const modalEl = document.getElementById('folderQueueMatchModal');
+    if (modalEl) {
+      const modal = bootstrap.Modal.getInstance(modalEl);
+      if (modal) modal.hide();
+    }
+
+    alert(`✅ Folder queue match update complete\n\nUpdated: ${updated}\nFailed: ${failed}`);
+    await loadQueueStatus();
+    await loadFolderGroups({ forceRender: true });
+  } catch (error) {
+    console.error('Error applying folder queue match:', error);
+    alert('❌ Network error: ' + error.message);
   }
 }
 
