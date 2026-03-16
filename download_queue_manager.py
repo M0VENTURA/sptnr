@@ -2547,12 +2547,16 @@ def _metadata_matches_queue_item(file_meta, queue_item, threshold=0.68, file_pat
     file_artist = (file_meta.get('artist') or '').strip()
     file_title = (file_meta.get('title') or '').strip()
     queue_artist = (queue_item.get('artist') or '').strip()
+    queue_album_artist = (queue_item.get('album_artist') or '').strip()
     queue_title = (queue_item.get('title') or '').strip()
 
     if not file_artist or not file_title or not queue_artist or not queue_title:
         return None
 
-    artist_score = _sim(file_artist, queue_artist)
+    artist_candidates = [queue_artist]
+    if queue_album_artist and queue_album_artist.lower() != queue_artist.lower():
+        artist_candidates.append(queue_album_artist)
+    artist_score = max((_sim(file_artist, cand) for cand in artist_candidates if cand), default=0.0)
     title_score = _sim(file_title, queue_title)
 
     # Each individual field must clear a minimum similarity floor before
@@ -2571,6 +2575,16 @@ def _metadata_matches_queue_item(file_meta, queue_item, threshold=0.68, file_pat
     if _title_a != _title_b and (_title_a.startswith(_title_b) or _title_b.startswith(_title_a)):
         if title_score < _PREFIX_TITLE_MIN:
             return False
+
+    file_track_num, file_disc_num = _extract_track_disc_from_text(file_meta.get('track_number'))
+    if file_track_num is None and file_path:
+        file_track_num, file_disc_num = _extract_track_disc_from_filename(file_path)
+
+    queue_track_num, queue_disc_num = _extract_track_disc_from_text(queue_item.get('track_number'))
+    if queue_track_num is not None and file_track_num is not None and queue_track_num != file_track_num:
+        return False
+    if queue_disc_num is not None and file_disc_num is not None and queue_disc_num != file_disc_num:
+        return False
 
     combined = (artist_score + title_score) / 2
 
@@ -3044,6 +3058,57 @@ def _strip_track_number_prefix(title):
     return cleaned if cleaned else title
 
 
+def _extract_track_disc_from_text(value):
+    """Extract numeric track/disc values from tags like '05', '1-05', or '05/12'."""
+    if value is None:
+        return None, None
+
+    text = str(value).strip()
+    if not text:
+        return None, None
+
+    disc_track_match = re.match(r'^\s*(\d{1,2})\s*[-/\.]\s*(\d{1,3})(?:\D|$)', text)
+    if disc_track_match:
+        try:
+            disc = int(disc_track_match.group(1))
+            track = int(disc_track_match.group(2))
+            return track, disc
+        except Exception:
+            pass
+
+    track_match = re.match(r'^\s*(\d{1,3})(?:\s*/\s*\d{1,3})?(?:\D|$)', text)
+    if track_match:
+        try:
+            return int(track_match.group(1)), None
+        except Exception:
+            pass
+
+    return None, None
+
+
+def _extract_track_disc_from_filename(filename):
+    """Extract numeric track/disc values from a filename prefix."""
+    stem = os.path.splitext(os.path.basename(filename or ''))[0]
+    if not stem:
+        return None, None
+
+    disc_track_match = re.match(r'^\s*(\d{1,2})\s*-\s*(\d{1,3})\s*[-\.]?\s*', stem)
+    if disc_track_match:
+        try:
+            return int(disc_track_match.group(2)), int(disc_track_match.group(1))
+        except Exception:
+            pass
+
+    track_match = re.match(r'^\s*(\d{1,3})(?:\s*[-\.]\s*|\s+)', stem)
+    if track_match:
+        try:
+            return int(track_match.group(1)), None
+        except Exception:
+            pass
+
+    return None, None
+
+
 def auto_discover_and_queue_files():
     """
     Scan /downloads folder for audio files and add them to download_queue with status 'discovered'.
@@ -3281,12 +3346,27 @@ def auto_discover_and_queue_files():
                 # When no title tag is present, derive it from the filename stem and strip
                 # any leading track-number prefix (e.g. "05 - CINEMA" → "CINEMA").
                 title = metadata.get('title') or _strip_track_number_prefix(os.path.splitext(filename)[0])
-                album_artist = metadata.get('album_artist') or artist
+                album_artist = metadata.get('album_artist')
                 track_number = metadata.get('track_number')
                 disc_number = metadata.get('disc_number')
                 year = metadata.get('date') or metadata.get('year')
                 duration_ms = metadata.get('duration_ms')
                 duration = int(duration_ms / 1000) if duration_ms and duration_ms > 0 else None
+
+                # Fallback track/disc extraction from filename prefixes when tags are missing.
+                file_track_num, file_disc_num = _extract_track_disc_from_filename(filename)
+                if not track_number and file_track_num is not None:
+                    track_number = str(file_track_num)
+                if not disc_number and file_disc_num is not None:
+                    disc_number = str(file_disc_num)
+
+                # Compilation fallback: infer album_artist from folder path when tags are sparse.
+                if not album_artist:
+                    rel_norm = (file_info.get('rel_path') or '').replace('\\', '/').lower()
+                    if '/various artists/' in rel_norm or rel_norm.startswith('various artists/'):
+                        album_artist = 'Various Artists'
+                    else:
+                        album_artist = artist
                 release_group = _build_release_import_group(album_artist or artist, album)
                 
                 # Log metadata extraction status
@@ -3418,6 +3498,9 @@ def auto_discover_and_queue_files():
                     'artist': artist,
                     'title': title,
                     'album': album,
+                    'album_artist': album_artist,
+                    'track_number': track_number,
+                    'disc_number': disc_number,
                 }
                 cursor.execute(f"""
                     SELECT id, artist, title, album, album_artist, year, track_number, disc_number,
@@ -4453,7 +4536,7 @@ def _ensure_matching_columns(cursor):
                 logger.warning(f"Could not add {col} column: {e}")
 
 
-def check_album_complete(album, artist):
+def check_album_complete(album, album_artist):
     """
     Check if all tracks for an album are discovered and have metadata.
     An album is considered complete when:
@@ -4463,7 +4546,7 @@ def check_album_complete(album, artist):
     
     Args:
         album: Album name
-        artist: Artist name
+        album_artist: Album artist (effective album owner)
     
     Returns:
         dict: {
@@ -4485,11 +4568,11 @@ def check_album_complete(album, artist):
         cursor.execute(f"""
             SELECT * FROM download_queue 
             WHERE LOWER(album) = LOWER({placeholder}) 
-            AND LOWER(artist) = LOWER({placeholder})
+            AND LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER({placeholder})
             AND status IN ('discovered', 'completed', 'pending_match', 'unmatched')
             AND file_path IS NOT NULL
             ORDER BY track_number ASC, title ASC
-        """, (album, artist))
+        """, (album, album_artist))
         
         tracks = [dict(row) for row in cursor.fetchall()]
         conn.close()
@@ -4734,14 +4817,14 @@ def get_release_tracks_with_status(artist, album, release_group_id, current_fold
         placeholder = "%s" if is_pg else "?"
         
         cursor.execute(f"""
-            SELECT id, title, file_path, status
+            SELECT id, title, file_path, status, track_number, artist, album_artist
             FROM download_queue
-            WHERE LOWER(artist) = LOWER({placeholder})
+            WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER({placeholder})
             AND LOWER(album) = LOWER({placeholder})
-            ORDER BY track_number, title
+            ORDER BY COALESCE(NULLIF(track_number, ''), '9999'), title
         """, (artist, album))
-        
-        queue_items = {dict(row)['title'].lower(): dict(row) for row in cursor.fetchall()}
+
+        queue_items = [dict(row) for row in cursor.fetchall()]
         
         # Check library for existing files
         from api_clients.musicbrainz import search_library_for_track
@@ -4750,27 +4833,57 @@ def get_release_tracks_with_status(artist, album, release_group_id, current_fold
         # Normalize filenames if provided
         current_folder_files = [f.lower() for f in (current_folder_files or [])]
         
+        def _to_track_int(value):
+            track, _disc = _extract_track_disc_from_text(value)
+            return track
+
+        used_queue_ids = set()
+
         # Match each track with status
         tracks_with_status = []
         for track in all_tracks:
             title = track['title']
             title_lower = title.lower()
+            title_norm = _normalize_match_text(title)
+            track_num = _to_track_int(track.get('track_number'))
             status = "missing"
             status_details = {}
             
-            # Check if in queue
-            if title_lower in queue_items:
-                q_item = queue_items[title_lower]
+            # Check queue by track number first, then title fallback.
+            q_item = None
+            if track_num is not None:
+                for candidate in queue_items:
+                    if candidate.get('id') in used_queue_ids:
+                        continue
+                    candidate_num = _to_track_int(candidate.get('track_number'))
+                    if candidate_num == track_num:
+                        q_item = candidate
+                        break
+
+            if q_item is None:
+                for candidate in queue_items:
+                    if candidate.get('id') in used_queue_ids:
+                        continue
+                    candidate_title_norm = _normalize_match_text(candidate.get('title') or '')
+                    if candidate_title_norm and candidate_title_norm == title_norm:
+                        q_item = candidate
+                        break
+
+            if q_item is not None:
+                used_queue_ids.add(q_item.get('id'))
                 status = "downloading"
                 status_details = {
                     "queue_id": q_item.get('id'),
-                    "queue_status": q_item.get('status')
+                    "queue_status": q_item.get('status'),
+                    "queue_title": q_item.get('title'),
+                    "queue_track_number": q_item.get('track_number')
                 }
             # Check if in current folder
             elif current_folder_files:
                 # Fuzzy match filename
                 for folder_file in current_folder_files:
-                    if title_lower in folder_file or folder_file in title_lower:
+                    folder_file_norm = _normalize_match_text(folder_file)
+                    if title_norm and (title_norm in folder_file_norm or folder_file_norm in title_norm):
                         status = "in_folder"
                         status_details = {"filename": folder_file}
                         break
@@ -5089,7 +5202,8 @@ def process_complete_albums():
 
         cursor.execute(
             """
-            SELECT DISTINCT album, artist
+            SELECT DISTINCT album,
+                   COALESCE(NULLIF(album_artist, ''), artist) AS album_artist
             FROM download_queue
             WHERE status IN ('discovered', 'pending_match', 'unmatched')
             AND album IS NOT NULL
@@ -5104,7 +5218,7 @@ def process_complete_albums():
 
         for album_info in albums:
             album = album_info['album']
-            artist = album_info['artist']
+            artist = album_info.get('album_artist') or album_info.get('artist')
             stats['checked'] += 1
 
             try:
