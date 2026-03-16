@@ -14361,7 +14361,10 @@ def _initiate_slskd_download_bg(tracking_id, query):
                             if hasattr(response, 'files') and response.files:
                                 for file_info in response.files:
                                     # Score the file based on how well it matches the query
-                                    filename = file_info.get('filename', '').lower()
+                                    # file_info is a SearchFile dataclass — use attribute access
+                                    raw_filename = file_info.filename if hasattr(file_info, 'filename') else file_info.get('filename', '')
+                                    raw_size = file_info.size if hasattr(file_info, 'size') else file_info.get('size', 0)
+                                    filename = raw_filename.lower()
                                     query_lower = query.lower()
                                     
                                     # Simple scoring: count matching words
@@ -14376,8 +14379,8 @@ def _initiate_slskd_download_bg(tracking_id, query):
                                     if match_score >= 0.3:  # Only include files with at least 30% match
                                         all_files.append({
                                             'username': response.username if hasattr(response, 'username') else 'Unknown',
-                                            'filename': file_info.get('filename', ''),
-                                            'size': file_info.get('size', 0),
+                                            'filename': raw_filename,
+                                            'size': raw_size,
                                             'match_score': match_score
                                         })
                     

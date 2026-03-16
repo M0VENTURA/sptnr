@@ -889,15 +889,22 @@ def calculate_album_stats(conn, artist: str, album: str) -> Tuple[float, float, 
     """
     is_pg = is_postgres_connection(conn)
     placeholder = "%s" if is_pg else "?"
-    cursor = conn.cursor()
-    cursor.execute(f"""
-        SELECT popularity_score
-        FROM tracks
-        WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder} AND popularity_score > 0
-    """, (artist, album))
-    
-    popularities = [row['popularity_score'] if is_pg else row[0] for row in cursor.fetchall()]
-    
+    try:
+        cursor = conn.cursor()
+        cursor.execute(f"""
+            SELECT popularity_score
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder} AND popularity_score > 0
+        """, (artist, album))
+        popularities = [row['popularity_score'] if is_pg else row[0] for row in cursor.fetchall()]
+    except Exception as e:
+        logger.warning(f"[SINGLE_DETECT] calculate_album_stats DB error for {artist!r}/{album!r}: {e} — rolling back")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return 0.0, 0.0, 0.0, 0
+
     if len(popularities) < 2:
         return 0.0, 0.0, 0.0, len(popularities)
     
@@ -920,17 +927,26 @@ def calculate_artist_stats(conn, artist: str) -> Tuple[float, float, int]:
     """
     is_pg = is_postgres_connection(conn)
     placeholder = "%s" if is_pg else "?"
-    cursor = conn.cursor()
-    cursor.execute(f"""
-        SELECT popularity_score, title, album
-        FROM tracks
-        WHERE artist = {placeholder} AND popularity_score > 0
-    """, (artist,))
-    
+    try:
+        cursor = conn.cursor()
+        cursor.execute(f"""
+            SELECT popularity_score, title, album
+            FROM tracks
+            WHERE artist = {placeholder} AND popularity_score > 0
+        """, (artist,))
+        rows = cursor.fetchall()
+    except Exception as e:
+        logger.warning(f"[SINGLE_DETECT] calculate_artist_stats DB error for {artist!r}: {e} — rolling back")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return 0.0, 0.0, 0
+
     # Filter out live/remix/alternate tracks before calculating statistics
     # Use word boundary matching to avoid false positives
     popularities = []
-    for row in cursor.fetchall():
+    for row in rows:
         popularity_score = row['popularity_score'] if is_pg else row[0]
         title = (row['title'] if is_pg else row[1]) or ""
         album = (row['album'] if is_pg else row[2]) or ""
