@@ -1895,25 +1895,8 @@ def detect_single_enhanced(
                 log_debug(f"   MusicBrainz: Client is disabled in configuration")
         musicbrainz_confirmed = False
     
-    # STAGE 3B: MusicBrainz Video Relationship Check (MEDIUM CONFIDENCE)
-    # Check if the track has a video relationship (YouTube/Vimeo) indicating it was promoted as a single
-    if musicbrainz_client and hasattr(musicbrainz_client, 'enabled') and musicbrainz_client.enabled:
-        if hasattr(musicbrainz_client, 'has_video_relationship'):
-            try:
-                log_debug(f"[MUSICBRAINZ] Checking for video relationships: {title} by {artist}")
-                log_info(f"   Checking MusicBrainz for video relationship: {title}")
-                
-                has_video = musicbrainz_client.has_video_relationship(title, artist)
-                if has_video:
-                    result['single_sources'].append('musicbrainz_video')
-                    result['single_sources_used'].append('musicbrainz_video')
-                    log_debug(f"[MUSICBRAINZ] ✓ CONFIRMED - Track has video relationship (single indicator)")
-                    log_info(f"   ✓ MusicBrainz video relationship found: {title}")
-                else:
-                    log_debug(f"[MUSICBRAINZ] ✗ No video relationship found")
-            except Exception as e:
-                log_debug(f"[MUSICBRAINZ] ERROR during video relationship check: {type(e).__name__}: {str(e)}")
-                log_info(f"   ⚠ MusicBrainz video check failed for {title}: {e}")
+    # STAGE 3B intentionally skipped: MusicBrainz video-relationship lookup removed
+    # to reduce single-detection API latency.
     
     # STAGE 3C: MusicBrainz Various Artists Compilation Check (MEDIUM CONFIDENCE)
     # Check if the track appears on multiple Various Artists compilations
@@ -2221,25 +2204,8 @@ def detect_single_enhanced(
                 log_debug(f"   MusicBrainz: Client is disabled in configuration")
         musicbrainz_confirmed = False
     
-    # STAGE 3B: MusicBrainz Video Relationship Check (MEDIUM CONFIDENCE)
-    # Check if the track has a video relationship (YouTube/Vimeo) indicating it was promoted as a single
-    if musicbrainz_client and hasattr(musicbrainz_client, 'enabled') and musicbrainz_client.enabled:
-        if hasattr(musicbrainz_client, 'has_video_relationship'):
-            try:
-                log_debug(f"[MUSICBRAINZ] Checking for video relationships: {title} by {artist}")
-                log_info(f"   Checking MusicBrainz for video relationship: {title}")
-                
-                has_video = musicbrainz_client.has_video_relationship(title, artist)
-                if has_video:
-                    result['single_sources'].append('musicbrainz_video')
-                    result['single_sources_used'].append('musicbrainz_video')
-                    log_debug(f"[MUSICBRAINZ] ✓ CONFIRMED - Track has video relationship (single indicator)")
-                    log_info(f"   ✓ MusicBrainz video relationship found: {title}")
-                else:
-                    log_debug(f"[MUSICBRAINZ] ✗ No video relationship found")
-            except Exception as e:
-                log_debug(f"[MUSICBRAINZ] ERROR during video relationship check: {type(e).__name__}: {str(e)}")
-                log_info(f"   ⚠ MusicBrainz video check failed for {title}: {e}")
+    # STAGE 3B intentionally skipped: MusicBrainz video-relationship lookup removed
+    # to reduce single-detection API latency.
     
     # STAGE 3C: MusicBrainz Various Artists Compilation Check (MEDIUM CONFIDENCE)
     # Check if the track appears on multiple Various Artists compilations
