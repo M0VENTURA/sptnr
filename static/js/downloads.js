@@ -7,19 +7,53 @@
  * Safely fetch and parse JSON, throwing an error if the HTTP status is not OK.
  * This prevents "Unexpected token '<'" errors when the server returns HTML error pages.
  */
-async function fetchJsonOrThrow(url, options = {}) {
-  const response = await fetch(url, options);
-  if (!response.ok) {
-    // Try to get error message from JSON response if available
-    try {
-      const errorData = await response.json();
-      throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`);
-    } catch (e) {
-      // If JSON parsing fails, throw a generic HTTP error
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+async function fetchJsonOrThrow(url, options = {}, timeoutMs = 30000) {
+  const controller = new AbortController();
+  const mergedOptions = { ...options, signal: options?.signal || controller.signal };
+  const timeoutId = setTimeout(() => {
+    if (!options?.signal) {
+      controller.abort();
     }
+  }, timeoutMs);
+
+  let response;
+  let raw;
+  try {
+    response = await fetch(url, mergedOptions);
+    raw = await response.text();
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      if (options?.signal?.aborted) {
+        throw error;
+      }
+      throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
   }
-  return response.json();
+
+  if (response.status === 524 || response.status === 504 || response.status === 502) {
+    throw new Error(`Connection timed out (HTTP ${response.status}). The server took too long to respond.`);
+  }
+
+  let data = null;
+  try {
+    data = raw ? JSON.parse(raw) : {};
+  } catch (_) {
+    const contentType = (response.headers.get('content-type') || '').toLowerCase();
+    if (contentType.includes('text/html') || raw?.trim().startsWith('<!DOCTYPE') || raw?.trim().startsWith('<html')) {
+      throw new Error(`Server returned HTML instead of JSON (HTTP ${response.status}).`);
+    }
+    throw new Error(`Server returned non-JSON response (HTTP ${response.status}).`);
+  }
+
+  if (!response.ok) {
+    const serverMsg = data && data.error ? data.error : response.statusText;
+    throw new Error(`HTTP ${response.status}: ${serverMsg || 'Request failed'}`);
+  }
+
+  return data;
 }
 
 function escapeHtml(text) {
