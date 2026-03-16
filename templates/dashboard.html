@@ -41,7 +41,7 @@
             <h5 class="card-title mb-0">
                 <i class="bi bi-plus-circle"></i> Add to Download Queue
             </h5>
-            <a href="{{ url_for('downloads') }}#queueContent" class="btn btn-sm btn-outline-primary">
+            <a href="/downloads/monitor#folderGroupsSection" class="btn btn-sm btn-outline-primary">
                 <i class="bi bi-list-check"></i> View Queue
             </a>
         </div>
@@ -73,7 +73,7 @@
             <h5 class="card-title mb-0">
                 <i class="bi bi-calendar-event"></i> Upcoming & Recent Releases
             </h5>
-            <a href="{{ url_for('downloads') }}#upcomingTab" class="btn btn-sm btn-info">
+            <a href="/downloads/monitor#upcomingReleasesMonitorCard" class="btn btn-sm btn-info">
                 <i class="bi bi-arrow-right"></i> View All
             </a>
         </div>
@@ -970,7 +970,7 @@ async function loadUpcomingReleasesBanner() {
                         </h6>
                         <small class="text-muted">${escapeHtml(release.artist_name)} - ${escapeHtml(release.album_name)}</small>
                     </div>
-                    <a href="{{ url_for('downloads') }}?search=${searchQuery}#upcomingTab" class="btn btn-sm btn-outline-primary" title="Search for this release">
+                    <a href="/downloads/monitor#upcomingReleasesMonitorCard" class="btn btn-sm btn-outline-primary" title="Open upcoming releases in downloads monitor">
                         <i class="bi bi-download"></i>
                     </a>
                 </div>
