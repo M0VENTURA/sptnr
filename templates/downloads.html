@@ -903,6 +903,9 @@
               <button class="btn btn-sm btn-outline-danger" onclick="clearEntireQueue()" title="Clear entire queue (keep imported)">
                 <i class="bi bi-trash3"></i> Clear Queue
               </button>
+              <button class="btn btn-sm btn-danger" onclick="purgeAllQueueAndDownloads()" title="Delete all queue rows and all files in the configured downloads folder">
+                <i class="bi bi-trash-fill"></i> Purge All
+              </button>
             </div>
           </div>
         </div>
@@ -6481,6 +6484,36 @@ async function clearEntireQueue() {
       await loadQueueStatus();
     } else {
       alert('❌ ' + (data.error || 'Failed to clear queue'));
+    }
+  } catch (e) {
+    alert('❌ Network error: ' + e.message);
+  }
+}
+
+async function purgeAllQueueAndDownloads() {
+  const confirmed = confirm(
+    'PURGE ALL? This deletes all queue rows and permanently deletes all files/folders in your configured downloads folder. This cannot be undone.'
+  );
+  if (!confirmed) return;
+
+  try {
+    const resp = await fetch('/api/queue/purge-all', { method: 'DELETE' });
+    if (!resp.ok) { alert('❌ Server error: ' + resp.statusText); return; }
+    const data = await resp.json();
+    if (data.success) {
+      alert(
+        `✅ Purge complete\n\n` +
+        `Downloads folder: ${data.downloads_dir || 'unknown'}\n` +
+        `Queue items removed: ${data.queue_items_deleted || 0}\n` +
+        `Folder matches removed: ${data.folder_matches_deleted || 0}\n` +
+        `Track matches removed: ${data.track_matches_deleted || 0}\n` +
+        `Queue events removed: ${data.queue_events_deleted || 0}\n` +
+        `Files deleted: ${data.deleted_files || 0}\n` +
+        `Directories deleted: ${data.deleted_dirs || 0}`
+      );
+      await loadQueueStatus();
+    } else {
+      alert('❌ ' + (data.error || 'Failed to purge queue and downloads folder'));
     }
   } catch (e) {
     alert('❌ Network error: ' + e.message);

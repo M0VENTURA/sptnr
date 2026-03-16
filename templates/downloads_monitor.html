@@ -347,6 +347,11 @@
         <i class="bi bi-trash"></i> Clear Queue
       </button>
     </div>
+    <div class="col-md-2">
+      <button class="btn btn-danger w-100 h-100" onclick="purgeAllQueueAndDownloads()">
+        <i class="bi bi-trash-fill"></i> Purge All
+      </button>
+    </div>
   </div>
 
   <div class="card mb-4">
@@ -3364,6 +3369,50 @@ async function clearQueue() {
   } catch (error) {
     console.error('Error clearing queue:', error);
     alert('❌ Error clearing queue: ' + error.message);
+  }
+}
+
+async function purgeAllQueueAndDownloads() {
+  const confirmed = confirm(
+    'PURGE ALL? This permanently deletes all queue data and all files/folders in the configured downloads folder. This cannot be undone.'
+  );
+  if (!confirmed) {
+    return;
+  }
+
+  try {
+    const response = await fetch('/api/queue/purge-all', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Server returned ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    if (data.success) {
+      alert(
+        `✅ Purge complete!\n\n` +
+        `Downloads folder: ${data.downloads_dir || 'unknown'}\n` +
+        `Queue items removed: ${data.queue_items_deleted || 0}\n` +
+        `Folder matches removed: ${data.folder_matches_deleted || 0}\n` +
+        `Track matches removed: ${data.track_matches_deleted || 0}\n` +
+        `Queue events removed: ${data.queue_events_deleted || 0}\n` +
+        `Files deleted: ${data.deleted_files || 0}\n` +
+        `Directories deleted: ${data.deleted_dirs || 0}`
+      );
+
+      queuePageOffset = 0;
+      await loadQueueStatus();
+      await loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true });
+    } else {
+      throw new Error(data.error || 'Failed to purge queue/downloads');
+    }
+  } catch (error) {
+    console.error('Error purging queue/downloads:', error);
+    alert('❌ Error purging queue/downloads: ' + error.message);
   }
 }
 

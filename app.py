@@ -20024,6 +20024,116 @@ def api_queue_clear():
         return jsonify({"error": str(e)}), 400
 
 
+@app.route("/api/queue/purge-all", methods=["POST", "DELETE"])
+def api_queue_purge_all():
+    """Hard purge queue data and remove all files under the configured downloads folder."""
+    conn = None
+    try:
+        import shutil
+
+        cfg = get_config()
+        downloads_dir = _resolve_downloads_monitor_dir(cfg)
+        downloads_abs = os.path.abspath(downloads_dir or "")
+
+        # Safety rails: never allow purging filesystem root.
+        if not downloads_abs or os.path.splitdrive(downloads_abs)[1] in (os.sep, ""):
+            return jsonify({
+                "success": False,
+                "error": f"Unsafe downloads path for purge: {downloads_abs or downloads_dir}"
+            }), 400
+
+        conn = get_db()
+        cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+
+        queue_count = 0
+        folder_count = 0
+        track_count = 0
+        events_count = 0
+
+        has_download_queue = _table_exists(cursor, 'download_queue', is_postgres=is_pg)
+        has_folder_albums = _table_exists(cursor, 'folder_album_matches', is_postgres=is_pg)
+        has_folder_tracks = _table_exists(cursor, 'folder_track_matches', is_postgres=is_pg)
+        has_queue_events = _table_exists(cursor, 'queue_events', is_postgres=is_pg)
+
+        if has_download_queue:
+            cursor.execute("SELECT COUNT(*) FROM download_queue")
+            queue_count = _row_get(cursor.fetchone(), 0, 0)
+        if has_folder_albums:
+            cursor.execute("SELECT COUNT(*) FROM folder_album_matches")
+            folder_count = _row_get(cursor.fetchone(), 0, 0)
+        if has_folder_tracks:
+            cursor.execute("SELECT COUNT(*) FROM folder_track_matches")
+            track_count = _row_get(cursor.fetchone(), 0, 0)
+        if has_queue_events:
+            cursor.execute("SELECT COUNT(*) FROM queue_events")
+            events_count = _row_get(cursor.fetchone(), 0, 0)
+
+        # Delete dependent rows first.
+        if has_folder_tracks:
+            cursor.execute("DELETE FROM folder_track_matches")
+        if has_folder_albums:
+            cursor.execute("DELETE FROM folder_album_matches")
+        if has_queue_events:
+            cursor.execute("DELETE FROM queue_events")
+        if has_download_queue:
+            cursor.execute("DELETE FROM download_queue")
+
+        conn.commit()
+        conn.close()
+        conn = None
+
+        deleted_files = 0
+        deleted_dirs = 0
+        fs_errors = []
+
+        if os.path.isdir(downloads_abs):
+            for child_name in os.listdir(downloads_abs):
+                child_path = os.path.join(downloads_abs, child_name)
+                try:
+                    if os.path.isdir(child_path):
+                        # Count files before deletion for reporting.
+                        for _root, _dirs, files in os.walk(child_path):
+                            deleted_files += len(files)
+                        shutil.rmtree(child_path)
+                        deleted_dirs += 1
+                    else:
+                        os.remove(child_path)
+                        deleted_files += 1
+                except Exception as fs_err:
+                    fs_errors.append(f"{child_path}: {fs_err}")
+        else:
+            fs_errors.append(f"Downloads folder not found: {downloads_abs}")
+
+        logging.warning(
+            f"[QUEUE_PURGE] Purged queue + downloads folder. "
+            f"queue_items={queue_count}, folder_matches={folder_count}, "
+            f"track_matches={track_count}, queue_events={events_count}, "
+            f"deleted_files={deleted_files}, deleted_dirs={deleted_dirs}, downloads_dir={downloads_abs}"
+        )
+
+        return jsonify({
+            "success": True,
+            "message": "Queue and downloads folder purged",
+            "downloads_dir": downloads_abs,
+            "queue_items_deleted": queue_count,
+            "folder_matches_deleted": folder_count,
+            "track_matches_deleted": track_count,
+            "queue_events_deleted": events_count,
+            "deleted_files": deleted_files,
+            "deleted_dirs": deleted_dirs,
+            "fs_errors": fs_errors[:25],
+        })
+    except Exception as e:
+        logging.error(f"Error purging queue and downloads folder: {e}")
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/queue/retry-all-failed", methods=["POST"])
 def api_queue_retry_all_failed():
     """Re-queue all items with status='failed' back to 'queued'."""
