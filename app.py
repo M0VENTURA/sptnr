@@ -1635,6 +1635,13 @@ def _start_boot_navidrome_import():
         try:
             logging.info("[BOOT] Starting Navidrome import-only scan (missing-only)")
             _write_progress_file(progress_path, "navidrome_scan", True, {"status": "starting", "source": "boot"})
+
+            # Warm local artist records from album metadata first.
+            # This does not fetch track payloads; it only syncs album artists.
+            try:
+                _sync_new_navidrome_album_artists_fast(trigger_source="boot_pre_import")
+            except Exception as pre_sync_err:
+                logging.warning(f"[BOOT] Album-artist pre-sync failed before import: {pre_sync_err}")
             
             artist_map = build_artist_index()
             artists = list(artist_map.items())
@@ -2619,6 +2626,20 @@ def _get_auto_boot_import_setting():
 AUTO_BOOT_ND_IMPORT = _get_auto_boot_import_setting()
 
 
+def _start_boot_album_artist_sync_only():
+    """Run a lightweight album-artist sync at boot without scanning track payloads."""
+
+    def _worker():
+        try:
+            logging.info("[BOOT] Starting album-list artist sync (metadata-only)")
+            _sync_new_navidrome_album_artists_fast(trigger_source="boot_init")
+            logging.info("[BOOT] Album-list artist sync complete")
+        except Exception as exc:
+            logging.error(f"[BOOT] Album-list artist sync failed: {exc}", exc_info=True)
+
+    threading.Thread(target=_worker, daemon=True, name="boot-album-artist-sync").start()
+
+
 def _schedule_configured_startup_scan_launch():
     """Launch configured scan set after reboot when enabled in feature settings."""
     def _worker():
@@ -2740,6 +2761,13 @@ _is_startup_leader_worker = _acquire_startup_leader_lock()
 
 # Kick off startup background tasks only in the elected leader worker.
 if _is_startup_leader_worker:
+    try:
+        # Always perform a lightweight album-list sync on reboot so newly
+        # added album artists appear quickly, even when full boot import is off.
+        _start_boot_album_artist_sync_only()
+    except Exception as e:
+        logging.error(f"Failed to start boot album-list artist sync: {e}")
+
     try:
         _start_queue_processor_if_needed(force_restart=False)
     except Exception as e:
