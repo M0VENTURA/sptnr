@@ -240,6 +240,43 @@
             <small class="d-block text-muted">Removes empty folders left behind after duplicate cleanup in Downloads.</small>
           </div>
         </div>
+
+        <div class="col-12"><hr class="my-2"></div>
+        <div class="col-12">
+          <h6 class="mb-2"><i class="bi bi-arrow-repeat"></i> Download Conversion</h6>
+          <small class="text-muted d-block mb-2">Optional conversion while importing to music library. Current implementation supports FLAC → MP3.</small>
+        </div>
+        <div class="col-12 col-md-6">
+          <div class="form-check form-switch mb-2">
+            <input class="form-check-input" type="checkbox" id="downloads_conversion_enabled" {% if config.get('downloads', {}).get('conversion', {}).get('enabled', False) %}checked{% endif %}>
+            <label class="form-check-label" for="downloads_conversion_enabled"><strong>Enable Conversion on Import</strong></label>
+          </div>
+        </div>
+        <div class="col-12 col-md-6">
+          <label class="form-label">Conversion Mode</label>
+          <select class="form-select" id="downloads_conversion_mode">
+            {% set conversion_mode = config.get('downloads', {}).get('conversion', {}).get('mode', 'flac_to_mp3') %}
+            <option value="flac_to_mp3" {% if conversion_mode == 'flac_to_mp3' %}selected{% endif %}>FLAC to MP3</option>
+            <option value="none" {% if conversion_mode == 'none' %}selected{% endif %}>Disabled (Move as-is)</option>
+          </select>
+        </div>
+        <div class="col-12 col-md-6">
+          <label class="form-label">MP3 Bitrate (kbps)</label>
+          <input type="number" class="form-control" id="downloads_conversion_mp3_bitrate" min="96" max="320" step="1" value="{{ config.get('downloads', {}).get('conversion', {}).get('mp3_bitrate_kbps', 320) }}">
+        </div>
+        <div class="col-12 col-md-6">
+          <label class="form-label">Original File Handling</label>
+          {% set original_handling = config.get('downloads', {}).get('conversion', {}).get('original_handling', 'move_to_original') %}
+          <select class="form-select" id="downloads_conversion_original_handling">
+            <option value="move_to_original" {% if original_handling == 'move_to_original' %}selected{% endif %}>Move to Downloads/Original</option>
+            <option value="delete" {% if original_handling == 'delete' %}selected{% endif %}>Delete original after convert</option>
+          </select>
+        </div>
+        <div class="col-12 col-md-6">
+          <label class="form-label">Original Archive Subfolder</label>
+          <input type="text" class="form-control" id="downloads_conversion_original_subfolder" placeholder="Original" value="{{ config.get('downloads', {}).get('conversion', {}).get('original_subfolder', 'Original') }}">
+          <div class="form-text">This folder is ignored by queue scanners.</div>
+        </div>
       </div>
     </div>
   </div>
@@ -951,7 +988,14 @@ function buildConfigObject() {
     },
     downloads: {
       folder: getValue('downloads_folder', ''),
-      file_name_format: getValue('downloads_file_name_format', '{album_artist}/{year} - {album}/{track_number}. {artist} - {title}')
+      file_name_format: getValue('downloads_file_name_format', '{album_artist}/{year} - {album}/{track_number}. {artist} - {title}'),
+      conversion: {
+        enabled: getChecked('downloads_conversion_enabled', false),
+        mode: getValue('downloads_conversion_mode', 'flac_to_mp3'),
+        mp3_bitrate_kbps: parseInt(getValue('downloads_conversion_mp3_bitrate', '320')) || 320,
+        original_handling: getValue('downloads_conversion_original_handling', 'move_to_original'),
+        original_subfolder: getValue('downloads_conversion_original_subfolder', 'Original')
+      }
     },
     watcher: {
       scan_interval: parseInt(getValue('watcher_scan_interval', '30')) || 30,

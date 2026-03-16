@@ -12,6 +12,7 @@ during parallel scan operations. PostgreSQL provides reliable concurrent access.
 import os
 import re
 import concurrent.futures
+import subprocess
 import psycopg2
 import psycopg2.extras
 import json
@@ -422,6 +423,189 @@ def get_downloads_dir():
     return resolve_downloads_dir()
 
 MUSIC_DIR = resolve_music_dir()
+
+
+def _read_download_conversion_settings():
+    """Read download conversion settings from config with safe defaults."""
+    settings = {
+        "enabled": False,
+        "mode": "flac_to_mp3",
+        "mp3_bitrate_kbps": 320,
+        "original_handling": "move_to_original",
+        "original_subfolder": "Original",
+    }
+    config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+    try:
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            conversion_cfg = ((cfg.get("downloads") or {}).get("conversion") or {})
+            if isinstance(conversion_cfg, dict):
+                settings["enabled"] = bool(conversion_cfg.get("enabled", settings["enabled"]))
+                mode = str(conversion_cfg.get("mode", settings["mode"]) or settings["mode"]).strip().lower()
+                if mode in ("flac_to_mp3", "none"):
+                    settings["mode"] = mode
+                try:
+                    bitrate = int(conversion_cfg.get("mp3_bitrate_kbps", settings["mp3_bitrate_kbps"]))
+                    settings["mp3_bitrate_kbps"] = max(96, min(320, bitrate))
+                except Exception:
+                    pass
+                original_handling = str(
+                    conversion_cfg.get("original_handling", settings["original_handling"]) or settings["original_handling"]
+                ).strip().lower()
+                if original_handling in ("move_to_original", "delete"):
+                    settings["original_handling"] = original_handling
+                original_subfolder = str(
+                    conversion_cfg.get("original_subfolder", settings["original_subfolder"]) or settings["original_subfolder"]
+                ).strip()
+                settings["original_subfolder"] = _sanitize_path_component(original_subfolder) or "Original"
+    except Exception as e:
+        logger.debug(f"Could not read download conversion settings: {e}")
+    return settings
+
+
+def _is_under_original_subfolder(path_value, downloads_root, original_subfolder):
+    """Return True when path is inside downloads/<original_subfolder>."""
+    if not path_value or not downloads_root or not original_subfolder:
+        return False
+    try:
+        abs_path = os.path.abspath(path_value)
+        original_root = os.path.abspath(os.path.join(downloads_root, original_subfolder))
+        return os.path.commonpath([abs_path, original_root]) == original_root
+    except Exception:
+        return False
+
+
+def _build_original_archive_path(source_path, downloads_root, original_subfolder):
+    """Build archive destination under downloads/<original_subfolder> preserving relative path when possible."""
+    original_root = os.path.join(downloads_root, original_subfolder)
+    abs_source = os.path.abspath(source_path)
+    abs_downloads = os.path.abspath(downloads_root)
+
+    try:
+        if os.path.commonpath([abs_source, abs_downloads]) == abs_downloads:
+            rel = os.path.relpath(abs_source, abs_downloads)
+            candidate = os.path.join(original_root, rel)
+        else:
+            candidate = os.path.join(original_root, os.path.basename(abs_source))
+    except Exception:
+        candidate = os.path.join(original_root, os.path.basename(abs_source))
+
+    base, ext = os.path.splitext(candidate)
+    counter = 1
+    unique_candidate = candidate
+    while os.path.exists(unique_candidate):
+        unique_candidate = f"{base}_{counter}{ext}"
+        counter += 1
+    return unique_candidate
+
+
+def transfer_download_to_music(source_path, dest_path, queue_id=None):
+    """Move or convert a downloaded file into the music library destination.
+
+    Conversion mode currently supports FLAC -> MP3 when enabled in config.
+    """
+    if not source_path or not os.path.isfile(source_path):
+        return {"success": False, "target_path": None, "error": f"Source file not found: {source_path}"}
+
+    settings = _read_download_conversion_settings()
+    source_ext = os.path.splitext(source_path)[1].lower()
+    convert_flac_to_mp3 = bool(
+        settings.get("enabled")
+        and settings.get("mode") == "flac_to_mp3"
+        and source_ext == ".flac"
+    )
+
+    final_dest_path = dest_path
+    if convert_flac_to_mp3:
+        dest_root, _ = os.path.splitext(dest_path)
+        final_dest_path = f"{dest_root}.mp3"
+
+    os.makedirs(os.path.dirname(final_dest_path), exist_ok=True)
+
+    if os.path.exists(final_dest_path):
+        return {
+            "success": True,
+            "target_path": final_dest_path,
+            "error": None,
+            "skipped": True,
+            "converted": convert_flac_to_mp3,
+        }
+
+    if convert_flac_to_mp3:
+        bitrate_kbps = int(settings.get("mp3_bitrate_kbps", 320) or 320)
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            source_path,
+            "-vn",
+            "-codec:a",
+            "libmp3lame",
+            "-b:a",
+            f"{bitrate_kbps}k",
+            "-map_metadata",
+            "0",
+            "-id3v2_version",
+            "3",
+            final_dest_path,
+        ]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        except FileNotFoundError:
+            return {
+                "success": False,
+                "target_path": None,
+                "error": "ffmpeg is required for conversion but is not available in PATH",
+            }
+        except Exception as e:
+            return {"success": False, "target_path": None, "error": f"Conversion launch failed: {e}"}
+
+        if proc.returncode != 0:
+            stderr_tail = (proc.stderr or "").strip().splitlines()[-5:]
+            return {
+                "success": False,
+                "target_path": None,
+                "error": "FLAC to MP3 conversion failed: " + " | ".join(stderr_tail),
+            }
+
+        downloads_root = get_downloads_dir()
+        original_handling = settings.get("original_handling", "move_to_original")
+        original_subfolder = settings.get("original_subfolder", "Original")
+
+        try:
+            if original_handling == "delete":
+                os.remove(source_path)
+            else:
+                if _is_under_original_subfolder(source_path, downloads_root, original_subfolder):
+                    # Already archived from a previous flow; keep as-is.
+                    pass
+                else:
+                    archive_path = _build_original_archive_path(source_path, downloads_root, original_subfolder)
+                    os.makedirs(os.path.dirname(archive_path), exist_ok=True)
+                    shutil.move(source_path, archive_path)
+        except Exception as archive_err:
+            logger.warning(
+                f"[MOVE] Queue {queue_id or 'unknown'}: conversion succeeded but original handling failed: {archive_err}"
+            )
+
+        logger.info(
+            f"[MOVE] Queue {queue_id or 'unknown'}: converted FLAC→MP3 to {final_dest_path}"
+        )
+        return {
+            "success": True,
+            "target_path": final_dest_path,
+            "error": None,
+            "converted": True,
+        }
+
+    shutil.move(source_path, final_dest_path)
+    return {
+        "success": True,
+        "target_path": final_dest_path,
+        "error": None,
+        "converted": False,
+    }
 
 
 def retry_on_db_lock(max_retries=3, initial_delay=0.5):
@@ -1887,9 +2071,13 @@ def _prune_empty_download_folders(downloads_root):
         if not downloads_root or not os.path.isdir(downloads_root):
             return 0
 
+        conversion_settings = _read_download_conversion_settings()
+        original_subfolder = (conversion_settings.get("original_subfolder") or "Original").strip().lower()
         abs_root = os.path.abspath(downloads_root)
         for current_root, dirs, _ in os.walk(abs_root, topdown=False):
             for d in dirs:
+                if d.strip().lower() == original_subfolder:
+                    continue
                 candidate = os.path.join(current_root, d)
                 try:
                     if os.path.abspath(candidate) == abs_root:
@@ -2175,15 +2363,20 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
             dest_path = os.path.join(music_root, f"{rel_safe}{ext}")
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
 
-        if os.path.exists(dest_path):
-            logger.info(f"[MOVE] Destination already exists, skipping move: {dest_path}")
-            return {'success': True, 'target_path': dest_path, 'error': None, 'skipped': True}
+        transfer_result = transfer_download_to_music(file_path, dest_path, queue_id=queue_item_dict.get('id'))
+        if not transfer_result.get('success'):
+            return {'success': False, 'target_path': None, 'error': transfer_result.get('error')}
 
-        shutil.move(file_path, dest_path)
-        logger.info(f"[MOVE] {filename} → {dest_path}")
+        final_target = transfer_result.get('target_path')
+        logger.info(f"[MOVE] {filename} → {final_target}")
         # Remove the (now empty) parent download directory to keep /downloads tidy.
         _remove_empty_download_dirs(file_path, get_downloads_dir())
-        return {'success': True, 'target_path': dest_path, 'error': None}
+        return {
+            'success': True,
+            'target_path': final_target,
+            'error': None,
+            'skipped': bool(transfer_result.get('skipped', False)),
+        }
 
     except Exception as e:
         logger.error(f"[MOVE] Failed to move file: {e}")
@@ -2869,13 +3062,18 @@ def check_downloads_folder():
         """)
         queue_items = cursor.fetchall()
         
-        # Recursively get all audio files in downloads folder and subdirectories
+        conversion_settings = _read_download_conversion_settings()
+        original_subfolder = (conversion_settings.get("original_subfolder") or "Original").strip().lower()
+
+        # Recursively get all supported audio files in downloads folder and subdirectories.
+        # Queue scanner is intentionally strict: mp3/flac only.
         downloads_files = []
         if os.path.isdir(downloads_dir):
             try:
                 for root, dirs, files in os.walk(downloads_dir):
+                    dirs[:] = [d for d in dirs if d.strip().lower() != original_subfolder]
                     for f in files:
-                        if f.endswith(('.mp3', '.flac', '.m4a', '.ogg', '.wav')):
+                        if f.lower().endswith(('.mp3', '.flac')):
                             # Store both filename and full path
                             downloads_files.append({
                                 'filename': f,
@@ -3549,7 +3747,7 @@ def auto_discover_and_queue_files():
     This makes manually added/downloaded files appear in the Download Monitor UI for user review.
     
     Only adds files that:
-    - Are valid audio files (.mp3, .flac, .m4a, .ogg, .wav)
+    - Are valid audio files (.mp3, .flac)
     - Are not already in the download_queue table
     - Are not already in the tracks table (existing library)
     
@@ -3703,6 +3901,9 @@ def auto_discover_and_queue_files():
                 except Exception as e:
                     logger.warning(f"[AUTO-DISCOVER] Could not add {col} column: {e}")
         
+        conversion_settings = _read_download_conversion_settings()
+        original_subfolder = (conversion_settings.get("original_subfolder") or "Original").strip().lower()
+
         # Get supported audio files from downloads folder and subdirectories.
         # Keep queue discovery strict to MP3/FLAC only.
         audio_extensions = {'.mp3', '.flac'}
@@ -3711,6 +3912,7 @@ def auto_discover_and_queue_files():
         
         try:
             for root, dirs, files in os.walk(downloads_dir):
+                dirs[:] = [d for d in dirs if d.strip().lower() != original_subfolder]
                 logger.debug(f"[AUTO-DISCOVER] Scanning: {root} ({len(files)} files)")
                 for filename in files:
                     file_ext = os.path.splitext(filename)[1].lower()

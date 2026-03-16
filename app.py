@@ -1137,7 +1137,14 @@ def setup():
                     "folder": "/downloads/Music",
                     "file_name_format": "{album_artist}/{year} - {album}/{track_number}. {artist} - {title}",
                     "incomplete_folder": "/downloads/Soulseek/Incomplete",
-                    "monitor_incomplete": True
+                    "monitor_incomplete": True,
+                    "conversion": {
+                        "enabled": False,
+                        "mode": "flac_to_mp3",
+                        "mp3_bitrate_kbps": 320,
+                        "original_handling": "move_to_original",
+                        "original_subfolder": "Original"
+                    }
                 },
                 "watcher": {
                     "scan_interval": 30,
@@ -2550,7 +2557,14 @@ def _baseline_config():
         },
         "downloads": {
             "folder": "/downloads/Music",
-            "file_name_format": "{album_artist}/{year} - {album}/{track_number}. {artist} - {title}"
+            "file_name_format": "{album_artist}/{year} - {album}/{track_number}. {artist} - {title}",
+            "conversion": {
+                "enabled": False,
+                "mode": "flac_to_mp3",
+                "mp3_bitrate_kbps": 320,
+                "original_handling": "move_to_original",
+                "original_subfolder": "Original"
+            }
         },
         "weights": {"spotify": 0.4, "lastfm": 0.3, "age": 0.3},
         "database": {"path": DB_PATH, "vacuum_on_start": False},

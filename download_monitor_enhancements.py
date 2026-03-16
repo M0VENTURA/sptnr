@@ -458,9 +458,13 @@ def move_to_music_collection(queue_id):
             year,
         )
         
-        # Copy file
-        shutil.copy2(source_path, dest_path)
-        logger.info(f"Copied file: {source_path} -> {dest_path}")
+        # Move/convert file using queue manager transfer settings.
+        from download_queue_manager import transfer_download_to_music
+        transfer_result = transfer_download_to_music(source_path, dest_path, queue_id=queue_id)
+        if not transfer_result.get('success'):
+            return {'error': transfer_result.get('error', 'Failed to transfer file to music directory')}
+        dest_path = transfer_result.get('target_path') or dest_path
+        logger.info(f"Transferred file: {source_path} -> {dest_path}")
         
         # Clear and rewrite tags
         update_music_tags(dest_path, queue_item)
