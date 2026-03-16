@@ -1853,10 +1853,43 @@ def migrate_existing_queue_items_to_grouped_setup(limit=None):
         cursor.execute(fetch_sql, tuple(params))
         rows = cursor.fetchall()
 
+        selected_columns = [
+            'id', 'artist', 'title', 'album', 'album_artist', 'source',
+            'import_group', 'import_type', 'release_id', 'release_source',
+            'track_number', 'status'
+        ]
+
         def _row_value(row, key, idx):
+            if row is None:
+                return None
+
             if hasattr(row, 'get'):
-                return row.get(key)
-            return row[idx]
+                try:
+                    return row.get(key)
+                except Exception:
+                    pass
+
+            try:
+                return row[idx]
+            except Exception:
+                pass
+
+            # Last-resort fallback for tuple/list rows with unexpected shape.
+            try:
+                col_idx = selected_columns.index(key)
+                if isinstance(row, (list, tuple)) and 0 <= col_idx < len(row):
+                    return row[col_idx]
+            except Exception:
+                pass
+
+            return None
+
+        def _norm_text(value):
+            if value is None:
+                return ''
+            if isinstance(value, str):
+                return value.strip()
+            return str(value).strip()
 
         source_updated = 0
         release_source_updated = 0
@@ -1866,15 +1899,15 @@ def migrate_existing_queue_items_to_grouped_setup(limit=None):
 
         for row in rows:
             row_id = _row_value(row, 'id', 0)
-            artist = (_row_value(row, 'artist', 1) or '').strip()
-            album = (_row_value(row, 'album', 3) or '').strip()
-            album_artist = (_row_value(row, 'album_artist', 4) or '').strip()
-            source = (_row_value(row, 'source', 5) or '').strip().lower()
-            import_group = (_row_value(row, 'import_group', 6) or '').strip()
-            import_type = (_row_value(row, 'import_type', 7) or '').strip().lower()
-            release_id = (_row_value(row, 'release_id', 8) or '').strip()
-            release_source = (_row_value(row, 'release_source', 9) or '').strip().lower()
-            track_number = (_row_value(row, 'track_number', 10) or '').strip()
+            artist = _norm_text(_row_value(row, 'artist', 1))
+            album = _norm_text(_row_value(row, 'album', 3))
+            album_artist = _norm_text(_row_value(row, 'album_artist', 4))
+            source = _norm_text(_row_value(row, 'source', 5)).lower()
+            import_group = _norm_text(_row_value(row, 'import_group', 6))
+            import_type = _norm_text(_row_value(row, 'import_type', 7)).lower()
+            release_id = _norm_text(_row_value(row, 'release_id', 8))
+            release_source = _norm_text(_row_value(row, 'release_source', 9)).lower()
+            track_number = _norm_text(_row_value(row, 'track_number', 10))
 
             updates = {}
 
@@ -6325,11 +6358,14 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
 
     try:
         conn = get_db()
-        cursor = conn.cursor()
 
         from app import _is_postgres_connection as app_is_postgres_connection
         is_pg = bool(app_is_postgres_connection(conn))
         placeholder = "%s" if is_pg else "?"
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) if is_pg else conn.cursor()
+
+        # Ensure late-added queue columns exist before selecting/updating them.
+        _ensure_download_queue_columns(conn, cursor, is_pg=is_pg)
 
         # Fetch all queue items for this album
         if release_id:
@@ -6360,7 +6396,12 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
                 (artist, album)
             )
 
-        tracks = [dict(row) for row in cursor.fetchall()]
+        rows = cursor.fetchall() or []
+        if rows and isinstance(rows[0], dict):
+            tracks = rows
+        else:
+            col_names = [d[0] for d in (cursor.description or [])]
+            tracks = [dict(zip(col_names, row)) for row in rows]
 
         if not tracks:
             conn.close()
@@ -6373,7 +6414,8 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
         def _is_done(t):
             if t['status'] == 'imported':
                 return True
-            if t.get('copied_individually') == 1:
+            copied_individually = t.get('copied_individually')
+            if copied_individually in (1, True, '1', 'true', 'True'):
                 return True
             if t['status'] == 'completed' and t.get('file_path'):
                 return True
