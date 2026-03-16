@@ -438,9 +438,31 @@ function changeQueuePage(direction) {
   loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true });
 }
 
-async function fetchJsonOrThrow(url, options = {}) {
-  const response = await fetch(url, options);
-  const raw = await response.text();
+async function fetchJsonOrThrow(url, options = {}, timeoutMs = 30000) {
+  const controller = new AbortController();
+  const mergedOptions = { ...options, signal: options?.signal || controller.signal };
+  const timeoutId = setTimeout(() => {
+    if (!options?.signal) {
+      controller.abort();
+    }
+  }, timeoutMs);
+
+  let response;
+  let raw;
+  try {
+    response = await fetch(url, mergedOptions);
+    raw = await response.text();
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      if (options?.signal?.aborted) {
+        throw error;
+      }
+      throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   // Gateway timeouts return HTML error pages, not JSON
   if (response.status === 524 || response.status === 504 || response.status === 502) {
@@ -461,6 +483,8 @@ async function fetchJsonOrThrow(url, options = {}) {
 
   return data;
 }
+
+let upcomingReleasesRequestController = null;
 
 async function addToQueue(event) {
   event.preventDefault();
@@ -542,15 +566,10 @@ async function clearUpcomingReleasesMonitor() {
   statusText.textContent = 'Clearing database...';
 
   try {
-    const response = await fetch('/api/upcoming-releases/clear', {
+    const data = await fetchJsonOrThrow('/api/upcoming-releases/clear', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' }
-    });
-
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.error || 'Failed to clear database');
-    }
+    }, 15000);
 
     statusText.textContent = `✓ ${data.message}`;
     setTimeout(() => {
@@ -586,15 +605,10 @@ async function scrapeUpcomingReleasesMonitor() {
   statusText.textContent = 'Scraping Wikipedia for upcoming releases...';
 
   try {
-    const response = await fetch('/api/upcoming-releases/scrape', {
+    const data = await fetchJsonOrThrow('/api/upcoming-releases/scrape', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' }
-    });
-
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.error || 'Failed to scrape releases');
-    }
+    }, 120000);
 
     statusText.textContent = `✓ ${data.message}`;
     setTimeout(() => {
@@ -619,6 +633,17 @@ async function refreshUpcomingReleasesMonitor() {
   }
   const filterCollection = document.getElementById('upcomingFilterCollectionMonitor')?.checked || false;
 
+  // Cancel any previous in-flight upcoming-releases request to avoid stale spinners.
+  if (upcomingReleasesRequestController) {
+    try {
+      upcomingReleasesRequestController.abort();
+    } catch (_) {
+      // no-op
+    }
+  }
+  upcomingReleasesRequestController = new AbortController();
+  const requestController = upcomingReleasesRequestController;
+
   container.innerHTML = `
     <div class="text-center py-4">
       <div class="spinner-border text-primary spinner-border-sm" role="status">
@@ -629,12 +654,11 @@ async function refreshUpcomingReleasesMonitor() {
   `;
 
   try {
-    const response = await fetch(`/api/upcoming-releases?collection=${filterCollection}`);
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(data.error || 'Failed to load releases');
-    }
+    const data = await fetchJsonOrThrow(
+      `/api/upcoming-releases?collection=${filterCollection}`,
+      { signal: requestController.signal },
+      20000
+    );
 
     if (!Array.isArray(data.releases) || data.releases.length === 0) {
       container.innerHTML = `
@@ -737,6 +761,9 @@ async function refreshUpcomingReleasesMonitor() {
     html += '</div>';
     container.innerHTML = html;
   } catch (error) {
+    if (error?.name === 'AbortError') {
+      return;
+    }
     console.error('Error loading upcoming releases:', error);
     container.innerHTML = `
       <div class="alert alert-danger mb-0">
@@ -744,6 +771,10 @@ async function refreshUpcomingReleasesMonitor() {
         <strong>Error loading releases:</strong> ${escapeHtml(error.message)}
       </div>
     `;
+  } finally {
+    if (upcomingReleasesRequestController === requestController) {
+      upcomingReleasesRequestController = null;
+    }
   }
 }
 
