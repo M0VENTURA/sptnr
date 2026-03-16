@@ -72,7 +72,9 @@ def _validate_postgres_config():
         logger.error(error_msg)
         raise RuntimeError(error_msg)
     
-    logger.info(f"✓ PostgreSQL configured: {PG_USER}@{PG_HOST}:{PG_PORT}/{PG_DATABASE}")
+    # This runs during module import and can be frequent in short-lived workers;
+    # keep details for troubleshooting without polluting INFO logs.
+    logger.debug(f"✓ PostgreSQL configured: {PG_USER}@{PG_HOST}:{PG_PORT}/{PG_DATABASE}")
 
 # Validate config on module import
 try:
