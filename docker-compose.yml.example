@@ -26,6 +26,7 @@ services:
       - DB_PATH=/database/sptnr.db         #Path to SQLite database
       - DOWNLOADS_DIR=/downloads/Music     #Path to downloads folder
       - MUSIC_ROOT=/music                  #Path to music library folder
+      - SPTNR_AUTO_INSTALL_FFMPEG=0        #Set 1 to attempt apt-based ffmpeg install at container start if missing
     
     ports:
       - "5000:5000"                        #Web UI port

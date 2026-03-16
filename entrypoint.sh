@@ -7,6 +7,27 @@ set -e
 echo "=== SPTNR Starting ==="
 echo "Starting queue processor and Flask web application..."
 
+# Verify ffmpeg availability for download conversion features.
+if command -v ffmpeg >/dev/null 2>&1; then
+    echo "✓ ffmpeg found: $(ffmpeg -version | head -n 1)"
+else
+    echo "⚠ ffmpeg not found in PATH. FLAC→MP3 conversion will be unavailable."
+
+    if [ "${SPTNR_AUTO_INSTALL_FFMPEG:-0}" = "1" ]; then
+        if command -v apt-get >/dev/null 2>&1 && [ "$(id -u)" = "0" ]; then
+            echo "Attempting runtime ffmpeg install (SPTNR_AUTO_INSTALL_FFMPEG=1)..."
+            apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+            if command -v ffmpeg >/dev/null 2>&1; then
+                echo "✓ ffmpeg installed at startup"
+            else
+                echo "⚠ Runtime ffmpeg install attempted but ffmpeg is still unavailable"
+            fi
+        else
+            echo "⚠ Cannot auto-install ffmpeg (requires apt-get and root user)"
+        fi
+    fi
+fi
+
 # Start queue processor in background (processing interval: 30 seconds)
 echo "Starting download queue processor (interval: 30s)..."
 python3 queue_processor.py 30 > /config/queue_processor.log 2>&1 &
