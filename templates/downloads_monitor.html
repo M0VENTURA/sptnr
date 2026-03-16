@@ -3662,22 +3662,55 @@ async function retryQueueItem(queueId) {
   }
 }
 
+async function _pollMoveToMusicTask(taskId, timeoutMs = 180000) {
+  const start = Date.now();
+  const pollIntervalMs = 1000;
+
+  while (Date.now() - start < timeoutMs) {
+    const task = await fetchJsonOrThrow(`/api/queue/move-to-music/status/${taskId}`);
+    if (task.status === 'completed' || task.status === 'failed') {
+      return task;
+    }
+    await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+  }
+
+  return {
+    success: false,
+    status: 'timeout',
+    result: { error: 'Move request is still running. Refresh queue status in a few seconds.' }
+  };
+}
+
 async function moveMatchedToMusic(queueId) {
   if (!confirm('Move track to /music and rewrite tags from MusicBrainz metadata?')) {
     return;
   }
 
   try {
-    const data = await fetchJsonOrThrow(`/api/queue/move-to-music/${queueId}`, {
+    const startData = await fetchJsonOrThrow(`/api/queue/move-to-music/${queueId}?async=1`, {
       method: 'POST'
     });
 
-    if (data.success) {
+    if (!startData.success || !startData.task_id) {
+      alert('❌ Error: ' + (startData.error || 'Failed to start move task'));
+      return;
+    }
+
+    const task = await _pollMoveToMusicTask(startData.task_id);
+    const result = task.result || {};
+
+    if (task.status === 'completed' && result.success) {
       alert('✅ Track moved to Music successfully');
       await loadQueueStatus();
       await loadFolderGroups({ forceRender: true });
+    } else if (task.status === 'timeout') {
+      alert('⏳ Move still in progress. Refreshing queue now.');
+      await loadQueueStatus();
+      await loadFolderGroups({ forceRender: true });
     } else {
-      alert('❌ Error: ' + (data.error || 'Failed to move track'));
+      alert('❌ Error: ' + (result.error || task.error || 'Failed to move track'));
+      await loadQueueStatus();
+      await loadFolderGroups({ forceRender: true });
     }
   } catch (error) {
     console.error('Error moving matched track to music:', error);

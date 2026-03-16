@@ -269,6 +269,7 @@ import threading
 import time
 import logging
 import re
+import uuid
 from api_clients.slskd import SlskdClient
 from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
 from helpers.metadata_reader import get_track_metadata_from_db, find_track_file, read_mp3_metadata
@@ -21042,133 +21043,235 @@ def _delete_queue_entry(queue_id: int) -> bool:
         return False
 
 
+_move_to_music_tasks = {}
+_move_to_music_tasks_lock = threading.Lock()
+
+
+def _move_to_music_task_set(task_id, **updates):
+    with _move_to_music_tasks_lock:
+        task = _move_to_music_tasks.get(task_id, {"task_id": task_id})
+        task.update(updates)
+        task.setdefault("updated_at", datetime.now().isoformat())
+        task["updated_at"] = datetime.now().isoformat()
+        _move_to_music_tasks[task_id] = task
+
+
+def _move_to_music_task_get(task_id):
+    with _move_to_music_tasks_lock:
+        return dict(_move_to_music_tasks.get(task_id) or {})
+
+
+def _perform_queue_move_to_music(queue_id):
+    """Core move-to-music logic shared by sync and async API paths."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT status, file_path, matched_file_path, music_file_path, found_filename FROM download_queue WHERE id = %s", (queue_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        return {"success": False, "error": "Queue item not found"}, 404
+
+    if isinstance(row, (list, tuple)):
+        item_status = row[0]
+        file_path_value = row[1] if len(row) > 1 else None
+        matched_file_path_value = row[2] if len(row) > 2 else None
+        music_file_path_value = row[3] if len(row) > 3 else None
+        found_filename_value = row[4] if len(row) > 4 else None
+    else:
+        item_status = row.get('status')
+        file_path_value = row.get('file_path')
+        matched_file_path_value = row.get('matched_file_path')
+        music_file_path_value = row.get('music_file_path')
+        found_filename_value = row.get('found_filename')
+
+    def _normalize_runtime_path(path_value):
+        if not path_value:
+            return ""
+        return os.path.normpath(str(path_value)).replace("\\", "/").rstrip("/")
+
+    def _is_under_root(path_value, root_value):
+        normalized_path = _normalize_runtime_path(path_value)
+        normalized_root = _normalize_runtime_path(root_value)
+        if not normalized_path or not normalized_root:
+            return False
+        lowered_path = normalized_path.lower()
+        lowered_root = normalized_root.lower()
+        return lowered_path == lowered_root or lowered_path.startswith(lowered_root + "/")
+
+    music_root = os.environ.get("MUSIC_ROOT", "/music")
+    try:
+        from download_queue_manager import get_downloads_dir
+        downloads_root = get_downloads_dir()
+    except Exception:
+        downloads_root = os.environ.get("DOWNLOADS_DIR", "/downloads")
+
+    candidate_paths = [file_path_value, matched_file_path_value, music_file_path_value, found_filename_value]
+    file_in_music = any(_is_under_root(path_value, music_root) for path_value in candidate_paths if path_value)
+    file_in_downloads = any(
+        _is_under_root(path_value, downloads_root) or _is_under_root(path_value, "/downloads")
+        for path_value in candidate_paths if path_value
+    )
+
+    if item_status == 'matched':
+        from download_monitor_enhancements import move_to_music_collection
+        result = move_to_music_collection(queue_id)
+        if 'error' in result:
+            return {"success": False, "error": result['error']}, 400
+
+        _delete_queue_entry(queue_id)
+        return {
+            "success": True,
+            "path": result.get('path'),
+            "message": f"File moved to music collection: {result.get('path')}",
+            "deleted": True,
+        }, 200
+
+    if item_status in ('completed', 'pending_match', 'in_collection'):
+        from download_queue_manager import move_single_track_to_music_dir, update_queue_item
+        from download_file_verification import verify_file_in_music, mark_queue_item_moved
+
+        if item_status == 'in_collection' and file_in_music:
+            return {"success": False, "error": "Queue item already points to a file under /music"}, 400
+
+        if item_status == 'in_collection' and not file_in_downloads:
+            return {
+                "success": False,
+                "error": "Queue item marked in_collection can only be moved when its source file is still under /downloads",
+            }, 400
+
+        conn2 = get_db()
+        cursor2 = conn2.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cursor2.execute("SELECT * FROM download_queue WHERE id = %s", (queue_id,))
+        queue_item = cursor2.fetchone()
+        conn2.close()
+
+        if not queue_item:
+            return {"success": False, "error": "Queue item not found"}, 404
+
+        source_path = (
+            queue_item.get('file_path')
+            or queue_item.get('matched_file_path')
+            or queue_item.get('music_file_path')
+            or queue_item.get('found_filename')
+        )
+        if source_path:
+            queue_item['file_path'] = source_path
+
+        if not queue_item.get('file_path'):
+            return {
+                "success": False,
+                "error": f"Queue item {queue_id} is marked completed but has no file_path. Cannot move to music directory until file is found.",
+            }, 400
+
+        move_result = move_single_track_to_music_dir(dict(queue_item))
+        if not move_result.get('success'):
+            return {"success": False, "error": move_result.get('error', 'Move failed')}, 500
+
+        target_path = move_result['target_path']
+        verify_result = verify_file_in_music(queue_id, target_path)
+        if verify_result.get('success'):
+            mark_queue_item_moved(queue_id, target_path)
+            update_queue_item(
+                queue_id,
+                status='imported',
+                file_path=target_path,
+                copied_individually=1,
+                copied_individually_at=datetime.now().isoformat(),
+            )
+            logging.info(f"[MANUAL_MOVE] Queue {queue_id}: verified and imported to {target_path}")
+        else:
+            update_queue_item(queue_id, status='completed', file_path=target_path)
+            return {
+                "success": False,
+                "error": f"File moved but verification failed: {verify_result.get('error')}",
+            }, 500
+
+        _delete_queue_entry(queue_id)
+        return {
+            "success": True,
+            "path": target_path,
+            "message": f"File moved to music collection: {target_path}",
+            "deleted": True,
+        }, 200
+
+    return {
+        "success": False,
+        "error": f"Track must be matched, completed, pending_match, or downloads-backed in_collection (current status: {item_status})",
+    }, 400
+
+
+@app.route("/api/queue/move-to-music/status/<task_id>", methods=["GET"])
+def api_queue_move_to_music_status(task_id):
+    """Return status for a background move-to-music request."""
+    task = _move_to_music_task_get(task_id)
+    if not task:
+        return jsonify({"success": False, "error": "Task not found"}), 404
+    return jsonify(task)
+
+
 @app.route("/api/queue/move-to-music/<int:queue_id>", methods=["POST"])
 def api_queue_move_to_music(queue_id):
     """
     Move a matched or completed queue item to /music directory with proper tagging.
-    - matched: uses move_to_music_collection (MusicBrainz retag path)
-    - completed/pending_match: uses move_single_track_to_music_dir (same flow as queue_processor auto-move)
+    Supports background mode to avoid request timeouts on large file operations.
     """
     try:
-        conn = get_db()
-        cursor = conn.cursor()
-        cursor.execute("SELECT status, file_path, matched_file_path, music_file_path, found_filename FROM download_queue WHERE id = %s", (queue_id,))
-        row = cursor.fetchone()
-        conn.close()
+        async_requested = str(request.args.get("async", "0")).strip().lower() in {"1", "true", "yes", "on"}
 
-        if not row:
-            return jsonify({"success": False, "error": "Queue item not found"}), 404
-
-        if isinstance(row, (list, tuple)):
-            item_status = row[0]
-            file_path_value = row[1] if len(row) > 1 else None
-            matched_file_path_value = row[2] if len(row) > 2 else None
-            music_file_path_value = row[3] if len(row) > 3 else None
-            found_filename_value = row[4] if len(row) > 4 else None
-        else:
-            item_status = row.get('status')
-            file_path_value = row.get('file_path')
-            matched_file_path_value = row.get('matched_file_path')
-            music_file_path_value = row.get('music_file_path')
-            found_filename_value = row.get('found_filename')
-
-        def _normalize_runtime_path(path_value):
-            if not path_value:
-                return ""
-            return os.path.normpath(str(path_value)).replace("\\", "/").rstrip("/")
-
-        def _is_under_root(path_value, root_value):
-            normalized_path = _normalize_runtime_path(path_value)
-            normalized_root = _normalize_runtime_path(root_value)
-            if not normalized_path or not normalized_root:
-                return False
-            lowered_path = normalized_path.lower()
-            lowered_root = normalized_root.lower()
-            return lowered_path == lowered_root or lowered_path.startswith(lowered_root + "/")
-
-        music_root = os.environ.get("MUSIC_ROOT", "/music")
-        try:
-            from download_queue_manager import get_downloads_dir
-            downloads_root = get_downloads_dir()
-        except Exception:
-            downloads_root = os.environ.get("DOWNLOADS_DIR", "/downloads")
-        candidate_paths = [file_path_value, matched_file_path_value, music_file_path_value, found_filename_value]
-        first_path = next((p for p in candidate_paths if p), "")
-
-        file_in_music = any(_is_under_root(path_value, music_root) for path_value in candidate_paths if path_value)
-        file_in_downloads = any(
-            _is_under_root(path_value, downloads_root) or _is_under_root(path_value, "/downloads")
-            for path_value in candidate_paths if path_value
-        )
-
-        if item_status == 'matched':
-            from download_monitor_enhancements import move_to_music_collection
-            result = move_to_music_collection(queue_id)
-            if 'error' in result:
-                return jsonify({"success": False, "error": result['error']}), 400
-            # Auto-delete the queue entry now that the file is safely in the music collection
-            _delete_queue_entry(queue_id)
-            return jsonify({"success": True, "path": result['path'], "message": f"File moved to music collection: {result['path']}", "deleted": True})
-
-        elif item_status in ('completed', 'pending_match', 'in_collection'):
-            from download_queue_manager import move_single_track_to_music_dir, update_queue_item
-            from download_file_verification import verify_file_in_music, mark_queue_item_moved
-            from datetime import datetime
-
-            if item_status == 'in_collection' and file_in_music:
-                return jsonify({"success": False, "error": "Queue item already points to a file under /music"}), 400
-
-            if item_status == 'in_collection' and not file_in_downloads:
-                return jsonify({"success": False, "error": "Queue item marked in_collection can only be moved when its source file is still under /downloads"}), 400
-
-            conn2 = get_db()
-            cursor2 = conn2.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-            cursor2.execute("SELECT * FROM download_queue WHERE id = %s", (queue_id,))
-            queue_item = cursor2.fetchone()
-            conn2.close()
-
-            if not queue_item:
-                return jsonify({"success": False, "error": "Queue item not found"}), 404
-
-            # Resolve best source path and require one before attempting to move
-            source_path = (
-                queue_item.get('file_path')
-                or queue_item.get('matched_file_path')
-                or queue_item.get('music_file_path')
-                or queue_item.get('found_filename')
+        if async_requested:
+            task_id = str(uuid.uuid4())
+            _move_to_music_task_set(
+                task_id,
+                success=None,
+                status="running",
+                queue_id=queue_id,
+                message="Move started",
+                started_at=datetime.now().isoformat(),
             )
-            if source_path:
-                queue_item['file_path'] = source_path
-            # Check that file_path exists before attempting to move
-            if not queue_item.get('file_path'):
-                return jsonify({"success": False, "error": f"Queue item {queue_id} is marked completed but has no file_path. Cannot move to music directory until file is found."}), 400
 
-            move_result = move_single_track_to_music_dir(dict(queue_item))
-            if not move_result.get('success'):
-                return jsonify({"success": False, "error": move_result.get('error', 'Move failed')}), 500
+            def _worker():
+                try:
+                    with app.app_context():
+                        payload, status_code = _perform_queue_move_to_music(queue_id)
+                    _move_to_music_task_set(
+                        task_id,
+                        success=bool(payload.get("success")),
+                        status="completed" if payload.get("success") else "failed",
+                        status_code=status_code,
+                        result=payload,
+                        completed_at=datetime.now().isoformat(),
+                    )
+                except Exception as worker_err:
+                    logging.error(f"Error in async move-to-music worker for queue {queue_id}: {worker_err}")
+                    import traceback
+                    logging.error(traceback.format_exc())
+                    _move_to_music_task_set(
+                        task_id,
+                        success=False,
+                        status="failed",
+                        status_code=500,
+                        result={"success": False, "error": str(worker_err)},
+                        completed_at=datetime.now().isoformat(),
+                    )
 
-            target_path = move_result['target_path']
-            verify_result = verify_file_in_music(queue_id, target_path)
-            if verify_result.get('success'):
-                mark_queue_item_moved(queue_id, target_path)
-                update_queue_item(
-                    queue_id,
-                    status='imported',
-                    file_path=target_path,
-                    copied_individually=1,
-                    copied_individually_at=datetime.now().isoformat()
-                )
-                logging.info(f"[MANUAL_MOVE] Queue {queue_id}: verified and imported to {target_path}")
-            else:
-                update_queue_item(queue_id, status='completed', file_path=target_path)
-                return jsonify({"success": False, "error": f"File moved but verification failed: {verify_result.get('error')}"}), 500
+            threading.Thread(
+                target=_worker,
+                daemon=True,
+                name=f"queue-move-to-music-{queue_id}-{task_id[:8]}",
+            ).start()
 
-            # Auto-delete the queue entry now that the file is confirmed in the music collection
-            _delete_queue_entry(queue_id)
-            return jsonify({"success": True, "path": target_path, "message": f"File moved to music collection: {target_path}", "deleted": True})
+            return jsonify({
+                "success": True,
+                "accepted": True,
+                "queue_id": queue_id,
+                "task_id": task_id,
+                "status": "running",
+                "message": "Move started in background",
+            }), 202
 
-        else:
-            return jsonify({"success": False, "error": f"Track must be matched, completed, pending_match, or downloads-backed in_collection (current status: {item_status})"}), 400
+        payload, status_code = _perform_queue_move_to_music(queue_id)
+        return jsonify(payload), status_code
 
     except Exception as e:
         logging.error(f"Error moving queue item to music: {e}")
