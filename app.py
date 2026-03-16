@@ -20016,6 +20016,14 @@ def _queue_sanitize_component(value):
     return value.strip('. ')
 
 
+def _queue_normalize_album_artist(value):
+    normalized = str(value or '').strip()
+    key = normalized.lower()
+    if key in ('various', 'various artist', 'various artists', 'va', 'v/a'):
+        return 'Various Artists'
+    return normalized
+
+
 def _queue_safe_track_number(track_number_value):
     if track_number_value is None:
         return '00'
@@ -20047,7 +20055,9 @@ def _read_queue_naming_format():
 def _build_queue_target_path(music_root_value, album_artist_value, year_value, album_value, track_artist_value, title_value, track_number_value, source_file_path):
     file_name_format = _read_queue_naming_format()
     ext_local = os.path.splitext(source_file_path)[1]
-    album_artist_part = _queue_sanitize_component(album_artist_value) or 'Unknown Artist'
+    album_artist_part = _queue_sanitize_component(
+        _queue_normalize_album_artist(album_artist_value)
+    ) or 'Unknown Artist'
     album_part = _queue_sanitize_component(album_value) or 'Unknown Album'
     year_part = str(year_value).strip()[:4] if year_value else ''
     format_vars = {

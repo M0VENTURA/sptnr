@@ -1617,6 +1617,15 @@ def _sanitize_path_component(value):
     return value.strip('. ')
 
 
+def _normalize_album_artist_for_path(value):
+    """Normalize known compilation aliases to a stable folder artist name."""
+    normalized = str(value or '').strip()
+    key = normalized.lower()
+    if key in ('various', 'various artist', 'various artists', 'va', 'v/a'):
+        return 'Various Artists'
+    return normalized
+
+
 def _is_musicbrainz_backed(queue_item):
     """Return True when a queue item was explicitly tied to a MusicBrainz release.
 
@@ -1828,7 +1837,9 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
         music_root = music_dir or resolve_music_dir()
 
         album_artist = _sanitize_path_component(
-            queue_item_dict.get('album_artist') or queue_item_dict.get('artist') or 'Unknown Artist'
+            _normalize_album_artist_for_path(
+                queue_item_dict.get('album_artist') or queue_item_dict.get('artist') or 'Unknown Artist'
+            )
         )
         album = _sanitize_path_component(queue_item_dict.get('album') or 'Unknown Album')
         artist = queue_item_dict.get('artist', 'Unknown Artist')
@@ -1885,7 +1896,9 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
                         tag_metadata['album_artist'] = mb_release_artist
                         # Recompute the folder-level album_artist so the file is organised
                         # under the correct artist directory.
-                        album_artist = _sanitize_path_component(mb_release_artist)
+                        album_artist = _sanitize_path_component(
+                            _normalize_album_artist_for_path(mb_release_artist)
+                        )
                         logger.info(
                             f"[MOVE] Queue {queue_item_dict.get('id', 'unknown')}: "
                             f"album_artist updated from MusicBrainz: {mb_release_artist}"
@@ -1999,7 +2012,9 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
         format_vars = {
             'track_number': track_num_fmt,
             'artist': _sanitize_path_component(artist) or 'Unknown Artist',
-            'album_artist': _sanitize_path_component(album_artist) or 'Unknown Artist',
+            'album_artist': _sanitize_path_component(
+                _normalize_album_artist_for_path(album_artist)
+            ) or 'Unknown Artist',
             'title': _sanitize_path_component(title) or 'Unknown Title',
             'album': _sanitize_path_component(album) or 'Unknown Album',
             'year': str(year)[:4] if year and str(year) != 'Unknown' else 'Unknown',
@@ -2166,7 +2181,9 @@ def rename_album_files(artist, album, db_conn, music_dir=None):
                     year_fmt = 'Unknown'
                 
                 # Build new path: <music_root>/<album_artist>/<year> - <album>/
-                album_artist_safe = _sanitize_path_component(track_album_artist or track_artist or 'Unknown Artist')
+                album_artist_safe = _sanitize_path_component(
+                    _normalize_album_artist_for_path(track_album_artist or track_artist or 'Unknown Artist')
+                )
                 album_safe = _sanitize_path_component(track_album or 'Unknown Album')
                 
                 dest_folder = os.path.join(music_root, album_artist_safe, f"{year_fmt} - {album_safe}")
@@ -5608,7 +5625,9 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
                 counts[v] = counts.get(v, 0) + 1
             return max(counts, key=counts.get)
 
-        dest_album_artist = _most_common(album_artists) or artist or 'Unknown Artist'
+        dest_album_artist = _normalize_album_artist_for_path(
+            _most_common(album_artists) or artist or 'Unknown Artist'
+        )
         dest_album = _most_common(albums) or album or 'Unknown Album'
         dest_year = _most_common(years) or ''
         

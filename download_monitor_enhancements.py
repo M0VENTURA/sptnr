@@ -224,7 +224,9 @@ def move_to_music_collection(queue_id):
             return None
 
         # Build destination path using album structure
-        album_artist = queue_item.get('album_artist') or queue_item['artist']
+        album_artist = _normalize_album_artist_for_path(
+            queue_item.get('album_artist') or queue_item['artist']
+        )
         album = queue_item.get('album') or 'Unknown Album'
         year = _extract_year(
             queue_item.get('year')
@@ -289,6 +291,15 @@ def sanitize_filename(name):
     name = name.strip(' .')
     
     return name or 'Unknown'
+
+
+def _normalize_album_artist_for_path(value):
+    """Normalize shorthand compilation artist names to a stable folder name."""
+    normalized = str(value or '').strip()
+    key = normalized.lower()
+    if key in ('various', 'various artist', 'various artists', 'va', 'v/a'):
+        return 'Various Artists'
+    return normalized
 
 
 def update_music_tags(file_path, queue_item):
