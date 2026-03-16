@@ -495,9 +495,16 @@ def _file_matches_queue_item(file_path, queue_item, relative_name=None):
     return False, 'filename'
 
 def get_db():
-    """Get database connection using helpers/db_utils backend (PostgreSQL or SQLite)."""
+    """Get database connection and fail fast unless PostgreSQL is active."""
     from helpers.db_utils import get_db_connection
-    return get_db_connection()
+    conn = get_db_connection()
+    if not _is_postgres_connection(conn):
+        try:
+            conn.close()
+        except Exception:
+            pass
+        raise RuntimeError("queue_processor requires PostgreSQL. SQLite fallback is disabled.")
+    return conn
 
 def get_slskd_client():
     """Get configured SlskdClient instance"""
@@ -746,6 +753,47 @@ def get_queued_items(limit=10):
         
     except Exception as e:
         logger.error(f"Error getting queued items: {e}")
+        return []
+
+
+def claim_queued_items(limit=10):
+    """Atomically claim queued rows for this worker using FOR UPDATE SKIP LOCKED."""
+    try:
+        cleanup_stuck_searching_items()
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        now = datetime.now().isoformat()
+        cursor.execute(
+            """
+            WITH candidates AS (
+                SELECT id
+                FROM download_queue
+                WHERE status = 'queued'
+                  AND (next_retry_at IS NULL OR next_retry_at <= %s)
+                ORDER BY priority ASC, retry_count ASC, next_retry_at ASC NULLS FIRST, created_at ASC
+                FOR UPDATE SKIP LOCKED
+                LIMIT %s
+            )
+            UPDATE download_queue dq
+            SET status = 'searching',
+                updated_at = CURRENT_TIMESTAMP
+            FROM candidates c
+            WHERE dq.id = c.id
+            RETURNING dq.*
+            """,
+            (now, int(limit)),
+        )
+
+        rows = cursor.fetchall() or []
+        items = [dict(row) for row in rows]
+        conn.commit()
+        conn.close()
+        return items
+
+    except Exception as e:
+        logger.error(f"Error claiming queued items: {e}")
         return []
 
 
@@ -1875,7 +1923,7 @@ def process_queue(client):
     try:
         promote_stale_queried_items(min_age_seconds=120, limit=200)
 
-        items = get_queued_items(limit=10)
+        items = claim_queued_items(limit=10)
         processed = 0
         for item in items:
             try:
