@@ -8,6 +8,7 @@ from helpers.db_utils import (
 )
 from download_file_verification import ensure_verification_columns, ensure_queue_mbid_columns
 import os
+import shutil
 import xml.etree.ElementTree as ET
 # --- ENVIRONMENT VARIABLE EDITING SUPPORT ---
 ALL_ENV_VARS = [
