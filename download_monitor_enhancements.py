@@ -350,11 +350,58 @@ def move_to_music_collection(queue_id):
             return {'error': f"Track must be matched first (current status: {queue_item['status']})"}
         
         source_path = queue_item.get('matched_file_path') or queue_item.get('file_path')
-        if not source_path:
-            return {'error': 'No source file path found'}
-        
-        if not os.path.exists(source_path):
+        logger.debug(f"[MOVE] Queue {queue_id}: raw source candidate='{source_path}'")
+
+        def _resolve_source_path(path_value):
+            if not path_value:
+                return None
+
+            raw = str(path_value).strip()
+            if not raw:
+                return None
+
+            normalized_raw = os.path.normpath(raw)
+            if os.path.isabs(normalized_raw) and os.path.isfile(normalized_raw):
+                return normalized_raw
+
+            try:
+                from download_queue_manager import get_downloads_dir
+                downloads_root = get_downloads_dir()
+            except Exception:
+                downloads_root = os.environ.get("DOWNLOADS_DIR", "/downloads")
+
+            candidates = []
+            rel = raw.replace('\\', '/').lstrip('/')
+            candidates.append(os.path.join(downloads_root, rel))
+
+            low_rel = rel.lower()
+            if low_rel.startswith('downloads/music/'):
+                candidates.append(os.path.join(downloads_root, rel[len('downloads/music/'):]))
+            elif low_rel.startswith('downloads/'):
+                candidates.append(os.path.join(downloads_root, rel[len('downloads/'):]))
+            elif low_rel.startswith('music/'):
+                candidates.append(os.path.join(downloads_root, rel[len('music/'):]))
+
+            for candidate in candidates:
+                abs_candidate = os.path.abspath(os.path.normpath(candidate))
+                if os.path.isfile(abs_candidate):
+                    return abs_candidate
+
+            # Last-resort basename search under configured downloads root.
+            basename = os.path.basename(raw)
+            if basename and os.path.isdir(downloads_root):
+                for root, _, files in os.walk(downloads_root):
+                    if basename in files:
+                        return os.path.join(root, basename)
+
+            return None
+
+        resolved_source_path = _resolve_source_path(source_path)
+        if not resolved_source_path:
             return {'error': f'Source file not found: {source_path}'}
+
+        source_path = resolved_source_path
+        logger.debug(f"[MOVE] Queue {queue_id}: resolved source path='{source_path}'")
         
         def _extract_year(value):
             if value is None:

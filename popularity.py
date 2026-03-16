@@ -3363,6 +3363,10 @@ def popularity_scan(
 
         # Build SQL query with optional filters
         sql_conditions = []
+
+        # Never scan placeholder queue rows created before files are imported.
+        sql_conditions.append("COALESCE(file_path, '') NOT LIKE '__queued_for_download__%'")
+        sql_conditions.append("CAST(id AS TEXT) NOT LIKE 'queue_%'")
         
         # Only filter by popularity_score if not forcing rescan
         if not (FORCE_RESCAN or force):

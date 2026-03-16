@@ -34,7 +34,7 @@ if not logger.handlers:
     _queue_log_handler = logging.FileHandler("/config/download_queue.log")
     _queue_log_handler.setFormatter(logging.Formatter('%(asctime)s - [Download Queue] %(levelname)s - %(message)s'))
     logger.addHandler(_queue_log_handler)
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 logger.propagate = False
 
 # PostgreSQL configuration (required - SQLite not supported)
