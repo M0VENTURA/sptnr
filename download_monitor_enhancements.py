@@ -13,12 +13,22 @@ import psycopg2
 import psycopg2.extras
 import logging
 import shutil
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 MUSIC_DIR = os.environ.get("MUSIC_DIR", "/music")
+
+
+_MBID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+
+def _is_valid_mbid(value):
+    return bool(_MBID_RE.match(str(value or "").strip()))
 
 
 def get_db():
@@ -99,16 +109,35 @@ def search_and_update_musicbrainz(queue_id, artist, title, album):
     
     try:
         # Search for release candidates
-        match_result = match_folder_group_with_musicbrainz('', artist, album)
+        # This workflow should only select MusicBrainz releases.
+        # Do not allow Discogs fallback IDs here, because they are not MBIDs.
+        match_result = match_folder_group_with_musicbrainz(
+            '', artist, album, allow_discogs_fallback=False
+        )
         releases = match_result.get('candidates', []) if isinstance(match_result, dict) else []
 
         if not releases:
             logger.info(f"No MusicBrainz match for unmatched file (queue_id={queue_id}): {artist} - {album}")
             return
         
-        # Take best match (first result)
-        release = releases[0]
-        release_mbid = release['id']
+        # Take the best valid MusicBrainz release candidate.
+        release = None
+        release_mbid = None
+        for candidate in releases:
+            candidate_source = (candidate.get('source') or '').strip().lower()
+            candidate_id = candidate.get('id')
+            if candidate_source == 'musicbrainz' and _is_valid_mbid(candidate_id):
+                release = candidate
+                release_mbid = str(candidate_id).strip()
+                break
+
+        if not release or not release_mbid:
+            logger.warning(
+                f"No valid MusicBrainz release MBID found for unmatched file "
+                f"(queue_id={queue_id}): {artist} - {album}; candidates={len(releases)}"
+            )
+            return
+
         release_year = release.get('date', '')[:4] if release.get('date') else None
         
         logger.info(f"Found MusicBrainz match: {release.get('title')} (MBID: {release_mbid})")
