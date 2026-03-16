@@ -21019,6 +21019,52 @@ def api_queue_matched_releases():
                     'track_count': row[4] or 0,
                 })
 
+        # Merge duplicate rows that share the same MBID. Queue rows can differ in
+        # album/year text while still pointing to the same MusicBrainz release.
+        merged_by_mbid = {}
+        for release in releases:
+            mbid = str(release.get('mbid') or '').strip()
+            if not mbid:
+                continue
+
+            key = mbid.lower()
+            existing = merged_by_mbid.get(key)
+            if not existing:
+                merged_by_mbid[key] = {
+                    'artist': release.get('artist') or '',
+                    'album': release.get('album') or '',
+                    'mbid': mbid,
+                    'year': str(release.get('year') or '').strip(),
+                    'track_count': int(release.get('track_count') or 0),
+                }
+                continue
+
+            existing['track_count'] += int(release.get('track_count') or 0)
+
+            # Prefer values that look more complete when duplicates disagree.
+            candidate_artist = str(release.get('artist') or '').strip()
+            if candidate_artist and len(candidate_artist) > len(str(existing.get('artist') or '').strip()):
+                existing['artist'] = candidate_artist
+
+            candidate_album = str(release.get('album') or '').strip()
+            if candidate_album and len(candidate_album) > len(str(existing.get('album') or '').strip()):
+                existing['album'] = candidate_album
+
+            candidate_year = str(release.get('year') or '').strip()
+            current_year = str(existing.get('year') or '').strip()
+            # Prefer a strict YYYY value when available.
+            if candidate_year and (not current_year or (len(candidate_year) == 4 and len(current_year) != 4)):
+                existing['year'] = candidate_year
+
+        releases = sorted(
+            merged_by_mbid.values(),
+            key=lambda item: (
+                str(item.get('artist') or '').lower(),
+                str(item.get('album') or '').lower(),
+                str(item.get('mbid') or '').lower(),
+            )
+        )
+
         return jsonify({"success": True, "releases": releases})
 
     except Exception as e:
