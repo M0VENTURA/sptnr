@@ -14,6 +14,7 @@ import psycopg2.extras
 import logging
 import shutil
 import re
+import yaml
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -283,19 +284,18 @@ def move_to_music_collection(queue_id):
             or queue_item.get('mb_matched_year')
         ) or 'Unknown'
         
-        dest_dir = os.path.join(
+        # Keep album artist in tag context aligned with destination folder artist.
+        queue_item['album_artist'] = album_artist
+
+        # Destination path follows downloads.file_name_format config.
+        dest_path = _build_target_path_from_format(
             MUSIC_DIR,
-            sanitize_filename(album_artist),
-            sanitize_filename(f"{year} - {album}")
+            queue_item,
+            source_path,
+            album_artist,
+            album,
+            year,
         )
-        os.makedirs(dest_dir, exist_ok=True)
-        
-        # Destination filename
-        track_num = queue_item.get('track_number')
-        track_prefix = f"{int(track_num):02d} - " if track_num and str(track_num).isdigit() else ''
-        ext = os.path.splitext(source_path)[1]
-        dest_filename = f"{track_prefix}{sanitize_filename(queue_item['title'])}{ext}"
-        dest_path = os.path.join(dest_dir, dest_filename)
         
         # Copy file
         shutil.copy2(source_path, dest_path)
@@ -349,6 +349,103 @@ def _normalize_album_artist_for_path(value):
     if key in ('various', 'various artist', 'various artists', 'va', 'v/a'):
         return 'Various Artists'
     return normalized
+
+
+def _sanitize_path_component(value):
+    value = str(value or '').strip()
+    for ch in '<>:"|?*\\':
+        value = value.replace(ch, '_')
+    return value.strip('. ')
+
+
+def _safe_track_number(track_number_value):
+    raw = str(track_number_value or '').strip()
+    if not raw:
+        return '00'
+    raw = raw.split('/')[0].strip()
+    if raw.isdigit():
+        return f"{int(raw):02d}"
+    digits = ''.join(ch for ch in raw if ch.isdigit())
+    if digits:
+        return f"{int(digits):02d}"
+    return _sanitize_path_component(raw) or '00'
+
+
+def _read_queue_naming_format():
+    config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+    try:
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            downloads_cfg = cfg.get('downloads', {}) if isinstance(cfg, dict) else {}
+            fmt = downloads_cfg.get('file_name_format') if isinstance(downloads_cfg, dict) else None
+            if isinstance(fmt, str) and fmt.strip():
+                return fmt.strip()
+    except Exception as cfg_err:
+        logger.debug(f"[MOVE] Could not read naming config: {cfg_err}")
+    return '{album_artist}/{year} - {album}/{track_number}. {artist} - {title}'
+
+
+def _build_target_path_from_format(music_root, queue_item, source_path, album_artist, album, year):
+    ext = os.path.splitext(source_path)[1]
+    file_name_format = _read_queue_naming_format()
+
+    format_vars = {
+        'track_number': _safe_track_number(queue_item.get('track_number')),
+        'artist': _sanitize_path_component(queue_item.get('artist') or 'Unknown Artist') or 'Unknown Artist',
+        'album_artist': _sanitize_path_component(album_artist) or 'Unknown Artist',
+        'title': _sanitize_path_component(queue_item.get('title') or 'Unknown Title') or 'Unknown Title',
+        'album': _sanitize_path_component(album) or 'Unknown Album',
+        'year': str(year).strip()[:4] if year and str(year).strip() else 'Unknown',
+    }
+
+    fallback_rel = (
+        f"{format_vars['album_artist']}/{format_vars['year']} - {format_vars['album']}/"
+        f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}"
+    )
+
+    try:
+        relative_path = file_name_format.format(**format_vars)
+    except Exception:
+        relative_path = fallback_rel
+
+    if not isinstance(relative_path, str) or not relative_path.strip():
+        relative_path = fallback_rel
+
+    relative_path = relative_path.strip().replace('\\', '/').lstrip('/').lstrip('\\')
+    safe_parts = []
+    for part in relative_path.split('/'):
+        clean = _sanitize_path_component(part)
+        if clean and clean not in ('.', '..'):
+            safe_parts.append(clean)
+
+    if not safe_parts:
+        safe_parts = [
+            format_vars['album_artist'],
+            _sanitize_path_component(f"{format_vars['year']} - {format_vars['album']}") or 'Unknown Album',
+            f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}",
+        ]
+
+    rel_safe = os.path.join(*safe_parts)
+    rel_root, rel_ext = os.path.splitext(rel_safe)
+    if rel_ext:
+        dest_path = os.path.join(music_root, rel_safe)
+    else:
+        dest_path = os.path.join(music_root, f"{rel_safe}{ext}")
+
+    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+
+    if os.path.exists(dest_path):
+        stem, ext_only = os.path.splitext(dest_path)
+        counter = 1
+        while True:
+            candidate = f"{stem}_{counter}{ext_only}"
+            if not os.path.exists(candidate):
+                dest_path = candidate
+                break
+            counter += 1
+
+    return dest_path
 
 
 def update_music_tags(file_path, queue_item):
