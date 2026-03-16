@@ -67,6 +67,9 @@ _SLSKD_ACTIVE_STATE_TIMEOUT_MINUTES = {
     "Requested": 30,            # No response from remote peer after 30 min
     "Initializing": 30,         # Transfer started to initialise but never progressed
     "InProgress": 240,          # Active download that has stalled for 4 hours
+    "Queued": 120,
+    "In Progress": 240,
+    "Downloading": 240,
 }
 
 
@@ -1563,6 +1566,9 @@ def check_completed_downloads():
             except Exception:
                 return False
 
+        def _state_normalize(value):
+            return str(value or "").strip().lower()
+
         try:
             slskd_client = get_slskd_client()
             if slskd_client:
@@ -1721,7 +1727,20 @@ def check_completed_downloads():
 
                     if transfer:
                         transfer_state = transfer.get("state", "")
-                        if transfer_state in getattr(slskd_client, "FAILED_STATES", set()):
+                        transfer_state_norm = _state_normalize(transfer_state)
+                        failed_states_norm = {
+                            _state_normalize(s)
+                            for s in getattr(slskd_client, "FAILED_STATES", set())
+                        }
+                        is_failed_state = (
+                            transfer_state_norm in failed_states_norm
+                            or "failed" in transfer_state_norm
+                            or "error" in transfer_state_norm
+                            or "rejected" in transfer_state_norm
+                            or "cancel" in transfer_state_norm
+                            or "timeout" in transfer_state_norm
+                        )
+                        if is_failed_state:
                             logger.warning(
                                 f"Queue {item_id}: slskd reports terminal failed state {transfer_state!r}, scheduling retry"
                             )
@@ -1731,7 +1750,11 @@ def check_completed_downloads():
                                 schedule_retry=True,
                                 retry_delay_minutes=10,
                             )
-                        elif transfer_state == getattr(slskd_client, "STATE_SUCCEEDED", None):
+                        elif (
+                            transfer_state == getattr(slskd_client, "STATE_SUCCEEDED", None)
+                            or "succeed" in transfer_state_norm
+                            or transfer_state_norm in {"completed", "complete", "succeeded"}
+                        ):
                             # slskd reports success but no local file was found — the file
                             # likely disappeared before matching completed.  Re-queue so it
                             # can be downloaded again.
@@ -1749,7 +1772,10 @@ def check_completed_downloads():
                             # timeout so that downloads stuck indefinitely — e.g. the
                             # remote peer queued the file but never started sending it —
                             # are eventually cancelled and retried from a different source.
-                            timeout_minutes = _SLSKD_ACTIVE_STATE_TIMEOUT_MINUTES.get(transfer_state)
+                            timeout_minutes = (
+                                _SLSKD_ACTIVE_STATE_TIMEOUT_MINUTES.get(transfer_state)
+                                or _SLSKD_ACTIVE_STATE_TIMEOUT_MINUTES.get(" ".join(str(transfer_state).split()))
+                            )
                             if timeout_minutes and _is_stale_queue_item(item, stale_minutes=timeout_minutes):
                                 logger.warning(
                                     f"Queue {item_id}: Download stuck in '{transfer_state}' state for "

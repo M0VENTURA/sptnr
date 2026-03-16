@@ -425,11 +425,80 @@ class SlskdClient:
     STATE_ERRORED = "Completed, Errored"
     STATE_REJECTED = "Completed, Rejected"
 
-    # Sets for quick membership tests
-    ACTIVE_STATES = frozenset([STATE_REQUESTED, STATE_QUEUED_REMOTELY, STATE_QUEUED_LOCALLY, STATE_INITIALIZING, STATE_IN_PROGRESS])
-    FAILED_STATES = frozenset([STATE_CANCELLED, STATE_TIMED_OUT, STATE_ERRORED, STATE_REJECTED])
+    # Sets for quick membership tests (include common state-string variants across slskd versions)
+    ACTIVE_STATES = frozenset([
+        STATE_REQUESTED,
+        STATE_QUEUED_REMOTELY,
+        STATE_QUEUED_LOCALLY,
+        STATE_INITIALIZING,
+        STATE_IN_PROGRESS,
+        "Queued",
+        "In Progress",
+        "Downloading",
+    ])
+    FAILED_STATES = frozenset([
+        STATE_CANCELLED,
+        STATE_TIMED_OUT,
+        STATE_ERRORED,
+        STATE_REJECTED,
+        "Cancelled",
+        "TimedOut",
+        "Errored",
+        "Failed",
+        "Rejected",
+        "Error",
+    ])
 
-    def _parse_transfers_response(self, raw: list) -> list[dict]:
+    @staticmethod
+    def _state_text(raw_state) -> str:
+        """Normalize transfer state values from different slskd response variants."""
+        if raw_state is None:
+            return ""
+        if isinstance(raw_state, dict):
+            # Some wrappers can return a typed object-like dict.
+            raw_state = raw_state.get("state") or raw_state.get("name") or raw_state.get("value")
+        return str(raw_state).strip()
+
+    @classmethod
+    def _is_success_state(cls, raw_state) -> bool:
+        """Return True when transfer state indicates successful completion."""
+        state = cls._state_text(raw_state)
+        state_lower = state.lower()
+        if not state_lower:
+            return False
+        if state == cls.STATE_SUCCEEDED:
+            return True
+        return (
+            "succeed" in state_lower
+            or state_lower in {"completed", "complete", "succeeded"}
+        )
+
+    def _iter_transfer_files(self, user_entry: dict):
+        """Yield transfer file dicts for both nested and flat transfer payload variants."""
+        if not isinstance(user_entry, dict):
+            return
+
+        # Canonical slskd response shape: [{username, directories:[{files:[...]}]}]
+        directories = user_entry.get("directories")
+        if isinstance(directories, list):
+            for directory in directories:
+                if not isinstance(directory, dict):
+                    continue
+                files = directory.get("files") or directory.get("downloads") or []
+                if not isinstance(files, list):
+                    continue
+                for f in files:
+                    if isinstance(f, dict):
+                        yield f
+
+        # Alternate shape where user object directly contains files/downloads
+        direct_files = user_entry.get("files") or user_entry.get("downloads")
+        if isinstance(direct_files, list):
+            for f in direct_files:
+                if isinstance(f, dict):
+                    yield f
+
+    def _parse_transfers_response(self, raw: list | dict) -> list[dict]:
         """
         Parse slskd GET /transfers/downloads response into a flat list of file dicts.
 
@@ -441,30 +510,62 @@ class SlskdClient:
         use the correct cancel endpoint (DELETE /transfers/downloads/{username}/{id}).
         """
         flat = []
+
+        # Some API wrappers return {downloads:[...]} or {transfers:[...]}.
+        if isinstance(raw, dict):
+            raw = raw.get("downloads") or raw.get("transfers") or raw.get("items") or []
+
         for user_entry in (raw or []):
             if not isinstance(user_entry, dict):
                 continue
             username = user_entry.get("username", "Unknown")
-            for directory in user_entry.get("directories", []):
-                if not isinstance(directory, dict):
-                    continue
-                for f in directory.get("files", []):
-                    if not isinstance(f, dict):
-                        continue
-                    size = int(f.get("size", 0) or 0)
-                    bytes_transferred = int(f.get("bytesTransferred", 0) or 0)
-                    progress = min(100, round((bytes_transferred / size) * 100, 2)) if size else 0
-                    flat.append({
-                        "id": f.get("id", ""),
-                        "username": username,
-                        "filename": f.get("filename", ""),
-                        "size": size,
-                        "bytesTransferred": bytes_transferred,
-                        "progress": progress,
-                        "state": f.get("state", ""),
-                        "averageSpeed": int(f.get("averageSpeed", 0) or 0),
-                        "localFilePath": f.get("localFilePath") or f.get("localPath") or "",
-                    })
+
+            # Flat per-transfer object shape: [{username, filename, state, ...}]
+            if user_entry.get("filename") and not user_entry.get("directories"):
+                size = int(user_entry.get("size", 0) or 0)
+                bytes_transferred = int(user_entry.get("bytesTransferred", 0) or 0)
+                progress = min(100, round((bytes_transferred / size) * 100, 2)) if size else int(user_entry.get("percentComplete", 0) or 0)
+                flat.append({
+                    "id": user_entry.get("id") or user_entry.get("remoteToken") or user_entry.get("token") or "",
+                    "username": username,
+                    "filename": user_entry.get("filename") or user_entry.get("fileName") or user_entry.get("path") or "",
+                    "size": size,
+                    "bytesTransferred": bytes_transferred,
+                    "progress": progress,
+                    "state": self._state_text(user_entry.get("state") or user_entry.get("transferState") or user_entry.get("status")),
+                    "averageSpeed": int(user_entry.get("averageSpeed", 0) or 0),
+                    "localFilePath": (
+                        user_entry.get("localFilePath")
+                        or user_entry.get("localPath")
+                        or user_entry.get("downloadedFilePath")
+                        or user_entry.get("path")
+                        or ""
+                    ),
+                })
+                continue
+
+            for f in self._iter_transfer_files(user_entry):
+                size = int(f.get("size", 0) or 0)
+                bytes_transferred = int(f.get("bytesTransferred", 0) or 0)
+                percent_complete = int(f.get("percentComplete", 0) or 0)
+                progress = min(100, round((bytes_transferred / size) * 100, 2)) if size else percent_complete
+                flat.append({
+                    "id": f.get("id") or f.get("remoteToken") or f.get("token") or "",
+                    "username": username,
+                    "filename": f.get("filename") or f.get("fileName") or f.get("name") or f.get("path") or "",
+                    "size": size,
+                    "bytesTransferred": bytes_transferred,
+                    "progress": progress,
+                    "state": self._state_text(f.get("state") or f.get("transferState") or f.get("status")),
+                    "averageSpeed": int(f.get("averageSpeed", 0) or 0),
+                    "localFilePath": (
+                        f.get("localFilePath")
+                        or f.get("localPath")
+                        or f.get("downloadedFilePath")
+                        or f.get("path")
+                        or ""
+                    ),
+                })
         return flat
 
     def get_active_downloads(self, timeout: Optional[int] = None) -> list[dict]:
@@ -505,7 +606,7 @@ class SlskdClient:
         """
         return [
             t for t in self.get_active_downloads(timeout=timeout)
-            if t.get("state") == self.STATE_SUCCEEDED
+            if self._is_success_state(t.get("state"))
         ]
     
     def cancel_search(self, search_id: str, timeout: Optional[int] = None) -> bool:

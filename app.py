@@ -22980,93 +22980,40 @@ def slskd_status():
     api_key = slskd_config.get("api_key", "")
     
     try:
-        import requests as req
-        
-        headers = {"X-API-Key": api_key} if api_key else {}
-        
-        # Get transfers
-        transfers_url = f"{web_url}/api/v0/transfers/downloads"
-        logging.debug(f"slskd_status: Fetching from {transfers_url}")
-        resp = req.get(transfers_url, headers=headers, timeout=10)
-        
-        logging.debug(f"slskd_status: Response status {resp.status_code}")
-        
-        if resp.status_code != 200:
-            logging.error(f"slskd_status: Failed to get transfers: {resp.status_code} - {resp.text[:500]}")
-            return jsonify({"error": f"Failed to get transfers: {resp.status_code}"}), 500
-        
-        downloads_data = resp.json()
-        logging.debug(f"slskd_status: Response is list: {isinstance(downloads_data, list)}, count: {len(downloads_data) if isinstance(downloads_data, list) else 'N/A'}")
-        
-        # Format downloads - slskd API returns array of UserResponse objects
-        # Structure: [{ "username": "...", "directories": [{ "directory": "...", "files": [...] }] }]
+        client = SlskdClient(web_url, api_key, enabled=True)
+        raw_downloads = client.get_active_downloads(timeout=10)
+
         active_downloads = []
-        
-        if isinstance(downloads_data, list):
-            # Correct format: array of user objects with nested directories and files
-            for user_obj in downloads_data:
-                if not isinstance(user_obj, dict):
-                    continue
-                
-                username = user_obj.get("username", "Unknown")
-                directories = user_obj.get("directories", [])
-                
-                if not isinstance(directories, list):
-                    continue
-                
-                # Iterate through directories for this user
-                for dir_obj in directories:
-                    if not isinstance(dir_obj, dict):
-                        continue
-                    
-                    files = dir_obj.get("files", [])
-                    if not isinstance(files, list):
-                        continue
-                    
-                    # Process each file
-                    for file_obj in files:
-                        if not isinstance(file_obj, dict):
-                            continue
-                        
-                        filename = file_obj.get("filename", "Unknown")
-                        size = int(file_obj.get("size", 0))
-                        bytes_transferred = int(file_obj.get("bytesTransferred", 0))
-                        percent_complete = int(file_obj.get("percentComplete", 0))
-                        
-                        # Normalize state
-                        state_raw = file_obj.get("state", "")
-                        state_lower = str(state_raw).lower()
-                        
-                        if "completed" in state_lower and "succeeded" in state_lower:
-                            state = "Completed"
-                        elif "completed" in state_lower and ("errored" in state_lower or "failed" in state_lower):
-                            state = "Failed"
-                        elif "completed" in state_lower and "cancelled" in state_lower:
-                            state = "Cancelled"
-                        elif "inprogress" in state_lower:
-                            state = "Downloading"
-                        elif "queued" in state_lower:
-                            state = "Queued"
-                        elif "initializing" in state_lower:
-                            state = "Initializing"
-                        else:
-                            state = state_raw or "Unknown"
-                        
-                        average_speed = int(file_obj.get("averageSpeed", 0))
-                        
-                        logging.debug(f"slskd download: {username} -> {filename[:60]}, state={state}, progress={percent_complete}%, size={size}")
-                        
-                        active_downloads.append({
-                            "username": username,
-                            "filename": filename,
-                            "state": state,
-                            "progress": percent_complete,
-                            "bytesTransferred": bytes_transferred,
-                            "size": size,
-                            "averageSpeed": average_speed,
-                            "remoteToken": file_obj.get("id", ""),
-                        })
-        
+        for download in raw_downloads:
+            state_raw = str(download.get("state") or "")
+            state_lower = state_raw.lower()
+
+            if "succeed" in state_lower:
+                state = "Completed"
+            elif "failed" in state_lower or "error" in state_lower or "rejected" in state_lower:
+                state = "Failed"
+            elif "cancel" in state_lower:
+                state = "Cancelled"
+            elif "inprogress" in state_lower or "in progress" in state_lower or "download" in state_lower:
+                state = "Downloading"
+            elif "queue" in state_lower:
+                state = "Queued"
+            elif "initial" in state_lower:
+                state = "Initializing"
+            else:
+                state = state_raw or "Unknown"
+
+            active_downloads.append({
+                "username": download.get("username", "Unknown"),
+                "filename": download.get("filename", "Unknown"),
+                "state": state,
+                "progress": int(download.get("progress", 0) or 0),
+                "bytesTransferred": int(download.get("bytesTransferred", 0) or 0),
+                "size": int(download.get("size", 0) or 0),
+                "averageSpeed": int(download.get("averageSpeed", 0) or 0),
+                "remoteToken": str(download.get("id", "") or ""),
+            })
+
         logging.info(f"slskd_status: Returning {len(active_downloads)} active downloads")
         return jsonify({"downloads": active_downloads})
         
