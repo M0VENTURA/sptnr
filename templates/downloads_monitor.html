@@ -2678,9 +2678,26 @@ async function loadCurrentQueueReleasesForFolder(queueIdsEnc, currentArtist, cur
 }
 
 async function searchFolderQueueMusicBrainzMatch(queueIdsEnc) {
-  const artistInput = document.getElementById('folderQueueMatchArtist');
-  const albumInput = document.getElementById('folderQueueMatchAlbum');
-  const results = document.getElementById('folderQueueMatchResults');
+  await searchQueueMusicBrainzMatchShared({
+    artistInputId: 'folderQueueMatchArtist',
+    albumInputId: 'folderQueueMatchAlbum',
+    resultsContainerId: 'folderQueueMatchResults',
+    selectButtonHtmlBuilder: (relArtist, relTitle, relMbid) =>
+      `<button class="btn btn-sm btn-success" onclick="applyFolderQueueMusicBrainzMatch('${queueIdsEnc}', '${encodeInlineArg(relArtist)}', '${encodeInlineArg(relTitle)}', '${encodeInlineArg(relMbid)}')">Select</button>`,
+    errorLogLabel: 'Error searching folder queue MusicBrainz match',
+  });
+}
+
+async function searchQueueMusicBrainzMatchShared({
+  artistInputId,
+  albumInputId,
+  resultsContainerId,
+  selectButtonHtmlBuilder,
+  errorLogLabel,
+}) {
+  const artistInput = document.getElementById(artistInputId);
+  const albumInput = document.getElementById(albumInputId);
+  const results = document.getElementById(resultsContainerId);
 
   if (!artistInput || !albumInput || !results) return;
 
@@ -2718,11 +2735,7 @@ async function searchFolderQueueMusicBrainzMatch(queueIdsEnc) {
           <td>${escapeHtml(relYear)}</td>
           <td>${escapeHtml(relTracks)}</td>
           <td><small class="text-info">${escapeHtml(relMbid)}</small></td>
-          <td>
-            <button class="btn btn-sm btn-success" onclick="applyFolderQueueMusicBrainzMatch('${queueIdsEnc}', '${encodeInlineArg(relArtist)}', '${encodeInlineArg(relTitle)}', '${encodeInlineArg(relMbid)}')">
-              Select
-            </button>
-          </td>
+          <td>${selectButtonHtmlBuilder(relArtist, relTitle, relMbid)}</td>
         </tr>
       `;
     }).join('');
@@ -2745,7 +2758,7 @@ async function searchFolderQueueMusicBrainzMatch(queueIdsEnc) {
       </div>
     `;
   } catch (error) {
-    console.error('Error searching folder queue MusicBrainz match:', error);
+    console.error(errorLogLabel || 'Error searching MusicBrainz match', error);
     results.innerHTML = `<div class="alert alert-danger mb-0">${escapeHtml(error.message)}</div>`;
   }
 }
@@ -4106,76 +4119,14 @@ async function loadCurrentQueueReleases(queueId, currentArtist, currentAlbum) {
 }
 
 async function searchQueueItemMusicBrainzMatch(queueId) {
-  const artistInput = document.getElementById('queueMatchArtist');
-  const albumInput = document.getElementById('queueMatchAlbum');
-  const results = document.getElementById('queueItemMatchResults');
-
-  if (!artistInput || !albumInput || !results) return;
-
-  const artist = (artistInput.value || '').trim();
-  const album = (albumInput.value || '').trim();
-
-  if (!artist || !album) {
-    alert('Artist and album are required');
-    return;
-  }
-
-  results.innerHTML = '<div class="text-muted">Searching...</div>';
-
-  try {
-    const url = `/api/musicbrainz/search/releases?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`;
-    const data = await fetchJsonOrThrow(url);
-    const releases = data.releases || [];
-
-    if (!releases.length) {
-      results.innerHTML = '<div class="alert alert-warning mb-0">No matches found.</div>';
-      return;
-    }
-
-    const rows = releases.map(rel => {
-      const relArtist = rel.artist || artist;
-      const relTitle = rel.title || album;
-      const relMbid = rel.id || '';
-      const relYear = rel.year || '';
-      const relTracks = rel.tracks || 0;
-
-      return `
-        <tr>
-          <td>${escapeHtml(relArtist)}</td>
-          <td>${escapeHtml(relTitle)}</td>
-          <td>${escapeHtml(relYear)}</td>
-          <td>${escapeHtml(relTracks)}</td>
-          <td><small class="text-info">${escapeHtml(relMbid)}</small></td>
-          <td>
-            <button class="btn btn-sm btn-success" onclick="applyQueueItemMusicBrainzMatch(${queueId}, '${encodeInlineArg(relArtist)}', '${encodeInlineArg(relTitle)}', '${encodeInlineArg(relMbid)}')">
-              Select
-            </button>
-          </td>
-        </tr>
-      `;
-    }).join('');
-
-    results.innerHTML = `
-      <div class="table-responsive">
-        <table class="table table-sm table-dark table-striped mb-0">
-          <thead>
-            <tr>
-              <th>Artist</th>
-              <th>Album</th>
-              <th>Year</th>
-              <th>Tracks</th>
-              <th>MBID</th>
-              <th>Action</th>
-            </tr>
-          </thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>
-    `;
-  } catch (error) {
-    console.error('Error searching queue item MusicBrainz match:', error);
-    results.innerHTML = `<div class="alert alert-danger mb-0">${escapeHtml(error.message)}</div>`;
-  }
+  await searchQueueMusicBrainzMatchShared({
+    artistInputId: 'queueMatchArtist',
+    albumInputId: 'queueMatchAlbum',
+    resultsContainerId: 'queueItemMatchResults',
+    selectButtonHtmlBuilder: (relArtist, relTitle, relMbid) =>
+      `<button class="btn btn-sm btn-success" onclick="applyQueueItemMusicBrainzMatch(${queueId}, '${encodeInlineArg(relArtist)}', '${encodeInlineArg(relTitle)}', '${encodeInlineArg(relMbid)}')">Select</button>`,
+    errorLogLabel: 'Error searching queue item MusicBrainz match',
+  });
 }
 
 async function applyQueueItemMusicBrainzMatch(queueId, newArtistEnc, newAlbumEnc, mbidEnc) {
