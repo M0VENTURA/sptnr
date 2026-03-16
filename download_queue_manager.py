@@ -11,6 +11,7 @@ during parallel scan operations. PostgreSQL provides reliable concurrent access.
 
 import os
 import re
+import concurrent.futures
 import psycopg2
 import psycopg2.extras
 import json
@@ -106,6 +107,53 @@ _PREFIX_TITLE_MIN = 0.9
 _queue_events = []
 _queue_events_lock = threading.Lock()
 _MAX_QUEUE_EVENTS = 200
+
+# Keep MusicBrainz auto-enrichment off the hot scan loop to avoid UI/API stalls
+# when many unmatched files are discovered at once.
+_MB_ENRICH_MAX_WORKERS = 1
+_MB_ENRICH_MAX_INFLIGHT = 12
+_mb_enrichment_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=_MB_ENRICH_MAX_WORKERS,
+    thread_name_prefix="mb-enrich",
+)
+_mb_enrichment_lock = threading.Lock()
+_mb_enrichment_inflight = set()
+
+
+def _enqueue_musicbrainz_auto_enrichment(queue_id, artist, title, album):
+    """Queue a background MusicBrainz enrichment task for an unmatched track.
+
+    Returns True if task was enqueued, False if skipped (duplicate/queue full/invalid).
+    """
+    artist_norm = (artist or '').strip().lower()
+    album_norm = (album or '').strip().lower()
+    if not queue_id or not album_norm or album_norm == 'unknown':
+        return False
+
+    key = (artist_norm, album_norm)
+    with _mb_enrichment_lock:
+        if key in _mb_enrichment_inflight:
+            return False
+        if len(_mb_enrichment_inflight) >= _MB_ENRICH_MAX_INFLIGHT:
+            logger.debug(
+                f"[AUTO-DISCOVER] Skipping MB enrichment for queue {queue_id}: "
+                f"in-flight limit reached ({_MB_ENRICH_MAX_INFLIGHT})"
+            )
+            return False
+        _mb_enrichment_inflight.add(key)
+
+    def _worker():
+        try:
+            from download_monitor_enhancements import search_and_update_musicbrainz
+            search_and_update_musicbrainz(queue_id, artist, title, album)
+        except Exception as mb_err:
+            logger.debug(f"MusicBrainz auto-enrichment failed for queue {queue_id}: {mb_err}")
+        finally:
+            with _mb_enrichment_lock:
+                _mb_enrichment_inflight.discard(key)
+
+    _mb_enrichment_executor.submit(_worker)
+    return True
 
 def log_queue_event(event_type, message, item_id=None, details=None):
     """Log a download queue event for UI display.
@@ -3811,8 +3859,8 @@ def auto_discover_and_queue_files():
                     context="auto_discover unmatched insert"
                 )
 
-                # Immediately attempt MusicBrainz enrichment for unmatched discoveries.
-                # This can populate release MBID metadata and add sibling album tracks as 'queried'.
+                # Queue MusicBrainz enrichment in the background so scan throughput and
+                # UI responsiveness are not blocked by external API latency.
                 try:
                     inserted_queue_id = None
                     cursor.execute(
@@ -3829,9 +3877,12 @@ def auto_discover_and_queue_files():
                     if inserted_row:
                         inserted_queue_id = _row_get(inserted_row, 'id', 0, None)
 
-                    if inserted_queue_id and album and album.strip() and album.strip().lower() != 'unknown':
-                        from download_monitor_enhancements import search_and_update_musicbrainz
-                        search_and_update_musicbrainz(inserted_queue_id, artist, title, album)
+                    _enqueue_musicbrainz_auto_enrichment(
+                        inserted_queue_id,
+                        artist,
+                        title,
+                        album,
+                    )
                 except Exception as mb_err:
                     logger.debug(f"MusicBrainz auto-enrichment skipped for unmatched track: {mb_err}")
                     # Any SQL error in the block above leaves the PostgreSQL transaction
