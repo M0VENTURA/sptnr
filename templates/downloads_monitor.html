@@ -3641,6 +3641,18 @@ function openBetterMatchModal(artistEnc, albumEnc, currentMbidEnc) {
                 <input type="text" id="betterMatchAlbum" class="form-control" value="${escapeHtml(album)}">
               </div>
             </div>
+            <div class="row g-2 mt-1">
+              <div class="col-md-8">
+                <label class="form-label">Direct MBID (optional)</label>
+                <input type="text" id="betterMatchDirectMbid" class="form-control" value="" placeholder="e.g. 5b022e01-a58d-34de-bf9f-f92f7d0f8076">
+                <small class="text-muted">Use this when you already know the MusicBrainz Release MBID.</small>
+              </div>
+              <div class="col-md-4 d-flex align-items-end">
+                <button class="btn btn-success w-100" onclick="applyBetterMusicBrainzMbidDirect('${artistEnc}','${albumEnc}')">
+                  <i class="bi bi-check2-circle"></i> Apply MBID
+                </button>
+              </div>
+            </div>
             <div class="mt-3">
               <button class="btn btn-primary" onclick="searchBetterMusicBrainzMatch('${artistEnc}', '${albumEnc}')">
                 <i class="bi bi-search"></i> Search MusicBrainz
@@ -3656,6 +3668,41 @@ function openBetterMatchModal(artistEnc, albumEnc, currentMbidEnc) {
   document.body.insertAdjacentHTML('beforeend', modalHtml);
   const modal = new bootstrap.Modal(document.getElementById('betterMatchModal'));
   modal.show();
+}
+
+async function applyBetterMusicBrainzMbidDirect(oldArtistEnc, oldAlbumEnc) {
+  const mbidInput = document.getElementById('betterMatchDirectMbid');
+  const artistInput = document.getElementById('betterMatchArtist');
+  const albumInput = document.getElementById('betterMatchAlbum');
+
+  if (!mbidInput || !artistInput || !albumInput) {
+    return;
+  }
+
+  const newMbid = String(mbidInput.value || '').trim();
+  const newArtist = String(artistInput.value || '').trim();
+  const newAlbum = String(albumInput.value || '').trim();
+
+  if (!newMbid) {
+    alert('Please enter an MBID first.');
+    return;
+  }
+
+  if (!newArtist || !newAlbum) {
+    alert('Artist and album are required when applying a direct MBID.');
+    return;
+  }
+
+  const oldArtist = decodeInlineArg(oldArtistEnc, '');
+  const oldAlbum = decodeInlineArg(oldAlbumEnc, '');
+
+  await applyBetterMusicBrainzMatch(
+    encodeInlineArg(oldArtist),
+    encodeInlineArg(oldAlbum),
+    encodeInlineArg(newArtist),
+    encodeInlineArg(newAlbum),
+    encodeInlineArg(newMbid)
+  );
 }
 
 async function searchBetterMusicBrainzMatch(oldArtistEnc, oldAlbumEnc) {
