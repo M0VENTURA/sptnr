@@ -19281,6 +19281,16 @@ def api_queue_add():
         release_id = data.get('release_id', '').strip() if data.get('release_id') else None
         release_source = data.get('release_source', '').strip() if data.get('release_source') else None
 
+        disc_number = data.get('disc_number')
+        if disc_number:
+            disc_number = str(disc_number).strip() if isinstance(disc_number, str) else str(disc_number)
+        else:
+            disc_number = None
+
+        release_mbid = data.get('release_mbid', '').strip() if data.get('release_mbid') else None
+        recording_mbid = data.get('recording_mbid', '').strip() if data.get('recording_mbid') else None
+        cover_art_url = data.get('cover_art_url', '').strip() if data.get('cover_art_url') else None
+
         duration = data.get('duration')
         if duration not in (None, ''):
             try:
@@ -19319,6 +19329,10 @@ def api_queue_add():
                 release_id=release_id,
                 release_source=release_source,
                 duration=duration,
+                disc_number=disc_number,
+                release_mbid=release_mbid,
+                recording_mbid=recording_mbid,
+                cover_art_url=cover_art_url,
             )
         except Exception as e:
             logging.error(f"Error in add_to_queue: {type(e).__name__}: {e}")
@@ -19426,6 +19440,16 @@ def api_queue_add_batch():
             release_id = item_data.get('release_id', '').strip() if item_data.get('release_id') else None
             release_source = item_data.get('release_source', '').strip() if item_data.get('release_source') else None
 
+            disc_number = item_data.get('disc_number')
+            if disc_number:
+                disc_number = str(disc_number).strip() if isinstance(disc_number, str) else str(disc_number)
+            else:
+                disc_number = None
+
+            release_mbid = item_data.get('release_mbid', '').strip() if item_data.get('release_mbid') else None
+            recording_mbid = item_data.get('recording_mbid', '').strip() if item_data.get('recording_mbid') else None
+            cover_art_url = item_data.get('cover_art_url', '').strip() if item_data.get('cover_art_url') else None
+
             duration = item_data.get('duration')
             if duration not in (None, ''):
                 try:
@@ -19449,11 +19473,13 @@ def api_queue_add_batch():
                 continue
             
             try:
-                item = add_to_queue(artist, title, album, source, priority, 
+                item = add_to_queue(artist, title, album, source, priority,
                                    import_group=import_group_id, import_type=import_type,
-                                   track_number=track_number, album_artist=album_artist, 
+                                   track_number=track_number, album_artist=album_artist,
                                    year=year, release_id=release_id, release_source=release_source,
-                                   duration=duration)
+                                   duration=duration, disc_number=disc_number,
+                                   release_mbid=release_mbid, recording_mbid=recording_mbid,
+                                   cover_art_url=cover_art_url)
                 if item:
                     added_count += 1
                 else:
@@ -21545,6 +21571,8 @@ def api_queue_apply_mbid_match(queue_id):
                         continue
                     track_artist = (track.get('artist') or artist_name or '').strip() or artist_name
                     track_number = track.get('track_number')
+                    disc_number = track.get('disc_number')
+                    recording_mbid = track.get('recording_mbid') or track.get('id')
                     track_duration = track.get('duration', 0)
                     if track_duration:
                         track_duration = track_duration // 1000
@@ -21559,6 +21587,8 @@ def api_queue_apply_mbid_match(queue_id):
                         release_id=mbid,
                         release_source='musicbrainz',
                         track_number=track_number,
+                        disc_number=disc_number,
+                        recording_mbid=recording_mbid,
                         year=inferred_year,
                         duration=track_duration,
                     )

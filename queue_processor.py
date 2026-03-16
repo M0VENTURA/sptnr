@@ -1862,17 +1862,29 @@ def check_completed_downloads():
                                 logger.debug(f"Queue {item_id}: could not extract duration from file: {dur_err}")
 
                         # ── Step 2: Verify file metadata matches the queue item ────────
-                        # A mismatch is a warning, not a hard block — we still move the
-                        # file so it doesn't sit in /downloads forever, but we log the
-                        # discrepancy prominently so it can be investigated.
+                        # For filename-only matches, a tag mismatch blocks the metadata
+                        # clear (Step 3) — the existing tags are preserved and merged
+                        # rather than replaced.  For all other match types it remains a
+                        # warning so the file is not stranded in /downloads.
+                        meta_mismatch_for_filename_match = False
                         try:
                             meta_check = verify_downloaded_file_metadata(file_path, item)
                             if not meta_check['ok']:
-                                logger.warning(
-                                    f"[AUTO_MOVE] Queue {item_id}: metadata verification "
-                                    f"WARNING — {meta_check['reason']} "
-                                    f"(detail={meta_check['detail']}) — proceeding with move"
-                                )
+                                if match_meta_state == 'filename':
+                                    logger.warning(
+                                        f"[AUTO_MOVE] Queue {item_id}: filename-only match but "
+                                        f"existing tags conflict with queue item — "
+                                        f"{meta_check['reason']} "
+                                        f"(detail={meta_check['detail']}) — "
+                                        f"will merge stored metadata without clearing existing tags"
+                                    )
+                                    meta_mismatch_for_filename_match = True
+                                else:
+                                    logger.warning(
+                                        f"[AUTO_MOVE] Queue {item_id}: metadata verification "
+                                        f"WARNING — {meta_check['reason']} "
+                                        f"(detail={meta_check['detail']}) — proceeding with move"
+                                    )
                             else:
                                 logger.debug(
                                     f"[AUTO_MOVE] Queue {item_id}: metadata OK "
@@ -1888,6 +1900,10 @@ def check_completed_downloads():
                         # the tags (cover art, per-track artist from MB release) on top
                         # of this baseline, but we guarantee the stored metadata is
                         # written even if the live MB fetch below fails.
+                        # For filename-only matches whose tags contradicted the queue
+                        # item, merge rather than clear to avoid overwriting the
+                        # original tag data with potentially wrong information.
+                        should_clear_tags = not meta_mismatch_for_filename_match
                         try:
                             from post_download_processor import update_file_metadata_with_albumart
                             stored_metadata = {
@@ -1897,10 +1913,14 @@ def check_completed_downloads():
                                 'album': item.get('album'),
                                 'year': item.get('year'),
                                 'track_number': item.get('track_number'),
+                                'disc_number': item.get('disc_number'),
                             }
-                            update_file_metadata_with_albumart(file_path, stored_metadata, clear_existing_tags=True)
+                            update_file_metadata_with_albumart(
+                                file_path, stored_metadata, clear_existing_tags=should_clear_tags
+                            )
                             logger.info(
-                                f"[AUTO_MOVE] Queue {item_id}: applied stored MusicBrainz metadata to file"
+                                f"[AUTO_MOVE] Queue {item_id}: applied stored MusicBrainz metadata to file "
+                                f"(clear_existing_tags={should_clear_tags})"
                             )
                         except Exception as meta_err:
                             logger.warning(

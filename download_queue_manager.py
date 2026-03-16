@@ -507,6 +507,7 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                 'collection_matched_at': "TEXT",
                 'copied_individually': "INTEGER DEFAULT 0",
                 'copied_individually_at': "TEXT",
+                'cover_art_url': "TEXT",
             }
 
             for col, col_type in required_cols.items():
@@ -827,7 +828,7 @@ def _add_queue_item_to_tracks_table(conn, cursor, is_pg, artist, title, album, a
 def add_to_queue(artist, title, album=None, source='soulseek', priority=5, import_group=None, import_type='song',
                  track_number=None, album_artist=None, year=None, release_id=None, release_source=None,
                  duration=None, disc_number=None, release_mbid=None, recording_mbid=None, status=None,
-                 matched_file_path=None):
+                 matched_file_path=None, cover_art_url=None):
     """
     Add a song to the download queue with comprehensive metadata and duplicate detection
     
@@ -850,6 +851,7 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         recording_mbid: MusicBrainz recording ID (optional)
         status: Initial status (optional, defaults to 'queued' or detected duplicate/collection status)
         matched_file_path: File path if already matched (for unmatched files workflow)
+        cover_art_url: URL to album art image for future metadata embedding (optional)
     
     Returns:
         Queue item dict or None if failed
@@ -1018,10 +1020,12 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                      track_number, album_artist, year, release_id, release_source,
                      duration, disc_number, release_mbid, recording_mbid, release_year, matched_file_path,
                      in_collection, collection_track_id, collection_matched_at,
+                     cover_art_url,
                      created_at, updated_at)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, %s, %s, %s, %s,
                             %s, %s, %s, %s, %s, %s,
                             %s, %s, %s,
+                            %s,
                             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     RETURNING id
                     """,
@@ -1029,7 +1033,8 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                      track_number, album_artist, year, release_id, release_source,
                      duration, disc_number, release_mbid, recording_mbid, release_year, matched_file_path,
                      1 if in_collection else 0, collection_track_id,
-                     datetime.now().isoformat() if in_collection else None),
+                     datetime.now().isoformat() if in_collection else None,
+                     cover_art_url),
                 )
                 inserted = cursor.fetchone()
                 conn.commit()
@@ -1046,17 +1051,20 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                      track_number, album_artist, year, release_id, release_source,
                      duration, disc_number, release_mbid, recording_mbid, release_year, matched_file_path,
                      in_collection, collection_track_id, collection_matched_at,
+                     cover_art_url,
                      created_at, updated_at)
                     VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, NULL, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder},
                             {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder},
                             {placeholder}, {placeholder}, {placeholder},
+                            {placeholder},
                             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """,
                     (artist, title, album, search_query, source, initial_status, priority, import_group, import_type,
                      track_number, album_artist, year, release_id, release_source,
                      duration, disc_number, release_mbid, recording_mbid, release_year, matched_file_path,
                      1 if in_collection else 0, collection_track_id,
-                     datetime.now().isoformat() if in_collection else None),
+                     datetime.now().isoformat() if in_collection else None,
+                     cover_art_url),
                     context="add_to_queue insert",
                     max_retries=8,
                     initial_delay=0.2,
@@ -2032,6 +2040,26 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
             except Exception as mb_err:
                 logger.warning(f"[MOVE] Could not fetch MusicBrainz metadata for release {release_id}: {mb_err}")
 
+        # Fall back to the cover_art_url stored in the queue item when no binary
+        # cover art was retrieved from MusicBrainz.
+        if not cover_art_data:
+            stored_cover_art_url = queue_item_dict.get('cover_art_url')
+            if stored_cover_art_url:
+                try:
+                    import requests as _req
+                    _art_resp = _req.get(stored_cover_art_url, timeout=10)
+                    if _art_resp.status_code == 200:
+                        cover_art_data = _art_resp.content
+                        logger.info(
+                            f"[MOVE] Queue {queue_item_dict.get('id', 'unknown')}: "
+                            f"Using stored cover_art_url: {stored_cover_art_url}"
+                        )
+                except Exception as art_err:
+                    logger.debug(
+                        f"[MOVE] Queue {queue_item_dict.get('id', 'unknown')}: "
+                        f"Could not fetch cover art from stored URL: {art_err}"
+                    )
+
         # If we still lack a per-track artist/title/number from the release
         # lookup above, try the recording MBID (more precise: one recording =
         # one song, whereas a release can have 20+ tracks).
@@ -2927,7 +2955,8 @@ def check_downloads_folder():
             import re
             match_found = None
             match_path = None
-            
+            match_meta_state = None  # 'metadata' or 'filename' — used for pre-clear verification
+
             # Try exact filename match first (but still verify metadata when available)
             if queue_item['found_filename']:
                 found_name = str(queue_item['found_filename']).replace('\\', '/').strip()
@@ -2961,8 +2990,9 @@ def check_downloads_folder():
                         else:
                             match_found = file_info['filename']
                             match_path = file_info['full_path']
+                            match_meta_state = 'metadata' if meta_state is True else 'filename'
                             break
-            
+
             # If not found by filename, try fuzzy matching based on artist/title
             if not match_found:
                 for file_info in downloads_files:
@@ -2983,11 +3013,15 @@ def check_downloads_folder():
                     if meta_state is True:
                         match_found = file_info['filename']
                         match_path = file_info['full_path']
+                        match_meta_state = 'metadata'
                         logger.debug(f"Fuzzy matched '{queue_item['search_query']}' to '{file_info['rel_path']}'")
                         break
             
             if match_found and match_path:
-                logger.info(f"Matched queue {queue_item['id']} ({queue_item['search_query']}) to file: {match_found}")
+                logger.info(
+                    f"Matched queue {queue_item['id']} ({queue_item['search_query']}) to file: {match_found} "
+                    f"(match_meta_state={match_meta_state})"
+                )
 
                 # First mark as completed so the item has file_path set
                 updated_item = update_queue_item(
@@ -3020,6 +3054,28 @@ def check_downloads_folder():
                         item_for_move = dict(queue_item)
                         item_for_move['file_path'] = match_path
                         # Apply the stored MusicBrainz metadata to the file before moving.
+                        # For filename-only matches, double-check that the existing file
+                        # tags do not hard-contradict the queue item before clearing them.
+                        # This prevents overwriting a correctly-tagged file that was
+                        # matched only by path/name similarity.
+                        should_clear_tags = True
+                        if match_meta_state == 'filename':
+                            try:
+                                pre_clear_check = verify_downloaded_file_metadata(match_path, queue_item)
+                                if not pre_clear_check['ok']:
+                                    # Tags exist and disagree — keep existing tags to
+                                    # preserve whatever metadata is already there.
+                                    logger.warning(
+                                        f"[MOVE] Queue {queue_item['id']}: filename-only match but "
+                                        f"existing tags conflict with queue item "
+                                        f"({pre_clear_check['reason']}); "
+                                        f"skipping metadata clear — will merge stored data"
+                                    )
+                                    should_clear_tags = False
+                            except Exception as pre_check_err:
+                                logger.debug(
+                                    f"[MOVE] Queue {queue_item['id']}: pre-clear check skipped: {pre_check_err}"
+                                )
                         try:
                             from post_download_processor import update_file_metadata_with_albumart
                             stored_metadata = {
@@ -3029,8 +3085,11 @@ def check_downloads_folder():
                                 'album': queue_item.get('album'),
                                 'year': queue_item.get('year'),
                                 'track_number': queue_item.get('track_number'),
+                                'disc_number': queue_item.get('disc_number'),
                             }
-                            update_file_metadata_with_albumart(match_path, stored_metadata)
+                            update_file_metadata_with_albumart(
+                                match_path, stored_metadata, clear_existing_tags=should_clear_tags
+                            )
                             logger.info(
                                 f"[MOVE] Queue {queue_item['id']}: applied stored MusicBrainz metadata to file"
                             )
