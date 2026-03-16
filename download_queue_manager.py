@@ -1714,6 +1714,72 @@ def _remove_empty_download_dirs(file_path, downloads_root):
         logger.debug(f"[CLEANUP] Could not remove empty dirs for {file_path}: {e}")
 
 
+def _is_path_within_root(path_value, root_value):
+    """Return True when path_value is inside root_value (or equals it)."""
+    try:
+        if not path_value or not root_value:
+            return False
+        abs_path = os.path.abspath(path_value)
+        abs_root = os.path.abspath(root_value)
+        return os.path.commonpath([abs_path, abs_root]) == abs_root
+    except Exception:
+        return False
+
+
+def _safe_delete_downloads_file(file_path, downloads_root, reason="duplicate cleanup"):
+    """Delete a file only when it is inside downloads_root; never touch /music files."""
+    try:
+        if not file_path:
+            return False
+
+        abs_path = os.path.abspath(file_path)
+        abs_downloads_root = os.path.abspath(downloads_root)
+
+        if not _is_path_within_root(abs_path, abs_downloads_root):
+            logger.warning(
+                f"[CLEANUP] Skipped deleting non-downloads path: {abs_path} (reason={reason})"
+            )
+            return False
+
+        if not os.path.isfile(abs_path):
+            return False
+
+        os.remove(abs_path)
+        _remove_empty_download_dirs(abs_path, abs_downloads_root)
+        logger.info(f"[CLEANUP] Deleted downloads file: {abs_path} (reason={reason})")
+        return True
+    except Exception as e:
+        logger.warning(f"[CLEANUP] Failed to delete downloads file {file_path}: {e}")
+        return False
+
+
+def _prune_empty_download_folders(downloads_root):
+    """Remove empty folders recursively under downloads_root (excluding root)."""
+    removed = 0
+    try:
+        if not downloads_root or not os.path.isdir(downloads_root):
+            return 0
+
+        abs_root = os.path.abspath(downloads_root)
+        for current_root, dirs, _ in os.walk(abs_root, topdown=False):
+            for d in dirs:
+                candidate = os.path.join(current_root, d)
+                try:
+                    if os.path.abspath(candidate) == abs_root:
+                        continue
+                    if os.path.isdir(candidate) and not os.listdir(candidate):
+                        os.rmdir(candidate)
+                        removed += 1
+                except Exception:
+                    continue
+    except Exception as e:
+        logger.debug(f"[CLEANUP] Empty folder pruning skipped: {e}")
+
+    if removed > 0:
+        logger.info(f"[CLEANUP] Removed {removed} empty folder(s) under {downloads_root}")
+    return removed
+
+
 def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
     """
     Move a single completed track from /downloads into /music using configured naming format.
@@ -2621,6 +2687,9 @@ def check_downloads_folder():
         if not os.path.isdir(downloads_dir):
             logger.warning(f"Downloads folder not found: {downloads_dir}")
             return []
+
+        # Keep /downloads tidy each scan pass.
+        _prune_empty_download_folders(downloads_dir)
         
         completed_items = []
         conn = get_db()
@@ -3132,6 +3201,9 @@ def auto_discover_and_queue_files():
         'queued': 0,
         'already_in_queue': 0,
         'already_in_library': 0,
+        'duplicate_files_deleted': 0,
+        'duplicate_entries_deleted': 0,
+        'empty_folders_deleted': 0,
         'errors': []
     }
     
@@ -3150,6 +3222,9 @@ def auto_discover_and_queue_files():
             stats['errors'].append(error_msg)
             update_scan_progress(scanning=False)
             return stats
+
+        # Remove leftover empty folders before scanning files.
+        stats['empty_folders_deleted'] += _prune_empty_download_folders(downloads_dir)
         
         # Clean up queue items for files that no longer exist
         cleanup_stats = cleanup_missing_files()
@@ -3598,21 +3673,46 @@ def auto_discover_and_queue_files():
 
                 if duplicate_existing:
                     existing_id = _row_get(duplicate_existing, 'id', 0, None)
+                    deleted_file = _safe_delete_downloads_file(
+                        full_path,
+                        downloads_dir,
+                        reason="auto_discover duplicate entry",
+                    )
+                    if deleted_file:
+                        stats['duplicate_files_deleted'] += 1
+
+                    # Remove stale duplicate queue rows for this discovered track identity,
+                    # keeping the first existing row we already matched above.
+                    removed_rows = 0
+                    if existing_id is not None:
+                        cursor.execute(
+                            f"""
+                            DELETE FROM download_queue
+                            WHERE id <> {placeholder}
+                              AND LOWER(artist) = LOWER({placeholder})
+                              AND LOWER(title) = LOWER({placeholder})
+                              AND LOWER(COALESCE(album, '')) = LOWER(COALESCE({placeholder}, ''))
+                              AND status NOT IN ('removed', 'cancelled', 'deleted', 'imported', 'in_collection')
+                            """,
+                            (existing_id, artist, title, album),
+                        )
+                        removed_rows = int(cursor.rowcount or 0)
+                        if removed_rows > 0:
+                            stats['duplicate_entries_deleted'] += removed_rows
+
                     execute_write_with_retry(
                         cursor,
                         conn,
                         f"""
                         UPDATE download_queue
-                        SET found_filename = COALESCE(found_filename, {placeholder}),
-                            file_path = COALESCE(file_path, {placeholder}),
-                            failure_reason = CASE
+                        SET failure_reason = CASE
                                 WHEN failure_reason IS NULL OR failure_reason = '' THEN 'Duplicate discovered during scan'
                                 ELSE failure_reason
                             END,
                             updated_at = CURRENT_TIMESTAMP
                         WHERE id = {placeholder}
                         """,
-                        (filename, full_path, existing_id),
+                        (existing_id,),
                         context="auto_discover duplicate update"
                     )
 
@@ -3786,10 +3886,16 @@ def auto_discover_and_queue_files():
             album_stats = process_complete_albums()
             stats['albums_processed'] = album_stats.get('processed', 0)
             stats['albums_duplicates'] = album_stats.get('duplicates_found', 0)
+            stats['duplicate_files_deleted'] += int(album_stats.get('duplicate_files_deleted', 0) or 0)
+            stats['duplicate_entries_deleted'] += int(album_stats.get('duplicate_entries_deleted', 0) or 0)
+            stats['empty_folders_deleted'] += int(album_stats.get('empty_folders_deleted', 0) or 0)
             
             if album_stats.get('processed') or album_stats.get('duplicates_found'):
                 logger.info(f"Album processing: {album_stats['processed']} auto-processed, "
                            f"{album_stats['duplicates_found']} marked as duplicates")
+
+        # Final empty-folder pruning after duplicate cleanup/deletes.
+        stats['empty_folders_deleted'] += _prune_empty_download_folders(downloads_dir)
         
         return stats
         
@@ -5189,6 +5295,9 @@ def process_complete_albums():
         'checked': 0,
         'processed': 0,
         'duplicates_found': 0,
+        'duplicate_files_deleted': 0,
+        'duplicate_entries_deleted': 0,
+        'empty_folders_deleted': 0,
         'pending_review': 0,
         'exact_matches': 0,
         'errors': []
@@ -5232,23 +5341,36 @@ def process_complete_albums():
                 if check_album_exists_in_library(album, artist):
                     conn = get_db()
                     cursor = conn.cursor()
+                    downloads_root = get_downloads_dir()
                     for track in completion['tracks']:
+                        file_path = track.get('file_path')
+                        if _safe_delete_downloads_file(
+                            file_path,
+                            downloads_root,
+                            reason="complete_album already in library",
+                        ):
+                            stats['duplicate_files_deleted'] += 1
+
                         from app import _is_postgres_connection as app_is_postgres_connection
                         is_pg = bool(app_is_postgres_connection(conn))
                         placeholder = "%s" if is_pg else "?"
                         cursor.execute(
                             f"""
-                            UPDATE download_queue
-                            SET status = 'possible_duplicate',
-                                updated_at = CURRENT_TIMESTAMP
+                            DELETE FROM download_queue
                             WHERE id = {placeholder}
                             """,
                             (track['id'],)
                         )
+                        stats['duplicate_entries_deleted'] += int(cursor.rowcount or 0)
                     conn.commit()
                     conn.close()
+
+                    stats['empty_folders_deleted'] += _prune_empty_download_folders(downloads_root)
                     stats['duplicates_found'] += 1
-                    logger.warning(f"Album already exists in library (marked as possible_duplicate): {artist} - {album}")
+                    logger.warning(
+                        f"Album already exists in library (deleted duplicate queue rows/files from downloads): "
+                        f"{artist} - {album}"
+                    )
                     continue
 
                 # Smart-match album against MusicBrainz candidates.
