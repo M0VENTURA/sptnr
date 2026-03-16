@@ -2608,7 +2608,14 @@ def _schedule_configured_startup_scan_launch():
     def _worker():
         try:
             # Delay until module routes are fully loaded.
-            time.sleep(15)
+            # Keep this short by default so scans become visible quickly after reboot.
+            delay_raw = os.environ.get("SPTNR_STARTUP_SCAN_DELAY_SECONDS", "3")
+            try:
+                startup_delay_seconds = int(delay_raw)
+            except Exception:
+                startup_delay_seconds = 3
+            startup_delay_seconds = max(0, min(startup_delay_seconds, 300))
+            time.sleep(startup_delay_seconds)
 
             cfg = get_config() or {}
             features = cfg.get("features", {}) if isinstance(cfg, dict) else {}
@@ -12816,42 +12823,77 @@ def api_scan_progress():
     try:
         from unified_scan import get_scan_progress
         progress = get_scan_progress()
+
+        def _active_entry(scan_key: str, state: dict):
+            return {
+                "scan_type": state.get("scan_type") or scan_key,
+                "is_running": bool(state.get("is_running", False)),
+                "percent_complete": int(state.get("percent_complete", 0) or 0),
+                "current_artist": state.get("current_artist"),
+                "current_album": state.get("current_album"),
+                "processed_artists": state.get("processed_artists"),
+                "total_artists": state.get("total_artists"),
+                "scanned_albums": state.get("scanned_albums"),
+                "total_albums": state.get("total_albums"),
+            }
+
+        active_scans = []
+        if progress.get("is_running", False):
+            active_scans.append(_active_entry(progress.get("scan_type") or "unified_scan", progress))
+
+        db_dir = os.path.dirname(DB_PATH)
+        scan_checks = [
+            ("navidrome_scan", os.path.join(db_dir, "navidrome_scan_progress.json"), scan_process_navidrome),
+            ("popularity_scan", os.path.join(db_dir, "popularity_scan_progress.json"), scan_process_popularity),
+            ("singles_scan", os.path.join(db_dir, "singles_scan_progress.json"), scan_process_singles),
+            ("combined_scan", os.path.join(db_dir, "combined_scan_progress.json"), scan_process_combined),
+            ("missing_releases_scan", os.path.join(db_dir, "missing_releases_scan_progress.json"), scan_process_missing_releases),
+        ]
+
+        progress_by_type = {}
+        for scan_key, file_path, proc_ref in scan_checks:
+            state = _validate_and_cleanup_progress_file(file_path, proc_ref)
+            if state and state.get("is_running", False):
+                entry = _active_entry(scan_key, state)
+                scan_type = entry.get("scan_type") or scan_key
+                if scan_type not in progress_by_type:
+                    progress_by_type[scan_type] = state
+                    active_scans.append(entry)
+
+        # De-duplicate active scan entries by scan_type while preserving order.
+        deduped_active_scans = []
+        seen_scan_types = set()
+        for entry in active_scans:
+            scan_type = entry.get("scan_type") or "unknown"
+            if scan_type in seen_scan_types:
+                continue
+            seen_scan_types.add(scan_type)
+            deduped_active_scans.append(entry)
+        active_scans = deduped_active_scans
         
         # If unified scan is not running, check for Navidrome, Popularity, Singles, and Combined scans
         if not progress.get("is_running", False):
-            db_dir = os.path.dirname(DB_PATH)
-            
-            # Check Navidrome scan progress with validation
-            nav_progress_file = os.path.join(db_dir, "navidrome_scan_progress.json")
-            nav_progress = _validate_and_cleanup_progress_file(nav_progress_file, scan_process_navidrome)
-            if nav_progress and nav_progress.get("is_running", False):
-                return jsonify(nav_progress)
-            
-            # Check Popularity scan progress with validation
-            popularity_progress_file = os.path.join(db_dir, "popularity_scan_progress.json")
-            pop_progress = _validate_and_cleanup_progress_file(popularity_progress_file, scan_process_popularity)
-            if pop_progress and pop_progress.get("is_running", False):
-                return jsonify(pop_progress)
-            
-            # Check Singles scan progress with validation
-            singles_progress_file = os.path.join(db_dir, "singles_scan_progress.json")
-            singles_progress = _validate_and_cleanup_progress_file(singles_progress_file, scan_process_singles)
-            if singles_progress and singles_progress.get("is_running", False):
-                return jsonify(singles_progress)
-            
-            # Check Combined scan progress with validation
-            combined_progress_file = os.path.join(db_dir, "combined_scan_progress.json")
-            combined_progress = _validate_and_cleanup_progress_file(combined_progress_file, scan_process_combined)
-            if combined_progress and combined_progress.get("is_running", False):
-                return jsonify(combined_progress)
-            
-            # Check Missing Releases scan progress with validation
-            missing_releases_progress_file = os.path.join(db_dir, "missing_releases_scan_progress.json")
-            missing_releases_progress = _validate_and_cleanup_progress_file(missing_releases_progress_file, scan_process_missing_releases)
-            if missing_releases_progress and missing_releases_progress.get("is_running", False):
-                return jsonify(missing_releases_progress)
-        
-        return jsonify(progress)
+            priority = [
+                "navidrome_scan",
+                "popularity_scan",
+                "singles_scan",
+                "combined_scan",
+                "missing_releases_scan",
+            ]
+            for scan_type in priority:
+                state = progress_by_type.get(scan_type)
+                if state and state.get("is_running", False):
+                    payload = dict(state)
+                    payload["active_scans"] = active_scans
+                    payload["active_scan_count"] = len(active_scans)
+                    return jsonify(payload)
+
+        payload = dict(progress)
+        payload["active_scans"] = active_scans
+        payload["active_scan_count"] = len(active_scans)
+        if active_scans and not payload.get("is_running", False):
+            payload["is_running"] = True
+        return jsonify(payload)
     except Exception as e:
         logging.error(f"Error getting scan progress: {e}")
         return jsonify({
@@ -12859,6 +12901,8 @@ def api_scan_progress():
             "percent_complete": 0,
             "current_artist": None,
             "current_album": None,
+            "active_scans": [],
+            "active_scan_count": 0,
             "error": str(e)
         })
 
@@ -20636,19 +20680,48 @@ def api_queue_processor_status():
             """
             SELECT status, COUNT(*) AS count
             FROM download_queue
-            WHERE status IN ('queued', 'downloading', 'failed', 'completed')
             GROUP BY status
             """
         )
         rows = cursor.fetchall() or []
         conn.close()
 
-        counts = {'queued': 0, 'downloading': 0, 'failed': 0, 'completed': 0}
+        counts = {
+            'queued': 0,
+            'searching': 0,
+            'downloading': 0,
+            'queried': 0,
+            'discovered': 0,
+            'pending_match': 0,
+            'matched': 0,
+            'possible_duplicate': 0,
+            'duplicate': 0,
+            'completed': 0,
+            'in_collection': 0,
+            'failed': 0,
+        }
         for row in rows:
             status_value = _row_get(row, 'status', 0)
             count_value = int(_row_get(row, 'count', 1, 0) or 0)
             if status_value in counts:
                 counts[status_value] = count_value
+
+        active_total = (
+            counts['queued']
+            + counts['searching']
+            + counts['downloading']
+            + counts['queried']
+            + counts['discovered']
+            + counts['pending_match']
+        )
+        completed_total = (
+            counts['matched']
+            + counts['possible_duplicate']
+            + counts['duplicate']
+            + counts['completed']
+            + counts['in_collection']
+        )
+        total_count = active_total + completed_total + counts['failed']
         
         return jsonify({
             "success": True,
@@ -20656,12 +20729,14 @@ def api_queue_processor_status():
             "processor_pid": processor_pid,
             "processor_memory_mb": round(processor_memory, 2) if processor_memory else 0,
             "processor_uptime": str(processor_uptime) if processor_uptime else None,
+            "status_counts": counts,
             "queue_stats": {
-                "queued": counts['queued'],
+                "queued": counts['queued'] + counts['searching'] + counts['queried'] + counts['discovered'] + counts['pending_match'],
                 "downloading": counts['downloading'],
                 "failed": counts['failed'],
-                "completed": counts['completed'],
-                "total": counts['queued'] + counts['downloading'] + counts['failed'] + counts['completed']
+                "completed": completed_total,
+                "active": active_total,
+                "total": total_count
             }
         })
         
