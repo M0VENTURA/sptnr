@@ -21470,6 +21470,146 @@ def api_queue_reset_match(queue_id):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route("/api/queue/cleanup-invalid-mbids", methods=["POST"])
+def api_queue_cleanup_invalid_mbids():
+    """Reset queue rows that contain a non-UUID release_mbid value.
+
+    This repairs legacy rows where a non-MusicBrainz ID (for example, a Discogs
+    numeric ID) was stored in release_mbid and later caused MusicBrainz lookup
+    failures.
+    """
+    conn = None
+    try:
+        payload = request.get_json(silent=True) or {}
+        dry_run = bool(payload.get("dry_run", False))
+
+        conn = get_db()
+        cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+
+        placeholder = "%s" if is_pg else "?"
+        length_expr = "char_length" if is_pg else "length"
+        current_ts_expr = "CURRENT_TIMESTAMP" if is_pg else "datetime('now')"
+        valid_uuid_like = "________-____-____-____-____________"
+
+        invalid_condition = (
+            "TRIM(COALESCE(release_mbid, '')) != '' "
+            f"AND NOT ({length_expr}(release_mbid) = 36 AND release_mbid LIKE {placeholder})"
+        )
+
+        cursor.execute(
+            f"""
+            SELECT id, artist, album, release_mbid, status
+            FROM download_queue
+            WHERE {invalid_condition}
+            ORDER BY id
+            LIMIT 25
+            """,
+            (valid_uuid_like,),
+        )
+        sample_rows = cursor.fetchall()
+
+        cursor.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM download_queue
+            WHERE {invalid_condition}
+            """,
+            (valid_uuid_like,),
+        )
+        count_row = cursor.fetchone()
+        invalid_count = count_row[0] if not isinstance(count_row, dict) else count_row.get("count", 0)
+
+        sample = []
+        for row in sample_rows:
+            if isinstance(row, dict):
+                sample.append({
+                    "id": row.get("id"),
+                    "artist": row.get("artist"),
+                    "album": row.get("album"),
+                    "release_mbid": row.get("release_mbid"),
+                    "status": row.get("status"),
+                })
+            else:
+                sample.append({
+                    "id": row[0],
+                    "artist": row[1],
+                    "album": row[2],
+                    "release_mbid": row[3],
+                    "status": row[4],
+                })
+
+        if dry_run:
+            conn.close()
+            conn = None
+            return jsonify({
+                "success": True,
+                "dry_run": True,
+                "invalid_count": invalid_count,
+                "sample": sample,
+            })
+
+        cursor.execute(
+            f"""
+            UPDATE download_queue
+            SET release_mbid = NULL,
+                release_id = CASE
+                    WHEN release_source = 'musicbrainz' OR release_id = release_mbid THEN NULL
+                    ELSE release_id
+                END,
+                release_source = CASE
+                    WHEN release_source = 'musicbrainz' OR release_id = release_mbid THEN NULL
+                    ELSE release_source
+                END,
+                mb_release_group_id = NULL,
+                mb_match_status = NULL,
+                mb_match_score = NULL,
+                mb_match_candidates = NULL,
+                mb_matched_title = NULL,
+                mb_matched_artist = NULL,
+                mb_matched_year = NULL,
+                mb_last_match_at = NULL,
+                status = CASE
+                    WHEN status IN ('matched', 'queried', 'pending_match', 'possible_duplicate', 'duplicate')
+                    THEN 'unmatched'
+                    ELSE status
+                END,
+                failure_reason = CASE
+                    WHEN status IN ('matched', 'queried', 'pending_match', 'possible_duplicate', 'duplicate')
+                    THEN 'Reset invalid release_mbid (non-UUID); please rematch'
+                    ELSE failure_reason
+                END,
+                updated_at = {current_ts_expr}
+            WHERE {invalid_condition}
+            """,
+            (valid_uuid_like,),
+        )
+        updated_count = cursor.rowcount or 0
+
+        conn.commit()
+        conn.close()
+        conn = None
+
+        logging.info(f"[QUEUE_CLEANUP] Reset {updated_count} queue rows with invalid release_mbid values")
+
+        return jsonify({
+            "success": True,
+            "dry_run": False,
+            "invalid_count": invalid_count,
+            "updated_count": updated_count,
+            "sample": sample,
+            "message": f"Reset {updated_count} queue row(s) with invalid release_mbid",
+        })
+    except Exception as e:
+        logging.error(f"Error cleaning up invalid queue MBIDs: {e}")
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 def api_lastfm_sync_status():
     """Get Last.fm sync status and next scheduled sync"""
     try:
