@@ -21210,12 +21210,12 @@ def api_queue_update_album_mbid():
                 release_id = {placeholder},
                 release_source = 'musicbrainz',
                 album = {placeholder},
-                artist = {placeholder},
+                album_artist = {placeholder},
                 import_group = {placeholder},
                 release_year = {placeholder},
                 updated_at = CURRENT_TIMESTAMP
-            WHERE LOWER(artist) = LOWER({placeholder})
-            AND LOWER(album) = LOWER({placeholder})
+            WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER({placeholder})
+              AND LOWER(album) = LOWER({placeholder})
             """,
             (new_mbid, new_mbid, new_album, new_artist, mbid_import_group, release_year, old_artist, old_album)
         )
@@ -21229,10 +21229,11 @@ def api_queue_update_album_mbid():
             UPDATE download_queue
             SET import_group = {placeholder},
                 release_source = 'musicbrainz',
+                album_artist = COALESCE(NULLIF(album_artist, ''), {placeholder}),
                 updated_at = CURRENT_TIMESTAMP
             WHERE COALESCE(NULLIF(release_mbid, ''), NULLIF(release_id, '')) = {placeholder}
             """,
-            (mbid_import_group, new_mbid),
+            (mbid_import_group, new_artist, new_mbid),
         )
         merged_count = cursor.rowcount or 0
 
@@ -21394,7 +21395,7 @@ def api_queue_apply_mbid_match(queue_id):
             SET release_mbid = {placeholder},
                 release_id = {placeholder},
                 release_source = 'musicbrainz',
-                artist = {placeholder},
+                album_artist = {placeholder},
                 album = {placeholder},
                 release_year = {placeholder},
                 status = 'matched',
@@ -21424,15 +21425,17 @@ def api_queue_apply_mbid_match(queue_id):
                     track_title = track.get('title', '')
                     if not track_title:
                         continue
+                    track_artist = (track.get('artist') or artist_name or '').strip() or artist_name
                     track_number = track.get('track_number')
                     track_duration = track.get('duration', 0)
                     if track_duration:
                         track_duration = track_duration // 1000
 
                     queued = add_to_queue(
-                        artist=artist_name,
+                        artist=track_artist,
                         title=track_title,
                         album=album_name,
+                        album_artist=artist_name,
                         source='soulseek',
                         release_mbid=mbid,
                         release_id=mbid,
