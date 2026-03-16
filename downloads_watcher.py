@@ -228,7 +228,7 @@ def queue_incomplete_download(file_path, metadata):
             album,
             title,
             metadata.get('duration', 0),
-            'discovered' if exists_in_library else 'discovered'
+            'in_collection' if exists_in_library else 'unmatched'
         ))
         conn.commit()
         
@@ -335,7 +335,7 @@ def get_retry_queue(limit=50):
         
         cursor.execute("""
             SELECT * FROM download_queue 
-            WHERE status = 'incomplete'
+            WHERE status = 'failed'
             AND (next_retry_at IS NULL OR next_retry_at <= %s)
             AND retry_count < max_retries
             ORDER BY next_retry_at ASC, created_at ASC
@@ -367,13 +367,13 @@ def get_download_queue_grouped(status=None, limit=50):
     """
     try:
         conn = get_db()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         
         # Get queue items
         if status:
             cursor.execute("""
                 SELECT * FROM download_queue 
-                WHERE status = ?
+                WHERE status = %s
                 ORDER BY artist ASC, album ASC, created_at ASC
             """, (status,))
         else:
@@ -383,7 +383,7 @@ def get_download_queue_grouped(status=None, limit=50):
             """)
         
         rows = cursor.fetchall()
-        items = [dict(row) for row in rows]
+        items = list(rows)
         conn.close()
         
         # Filter out items where the file no longer exists

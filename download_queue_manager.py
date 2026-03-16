@@ -91,6 +91,9 @@ _queue_schema_checked = False
 _queue_schema_lock = threading.Lock()
 _queue_columns_cache = None  # populated once; avoids repeated information_schema queries
 
+# Canonical active statuses for queue reads and processor selection.
+_ACTIVE_QUEUE_STATUSES = ('queued', 'searching', 'downloading', 'unmatched', 'queried')
+
 # Throttle expensive downloads-folder checks triggered by frequent UI polling.
 _downloads_check_lock = threading.Lock()
 _downloads_check_cache = {
@@ -1246,8 +1249,9 @@ def get_queue(status=None, source=None, limit=50):
             conditions.append(f"status = {placeholder}")
             params.append(status)
         else:
-            # Default: return all non-archived statuses
-            conditions.append("status NOT IN ('imported', 'removed', 'cancelled')")
+            # Default: return active statuses only (not completed/failed/archived).
+            conditions.append(f"status = ANY({placeholder})")
+            params.append(list(_ACTIVE_QUEUE_STATUSES))
 
         query = "SELECT * FROM download_queue"
         if conditions:
@@ -3699,8 +3703,9 @@ def auto_discover_and_queue_files():
                 except Exception as e:
                     logger.warning(f"[AUTO-DISCOVER] Could not add {col} column: {e}")
         
-        # Get all audio files from downloads folder and subdirectories
-        audio_extensions = {'.mp3', '.flac', '.m4a', '.ogg', '.wav'}
+        # Get supported audio files from downloads folder and subdirectories.
+        # Keep queue discovery strict to MP3/FLAC only.
+        audio_extensions = {'.mp3', '.flac'}
         discovered_files = []
         folder_audio_counts = {}
         
@@ -3754,6 +3759,39 @@ def auto_discover_and_queue_files():
                 logger.debug(f"[AUTO-DISCOVER] No eligible audio files found in {downloads_dir}")
             update_scan_progress(scanning=False)
             return stats
+
+        # Build folder groups once so we can perform a folder-level pre-check
+        # against existing queue rows before creating new queue entries.
+        folder_to_files = {}
+        for discovered in filtered_discovered_files:
+            folder_to_files.setdefault(os.path.dirname(discovered['full_path']), []).append(discovered)
+
+        folder_precheck_done = set()
+        folders_fully_queued = set()
+        placeholder = "%s" if is_pg else "?"
+
+        def _queue_signature(artist_value, title_value):
+            artist_norm = _normalize_match_text(artist_value or "")
+            title_norm = _normalize_match_text(_strip_track_number_prefix(title_value or ""))
+            if not artist_norm or not title_norm:
+                return None
+            return f"{artist_norm}::{title_norm}"
+
+        # Snapshot existing queue signatures (artist+title) once for this scan.
+        cursor.execute(
+            """
+            SELECT artist, title
+            FROM download_queue
+            WHERE status NOT IN ('imported', 'removed', 'cancelled', 'deleted', 'in_collection')
+            """
+        )
+        existing_queue_signatures = set()
+        for row in cursor.fetchall() or []:
+            artist_val = _row_get(row, 'artist', 0, '')
+            title_val = _row_get(row, 'title', 1, '')
+            sig = _queue_signature(artist_val, title_val)
+            if sig:
+                existing_queue_signatures.add(sig)
         
         for file_info in filtered_discovered_files:
             # PostgreSQL: use a SAVEPOINT so a per-file DB error can be rolled
@@ -3769,6 +3807,40 @@ def auto_discover_and_queue_files():
                 full_path = file_info['full_path']
                 filename = file_info['filename']
                 file_ext = os.path.splitext(filename)[1].lower()
+                folder_path = os.path.dirname(full_path)
+
+                if folder_path in folders_fully_queued:
+                    continue
+
+                if folder_path not in folder_precheck_done:
+                    folder_precheck_done.add(folder_path)
+                    folder_entries = folder_to_files.get(folder_path, [])
+
+                    folder_signatures = set()
+                    for entry in folder_entries:
+                        entry_full_path = entry.get('full_path')
+                        entry_filename = entry.get('filename', '')
+                        entry_title_fallback = _strip_track_number_prefix(os.path.splitext(entry_filename)[0])
+
+                        try:
+                            entry_metadata = read_mp3_metadata(entry_full_path) or {}
+                        except Exception:
+                            entry_metadata = {}
+
+                        entry_artist = entry_metadata.get('artist', 'Unknown Artist')
+                        entry_title = entry_metadata.get('title') or entry_title_fallback
+                        signature = _queue_signature(entry_artist, entry_title)
+                        if signature:
+                            folder_signatures.add(signature)
+
+                    if folder_signatures and folder_signatures.issubset(existing_queue_signatures):
+                        folders_fully_queued.add(folder_path)
+                        stats['already_in_queue'] += len(folder_entries)
+                        logger.info(
+                            f"[AUTO-DISCOVER] Skipping folder already represented in queue: "
+                            f"{os.path.relpath(folder_path, downloads_dir)} ({len(folder_entries)} files)"
+                        )
+                        continue
                 
                 # Extract metadata from file
                 metadata = {}
@@ -3828,7 +3900,6 @@ def auto_discover_and_queue_files():
                 )
                 
                 # Check if already in download_queue
-                placeholder = "%s" if is_pg else "?"
                 cursor.execute(f"""
                     SELECT id, status FROM download_queue 
                     WHERE file_path = {placeholder}
@@ -4084,6 +4155,9 @@ def auto_discover_and_queue_files():
 
                     stats['already_in_queue'] += 1
                     logger.debug(f"[AUTO-DISCOVER] Duplicate skipped (existing queue id {existing_id}): {artist} - {title} ({album})")
+                    duplicate_sig = _queue_signature(artist, title)
+                    if duplicate_sig:
+                        existing_queue_signatures.add(duplicate_sig)
                     continue
 
                 # Before creating a new entry, check if this file belongs to an existing album group
@@ -4130,6 +4204,10 @@ def auto_discover_and_queue_files():
                     (artist, title, album, album_artist, track_number, disc_number, year, duration, filename, full_path, release_group),
                     context="auto_discover unmatched insert"
                 )
+
+                inserted_sig = _queue_signature(artist, title)
+                if inserted_sig:
+                    existing_queue_signatures.add(inserted_sig)
 
                 # Queue MusicBrainz enrichment in the background so scan throughput and
                 # UI responsiveness are not blocked by external API latency.
