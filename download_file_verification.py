@@ -137,6 +137,8 @@ def ensure_queue_mbid_columns():
         - in_collection INTEGER: Whether track exists in local library
         - collection_track_id TEXT: ID of matching track in collection
         - collection_matched_at TEXT: Timestamp of collection match
+        - copied_individually INTEGER: Whether file already moved individually
+        - copied_individually_at TEXT: Timestamp of individual copy event
     """
     return _ensure_columns_in_table([
         ("release_mbid", "TEXT"),
@@ -147,6 +149,8 @@ def ensure_queue_mbid_columns():
         ("in_collection", "INTEGER DEFAULT 0"),
         ("collection_track_id", "TEXT"),
         ("collection_matched_at", "TEXT"),
+        ("copied_individually", "INTEGER DEFAULT 0"),
+        ("copied_individually_at", "TEXT"),
     ])
 
 

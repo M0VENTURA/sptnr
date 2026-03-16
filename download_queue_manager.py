@@ -11,6 +11,7 @@ during parallel scan operations. PostgreSQL provides reliable concurrent access.
 
 import os
 import re
+import shutil
 import concurrent.futures
 import subprocess
 import psycopg2
@@ -773,7 +774,26 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                     pass
                 logger.warning(f"Could not create active queue dedupe index: {e}")
 
-            _queue_schema_checked = True
+            # Re-check after attempted ALTERs. Only mark schema as checked when all
+            # required columns are present; otherwise keep retrying on future calls.
+            cursor.execute("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = 'download_queue'
+                  AND table_schema = 'public'
+            """)
+            final_columns = {row['column_name'] for row in cursor.fetchall()}
+            missing_after_ensure = sorted(
+                [col for col in required_cols.keys() if col not in final_columns]
+            )
+
+            if missing_after_ensure:
+                _queue_schema_checked = False
+                logger.warning(
+                    "download_queue schema still missing columns after ensure pass: %s",
+                    ", ".join(missing_after_ensure),
+                )
+            else:
+                _queue_schema_checked = True
         except Exception as e:
             logger.warning(f"Schema check failed: {e}")
             try:
@@ -1477,6 +1497,7 @@ def update_queue_item(queue_id, **kwargs):
     last_error = None
     
     for attempt in range(max_retries):
+        conn = None
         try:
             # Try app's get_db first (PostgreSQL-aware)
             is_pg = False
@@ -1490,6 +1511,10 @@ def update_queue_item(queue_id, **kwargs):
             
             cursor = conn.cursor()
             placeholder = "%s" if is_pg else "?"
+
+            # Ensure schema before any queue writes. This prevents missing-column
+            # failures on older databases and post-deploy drift.
+            _ensure_download_queue_columns(conn, cursor, is_pg=is_pg)
             
             # Build update query
             updates = []
@@ -1571,6 +1596,16 @@ def update_queue_item(queue_id, **kwargs):
         
         except psycopg2.OperationalError as e:
             last_error = e
+            try:
+                if conn:
+                    conn.rollback()
+            except Exception:
+                pass
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, 5.0)
@@ -1579,6 +1614,16 @@ def update_queue_item(queue_id, **kwargs):
             logger.error(f"OperationalError updating queue item {queue_id}: {e}")
             return None
         except psycopg2.IntegrityError as e:
+            try:
+                if conn:
+                    conn.rollback()
+            except Exception:
+                pass
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
             logger.error(f"Database integrity error updating queue item {queue_id}: {e}")
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
@@ -1586,7 +1631,48 @@ def update_queue_item(queue_id, **kwargs):
                 logger.warning(f"Integrity error, retrying (attempt {attempt + 1}/{max_retries})...")
                 continue
             return None
+        except psycopg2.ProgrammingError as e:
+            # Recover when a column is missing (e.g. copied_individually/release_year)
+            # by forcing a schema re-check and retrying once the transaction is rolled back.
+            err = str(e).lower()
+            try:
+                if conn:
+                    conn.rollback()
+            except Exception:
+                pass
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+
+            if (
+                attempt < max_retries - 1
+                and "column" in err
+                and ("copied_individually" in err or "release_year" in err or "download_queue" in err)
+            ):
+                global _queue_schema_checked
+                _queue_schema_checked = False
+                logger.warning(
+                    f"ProgrammingError updating queue item {queue_id}; forcing schema re-check and retry (attempt {attempt + 1}/{max_retries}): {e}"
+                )
+                time.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 5.0)
+                continue
+
+            logger.error(f"ProgrammingError updating queue item {queue_id}: {e}")
+            return None
         except Exception as e:
+            try:
+                if conn:
+                    conn.rollback()
+            except Exception:
+                pass
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
             logger.error(f"Error updating queue item {queue_id}: {type(e).__name__}: {e}")
             import traceback
             logger.error(traceback.format_exc())
