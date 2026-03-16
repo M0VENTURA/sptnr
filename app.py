@@ -21594,6 +21594,178 @@ def api_queue_apply_mbid_match(queue_id):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route("/api/queue/apply-mbid-match-batch", methods=["POST"])
+def api_queue_apply_mbid_match_batch():
+    """Apply one MusicBrainz release match to multiple queue items in a single merge operation."""
+    conn = None
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        queue_ids_raw = data.get('queue_ids') or []
+        new_mbid = (data.get('new_mbid') or '').strip()
+        new_artist = (data.get('new_artist') or '').strip()
+        new_album = (data.get('new_album') or '').strip()
+
+        queue_ids = []
+        if isinstance(queue_ids_raw, list):
+            for value in queue_ids_raw:
+                try:
+                    qid = int(value)
+                    if qid > 0:
+                        queue_ids.append(qid)
+                except Exception:
+                    continue
+
+        # Preserve input order while de-duplicating ids.
+        queue_ids = list(dict.fromkeys(queue_ids))
+
+        if not queue_ids:
+            return jsonify({"error": "queue_ids is required"}), 400
+        if not new_mbid:
+            return jsonify({"error": "new_mbid is required"}), 400
+
+        release_year = None
+        release_metadata = None
+        try:
+            from folder_matching_enhancements import get_musicbrainz_release_metadata
+
+            release_metadata = get_musicbrainz_release_metadata(new_mbid) or {}
+            release_year_raw = release_metadata.get('release_year')
+            release_year = str(release_year_raw).strip() if release_year_raw not in (None, '') else None
+            if not new_artist:
+                new_artist = (release_metadata.get('artist') or '').strip()
+            if not new_album:
+                new_album = (release_metadata.get('release_title') or '').strip()
+        except Exception as mb_err:
+            logging.debug(f"[QUEUE_MATCH_BATCH] Could not preload release metadata for {new_mbid}: {mb_err}")
+
+        conn = get_db()
+        cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+
+        # Resolve fallback artist/album from first queue item when caller did not pass values.
+        first_queue_id = queue_ids[0]
+        cursor.execute(
+            f"SELECT artist, album FROM download_queue WHERE id = {placeholder}",
+            (first_queue_id,)
+        )
+        first_row = cursor.fetchone()
+        if not first_row:
+            conn.close()
+            conn = None
+            return jsonify({"error": "Queue item not found"}), 404
+
+        fallback_artist = first_row.get('artist') if isinstance(first_row, dict) else first_row[0]
+        fallback_album = first_row.get('album') if isinstance(first_row, dict) else first_row[1]
+        target_artist = new_artist or fallback_artist
+        target_album = new_album or fallback_album
+        mbid_import_group = f"mbid_{new_mbid}"
+
+        ids_placeholders = ", ".join([placeholder] * len(queue_ids))
+        cursor.execute(
+            f"""
+            UPDATE download_queue
+            SET release_mbid = {placeholder},
+                release_id = {placeholder},
+                release_source = 'musicbrainz',
+                album_artist = {placeholder},
+                album = {placeholder},
+                release_year = COALESCE(release_year, {placeholder}),
+                import_group = {placeholder},
+                status = CASE
+                    WHEN status IN ('completed', 'in_collection', 'imported') THEN status
+                    ELSE 'matched'
+                END,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id IN ({ids_placeholders})
+            """,
+            (new_mbid, new_mbid, target_artist, target_album, release_year, mbid_import_group, *queue_ids)
+        )
+
+        updated_count = cursor.rowcount or 0
+        conn.commit()
+        conn.close()
+        conn = None
+
+        # Optional single expansion in the background to mirror single-item flow.
+        def _expand_release_tracks_async(mbid, artist_name, album_name, prefetched_release_metadata=None):
+            try:
+                from folder_matching_enhancements import get_musicbrainz_release_metadata
+                from download_queue_manager import add_to_queue
+
+                release_data = prefetched_release_metadata or get_musicbrainz_release_metadata(mbid) or {}
+                release_tracks = release_data.get('tracks', [])
+                inferred_year_raw = release_data.get('release_year')
+                inferred_year = str(inferred_year_raw).strip() if inferred_year_raw not in (None, '') else None
+
+                added_tracks = 0
+                for track in release_tracks or []:
+                    track_title = track.get('title', '')
+                    if not track_title:
+                        continue
+                    track_artist = (track.get('artist') or artist_name or '').strip() or artist_name
+                    track_number = track.get('track_number')
+                    disc_number = track.get('disc_number')
+                    recording_mbid = track.get('recording_mbid') or track.get('id')
+                    track_duration = track.get('duration', 0)
+                    if track_duration:
+                        track_duration = track_duration // 1000
+
+                    queued = add_to_queue(
+                        artist=track_artist,
+                        title=track_title,
+                        album=album_name,
+                        album_artist=artist_name,
+                        source='soulseek',
+                        release_mbid=mbid,
+                        release_id=mbid,
+                        release_source='musicbrainz',
+                        track_number=track_number,
+                        disc_number=disc_number,
+                        recording_mbid=recording_mbid,
+                        year=inferred_year,
+                        duration=track_duration,
+                    )
+                    if queued:
+                        added_tracks += 1
+
+                log_unified(
+                    f"[QUEUE_MATCH_BATCH] Expanded MBID {mbid}: added {added_tracks} track(s)"
+                )
+            except Exception as async_err:
+                logging.warning(f"[QUEUE_MATCH_BATCH] Background release expansion failed for MBID {mbid}: {async_err}")
+
+        threading.Thread(
+            target=_expand_release_tracks_async,
+            args=(new_mbid, target_artist, target_album, release_metadata),
+            daemon=True,
+            name=f"queue-match-batch-expand-{new_mbid[:8]}",
+        ).start()
+
+        return jsonify({
+            "success": True,
+            "message": "Folder queue match updated",
+            "queue_ids": queue_ids,
+            "updated_count": updated_count,
+            "failed_count": max(len(queue_ids) - int(updated_count or 0), 0),
+            "release_mbid": new_mbid,
+            "artist": target_artist,
+            "album": target_album,
+            "tracks_pending": True,
+        })
+
+    except Exception as e:
+        logging.error(f"Error applying batch queue MBID match: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/queue/<int:queue_id>/reset-match", methods=["POST"])
 def api_queue_reset_match(queue_id):
     """Reset a queue item's current match so it can be rematched manually."""

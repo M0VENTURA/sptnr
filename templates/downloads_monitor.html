@@ -2566,22 +2566,39 @@ function openFolderQueueMatchModal(folderPath, artist, album, currentMbid, queue
             <div class="small text-muted mb-2">Folder: ${escapeHtml(folderPath || '(queue group)')}</div>
             <div class="small text-muted mb-2">Queue items affected: ${safeQueueIds.length}</div>
             <div class="small text-muted mb-3">Current MBID: ${escapeHtml(currentMbid || 'None')}</div>
-            <div class="row g-2">
-              <div class="col-md-6">
-                <label class="form-label">Artist</label>
-                <input type="text" id="folderQueueMatchArtist" class="form-control" value="${escapeHtml(artist)}" placeholder="Artist name">
-              </div>
-              <div class="col-md-6">
-                <label class="form-label">Album</label>
-                <input type="text" id="folderQueueMatchAlbum" class="form-control" value="${escapeHtml(album)}" placeholder="Album name">
+
+            <div class="mb-3">
+              <h6 class="text-light mb-2"><i class="bi bi-collection"></i> Current Queue Releases</h6>
+              <div id="folderQueueCurrentReleases">
+                <div class="text-muted small">Loading current queue…</div>
               </div>
             </div>
-            <div class="mt-3">
-              <button class="btn btn-primary" onclick="searchFolderQueueMusicBrainzMatch('${encodeInlineArg(safeQueueIds)}')">
-                <i class="bi bi-search"></i> Search MusicBrainz
+
+            <div class="border-top border-secondary pt-3">
+              <button class="btn btn-outline-primary btn-sm" type="button"
+                data-bs-toggle="collapse" data-bs-target="#folderQueueOnlineSearch"
+                aria-expanded="false" aria-controls="folderQueueOnlineSearch">
+                <i class="bi bi-globe"></i> Search Online (MusicBrainz)
               </button>
+              <div class="collapse mt-3" id="folderQueueOnlineSearch">
+                <div class="row g-2">
+                  <div class="col-md-6">
+                    <label class="form-label">Artist</label>
+                    <input type="text" id="folderQueueMatchArtist" class="form-control" value="${escapeHtml(artist)}" placeholder="Artist name">
+                  </div>
+                  <div class="col-md-6">
+                    <label class="form-label">Album</label>
+                    <input type="text" id="folderQueueMatchAlbum" class="form-control" value="${escapeHtml(album)}" placeholder="Album name">
+                  </div>
+                </div>
+                <div class="mt-2">
+                  <button class="btn btn-primary btn-sm" onclick="searchFolderQueueMusicBrainzMatch('${encodeInlineArg(safeQueueIds)}')">
+                    <i class="bi bi-search"></i> Search MusicBrainz
+                  </button>
+                </div>
+                <div id="folderQueueMatchResults" class="mt-3"></div>
+              </div>
             </div>
-            <div id="folderQueueMatchResults" class="mt-3"></div>
           </div>
         </div>
       </div>
@@ -2591,6 +2608,73 @@ function openFolderQueueMatchModal(folderPath, artist, album, currentMbid, queue
   document.body.insertAdjacentHTML('beforeend', modalHtml);
   const modal = new bootstrap.Modal(document.getElementById('folderQueueMatchModal'));
   modal.show();
+
+  // Keep folder flow aligned with single-item flow: show current queue releases first.
+  loadCurrentQueueReleasesForFolder(encodeInlineArg(safeQueueIds), artist, album);
+}
+
+async function loadCurrentQueueReleasesForFolder(queueIdsEnc, currentArtist, currentAlbum) {
+  const container = document.getElementById('folderQueueCurrentReleases');
+  if (!container) return;
+
+  try {
+    const apiUrl = `/api/queue/matched-releases?artist=${encodeURIComponent(currentArtist || '')}&album=${encodeURIComponent(currentAlbum || '')}&limit=80`;
+    const data = await fetchJsonOrThrow(apiUrl);
+    const releases = data.releases || [];
+
+    if (!releases.length) {
+      container.innerHTML = '<div class="alert alert-info mb-0 small">No matched releases found in the current queue. Use <strong>Search Online</strong> below to find a match.</div>';
+      const onlineSearchEl = document.getElementById('folderQueueOnlineSearch');
+      if (onlineSearchEl) {
+        new bootstrap.Collapse(onlineSearchEl, { show: true });
+      }
+      return;
+    }
+
+    const rows = releases.map(rel => {
+      const relArtist = rel.artist || '';
+      const relAlbum = rel.album || '';
+      const relMbid = rel.mbid || '';
+      const relYear = rel.year || '';
+      const relCount = rel.track_count || 0;
+
+      return `
+        <tr>
+          <td>${escapeHtml(relArtist)}</td>
+          <td>${escapeHtml(relAlbum)}</td>
+          <td>${escapeHtml(String(relYear))}</td>
+          <td>${escapeHtml(String(relCount))}</td>
+          <td><small class="text-info">${escapeHtml(relMbid)}</small></td>
+          <td>
+            <button class="btn btn-sm btn-success" onclick="applyFolderQueueMusicBrainzMatch('${queueIdsEnc}', '${encodeInlineArg(relArtist)}', '${encodeInlineArg(relAlbum)}', '${encodeInlineArg(relMbid)}')">
+              Select
+            </button>
+          </td>
+        </tr>
+      `;
+    }).join('');
+
+    container.innerHTML = `
+      <div class="table-responsive">
+        <table class="table table-sm table-dark table-striped mb-0">
+          <thead>
+            <tr>
+              <th>Artist</th>
+              <th>Album</th>
+              <th>Year</th>
+              <th>Tracks</th>
+              <th>MBID</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    `;
+  } catch (error) {
+    console.error('Error loading current queue releases for folder match:', error);
+    container.innerHTML = '<div class="alert alert-warning mb-0 small">Could not load current queue releases.</div>';
+  }
 }
 
 async function searchFolderQueueMusicBrainzMatch(queueIdsEnc) {
@@ -2687,31 +2771,19 @@ async function applyFolderQueueMusicBrainzMatch(queueIdsEnc, newArtistEnc, newAl
   }
 
   try {
-    let updated = 0;
-    let failed = 0;
+    const data = await fetchJsonOrThrow('/api/queue/apply-mbid-match-batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        queue_ids: safeIds,
+        new_mbid: newMbid,
+        new_artist: newArtist,
+        new_album: newAlbum,
+      })
+    });
 
-    for (const queueId of safeIds) {
-      try {
-        const data = await fetchJsonOrThrow(`/api/queue/${queueId}/apply-mbid-match`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            new_mbid: newMbid,
-            new_artist: newArtist,
-            new_album: newAlbum
-          })
-        });
-
-        if (data.success) {
-          updated += 1;
-        } else {
-          failed += 1;
-        }
-      } catch (err) {
-        console.warn(`Failed to update queue item ${queueId}:`, err);
-        failed += 1;
-      }
-    }
+    const updated = Number(data.updated_count || 0);
+    const failed = Number(data.failed_count || Math.max(safeIds.length - updated, 0));
 
     const modalEl = document.getElementById('folderQueueMatchModal');
     if (modalEl) {
