@@ -303,6 +303,7 @@ from helpers.logging_config import (
     log_unified, 
     log_info, 
     log_debug,
+    get_unified_log_targets,
     UNIFIED_LOG_PATH,
     INFO_LOG_PATH,
     DEBUG_LOG_PATH
@@ -579,11 +580,16 @@ def api_unified_log():
     configured_env_path = os.environ.get("UNIFIED_SCAN_LOG_PATH", "").strip()
     # Resolve active unified log path from logging config first, then env override,
     # then legacy /config fallback for backward compatibility.
-    path_candidates = [
+    path_candidates = []
+    try:
+        path_candidates.extend(get_unified_log_targets())
+    except Exception:
+        pass
+    path_candidates.extend([
         UNIFIED_LOG_PATH,
         configured_env_path,
         "/config/unified_scan.log",
-    ]
+    ])
     unified_log_path = next((p for p in path_candidates if p and os.path.exists(p)), None)
     if not unified_log_path:
         # Prefer the configured path as the canonical error reference.
@@ -616,6 +622,23 @@ def api_unified_log():
             log_verbose(f"[api_unified_log] Log file not found: {unified_log_path}")
             return jsonify({"error": f"Unified log file not found at {unified_log_path}", "lines": []}), 404
         log_lines = _read_last_lines(unified_log_path, lines)
+
+        # Fallback: if unified log is empty, surface scan-related lines from info log
+        # so dashboard remains useful during logger path/filter drift.
+        if not log_lines and os.path.exists(INFO_LOG_PATH):
+            info_tail = _read_last_lines(INFO_LOG_PATH, max(lines * 4, 400))
+            scan_markers = (
+                'scan',
+                'popularity',
+                'single detection',
+                'star ratings',
+                'navidrome import',
+                'import scan',
+            )
+            log_lines = [
+                row for row in info_tail
+                if any(marker in row.lower() for marker in scan_markers)
+            ][-lines:]
     except Exception as e:
         log_verbose(f"[api_unified_log] Exception reading file: {e}")
         return jsonify({"error": str(e), "lines": []}), 500

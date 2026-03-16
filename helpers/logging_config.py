@@ -216,6 +216,22 @@ def get_loggers():
     return unified_logger, info_logger, debug_logger
 
 
+def get_unified_log_targets():
+    """Return candidate file paths currently used by the unified logger."""
+    unified_logger, _, _ = get_loggers()
+    paths = []
+
+    for handler in unified_logger.handlers:
+        base = getattr(handler, 'baseFilename', None)
+        if base and base not in paths:
+            paths.append(base)
+
+    if UNIFIED_LOG_PATH not in paths:
+        paths.append(UNIFIED_LOG_PATH)
+
+    return paths
+
+
 def log_unified(msg, level=logging.INFO):
     """
     Log to unified_scan.log - basic operational messages only.
@@ -231,6 +247,21 @@ def log_unified(msg, level=logging.INFO):
         try:
             handler.flush()
         except Exception:
+            pass
+
+    # Safety net: append directly only when no handlers are present.
+    # This avoids duplicate lines when handlers are healthy.
+    if not unified_logger.handlers:
+        try:
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            level_name = logging.getLevelName(level)
+            line = f"{timestamp} [{level_name}] {msg}\n"
+            target_paths = get_unified_log_targets()
+            primary_path = target_paths[0] if target_paths else UNIFIED_LOG_PATH
+            with open(primary_path, 'a', encoding='utf-8') as fh:
+                fh.write(line)
+        except Exception:
+            # Never raise from logging path.
             pass
 
 
