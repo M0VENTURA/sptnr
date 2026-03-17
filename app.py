@@ -9645,7 +9645,7 @@ def album_detail(artist, album):
                              error=f"Error loading album: {str(e)}")
 
 
-def _run_artist_scan_pipeline(artist_name: str):
+def _run_artist_scan_pipeline(artist_name: str, force: bool = False):
     """
     Helper function to run the complete scan pipeline for an artist:
     1. Navidrome import (imports metadata from Navidrome)
@@ -9654,7 +9654,7 @@ def _run_artist_scan_pipeline(artist_name: str):
     All steps log to unified_scan.log and Recent Scans page.
     This is used by artist scan, album rescan, and track rescan routes.
     
-    Note: Force is always True for single artist/album scans to ensure fresh data.
+    Note: Album-level rescans remain force=True in the album pipeline.
     """
     # Write to file immediately to confirm function is called
     try:
@@ -9665,9 +9665,7 @@ def _run_artist_scan_pipeline(artist_name: str):
     
     log_unified(f"🎤 Artist scan pipeline started for: {artist_name}")
     try:
-        # Force is always True for single artist/album scans
-        force = True
-        log_unified(f"Force rescan: {force} (always enabled for single artist scans)")
+        log_unified(f"Force rescan: {force}")
         
         # Look up artist_id from cache; rebuild index if missing
         log_unified(f"Looking up artist_id for '{artist_name}' in database...")
@@ -10961,6 +10959,7 @@ def scan_start():
     
     scan_type = request.form.get("scan_type", "full")
     artist = request.form.get("artist")
+    force_artist_scan = str(request.form.get("force", "")).strip().lower() in ("1", "true", "yes", "on")
     
     logging.info(f"scan_start called: scan_type={scan_type}, artist={artist}")
     
@@ -10968,8 +10967,9 @@ def scan_start():
     if scan_type == "artist":
         if artist:
             logging.info(f"Starting artist scan thread for: {artist}")
-            threading.Thread(target=_run_artist_scan_pipeline, args=(artist,), daemon=True).start()
-            flash(f"Scan started for artist: {artist}", "success")
+            threading.Thread(target=_run_artist_scan_pipeline, args=(artist, force_artist_scan), daemon=True).start()
+            mode_label = "Forced" if force_artist_scan else "Changes Only"
+            flash(f"Scan started for artist: {artist} ({mode_label})", "success")
             return redirect(url_for("artist_detail", name=artist))
         else:
             logging.error("Artist scan requested but no artist name provided")
@@ -12607,6 +12607,7 @@ def api_scan_single_artist():
     try:
         data = request.json or {}
         artist = data.get("artist", "").strip()
+        force_artist_scan = bool(data.get("force", False))
         
         if not artist:
             return jsonify({"success": False, "error": "Artist name is required"}), 400
@@ -12616,7 +12617,7 @@ def api_scan_single_artist():
         
         def run_scan():
             try:
-                _run_artist_scan_pipeline(artist)
+                _run_artist_scan_pipeline(artist, force_artist_scan)
                 logging.info(f"✅ Scan completed for artist: {artist}")
             except Exception as e:
                 logging.error(f"❌ Scan failed for artist {artist}: {e}", exc_info=True)
@@ -12627,7 +12628,8 @@ def api_scan_single_artist():
         return jsonify({
             "success": True,
             "message": f"Scan started for artist: {artist}",
-            "artist": artist
+            "artist": artist,
+            "mode": "Forced" if force_artist_scan else "Changes Only"
         })
     
     except Exception as e:

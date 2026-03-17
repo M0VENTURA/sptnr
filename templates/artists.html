@@ -101,12 +101,13 @@
                             <td colspan="7" class="py-2 px-0">
                                 <div class="d-flex justify-content-between align-items-center px-3 py-2 bg-primary bg-opacity-10">
                                     <h5 class="mb-0 fw-bold">{{ letter_key }}</h5>
-                                    <div class="btn-group btn-group-sm" role="group">
-                                        <button class="btn btn-outline-primary btn-sm" onclick="scanLetterArtists('{{ letter_key }}', 'changes')" title="Scan changes only">
-                                            <i class="bi bi-lightning"></i> Scan (Changes)
-                                        </button>
-                                        <button class="btn btn-outline-warning btn-sm" onclick="scanLetterArtists('{{ letter_key }}', 'forced')" title="Full rescan">
-                                            <i class="bi bi-arrow-repeat"></i> Scan (Forced)
+                                    <div class="d-flex align-items-center gap-2">
+                                        <div class="form-check form-check-inline mb-0" title="Force full rescan from this letter">
+                                            <input class="form-check-input letter-force-check" type="checkbox" id="letter-force-{{ loop.index0 }}" data-letter="{{ letter_key }}">
+                                            <label class="form-check-label small" for="letter-force-{{ loop.index0 }}">Force</label>
+                                        </div>
+                                        <button class="btn btn-outline-primary btn-sm" onclick="scanLetterArtists('{{ letter_key }}')" title="Scan from this letter">
+                                            <i class="bi bi-lightning"></i> Scan
                                         </button>
                                     </div>
                                 </div>
@@ -359,8 +360,9 @@ function jumpToLetter(letter) {
 }
 
 // Start a full scan from the first artist in a letter section
-async function scanLetterArtists(letter, scanType) {
-    const fullScan = scanType === 'forced';
+async function scanLetterArtists(letter) {
+    const forceCheck = document.querySelector(`.letter-force-check[data-letter="${letter}"]`);
+    const fullScan = !!(forceCheck && forceCheck.checked);
     const scanMode = fullScan ? 'forced' : 'changes';
     const message = `Start ${fullScan ? 'Full' : 'Changes'} scan from letter "${letter}"?\\n\\nThis will query Navidrome for the first artist starting with "${letter}" and scan from there.`;
     

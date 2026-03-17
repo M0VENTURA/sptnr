@@ -53,9 +53,13 @@
       <a class="btn btn-outline-secondary" href="{{ url_for('artists') }}">
         <i class="bi bi-arrow-left"></i> <span class="d-none d-sm-inline">Back</span>
       </a>
-      <form action="{{ url_for('scan_start') }}" method="post">
+      <form action="{{ url_for('scan_start') }}" method="post" class="d-flex align-items-center gap-2">
         <input type="hidden" name="scan_type" value="artist">
         <input type="hidden" name="artist" value="{{ artist_name }}">
+        <div class="form-check form-check-inline mb-0" title="Force full rescan for this artist">
+          <input class="form-check-input" type="checkbox" id="artistForceScan" name="force" value="1">
+          <label class="form-check-label small" for="artistForceScan">Force</label>
+        </div>
         <button type="submit" class="btn btn-warning w-100" title="Full scan: Navidrome + Popularity + Singles">
           <i class="bi bi-play-circle"></i> <span class="d-none d-sm-inline">Scan Artist</span>
         </button>
