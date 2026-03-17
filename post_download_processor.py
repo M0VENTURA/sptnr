@@ -2,14 +2,14 @@
 """
 Post-Download Processor
 Automatically processes completed downloads from MusicBrainz/Discogs:
-- Converts FLAC files to 320kbps MP3 (via ffmpeg)
+- Optionally converts FLAC files to 320kbps MP3 when enabled in downloads conversion settings
 - Updates file metadata (track number, artist, album artist, year, disc number, album art)
 - Renames file to proper format: [track_number]. [artist] - [title].[ext]
 - Moves file to proper folder: [album_artist]/[year] - [album]/
 - Handles duplicates by moving to Duplicates/ subfolder
 
 Requirements:
-- ffmpeg: Required for FLAC to MP3 conversion (optional if only processing MP3 files)
+- ffmpeg: Required only when FLAC to MP3 conversion is enabled
 - mutagen: Required for embedding album art and updating metadata
 """
 
@@ -494,7 +494,7 @@ def update_file_metadata(file_path, metadata, clear_existing_tags=True):
 def rename_and_move_file(file_path, metadata):
     """
     Rename file and move to proper folder structure
-    FLAC files are automatically converted to 320kbps MP3
+    FLAC files are converted only when downloads conversion is enabled
     Uses manual file operations without external dependencies
     
     Args:
@@ -506,23 +506,10 @@ def rename_and_move_file(file_path, metadata):
     """
     try:
         music_dir = get_music_dir()
+        from download_queue_manager import get_import_destination_path, transfer_download_to_music
         
         # Get file extension
         ext = os.path.splitext(file_path)[1].lower()
-        
-        # Convert FLAC to MP3 320kbps if needed
-        if ext == '.flac':
-            logger.info(f"Converting FLAC to 320kbps MP3: {file_path}")
-            converted_path = convert_flac_to_mp3(file_path)
-            if not converted_path:
-                return {
-                    'success': False,
-                    'target_path': None,
-                    'error': 'FLAC to MP3 conversion failed'
-                }
-            file_path = converted_path
-            ext = '.mp3'
-            logger.info(f"Conversion complete: {file_path}")
         
         # Extract metadata with fallbacks - ensure proper string conversions
         track_number = str(metadata.get('track_number') or '00').zfill(2)
@@ -542,6 +529,8 @@ def rename_and_move_file(file_path, metadata):
         # Build filename: [track_number]. [artist] - [title].[ext]
         filename = sanitize_filename(f"{track_number}. {artist} - {title}{ext}")
         target_path = os.path.join(album_dir, filename)
+        target_path = get_import_destination_path(file_path, target_path)
+        filename = os.path.basename(target_path)
         
         # Handle duplicate filenames - move to Duplicates subfolder
         if os.path.exists(target_path) and os.path.abspath(file_path) != os.path.abspath(target_path):
@@ -560,9 +549,16 @@ def rename_and_move_file(file_path, metadata):
             filename = f"{base}_{counter}{extension}"
             logger.info(f"Duplicate detected - will save to Duplicates subfolder: {filename}")
         
-        # Move file
+        # Move or convert+move using the shared import-transfer logic.
         if os.path.abspath(file_path) != os.path.abspath(target_path):
-            shutil.move(file_path, target_path)
+            transfer_result = transfer_download_to_music(file_path, target_path)
+            if not transfer_result.get('success'):
+                return {
+                    'success': False,
+                    'target_path': None,
+                    'error': transfer_result.get('error') or 'Move failed'
+                }
+            target_path = transfer_result.get('target_path') or target_path
             logger.info(f"Moved: {file_path} -> {target_path}")
         else:
             logger.info(f"File already in correct location: {target_path}")

@@ -510,17 +510,13 @@ def transfer_download_to_music(source_path, dest_path, queue_id=None):
         return {"success": False, "target_path": None, "error": f"Source file not found: {source_path}"}
 
     settings = _read_download_conversion_settings()
+    final_dest_path = get_import_destination_path(source_path, dest_path, settings=settings)
     source_ext = os.path.splitext(source_path)[1].lower()
     convert_flac_to_mp3 = bool(
         settings.get("enabled")
         and settings.get("mode") == "flac_to_mp3"
         and source_ext == ".flac"
     )
-
-    final_dest_path = dest_path
-    if convert_flac_to_mp3:
-        dest_root, _ = os.path.splitext(dest_path)
-        final_dest_path = f"{dest_root}.mp3"
 
     os.makedirs(os.path.dirname(final_dest_path), exist_ok=True)
 
@@ -607,6 +603,23 @@ def transfer_download_to_music(source_path, dest_path, queue_id=None):
         "error": None,
         "converted": False,
     }
+
+
+def get_import_destination_path(source_path, dest_path, settings=None):
+    """Return the final import destination path after applying conversion settings."""
+    if settings is None:
+        settings = _read_download_conversion_settings()
+
+    source_ext = os.path.splitext(source_path or "")[1].lower()
+    should_convert = bool(
+        settings.get("enabled")
+        and settings.get("mode") == "flac_to_mp3"
+        and source_ext == ".flac"
+    )
+    if should_convert:
+        dest_root, _ = os.path.splitext(dest_path)
+        return f"{dest_root}.mp3"
+    return dest_path
 
 
 def retry_on_db_lock(max_retries=3, initial_delay=0.5):
@@ -6590,12 +6603,13 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
                 except Exception as conv_err:
                     logger.warning(f"[AUTO_MOVE] FLAC conversion error (non-fatal): {conv_err}")
 
-            # Get file extension
+            # Get file extension and build the destination path using shared
+            # conversion settings so auto-move matches all other import flows.
             ext = os.path.splitext(src)[1].lower()
-            
-            # Build filename with proper format
-            filename = _sanitize_path_component(f"{track_num}. {track_artist} - {track_title}{ext}")
-            dest = os.path.join(dest_dir, filename)
+            source_filename = _sanitize_path_component(f"{track_num}. {track_artist} - {track_title}{ext}")
+            dest = os.path.join(dest_dir, source_filename)
+            dest = get_import_destination_path(src, dest)
+            filename = os.path.basename(dest)
 
             # Avoid overwriting
             if os.path.exists(dest):
@@ -6626,7 +6640,10 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
                 )
 
             try:
-                shutil.move(src, dest)
+                transfer_result = transfer_download_to_music(src, dest, queue_id=track['id'])
+                if not transfer_result.get('success'):
+                    raise RuntimeError(transfer_result.get('error') or 'transfer failed')
+                final_dest = transfer_result.get('target_path') or dest
                 cursor.execute(
                     f"""
                     UPDATE download_queue
@@ -6635,11 +6652,11 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = {placeholder}
                     """,
-                    (dest, track['id'])
+                    (final_dest, track['id'])
                 )
                 result['moved'] += 1
                 logger.info(
-                    f"[AUTO_MOVE] Moved {filename} → {dest} "
+                    f"[AUTO_MOVE] Moved {filename} → {final_dest} "
                     f"(queue id={track['id']})"
                 )
             except Exception as move_err:
