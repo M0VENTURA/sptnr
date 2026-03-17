@@ -244,6 +244,9 @@ def ensure_album_artist_column():
         conn.close()
         return True
         
+    except RuntimeError as e:
+        logging.warning(f"⚠ Skipping album_artist migration: {e}")
+        return False
     except Exception as e:
         logging.error(f"✗ Error ensuring album_artist column exists: {e}", exc_info=True)
         # Don't fail app startup, but log the error
@@ -367,6 +370,9 @@ def ensure_musicbrainz_album_mbid_column():
 
         conn.close()
         return True
+    except RuntimeError as e:
+        logging.warning(f"⚠ Skipping musicbrainz_album_mbid migration: {e}")
+        return False
     except Exception as e:
         logging.error(f"Error ensuring musicbrainz_album_mbid column exists: {e}", exc_info=True)
         return False
@@ -475,6 +481,9 @@ def ensure_writer_column():
         conn.close()
         return True
         
+    except RuntimeError as e:
+        logging.warning(f"⚠ Skipping writer column migration: {e}")
+        return False
     except Exception as e:
         logging.error(f"✗ Error ensuring writer column exists: {e}", exc_info=True)
         # Don't fail app startup, but log the error
@@ -533,6 +542,9 @@ def ensure_cover_columns():
         conn.close()
         return True
 
+    except RuntimeError as e:
+        logging.warning(f"⚠ Skipping cover columns migration: {e}")
+        return False
     except Exception as e:
         logging.error(f"✗ Error ensuring cover columns exist: {e}", exc_info=True)
         return False
@@ -563,6 +575,9 @@ def ensure_track_release_year_column():
 
         conn.close()
         return True
+    except RuntimeError as e:
+        logging.warning(f"⚠ Skipping release_year migration: {e}")
+        return False
     except Exception as e:
         logging.error(f"✗ Error ensuring release_year column exists: {e}", exc_info=True)
         return False

@@ -34,22 +34,26 @@ def _is_postgres_connection(conn):
         return False
 
 
+def _is_postgres_configured():
+    """Return True when PostgreSQL connection settings are present in the environment."""
+    pg_dsn = (os.environ.get("DATABASE_URL") or os.environ.get("PG_DSN") or "").strip()
+    pg_host = (os.environ.get("PG_HOST") or "").strip()
+    pg_user = (os.environ.get("PG_USER") or "").strip()
+    pg_database = (os.environ.get("PG_DATABASE") or "").strip()
+    return bool(pg_dsn or (pg_host and pg_user and pg_database))
+
+
 def _get_db_connection():
     """Get database connection with proper row factory."""
-    try:
-        conn = psycopg2.connect(
-            host=os.environ.get("PG_HOST", "sptnr-postgres"),
-            user=os.environ.get("PG_USER", "sptnr"),
-            password=os.environ.get("PG_PASSWORD", ""),
-            dbname=os.environ.get("PG_DATABASE", "sptnr"),
-            port=int(os.environ.get("PG_PORT", "5432")),
-            connect_timeout=10,
-        )
-        return conn
-    except Exception as e:
-        logger.error(f"Failed to connect to database: {e}")
-        logger.error(f"PG_HOST={os.environ.get('PG_HOST')}, PG_DATABASE={os.environ.get('PG_DATABASE')}")
-        raise
+    conn = psycopg2.connect(
+        host=os.environ.get("PG_HOST", "sptnr-postgres"),
+        user=os.environ.get("PG_USER", "sptnr"),
+        password=os.environ.get("PG_PASSWORD", ""),
+        dbname=os.environ.get("PG_DATABASE", "sptnr"),
+        port=int(os.environ.get("PG_PORT", "5432")),
+        connect_timeout=10,
+    )
+    return conn
 
 
 def _ensure_columns_in_table(columns_to_add):
@@ -62,6 +66,10 @@ def _ensure_columns_in_table(columns_to_add):
     Returns:
         True on success, False on failure.
     """
+    if not _is_postgres_configured():
+        logger.debug("PostgreSQL not configured; skipping download_queue column migration")
+        return False
+
     try:
         conn = _get_db_connection()
         cursor = conn.cursor()
@@ -100,6 +108,9 @@ def _ensure_columns_in_table(columns_to_add):
         conn.close()
         return True
 
+    except psycopg2.Error as e:
+        logger.warning(f"Skipping download_queue column migration: PostgreSQL unavailable - {e}")
+        return False
     except Exception as e:
         logger.error(f"Error ensuring download_queue columns: {e}", exc_info=True)
         return False
