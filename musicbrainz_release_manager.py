@@ -422,6 +422,15 @@ class MusicBrainzReleaseManager:
                 releases = [mb_release_data]
             
             for release in releases:
+                # Extract release year from date field (format: YYYY-MM-DD or YYYY)
+                release_date = release.get('date', '')
+                release_year = None
+                if release_date:
+                    try:
+                        release_year = release_date[:4]  # Extract first 4 characters (year)
+                    except Exception:
+                        release_year = None
+                
                 media = release.get('media', [])
                 track_count = 0
                 
@@ -452,30 +461,30 @@ class MusicBrainzReleaseManager:
                         # Create search query (artist - title format, no album)
                         search_query = f"{track_artist} - {track_title}".strip()
                         
-                        # Add to download_queue
+                        # Add to download_queue with release year
                         if is_pg:
                             cursor.execute(f"""
                                 INSERT INTO download_queue
                                 (artist, album, title, search_query, source, status,
-                                 release_id, track_number, mb_release_download_id,
+                                 release_id, track_number, mb_release_download_id, year,
                                  created_at, updated_at)
-                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'soulseek', 'queued', {placeholder}, {placeholder}, {placeholder},
+                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'soulseek', 'queued', {placeholder}, {placeholder}, {placeholder}, {placeholder},
                                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                                 RETURNING id
                             """, (track_artist, album, track_title, search_query,
-                                  release_id, track_number, mb_release_db_id))
+                                  release_id, track_number, mb_release_db_id, release_year))
                             queue_row = cursor.fetchone()
                             queue_id = self._row_get(queue_row, 'id', 0, 0)
                         else:
                             cursor.execute(f"""
                                 INSERT INTO download_queue
                                 (artist, album, title, search_query, source, status,
-                                 release_id, track_number, mb_release_download_id,
+                                 release_id, track_number, mb_release_download_id, year,
                                  created_at, updated_at)
-                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'soulseek', 'queued', {placeholder}, {placeholder}, {placeholder},
+                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'soulseek', 'queued', {placeholder}, {placeholder}, {placeholder}, {placeholder},
                                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                             """, (track_artist, album, track_title, search_query,
-                                  release_id, track_number, mb_release_db_id))
+                                  release_id, track_number, mb_release_db_id, release_year))
                             queue_id = cursor.lastrowid
                         queue_ids.append(queue_id)
                         
