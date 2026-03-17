@@ -1398,7 +1398,7 @@ def check_track_exists_in_db(queue_item):
         if album:
             cursor.execute(
                 f"""
-                SELECT id, title, artist, album, duration FROM tracks
+                SELECT id, title, artist, album, duration, file_path FROM tracks
                 WHERE LOWER(artist) = LOWER({placeholder})
                   AND LOWER(title) = LOWER({placeholder})
                   AND LOWER(album) = LOWER({placeholder})
@@ -1410,7 +1410,7 @@ def check_track_exists_in_db(queue_item):
         else:
             cursor.execute(
                 f"""
-                SELECT id, title, artist, album, duration FROM tracks
+                SELECT id, title, artist, album, duration, file_path FROM tracks
                 WHERE LOWER(artist) = LOWER({placeholder})
                   AND LOWER(title) = LOWER({placeholder})
                   AND (file_path IS NULL OR file_path NOT LIKE '__queued_for_download__%')
@@ -1424,8 +1424,19 @@ def check_track_exists_in_db(queue_item):
 
         if row:
             matched = dict(row) if hasattr(row, "keys") else {
-                "id": row[0], "title": row[1], "artist": row[2], "album": row[3], "duration": row[4]
+                "id": row[0], "title": row[1], "artist": row[2], "album": row[3],
+                "duration": row[4], "file_path": row[5]
             }
+            db_file_path = matched.get("file_path") or ""
+            # If the tracks row has a file_path, verify it still exists on disk.
+            # Stale entries for deleted files must not block re-downloading.
+            if db_file_path and not db_file_path.startswith("__queued_for_download__"):
+                if not os.path.isfile(db_file_path):
+                    logger.debug(
+                        f"DB existence check: '{artist} - {title}' found in tracks table "
+                        f"but file no longer on disk ({db_file_path}); skipping"
+                    )
+                    return False, "", None
             track_id = matched.get("id")
             reason = f"Track '{artist} - {title}' already exists in local database (track ID {track_id})"
             return True, reason, matched

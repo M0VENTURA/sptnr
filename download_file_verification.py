@@ -343,11 +343,55 @@ def requeue_missing_file(queue_id):
         return False
 
 
+def _reset_matched_item_to_queued(queue_id):
+    """
+    Reset a 'matched' queue item back to 'queued' when its source file has
+    been deleted from disk.  This allows the track to be re-downloaded rather
+    than remaining permanently stuck in the 'matched' state with a dead
+    file reference.
+
+    Args:
+        queue_id: Download queue item ID
+
+    Returns:
+        bool: True if successful
+    """
+    try:
+        conn = _get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            UPDATE download_queue
+            SET status = 'queued',
+                file_path = NULL,
+                found_filename = NULL,
+                failure_reason = 'Matched file no longer exists on disk; re-queued for download'
+            WHERE id = %s AND status = 'matched'
+            """,
+            (queue_id,),
+        )
+        conn.commit()
+        conn.close()
+
+        logger.warning(
+            f"Queue {queue_id}: Matched file missing from disk — reset to 'queued' for re-download"
+        )
+        return True
+
+    except Exception as e:
+        logger.error(f"Error resetting matched item {queue_id}: {e}", exc_info=True)
+        return False
+
+
 def check_missing_moved_files(minutes_old=30):
     """
     Find files that were moved to /music but have since disappeared.
     Requeue them for retry.
-    
+
+    Also detects 'matched' queue items whose source file no longer exists on
+    disk and resets them to 'queued' so they can be re-downloaded.
+
     This runs periodically to catch filesystem issues or external deletions.
     
     Args:
@@ -381,22 +425,41 @@ def check_missing_moved_files(minutes_old=30):
 
         cursor.execute(select_sql, (cutoff_time,))
         old_files = cursor.fetchall()
+
+        # Also fetch 'matched' items that have a file_path set so we can verify
+        # the source file still exists.  These are items where the user confirmed
+        # a match but the file was subsequently deleted before being moved.
+        cursor.execute(
+            """
+            SELECT id, file_path, artist, album, title
+            FROM download_queue
+            WHERE status = 'matched'
+              AND TRIM(COALESCE(file_path, '')) != ''
+            """
+        )
+        matched_with_path = cursor.fetchall() or []
+
         conn.close()
 
-        if not old_files:
+        found_missing = 0
+        requeued = 0
+        total_checked = 0
+
+        if not old_files and not matched_with_path:
             return {
                 'checked': 0,
                 'found_missing': 0,
                 'requeued': 0,
-                'message': f'No files moved more than {minutes_old} minutes ago'
+                'message': (
+                    f'No files to verify (no imported files older than {minutes_old} min '
+                    f'and no matched items with paths)'
+                ),
             }
 
-        logger.info(
-            f"Checking {len(old_files)} files moved more than {minutes_old} minutes ago..."
-        )
-
-        found_missing = 0
-        requeued = 0
+        if old_files:
+            logger.info(
+                f"Checking {len(old_files)} files moved more than {minutes_old} minutes ago..."
+            )
 
         for item in old_files:
             queue_id = item.get('id')
@@ -407,6 +470,7 @@ def check_missing_moved_files(minutes_old=30):
             if not music_file_path:
                 continue
 
+            total_checked += 1
             # Check if file still exists
             if not os.path.isfile(music_file_path):
                 logger.warning(
@@ -418,11 +482,32 @@ def check_missing_moved_files(minutes_old=30):
                 if requeue_missing_file(queue_id):
                     requeued += 1
 
+        # Check matched items whose source file is gone
+        for item in matched_with_path:
+            queue_id = item.get('id')
+            file_path = item.get('file_path', '')
+            artist = item.get('artist', 'Unknown')
+            title = item.get('title', 'Unknown')
+
+            if not file_path:
+                continue
+
+            total_checked += 1
+            if not os.path.isfile(file_path):
+                logger.warning(
+                    f"Queue {queue_id}: Matched source file missing — "
+                    f"{artist} - {title} ({file_path})"
+                )
+                found_missing += 1
+
+                if _reset_matched_item_to_queued(queue_id):
+                    requeued += 1
+
         return {
-            'checked': len(old_files),
+            'checked': total_checked,
             'found_missing': found_missing,
             'requeued': requeued,
-            'message': f'Checked {len(old_files)}, found {found_missing} missing, requeued {requeued}'
+            'message': f'Checked {total_checked}, found {found_missing} missing, requeued {requeued}'
         }
 
     except Exception as e:

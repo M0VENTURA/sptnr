@@ -145,6 +145,34 @@ class QueueHardeningTests(unittest.TestCase):
         self.assertIn("startswith(_title_b)", mgr_text)
         self.assertIn("startswith(_title_a)", mgr_text)
 
+    def test_matched_items_file_existence_check_in_normalization(self):
+        """api_downloads_get_queue must reset 'matched' items whose file no longer exists."""
+        app_text = _read("app.py")
+        # The normalization block must query matched items with a file_path
+        self.assertIn("status = 'matched'", app_text)
+        self.assertIn("os.path.isfile(mrow_file_path)", app_text)
+        # And reset them to 'queued' when the file is gone
+        self.assertIn("Auto-corrected: matched file no longer exists on disk", app_text)
+
+    def test_check_track_exists_in_db_verifies_file_on_disk(self):
+        """check_track_exists_in_db must skip stale tracks whose file was deleted."""
+        processor_text = _read("queue_processor.py")
+        # Must select file_path from tracks so it can be verified
+        self.assertIn("file_path FROM tracks", processor_text)
+        # Must check os.path.isfile before returning True
+        self.assertIn("os.path.isfile(db_file_path)", processor_text)
+        # Must return False when file is missing
+        self.assertIn("file no longer on disk", processor_text)
+
+    def test_check_missing_moved_files_handles_matched_items(self):
+        """check_missing_moved_files must also reset matched items with missing files."""
+        verif_text = _read("download_file_verification.py")
+        # Must check matched items with file_path set
+        self.assertIn("status = 'matched'", verif_text)
+        self.assertIn("_reset_matched_item_to_queued", verif_text)
+        # Must define the helper that resets them
+        self.assertIn("def _reset_matched_item_to_queued", verif_text)
+
 
 class FilenameMatchLogicTests(unittest.TestCase):
     """Unit tests for _filename_matches_queue_item (no DB/network needed)."""

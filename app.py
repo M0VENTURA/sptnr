@@ -18750,6 +18750,44 @@ def api_downloads_get_queue():
                 )
                 normalized_count += cursor.rowcount or 0
 
+                # Safety net: reset 'matched' items whose source file no longer exists
+                # on disk.  This prevents queue entries from showing "Match confirmed and
+                # ready to move to music" indefinitely when the file was deleted after
+                # the match was confirmed.
+                try:
+                    cursor.execute(
+                        """
+                        SELECT id, file_path, found_filename
+                        FROM download_queue
+                        WHERE status = 'matched'
+                          AND TRIM(COALESCE(file_path, '')) != ''
+                        """
+                    )
+                    matched_with_path = cursor.fetchall() or []
+                    for mrow in matched_with_path:
+                        mrow_id = _row_get(mrow, 'id', 0)
+                        mrow_file_path = _row_get(mrow, 'file_path', 1) or ''
+                        if mrow_file_path and not os.path.isfile(mrow_file_path):
+                            cursor.execute(
+                                f"""
+                                UPDATE download_queue
+                                SET status = 'queued',
+                                    file_path = NULL,
+                                    found_filename = NULL,
+                                    failure_reason = 'Auto-corrected: matched file no longer exists on disk',
+                                    updated_at = CURRENT_TIMESTAMP
+                                WHERE id = {placeholder}
+                                """,
+                                (mrow_id,),
+                            )
+                            normalized_count += 1
+                            logging.info(
+                                f"[QUEUE_NORMALIZE] Reset matched item {mrow_id} to queued "
+                                f"— file no longer on disk: {mrow_file_path}"
+                            )
+                except Exception as matched_norm_err:
+                    logging.debug(f"[QUEUE_NORMALIZE] Skipped matched-file normalization: {matched_norm_err}")
+
                 if normalized_count:
                     conn.commit()
                     logging.info(
