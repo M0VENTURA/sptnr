@@ -866,7 +866,7 @@ def process_pending_completed_items(limit=10):
             AND release_source IS NOT NULL
             AND (imported_at IS NULL OR imported_at = '')
             ORDER BY updated_at ASC
-            LIMIT ?
+            LIMIT %s
         """, (limit,))
         
         items = [dict(row) for row in cursor.fetchall()]
@@ -888,10 +888,10 @@ def process_pending_completed_items(limit=10):
                     cursor.execute("""
                         UPDATE download_queue
                         SET status = 'imported',
-                            file_path = ?,
+                            file_path = %s,
                             imported_at = CURRENT_TIMESTAMP,
                             updated_at = CURRENT_TIMESTAMP
-                        WHERE id = ?
+                        WHERE id = %s
                     """, (result['target_path'], queue_id))
                     conn.commit()
                     

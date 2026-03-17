@@ -17203,6 +17203,54 @@ def _fetch_album_art_from_discogs(artist_name: str, album_name: str) -> bytes | 
     return None
 
 
+_pg_album_art_schema_ensured = False
+
+
+def _ensure_album_art_pg_schema(conn, cursor) -> None:
+    """Ensure album_art binary schema and UNIQUE(artist_name, album_name) constraint exist
+    in PostgreSQL.  Runs at most once per process lifetime.
+
+    In older deployments the table was created without the UNIQUE constraint, which
+    causes every ON CONFLICT upsert to fail with:
+    "there is no unique or exclusion constraint matching the ON CONFLICT specification".
+    """
+    global _pg_album_art_schema_ensured
+    if _pg_album_art_schema_ensured:
+        return
+    try:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS album_art (
+                artist_name TEXT NOT NULL,
+                album_name TEXT NOT NULL,
+                image_data BYTEA,
+                image_mime_type TEXT,
+                source TEXT,
+                downloaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        # Remove duplicate rows (keep the most recently inserted ctid) before
+        # creating the unique index so it does not fail on existing duplicates.
+        cursor.execute("""
+            DELETE FROM album_art a
+            USING album_art b
+            WHERE a.ctid < b.ctid
+              AND a.artist_name = b.artist_name
+              AND a.album_name = b.album_name
+        """)
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_album_art_artist_album
+            ON album_art (artist_name, album_name)
+        """)
+        conn.commit()
+        _pg_album_art_schema_ensured = True
+    except Exception as _schema_err:
+        logging.debug(f"[ALBUM_ART] album_art schema ensure failed: {_schema_err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+
 def _save_album_art_to_db(artist_name: str, album_name: str, image_data: bytes, source: str = "unknown", mime_type: str = "image/jpeg") -> bool:
     """
     Save album art image data to the local database.
@@ -17226,6 +17274,7 @@ def _save_album_art_to_db(artist_name: str, album_name: str, image_data: bytes, 
         is_pg = _is_postgres_connection(conn)
 
         if is_pg:
+            _ensure_album_art_pg_schema(conn, cursor)
             cursor.execute("""
                 INSERT INTO album_art 
                 (artist_name, album_name, image_data, image_mime_type, source, downloaded_at)

@@ -2125,6 +2125,54 @@ def fetch_album_art_url_from_musicbrainz(artist: str, album: str) -> str | None:
         return None
 
 
+_album_art_pg_schema_ensured = False
+
+
+def _ensure_album_art_pg_schema(conn, cursor) -> None:
+    """Ensure album_art table exists with correct binary schema and a UNIQUE constraint
+    on (artist_name, album_name) for PostgreSQL.  Runs at most once per process lifetime.
+
+    The table may have been created without the UNIQUE constraint in older deployments,
+    which causes every ON CONFLICT upsert to fail with
+    "there is no unique or exclusion constraint matching the ON CONFLICT specification".
+    """
+    global _album_art_pg_schema_ensured
+    if _album_art_pg_schema_ensured:
+        return
+    try:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS album_art (
+                artist_name TEXT NOT NULL,
+                album_name TEXT NOT NULL,
+                image_data BYTEA,
+                image_mime_type TEXT,
+                source TEXT,
+                downloaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        # Remove duplicate rows (keep the most recently inserted ctid) before
+        # adding a unique index, so the CREATE INDEX does not fail on existing data.
+        cursor.execute("""
+            DELETE FROM album_art a
+            USING album_art b
+            WHERE a.ctid < b.ctid
+              AND a.artist_name = b.artist_name
+              AND a.album_name = b.album_name
+        """)
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_album_art_artist_album
+            ON album_art (artist_name, album_name)
+        """)
+        conn.commit()
+        _album_art_pg_schema_ensured = True
+    except Exception as _schema_err:
+        log_debug(f"[ALBUM_ART] album_art schema ensure failed: {_schema_err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+
 def download_and_save_album_art(artist: str, album: str, art_url: str, conn=None, cursor=None, source: str = "unknown") -> bool:
     """
     Download album art image from URL and save to database.
@@ -2170,6 +2218,7 @@ def download_and_save_album_art(artist: str, album: str, art_url: str, conn=None
         placeholder = "%s" if is_pg else "?"
         
         if is_pg:
+            _ensure_album_art_pg_schema(conn, cursor)
             cursor.execute("""
                 INSERT INTO album_art 
                 (artist_name, album_name, image_data, image_mime_type, source, downloaded_at)
