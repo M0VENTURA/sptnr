@@ -1064,11 +1064,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
 document.addEventListener('DOMContentLoaded', function() {
     const savedUser = localStorage.getItem('selectedNavidromeUser');
+    const launchOnStartup = JSON.parse('{{ "true" if launch_on_startup else "false" }}');
     if (savedUser && document.getElementById('userSelector')) {
         document.getElementById('userSelector').value = savedUser;
     }
 
-    _renderLaunchStartupButton({{ 'true' if launch_on_startup else 'false' }});
+    _renderLaunchStartupButton(launchOnStartup);
 
     if (!firstFullScanDone) {
         const lockMessage = 'Locked until first full Navidrome scan completes';
@@ -1095,7 +1096,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // ===== Scan Controls =====
 
-const firstFullScanDone = {{ 'true' if first_full_scan_done else 'false' }};
+const firstFullScanDone = JSON.parse('{{ "true" if first_full_scan_done else "false" }}');
 
 function startSelectedScan(restart = false) {
     const scanType = document.getElementById('scanTypeSelect').value;
