@@ -2580,8 +2580,9 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
             ]
 
         rel_safe = os.path.join(*path_parts)
-        rel_root, rel_ext = os.path.splitext(rel_safe)
-        if rel_ext:
+        _, rel_ext = os.path.splitext(rel_safe)
+        valid_audio_exts = {'.mp3', '.flac', '.m4a', '.ogg', '.wav', '.aac', '.opus'}
+        if rel_ext and rel_ext.lower() in valid_audio_exts:
             dest_path = os.path.join(music_root, rel_safe)
         else:
             dest_path = os.path.join(music_root, f"{rel_safe}{ext}")
@@ -2960,8 +2961,9 @@ def rename_track_file(track_id, db_conn, music_dir=None):
 
         ext = os.path.splitext(resolved_file_path)[1].lower()
         relative_joined = os.path.join(*parts)
-        base_name, ext_from_format = os.path.splitext(relative_joined)
-        if not ext_from_format:
+        _, ext_from_format = os.path.splitext(relative_joined)
+        valid_audio_exts = {'.mp3', '.flac', '.m4a', '.ogg', '.wav', '.aac', '.opus'}
+        if not ext_from_format or ext_from_format.lower() not in valid_audio_exts:
             relative_joined = relative_joined + ext
 
         new_path = os.path.join(music_root, relative_joined)
