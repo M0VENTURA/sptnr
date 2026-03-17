@@ -204,6 +204,12 @@ class FilenameMatchLogicTests(unittest.TestCase):
         item = {"artist": "Radiohead", "title": "Creep", "album": "Pablo Honey"}
         self.assertFalse(fn("totally unrelated track name here.mp3", item))
 
+    def test_variant_suffix_does_not_match_plain_title(self):
+        """Queue title without variant must not match a '(mix/edit/live)' filename variant."""
+        fn = self._get_func()
+        item = {"artist": "Aiden", "title": "The Last Sunrise", "album": "REV"}
+        self.assertFalse(fn("07. Aiden - The Last Sunrise (Dusk mix).flac", item))
+
 
 class SiblingDownloadCleanupTests(unittest.TestCase):
     """Unit tests for _cleanup_sibling_downloads (no DB/network needed)."""

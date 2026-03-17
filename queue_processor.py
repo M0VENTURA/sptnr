@@ -54,6 +54,10 @@ _CONFIRMED_MATCH_DURATION_TOLERANCE_SECONDS = 10
 # Minimum title similarity for prefix-like title pairs (e.g. "World So Cold"
 # vs "World So Cold Intro").  See _metadata_matches_queue_item for details.
 _PREFIX_TITLE_MIN = 0.9
+_TITLE_VARIANT_TOKENS = {
+    "acoustic", "demo", "edit", "instrumental", "intro", "live",
+    "mix", "radio", "remaster", "remastered", "remix", "version",
+}
 
 # Minimum similarity score below which a file's artist/title tags are considered
 # a hard mismatch against the queue item.  Scores this low mean it's a completely
@@ -173,6 +177,25 @@ def _tokenize_meaningful(value):
     return [t for t in normalized.split() if len(t) >= 3 and t not in stop_words]
 
 
+def _extract_title_variant_tokens(value):
+    """Return known version/variant tokens from a title-like string."""
+    tokens = set(_normalize_match_text(value).split())
+    return tokens & _TITLE_VARIANT_TOKENS
+
+
+def _title_variants_are_compatible(expected_title, candidate_title):
+    """Require variant labels (mix/live/edit/etc.) to agree between titles."""
+    expected_variants = _extract_title_variant_tokens(expected_title)
+    candidate_variants = _extract_title_variant_tokens(candidate_title)
+
+    if expected_variants or candidate_variants:
+        if not expected_variants or not candidate_variants:
+            return False
+        if expected_variants.isdisjoint(candidate_variants):
+            return False
+    return True
+
+
 def _normalize_duration_seconds(value):
     """Normalize duration values to whole seconds."""
     if value in (None, "", 0, "0"):
@@ -266,9 +289,8 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     if title_tokens:
         shared_title_tokens = sum(1 for tok in title_tokens if tok in filename_tokens)
         title_token_ratio = shared_title_tokens / len(title_tokens)
-        title_variant_tokens = {"acoustic", "demo", "edit", "instrumental", "intro", "live", "mix", "radio", "remaster", "remastered", "remix", "version"}
-        requested_variants = set(title_tokens) & title_variant_tokens
-        candidate_variants = filename_tokens & title_variant_tokens
+        requested_variants = set(title_tokens) & _TITLE_VARIANT_TOKENS
+        candidate_variants = filename_tokens & _TITLE_VARIANT_TOKENS
 
         if requested_variants or candidate_variants:
             if not requested_variants or not candidate_variants:
@@ -675,6 +697,10 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
     if artist_score < 0.55 or title_score < 0.55:
         return None
 
+    # Reject explicit variant mismatches like "Song" vs "Song (Dusk Mix)".
+    if not _title_variants_are_compatible(queue_title, file_title):
+        return False
+
     # Protect against "prefix" false-positives: when one title is merely a
     # leading substring of the other (e.g. "World So Cold" vs "World So Cold
     # Intro"), the similarity score is deceptively high (~0.81) even though
@@ -717,6 +743,9 @@ def _filename_matches_queue_item(filename, queue_item):
         title = (queue_item.get('title') or '').lower().strip()
 
         if not artist or not title:
+            return False
+
+        if not _title_variants_are_compatible(title, basename_test):
             return False
 
         artist_in_path = artist in filename_test

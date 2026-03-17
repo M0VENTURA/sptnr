@@ -109,6 +109,31 @@ _DOWNLOADS_CHECK_MIN_INTERVAL_SECONDS = 20
 # combined threshold of 0.68 is too lenient for these prefix cases because the
 # album similarity boost can push a clearly mismatched pair well above it.
 _PREFIX_TITLE_MIN = 0.9
+_TITLE_VARIANT_TOKENS = {
+    "acoustic", "demo", "edit", "instrumental", "intro", "live",
+    "mix", "radio", "remaster", "remastered", "remix", "version",
+}
+
+
+def _extract_title_variant_tokens(value):
+    """Extract known title-variant tokens from free-form text."""
+    if not value:
+        return set()
+    tokens = set(re.sub(r"[^a-z0-9]+", " ", str(value).lower()).split())
+    return tokens & _TITLE_VARIANT_TOKENS
+
+
+def _title_variants_are_compatible(expected_title, candidate_title):
+    """Require version labels (mix/live/edit/etc.) to align between titles."""
+    expected_variants = _extract_title_variant_tokens(expected_title)
+    candidate_variants = _extract_title_variant_tokens(candidate_title)
+
+    if expected_variants or candidate_variants:
+        if not expected_variants or not candidate_variants:
+            return False
+        if expected_variants.isdisjoint(candidate_variants):
+            return False
+    return True
 
 # In-memory event queue for displaying logs on UI (keep last 200 events)
 _queue_events = []
@@ -3278,6 +3303,9 @@ def _metadata_matches_queue_item(file_meta, queue_item, threshold=0.68, file_pat
     if artist_score < _FIELD_MIN or title_score < _FIELD_MIN:
         return False
 
+    if not _title_variants_are_compatible(queue_title, file_title):
+        return False
+
     # Protect against "prefix" false-positives: when one title is merely a
     # leading substring of the other (e.g. "World So Cold" vs "World So Cold
     # Intro"), the similarity score is deceptively high (~0.81) even though
@@ -3927,6 +3955,9 @@ def is_match(filename, queue_item):
         
         # Require artist/title presence first; this is a fallback only.
         if not artist or not title:
+            return False
+
+        if not _title_variants_are_compatible(title, filename_test):
             return False
 
         artist_in_path = artist in filename_test
