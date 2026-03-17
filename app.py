@@ -6142,20 +6142,51 @@ def api_import_release():
         return jsonify({"error": "Artist, release_id, and title are required"}), 400
     
     try:
-        # Fetch release details from MusicBrainz including media and recordings
-        mb_url = f"https://musicbrainz.org/ws/2/release/{release_id}"
         headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
-        response = requests.get(
-            mb_url,
-            params={
+
+        def _fetch_release_payload(mbid):
+            """Fetch a release payload by release MBID, with release-group fallback."""
+            mb_url = f"https://musicbrainz.org/ws/2/release/{mbid}"
+            params = {
                 "fmt": "json",
-                "inc": "recordings+artist-rels+release-groups"
-            },
-            headers=headers,
-            timeout=15
-        )
-        response.raise_for_status()
-        release_data = response.json()
+                "inc": "recordings+artist-credits+release-groups"
+            }
+            response = requests.get(mb_url, params=params, headers=headers, timeout=15)
+            if response.status_code == 404:
+                # Some UI paths provide a release-group MBID. Resolve it to a concrete
+                # release and retry with that MBID.
+                search_resp = requests.get(
+                    "https://musicbrainz.org/ws/2/release",
+                    params={
+                        "fmt": "json",
+                        "release-group": mbid,
+                        "limit": 1,
+                    },
+                    headers=headers,
+                    timeout=15,
+                )
+                search_resp.raise_for_status()
+                releases = (search_resp.json() or {}).get("releases") or []
+                if not releases:
+                    return None, mbid
+
+                resolved_release_id = releases[0].get("id")
+                if not resolved_release_id:
+                    return None, mbid
+
+                retry_resp = requests.get(
+                    f"https://musicbrainz.org/ws/2/release/{resolved_release_id}",
+                    params=params,
+                    headers=headers,
+                    timeout=15,
+                )
+                retry_resp.raise_for_status()
+                return retry_resp.json(), resolved_release_id
+
+            response.raise_for_status()
+            return response.json(), mbid
+
+        release_data, resolved_release_id = _fetch_release_payload(release_id)
         
         if not release_data:
             return jsonify({"error": "Release not found on MusicBrainz"}), 404
@@ -6166,8 +6197,6 @@ def api_import_release():
             return jsonify({"error": "Release has no media/tracks"}), 400
         
         conn = get_db()
-        cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
         imported_count = 0
         
         # Get year from release-date
@@ -6188,7 +6217,7 @@ def api_import_release():
                 
                 # Build track record
                 track_record = {
-                    "id": recording.get("id", f"{release_id}_{disc_number}_{track_idx}"),
+                    "id": recording.get("id", f"{resolved_release_id}_{disc_number}_{track_idx}"),
                     "title": track_title,
                     "artist": artist,
                     "album": title,
@@ -6214,19 +6243,36 @@ def api_import_release():
         
         conn.close()
         
-        logging.info(f"[IMPORT] Imported {imported_count} tracks from '{title}' by {artist} (MB ID: {release_id})")
+        logging.info(
+            f"[IMPORT] Imported {imported_count} tracks from '{title}' by {artist} "
+            f"(requested MB ID: {release_id}, resolved release MB ID: {resolved_release_id})"
+        )
         
         return jsonify({
             "success": True,
             "message": f"Imported {imported_count} tracks from '{title}'",
             "tracks_imported": imported_count,
             "artist": artist,
-            "album": title
+            "album": title,
+            "release_id": resolved_release_id,
         })
         
     except requests.exceptions.HTTPError as e:
+        status_code = e.response.status_code if e.response is not None else 500
+        if status_code == 404:
+            logging.warning(
+                f"[IMPORT] MusicBrainz release not found for release_id={release_id}; "
+                f"artist='{artist}', title='{title}'"
+            )
+            return jsonify({
+                "error": "Release not found on MusicBrainz",
+                "release_id": release_id,
+                "artist": artist,
+                "title": title,
+            }), 404
+
         logging.error(f"[IMPORT] MusicBrainz API error: {e}")
-        return jsonify({"error": f"MusicBrainz API error: {e.response.status_code}"}), 500
+        return jsonify({"error": f"MusicBrainz API error: {status_code}"}), 500
     except Exception as e:
         logging.error(f"[IMPORT] Error importing release: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
