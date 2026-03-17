@@ -19769,8 +19769,24 @@ def api_queue_add_batch():
     """Add multiple songs/albums to download queue in a single request"""
     try:
         from download_queue_manager import add_to_queue
+        import download_queue_manager as dqm
         import uuid
         allowed_sources = {"soulseek", "qbittorrent"}
+
+        def _run_queue_schema_self_heal_once(already_ran):
+            """Best-effort runtime schema repair for stale DBs during batch queue adds."""
+            if already_ran:
+                return True
+            try:
+                from migrations.startup_queue_columns_fast import main as startup_schema_migration_main
+                startup_schema_migration_main()
+            except Exception as migration_err:
+                logging.warning(f"[QUEUE_BATCH] Startup schema self-heal failed: {migration_err}")
+            try:
+                dqm._queue_schema_checked = False
+            except Exception:
+                pass
+            return True
         
         data = request.get_json()
         if not data or 'items' not in data:
@@ -19807,7 +19823,9 @@ def api_queue_add_batch():
         skipped_count = 0
         failed_count = 0
         failed_tracks = []
+        failed_details = []
         skipped_tracks = []
+        schema_self_heal_ran = False
         
         for item_data in items:
             artist = item_data.get('artist', '').strip() if item_data.get('artist') else ''
@@ -19887,6 +19905,19 @@ def api_queue_add_batch():
                                    duration=duration, disc_number=disc_number,
                                    release_mbid=release_mbid, recording_mbid=recording_mbid,
                                    cover_art_url=cover_art_url)
+
+                # Self-heal path: add_to_queue can return None on schema drift.
+                # Run startup schema migration once, then retry this item.
+                if not item:
+                    schema_self_heal_ran = _run_queue_schema_self_heal_once(schema_self_heal_ran)
+                    item = add_to_queue(artist, title, album, source, priority,
+                                       import_group=import_group_id, import_type=import_type,
+                                       track_number=track_number, album_artist=album_artist,
+                                       year=year, release_id=release_id, release_source=release_source,
+                                       duration=duration, disc_number=disc_number,
+                                       release_mbid=release_mbid, recording_mbid=recording_mbid,
+                                       cover_art_url=cover_art_url)
+
                 if item:
                     outcome = str(item.get('_queue_outcome', 'added')).strip().lower() if hasattr(item, 'get') else 'added'
                     if outcome == 'duplicate' or bool(item.get('already_queued')):
@@ -19897,20 +19928,81 @@ def api_queue_add_batch():
                 else:
                     failed_count += 1
                     failed_tracks.append(title)
+                    failed_details.append({
+                        "artist": artist,
+                        "title": title,
+                        "reason": "add_to_queue returned no result"
+                    })
             except Exception as e:
                 failed_count += 1
                 failed_tracks.append(title)
                 logging.error(f"Error adding track '{title}' to queue: {e}")
+                failed_details.append({
+                    "artist": artist,
+                    "title": title,
+                    "reason": str(e)
+                })
+
+                # Retry once after schema self-heal for known DB drift errors.
+                err_text = str(e).lower()
+                if (
+                    ("column" in err_text or "download_queue" in err_text or "tracks" in err_text or "transaction" in err_text)
+                    and not schema_self_heal_ran
+                ):
+                    try:
+                        schema_self_heal_ran = _run_queue_schema_self_heal_once(schema_self_heal_ran)
+                        retry_item = add_to_queue(artist, title, album, source, priority,
+                                                  import_group=import_group_id, import_type=import_type,
+                                                  track_number=track_number, album_artist=album_artist,
+                                                  year=year, release_id=release_id, release_source=release_source,
+                                                  duration=duration, disc_number=disc_number,
+                                                  release_mbid=release_mbid, recording_mbid=recording_mbid,
+                                                  cover_art_url=cover_art_url)
+                        if retry_item:
+                            failed_count -= 1
+                            failed_tracks.pop()
+                            failed_details.pop()
+                            outcome = str(retry_item.get('_queue_outcome', 'added')).strip().lower() if hasattr(retry_item, 'get') else 'added'
+                            if outcome == 'duplicate' or bool(retry_item.get('already_queued')):
+                                skipped_count += 1
+                                skipped_tracks.append(title)
+                            else:
+                                added_count += 1
+                    except Exception as retry_err:
+                        logging.error(f"Retry after schema self-heal failed for '{title}': {retry_err}")
+
+        all_failed = failed_count > 0 and added_count == 0 and skipped_count == 0
+        success_value = not all_failed
+
+        if all_failed:
+            logging.error(
+                f"[QUEUE_BATCH] All {failed_count} batch add items failed (import_group={import_group_id}, import_type={import_type})"
+            )
+            return jsonify({
+                "success": False,
+                "error": "Failed to add any items to queue",
+                "added": added_count,
+                "skipped": skipped_count,
+                "failed": failed_count,
+                "failed_tracks": failed_tracks,
+                "failed_details": failed_details,
+                "import_group": import_group_id,
+                "import_type": import_type,
+                "schema_self_heal_ran": schema_self_heal_ran,
+                "message": "Failed to add any items to queue"
+            }), 500
         
         return jsonify({
-            "success": True,
+            "success": success_value,
             "added": added_count,
             "skipped": skipped_count,
             "failed": failed_count,
             "failed_tracks": failed_tracks,
+            "failed_details": failed_details,
             "skipped_tracks": skipped_tracks,
             "import_group": import_group_id,
             "import_type": import_type,
+            "schema_self_heal_ran": schema_self_heal_ran,
             "message": (
                 f"Added {added_count} items to queue"
                 + (f", skipped {skipped_count}" if skipped_count > 0 else "")
