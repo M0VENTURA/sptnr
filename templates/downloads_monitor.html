@@ -3662,12 +3662,12 @@ async function retryQueueItem(queueId) {
   }
 }
 
-async function _pollMoveToMusicTask(taskId, timeoutMs = 180000) {
+async function _pollMoveToMusicTask(taskId, queueId, timeoutMs = 180000) {
   const start = Date.now();
   const pollIntervalMs = 1000;
 
   while (Date.now() - start < timeoutMs) {
-    const task = await fetchJsonOrThrow(`/api/queue/move-to-music/status/${taskId}`);
+    const task = await fetchJsonOrThrow(`/api/queue/move-to-music/status/${taskId}?queue_id=${encodeURIComponent(queueId)}`);
     if (task.status === 'completed' || task.status === 'failed') {
       return task;
     }
@@ -3696,7 +3696,7 @@ async function moveMatchedToMusic(queueId) {
       return;
     }
 
-    const task = await _pollMoveToMusicTask(startData.task_id);
+    const task = await _pollMoveToMusicTask(startData.task_id, queueId);
     const result = task.result || {};
 
     if (task.status === 'completed' && result.success) {

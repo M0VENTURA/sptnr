@@ -21257,7 +21257,89 @@ def api_queue_move_to_music_status(task_id):
     """Return status for a background move-to-music request."""
     task = _move_to_music_task_get(task_id)
     if not task:
-        return jsonify({"success": False, "error": "Task not found"}), 404
+        queue_id = request.args.get("queue_id", type=int)
+        if queue_id is not None:
+            try:
+                conn = get_db()
+                cursor = conn.cursor()
+                cursor.execute("SELECT status, file_path, matched_file_path, music_file_path FROM download_queue WHERE id = %s", (queue_id,))
+                row = cursor.fetchone()
+                conn.close()
+
+                if not row:
+                    return jsonify({
+                        "success": True,
+                        "task_id": task_id,
+                        "queue_id": queue_id,
+                        "status": "completed",
+                        "status_code": 200,
+                        "result": {
+                            "success": True,
+                            "message": "Move completed (queue entry no longer exists)."
+                        },
+                        "recovered": True,
+                    })
+
+                if isinstance(row, (list, tuple)):
+                    item_status = row[0]
+                    file_path_value = row[1] if len(row) > 1 else None
+                    matched_file_path_value = row[2] if len(row) > 2 else None
+                    music_file_path_value = row[3] if len(row) > 3 else None
+                else:
+                    item_status = row.get("status")
+                    file_path_value = row.get("file_path")
+                    matched_file_path_value = row.get("matched_file_path")
+                    music_file_path_value = row.get("music_file_path")
+
+                candidate_paths = [file_path_value, matched_file_path_value, music_file_path_value]
+                has_music_path = any(str(path or "").replace("\\", "/").startswith("/music/") for path in candidate_paths)
+
+                if item_status in {"failed", "error"}:
+                    return jsonify({
+                        "success": False,
+                        "task_id": task_id,
+                        "queue_id": queue_id,
+                        "status": "failed",
+                        "status_code": 500,
+                        "result": {
+                            "success": False,
+                            "error": "Move task failed"
+                        },
+                        "recovered": True,
+                    })
+
+                if item_status in {"imported", "in_collection"} or has_music_path:
+                    return jsonify({
+                        "success": True,
+                        "task_id": task_id,
+                        "queue_id": queue_id,
+                        "status": "completed",
+                        "status_code": 200,
+                        "result": {
+                            "success": True,
+                            "message": "Move completed"
+                        },
+                        "recovered": True,
+                    })
+
+                return jsonify({
+                    "success": None,
+                    "task_id": task_id,
+                    "queue_id": queue_id,
+                    "status": "running",
+                    "message": "Move still running",
+                    "recovered": True,
+                })
+            except Exception as recovery_err:
+                logging.warning(f"[MOVE_TASK] Failed to recover missing task state for {task_id}: {recovery_err}")
+
+        return jsonify({
+            "success": None,
+            "task_id": task_id,
+            "status": "running",
+            "message": "Task state unavailable; still processing",
+            "recovered": True,
+        })
     return jsonify(task)
 
 
