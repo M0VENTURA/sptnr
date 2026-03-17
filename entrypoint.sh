@@ -6,12 +6,11 @@ set -e
 
 echo "=== SPTNR Starting ==="
 
-# Run pending database migrations before starting services
-echo "Running database migrations..."
-python3 migrations/add_release_tracking_columns.py      && echo "✓ release_tracking" || echo "⚠ release_tracking migration failed (non-fatal)"
-python3 migrations/add_download_queue_mbid_columns.py   && echo "✓ mbid_columns"      || echo "⚠ mbid_columns migration failed (non-fatal)"
-python3 migrations/add_queue_copy_tracking_columns.py   && echo "✓ copy_tracking"     || echo "⚠ copy_tracking migration failed (non-fatal)"
-echo "Migrations complete."
+# Run a lightweight startup migration before starting services.
+# This avoids importing app.py during boot (which can delay startup significantly).
+echo "Running startup queue migration..."
+python3 migrations/startup_queue_columns_fast.py || echo "⚠ startup queue migration failed (non-fatal)"
+echo "Startup queue migration complete."
 
 echo "Starting queue processor and Flask web application..."
 
