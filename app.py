@@ -18799,22 +18799,38 @@ def api_downloads_get_queue():
                 try:
                     cursor.execute(
                         """
-                        SELECT id, file_path, found_filename
+                        SELECT id, file_path, matched_file_path, music_file_path, found_filename
                         FROM download_queue
                         WHERE status = 'matched'
-                          AND TRIM(COALESCE(file_path, '')) != ''
+                          AND (
+                            TRIM(COALESCE(file_path, '')) != ''
+                            OR TRIM(COALESCE(matched_file_path, '')) != ''
+                            OR TRIM(COALESCE(music_file_path, '')) != ''
+                          )
                         """
                     )
                     matched_with_path = cursor.fetchall() or []
                     for mrow in matched_with_path:
                         mrow_id = _row_get(mrow, 'id', 0)
                         mrow_file_path = _row_get(mrow, 'file_path', 1) or ''
-                        if mrow_file_path and not os.path.isfile(mrow_file_path):
+                        mrow_matched_file_path = _row_get(mrow, 'matched_file_path', 2) or ''
+                        mrow_music_file_path = _row_get(mrow, 'music_file_path', 3) or ''
+                        existing_match_paths = [
+                            path_value for path_value in (
+                                mrow_file_path,
+                                mrow_matched_file_path,
+                                mrow_music_file_path,
+                            )
+                            if path_value and os.path.isfile(path_value)
+                        ]
+                        if not existing_match_paths:
                             cursor.execute(
                                 f"""
                                 UPDATE download_queue
-                                SET status = 'queued',
+                                SET status = 'unmatched',
                                     file_path = NULL,
+                                    matched_file_path = NULL,
+                                    music_file_path = NULL,
                                     found_filename = NULL,
                                     failure_reason = 'Auto-corrected: matched file no longer exists on disk',
                                     updated_at = CURRENT_TIMESTAMP
@@ -18824,8 +18840,8 @@ def api_downloads_get_queue():
                             )
                             normalized_count += 1
                             logging.info(
-                                f"[QUEUE_NORMALIZE] Reset matched item {mrow_id} to queued "
-                                f"— file no longer on disk: {mrow_file_path}"
+                                f"[QUEUE_NORMALIZE] Reset matched item {mrow_id} to unmatched "
+                                f"— no valid matched file remains on disk"
                             )
                 except Exception as matched_norm_err:
                     logging.debug(f"[QUEUE_NORMALIZE] Skipped matched-file normalization: {matched_norm_err}")
@@ -22645,6 +22661,9 @@ def api_queue_reset_match(queue_id):
                 mb_matched_year = NULL,
                 mb_last_match_at = NULL,
                 status = 'unmatched',
+                matched_file_path = NULL,
+                music_file_path = NULL,
+                found_filename = NULL,
                 in_collection = 0,
                 collection_track_id = NULL,
                 collection_matched_at = NULL,
