@@ -4,7 +4,7 @@
 
 set -e
 
-echo "=== SPTNR Starting ==="
+echo "=== Popularr Starting ==="
 
 # Run a lightweight startup migration before starting services.
 # This avoids importing app.py during boot (which can delay startup significantly).
