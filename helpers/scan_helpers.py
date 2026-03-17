@@ -656,7 +656,7 @@ def pre_import_sync_album_artists(artist_id: str = None) -> dict:
                         cursor.execute(f"""
                             INSERT INTO artists (id, name)
                             VALUES ({placeholder}, {placeholder})
-                            ON CONFLICT (name) DO NOTHING
+                            ON CONFLICT DO NOTHING
                         """, (artist_name.lower().replace(' ', '_'), artist_name))
                     else:
                         cursor.execute("""
