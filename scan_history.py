@@ -9,7 +9,7 @@ import sqlite3
 from datetime import datetime
 import os
 import time
-from helpers.db_utils import get_db_connection, _is_postgres_connection
+from helpers.db_utils import get_db_connection, _is_postgres_connection, is_postgres_configured
 
 
 def _get_db_path():
@@ -53,6 +53,21 @@ def _get_db_path():
 
 
 DB_PATH = _get_db_path()
+
+
+def _db_target_description() -> str:
+    """Describe the configured database target for clearer error logging."""
+    if is_postgres_configured():
+        pg_dsn = (os.environ.get("DATABASE_URL") or os.environ.get("PG_DSN") or "").strip()
+        if pg_dsn:
+            return "PostgreSQL via DATABASE_URL/PG_DSN"
+
+        pg_host = (os.environ.get("PG_HOST") or "").strip() or "<unset>"
+        pg_port = (os.environ.get("PG_PORT") or "5432").strip()
+        pg_database = (os.environ.get("PG_DATABASE") or "sptnr").strip()
+        return f"PostgreSQL {pg_host}:{pg_port}/{pg_database}"
+
+    return f"SQLite {DB_PATH}"
 
 
 def _placeholder(is_pg: bool) -> str:
@@ -229,7 +244,7 @@ def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: in
                 time.sleep(wait_time)
                 continue
             logging.error(f"Error logging album scan for '{artist}' - '{album}': {e}")
-            logging.error(f"DB_PATH={DB_PATH}")
+            logging.error(f"DB target={_db_target_description()}")
             return
 
 def was_album_scanned(artist: str, album: str, scan_type: str, days_threshold: int = None) -> bool:
@@ -302,7 +317,7 @@ def was_album_scanned(artist: str, album: str, scan_type: str, days_threshold: i
         return result is not None
     except Exception as e:
         logging.error(f"Error checking album scan history: {e}")
-        logging.error(f"DB_PATH={DB_PATH}")
+        logging.error(f"DB target={_db_target_description()}")
         # Return False on error to ensure albums will be scanned even if there's a database error,
         # preventing data loss at the cost of potential duplicate scans
         return False
@@ -385,5 +400,5 @@ def get_recent_album_scans(limit: int = 10):
         return scans
     except Exception as e:
         logging.error(f"Error getting recent scans: {e}")
-        logging.error(f"DB_PATH={DB_PATH}")
+        logging.error(f"DB target={_db_target_description()}")
         return []
