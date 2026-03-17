@@ -13,6 +13,7 @@ import os
 import re
 import requests
 import secrets
+import subprocess
 import sqlite3
 import sys
 import time
@@ -2562,6 +2563,26 @@ def run_processor(interval=30):
     """Run queue processor loop"""
     logger.info("=== Queue Processor Started ===")
     logger.info(f"Processing interval: {interval}s")
+
+    # Self-heal queue schema even when process startup bypasses entrypoint.sh.
+    try:
+        migration_script = os.path.join(os.path.dirname(__file__), "migrations", "startup_queue_columns_fast.py")
+        if os.path.exists(migration_script):
+            proc = subprocess.run(
+                [sys.executable, migration_script],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+            if proc.stdout:
+                logger.info(f"[STARTUP_MIGRATION] {proc.stdout.strip()}")
+            if proc.stderr:
+                logger.debug(f"[STARTUP_MIGRATION] stderr: {proc.stderr.strip()}")
+        else:
+            logger.debug("[STARTUP_MIGRATION] startup_queue_columns_fast.py not found, skipping")
+    except Exception as migration_err:
+        logger.warning(f"[STARTUP_MIGRATION] Could not run startup queue migration: {migration_err}")
     
     client = get_slskd_client()
     if not client:
