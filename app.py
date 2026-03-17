@@ -9927,7 +9927,7 @@ def _auto_detect_album_type(artist_name: str, album_name: str):
         log_unified(f"Warning: Failed to auto-detect album type: {e}")
 
 
-def _run_album_scan_pipeline(artist_name: str, album_name: str):
+def _run_album_scan_pipeline(artist_name: str, album_name: str, force: bool = False):
     """
     Helper function to run the complete scan pipeline for a specific album:
     1. Navidrome import (imports metadata from Navidrome for the album)
@@ -9940,9 +9940,7 @@ def _run_album_scan_pipeline(artist_name: str, album_name: str):
         artist_name: Name of the artist
         album_name: Name of the album to scan
     
-    Note: Force is always True for single album scans. When a user explicitly requests
-    a rescan for a specific album, we want to ensure we fetch fresh data from external
-    sources and update all metadata, even if the album was recently scanned.
+    Note: Force is optional and controlled by the caller/UI toggle.
     """
     album_display = f"{artist_name} - {album_name}"
     log_unified(f"💿 Album scan pipeline started for: {album_display}")
@@ -9991,8 +9989,8 @@ def _run_album_scan_pipeline(artist_name: str, album_name: str):
             # Artist/album exists as track artist only - skip Navidrome import, go straight to popularity scan
             log_unified(f"Album '{album_display}' uses track artist (e.g., from Various Artists compilation)")
             log_unified(f"Skipping Navidrome import (Step 1/2) - album metadata already imported via album artist")
-            log_unified(f"Step 2/2: Running popularity scan for album '{album_display}' (force=True)")
-            popularity_scan(verbose=True, force=True, artist_filter=artist_name, album_filter=album_name)
+            log_unified(f"Step 2/2: Running popularity scan for album '{album_display}' (force={force})")
+            popularity_scan(verbose=True, force=force, artist_filter=artist_name, album_filter=album_name)
             
             # Step 3: Auto-detect and set album type
             log_unified(f"Step 3/3: Auto-detecting album type for '{album_display}'")
@@ -10000,13 +9998,12 @@ def _run_album_scan_pipeline(artist_name: str, album_name: str):
         else:
             # Normal flow: artist_id found, run both steps
             # Step 1: Import metadata from Navidrome for this specific album
-            # Force is always True for single album scans to ensure fresh data
-            log_unified(f"Step 1/2: Navidrome import for album '{album_display}' (force=True)")
-            scan_artist_to_db(artist_name, artist_id, verbose=True, force=True, album_filter=album_name)
+            log_unified(f"Step 1/2: Navidrome import for album '{album_display}' (force={force})")
+            scan_artist_to_db(artist_name, artist_id, verbose=True, force=force, album_filter=album_name)
 
             # Step 2: Run popularity scan for this specific album (includes singles detection and star rating)
-            log_unified(f"Step 2/2: Running popularity scan for album '{album_display}' (force=True)")
-            popularity_scan(verbose=True, force=True, artist_filter=artist_name, album_filter=album_name)
+            log_unified(f"Step 2/2: Running popularity scan for album '{album_display}' (force={force})")
+            popularity_scan(verbose=True, force=force, artist_filter=artist_name, album_filter=album_name)
         
         # Step 3: Auto-detect and set album type based on singles detection
         log_unified(f"Step 3/3: Auto-detecting album type for '{album_display}'")
@@ -10583,9 +10580,11 @@ def album_rescan(artist, album):
     from urllib.parse import unquote
     artist = unquote(artist)
     album = unquote(album)
+    force_album_scan = str(request.form.get("force", "")).strip().lower() in ("1", "true", "yes", "on")
 
-    threading.Thread(target=_run_album_scan_pipeline, args=(artist, album), daemon=True).start()
-    flash(f"Rescan started for album '{album}' by {artist}", "info")
+    threading.Thread(target=_run_album_scan_pipeline, args=(artist, album, force_album_scan), daemon=True).start()
+    mode_label = "Forced" if force_album_scan else "Changes Only"
+    flash(f"Rescan started for album '{album}' by {artist} ({mode_label})", "info")
     return redirect(url_for("album_detail", artist=artist, album=album))
 
 
