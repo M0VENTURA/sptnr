@@ -4297,15 +4297,60 @@ def popularity_scan(
                     log_info(f'⏭️ SINGLES-ONLY MODE: Skipping popularity scan for "{artist} - {album}"')
                     log_info(f'🔍 Will proceed directly to singles detection')
                 else:
-                    # Check if album was already scanned (unless force rescan is enabled)
-                    if not (FORCE_RESCAN or force) and was_album_scanned(artist, album, 'popularity', album_skip_days):
-                        log_unified(f'Popularity Scan - Skipping album "{album}" (scanned within last {album_skip_days} days)')
-                        log_info(f'⏱️ Album "{artist} - {album}" was already scanned within {album_skip_days} days - POPULARITY SKIP')
-                        skipped_count += 1
-                        skip_popularity_for_album = True
-                    
-                    log_unified(f'Popularity Scan - Scanning Album {album} ({album_num}/{len(albums)})')
-                    log_info(f'🔎 Starting POPULARITY SCAN for album: "{artist} - {album}"')
+                        # ------------------------------------------------------------------
+                        # Fast "skip-if-unchanged" check: when not forced and not a targeted
+                        # album rescan, skip the entire album when nothing has changed.
+                        #
+                        # Rules:
+                        #   * ALL tracks have popularity_score > 0  → skip popularity scoring
+                        #   * ALL tracks have single_detection_last_updated IS NOT NULL → skip singles too
+                        #   * Either condition missing → run the appropriate pass
+                        #   * force=True or album_filter set → bypass this check entirely
+                        # ------------------------------------------------------------------
+                        if not (FORCE_RESCAN or force) and not album_filter:
+                            try:
+                                total_in_album = len(album_tracks)
+                                if total_in_album > 0:
+                                    track_ids_in_album = [t["id"] for t in album_tracks]
+                                    id_placeholders = ", ".join([placeholder] * len(track_ids_in_album))
+                                    cursor.execute(
+                                        f"""
+                                        SELECT
+                                            COUNT(*) AS total,
+                                            SUM(CASE WHEN popularity_score > 0 THEN 1 ELSE 0 END) AS scored,
+                                            SUM(CASE WHEN single_detection_last_updated IS NOT NULL THEN 1 ELSE 0 END) AS singles_assessed
+                                        FROM tracks
+                                        WHERE id IN ({id_placeholders})
+                                        """,
+                                        track_ids_in_album,
+                                    )
+                                    check_row = cursor.fetchone()
+                                    if check_row:
+                                        scored_count = int(row_get(check_row, "scored", 0) or 0)
+                                        singles_assessed = int(row_get(check_row, "singles_assessed", 0) or 0)
+                                        all_scored = scored_count >= total_in_album
+                                        all_singles_assessed = singles_assessed >= total_in_album
+                                        if all_scored and all_singles_assessed:
+                                            log_unified(f'Popularity Scan - Skipping album "{album}" (no changes detected)')
+                                            log_info(f'Album "{artist} - {album}" unchanged — all {total_in_album} tracks scored & singles assessed, skipping')
+                                            skipped_count += 1
+                                            continue
+                                        elif all_scored:
+                                            # Popularity is current but some singles haven't been assessed yet
+                                            log_info(f'Album "{artist} - {album}" popularity unchanged — running singles detection only')
+                                            skip_popularity_for_album = True
+                            except Exception as _unch_err:
+                                log_debug(f"skip-if-unchanged check failed for '{artist} - {album}': {_unch_err}")
+
+                        # Check if album was already scanned (unless force rescan is enabled)
+                        if not (FORCE_RESCAN or force) and was_album_scanned(artist, album, 'popularity', album_skip_days):
+                            log_unified(f'Popularity Scan - Skipping album "{album}" (scanned within last {album_skip_days} days)')
+                            log_info(f'⏱️ Album "{artist} - {album}" was already scanned within {album_skip_days} days - POPULARITY SKIP')
+                            skipped_count += 1
+                            skip_popularity_for_album = True
+
+                        log_unified(f'Popularity Scan - Scanning Album {album} ({album_num}/{len(albums)})')
+                        log_info(f'🔎 Starting POPULARITY SCAN for album: "{artist} - {album}"')
                 
                 # ALBUM TYPE DETECTION - Do this once per album at the start
                 # Detect album type from MusicBrainz/auto-detection and apply to all tracks
