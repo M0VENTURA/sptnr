@@ -243,6 +243,52 @@
 
         <div class="col-12"><hr class="my-2"></div>
         <div class="col-12">
+          <h6 class="mb-2"><i class="bi bi-shield-check"></i> Download Quality Filter</h6>
+          <small class="text-muted d-block mb-2">Restrict accepted downloads by format and bitrate (for example, FLAC or MP3 320kbps only).</small>
+        </div>
+        <div class="col-12 col-md-6">
+          <div class="form-check form-switch mb-2">
+            <input class="form-check-input" type="checkbox" id="downloads_quality_enabled" {% if config.get('downloads', {}).get('quality_filter', {}).get('enabled', False) %}checked{% endif %}>
+            <label class="form-check-label" for="downloads_quality_enabled"><strong>Enable Quality Filter</strong></label>
+          </div>
+        </div>
+        <div class="col-12 col-md-6">
+          <div class="form-check form-switch mb-2">
+            <input class="form-check-input" type="checkbox" id="downloads_quality_reject_others" {% if config.get('downloads', {}).get('quality_filter', {}).get('reject_others', True) %}checked{% endif %}>
+            <label class="form-check-label" for="downloads_quality_reject_others"><strong>Reject Non-matching Files</strong></label>
+            <small class="d-block text-muted">When enabled, files that do not match selected priorities are skipped.</small>
+          </div>
+        </div>
+        <div class="col-12 col-md-4">
+          <div class="form-check form-switch mb-2">
+            {% set qf_priorities = config.get('downloads', {}).get('quality_filter', {}).get('priorities', []) %}
+            {% set qf_ns = namespace(mp3=false, flac=false) %}
+            {% for p in qf_priorities %}
+              {% if p.get('format') == 'mp3' and (p.get('bitrate_kbps') == 320 or p.get('bitrate_kbps') == '320') %}
+                {% set qf_ns.mp3 = true %}
+              {% endif %}
+              {% if p.get('format') == 'flac' %}
+                {% set qf_ns.flac = true %}
+              {% endif %}
+            {% endfor %}
+            <input class="form-check-input" type="checkbox" id="downloads_quality_allow_mp3_320" {% if qf_ns.mp3 or not qf_priorities %}checked{% endif %}>
+            <label class="form-check-label" for="downloads_quality_allow_mp3_320"><strong>Allow MP3 320kbps</strong></label>
+          </div>
+        </div>
+        <div class="col-12 col-md-4">
+          <div class="form-check form-switch mb-2">
+            <input class="form-check-input" type="checkbox" id="downloads_quality_allow_flac" {% if qf_ns.flac or not qf_priorities %}checked{% endif %}>
+            <label class="form-check-label" for="downloads_quality_allow_flac"><strong>Allow FLAC</strong></label>
+          </div>
+        </div>
+        <div class="col-12 col-md-4">
+          <label class="form-label">MP3 Bitrate Tolerance (kbps)</label>
+          <input type="number" class="form-control" id="downloads_quality_bitrate_tolerance" min="0" max="32" step="1" value="{{ config.get('downloads', {}).get('quality_filter', {}).get('bitrate_tolerance', 5) }}">
+          <div class="form-text">Allowed variance around 320kbps (for example, 315-325 with tolerance 5).</div>
+        </div>
+
+        <div class="col-12"><hr class="my-2"></div>
+        <div class="col-12">
           <h6 class="mb-2"><i class="bi bi-arrow-repeat"></i> Download Conversion</h6>
           <small class="text-muted d-block mb-2">Optional conversion while importing to music library. Current implementation supports FLAC → MP3.</small>
         </div>
@@ -989,6 +1035,21 @@ function buildConfigObject() {
     downloads: {
       folder: getValue('downloads_folder', ''),
       file_name_format: getValue('downloads_file_name_format', '{album_artist}/{year} - {album}/{track_number}. {artist} - {title}'),
+      quality_filter: (() => {
+        const priorities = [];
+        if (getChecked('downloads_quality_allow_mp3_320', true)) {
+          priorities.push({ format: 'mp3', bitrate_kbps: 320 });
+        }
+        if (getChecked('downloads_quality_allow_flac', true)) {
+          priorities.push({ format: 'flac', bitrate_kbps: null });
+        }
+        return {
+          enabled: getChecked('downloads_quality_enabled', false),
+          reject_others: getChecked('downloads_quality_reject_others', true),
+          bitrate_tolerance: parseInt(getValue('downloads_quality_bitrate_tolerance', '5')) || 5,
+          priorities: priorities
+        };
+      })(),
       conversion: {
         enabled: getChecked('downloads_conversion_enabled', false),
         mode: getValue('downloads_conversion_mode', 'flac_to_mp3'),

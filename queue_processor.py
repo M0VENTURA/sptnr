@@ -112,6 +112,16 @@ DOWNLOADS_DIR = resolve_downloads_dir()
 # Soulseek queue downloads are intentionally restricted to these formats.
 _SLSKD_ALLOWED_EXTENSIONS = ('.mp3', '.flac')
 
+_DEFAULT_DOWNLOAD_QUALITY_FILTER = {
+    'enabled': False,
+    'reject_others': True,
+    'bitrate_tolerance': 5,
+    'priorities': [
+        {'format': 'mp3', 'bitrate_kbps': 320},
+        {'format': 'flac', 'bitrate_kbps': None},
+    ],
+}
+
 # Cache album-search response snapshots briefly so sibling tracks in the same
 # queued release can reuse results instead of re-querying Soulseek each time.
 _ALBUM_SEARCH_CACHE_TTL_SECONDS = 600
@@ -366,10 +376,112 @@ def _is_allowed_download_extension(filename):
     return str(filename or '').lower().endswith(_SLSKD_ALLOWED_EXTENSIONS)
 
 
+def _load_download_quality_filter():
+    """Read downloads.quality_filter from config with safe defaults."""
+    cfg = dict(_DEFAULT_DOWNLOAD_QUALITY_FILTER)
+    try:
+        config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+        if not os.path.exists(config_path):
+            config_path = "/config/config.yml"
+        if not os.path.exists(config_path):
+            return cfg
+
+        with open(config_path, 'r', encoding='utf-8') as f:
+            loaded = yaml.safe_load(f) or {}
+
+        qf = (loaded.get('downloads') or {}).get('quality_filter') or {}
+        cfg['enabled'] = bool(qf.get('enabled', cfg['enabled']))
+        cfg['reject_others'] = bool(qf.get('reject_others', cfg['reject_others']))
+        try:
+            cfg['bitrate_tolerance'] = int(qf.get('bitrate_tolerance', cfg['bitrate_tolerance']))
+        except Exception:
+            cfg['bitrate_tolerance'] = _DEFAULT_DOWNLOAD_QUALITY_FILTER['bitrate_tolerance']
+
+        priorities = qf.get('priorities')
+        if isinstance(priorities, list) and priorities:
+            cfg['priorities'] = priorities
+
+    except Exception as e:
+        logger.debug(f"[QUALITY-FILTER] Could not read quality filter config: {e}")
+
+    return cfg
+
+
+def _extract_candidate_bitrate_kbps(file_info):
+    """Extract bitrate for a Soulseek candidate when available."""
+    bitrate_raw = None
+    if isinstance(file_info, dict):
+        bitrate_raw = (
+            file_info.get('bitrate_kbps')
+            or file_info.get('bitrateKbps')
+            or file_info.get('bitrate')
+            or file_info.get('bitRate')
+        )
+    else:
+        bitrate_raw = (
+            getattr(file_info, 'bitrate_kbps', None)
+            or getattr(file_info, 'bitrateKbps', None)
+            or getattr(file_info, 'bitrate', None)
+            or getattr(file_info, 'bitRate', None)
+        )
+
+    try:
+        if bitrate_raw is None:
+            return None
+        bitrate = float(bitrate_raw)
+        if bitrate <= 0:
+            return None
+        # Some APIs report bps instead of kbps.
+        if bitrate > 10000:
+            bitrate = bitrate / 1000.0
+        return int(round(bitrate))
+    except Exception:
+        return None
+
+
+def _candidate_matches_quality_filter(file_info, filename, quality_filter):
+    """Return True when candidate file passes configured quality rules."""
+    if not quality_filter.get('enabled'):
+        return True
+
+    priorities = quality_filter.get('priorities') or []
+    if not priorities:
+        return True
+
+    ext = os.path.splitext(str(filename or '').lower())[1].lstrip('.')
+    if not ext:
+        return not quality_filter.get('reject_others', True)
+
+    bitrate_kbps = _extract_candidate_bitrate_kbps(file_info)
+    tolerance = int(quality_filter.get('bitrate_tolerance', 5) or 0)
+
+    format_rules = [p for p in priorities if str(p.get('format') or '').lower() == ext]
+    if not format_rules:
+        return not quality_filter.get('reject_others', True)
+
+    for rule in format_rules:
+        target_bitrate = rule.get('bitrate_kbps')
+        if target_bitrate in (None, ''):
+            return True
+        try:
+            target = int(target_bitrate)
+        except Exception:
+            continue
+
+        if bitrate_kbps is None:
+            continue
+
+        if abs(bitrate_kbps - target) <= tolerance:
+            return True
+
+    return not quality_filter.get('reject_others', True)
+
+
 def _pick_best_candidate_from_responses(responses, queue_item):
     """Select the best allowed Soulseek candidate for a queue item."""
     best_result = None
     best_score = 0.0
+    quality_filter = _load_download_quality_filter()
 
     for resp_idx, resp in enumerate(responses or []):
         resp_files = _extract_response_files(resp)
@@ -387,6 +499,11 @@ def _pick_best_candidate_from_responses(responses, queue_item):
         for file_info in resp_files:
             filename = _candidate_filename(file_info)
             if not _is_allowed_download_extension(filename):
+                continue
+            if not _candidate_matches_quality_filter(file_info, filename, quality_filter):
+                logger.debug(
+                    f"Queue {queue_item.get('id', 'unknown')}: skipped by quality filter: {filename}"
+                )
                 continue
 
             size = _candidate_size(file_info)

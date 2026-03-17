@@ -1206,6 +1206,15 @@ def setup():
                     "file_name_format": "{album_artist}/{year} - {album}/{track_number}. {artist} - {title}",
                     "incomplete_folder": "/downloads/Soulseek/Incomplete",
                     "monitor_incomplete": True,
+                    "quality_filter": {
+                        "enabled": False,
+                        "reject_others": True,
+                        "bitrate_tolerance": 5,
+                        "priorities": [
+                            {"format": "mp3", "bitrate_kbps": 320},
+                            {"format": "flac", "bitrate_kbps": None}
+                        ]
+                    },
                     "conversion": {
                         "enabled": False,
                         "mode": "flac_to_mp3",
@@ -2633,6 +2642,15 @@ def _baseline_config():
         "downloads": {
             "folder": "/downloads/Music",
             "file_name_format": "{album_artist}/{year} - {album}/{track_number}. {artist} - {title}",
+            "quality_filter": {
+                "enabled": False,
+                "reject_others": True,
+                "bitrate_tolerance": 5,
+                "priorities": [
+                    {"format": "mp3", "bitrate_kbps": 320},
+                    {"format": "flac", "bitrate_kbps": None}
+                ]
+            },
             "conversion": {
                 "enabled": False,
                 "mode": "flac_to_mp3",
