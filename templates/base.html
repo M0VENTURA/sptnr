@@ -104,11 +104,23 @@
       background: rgba(18, 18, 18, 0.95) !important;
     }
 
+    .navbar > .container-fluid {
+      padding-left: max(0.75rem, env(safe-area-inset-left));
+      padding-right: max(0.75rem, env(safe-area-inset-right));
+      flex-wrap: nowrap;
+    }
+
     .navbar-brand {
       font-weight: 700;
       font-size: 1.5rem;
       color: var(--spotify-green) !important;
       letter-spacing: -0.5px;
+      margin-right: 0.5rem;
+    }
+
+    .navbar-toggler {
+      margin-left: auto;
+      flex-shrink: 0;
     }
 
     .navbar-brand i {
@@ -617,6 +629,10 @@
 
       .navbar-brand {
         font-size: 1.2rem;
+        max-width: calc(100vw - 92px);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
 
       .nav-link {
