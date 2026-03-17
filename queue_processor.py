@@ -1196,8 +1196,9 @@ def update_queue_status(queue_id, status, **kwargs):
         
         # Add any additional fields to update
         for key, value in kwargs.items():
-            if key in ['found_filename', 'file_path', 'failure_reason', 'retry_count', 
-                       'last_failure_time', 'source_id', 'source']:
+            if key in ['found_filename', 'file_path', 'failure_reason', 'retry_count',
+                       'last_failure_time', 'source_id', 'source', 'matched_file_path',
+                       'in_collection', 'collection_track_id']:
                 updates.append(f"{key} = {placeholder}")
                 params.append(value)
         
@@ -1669,39 +1670,78 @@ def _cleanup_sibling_downloads(queue_item, keep_path):
         )
 
 
+def _find_location_match_in_music(queue_item):
+    """Return /music path when queue source path maps to an existing library file."""
+    source_path = (queue_item.get('file_path') or '').strip()
+    if not source_path:
+        return None
+
+    try:
+        abs_source = os.path.abspath(source_path)
+        abs_downloads = os.path.abspath(DOWNLOADS_DIR)
+        rel = os.path.relpath(abs_source, abs_downloads)
+    except Exception:
+        return None
+
+    if not rel or rel.startswith('..'):
+        return None
+
+    music_root = os.path.abspath(os.environ.get('MUSIC_ROOT', '/music'))
+    candidate = os.path.abspath(os.path.join(music_root, rel))
+    if os.path.exists(candidate):
+        return candidate
+    return None
+
+
 def search_and_download(queue_id, queue_item, client):
     """Search Soulseek for queue item and download top result"""
     try:
         search_query = queue_item['search_query']
 
-        # Pre-download existence checks: skip download if the track already exists
-        # in the local database or in Navidrome (catches items indexed there but not
-        # yet scanned into the local DB).
-        db_exists, db_reason, db_matched = check_track_exists_in_db(queue_item)
-        if db_exists:
-            logger.info(f"Queue {queue_id}: ⏭️  Skipping download — {db_reason}")
-            if _is_confirmed_collection_match(queue_item, db_matched):
-                logger.info(
-                    f"Queue {queue_id}: 🎯 Confirmed full match in local DB "
-                    f"(title+artist+album+duration) — auto-cleaning queue and /downloads"
-                )
-                _delete_confirmed_collection_item(queue_id, queue_item)
-            else:
-                update_queue_status(queue_id, 'in_collection', failure_reason=db_reason)
+        # Location-first collection check: only trust concrete path matches.
+        location_match = _find_location_match_in_music(queue_item)
+        if location_match:
+            logger.info(f"Queue {queue_id}: ⏭️  Skipping download — location match found in /music: {location_match}")
+            update_queue_status(
+                queue_id,
+                'in_collection',
+                in_collection=1,
+                matched_file_path=location_match,
+                failure_reason=f"Location match in /music: {location_match}"
+            )
             return False
 
-        nav_exists, nav_reason, nav_matched = check_track_exists_in_navidrome(queue_item)
-        if nav_exists:
-            logger.info(f"Queue {queue_id}: ⏭️  Skipping download — {nav_reason}")
-            if _is_confirmed_collection_match(queue_item, nav_matched):
-                logger.info(
-                    f"Queue {queue_id}: 🎯 Confirmed full match in Navidrome "
-                    f"(title+artist+album+duration) — auto-cleaning queue and /downloads"
-                )
-                _delete_confirmed_collection_item(queue_id, queue_item)
-            else:
-                update_queue_status(queue_id, 'in_collection', failure_reason=nav_reason)
-            return False
+        # By default we avoid metadata-only DB/Navidrome matching because it can
+        # produce ambiguous "Matched" rows with no usable file path details.
+        location_only_matching = os.environ.get('SPTNR_LOCATION_MATCH_ONLY', '1').strip() != '0'
+        if not location_only_matching:
+            db_exists, db_reason, db_matched = check_track_exists_in_db(queue_item)
+            if db_exists:
+                logger.info(f"Queue {queue_id}: ⏭️  Skipping download — {db_reason}")
+                if _is_confirmed_collection_match(queue_item, db_matched):
+                    logger.info(
+                        f"Queue {queue_id}: 🎯 Confirmed full match in local DB "
+                        f"(title+artist+album+duration) — auto-cleaning queue and /downloads"
+                    )
+                    _delete_confirmed_collection_item(queue_id, queue_item)
+                else:
+                    update_queue_status(queue_id, 'in_collection', failure_reason=db_reason)
+                return False
+
+            nav_exists, nav_reason, nav_matched = check_track_exists_in_navidrome(queue_item)
+            if nav_exists:
+                logger.info(f"Queue {queue_id}: ⏭️  Skipping download — {nav_reason}")
+                if _is_confirmed_collection_match(queue_item, nav_matched):
+                    logger.info(
+                        f"Queue {queue_id}: 🎯 Confirmed full match in Navidrome "
+                        f"(title+artist+album+duration) — auto-cleaning queue and /downloads"
+                    )
+                    _delete_confirmed_collection_item(queue_id, queue_item)
+                else:
+                    update_queue_status(queue_id, 'in_collection', failure_reason=nav_reason)
+                return False
+        else:
+            logger.debug(f"Queue {queue_id}: location-only matching enabled; skipping metadata DB/Navidrome checks")
 
         logger.info(f"Queue {queue_id}: Searching for '{search_query}'...")
         update_queue_status(queue_id, 'searching')

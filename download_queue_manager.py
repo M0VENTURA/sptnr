@@ -1296,52 +1296,12 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         auto_delete_at = None
         initial_status = status if status else 'queued'
         
-        # Collection matching: Check if track already exists in Navidrome collection
+        # Collection matching: location/path-based only.
+        # Do not mark as in_collection using metadata-only DB lookups because that
+        # can produce ambiguous matches without a concrete file path.
         in_collection = False
         collection_track_id = None
-        
-        if release_mbid or release_id:  # Only check if we have MBID
-            mbid_to_check = release_mbid or release_id
-            collection_check_query = """
-                SELECT id, file_path, album, album_artist FROM tracks
-                WHERE LOWER(artist) = LOWER(?) AND LOWER(title) = LOWER(?)
-                AND (release_group_mbid = ? OR suggested_mbid = ?)
-                AND (file_path IS NULL OR file_path NOT LIKE '__queued_for_download__%')
-                ORDER BY id DESC
-                LIMIT 10
-            """ if not is_pg else """
-                SELECT id, file_path, album, album_artist FROM tracks
-                WHERE LOWER(artist) = LOWER(%s) AND LOWER(title) = LOWER(%s)
-                AND (release_group_mbid = %s OR suggested_mbid = %s)
-                AND (file_path IS NULL OR file_path NOT LIKE '__queued_for_download__%')
-                ORDER BY id DESC
-                LIMIT 10
-            """
-            
-            try:
-                cursor.execute(collection_check_query, (artist, title, mbid_to_check, mbid_to_check))
-                collection_track = _pick_valid_collection_track_row(
-                    cursor.fetchall(),
-                    artist,
-                    album,
-                    album_artist,
-                )
-                
-                if collection_track:
-                    in_collection = True
-                    collection_track_id = collection_track[0] if isinstance(collection_track, tuple) else collection_track.get('id')
-                    initial_status = 'in_collection'
-                    logger.info(f"Track already in collection: {artist} - {title} (track ID {collection_track_id})")
-                else:
-                    logger.debug(f"Ignoring collection candidate outside canonical library path: {artist} - {title}")
-            except Exception as e_collection:
-                # tracks table might not exist or columns missing, that's okay
-                # CRITICAL: Must rollback transaction to recover from failed query
-                try:
-                    conn.rollback()
-                except:
-                    pass
-                logger.debug(f"Collection check error (table may not exist): {e_collection}")
+
 
         
         # Prepare release_year from year parameter (normalize to INTEGER)
@@ -4242,6 +4202,20 @@ def auto_discover_and_queue_files():
                 album_artist_value,
             )
             return _row_get(valid_row, 'id', 0, None) if valid_row else None
+
+        def _find_library_path_match(source_full_path):
+            """Location-based match: /downloads/<rel> -> /music/<rel>."""
+            try:
+                rel = os.path.relpath(source_full_path, downloads_dir)
+            except Exception:
+                return None
+            if not rel or rel.startswith('..'):
+                return None
+            music_root_local = os.environ.get("MUSIC_ROOT", "/music")
+            candidate = os.path.normpath(os.path.join(music_root_local, rel))
+            if os.path.exists(candidate):
+                return candidate
+            return None
         
         # Ensure required columns exist for auto-discovery inserts
         if is_pg:
@@ -4490,8 +4464,8 @@ def auto_discover_and_queue_files():
                 if existing:
                     existing_id = _row_get(existing, 'id', 0, None)
                     existing_status = _row_get(existing, 'status', 1, None)
-                    collection_track_id = _find_library_track_id(artist, album, title, album_artist)
-                    if collection_track_id is not None:
+                    location_match_path = _find_library_path_match(full_path)
+                    if location_match_path:
                         stats['already_in_library'] += 1
                         execute_write_with_retry(
                             cursor,
@@ -4500,24 +4474,25 @@ def auto_discover_and_queue_files():
                             UPDATE download_queue
                             SET status = 'in_collection',
                                 in_collection = {placeholder},
-                                collection_track_id = {placeholder},
+                                collection_track_id = NULL,
                                 collection_matched_at = CURRENT_TIMESTAMP,
+                                matched_file_path = {placeholder},
                                 found_filename = COALESCE(found_filename, {placeholder}),
                                 file_path = COALESCE(file_path, {placeholder}),
                                 updated_at = CURRENT_TIMESTAMP
                             WHERE id = {placeholder}
                         """,
-                            (1, collection_track_id, filename, full_path, existing_id),
+                            (1, location_match_path, filename, full_path, existing_id),
                             context="auto_discover existing queue in-library update"
                         )
                         log_queue_event(
                             'status_change',
-                            f"[AUTO-DISCOVER] Cleared existing queue item {existing_id} as in_collection: {artist} - {title}",
+                            f"[AUTO-DISCOVER] Cleared existing queue item {existing_id} as in_collection via location match: {location_match_path}",
                             item_id=existing_id,
                         )
                         logger.debug(
-                            f"[AUTO-DISCOVER] Cleared existing queue item {existing_id} as in_collection: "
-                            f"{artist} - {title}"
+                            f"[AUTO-DISCOVER] Cleared existing queue item {existing_id} as in_collection via location match: "
+                            f"{location_match_path}"
                         )
                         continue
 
@@ -4531,7 +4506,7 @@ def auto_discover_and_queue_files():
                 # file.  On error we reset the SAVEPOINT so the cursor is
                 # ready for the next SQL statement.
                 try:
-                    collection_track_id = _find_library_track_id(artist, album, title, album_artist)
+                    collection_track_id = None
                 except Exception as _lib_err:
                     logger.debug(
                         f"[AUTO-DISCOVER] Library check failed for {filename}: {_lib_err}"
@@ -4546,9 +4521,10 @@ def auto_discover_and_queue_files():
                             except Exception:
                                 pass
                     collection_track_id = None
-                if collection_track_id is not None:
+                location_match_path = _find_library_path_match(full_path)
+                if location_match_path:
                     stats['already_in_library'] += 1
-                    logger.debug(f"Track already in library: {artist} - {title}")
+                    logger.debug(f"Track already in library by location: {location_match_path}")
 
                     execute_write_with_retry(
                         cursor,
@@ -4557,8 +4533,9 @@ def auto_discover_and_queue_files():
                         UPDATE download_queue
                         SET status = 'in_collection',
                             in_collection = {placeholder},
-                            collection_track_id = {placeholder},
+                            collection_track_id = NULL,
                             collection_matched_at = CURRENT_TIMESTAMP,
+                            matched_file_path = {placeholder},
                             found_filename = COALESCE(found_filename, {placeholder}),
                             file_path = COALESCE(file_path, {placeholder}),
                             updated_at = CURRENT_TIMESTAMP
@@ -4567,7 +4544,7 @@ def auto_discover_and_queue_files():
                           AND LOWER(title) = LOWER({placeholder})
                           AND status NOT IN ('completed', 'removed', 'cancelled', 'deleted', 'in_collection')
                     """,
-                        (1, collection_track_id, filename, full_path, artist, album, title),
+                        (1, location_match_path, filename, full_path, artist, album, title),
                         context="auto_discover in-library update"
                     )
 
@@ -6533,34 +6510,71 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
         # Ensure late-added queue columns exist before selecting/updating them.
         _ensure_download_queue_columns(conn, cursor, is_pg=is_pg)
 
-        # Fetch all queue items for this album
-        if release_id:
-            cursor.execute(
-                f"""
-                SELECT id, status, file_path, found_filename, artist, title,
-                       album, album_artist, track_number, disc_number, year,
-                       copied_individually
-                FROM download_queue
-                WHERE release_id = {placeholder}
-                  AND status NOT IN ('removed', 'cancelled')
-                ORDER BY track_number ASC, title ASC
-                """,
-                (release_id,)
-            )
-        else:
-            cursor.execute(
-                f"""
-                SELECT id, status, file_path, found_filename, artist, title,
-                       album, album_artist, track_number, disc_number, year,
-                       copied_individually
-                FROM download_queue
-                WHERE LOWER(artist) = LOWER({placeholder})
-                  AND LOWER(album)  = LOWER({placeholder})
-                  AND status NOT IN ('removed', 'cancelled')
-                ORDER BY track_number ASC, title ASC
-                """,
-                (artist, album)
-            )
+        # Fetch all queue items for this album. If copied_individually is missing
+        # on a stale DB, retry with a literal fallback column so processing can continue.
+        try:
+            if release_id:
+                cursor.execute(
+                    f"""
+                    SELECT id, status, file_path, found_filename, artist, title,
+                           album, album_artist, track_number, disc_number, year,
+                           copied_individually
+                    FROM download_queue
+                    WHERE release_id = {placeholder}
+                      AND status NOT IN ('removed', 'cancelled')
+                    ORDER BY track_number ASC, title ASC
+                    """,
+                    (release_id,)
+                )
+            else:
+                cursor.execute(
+                    f"""
+                    SELECT id, status, file_path, found_filename, artist, title,
+                           album, album_artist, track_number, disc_number, year,
+                           copied_individually
+                    FROM download_queue
+                    WHERE LOWER(artist) = LOWER({placeholder})
+                      AND LOWER(album)  = LOWER({placeholder})
+                      AND status NOT IN ('removed', 'cancelled')
+                    ORDER BY track_number ASC, title ASC
+                    """,
+                    (artist, album)
+                )
+        except Exception as select_err:
+            if "copied_individually" not in str(select_err).lower():
+                raise
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
+            if release_id:
+                cursor.execute(
+                    f"""
+                    SELECT id, status, file_path, found_filename, artist, title,
+                           album, album_artist, track_number, disc_number, year,
+                           0 AS copied_individually
+                    FROM download_queue
+                    WHERE release_id = {placeholder}
+                      AND status NOT IN ('removed', 'cancelled')
+                    ORDER BY track_number ASC, title ASC
+                    """,
+                    (release_id,)
+                )
+            else:
+                cursor.execute(
+                    f"""
+                    SELECT id, status, file_path, found_filename, artist, title,
+                           album, album_artist, track_number, disc_number, year,
+                           0 AS copied_individually
+                    FROM download_queue
+                    WHERE LOWER(artist) = LOWER({placeholder})
+                      AND LOWER(album)  = LOWER({placeholder})
+                      AND status NOT IN ('removed', 'cancelled')
+                    ORDER BY track_number ASC, title ASC
+                    """,
+                    (artist, album)
+                )
 
         rows = cursor.fetchall() or []
         if rows and isinstance(rows[0], dict):
