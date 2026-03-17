@@ -127,10 +127,10 @@
                         <option value="popularity">Popularity and Single Scan</option>
                         <option value="combined">Combined Scan</option>
                     </select>
-                    <button id="startScanBtn" class="btn btn-primary btn-sm" onclick="startSelectedScan(false)" {{ '' if first_full_scan_done else 'disabled' }}>
+                    <button id="startScanBtn" class="btn btn-primary btn-sm" onclick="startSelectedScan(false)">
                         <i class="bi bi-play-fill"></i> Start Scan
                     </button>
-                    <button id="restartScanBtn" class="btn btn-outline-info btn-sm" onclick="startSelectedScan(true)" title="Restart selected scan from beginning" {{ '' if first_full_scan_done else 'disabled' }}>
+                    <button id="restartScanBtn" class="btn btn-outline-info btn-sm" onclick="startSelectedScan(true)" title="Restart selected scan from beginning">
                         <i class="bi bi-arrow-clockwise"></i> Restart
                     </button>
                     <button id="launchStartupBtn"
@@ -1036,13 +1036,24 @@ document.addEventListener('DOMContentLoaded', function() {
 
     if (!firstFullScanDone) {
         const lockMessage = 'Locked until first full Navidrome scan completes';
-        ['scanTypeSelect', 'startScanBtn', 'restartScanBtn', 'launchStartupBtn'].forEach(id => {
+        ['scanTypeSelect', 'launchStartupBtn'].forEach(id => {
             const el = document.getElementById(id);
             if (el) {
                 el.disabled = true;
                 el.title = lockMessage;
             }
         });
+
+        const startBtn = document.getElementById('startScanBtn');
+        if (startBtn) {
+            startBtn.disabled = false;
+            startBtn.title = 'Run initial Navidrome import';
+        }
+        const restartBtn = document.getElementById('restartScanBtn');
+        if (restartBtn) {
+            restartBtn.disabled = false;
+            restartBtn.title = 'Restart initial Navidrome import from beginning';
+        }
     }
 });
 
@@ -1051,12 +1062,13 @@ document.addEventListener('DOMContentLoaded', function() {
 const firstFullScanDone = {{ 'true' if first_full_scan_done else 'false' }};
 
 function startSelectedScan(restart = false) {
-    if (!firstFullScanDone) {
+    const scanType = document.getElementById('scanTypeSelect').value;
+
+    if (!firstFullScanDone && scanType !== 'navidrome') {
         alert('This scan control is locked until after the first full Navidrome import completes.');
         return;
     }
 
-    const scanType = document.getElementById('scanTypeSelect').value;
     const forced = document.getElementById('forcedCheck').checked;
     const mode = (forced || restart) ? 'force' : 'all';
 
