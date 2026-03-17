@@ -13,7 +13,15 @@ import sys
 
 
 def _postgres_env_configured():
-    return bool(os.environ.get("DATABASE_URL") or os.environ.get("PG_DSN") or os.environ.get("PG_HOST"))
+    """Return True when Postgres appears configured via DSN or host/user/db env vars.
+
+    Supports both app-native PG_* names and libpq-style PGHOST/PGUSER/PGDATABASE.
+    """
+    dsn = os.environ.get("DATABASE_URL") or os.environ.get("PG_DSN")
+    host = os.environ.get("PG_HOST") or os.environ.get("PGHOST")
+    user = os.environ.get("PG_USER") or os.environ.get("PGUSER")
+    database = os.environ.get("PG_DATABASE") or os.environ.get("PGDATABASE")
+    return bool(dsn or (host and user and database))
 
 
 def _connect_postgres():
@@ -24,11 +32,11 @@ def _connect_postgres():
         return psycopg2.connect(dsn, connect_timeout=5)
 
     return psycopg2.connect(
-        host=os.environ.get("PG_HOST"),
-        port=int(os.environ.get("PG_PORT", "5432")),
-        user=os.environ.get("PG_USER"),
-        password=os.environ.get("PG_PASSWORD", ""),
-        dbname=os.environ.get("PG_DATABASE", "sptnr"),
+        host=os.environ.get("PG_HOST") or os.environ.get("PGHOST"),
+        port=int(os.environ.get("PG_PORT") or os.environ.get("PGPORT") or "5432"),
+        user=os.environ.get("PG_USER") or os.environ.get("PGUSER"),
+        password=os.environ.get("PG_PASSWORD") or os.environ.get("PGPASSWORD") or "",
+        dbname=os.environ.get("PG_DATABASE") or os.environ.get("PGDATABASE") or "sptnr",
         connect_timeout=5,
     )
 
@@ -98,38 +106,74 @@ def _ensure_sqlite_columns(conn):
     return added
 
 
+def _ensure_postgres_track_columns(conn):
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'tracks' AND column_name = 'release_year'
+        )
+        """
+    )
+    exists_row = cur.fetchone()
+    exists = bool(exists_row and exists_row[0])
+    if not exists:
+        cur.execute("ALTER TABLE tracks ADD COLUMN IF NOT EXISTS release_year INTEGER")
+        conn.commit()
+        return ["release_year"]
+    return []
+
+
+def _ensure_sqlite_track_columns(conn):
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(tracks)")
+    existing = {row[1] for row in cur.fetchall()}
+    added = []
+    if "release_year" not in existing:
+        cur.execute("ALTER TABLE tracks ADD COLUMN release_year INTEGER")
+        added.append("release_year")
+        conn.commit()
+    return added
+
+
 def main():
     try:
         if _postgres_env_configured():
             try:
                 conn = _connect_postgres()
                 try:
-                    added = _ensure_postgres_columns(conn)
+                    queue_added = _ensure_postgres_columns(conn)
+                    track_added = _ensure_postgres_track_columns(conn)
+                    added = queue_added + [f"tracks.{c}" for c in track_added]
                     if added:
-                        print(f"✓ startup queue migration (postgres): added {', '.join(added)}")
+                        print(f"✓ startup schema migration (postgres): added {', '.join(added)}")
                     else:
-                        print("✓ startup queue migration (postgres): no changes")
+                        print("✓ startup schema migration (postgres): no changes")
                     return 0
                 finally:
                     conn.close()
             except Exception as e:
                 # Fast-fail behavior: report and continue boot; app startup will report DB state as needed.
-                print(f"⚠ startup queue migration (postgres) skipped: {e}")
+                print(f"⚠ startup schema migration (postgres) skipped: {e}")
                 return 0
 
         db_path = os.environ.get("DB_PATH", "/database/sptnr.db")
         conn = sqlite3.connect(db_path, timeout=5)
         try:
-            added = _ensure_sqlite_columns(conn)
+            queue_added = _ensure_sqlite_columns(conn)
+            track_added = _ensure_sqlite_track_columns(conn)
+            added = queue_added + [f"tracks.{c}" for c in track_added]
             if added:
-                print(f"✓ startup queue migration (sqlite): added {', '.join(added)}")
+                print(f"✓ startup schema migration (sqlite): added {', '.join(added)}")
             else:
-                print("✓ startup queue migration (sqlite): no changes")
+                print("✓ startup schema migration (sqlite): no changes")
         finally:
             conn.close()
         return 0
     except Exception as e:
-        print(f"⚠ startup queue migration failed (non-fatal): {e}")
+        print(f"⚠ startup schema migration failed (non-fatal): {e}")
         return 0
 
 
