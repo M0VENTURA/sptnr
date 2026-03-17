@@ -10193,6 +10193,38 @@ def album_edit(artist, album):
                     try:
                         from helpers.tag_manager import write_tags_to_file
 
+                        def _resolve_music_file_path(path_value):
+                            if not path_value:
+                                return None
+                            raw_path = str(path_value).strip()
+                            if not raw_path:
+                                return None
+
+                            candidates = [raw_path]
+                            if not os.path.isabs(raw_path):
+                                roots = [
+                                    os.environ.get("MUSIC_FOLDER"),
+                                    os.environ.get("MUSIC_ROOT"),
+                                    os.environ.get("MUSIC_DIR"),
+                                    "/music",
+                                ]
+                                seen = set()
+                                for root in roots:
+                                    if not root:
+                                        continue
+                                    root_text = str(root).strip()
+                                    if not root_text:
+                                        continue
+                                    candidate = os.path.join(root_text, raw_path)
+                                    if candidate not in seen:
+                                        candidates.append(candidate)
+                                        seen.add(candidate)
+
+                            for candidate in candidates:
+                                if os.path.exists(candidate):
+                                    return candidate
+                            return None
+
                         for track in tracks:
                             track_title = track.get('title') if hasattr(track, 'get') else track[2]
                             file_path = track.get('file_path') if hasattr(track, 'get') else track[1]
@@ -10201,7 +10233,8 @@ def album_edit(artist, album):
                                 continue
 
                             files_with_path += 1
-                            if not os.path.exists(str(file_path)):
+                            resolved_file_path = _resolve_music_file_path(file_path)
+                            if not resolved_file_path:
                                 files_missing += 1
                                 tracks_missing_on_disk.append(f"{track_title} ({file_path})")
                                 continue
@@ -10224,15 +10257,15 @@ def album_edit(artist, album):
                                     tags_to_write["album_artist"] = album_artist
 
                                 if tags_to_write:
-                                    if write_tags_to_file(str(file_path), tags_to_write):
+                                    if write_tags_to_file(str(resolved_file_path), tags_to_write):
                                         files_updated += 1
                                     else:
                                         files_failed += 1
-                                        tracks_failed_to_write.append(f"{track_title} ({file_path})")
+                                        tracks_failed_to_write.append(f"{track_title} ({resolved_file_path})")
                             except Exception as file_err:
-                                logging.warning(f"Failed to write tags to {file_path}: {file_err}")
+                                logging.warning(f"Failed to write tags to {resolved_file_path}: {file_err}")
                                 files_failed += 1
-                                tracks_failed_to_write.append(f"{track_title} ({file_path})")
+                                tracks_failed_to_write.append(f"{track_title} ({resolved_file_path})")
                     except ImportError:
                         logging.warning("Tag manager not available for file writing")
                         tag_writer_unavailable = True
@@ -10851,6 +10884,53 @@ def track_edit(track_id):
         if file_path:
             try:
                 from helpers.tag_manager import write_tags_to_file
+
+                def _resolve_music_file_path(path_value):
+                    if not path_value:
+                        return None
+                    raw_path = str(path_value).strip()
+                    if not raw_path:
+                        return None
+                    candidates = [raw_path]
+                    if not os.path.isabs(raw_path):
+                        roots = [
+                            os.environ.get("MUSIC_FOLDER"),
+                            os.environ.get("MUSIC_ROOT"),
+                            os.environ.get("MUSIC_DIR"),
+                            "/music",
+                        ]
+                        seen = set()
+                        for root in roots:
+                            if not root:
+                                continue
+                            root_text = str(root).strip()
+                            if not root_text:
+                                continue
+                            candidate = os.path.join(root_text, raw_path)
+                            if candidate not in seen:
+                                candidates.append(candidate)
+                                seen.add(candidate)
+                    for candidate in candidates:
+                        if os.path.exists(candidate):
+                            return candidate
+                    return None
+
+                resolved_file_path = _resolve_music_file_path(file_path)
+                if not resolved_file_path:
+                    flash_result_panel(
+                        "Track metadata update completed with missing file",
+                        category="warning",
+                        summary=f"Updated '{title or 'Unknown'}' in the database, but the audio file could not be found on disk.",
+                        stats=[
+                            {"label": "Track", "value": title or 'Unknown'},
+                            {"label": "File updated", "value": "No"},
+                        ],
+                        sections=[{
+                            "title": "Missing file path",
+                            "items": [str(file_path)],
+                        }],
+                    )
+                    return redirect(url_for("track_detail", track_id=track_id))
                 
                 # Prepare tags dictionary
                 tags_to_write = {}
@@ -10892,7 +10972,7 @@ def track_edit(track_id):
                     tags_to_write["bpm"] = bpm
                 
                 # Write to file
-                file_write_success = write_tags_to_file(file_path, tags_to_write)
+                file_write_success = write_tags_to_file(resolved_file_path, tags_to_write)
                 
                 if file_write_success:
                     flash_result_panel(
@@ -10915,7 +10995,7 @@ def track_edit(track_id):
                         ],
                         sections=[{
                             "title": "Failed file",
-                            "items": [str(file_path)],
+                            "items": [str(resolved_file_path)],
                         }],
                     )
             except ImportError as e:
