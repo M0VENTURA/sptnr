@@ -15,13 +15,19 @@ Requirements:
 
 import os
 import shutil
-import sqlite3
 import logging
 import io
 import time
 import requests
 from pathlib import Path
 from datetime import datetime
+
+# Database imports
+try:
+    import psycopg2
+    import psycopg2.extras
+except ImportError:
+    psycopg2 = None
 
 # Setup logging with fallback for when /config doesn't exist (e.g., in tests)
 log_handlers = [logging.StreamHandler()]
@@ -37,11 +43,32 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# PostgreSQL configuration from environment
+PG_HOST = os.environ.get("PG_HOST", "")
+PG_PORT = int(os.environ.get("PG_PORT", "5432"))
+PG_USER = os.environ.get("PG_USER", "")
+PG_PASSWORD = os.environ.get("PG_PASSWORD", "")
+PG_DATABASE = os.environ.get("PG_DATABASE", "")
+
 def get_db():
-    """Get database connection"""
-    db_path = os.environ.get("DB_PATH", "/database/sptnr.db")
-    conn = sqlite3.connect(db_path, timeout=30.0)
-    conn.row_factory = sqlite3.Row
+    """Get PostgreSQL database connection (required for post-processor)"""
+    if not all([PG_HOST, PG_USER, PG_DATABASE]):
+        raise RuntimeError(
+            "PostgreSQL configuration required: PG_HOST, PG_USER, PG_DATABASE must be set. "
+            "The post-download processor requires PostgreSQL for multi-process safety."
+        )
+    
+    if psycopg2 is None:
+        raise RuntimeError("psycopg2 not available - install with: pip install psycopg2-binary")
+    
+    conn = psycopg2.connect(
+        host=PG_HOST,
+        port=PG_PORT,
+        user=PG_USER,
+        password=PG_PASSWORD,
+        dbname=PG_DATABASE,
+        cursor_factory=psycopg2.extras.RealDictCursor
+    )
     return conn
 
 
