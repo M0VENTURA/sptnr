@@ -635,6 +635,97 @@ def convert_flac_to_mp3(flac_path, bitrate='320k'):
         return None
 
 
+def update_track_with_mb_metadata(queue_item, target_path):
+    """
+    Update track record in tracks table with MusicBrainz metadata from queue item.
+    
+    Args:
+        queue_item: Dict from download_queue with MB metadata
+        target_path: Final file path where track was organized
+    
+    Returns:
+        bool: True if updated successfully, False otherwise
+    """
+    try:
+        queue_id = queue_item.get('id')
+        artist = queue_item.get('artist')
+        album = queue_item.get('album')
+        title = queue_item.get('title')
+        
+        # Extract MB fields from queue
+        recording_mbid = queue_item.get('recording_mbid') or queue_item.get('mbid')
+        release_mbid = queue_item.get('release_mbid') or queue_item.get('release_id')
+        isrc = queue_item.get('isrc')
+        release_source = queue_item.get('release_source')
+        
+        if not all([artist, title]):
+            logger.debug(f"Queue {queue_id}: Insufficient track identity for DB update")
+            return False
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        try:
+            # Find track in tracks table (artist, album, title match)
+            cursor.execute("""
+                SELECT id FROM tracks
+                WHERE LOWER(artist) = LOWER(?)
+                  AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(?, ''))
+                  AND LOWER(title) = LOWER(?)
+                ORDER BY last_scanned DESC NULLS LAST, id DESC
+                LIMIT 1
+            """, (artist, album or '', title))
+            
+            track_row = cursor.fetchone()
+            if not track_row:
+                logger.debug(f"Queue {queue_id}: Track not found in DB ({artist} - {title}), creating placeholder")
+                # Track doesn't exist yet, create placeholder that will be overwritten when Navidrome imports
+                track_id = f"mb_{release_mbid or 'unknown'}_{queue_id}"
+                cursor.execute("""
+                    INSERT INTO tracks (
+                        id, artist, album, title, album_artist,
+                        mbid, suggested_mbid, isrc, file_path,
+                        score, stars, is_single, last_scanned
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+                              0, 0, 0, CURRENT_TIMESTAMP)
+                """, (track_id, artist, album, title, queue_item.get('album_artist') or artist,
+                      recording_mbid, release_mbid, isrc, target_path))
+            else:
+                # Track exists, update with MB metadata
+                track_id = track_row[0] if isinstance(track_row, (tuple, list)) else track_row.get('id')
+                
+                # Only update MB fields if we have them and track doesn't have them yet
+                cursor.execute("""
+                    UPDATE tracks
+                    SET
+                        mbid = COALESCE(?, mbid),
+                        suggested_mbid = COALESCE(?, suggested_mbid),
+                        isrc = COALESCE(?, isrc),
+                        file_path = ?,
+                        last_scanned = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                """, (recording_mbid, release_mbid, isrc, target_path, track_id))
+                
+                logger.info(f"Queue {queue_id}: Updated track {track_id} with MB metadata - MBID: {recording_mbid}, Release: {release_mbid}")
+            
+            conn.commit()
+            conn.close()
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Queue {queue_id}: DB update error - {e}")
+            try:
+                conn.rollback()
+                conn.close()
+            except:
+                pass
+            return False
+            
+    except Exception as e:
+        logger.warning(f"Queue {queue_item.get('id')}: Unexpected error updating track metadata - {e}")
+        return False
+
+
 def process_completed_queue_item(queue_item):
     """
     Process a completed queue item with MusicBrainz/Discogs metadata
@@ -691,6 +782,14 @@ def process_completed_queue_item(queue_item):
         if result['success']:
             target_path = result['target_path']
             logger.info(f"Queue {queue_id}: Successfully processed and organized - {target_path}")
+            
+            # Step 3: Update tracks table with MusicBrainz metadata
+            mb_updated = update_track_with_mb_metadata(queue_item, target_path)
+            if mb_updated:
+                logger.info(f"Queue {queue_id}: Track database updated with MB metadata")
+            else:
+                logger.debug(f"Queue {queue_id}: Could not update track database (non-fatal)")
+            
             return {
                 'success': True,
                 'message': 'Successfully processed and organized',
