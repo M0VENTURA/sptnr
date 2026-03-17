@@ -986,7 +986,7 @@ async function downloadMusicBrainzRelease(artist, album, tracks, year, release_i
       body: JSON.stringify({
         items: trackItems,
         import_group,
-        source: source || 'musicbrainz'
+        import_type: 'album'
       })
     });
 

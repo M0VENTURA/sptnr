@@ -428,16 +428,27 @@ def _is_valid_collection_track_path(path_value, artist, album, album_artist=None
 
 
 def _pick_valid_collection_track_row(rows, artist, album, album_artist=None):
-    for row in rows or []:
-        try:
-            file_path = row.get('file_path') if hasattr(row, 'get') else row[1]
-        except Exception:
-            file_path = None
+    def _row_value(row, key, *indexes):
+        if row is None:
+            return None
+        if hasattr(row, 'get'):
+            try:
+                return row.get(key)
+            except Exception:
+                pass
+        if isinstance(row, (list, tuple)):
+            for index in indexes:
+                if index is None:
+                    continue
+                try:
+                    return row[index]
+                except Exception:
+                    continue
+        return None
 
-        try:
-            candidate_album_artist = row.get('album_artist') if hasattr(row, 'get') else row[3]
-        except Exception:
-            candidate_album_artist = None
+    for row in rows or []:
+        file_path = _row_value(row, 'file_path', 1, 0)
+        candidate_album_artist = _row_value(row, 'album_artist', 3)
 
         if _is_valid_collection_track_path(file_path, artist, album, candidate_album_artist or album_artist or artist):
             return row

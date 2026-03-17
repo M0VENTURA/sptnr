@@ -19908,6 +19908,8 @@ def api_queue_add_batch():
         items = data.get('items', [])
         if not isinstance(items, list):
             return jsonify({"error": "items must be an array"}), 400
+
+        batch_source = str(data.get('source') or '').strip().lower()
         
         logging.info(f"Adding {len(items)} items to queue in batch")
         
@@ -19943,14 +19945,25 @@ def api_queue_add_batch():
             artist = item_data.get('artist', '').strip() if item_data.get('artist') else ''
             title = item_data.get('title', '').strip() if item_data.get('title') else ''
             album = item_data.get('album', '').strip() if item_data.get('album') else None
-            explicit_source = item_data.get('source') or data.get('source')
-            if explicit_source:
-                source = str(explicit_source).strip().lower()
+            item_source = str(item_data.get('source') or '').strip().lower()
+            if item_source in allowed_sources:
+                source = item_source
+            elif batch_source in allowed_sources:
+                source = batch_source
             else:
                 # Batch default routing policy:
                 # - Album imports: qBittorrent first
                 # - Song/playlist track imports: Soulseek first
                 source = 'qbittorrent' if import_type == 'album' else 'soulseek'
+
+            if item_source and item_source not in allowed_sources:
+                logging.info(
+                    f"[QUEUE_BATCH] Ignoring non-transport item source '{item_source}' for {artist} - {title}; using '{source}'"
+                )
+            elif batch_source and batch_source not in allowed_sources:
+                logging.info(
+                    f"[QUEUE_BATCH] Ignoring non-transport batch source '{batch_source}' for import_group={import_group_id}; using '{source}'"
+                )
 
             if source not in allowed_sources:
                 failed_count += 1
