@@ -9,6 +9,7 @@ from helpers.db_utils import (
 )
 from download_file_verification import ensure_verification_columns, ensure_queue_mbid_columns
 import os
+import glob
 import shutil
 import xml.etree.ElementTree as ET
 # --- ENVIRONMENT VARIABLE EDITING SUPPORT ---
@@ -691,21 +692,48 @@ def api_download_log(log_type):
     """
     from datetime import datetime, timedelta
     
-    # Map log type to file path
-    log_paths = {
-        'unified': UNIFIED_LOG_PATH,
-        'info': INFO_LOG_PATH,
-        'debug': DEBUG_LOG_PATH,
-        'queue': '/config/download_queue.log',
-    }
-    
-    if log_type not in log_paths:
+    def _resolve_log_path(requested_type):
+        candidates = []
+        if requested_type == 'unified':
+            try:
+                candidates.extend(get_unified_log_targets())
+            except Exception:
+                pass
+            candidates.extend([UNIFIED_LOG_PATH, os.environ.get("UNIFIED_SCAN_LOG_PATH", "").strip(), "/config/unified_scan.log"])
+        elif requested_type == 'info':
+            candidates.extend([INFO_LOG_PATH, "/config/info.log"])
+        elif requested_type == 'debug':
+            candidates.extend([DEBUG_LOG_PATH, "/config/debug.log"])
+        elif requested_type == 'queue':
+            candidates.extend(['/config/download_queue.log'])
+
+        candidates = [p for p in candidates if p]
+        for path in candidates:
+            if os.path.exists(path):
+                return path
+
+        # TimedRotatingFileHandler may have rotated the base file; fall back to the newest rotated file.
+        newest_path = None
+        newest_mtime = -1.0
+        for base in candidates:
+            for path in [base] + glob.glob(base + '*'):
+                try:
+                    if os.path.exists(path):
+                        mtime = os.path.getmtime(path)
+                        if mtime > newest_mtime:
+                            newest_mtime = mtime
+                            newest_path = path
+                except Exception:
+                    continue
+        return newest_path
+
+    if log_type not in {'unified', 'info', 'debug', 'queue'}:
         return jsonify({"error": "Invalid log type. Must be 'unified', 'info', 'debug', or 'queue'"}), 400
+
+    log_path = _resolve_log_path(log_type)
     
-    log_path = log_paths[log_type]
-    
-    if not os.path.exists(log_path):
-        return jsonify({"error": f"Log file not found: {log_path}"}), 404
+    if not log_path or not os.path.exists(log_path):
+        return jsonify({"error": f"Log file not found for type: {log_type}"}), 404
     
     try:
         # Read log file and filter for last hour
@@ -12700,6 +12728,7 @@ def api_scan_from_artist():
                 # Use the first artist from Navidrome for this letter
                 artist = matching_artists[0]
                 logging.info(f"Letter '{letter}' scan: Using first artist from Navidrome: '{artist}'")
+                log_unified(f"Popularity Scan - Letter '{letter}' resolved to artist '{artist}'")
                 
             except Exception as e:
                 logging.error(f"Error querying Navidrome for letter '{letter}': {e}", exc_info=True)
@@ -12727,11 +12756,27 @@ def api_scan_from_artist():
             
             db_dir = os.path.dirname(DB_PATH)
             popularity_progress_file = os.path.join(db_dir, "popularity_scan_progress.json")
-            _write_progress_file(popularity_progress_file, "popularity_scan", True, {"status": "starting", "resume_from": artist})
+            _write_progress_file(
+                popularity_progress_file,
+                "popularity_scan",
+                True,
+                {
+                    "status": "starting",
+                    "resume_from": artist,
+                    "current_artist": artist,
+                    "processed_artists": 0,
+                    "total_artists": 0,
+                    "percent_complete": 0,
+                }
+            )
+            mode_desc = "Full (Forced)" if force_rescan else "Changes Only"
+            message_suffix = f" (from Navidrome letter '{letter}')" if letter else ""
+            log_unified(f"Popularity Scan - Starting from artist '{artist}' ({mode_desc}){message_suffix}")
             
             def run_popularity_scan_bg():
                 try:
                     logging.info(f"Starting popularity scan from artist '{artist}' (force={force_rescan})")
+                    log_unified(f"Popularity Scan - Worker started from artist '{artist}' (force={force_rescan})")
                     completed = scan_popularity_func(
                         verbose=False,
                         force=force_rescan,
@@ -12741,20 +12786,21 @@ def api_scan_from_artist():
                     if completed is False:
                         _write_progress_with_current_artist(popularity_progress_file, "popularity_scan", False, {"status": "stopped", "exit_code": 0})
                         logging.info(f"Popularity scan from '{artist}' stopped by user request")
+                        log_unified(f"Popularity Scan - Stopped from artist '{artist}'")
                     else:
                         _write_progress_with_current_artist(popularity_progress_file, "popularity_scan", False, {"status": "complete", "exit_code": 0})
                         logging.info(f"Popularity scan from '{artist}' completed successfully")
+                        log_unified(f"Popularity Scan - Completed from artist '{artist}'")
                         _log_scan_session_complete("popularity")
                 except Exception as e:
                     logging.error(f"Error in popularity scan from '{artist}': {e}", exc_info=True)
+                    log_unified(f"Popularity Scan - Error from artist '{artist}': {e}")
                     _write_progress_with_current_artist(popularity_progress_file, "popularity_scan", False, {"status": "error", "error": str(e), "exit_code": 1})
             
             scan_thread = threading.Thread(target=run_popularity_scan_bg, daemon=False)
             scan_thread.start()
             scan_process_popularity = {'thread': scan_thread, 'type': 'popularity'}
             
-            mode_desc = "Full (Forced)" if force_rescan else "Changes Only"
-            message_suffix = f" (from Navidrome letter '{letter}')" if letter else ""
             logging.info(f"Popularity scan thread started from artist '{artist}' ({mode_desc}){message_suffix}")
             
             return jsonify({
