@@ -310,10 +310,10 @@ def was_album_scanned(artist: str, album: str, scan_type: str, days_threshold: i
 def get_recent_album_scans(limit: int = 10):
     """
     Get recent album scans with scan type information.
-    
+
     Args:
         limit: Maximum number of scans to return
-        
+
     Returns:
         List of dicts with scan information
     """
@@ -326,10 +326,9 @@ def get_recent_album_scans(limit: int = 10):
             conn.execute("PRAGMA busy_timeout=5000")  # 5 second busy timeout
             conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        
+
         # Check if scan_history table exists
         if not _table_exists(cursor, "scan_history", is_pg):
-            # Table doesn't exist yet, return empty list
             conn.close()
             return []
 
@@ -347,41 +346,41 @@ def get_recent_album_scans(limit: int = 10):
         except Exception:
             pass  # Column already exists
 
+        # PostgreSQL puts NULLs FIRST on DESC by default; old rows
+        # inserted before the explicit-timestamp fix (a5abcbb Mar 16)
+        # have NULL scan_timestamp and float to the top, hiding newer entries.
+        order_clause = "NULLS LAST" if is_pg else ""
         cursor.execute(
             f"""
             SELECT artist, album, scan_type, scan_timestamp, tracks_processed, status, source
             FROM scan_history
             WHERE status != 'skipped'
-            ORDER BY scan_timestamp DESC
+            ORDER BY scan_timestamp DESC {order_clause}
             LIMIT {placeholder}
             """,
             (limit,)
         )
-        
+
         scans = []
         for row in cursor.fetchall():
-            raw_ts = row['scan_timestamp'] if hasattr(row, 'keys') else row[3]
-            # Ensure scan_timestamp is a plain ISO-8601 string so it survives JSON
-            # serialisation and is reliably parsed by new Date() in all browsers.
-            # PostgreSQL returns datetime objects; SQLite returns strings like
-            # "2024-01-15 10:30:00" (space separator) which Safari/Firefox reject.
-            if hasattr(raw_ts, 'isoformat'):
+            raw_ts = row["scan_timestamp"] if hasattr(row, "keys") else row[3]
+            if hasattr(raw_ts, "isoformat"):
                 scan_ts = raw_ts.isoformat()
             elif raw_ts is not None:
-                # Normalise SQLite-style "YYYY-MM-DD HH:MM:SS" → "YYYY-MM-DDTHH:MM:SS"
-                scan_ts = str(raw_ts).replace(' ', 'T', 1)
+                scan_ts = str(raw_ts).replace(" ", "T", 1)
             else:
-                scan_ts = ''
+                scan_ts = ""
+            keys = row.keys() if hasattr(row, "keys") else None
             scans.append({
-                'artist': row['artist'] if hasattr(row, 'keys') else row[0],
-                'album': row['album'] if hasattr(row, 'keys') else row[1],
-                'scan_type': row['scan_type'] if hasattr(row, 'keys') else row[2],
-                'scan_timestamp': scan_ts,
-                'tracks_processed': row['tracks_processed'] if hasattr(row, 'keys') else row[4],
-                'status': row['status'] if hasattr(row, 'keys') else row[5],
-                'source': (row['source'] if hasattr(row, 'keys') and 'source' in row.keys() else (row[6] if len(row) > 6 else ''))
+                "artist": row["artist"] if keys else row[0],
+                "album": row["album"] if keys else row[1],
+                "scan_type": row["scan_type"] if keys else row[2],
+                "scan_timestamp": scan_ts,
+                "tracks_processed": row["tracks_processed"] if keys else row[4],
+                "status": row["status"] if keys else row[5],
+                "source": (row["source"] if keys and "source" in keys else (row[6] if not keys and len(row) > 6 else ""))
             })
-        
+
         conn.close()
         return scans
     except Exception as e:
