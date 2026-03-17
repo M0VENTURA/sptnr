@@ -3694,7 +3694,8 @@ async function refreshUpcomingReleases() {
                       <th>Artist</th>
                       <th>Album</th>
                       <th>Date</th>
-                      <th style="width: 120px;">Action</th>
+                      <th>MBID</th>
+                      <th style="width: 220px;">Action</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -3703,16 +3704,27 @@ async function refreshUpcomingReleases() {
       monthReleases.forEach(release => {
         const albumStatus = release.album_in_collection ? 
           ' <span class="badge bg-success ms-1">In Collection</span>' : '';
+        const mbidDisplay = release.release_group_mbid ? `
+          <div>
+            <span class="small" title="${escapeHtml(release.release_group_mbid)}">${escapeHtml(release.release_group_mbid.slice(0, 8))}...</span>
+            <div><small class="text-muted">${escapeHtml(release.mbid_manual_override ? 'manual' : (release.mbid_confidence || release.mbid_match_status || 'matched'))}</small></div>
+          </div>
+        ` : `<small class="text-muted">${escapeHtml(release.mbid_match_status || 'unmatched')}</small>`;
         
         html += `
           <tr>
             <td>${escapeHtml(release.artist_name)}</td>
             <td>${escapeHtml(release.album_name)}${albumStatus}</td>
             <td><small>${release.release_date || 'TBA'}</small></td>
+            <td>${mbidDisplay}</td>
             <td>
+              <button type="button" class="btn btn-sm btn-outline-secondary me-1" title="Smart-match and save MBID"
+                onclick="matchUpcomingRelease(${Number(release.id) || 0})">
+                <i class="bi bi-magic"></i> Auto
+              </button>
               <button type="button" class="btn btn-sm btn-outline-primary" title="Search on MusicBrainz"
-                onclick="searchMusicBrainzRelease(event, '${escapeJavaScriptString(release.artist_name)}', '${escapeJavaScriptString(release.album_name)}')">
-                <i class="bi bi-search"></i> Search
+                onclick="searchMusicBrainzRelease(event, '${escapeJavaScriptString(release.artist_name)}', '${escapeJavaScriptString(release.album_name)}', ${Number(release.id) || 0})">
+                <i class="bi bi-search"></i> Choose
               </button>
             </td>
           </tr>
@@ -3831,10 +3843,47 @@ async function addReleaseToQueue(artist, album) {
   }
 }
 
+async function matchUpcomingRelease(releaseId) {
+  if (!releaseId) {
+    alert('Missing upcoming release id');
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/upcoming-releases/${releaseId}/match`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to match upcoming release');
+    }
+
+    if (!data.success) {
+      alert(data.match_status === 'ambiguous'
+        ? 'Multiple close MusicBrainz matches were found. Use Choose to select the correct MBID.'
+        : 'No reliable MusicBrainz match was found for this release.');
+    }
+
+    await refreshUpcomingReleases();
+  } catch (error) {
+    console.error('Upcoming release match error:', error);
+    alert('Error matching upcoming release: ' + error.message);
+  }
+}
+
 // MusicBrainz search for Wikipedia releases with Discogs fallback
-async function searchMusicBrainzRelease(event, artist, album) {
+async function searchMusicBrainzRelease(event, artist, album, upcomingReleaseId = null) {
   event.preventDefault();
   event.stopPropagation();
+
+  window.currentUpcomingReleaseContext = upcomingReleaseId ? {
+    releaseId: upcomingReleaseId,
+    artist,
+    album
+  } : null;
   
   // Show modal
   const modal = new bootstrap.Modal(document.getElementById('musicBrainzModal'));
@@ -3935,6 +3984,7 @@ function displayMusicBrainzResults(results) {
       tracks: release.tracks,
       year: release.date || release.year || null,
       release_id: release.release_id || release.release_group_id || null,
+      release_group_id: release.release_group_id || null,
       source: release.source || 'musicbrainz'
     };
     
@@ -4013,6 +4063,11 @@ function displayMusicBrainzResults(results) {
               <button class="btn btn-outline-success mb-download-selected" data-release-key="${dataKey}" disabled>
                 <i class="bi bi-check2-square"></i> Download Selected (0)
               </button>
+              ${window.currentUpcomingReleaseContext && source !== 'discogs' && release.release_group_id ? `
+              <button class="btn btn-outline-primary mb-save-upcoming-match" data-release-key="${dataKey}">
+                <i class="bi bi-link-45deg"></i> Use MBID
+              </button>
+              ` : ''}
               <div class="form-check mb-0 ms-md-2">
                 <input class="form-check-input mb-select-all" type="checkbox" id="mbSelectAll_${releaseId}" data-release-key="${dataKey}">
                 <label class="form-check-label" for="mbSelectAll_${releaseId}">Select All</label>
@@ -4106,6 +4161,49 @@ function displayMusicBrainzResults(results) {
       );
       if (queued) {
         selectedIndices.forEach(index => markMBTrackQueued(container, dataKey, index));
+      }
+    });
+  });
+
+  container.querySelectorAll('.mb-save-upcoming-match').forEach(button => {
+    button.addEventListener('click', async function() {
+      const dataKey = this.dataset.releaseKey;
+      const releaseData = window.mbReleaseData[dataKey];
+
+      if (!releaseData || !releaseData.release_group_id) {
+        alert('This result does not include a MusicBrainz release-group MBID');
+        return;
+      }
+
+      if (!window.currentUpcomingReleaseContext || !window.currentUpcomingReleaseContext.releaseId) {
+        alert('No upcoming release is selected for matching');
+        return;
+      }
+
+      try {
+        const response = await fetch(`/api/upcoming-releases/${window.currentUpcomingReleaseContext.releaseId}/match`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            release_group_mbid: releaseData.release_group_id,
+            source: 'manual_selection'
+          })
+        });
+        const data = await response.json();
+
+        if (!response.ok || !data.success) {
+          throw new Error(data.error || 'Failed to save upcoming release match');
+        }
+
+        const modalEl = document.getElementById('musicBrainzModal');
+        const modal = bootstrap.Modal.getInstance(modalEl);
+        if (modal) {
+          modal.hide();
+        }
+        await refreshUpcomingReleases();
+      } catch (error) {
+        console.error('Error saving upcoming release match:', error);
+        alert('Error saving upcoming release match: ' + error.message);
       }
     });
   });

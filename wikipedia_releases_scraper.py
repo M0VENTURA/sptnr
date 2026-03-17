@@ -13,6 +13,8 @@ from bs4 import BeautifulSoup
 import re
 import urllib.request
 import os
+from database_abstraction import DatabaseQuery, get_column_names, is_postgres_connection
+from helpers.db_utils import get_db_connection
 
 # Suppress SSL warnings from urllib3 (Wikipedia requests work fine without verification)
 import urllib3
@@ -51,6 +53,16 @@ WIKIPEDIA_SOURCES = {
         "url": "https://en.wikipedia.org/wiki/2026_in_American_music",
         "name": "American Music 2026",
     },
+}
+
+UPCOMING_RELEASE_REQUIRED_COLUMNS = {
+    "release_group_mbid": "TEXT",
+    "mbid_match_status": "TEXT DEFAULT 'unmatched'",
+    "mbid_source": "TEXT",
+    "mbid_confidence": "TEXT",
+    "mbid_match_score": "REAL",
+    "mbid_last_checked_at": "TEXT",
+    "mbid_manual_override": "BOOLEAN DEFAULT FALSE",
 }
 
 class WikipediaReleaseScraper:
@@ -94,6 +106,7 @@ class WikipediaReleaseScraper:
         
         # Initialize MusicBrainz lookup cache
         self._mbz_cache = {}
+        self._schema_ensured = False
         
         self.use_requests = HAS_REQUESTS
         
@@ -130,9 +143,149 @@ class WikipediaReleaseScraper:
     
     def get_db(self):
         """Get database connection"""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
+        conn = get_db_connection()
+        self.ensure_schema(conn)
         return conn
+
+    def ensure_schema(self, conn):
+        """Ensure the upcoming releases schema exists on the active backend."""
+        if self._schema_ensured:
+            return
+
+        is_pg = is_postgres_connection(conn)
+        cursor = conn.cursor()
+
+        if is_pg:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS upcoming_releases (
+                    id SERIAL PRIMARY KEY,
+                    artist_name TEXT NOT NULL,
+                    album_name TEXT NOT NULL,
+                    release_date TEXT,
+                    release_year INTEGER,
+                    source TEXT,
+                    artist_in_collection BOOLEAN DEFAULT FALSE,
+                    album_in_collection BOOLEAN DEFAULT FALSE,
+                    is_new_release BOOLEAN DEFAULT FALSE,
+                    notes TEXT,
+                    url TEXT,
+                    release_group_mbid TEXT,
+                    mbid_match_status TEXT DEFAULT 'unmatched',
+                    mbid_source TEXT,
+                    mbid_confidence TEXT,
+                    mbid_match_score REAL,
+                    mbid_last_checked_at TEXT,
+                    mbid_manual_override BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(artist_name, album_name, release_date)
+                )
+                """
+            )
+        else:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS upcoming_releases (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    artist_name TEXT NOT NULL,
+                    album_name TEXT NOT NULL,
+                    release_date TEXT,
+                    release_year INTEGER,
+                    source TEXT,
+                    artist_in_collection BOOLEAN DEFAULT FALSE,
+                    album_in_collection BOOLEAN DEFAULT FALSE,
+                    is_new_release BOOLEAN DEFAULT FALSE,
+                    notes TEXT,
+                    url TEXT,
+                    release_group_mbid TEXT,
+                    mbid_match_status TEXT DEFAULT 'unmatched',
+                    mbid_source TEXT,
+                    mbid_confidence TEXT,
+                    mbid_match_score REAL,
+                    mbid_last_checked_at TEXT,
+                    mbid_manual_override BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(artist_name, album_name, release_date)
+                )
+                """
+            )
+
+        existing_columns = set(get_column_names(cursor, "upcoming_releases", is_pg))
+        for column_name, column_type in UPCOMING_RELEASE_REQUIRED_COLUMNS.items():
+            if column_name not in existing_columns:
+                cursor.execute(f"ALTER TABLE upcoming_releases ADD COLUMN {column_name} {column_type}")
+
+        if is_pg:
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_upcoming_artist_collection
+                ON upcoming_releases(artist_in_collection, release_date DESC)
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_upcoming_release_date
+                ON upcoming_releases(release_date)
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_upcoming_year
+                ON upcoming_releases(release_year)
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_upcoming_release_group_mbid
+                ON upcoming_releases(release_group_mbid)
+                """
+            )
+        else:
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_upcoming_artist_collection
+                ON upcoming_releases(artist_in_collection, release_date DESC)
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_upcoming_release_date
+                ON upcoming_releases(release_date)
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_upcoming_year
+                ON upcoming_releases(release_year)
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_upcoming_release_group_mbid
+                ON upcoming_releases(release_group_mbid)
+                """
+            )
+
+        conn.commit()
+        self._schema_ensured = True
+
+    @staticmethod
+    def _row_value(row, key: str = "", index: int = 0, default=None):
+        if row is None:
+            return default
+        if isinstance(row, dict):
+            return row.get(key, default)
+        if hasattr(row, "keys"):
+            try:
+                return row[key]
+            except Exception:
+                pass
+        try:
+            return row[index]
+        except Exception:
+            return default
     
     @staticmethod
     def normalize_artist_name(artist_name: str) -> str:
@@ -219,10 +372,10 @@ class WikipediaReleaseScraper:
                 return None
             
             conn = self.get_db()
-            cursor = conn.cursor()
+            query = DatabaseQuery(conn)
             
             # Query all albums on same date and check normalized names
-            cursor.execute("""
+            cursor = query.execute("""
                 SELECT * FROM upcoming_releases 
                 WHERE release_date = ?
             """, (release_date,))
@@ -797,7 +950,7 @@ class WikipediaReleaseScraper:
         Only imports releases from artists in the user's collection.
         """
         conn = self.get_db()
-        cursor = conn.cursor()
+        query = DatabaseQuery(conn)
         added = 0
         updated = 0
         filtered_out = 0
@@ -809,21 +962,29 @@ class WikipediaReleaseScraper:
         try:
             # Include both track-level artist and album_artist so that all catalog artists
             # are matched correctly (e.g. an artist who only appears as album_artist is still found)
-            cursor.execute(
+            cursor = query.execute(
                 "SELECT DISTINCT LOWER(COALESCE(NULLIF(album_artist, ''), artist)) FROM tracks "
                 "WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL"
             )
             rows = cursor.fetchall() or []
-            artists_in_collection = {row[0] for row in rows if row and row[0]}
+            artists_in_collection = {
+                self._row_value(row, index=0)
+                for row in rows
+                if row and self._row_value(row, index=0)
+            }
             
             # Get list of albums in collection (keyed by canonical album_artist or artist)
-            cursor.execute(
+            cursor = query.execute(
                 "SELECT DISTINCT LOWER(COALESCE(NULLIF(album_artist, ''), artist)), LOWER(album) "
                 "FROM tracks WHERE album IS NOT NULL AND album != ''"
             )
             rows = cursor.fetchall() or []
-            albums_in_collection = {(row[0], row[1]) for row in rows if row and row[0] and row[1]}
-        except (sqlite3.OperationalError, TypeError) as e:
+            albums_in_collection = {
+                (self._row_value(row, index=0), self._row_value(row, index=1))
+                for row in rows
+                if row and self._row_value(row, index=0) and self._row_value(row, index=1)
+            }
+        except Exception as e:
             # tracks table may not exist yet, continue without filtering
             logger.debug(f"Could not query tracks table (may not exist yet): {e}")
             artists_in_collection = set()
@@ -862,7 +1023,7 @@ class WikipediaReleaseScraper:
                     # (e.g., prefer "The Wilted EP" over "The Wilted EP(EP)")
                     better_name = album_name if len(album_name) < len(existing_normalized.get('album_name', '')) else existing_normalized.get('album_name')
                     
-                    cursor.execute("""
+                    query.execute("""
                         UPDATE upcoming_releases
                         SET artist_in_collection = ?, album_in_collection = ?, updated_at = CURRENT_TIMESTAMP, album_name = ?
                         WHERE id = ?
@@ -870,7 +1031,7 @@ class WikipediaReleaseScraper:
                     updated += 1
                 else:
                     # Insert new record
-                    cursor.execute("""
+                    query.execute("""
                         INSERT INTO upcoming_releases 
                         (artist_name, album_name, release_date, release_year, source, 
                          artist_in_collection, album_in_collection)
@@ -889,10 +1050,10 @@ class WikipediaReleaseScraper:
                         album_in_collection,
                     ))
                     added += 1
-            except sqlite3.IntegrityError as e:
+            except Exception:
                 # Update existing record on constraint violation
                 try:
-                    cursor.execute("""
+                    query.execute("""
                         UPDATE upcoming_releases
                         SET artist_in_collection = ?, album_in_collection = ?, updated_at = CURRENT_TIMESTAMP
                         WHERE artist_name = ? AND album_name = ? AND release_date = ?
@@ -903,7 +1064,7 @@ class WikipediaReleaseScraper:
         
         # Log scrape
         try:
-            cursor.execute("""
+            query.execute("""
                 INSERT INTO release_scrape_history 
                 (source_url, source_name, items_found, items_added, items_updated, 
                  scrape_status, scrape_start, scrape_end)
@@ -931,14 +1092,14 @@ class WikipediaReleaseScraper:
         """Get upcoming releases, optionally filtered by collection artists"""
         try:
             conn = self.get_db()
-            cursor = conn.cursor()
+            query = DatabaseQuery(conn)
             
             if artist_in_collection:
                 query = "SELECT * FROM upcoming_releases WHERE artist_in_collection = TRUE ORDER BY release_date ASC"
             else:
                 query = "SELECT * FROM upcoming_releases ORDER BY release_date ASC"
             
-            cursor.execute(query)
+            cursor = DatabaseQuery(conn).execute(query)
             rows = cursor.fetchall() or []
             releases = []
             
@@ -966,14 +1127,14 @@ class WikipediaReleaseScraper:
         """Clear all upcoming releases from the database"""
         try:
             conn = self.get_db()
-            cursor = conn.cursor()
+            query = DatabaseQuery(conn)
             
             # Get count before deletion
-            cursor.execute("SELECT COUNT(*) FROM upcoming_releases")
+            cursor = query.execute("SELECT COUNT(*) FROM upcoming_releases")
             count_row = cursor.fetchone()
-            count_before = count_row[0] if count_row else 0
+            count_before = self._row_value(count_row, index=0, default=0) or 0
             
-            cursor.execute("DELETE FROM upcoming_releases")
+            query.execute("DELETE FROM upcoming_releases")
             
             conn.commit()
             conn.close()

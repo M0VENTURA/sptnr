@@ -502,14 +502,37 @@ async function addToQueue(event) {
 
 // ===== Upcoming Releases (Embedded) =====
 
-function searchUpcomingReleaseFromEncoded(artistEnc, albumEnc) {
+function searchUpcomingReleaseFromEncoded(artistEnc, albumEnc, releaseId = null) {
   const artist = decodeInlineArg(artistEnc, '');
   const album = decodeInlineArg(albumEnc, '');
   if (!artist || !album) {
     alert('Missing artist or album information for this release.');
     return;
   }
-  searchMusicBrainzRelease(null, artist, album);
+  searchMusicBrainzRelease(null, artist, album, releaseId);
+}
+
+async function matchUpcomingReleaseMonitor(releaseId) {
+  if (!releaseId) {
+    alert('Missing upcoming release ID.');
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/upcoming-releases/${releaseId}/match`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    const data = await response.json();
+    if (!response.ok || !data.success) {
+      throw new Error(data.error || 'Failed to match upcoming release');
+    }
+    await refreshUpcomingReleasesMonitor();
+  } catch (error) {
+    console.error('Error matching upcoming release:', error);
+    alert('Error matching upcoming release: ' + error.message);
+  }
 }
 
 async function clearUpcomingReleasesMonitor() {
@@ -620,7 +643,7 @@ async function refreshUpcomingReleasesMonitor() {
 
   try {
     const data = await fetchJsonOrThrow(
-      `/api/upcoming-releases?collection=${filterCollection}`,
+      `/api/upcoming-releases?collection=${filterCollection}&include_queue=true`,
       { signal: requestController.signal },
       20000
     );
@@ -685,7 +708,8 @@ async function refreshUpcomingReleasesMonitor() {
                       <th>Artist</th>
                       <th>Album</th>
                       <th>Date</th>
-                      <th style="width: 120px;">Action</th>
+                      <th>MBID</th>
+                      <th style="width: 220px;">Action</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -697,17 +721,28 @@ async function refreshUpcomingReleasesMonitor() {
           : '';
         const artistEnc = encodeInlineArg(release.artist_name || '');
         const albumEnc = encodeInlineArg(release.album_name || '');
+        const releaseGroupMbid = release.release_group_mbid || '';
+        const mbidStatus = releaseGroupMbid
+          ? `<code class="small">${escapeHtml(releaseGroupMbid.slice(0, 8))}...</code>`
+          : `<span class="text-muted small">${escapeHtml(release.mbid_match_status || 'unmatched')}</span>`;
 
         html += `
           <tr>
             <td>${escapeHtml(release.artist_name || '')}</td>
             <td>${escapeHtml(release.album_name || '')}${albumStatus}</td>
             <td><small>${escapeHtml(release.release_date || 'TBA')}</small></td>
+            <td>${mbidStatus}</td>
             <td>
-              <button type="button" class="btn btn-sm btn-outline-primary" title="Search on MusicBrainz"
-                onclick="searchUpcomingReleaseFromEncoded('${artistEnc}', '${albumEnc}')">
-                <i class="bi bi-search"></i> Search
-              </button>
+              <div class="d-flex gap-1 flex-wrap">
+                <button type="button" class="btn btn-sm btn-outline-success" title="Auto match MBID"
+                  onclick="matchUpcomingReleaseMonitor(${Number(release.id) || 0})">
+                  <i class="bi bi-magic"></i> Auto
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-primary" title="Choose a MusicBrainz match"
+                  onclick="searchUpcomingReleaseFromEncoded('${artistEnc}', '${albumEnc}', ${Number(release.id) || 0})">
+                  <i class="bi bi-search"></i> Choose
+                </button>
+              </div>
             </td>
           </tr>
         `;

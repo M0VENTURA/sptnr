@@ -1378,6 +1378,13 @@ navidrome_incremental_scheduler = {
 }
 navidrome_incremental_scheduler_lock = threading.Lock()
 
+upcoming_release_match_scheduler = {
+    "thread": None,
+    "running": False,
+    "stop_event": None,
+}
+upcoming_release_match_scheduler_lock = threading.Lock()
+
 # Optional auto-import toggle placeholder (will be set after config functions are defined)
 AUTO_BOOT_ND_IMPORT = None
 
@@ -2108,6 +2115,252 @@ def _run_daily_5am_lb_rematch():
         logging.error(f"[LB_REMATCH] Daily rematch error: {exc}", exc_info=True)
     finally:
         conn.close()
+
+
+def _ensure_upcoming_releases_schema(conn):
+    from wikipedia_releases_scraper import WikipediaReleaseScraper
+
+    scraper = WikipediaReleaseScraper(db_path=DB_PATH)
+    scraper.ensure_schema(conn)
+    return scraper
+
+
+def _upcoming_release_checked_today(last_checked_at):
+    if not last_checked_at:
+        return False
+
+    today_key = datetime.now().date().isoformat()
+    return str(last_checked_at).startswith(today_key)
+
+
+def _select_best_upcoming_release_match(candidates):
+    if not candidates:
+        return None, "unmatched"
+
+    best = candidates[0]
+    best_score = float(best.get("match_score") or 0.0)
+    second_score = float(candidates[1].get("match_score") or 0.0) if len(candidates) > 1 else 0.0
+
+    if best_score < 0.75:
+        return None, "unmatched"
+
+    if second_score and abs(best_score - second_score) < 0.03 and best_score < 0.92:
+        return None, "ambiguous"
+
+    return best, "matched"
+
+
+def _update_upcoming_release_match_record(
+    conn,
+    release_id,
+    *,
+    release_group_mbid=None,
+    status="unmatched",
+    source=None,
+    confidence=None,
+    match_score=None,
+    manual_override=False,
+):
+    placeholder = "%s" if _is_postgres_connection(conn) else "?"
+    cursor = conn.cursor()
+    cursor.execute(
+        f"""
+        UPDATE upcoming_releases
+        SET release_group_mbid = {placeholder},
+            mbid_match_status = {placeholder},
+            mbid_source = {placeholder},
+            mbid_confidence = {placeholder},
+            mbid_match_score = {placeholder},
+            mbid_last_checked_at = {placeholder},
+            mbid_manual_override = {placeholder},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = {placeholder}
+        """,
+        (
+            release_group_mbid,
+            status,
+            source,
+            confidence,
+            match_score,
+            datetime.now().isoformat(),
+            bool(manual_override),
+            release_id,
+        ),
+    )
+    conn.commit()
+
+
+def _match_upcoming_release(release_id, manual_release_group_mbid=None, manual_source=None):
+    conn = get_db()
+    try:
+        _ensure_upcoming_releases_schema(conn)
+        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        cursor = conn.cursor()
+        cursor.execute(
+            f"SELECT * FROM upcoming_releases WHERE id = {placeholder}",
+            (release_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return {"success": False, "error": "Upcoming release not found"}, 404
+
+        artist_name = (_row_get(row, "artist_name", 1, "") or "").strip()
+        album_name = (_row_get(row, "album_name", 2, "") or "").strip()
+        if not artist_name or not album_name:
+            return {"success": False, "error": "Upcoming release is missing artist or album information"}, 400
+
+        if manual_release_group_mbid:
+            _update_upcoming_release_match_record(
+                conn,
+                release_id,
+                release_group_mbid=manual_release_group_mbid,
+                status="matched",
+                source=manual_source or "manual_selection",
+                confidence="manual",
+                match_score=1.0,
+                manual_override=True,
+            )
+            return {
+                "success": True,
+                "release_id": release_id,
+                "release_group_mbid": manual_release_group_mbid,
+                "match_status": "matched",
+                "manual_override": True,
+            }, 200
+
+        candidates = _search_musicbrainz_releasegroup_matches(artist_name, album_name, limit=10)
+        selected, status = _select_best_upcoming_release_match(candidates)
+
+        if not selected:
+            _update_upcoming_release_match_record(
+                conn,
+                release_id,
+                release_group_mbid=None,
+                status=status,
+                source="musicbrainz_auto",
+                confidence=None,
+                match_score=float(candidates[0].get("match_score") or 0.0) if candidates else None,
+                manual_override=False,
+            )
+            return {
+                "success": False,
+                "release_id": release_id,
+                "match_status": status,
+                "candidates": candidates[:5],
+            }, 200
+
+        _update_upcoming_release_match_record(
+            conn,
+            release_id,
+            release_group_mbid=selected.get("id"),
+            status="matched",
+            source="musicbrainz_auto",
+            confidence=selected.get("confidence"),
+            match_score=selected.get("match_score"),
+            manual_override=False,
+        )
+        return {
+            "success": True,
+            "release_id": release_id,
+            "release_group_mbid": selected.get("id"),
+            "match_status": "matched",
+            "confidence": selected.get("confidence"),
+            "match_score": selected.get("match_score"),
+            "candidate": selected,
+        }, 200
+    finally:
+        conn.close()
+
+
+def _run_daily_1am_upcoming_release_match():
+    now = datetime.now()
+    if now.hour != 1:
+        return
+
+    conn = get_db()
+    try:
+        _ensure_upcoming_releases_schema(conn)
+        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT id, mbid_last_checked_at
+            FROM upcoming_releases
+            WHERE COALESCE(mbid_manual_override, FALSE) = FALSE
+              AND (release_date IS NULL OR release_date >= {placeholder})
+            ORDER BY release_date ASC, artist_name ASC, album_name ASC
+            """,
+            (now.date().isoformat(),),
+        )
+        rows = cursor.fetchall() or []
+    finally:
+        conn.close()
+
+    pending_ids = []
+    for row in rows:
+        release_id = _row_get(row, "id", 0)
+        last_checked_at = _row_get(row, "mbid_last_checked_at", 1)
+        if release_id and not _upcoming_release_checked_today(last_checked_at):
+            pending_ids.append(int(release_id))
+
+    if not pending_ids:
+        return
+
+    matched = 0
+    unresolved = 0
+    for release_id in pending_ids:
+        try:
+            result, _ = _match_upcoming_release(release_id)
+            if result.get("success"):
+                matched += 1
+            else:
+                unresolved += 1
+        except Exception as match_err:
+            unresolved += 1
+            logging.warning(f"[UPCOMING_MATCH] Release {release_id} auto-match failed: {match_err}")
+
+    logging.info(
+        "[UPCOMING_MATCH] 1am auto-match complete: checked=%s matched=%s unresolved=%s",
+        len(pending_ids),
+        matched,
+        unresolved,
+    )
+
+
+def _start_upcoming_release_match_scheduler():
+    """Start a lightweight scheduler that performs upcoming-release MBID matching at 1am."""
+    global upcoming_release_match_scheduler
+
+    with upcoming_release_match_scheduler_lock:
+        existing_thread = upcoming_release_match_scheduler.get("thread")
+        if existing_thread and hasattr(existing_thread, "is_alive") and existing_thread.is_alive():
+            upcoming_release_match_scheduler["running"] = True
+            return
+
+        stop_event = threading.Event()
+        upcoming_release_match_scheduler["stop_event"] = stop_event
+
+        def scheduler_worker():
+            try:
+                time.sleep(15)
+                interval_seconds = 10 * 60
+                while not stop_event.is_set():
+                    try:
+                        _run_daily_1am_upcoming_release_match()
+                    except Exception as loop_err:
+                        logging.error(f"[UPCOMING_MATCH] Scheduler loop error: {loop_err}")
+
+                    if stop_event.wait(timeout=interval_seconds):
+                        break
+            finally:
+                with upcoming_release_match_scheduler_lock:
+                    upcoming_release_match_scheduler["running"] = False
+
+        thread = threading.Thread(target=scheduler_worker, daemon=True, name="upcoming-release-match-scheduler")
+        thread.start()
+        upcoming_release_match_scheduler["thread"] = thread
+        upcoming_release_match_scheduler["running"] = True
+        logging.info("[UPCOMING_MATCH] Scheduler started (checks every 10 minutes, runs matching at 1am)")
 
 
 def _run_daily_new_artist_import():
@@ -2886,6 +3139,11 @@ if _is_startup_leader_worker:
         _start_daily_scheduler()
     except Exception as e:
         logging.error(f"Failed to start daily scheduler: {e}")
+
+    try:
+        _start_upcoming_release_match_scheduler()
+    except Exception as e:
+        logging.error(f"Failed to start upcoming release match scheduler: {e}")
 else:
     logging.debug("[BOOT] Non-leader worker: startup background schedulers not started in this process")
 
@@ -28058,39 +28316,39 @@ def api_upcoming_releases():
         from wikipedia_releases_scraper import WikipediaReleaseScraper
         
         filter_collection = request.args.get("collection", "false").lower() == "true"
+        include_queue = request.args.get("include_queue", "false").lower() == "true"
         
         scraper = WikipediaReleaseScraper(db_path=DB_PATH)
         releases = scraper.get_upcoming_releases(artist_in_collection=filter_collection)
 
-        # Annotate each release with whether it is currently in the download queue
-        try:
-            conn = get_db()
-            cursor = conn.cursor()
-            placeholder = "%s" if _is_postgres_connection(conn) else "?"
-            # Fetch all album-level queue entries that are not yet completed/failed
-            cursor.execute(
-                "SELECT LOWER(COALESCE(album_artist, artist)) AS artist_key, LOWER(album) AS album_key "
-                "FROM download_queue "
-                "WHERE import_type = 'album' "
-                "  AND status NOT IN ('completed', 'failed', 'cancelled') "
-                "  AND album IS NOT NULL"
-            )
-            queue_albums = set()
-            for row in (cursor.fetchall() or []):
-                artist_val = _row_get(row, 'artist_key', index=0)
-                album_val = _row_get(row, 'album_key', index=1)
-                if artist_val and album_val:
-                    queue_albums.add((artist_val, album_val))
-            conn.close()
+        if include_queue:
+            # Optional queue annotation for views that render download-state badges.
+            try:
+                conn = get_db()
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT LOWER(COALESCE(album_artist, artist)) AS artist_key, LOWER(album) AS album_key "
+                    "FROM download_queue "
+                    "WHERE import_type = 'album' "
+                    "  AND status NOT IN ('completed', 'failed', 'cancelled') "
+                    "  AND album IS NOT NULL"
+                )
+                queue_albums = set()
+                for row in (cursor.fetchall() or []):
+                    artist_val = _row_get(row, 'artist_key', index=0)
+                    album_val = _row_get(row, 'album_key', index=1)
+                    if artist_val and album_val:
+                        queue_albums.add((artist_val, album_val))
+                conn.close()
 
-            for release in releases:
-                artist_key = (release.get("artist_name") or "").lower()
-                album_key = (release.get("album_name") or "").lower()
-                release["in_queue"] = (artist_key, album_key) in queue_albums
-        except Exception as queue_err:
-            logging.warning(f"Could not check download queue for upcoming releases: {queue_err}")
-            for release in releases:
-                release["in_queue"] = False
+                for release in releases:
+                    artist_key = (release.get("artist_name") or "").lower()
+                    album_key = (release.get("album_name") or "").lower()
+                    release["in_queue"] = (artist_key, album_key) in queue_albums
+            except Exception as queue_err:
+                logging.warning(f"Could not check download queue for upcoming releases: {queue_err}")
+                for release in releases:
+                    release["in_queue"] = False
         
         # Group by month for UI display
         grouped = {}
@@ -28111,6 +28369,25 @@ def api_upcoming_releases():
     except Exception as e:
         logging.error(f"Error fetching upcoming releases: {str(e)}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/upcoming-releases/<int:release_id>/match", methods=["POST"])
+def api_match_upcoming_release(release_id):
+    """Automatically match an upcoming release to a MusicBrainz release-group or store a manual override."""
+    try:
+        data = request.get_json(silent=True) or {}
+        release_group_mbid = (data.get("release_group_mbid") or data.get("release_group_id") or "").strip()
+        source = (data.get("source") or "manual_selection").strip() or "manual_selection"
+
+        payload, status_code = _match_upcoming_release(
+            release_id,
+            manual_release_group_mbid=release_group_mbid or None,
+            manual_source=source,
+        )
+        return jsonify(payload), status_code
+    except Exception as e:
+        logging.error(f"Error matching upcoming release {release_id}: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/api/upcoming-releases/scrape", methods=["POST"])

@@ -929,11 +929,33 @@ def update_schema(db_path):
             is_new_release BOOLEAN DEFAULT FALSE,
             notes TEXT,
             url TEXT,
+            release_group_mbid TEXT,
+            mbid_match_status TEXT DEFAULT 'unmatched',
+            mbid_source TEXT,
+            mbid_confidence TEXT,
+            mbid_match_score REAL,
+            mbid_last_checked_at TEXT,
+            mbid_manual_override BOOLEAN DEFAULT FALSE,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(artist_name, album_name, release_date)
         )
     """)
+
+    cursor.execute("PRAGMA table_info(upcoming_releases);")
+    existing_upcoming_columns = [row[1] for row in cursor.fetchall()]
+    required_upcoming_columns = {
+        "release_group_mbid": "TEXT",
+        "mbid_match_status": "TEXT DEFAULT 'unmatched'",
+        "mbid_source": "TEXT",
+        "mbid_confidence": "TEXT",
+        "mbid_match_score": "REAL",
+        "mbid_last_checked_at": "TEXT",
+        "mbid_manual_override": "BOOLEAN DEFAULT FALSE",
+    }
+    for col, col_type in required_upcoming_columns.items():
+        if col not in existing_upcoming_columns:
+            cursor.execute(f"ALTER TABLE upcoming_releases ADD COLUMN {col} {col_type};")
     
     # ✅ Create indexes for upcoming_releases
     cursor.execute("""
@@ -947,6 +969,10 @@ def update_schema(db_path):
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_upcoming_year 
         ON upcoming_releases(release_year)
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_upcoming_release_group_mbid
+        ON upcoming_releases(release_group_mbid)
     """)
     
     # ✅ Create genre_updates table for tracking genre changes
