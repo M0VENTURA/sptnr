@@ -671,7 +671,14 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                   AND table_schema = 'public'
                 ORDER BY column_name
             """)
-            columns = [row['column_name'] for row in cursor.fetchall()]
+            columns = []
+            for row in cursor.fetchall():
+                if hasattr(row, 'get'):
+                    col_name = row.get('column_name')
+                else:
+                    col_name = row[0] if row and len(row) > 0 else None
+                if col_name:
+                    columns.append(col_name)
 
             required_cols = {
                 'search_query': "TEXT",
@@ -781,7 +788,14 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                 WHERE table_name = 'download_queue'
                   AND table_schema = 'public'
             """)
-            final_columns = {row['column_name'] for row in cursor.fetchall()}
+            final_columns = set()
+            for row in cursor.fetchall():
+                if hasattr(row, 'get'):
+                    col_name = row.get('column_name')
+                else:
+                    col_name = row[0] if row and len(row) > 0 else None
+                if col_name:
+                    final_columns.add(col_name)
             missing_after_ensure = sorted(
                 [col for col in required_cols.keys() if col not in final_columns]
             )
@@ -3308,6 +3322,16 @@ def check_downloads_folder():
 
         def _find_existing_music_file(queue_item):
             """Find a likely already-imported /music file for an active queue item."""
+            def _row_file_path(row_value):
+                if not row_value:
+                    return None
+                if hasattr(row_value, 'get'):
+                    return row_value.get('file_path')
+                if isinstance(row_value, (list, tuple)):
+                    return row_value[0] if len(row_value) > 0 else None
+                return None
+
+            queue_item_id = queue_item.get('id') if hasattr(queue_item, 'get') else None
             try:
                 # 1) Strongest match: recording MBID already present on tracks.mbid
                 recording_mbid = (queue_item.get('recording_mbid') or '').strip()
@@ -3327,7 +3351,7 @@ def check_downloads_folder():
                     )
                     row = cursor.fetchone()
                     if row:
-                        path_value = row.get('file_path') if hasattr(row, 'keys') else row[0]
+                        path_value = _row_file_path(row)
                         if path_value and _is_within_music(path_value) and os.path.isfile(path_value):
                             return path_value
 
@@ -3358,13 +3382,19 @@ def check_downloads_folder():
                 )
                 rows = cursor.fetchall() or []
                 for row in rows:
-                    path_value = row.get('file_path') if hasattr(row, 'keys') else row[0]
+                    path_value = _row_file_path(row)
                     if path_value and _is_within_music(path_value) and os.path.isfile(path_value):
                         return path_value
 
                 return None
             except Exception as e:
-                logger.debug(f"[RECONCILE] Failed to query tracks for queue item {queue_item.get('id')}: {e}")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                logger.debug(
+                    f"[RECONCILE] Failed to query tracks for queue item {queue_item_id}: {type(e).__name__}: {e}"
+                )
                 return None
 
         # Try to match files to queue items
