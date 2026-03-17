@@ -1507,38 +1507,37 @@ def get_queue(status=None, source=None, limit=50):
         conn = get_db()
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-        # Only run the expensive information_schema check once per process lifetime.
-        if not _queue_schema_checked:
-            with _queue_schema_lock:
-                if not _queue_schema_checked:
-                    cursor.execute("""
-                        SELECT column_name FROM information_schema.columns
-                        WHERE table_name = 'download_queue' AND table_schema = 'public'
-                    """)
-                    columns = [row.get('column_name') for row in cursor.fetchall() if row.get('column_name')]
+        # Run the canonical schema self-heal pass so all queue columns
+        # (including copied_individually/release_year) are present.
+        try:
+            _ensure_download_queue_columns(conn, cursor, is_pg=True)
+        except Exception as schema_err:
+            logger.warning(f"get_queue schema ensure failed (continuing): {schema_err}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
 
-                    # Add missing columns if needed
-                    missing_cols = {
-                        'source': "TEXT DEFAULT 'soulseek'",
-                        'priority': "INTEGER DEFAULT 5",
-                        'search_query': "TEXT",
-                        'import_group': "TEXT",
-                        'import_type': "TEXT DEFAULT 'song'"
-                    }
-                    for col, col_type in missing_cols.items():
-                        if col not in columns:
-                            logger.warning(f"'{col}' column missing from download_queue, attempting to add it")
-                            try:
-                                cursor.execute(f"ALTER TABLE download_queue ADD COLUMN {col} {col_type};")
-                                conn.commit()
-                                columns.append(col)
-                            except Exception as e:
-                                logger.warning(f"Could not add {col} column: {e}")
+        # Refresh cached columns; guard against None so membership checks
+        # cannot raise TypeError when Postgres has transient failures.
+        if not _queue_columns_cache:
+            try:
+                cursor.execute("""
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_name = 'download_queue' AND table_schema = 'public'
+                """)
+                _queue_columns_cache = [
+                    row.get('column_name') for row in cursor.fetchall() if row.get('column_name')
+                ]
+            except Exception as col_err:
+                logger.warning(f"get_queue could not refresh column cache: {col_err}")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                _queue_columns_cache = []
 
-                    _queue_columns_cache = columns
-                    _queue_schema_checked = True
-        else:
-            columns = _queue_columns_cache
+        columns = _queue_columns_cache or []
 
         placeholder = "%s"
 

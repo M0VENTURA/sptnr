@@ -1,8 +1,11 @@
 import sqlite3
 import os
 import logging
+import time
 
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
+_pg_last_failure_monotonic = 0.0
+_PG_FAILURE_BACKOFF_SECONDS = float(os.environ.get("PG_FAILURE_BACKOFF_SECONDS", "30"))
 
 
 def is_postgres_configured() -> bool:
@@ -83,6 +86,16 @@ def get_db_connection():
     pg_database = os.environ.get("PG_DATABASE", "sptnr")
 
     if is_postgres_configured():
+        global _pg_last_failure_monotonic
+        now = time.monotonic()
+        if _pg_last_failure_monotonic > 0:
+            elapsed = now - _pg_last_failure_monotonic
+            if elapsed < _PG_FAILURE_BACKOFF_SECONDS:
+                remaining = int(_PG_FAILURE_BACKOFF_SECONDS - elapsed)
+                raise RuntimeError(
+                    "PostgreSQL is configured but recent connection failures are in backoff "
+                    f"for another ~{remaining}s"
+                )
         try:
             import psycopg2
             import psycopg2.extras
@@ -104,6 +117,7 @@ def get_db_connection():
                     connect_timeout=10,
                 )
                 logging.debug(f"Connected to PostgreSQL: {pg_host}/{pg_database}")
+            _pg_last_failure_monotonic = 0.0
             return conn
         except ImportError as e:
             raise RuntimeError(
@@ -111,6 +125,7 @@ def get_db_connection():
                 "Install psycopg2-binary to continue."
             ) from e
         except Exception as e:
+            _pg_last_failure_monotonic = time.monotonic()
             raise RuntimeError(
                 f"PostgreSQL is configured but connection failed: {e}"
             ) from e
