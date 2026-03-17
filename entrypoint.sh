@@ -37,6 +37,7 @@ fi
 
 # Start queue processor in background (processing interval: 30 seconds)
 echo "Starting download queue processor (interval: 30s)..."
+export SPTNR_QUEUE_PROCESSOR_MANAGED_EXTERNALLY=1
 python3 queue_processor.py 30 > /config/queue_processor.log 2>&1 &
 QUEUE_PID=$!
 echo "✓ Queue processor started (PID: $QUEUE_PID)"

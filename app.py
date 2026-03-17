@@ -2804,6 +2804,11 @@ def _start_queue_processor_if_needed(force_restart: bool = False) -> bool:
 
     Returns True when a new process was started.
     """
+    managed_externally = str(os.environ.get("SPTNR_QUEUE_PROCESSOR_MANAGED_EXTERNALLY", "0")).strip().lower()
+    if managed_externally in {"1", "true", "yes", "on"}:
+        logging.info("[QUEUE_PROCESSOR] External queue processor management enabled; skipping app-managed start")
+        return False
+
     existing = _find_queue_processor_process()
     if existing and not force_restart:
         return False
