@@ -1861,11 +1861,29 @@ function escapeJsString(str) {
             .replace(/\r/g, '\\r');
 }
 
-function formatDuration(ms) {
-  if (!ms) return 'N/A';
-  const seconds = Math.floor(ms / 1000);
-  const mins = Math.floor(seconds / 60);
+function formatDuration(rawValue) {
+  if (rawValue == null || rawValue === '') return 'N/A';
+
+  let n = Number(rawValue);
+  if (!Number.isFinite(n) || n <= 0) return 'N/A';
+
+  let seconds;
+  if (n >= 100000000) {
+    seconds = n / 1000000;
+  } else if (n >= 100000) {
+    seconds = n / 1000;
+  } else {
+    seconds = n;
+  }
+
+  seconds = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(seconds / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
   const secs = seconds % 60;
+
+  if (hours > 0) {
+    return `${hours}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  }
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 

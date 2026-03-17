@@ -14,11 +14,34 @@ if (typeof escapeHtml === 'undefined') {
 }
 
 if (typeof formatDuration === 'undefined') {
-  function formatDuration(ms) {
-    if (!ms || ms === 0) return 'N/A';
-    const seconds = Math.floor(ms / 1000);
-    const minutes = Math.floor(seconds / 60);
+  function formatDuration(rawValue) {
+    if (rawValue == null || rawValue === '') return 'N/A';
+
+    // MusicBrainz duration fields can arrive as seconds, milliseconds, or
+    // microseconds depending on endpoint/proxy path. Normalize heuristically.
+    let n = Number(rawValue);
+    if (!Number.isFinite(n) || n <= 0) return 'N/A';
+
+    let seconds;
+    if (n >= 100000000) {
+      // Likely microseconds
+      seconds = n / 1000000;
+    } else if (n >= 100000) {
+      // Likely milliseconds
+      seconds = n / 1000;
+    } else {
+      // Likely already seconds
+      seconds = n;
+    }
+
+    seconds = Math.max(0, Math.floor(seconds));
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
     const secs = seconds % 60;
+
+    if (hours > 0) {
+      return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    }
     return `${minutes}:${secs.toString().padStart(2, '0')}`;
   }
 }
