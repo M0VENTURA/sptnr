@@ -4,6 +4,7 @@ from helpers.db_utils import (
     ensure_musicbrainz_album_mbid_column,
     ensure_writer_column,
     ensure_cover_columns,
+    ensure_track_release_year_column,
     verify_album_artist_column,
 )
 from download_file_verification import ensure_verification_columns, ensure_queue_mbid_columns
@@ -547,6 +548,9 @@ ensure_writer_column()
 
 # Ensure cover detection columns exist in tracks table
 ensure_cover_columns()
+
+# Ensure optional release_year column exists in tracks table
+ensure_track_release_year_column()
 
 # Ensure download file verification columns exist
 ensure_verification_columns()

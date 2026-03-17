@@ -31,6 +31,37 @@ from helpers.db_utils import _is_postgres_connection
 # Constants for z-score to popularity conversion
 Z_SCORE_MIDPOINT = 50.0
 Z_SCORE_TO_POPULARITY_SCALE = 16.7
+_TRACKS_COLUMN_CACHE: Dict[str, set[str]] = {}
+
+
+def _get_tracks_table_columns(cursor, is_pg: bool) -> set[str]:
+    """Return cached set of columns currently present on the tracks table."""
+    cache_key = "postgres" if is_pg else "sqlite"
+    cached = _TRACKS_COLUMN_CACHE.get(cache_key)
+    if cached:
+        return cached
+
+    if is_pg:
+        cursor.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'tracks' AND table_schema = 'public'
+            """
+        )
+        columns = {
+            (row.get("column_name") if hasattr(row, "get") else row[0])
+            for row in cursor.fetchall()
+        }
+    else:
+        cursor.execute("PRAGMA table_info(tracks)")
+        columns = {
+            (row[1] if isinstance(row, (tuple, list)) else row["name"])
+            for row in cursor.fetchall()
+        }
+
+    _TRACKS_COLUMN_CACHE[cache_key] = columns
+    return columns
 
 
 def calculate_track_zscore(score: float, mean: float, stddev: float) -> float:
@@ -844,6 +875,21 @@ def save_to_db(track_data):
             sanitized_data[key] = int(value)
         else:
             sanitized_data[key] = value
+
+    # Drop keys for columns that are not present in the current DB schema.
+    # This prevents optional/newer fields (for example release_year on older DBs)
+    # from aborting the entire track save and poisoning the transaction.
+    try:
+        existing_track_columns = _get_tracks_table_columns(cursor, is_pg)
+        dropped_keys = [key for key in list(sanitized_data.keys()) if key not in existing_track_columns]
+        for key in dropped_keys:
+            sanitized_data.pop(key, None)
+        if dropped_keys:
+            logging.warning(
+                f"save_to_db dropped unknown tracks column(s): {', '.join(sorted(dropped_keys))}"
+            )
+    except Exception as schema_err:
+        logging.debug(f"save_to_db could not inspect tracks schema before upsert: {schema_err}")
 
     # Preserve existing writer credits when the incoming payload has no writer data.
     # Some Navidrome responses omit credit fields; without this guard we'd erase valid writer values.

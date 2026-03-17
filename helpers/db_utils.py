@@ -537,3 +537,33 @@ def ensure_cover_columns():
         logging.error(f"✗ Error ensuring cover columns exist: {e}", exc_info=True)
         return False
 
+
+def ensure_track_release_year_column():
+    """Ensure the optional release_year column exists in the tracks table."""
+    import logging
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+
+        if not _table_exists(cursor, "tracks", is_pg):
+            logging.warning("Tracks table does not exist yet, skipping release_year migration")
+            conn.close()
+            return False
+
+        existing = _get_table_columns(cursor, "tracks", is_pg)
+        if "release_year" not in existing:
+            logging.info("Adding 'release_year' column to tracks table...")
+            cursor.execute("ALTER TABLE tracks ADD COLUMN release_year INTEGER")
+            conn.commit()
+            logging.info("✓ Added 'release_year' column to tracks table")
+        else:
+            logging.debug("✓ Column 'release_year' already exists in tracks table")
+
+        conn.close()
+        return True
+    except Exception as e:
+        logging.error(f"✗ Error ensuring release_year column exists: {e}", exc_info=True)
+        return False
+
