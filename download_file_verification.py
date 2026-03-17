@@ -12,6 +12,7 @@ import os
 import psycopg2
 import psycopg2.extras
 import logging
+import time
 from datetime import datetime, timedelta
 from contextlib import closing
 
@@ -24,6 +25,7 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+_last_pg_startup_log_monotonic = 0.0
 
 
 def _is_postgres_connection(conn):
@@ -41,6 +43,26 @@ def _is_postgres_configured():
     pg_user = (os.environ.get("PG_USER") or "").strip()
     pg_database = (os.environ.get("PG_DATABASE") or "").strip()
     return bool(pg_dsn or (pg_host and pg_user and pg_database))
+
+
+def _is_transient_pg_startup_error(error) -> bool:
+    message = str(error).lower()
+    markers = (
+        "the database system is starting up",
+        "the database system is in recovery mode",
+        "cannot connect now",
+    )
+    return any(marker in message for marker in markers)
+
+
+def _log_pg_startup_once(message: str, interval_seconds: int = 30):
+    global _last_pg_startup_log_monotonic
+    now = time.monotonic()
+    if (now - _last_pg_startup_log_monotonic) >= interval_seconds:
+        logger.info(message)
+        _last_pg_startup_log_monotonic = now
+    else:
+        logger.debug(message)
 
 
 def _get_db_connection():
@@ -109,7 +131,12 @@ def _ensure_columns_in_table(columns_to_add):
         return True
 
     except psycopg2.Error as e:
-        logger.warning(f"Skipping download_queue column migration: PostgreSQL unavailable - {e}")
+        if _is_transient_pg_startup_error(e):
+            _log_pg_startup_once(
+                f"Skipping download_queue column migration while PostgreSQL starts: {e}"
+            )
+        else:
+            logger.warning(f"Skipping download_queue column migration: PostgreSQL unavailable - {e}")
         return False
     except Exception as e:
         logger.error(f"Error ensuring download_queue columns: {e}", exc_info=True)

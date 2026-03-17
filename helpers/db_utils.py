@@ -8,6 +8,19 @@ _pg_last_failure_monotonic = 0.0
 _PG_FAILURE_BACKOFF_SECONDS = float(os.environ.get("PG_FAILURE_BACKOFF_SECONDS", "30"))
 
 
+def is_transient_pg_startup_error(error) -> bool:
+    """Return True for transient PostgreSQL startup/recovery availability errors."""
+    message = str(error).lower()
+    markers = (
+        "the database system is starting up",
+        "the database system is in recovery mode",
+        "cannot connect now",
+        "terminating connection due to administrator command",
+        "recent connection failures are in backoff",
+    )
+    return any(marker in message for marker in markers)
+
+
 def is_postgres_configured() -> bool:
     """Return True when PostgreSQL connection settings are configured."""
     pg_dsn = (os.environ.get("DATABASE_URL") or os.environ.get("PG_DSN") or "").strip()
@@ -497,7 +510,10 @@ def ensure_writer_column():
         return True
         
     except RuntimeError as e:
-        logging.warning(f"⚠ Skipping writer column migration: {e}")
+        if is_transient_pg_startup_error(e):
+            logging.info(f"Skipping writer column migration while PostgreSQL starts: {e}")
+        else:
+            logging.warning(f"⚠ Skipping writer column migration: {e}")
         return False
     except Exception as e:
         logging.error(f"✗ Error ensuring writer column exists: {e}", exc_info=True)
@@ -558,7 +574,10 @@ def ensure_cover_columns():
         return True
 
     except RuntimeError as e:
-        logging.warning(f"⚠ Skipping cover columns migration: {e}")
+        if is_transient_pg_startup_error(e):
+            logging.info(f"Skipping cover columns migration while PostgreSQL starts: {e}")
+        else:
+            logging.warning(f"⚠ Skipping cover columns migration: {e}")
         return False
     except Exception as e:
         logging.error(f"✗ Error ensuring cover columns exist: {e}", exc_info=True)
@@ -591,7 +610,10 @@ def ensure_track_release_year_column():
         conn.close()
         return True
     except RuntimeError as e:
-        logging.warning(f"⚠ Skipping release_year migration: {e}")
+        if is_transient_pg_startup_error(e):
+            logging.info(f"Skipping release_year migration while PostgreSQL starts: {e}")
+        else:
+            logging.warning(f"⚠ Skipping release_year migration: {e}")
         return False
     except Exception as e:
         logging.error(f"✗ Error ensuring release_year column exists: {e}", exc_info=True)

@@ -563,7 +563,10 @@ ensure_queue_mbid_columns()
 # Verify the migration worked
 verification = verify_album_artist_column()
 if not verification["exists"]:
-    logging.warning(f"⚠️ Database migration issue: {verification['message']}")
+    if _is_pg_startup_unavailable_error(verification.get("message", "")):
+        logging.info(f"Database migration checks deferred while PostgreSQL starts: {verification['message']}")
+    else:
+        logging.warning(f"⚠️ Database migration issue: {verification['message']}")
 else:
     logging.debug(f"Album Artist Migration Status: {verification['message']}")
 
@@ -3030,24 +3033,63 @@ def enforce_setup_wizard():
 
 # Track if schema has been updated this session
 _schema_updated = False
+_pg_startup_backoff_until = 0.0
+_PG_STARTUP_BACKOFF_SECONDS = float(os.environ.get("PG_STARTUP_BACKOFF_SECONDS", "20"))
+
+
+def _is_pg_startup_unavailable_error(error) -> bool:
+    """Return True for transient PostgreSQL startup/recovery availability errors."""
+    message = str(error).lower()
+    markers = (
+        "the database system is starting up",
+        "the database system is in recovery mode",
+        "cannot connect now",
+        "terminating connection due to administrator command",
+    )
+    return any(marker in message for marker in markers)
 
 
 def get_db():
     """Get a database connection (PostgreSQL if configured, else SQLite)."""
-    global _schema_updated
+    global _schema_updated, _pg_startup_backoff_until
     if PG_HOST and PG_USER and PG_DATABASE:
         # Connect to PostgreSQL
         if not _ensure_psycopg2_loaded() or psycopg2 is None:
             raise RuntimeError("psycopg2 not available - install with: pip install psycopg2-binary")
-        conn = psycopg2.connect(  # type: ignore[name-defined]
-            host=PG_HOST,
-            port=PG_PORT,
-            user=PG_USER,
-            password=PG_PASSWORD,
-            dbname=PG_DATABASE,
-            cursor_factory=psycopg2.extras.RealDictCursor  # type: ignore[name-defined]
-        )
-        return conn
+
+        now = time.monotonic()
+        if _pg_startup_backoff_until and now < _pg_startup_backoff_until:
+            wait_left = max(1, int(_pg_startup_backoff_until - now))
+            raise RuntimeError(f"PostgreSQL startup backoff active; retry in ~{wait_left}s")
+
+        max_attempts = 3
+        retry_delays = (0.6, 1.0)
+        connect_timeout = int(os.environ.get("PG_CONNECT_TIMEOUT", "5"))
+
+        for attempt in range(max_attempts):
+            try:
+                conn = psycopg2.connect(  # type: ignore[name-defined]
+                    host=PG_HOST,
+                    port=PG_PORT,
+                    user=PG_USER,
+                    password=PG_PASSWORD,
+                    dbname=PG_DATABASE,
+                    cursor_factory=psycopg2.extras.RealDictCursor,  # type: ignore[name-defined]
+                    connect_timeout=connect_timeout,
+                )
+                _pg_startup_backoff_until = 0.0
+                return conn
+            except Exception as e:
+                if _is_pg_startup_unavailable_error(e):
+                    if attempt < (max_attempts - 1):
+                        time.sleep(retry_delays[attempt])
+                        continue
+
+                    _pg_startup_backoff_until = time.monotonic() + _PG_STARTUP_BACKOFF_SECONDS
+                    raise RuntimeError(
+                        "PostgreSQL is starting up; temporary DB operations are deferred"
+                    ) from e
+                raise
     else:
         # Fallback to SQLite
         db_dir = os.path.dirname(DB_PATH)
@@ -19438,6 +19480,14 @@ def api_downloads_folder_status():
         })
         
     except Exception as e:
+        if _is_pg_startup_unavailable_error(e):
+            logging.info("Folder status unavailable while PostgreSQL starts; returning empty status")
+            return jsonify({
+                "success": True,
+                "folder_matches": [],
+                "total": 0,
+                "message": "PostgreSQL is starting up; try again shortly"
+            })
         logging.error(f"Error getting folder status: {e}")
         import traceback
         logging.error(traceback.format_exc())
@@ -19528,6 +19578,14 @@ def api_downloads_folder_duplicates():
         })
         
     except Exception as e:
+        if _is_pg_startup_unavailable_error(e):
+            logging.info("Folder duplicate detection unavailable while PostgreSQL starts; returning empty list")
+            return jsonify({
+                "success": True,
+                "duplicates": [],
+                "total_duplicate_groups": 0,
+                "message": "PostgreSQL is starting up; try again shortly"
+            })
         logging.error(f"Error detecting folder duplicates: {e}")
         import traceback
         logging.error(traceback.format_exc())
