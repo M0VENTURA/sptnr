@@ -654,7 +654,7 @@ def get_db():
 
 
 def _ensure_download_queue_columns(conn, cursor, is_pg=True):
-    """Ensure expected queue columns exist (PostgreSQL only)"""
+    """Ensure expected queue columns exist (PostgreSQL and SQLite)"""
     global _queue_schema_checked
     if _queue_schema_checked:
         return
@@ -663,8 +663,59 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
         if _queue_schema_checked:
             return
 
+        # --- SQLite branch ---
+        if not is_pg:
+            try:
+                cursor.execute("PRAGMA table_info(download_queue)")
+                sqlite_rows = cursor.fetchall()
+                # PRAGMA table_info returns (cid, name, type, notnull, dflt_value, pk)
+                existing_cols = {row[1] for row in sqlite_rows}
+                required_cols_sqlite = {
+                    'search_query': "TEXT",
+                    'source': "TEXT DEFAULT 'soulseek'",
+                    'priority': "INTEGER DEFAULT 5",
+                    'import_group': "TEXT",
+                    'import_type': "TEXT DEFAULT 'song'",
+                    'track_number': "TEXT",
+                    'disc_number': "TEXT",
+                    'album_artist': "TEXT",
+                    'year': "TEXT",
+                    'release_id': "TEXT",
+                    'release_source': "TEXT",
+                    'release_mbid': "TEXT",
+                    'recording_mbid': "TEXT",
+                    'isrc': "TEXT",
+                    'composer': "TEXT",
+                    'genres': "TEXT",
+                    'release_year': "INTEGER",
+                    'duration': "INTEGER",
+                    'matched_file_path': "TEXT",
+                    'in_collection': "INTEGER DEFAULT 0",
+                    'collection_track_id': "TEXT",
+                    'collection_matched_at': "TEXT",
+                    'copied_individually': "INTEGER DEFAULT 0",
+                    'copied_individually_at': "TEXT",
+                    'cover_art_url': "TEXT",
+                }
+                for col, col_type in required_cols_sqlite.items():
+                    if col not in existing_cols:
+                        logger.info(f"Adding missing SQLite column '{col}' to download_queue")
+                        try:
+                            cursor.execute(f"ALTER TABLE download_queue ADD COLUMN {col} {col_type}")
+                            conn.commit()
+                        except Exception as e:
+                            try:
+                                conn.rollback()
+                            except Exception:
+                                pass
+                            logger.warning(f"Could not add SQLite column {col}: {e}")
+                _queue_schema_checked = True
+            except Exception as e:
+                logger.warning(f"SQLite schema check failed: {e}")
+            return
+
         try:
-            # PostgreSQL-only column checking
+            # PostgreSQL column checking
             cursor.execute("""
                 SELECT column_name FROM information_schema.columns
                 WHERE table_name = 'download_queue'

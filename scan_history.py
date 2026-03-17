@@ -191,7 +191,21 @@ def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: in
                 CREATE INDEX IF NOT EXISTS idx_scan_history_artist_album 
                 ON scan_history(artist, album)
             """)
-            
+
+            # Self-heal: add source column if missing from older schema (e.g. from
+            # the original add_scan_history.sql migration that lacked this column).
+            try:
+                if is_pg:
+                    cursor.execute(
+                        "ALTER TABLE scan_history ADD COLUMN IF NOT EXISTS source TEXT DEFAULT ''"
+                    )
+                else:
+                    cursor.execute(
+                        "ALTER TABLE scan_history ADD COLUMN source TEXT DEFAULT ''"
+                    )
+            except Exception:
+                pass  # Column already exists
+
             # Insert scan record with explicit timestamp so legacy schemas lacking
             # scan_timestamp defaults still produce valid dashboard times.
             scan_timestamp = datetime.utcnow().isoformat() + "Z"
@@ -318,7 +332,21 @@ def get_recent_album_scans(limit: int = 10):
             # Table doesn't exist yet, return empty list
             conn.close()
             return []
-        
+
+        # Self-heal: add source column if missing from older schema.
+        try:
+            if is_pg:
+                cursor.execute(
+                    "ALTER TABLE scan_history ADD COLUMN IF NOT EXISTS source TEXT DEFAULT ''"
+                )
+            else:
+                cursor.execute(
+                    "ALTER TABLE scan_history ADD COLUMN source TEXT DEFAULT ''"
+                )
+            conn.commit()
+        except Exception:
+            pass  # Column already exists
+
         cursor.execute(
             f"""
             SELECT artist, album, scan_type, scan_timestamp, tracks_processed, status, source
