@@ -6578,6 +6578,18 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
             except:
                 track_num = "00"
             
+            # Convert FLAC to MP3 before moving (matches post_download_processor behaviour)
+            if src.lower().endswith('.flac'):
+                try:
+                    from post_download_processor import convert_flac_to_mp3
+                    converted = convert_flac_to_mp3(src)
+                    if converted:
+                        src = converted
+                    else:
+                        logger.warning(f"[AUTO_MOVE] FLAC conversion failed for {src}, moving as FLAC")
+                except Exception as conv_err:
+                    logger.warning(f"[AUTO_MOVE] FLAC conversion error (non-fatal): {conv_err}")
+
             # Get file extension
             ext = os.path.splitext(src)[1].lower()
             

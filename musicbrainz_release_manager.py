@@ -431,15 +431,24 @@ class MusicBrainzReleaseManager:
                     except Exception:
                         release_year = None
                 
+                # Derive release-level album artist from artist-credit
+                rel_credits = release.get('artist-credit', [])
+                if rel_credits:
+                    rel_album_artist = _build_artist_credit_string(rel_credits) or album_artist or artist
+                else:
+                    rel_album_artist = album_artist or artist
+
                 media = release.get('media', [])
                 track_count = 0
                 
                 for medium in media:
                     tracks = medium.get('tracks', [])
+                    disc_number = str(medium.get('position', 1))
                     
                     for track in tracks:
                         track_count += 1
                         recording = track.get('recording', {})
+                        recording_mbid = recording.get('id')
                         
                         track_number = track.get('number', track_count)
                         track_title = recording.get('title', 'Unknown Track')
@@ -461,30 +470,38 @@ class MusicBrainzReleaseManager:
                         # Create search query (artist - title format, no album)
                         search_query = f"{track_artist} - {track_title}".strip()
                         
-                        # Add to download_queue with release year
+                        # Add to download_queue with release year, album_artist, and MB IDs
                         if is_pg:
                             cursor.execute(f"""
                                 INSERT INTO download_queue
                                 (artist, album, title, search_query, source, status,
-                                 release_id, track_number, mb_release_download_id, year,
+                                 release_id, track_number, disc_number, mb_release_download_id,
+                                 year, album_artist, recording_mbid,
                                  created_at, updated_at)
-                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'soulseek', 'queued', {placeholder}, {placeholder}, {placeholder}, {placeholder},
-                                       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'soulseek', 'queued',
+                                        {placeholder}, {placeholder}, {placeholder}, {placeholder},
+                                        {placeholder}, {placeholder}, {placeholder},
+                                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                                 RETURNING id
                             """, (track_artist, album, track_title, search_query,
-                                  release_id, track_number, mb_release_db_id, release_year))
+                                  release_id, track_number, disc_number, mb_release_db_id,
+                                  release_year, rel_album_artist, recording_mbid))
                             queue_row = cursor.fetchone()
                             queue_id = self._row_get(queue_row, 'id', 0, 0)
                         else:
                             cursor.execute(f"""
                                 INSERT INTO download_queue
                                 (artist, album, title, search_query, source, status,
-                                 release_id, track_number, mb_release_download_id, year,
+                                 release_id, track_number, disc_number, mb_release_download_id,
+                                 year, album_artist, recording_mbid,
                                  created_at, updated_at)
-                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'soulseek', 'queued', {placeholder}, {placeholder}, {placeholder}, {placeholder},
-                                       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'soulseek', 'queued',
+                                        {placeholder}, {placeholder}, {placeholder}, {placeholder},
+                                        {placeholder}, {placeholder}, {placeholder},
+                                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                             """, (track_artist, album, track_title, search_query,
-                                  release_id, track_number, mb_release_db_id, release_year))
+                                  release_id, track_number, disc_number, mb_release_db_id,
+                                  release_year, rel_album_artist, recording_mbid))
                             queue_id = cursor.lastrowid
                         queue_ids.append(queue_id)
                         
@@ -584,9 +601,17 @@ class MusicBrainzReleaseManager:
                 total_tracks, monitoring_folder, method
             )
             
+            # Derive album artist from release artist-credit (e.g. "Various Artists" for compilations)
+            release_album_artist = artist
+            if 'releases' in mb_data and mb_data['releases']:
+                rel_credits = mb_data['releases'][0].get('artist-credit', [])
+                if rel_credits:
+                    release_album_artist = _build_artist_credit_string(rel_credits) or artist
+
             # Add tracks to queue
             queue_ids = self.add_release_tracks_to_queue(
-                release_id, mb_data, artist, release_title
+                release_id, mb_data, artist, release_title,
+                album_artist=release_album_artist
             )
             
             return {
