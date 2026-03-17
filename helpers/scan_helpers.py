@@ -274,6 +274,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
         existing_track_ids: set[str] = set()
         navidrome_track_ids: set[str] = set()  # All track IDs returned by Navidrome during this scan
         existing_album_tracks: dict[str, set[str]] = {}
+        existing_album_artists: dict[str, str] = {}  # album_name -> existing album_artist
         albums_needing_reimport: set[str] = set()  # Track albums with missing fields
         albums_logged: set[str] = set()  # Track which albums we've already logged
         try:
@@ -286,12 +287,18 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
             critical_fields = ['duration', 'track_number', 'year', 'file_path']
 
             # Get existing tracks and check for missing fields
-            cursor.execute(f"SELECT album, id, {', '.join(critical_fields)} FROM tracks WHERE artist = {placeholder}", (canonical_artist_name,))
+            cursor.execute(f"SELECT album, id, album_artist, {', '.join(critical_fields)} FROM tracks WHERE artist = {placeholder}", (canonical_artist_name,))
             for row in cursor.fetchall():
                 alb_name = row['album']
                 tid = row['id']
                 existing_track_ids.add(tid)
                 existing_album_tracks.setdefault(alb_name, set()).add(tid)
+
+                # Capture existing album_artist once per album (used to preserve Various Artists)
+                if alb_name not in existing_album_artists:
+                    aa = row['album_artist']
+                    if aa:
+                        existing_album_artists[alb_name] = str(aa)
 
                 # Check if any critical field is missing (NULL or empty)
                 field_values = [row[f] for f in critical_fields]
@@ -381,6 +388,16 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 log_album_scan(artist_name, album_name, 'navidrome', len(cached_ids_for_album), 'skipped')
                 continue
 
+            # Skip if Navidrome track IDs exactly match the DB (no additions/removals) even with
+            # force=True — the library hasn't changed so there is nothing to update.
+            if not album_needs_reimport and tracks and cached_ids_for_album:
+                navidrome_album_ids = {t.get("id") for t in tracks if t.get("id")}
+                if navidrome_album_ids and navidrome_album_ids == cached_ids_for_album:
+                    logging.debug(f"Skipping unchanged album '{album_name}' ({len(cached_ids_for_album)} tracks, IDs match)")
+                    log_unified(f"Navidrome Import - {artist_name} - Skipped album: {album_name} (no changes)")
+                    log_album_scan(artist_name, album_name, 'navidrome', len(cached_ids_for_album), 'skipped')
+                    continue
+
             if album_needs_reimport and verbose:
                 print(f"   Re-importing album with missing fields: {album_name}")
             # Track the number of tracks actually processed for this album
@@ -392,6 +409,18 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
             # 3. artist_name - the function parameter (artist we're importing)
             # Note: track.albumArtist field can be incorrect (e.g., containing track artist with feat.)
             album_artist_value = _clean_artist_name_for_storage(api_album_artist or alb.get("artist") or canonical_artist_name) or canonical_artist_name
+
+            # Preserve an existing 'Various Artists' (or similar) album_artist from the DB.
+            # When scanning a single artist, Navidrome may return their name as the artist for
+            # VA compilation/soundtrack albums, incorrectly overwriting the correct value.
+            _va_variants = frozenset({'various artists', 'various', 'v/a', 'va', 'compilation', 'original soundtrack'})
+            _existing_aa = existing_album_artists.get(album_name, '')
+            if _existing_aa and _existing_aa.lower().strip() in _va_variants and album_artist_value.lower().strip() not in _va_variants:
+                logging.debug(
+                    f"[ARTIST_NORMALIZE] Preserved album_artist='{_existing_aa}' for '{album_name}' "
+                    f"(Navidrome returned '{album_artist_value}')"
+                )
+                album_artist_value = _existing_aa
 
             for t in tracks:
                 track_id = t.get("id")
