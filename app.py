@@ -12347,6 +12347,175 @@ def config_save_json():
         return jsonify({"success": False, "error": error_msg}), 400
 
 
+@app.route("/api/navidrome/ratings/sync-now", methods=["POST"])
+def api_navidrome_sync_ratings_now():
+    """Sync local track star ratings to all configured Navidrome users immediately."""
+    if 'username' not in session:
+        return jsonify({"success": False, "error": "Authentication required"}), 401
+
+    def _get_val(row, key, index=0):
+        if row is None:
+            return None
+        if isinstance(row, dict):
+            return row.get(key)
+        if hasattr(row, "keys"):
+            try:
+                return row[key]
+            except Exception:
+                pass
+        try:
+            return row[index]
+        except Exception:
+            return None
+
+    def _collect_navidrome_users(cfg):
+        users = []
+        for item in (cfg.get("navidrome_users") or []):
+            if not isinstance(item, dict):
+                continue
+            base_url = (item.get("base_url") or "").strip().rstrip("/")
+            username = (item.get("user") or "").strip()
+            password = (item.get("pass") or "").strip()
+            display_name = (item.get("display_name") or username or "Navidrome User").strip()
+            if base_url and username and password:
+                users.append({
+                    "base_url": base_url,
+                    "user": username,
+                    "pass": password,
+                    "display_name": display_name,
+                })
+
+        if users:
+            return users
+
+        nav_cfg = cfg.get("navidrome", {}) if isinstance(cfg.get("navidrome"), dict) else {}
+        base_url = (nav_cfg.get("base_url") or "").strip().rstrip("/")
+        username = (nav_cfg.get("user") or "").strip()
+        password = (nav_cfg.get("pass") or "").strip()
+        if base_url and username and password:
+            users.append({
+                "base_url": base_url,
+                "user": username,
+                "pass": password,
+                "display_name": username,
+            })
+        return users
+
+    conn = None
+    try:
+        cfg = get_config()
+        nav_users = _collect_navidrome_users(cfg)
+        if not nav_users:
+            return jsonify({"success": False, "error": "No configured Navidrome users with credentials"}), 400
+
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, stars FROM tracks WHERE stars IS NOT NULL AND stars > 0")
+        rows = cursor.fetchall() or []
+
+        rated_tracks = []
+        for row in rows:
+            track_id = _get_val(row, "id", 0)
+            stars_raw = _get_val(row, "stars", 1)
+            if track_id is None or stars_raw is None:
+                continue
+            try:
+                stars = int(stars_raw)
+            except (TypeError, ValueError):
+                continue
+            if stars < 1:
+                continue
+            if stars > 5:
+                stars = 5
+            rated_tracks.append((str(track_id), stars))
+
+        if not rated_tracks:
+            return jsonify({
+                "success": True,
+                "message": "No rated tracks found to sync",
+                "tracks_total": 0,
+                "users_total": len(nav_users),
+                "attempted_total": 0,
+                "synced_total": 0,
+                "failed_total": 0,
+                "users": []
+            })
+
+        from api_clients.navidrome import NavidromeClient
+
+        users_result = []
+        total_attempted = 0
+        total_synced = 0
+        total_failed = 0
+
+        for user_cfg in nav_users:
+            client = NavidromeClient(
+                base_url=user_cfg["base_url"],
+                username=user_cfg["user"],
+                password=user_cfg["pass"],
+            )
+
+            user_success = 0
+            user_failed = 0
+            sample_errors = []
+
+            for track_id, stars in rated_tracks:
+                total_attempted += 1
+                try:
+                    response = client.session.get(
+                        f"{user_cfg['base_url']}/rest/setRating.view",
+                        params=client._build_params(id=track_id, rating=stars),
+                        timeout=10,
+                    )
+                    response.raise_for_status()
+                    payload = response.json() if response.content else {}
+                    status = (payload.get("subsonic-response") or {}).get("status")
+                    if status == "ok":
+                        user_success += 1
+                        total_synced += 1
+                    else:
+                        user_failed += 1
+                        total_failed += 1
+                        error_info = ((payload.get("subsonic-response") or {}).get("error") or {})
+                        if len(sample_errors) < 3:
+                            sample_errors.append(
+                                f"{track_id}: {error_info.get('message', 'API status not ok')}"
+                            )
+                except Exception as exc:
+                    user_failed += 1
+                    total_failed += 1
+                    if len(sample_errors) < 3:
+                        sample_errors.append(f"{track_id}: {exc}")
+
+            users_result.append({
+                "display_name": user_cfg["display_name"],
+                "username": user_cfg["user"],
+                "base_url": user_cfg["base_url"],
+                "synced": user_success,
+                "failed": user_failed,
+                "errors": sample_errors,
+            })
+
+        return jsonify({
+            "success": total_synced > 0,
+            "tracks_total": len(rated_tracks),
+            "users_total": len(nav_users),
+            "attempted_total": total_attempted,
+            "synced_total": total_synced,
+            "failed_total": total_failed,
+            "users": users_result,
+        })
+    except Exception as exc:
+        logging.error(f"[CONFIG] Sync-now rating push failed: {exc}", exc_info=True)
+        return jsonify({"success": False, "error": str(exc)}), 500
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
 @app.route("/api/features/update", methods=["POST"])
 def api_features_update():
     """Update individual feature flags and startup-scan preferences in config.yaml."""

@@ -56,12 +56,22 @@
           <h5 class="mb-0"><i class="bi bi-people-fill"></i> Music Users</h5>
           <small class="text-muted">Configure Navidrome, Spotify, and Last.fm for each user</small>
         </div>
-        <button type="button" class="btn btn-sm btn-outline-primary" onclick="addNewUser()">
-          <i class="bi bi-plus-circle"></i> Add Another User
-        </button>
+        <div class="d-flex gap-2 flex-wrap justify-content-end">
+          <button type="button" class="btn btn-sm btn-outline-success" id="syncRatingsNowBtn" onclick="syncRatingsNow()">
+            <i class="bi bi-arrow-repeat"></i> Sync Ratings Now
+          </button>
+          <button type="button" class="btn btn-sm btn-outline-primary" onclick="addNewUser()">
+            <i class="bi bi-plus-circle"></i> Add Another User
+          </button>
+        </div>
       </div>
     </div>
     <div class="card-body">
+      <div class="alert alert-light border mb-3 py-2">
+        <small class="text-muted">
+          Pushes current local track stars to every configured Navidrome user account immediately.
+        </small>
+      </div>
       <!-- Users Container -->
       <div id="usersContainer">
         {% set navidrome_users = config.get('navidrome_users', []) %}
@@ -1170,6 +1180,56 @@ function saveConfig() {
   .finally(() => {
     saveBtn.disabled = false;
     saveBtn.innerHTML = originalText;
+  });
+}
+
+function syncRatingsNow() {
+  const btn = document.getElementById('syncRatingsNowBtn');
+  if (!btn) return;
+
+  btn.disabled = true;
+  const originalHtml = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Syncing...';
+
+  fetch('/api/navidrome/ratings/sync-now', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({})
+  })
+  .then(async response => {
+    const data = await response.json().catch(() => ({}));
+    return {
+      ok: response.ok,
+      data
+    };
+  })
+  .then(result => {
+    const data = result.data || {};
+    if (!result.ok || data.success === false) {
+      const message = data.error || 'Failed to sync ratings';
+      showToast('Sync Failed', message, 'error');
+      return;
+    }
+
+    const users = Array.isArray(data.users) ? data.users : [];
+    const usersWithErrors = users.filter(u => (u.failed || 0) > 0);
+    const summary = `Synced ${data.synced_total || 0}/${data.attempted_total || 0} rating updates across ${data.users_total || 0} user(s)`;
+
+    if (usersWithErrors.length > 0) {
+      const failingNames = usersWithErrors.map(u => u.display_name || u.username || 'Unknown user').join(', ');
+      showToast('Partial Sync Complete', `${summary}. Issues: ${failingNames}`, 'warning');
+    } else {
+      showToast('Sync Complete', summary, 'success');
+    }
+  })
+  .catch(error => {
+    showToast('Sync Failed', error.message || 'Network error while syncing ratings', 'error');
+  })
+  .finally(() => {
+    btn.disabled = false;
+    btn.innerHTML = originalHtml;
   });
 }
 
