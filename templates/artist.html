@@ -31,14 +31,14 @@
   </nav>
 
   {% if qbit_config.enabled %}
-  <div class="d-flex flex-column flex-lg-row justify-content-between align-items-start mb-4 gap-3">
+  <div class="d-flex flex-column flex-md-row justify-content-between align-items-start mb-4 gap-3">
     <div class="flex-grow-1">
       <h1 class="h2 mb-2" data-artist-name="{{ artist_name|e }}">
         <i class="bi bi-person-music"></i> {{ artist_name }}
       </h1>
       <p class="text-muted mb-0">Artist overview</p>
     </div>
-    <div class="d-flex gap-2 flex-column flex-lg-row w-100 w-lg-auto">
+    <div class="d-flex gap-2 flex-row flex-wrap">
       <button class="btn btn-outline-warning" onclick='updateArtistAlbumsWithBeets({{ artist_name|tojson }})' title="Update all albums with beets (write tags and organize files)">
         <i class="bi bi-wrench"></i> <span class="d-none d-sm-inline">Update All Albums</span>
       </button>
@@ -60,7 +60,7 @@
           <input class="form-check-input" type="checkbox" id="artistForceScan" name="force" value="1">
           <label class="form-check-label small" for="artistForceScan">Force</label>
         </div>
-        <button type="submit" class="btn btn-warning w-100" title="Full scan: Navidrome + Popularity + Singles">
+        <button type="submit" class="btn btn-warning" title="Full scan: Navidrome + Popularity + Singles">
           <i class="bi bi-play-circle"></i> <span class="d-none d-sm-inline">Scan Artist</span>
         </button>
       </form>
