@@ -19804,8 +19804,10 @@ def api_queue_add_batch():
         import_type = data.get('import_type', 'playlist' if len(items) > 1 else 'song')
         
         added_count = 0
+        skipped_count = 0
         failed_count = 0
         failed_tracks = []
+        skipped_tracks = []
         
         for item_data in items:
             artist = item_data.get('artist', '').strip() if item_data.get('artist') else ''
@@ -19886,7 +19888,12 @@ def api_queue_add_batch():
                                    release_mbid=release_mbid, recording_mbid=recording_mbid,
                                    cover_art_url=cover_art_url)
                 if item:
-                    added_count += 1
+                    outcome = str(item.get('_queue_outcome', 'added')).strip().lower() if hasattr(item, 'get') else 'added'
+                    if outcome == 'duplicate' or bool(item.get('already_queued')):
+                        skipped_count += 1
+                        skipped_tracks.append(title)
+                    else:
+                        added_count += 1
                 else:
                     failed_count += 1
                     failed_tracks.append(title)
@@ -19898,12 +19905,17 @@ def api_queue_add_batch():
         return jsonify({
             "success": True,
             "added": added_count,
+            "skipped": skipped_count,
             "failed": failed_count,
             "failed_tracks": failed_tracks,
+            "skipped_tracks": skipped_tracks,
             "import_group": import_group_id,
             "import_type": import_type,
-            "message": f"Added {added_count} items to queue" + 
-                      (f", {failed_count} failed" if failed_count > 0 else "")
+            "message": (
+                f"Added {added_count} items to queue"
+                + (f", skipped {skipped_count}" if skipped_count > 0 else "")
+                + (f", {failed_count} failed" if failed_count > 0 else "")
+            )
         })
         
     except Exception as e:

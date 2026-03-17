@@ -1172,6 +1172,24 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
     Returns:
         Queue item dict or None if failed
     """
+    def _row_to_dict(row, row_cursor=None):
+        if row is None:
+            return None
+        if isinstance(row, dict):
+            return dict(row)
+        if hasattr(row, 'keys'):
+            try:
+                return {key: row[key] for key in row.keys()}
+            except Exception:
+                pass
+        if isinstance(row, (list, tuple)) and row_cursor and getattr(row_cursor, 'description', None):
+            try:
+                columns = [col[0] for col in row_cursor.description]
+                return {col: row[idx] for idx, col in enumerate(columns)}
+            except Exception:
+                pass
+        return None
+
     try:
         # Use the instance-configured DB method.
         # If PostgreSQL is configured but cannot be resolved, fail fast instead of silently falling back to SQLite.
@@ -1240,8 +1258,12 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
             if existing:
                 existing_id = existing[0] if isinstance(existing, tuple) else existing.get('id')
                 logger.info(f"Duplicate skipped: {artist} - {title} already in queue (ID {existing_id})")
+                existing_item = _row_to_dict(existing, cursor)
                 conn.close()
-                return dict(existing) if hasattr(existing, 'keys') else None
+                if existing_item is not None:
+                    existing_item['already_queued'] = True
+                    existing_item['_queue_outcome'] = 'duplicate'
+                return existing_item
 
         # 2. Cross-album check: same artist + title + source regardless of album.
         # This prevents re-queuing when the album is missing in one of the requests.
@@ -1261,8 +1283,12 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         if existing:
             existing_id = existing[0] if isinstance(existing, tuple) else existing.get('id')
             logger.info(f"Duplicate skipped: {artist} - {title} already in queue (ID {existing_id})")
+            existing_item = _row_to_dict(existing, cursor)
             conn.close()
-            return dict(existing) if hasattr(existing, 'keys') else None
+            if existing_item is not None:
+                existing_item['already_queued'] = True
+                existing_item['_queue_outcome'] = 'duplicate'
+            return existing_item
         
         # No duplicate found, proceed with insertion
         is_duplicate = False
@@ -1420,7 +1446,10 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
             item = cursor.fetchone()
             
             if item:
-                return dict(item)
+                item_dict = _row_to_dict(item, cursor)
+                if item_dict is not None:
+                    item_dict['_queue_outcome'] = 'added'
+                return item_dict
             else:
                 logger.error(f"Failed to retrieve inserted item with ID: {queue_id}")
                 return None
@@ -1466,7 +1495,17 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
             existing = cursor2.fetchone()
             conn2.close()
             if existing:
-                return dict(existing)
+                if hasattr(existing, 'keys'):
+                    existing_item = dict(existing)
+                elif isinstance(existing, (list, tuple)) and getattr(cursor2, 'description', None):
+                    columns = [col[0] for col in cursor2.description]
+                    existing_item = {col: existing[idx] for idx, col in enumerate(columns)}
+                else:
+                    existing_item = None
+                if existing_item is not None:
+                    existing_item['already_queued'] = True
+                    existing_item['_queue_outcome'] = 'duplicate'
+                return existing_item
         except Exception as lookup_err:
             logger.warning(f"Could not resolve dedupe race by lookup: {lookup_err}")
         return None

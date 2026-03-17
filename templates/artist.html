@@ -2628,13 +2628,22 @@ async function downloadMusicBrainzRelease(artist, album, tracks, year, release_i
     // Show result message
     if (data.success) {
       const added = data.added || 0;
+      const skipped = data.skipped || 0;
       const failed = data.failed || 0;
+      const skippedTracks = data.skipped_tracks || [];
       const failedTracks = data.failed_tracks || [];
       const importGroup = data.import_group;
       const importType = data.import_type || 'album';
       
       const label = selectionLabel ? ` ${selectionLabel}` : ' tracks';
       let message = `✅ Added ${added}${label} from "${album}" to download queue`;
+      if (skipped > 0) {
+        message += `\nℹ️ Skipped ${skipped} already queued tracks`;
+        if (skippedTracks.length > 0) {
+          const skippedList = skippedTracks.slice(0, 5).join(', ');
+          message += `:\n${skippedList}${skippedTracks.length > 5 ? '...' : ''}`;
+        }
+      }
       if (failed > 0) {
         message += `\n⚠️ Failed to add ${failed} tracks`;
         if (failedTracks.length > 0) {
