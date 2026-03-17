@@ -1786,6 +1786,36 @@ def check_completed_downloads():
         conn = get_db()
         cursor = conn.cursor()
 
+        # Prepare optional helpers once so they are always defined for the full
+        # function scope, including exception paths.
+        dq_update_queue_item = None
+        move_single_track_to_music_dir = None
+        verify_downloaded_file_metadata = None
+        verify_file_in_music = None
+        mark_queue_item_moved = None
+
+        try:
+            from download_queue_manager import (
+                move_single_track_to_music_dir,
+                update_queue_item as dq_update_queue_item,
+                verify_downloaded_file_metadata,
+            )
+            from download_file_verification import verify_file_in_music, mark_queue_item_moved
+        except Exception as helper_import_err:
+            logger.debug(f"Could not import auto-move helpers; using fallback queue updates only: {helper_import_err}")
+
+        def _safe_update_queue_item(queue_id, **kwargs):
+            """Prefer download_queue_manager.update_queue_item; fallback to local status update."""
+            if dq_update_queue_item:
+                return dq_update_queue_item(queue_id, **kwargs)
+
+            # Fallback path only supports status/file_path updates.
+            status = kwargs.get('status')
+            file_path = kwargs.get('file_path')
+            if status is not None:
+                return update_queue_status(queue_id, status, file_path=file_path)
+            return None
+
         # ------------------------------------------------------------------
         # Build a lookup of slskd-completed files: filename → localFilePath
         # ------------------------------------------------------------------
@@ -1821,6 +1851,7 @@ def check_completed_downloads():
         def _state_normalize(value):
             return str(value or "").strip().lower()
 
+        slskd_client = None
         try:
             slskd_client = get_slskd_client()
             if slskd_client:
@@ -2112,12 +2143,8 @@ def check_completed_downloads():
                 else:
                     # Immediately move the file to /music
                     try:
-                        from download_queue_manager import (
-                            move_single_track_to_music_dir,
-                            update_queue_item,
-                            verify_downloaded_file_metadata,
-                        )
-                        from download_file_verification import verify_file_in_music, mark_queue_item_moved
+                        if not move_single_track_to_music_dir or not verify_downloaded_file_metadata:
+                            raise RuntimeError("Auto-move helpers unavailable")
 
                         # ── Step 1: Extract duration from file and persist it ──────────
                         # We do this before verification so the queue item's duration
@@ -2128,7 +2155,7 @@ def check_completed_downloads():
                                 if audio is not None and audio.info and hasattr(audio.info, 'length'):
                                     file_duration = _normalize_duration_seconds(audio.info.length)
                                     if file_duration:
-                                        update_queue_item(item_id, duration=file_duration)
+                                        _safe_update_queue_item(item_id, duration=file_duration)
                                         # Refresh item dict so the verification step sees the
                                         # newly-stored duration.
                                         item = dict(item)
@@ -2216,7 +2243,7 @@ def check_completed_downloads():
                             verify_result = verify_file_in_music(item_id, target_path)
                             if verify_result['success']:
                                 mark_queue_item_moved(item_id, target_path)
-                                update_queue_item(
+                                _safe_update_queue_item(
                                     item_id,
                                     status='imported',
                                     file_path=target_path,
@@ -2234,14 +2261,14 @@ def check_completed_downloads():
                                 logger.warning(
                                     f"[AUTO_MOVE] Queue {item_id}: file verification failed after move to {target_path}, updating path"
                                 )
-                                update_queue_item(item_id, status='completed', file_path=target_path)
+                                _safe_update_queue_item(item_id, status='completed', file_path=target_path)
                         else:
                             logger.warning(
                                 f"[AUTO_MOVE] Queue {item_id}: move to music dir failed, keeping as completed"
                             )
                     except Exception as e:
                         logger.error(f"[AUTO_MOVE] Queue {item_id}: error during auto-move: {e}")
-                        update_queue_item(item_id, status='completed', file_path=file_path)
+                        _safe_update_queue_item(item_id, status='completed', file_path=file_path)
 
         conn.close()
     except Exception as e:
