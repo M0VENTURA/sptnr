@@ -864,7 +864,7 @@ def process_pending_completed_items(limit=10):
             WHERE status = 'completed'
             AND file_path IS NOT NULL
             AND release_source IS NOT NULL
-            AND (imported_at IS NULL OR imported_at = '')
+            AND imported_at IS NULL
             ORDER BY updated_at ASC
             LIMIT %s
         """, (limit,))
