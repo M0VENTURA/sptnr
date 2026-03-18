@@ -948,9 +948,9 @@
         flex-shrink: 0;
       }
 
-      /* Flush sticky elements with navbar edge on small screens */
+      /* Sticky elements must sit just below the fixed navbar */
       .sticky-top {
-        top: 0 !important;
+        top: 3.5rem !important; /* matches body padding-top at 576px */
       }
     }
 

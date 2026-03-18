@@ -20,7 +20,7 @@
                 <div class="row g-4">
                     <!-- Album Art -->
                     <div class="col-12 col-md-3 d-flex flex-column align-items-center">
-                        <div class="position-relative mb-3" style="width: 200px; height: 200px; border-radius: 0.5rem; overflow: hidden; background-color: #2a2a2a; border: 2px solid var(--border-color);">
+                        <div class="album-art-wrap position-relative mb-3" style="width: 200px; height: 200px; border-radius: 0.5rem; overflow: hidden; background-color: #2a2a2a; border: 2px solid var(--border-color);">
                             <img id="albumArtImage" src="{{ url_for('api_album_art', artist=artist_name, album=album_name) }}" 
                                  alt="{{ album_name }}" 
                                  style="width: 100%; height: 100%; object-fit: cover;"
@@ -143,7 +143,7 @@
     </div>
 
     <!-- Navigation Tabs -->
-    <div class="card mb-4 sticky-top" style="top: 0.75rem; z-index: 1000;">
+    <div class="card mb-4 sticky-top" style="top: 4rem; z-index: 1000;">
         <div class="card-body py-2 px-3">
             <ul class="nav nav-pills gap-2 small">
                 <li class="nav-item"><a class="nav-link" href="#album-information-section">Information</a></li>
@@ -525,7 +525,7 @@
             <h5 class="card-title mb-0">
                 <i class="bi bi-music-note-list"></i> Tracks
             </h5>
-            <div class="d-flex gap-2" id="bulkActionsToolbar" style="display: none;">
+            <div class="d-flex gap-2 flex-wrap" id="bulkActionsToolbar" style="display: none;">
                 <button class="btn btn-sm btn-outline-secondary" onclick="selectAllTracks()">
                     <i class="bi bi-check2-square"></i> Select All
                 </button>
@@ -901,6 +901,37 @@
 }
 
 @media (max-width: 767.98px) {
+    /* Album art: shrink for small phones */
+    .album-art-wrap {
+        width: 160px !important;
+        height: 160px !important;
+    }
+
+    /* Tracks card header: stack toolbar below heading on mobile */
+    #album-tracks-section .card-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.5rem;
+    }
+
+    #album-tracks-section #bulkActionsToolbar {
+        flex-wrap: wrap;
+        gap: 0.25rem !important;
+        width: 100%;
+    }
+
+    /* Edit-album card header: allow button wrap */
+    #album-information-section .card-header {
+        flex-wrap: wrap;
+        gap: 0.5rem;
+    }
+
+    /* Form controls: prevent iOS zoom */
+    #albumMetadataForm input,
+    #albumMetadataForm select,
+    #albumMetadataForm textarea {
+        font-size: 16px !important;
+    }
     #album-tracks-section .table-responsive {
         overflow-x: hidden;
     }
