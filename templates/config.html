@@ -48,6 +48,29 @@
     </div>
   </div>
 
+  {% set navidrome_users = config.get('navidrome_users', []) %}
+  {% if navidrome_users and navidrome_users|length > 1 %}
+  <div class="card shadow-sm mb-3" id="user-context">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-person-gear"></i> Switch User Context</h5>
+    </div>
+    <div class="card-body">
+      <div class="row g-2 align-items-center">
+        <div class="col-12 col-md-8 col-lg-6">
+          <label for="configUserSelector" class="form-label">Active user context</label>
+          <select class="form-select" id="configUserSelector" onchange="setActiveUserContext(this.value)">
+            {% for user in navidrome_users %}
+            <option value="{{ loop.index0 }}">{{ user.get('user', 'user') }} @ {{ user.get('base_url', '') }}</option>
+            {% endfor %}
+          </select>
+          <small class="text-muted">Used by multi-user features that read selected context from your browser.</small>
+        </div>
+      </div>
+      <div id="userContextNotice" class="alert alert-info mt-3 mb-0 d-none" role="alert"></div>
+    </div>
+  </div>
+  {% endif %}
+
   <!-- Multi-User Configuration Section -->
   <div class="card shadow-sm mb-3" id="users">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
@@ -867,6 +890,14 @@ const DEFAULT_STRIP_KEYWORDS = [
 // Initialize strip keywords UI on page load
 document.addEventListener('DOMContentLoaded', function() {
   initializeStripKeywords();
+
+  const configUserSelector = document.getElementById('configUserSelector');
+  if (configUserSelector) {
+    const savedUser = localStorage.getItem('selectedNavidromeUser');
+    if (savedUser !== null) {
+      configUserSelector.value = savedUser;
+    }
+  }
   
   var cancelBtn = document.getElementById('cancelBtn');
   if (cancelBtn) {
@@ -877,6 +908,15 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   }
 });
+
+function setActiveUserContext(userIndex) {
+  localStorage.setItem('selectedNavidromeUser', userIndex);
+  const notice = document.getElementById('userContextNotice');
+  if (notice) {
+    notice.textContent = 'User context updated for this browser.';
+    notice.classList.remove('d-none');
+  }
+}
 
 // Initialize the keywords list from config
 function initializeStripKeywords() {

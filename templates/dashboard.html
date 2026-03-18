@@ -30,18 +30,6 @@
                     </button>
                 </div>
             </form>
-
-            <!-- User Selector (if multiple users configured) -->
-            {% if nav_users and nav_users|length > 1 %}
-            <div class="dashboard-user-switch mt-2">
-                <select class="form-select" id="userSelector" onchange="switchUser(this.value)">
-                    {% for user in nav_users %}
-                    <option value="{{ loop.index0 }}">{{ user.user }} @ {{ user.base_url }}</option>
-                    {% endfor %}
-                </select>
-                <small class="text-muted">Switch user context</small>
-            </div>
-            {% endif %}
         </div>
     </div>
     
@@ -985,15 +973,6 @@ function clearApiError(endpoint) {
 }
 
 // Switch between Navidrome users
-function switchUser(userIndex) {
-    // Store selected user in session/localStorage
-    localStorage.setItem('selectedNavidromeUser', userIndex);
-    // Reload the page to update with selected user context
-    // In future, could make this AJAX-based without page reload
-    alert('User switching selected. Multi-user support is active. User-specific features like Spotify playlists will use this context.');
-}
-
-// Load selected user on page load
 async function loadUpcomingReleasesBanner() {
     try {
         const data = await fetchJsonOrThrow('/api/upcoming-releases?collection=true');
@@ -1107,11 +1086,6 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 document.addEventListener('DOMContentLoaded', function() {
-    const savedUser = localStorage.getItem('selectedNavidromeUser');
-    if (savedUser && document.getElementById('userSelector')) {
-        document.getElementById('userSelector').value = savedUser;
-    }
-
     _renderLaunchStartupButton(launchOnStartup);
 
     if (!firstFullScanDone) {
