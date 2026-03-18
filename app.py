@@ -21539,6 +21539,22 @@ def _perform_queue_move_to_music(queue_id):
         music_file_path_value = row.get('music_file_path')
         found_filename_value = row.get('found_filename')
 
+    # Idempotency: already moved — return success immediately.
+    if item_status == 'imported':
+        return {
+            "success": True,
+            "message": "Track already imported to music directory",
+            "already_imported": True,
+        }, 200
+
+    # Background processor has claimed this item — block the button.
+    if item_status == 'moving':
+        return {
+            "success": False,
+            "error": "Move already in progress by the background processor. Please wait a moment and refresh.",
+            "in_progress": True,
+        }, 409
+
     def _normalize_runtime_path(path_value):
         if not path_value:
             return ""
