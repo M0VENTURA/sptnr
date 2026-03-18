@@ -24,7 +24,12 @@ def get_db_connection():
 
 def is_postgres_connection(conn):
     """Check if connection is PostgreSQL."""
-    return isinstance(conn, psycopg2.extensions.connection)
+    try:
+        import psycopg2
+        underlying = getattr(conn, "_conn", conn)
+        return isinstance(underlying, psycopg2.extensions.connection)
+    except (ImportError, AttributeError):
+        return False
 
 def init_db():
     conn = get_db_connection()

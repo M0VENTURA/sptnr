@@ -1566,7 +1566,7 @@ def lookup_and_save_artist_mbid(artist: str, db_connection) -> str:
         is_pg = False
         try:
             import psycopg2
-            is_pg = isinstance(db_connection, psycopg2.extensions.connection)
+            is_pg = isinstance(getattr(db_connection, "_conn", db_connection), psycopg2.extensions.connection)
         except (ImportError, AttributeError):
             is_pg = False
         placeholder = "%s" if is_pg else "?"

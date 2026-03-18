@@ -97,10 +97,11 @@ _SLSKD_ACTIVE_STATE_TIMEOUT_MINUTES = {
 
 
 def _is_postgres_connection(conn):
-    """Return True when the active DB connection is PostgreSQL."""
+    """Return True when the active DB connection is (or wraps) a psycopg2 connection."""
     try:
         import psycopg2
-        return isinstance(conn, psycopg2.extensions.connection)
+        underlying = getattr(conn, "_conn", conn)
+        return isinstance(underlying, psycopg2.extensions.connection)
     except Exception:
         return False
 
