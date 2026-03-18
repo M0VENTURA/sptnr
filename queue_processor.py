@@ -13,6 +13,7 @@ import os
 import re
 import requests
 import secrets
+import signal
 import subprocess
 import sqlite3
 import sys
@@ -42,6 +43,23 @@ setup_logging("QueueProcessor")
 # Create logger reference for compatibility with existing code
 import logging
 logger = logging.getLogger(__name__)
+
+# ── Graceful shutdown flag ────────────────────────────────────────────────────
+# Set by the SIGTERM handler so the main loop exits cleanly after the current
+# iteration, allowing in-flight DB transactions to commit/close before the
+# process terminates.  Without this, Docker's graceful stop sends SIGTERM which
+# Python ignores by default → then SIGKILL → Postgres sees "unexpected EOF on
+# client connection while in transaction".
+_shutdown_requested = False
+
+
+def _handle_sigterm(signum, frame):
+    global _shutdown_requested
+    _shutdown_requested = True
+    logger.info("Queue processor received SIGTERM — will stop after current iteration")
+
+
+signal.signal(signal.SIGTERM, _handle_sigterm)
 
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 
@@ -1065,6 +1083,7 @@ def get_queued_items(limit=10):
 
 def claim_queued_items(limit=10):
     """Claim queued rows for this worker with backend-safe SQL."""
+    conn = None
     try:
         cleanup_stuck_searching_items()
 
@@ -1112,7 +1131,6 @@ def claim_queued_items(limit=10):
             id_rows = cursor.fetchall() or []
             row_ids = [r['id'] if hasattr(r, 'keys') else r[0] for r in id_rows]
             if not row_ids:
-                conn.close()
                 return []
 
             in_params = ",".join([placeholder] * len(row_ids))
@@ -1139,12 +1157,17 @@ def claim_queued_items(limit=10):
             items = [dict(row) for row in rows]
 
         conn.commit()
-        conn.close()
         return items
 
     except Exception as e:
         logger.error(f"Error claiming queued items: {e}")
         return []
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def promote_stale_queried_items(min_age_seconds=120, limit=200):
@@ -1159,6 +1182,7 @@ def promote_stale_queried_items(min_age_seconds=120, limit=200):
     Returns:
         int: number of rows promoted
     """
+    conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
@@ -1179,12 +1203,10 @@ def promote_stale_queried_items(min_age_seconds=120, limit=200):
         )
         rows = cursor.fetchall() or []
         if not rows:
-            conn.close()
             return 0
 
         row_ids = [r['id'] if hasattr(r, 'keys') else r[0] for r in rows]
         if not row_ids:
-            conn.close()
             return 0
 
         # Update in a single statement to keep churn low.
@@ -1216,7 +1238,6 @@ def promote_stale_queried_items(min_age_seconds=120, limit=200):
             promoted = cursor.rowcount or 0
 
         conn.commit()
-        conn.close()
 
         if promoted > 0:
             logger.info(f"Auto-promoted {promoted} stale queried item(s) to queued")
@@ -1226,6 +1247,12 @@ def promote_stale_queried_items(min_age_seconds=120, limit=200):
     except Exception as e:
         logger.error(f"Error promoting queried items: {e}")
         return 0
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 def update_queue_status(queue_id, status, **kwargs):
     """Update queue item status"""
@@ -1299,6 +1326,7 @@ def increment_retry_count(queue_id, retry_delay_minutes=30):
 
 def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=30):
     """Mark queue item as failed, optionally scheduling retry"""
+    conn = None
     try:
         conn = get_db()
         is_pg = _is_postgres_connection(conn)
@@ -1311,7 +1339,6 @@ def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=30):
         row = cursor.fetchone()
         
         if not row:
-            conn.close()
             return False
         
         retry_count = (row['retry_count'] or 0) + 1
@@ -1337,13 +1364,18 @@ def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=30):
         """, (new_status, retry_count, reason, next_retry.isoformat() if next_retry else None, queue_id))
         
         conn.commit()
-        conn.close()
-        
+
         return new_status == 'queued'  # Return whether retry was scheduled
-        
+
     except Exception as e:
         logger.error(f"Error marking queue item as failed: {e}")
         return False
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 def _get_navidrome_config():
     """Load Navidrome credentials from config file, supporting both navidrome_users list and legacy navidrome block."""
@@ -2747,7 +2779,7 @@ def run_processor(interval=30):
     last_navidrome_scan_ts = None
 
     try:
-        while True:
+        while not _shutdown_requested:
             try:
                 loop_count += 1
                 logger.debug(f"--- Loop {loop_count} ---")
@@ -2759,22 +2791,30 @@ def run_processor(interval=30):
                 last_verify_ts = maybe_check_missing_moved_files(now_ts, last_verify_ts)
                 last_slskd_cleanup_ts = maybe_clear_slskd_completed_downloads(now_ts, last_slskd_cleanup_ts)
                 last_navidrome_scan_ts = maybe_trigger_navidrome_scan_for_new_imports(now_ts, last_navidrome_scan_ts)
-                
+
                 processed = process_queue(client)
-                
+
                 if processed > 0:
                     logger.info(f"Processed {processed} queue items")
-                
-                time.sleep(interval)
-                
+
+                if _shutdown_requested:
+                    break
+
+                # Interruptible sleep: wake early if SIGTERM was received
+                for _ in range(interval):
+                    if _shutdown_requested:
+                        break
+                    time.sleep(1)
+
             except KeyboardInterrupt:
                 logger.info("Queue processor stopped by user")
                 break
             except Exception as e:
                 logger.error(f"Error in processor loop: {e}")
                 logger.error(traceback.format_exc())
-                time.sleep(interval)
-                
+                if not _shutdown_requested:
+                    time.sleep(interval)
+
     except KeyboardInterrupt:
         logger.info("Queue processor interrupted")
     finally:
