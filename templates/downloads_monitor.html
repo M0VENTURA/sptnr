@@ -2343,6 +2343,14 @@ async function loadFolderGroups(options = {}) {
                 const duration = track.duration ? 
                   Math.floor(track.duration / 60) + ':' + String(track.duration % 60).padStart(2, '0') : 
                   '-';
+                const normalizedGroupAlbumArtist = String(group.album_artist || group.artist || '').trim().toLowerCase();
+                const trackArtistLabel = String(track.artist || '').trim();
+                const showTrackArtistInline = !!trackArtistLabel
+                  && trackArtistLabel.toLowerCase() !== 'unknown artist'
+                  && trackArtistLabel.toLowerCase() !== normalizedGroupAlbumArtist;
+                const inlineTrackArtistHtml = showTrackArtistInline
+                  ? `<span class="text-muted ms-2">${escapeHtml(trackArtistLabel)}</span>`
+                  : '';
                 
                 // Check if this track has been organized (from folder status)
                 let trackMatched = false;
@@ -2465,7 +2473,7 @@ async function loadFolderGroups(options = {}) {
                       <tr class="${trackClass}">
                         <td><span style="font-size: 14px; font-weight: 500;">${trackIcon}${track.track_number || '-'}</span></td>
                         <td>
-                          <span style="font-size: 14px;">${escapeHtml(track.title || 'Unknown')}</span>
+                          <span style="font-size: 14px;">${escapeHtml(track.title || 'Unknown')}${inlineTrackArtistHtml}</span>
                           ${mappingHint}
                           ${isQueueItem ? `<div class="small text-muted mt-1"><i class="bi bi-info-circle"></i> ${escapeHtml(statusDetail)}</div>` : ''}
                           ${trackPathDetailsHtml || (displayPath ? `<div class="small text-muted mt-1"><i class="bi bi-file-earmark"></i> ${escapeHtml(displayPath)}</div>` : '')}
