@@ -2455,6 +2455,111 @@ def check_completed_downloads():
         logger.error(f"Error in check_completed_downloads: {e}")
 
 
+def process_matched_items(limit=5):
+    """
+    Automatically move queue items in 'matched' status to the music directory.
+
+    'matched' items have a confirmed file-to-MusicBrainz mapping (set either by
+    the user via the Downloads UI or by the auto-discovery workflow) but have not
+    yet been moved to /music.  Without this function they remain stuck in
+    'matched' status indefinitely unless the user manually presses the Move
+    button.
+
+    Returns:
+        int: number of items successfully moved and marked as 'imported'.
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = _get_placeholder(conn)
+
+        cursor.execute(
+            f"""
+            SELECT *
+            FROM download_queue
+            WHERE status = 'matched'
+              AND (
+                TRIM(COALESCE(matched_file_path, '')) != ''
+                OR TRIM(COALESCE(file_path, '')) != ''
+              )
+            ORDER BY updated_at ASC
+            LIMIT {placeholder}
+            """,
+            (limit,),
+        )
+        rows = cursor.fetchall() or []
+        items = [dict(row) for row in rows]
+        conn.close()
+
+    except Exception as e:
+        logger.error(f"[MATCHED_MOVE] Error fetching matched items: {e}")
+        return 0
+
+    if not items:
+        return 0
+
+    try:
+        from download_queue_manager import _try_claim_for_move, _release_move_claim
+        _claim_fn = _try_claim_for_move
+        _release_fn = _release_move_claim
+    except Exception:
+        _claim_fn = None
+        _release_fn = None
+
+    processed = 0
+    for item in items:
+        item_id = item.get('id')
+        if not item_id:
+            continue
+
+        # Atomically claim the item so the UI Move button and this loop cannot
+        # both move the same file simultaneously.
+        if _claim_fn and not _claim_fn(item_id, 'matched'):
+            logger.debug(
+                f"[MATCHED_MOVE] Queue {item_id}: already claimed by another process — skipping"
+            )
+            continue
+
+        try:
+            from download_monitor_enhancements import move_to_music_collection
+            result = move_to_music_collection(item_id)
+
+            if 'error' in result:
+                logger.warning(
+                    f"[MATCHED_MOVE] Queue {item_id}: move failed — {result['error']}"
+                )
+                if _release_fn:
+                    _release_fn(item_id, restore_status='matched')
+            else:
+                # move_to_music_collection sets status='completed' internally;
+                # promote immediately to 'imported' to be consistent with the
+                # auto-move flow in check_completed_downloads().
+                try:
+                    from download_queue_manager import update_queue_item as dq_update
+                    dq_update(
+                        item_id,
+                        status='imported',
+                        copied_individually=1,
+                        copied_individually_at=datetime.now().isoformat(),
+                    )
+                except Exception:
+                    update_queue_status(item_id, 'imported')
+
+                logger.info(
+                    f"[MATCHED_MOVE] Queue {item_id}: moved to music and marked as imported: "
+                    f"{result.get('path')}"
+                )
+                _trigger_navidrome_scan()
+                processed += 1
+
+        except Exception as move_err:
+            logger.error(f"[MATCHED_MOVE] Queue {item_id}: error during move: {move_err}")
+            if _release_fn:
+                _release_fn(item_id, restore_status='matched')
+
+    return processed
+
+
 def process_queue(client):
     """Process queued download items"""
     try:
@@ -2481,6 +2586,16 @@ def process_queue(client):
         # Always check for completed downloads, even if no new items were processed
         # This ensures downloads that complete between processing cycles are detected
         check_completed_downloads()
+
+        # Process matched items (files confirmed by user or auto-discovery but not
+        # yet moved to /music).  Without this, 'matched' items remain stuck forever
+        # unless the user manually clicks Move in the Downloads UI.
+        try:
+            matched_processed = process_matched_items(limit=5)
+            if matched_processed > 0:
+                logger.info(f"[MATCHED_MOVE] Processed {matched_processed} matched item(s)")
+        except Exception as e:
+            logger.error(f"[MATCHED_MOVE] Error processing matched items: {e}")
 
         # Process completed downloads with MusicBrainz/Discogs metadata
         try:
