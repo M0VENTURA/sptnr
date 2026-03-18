@@ -393,6 +393,14 @@ def copy_file_to_music(source_file_path, queue_item, music_dir):
         # Copy file
         shutil.copy2(source_file_path, target_path)
         logger.info(f"✅ Copied file: {source_file_path} → {target_path}")
+
+        # Set file mtime to the release year from MusicBrainz so the library
+        # reflects the original release date rather than the copy date.
+        try:
+            from download_queue_manager import _apply_release_year_mtime
+            _apply_release_year_mtime(target_path, metadata.get('year'))
+        except Exception:
+            pass
         
         return {
             'success': True,
