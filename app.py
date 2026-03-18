@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from helpers.db_utils import (
+    _AutoRollbackPGConnection,
     ensure_album_artist_column,
     ensure_musicbrainz_album_mbid_column,
     ensure_writer_column,
@@ -99,16 +100,9 @@ def aggregate_genres_from_tracks(artist_name, db_path="/database/sptnr.db"):
     try:
         import re
 
-        # Use the app's active backend for the primary DB path, otherwise honor explicit SQLite paths.
-        if db_path == DB_PATH:
-            conn = get_db()
-        else:
-            conn = sqlite3.connect(db_path)
-            conn.row_factory = sqlite3.Row
-
-        is_pg = _is_postgres_connection(conn)
+        conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         # Use navidrome_genres which are populated from Navidrome during import.
         # Query by COALESCE(album_artist, artist) to match the artist list page logic.
@@ -217,15 +211,9 @@ def log_genre_update(artist_name=None, album_name=None, track_id=None, genres_be
     """
     conn = None
     try:
-        # Use the app's active backend for the primary DB path, otherwise honor explicit SQLite paths.
-        if db_path == DB_PATH:
-            conn = get_db()
-        else:
-            conn = sqlite3.connect(db_path, timeout=120.0)
-
-        is_pg = _is_postgres_connection(conn)
+        conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         cursor.execute(f"""
             INSERT INTO genre_updates 
@@ -968,7 +956,7 @@ def api_spotify_playlist_tracks_with_matching(playlist_id):
             # Get all tracks from collection
             conn = get_db()
             cursor = conn.cursor()
-            placeholder = "%s" if _is_postgres_connection(conn) else "?"
+            placeholder = "%s"
             cursor.execute("SELECT artist, title, album FROM tracks ORDER BY artist, title")
             collection_tracks = cursor.fetchall()
             conn.close()
@@ -1078,7 +1066,7 @@ def api_create_playlist_session():
         try:
             conn = get_db()
             cursor = conn.cursor()
-            placeholder = "%s" if _is_postgres_connection(conn) else "?"
+            placeholder = "%s"
             
             # Use the correct table name from schema (playlist_download_sessions)
             cursor.execute(f"""
@@ -1293,8 +1281,6 @@ def setup():
         import logging
         logging.error(f"Error loading setup page: {e}")
         return "Setup page error", 500
-
-
 
 
 # Standardized config/database/log path variables
@@ -1904,15 +1890,13 @@ def _start_daily_scheduler():
     logging.info("[DAILY] Daily scheduler thread started (tasks run every 24 hours)")
 
 
-
 @app.route("/api/queue/<queue_id>/requeue", methods=["POST"])
 def api_queue_requeue_item(queue_id):
     """Re-queue a single unmatched or failed item back to queued status."""
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         cursor.execute(
             f"SELECT id, status, artist, title, file_path FROM download_queue WHERE id = {placeholder}",
@@ -1968,8 +1952,7 @@ def api_queue_requeue_all_unmatched():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         cursor.execute(
             f"""UPDATE download_queue
@@ -2161,7 +2144,7 @@ def _update_upcoming_release_match_record(
     match_score=None,
     manual_override=False,
 ):
-    placeholder = "%s" if _is_postgres_connection(conn) else "?"
+    placeholder = "%s"
     cursor = conn.cursor()
     cursor.execute(
         f"""
@@ -2194,7 +2177,7 @@ def _match_upcoming_release(release_id, manual_release_group_mbid=None, manual_s
     conn = get_db()
     try:
         _ensure_upcoming_releases_schema(conn)
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         cursor = conn.cursor()
         cursor.execute(
             f"SELECT * FROM upcoming_releases WHERE id = {placeholder}",
@@ -2280,7 +2263,7 @@ def _run_daily_1am_upcoming_release_match():
     conn = get_db()
     try:
         _ensure_upcoming_releases_schema(conn)
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         cursor = conn.cursor()
         cursor.execute(
             f"""
@@ -2417,7 +2400,7 @@ def _run_daily_new_artist_import():
         # Get existing album artists from local database
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         cursor.execute(
             "SELECT DISTINCT LOWER(COALESCE(NULLIF(album_artist, ''), artist)) FROM tracks "
             "WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL"
@@ -2503,7 +2486,7 @@ def _has_valid_local_track_paths_for_mp3_import(sample_size: int = 120):
         else:
             cursor = conn.cursor()
             placeholder = "?"
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
 
         cursor.execute(
             f"""
@@ -2661,9 +2644,8 @@ def _scan_new_navidrome_files_since_last_import(max_newest_albums: int = 80):
     conn = None
     try:
         conn = get_db()
-        is_pg = _is_postgres_connection(conn)
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) if is_pg else conn.cursor()
-        placeholder = "%s" if is_pg else "?"
+        cursor = conn.cursor()
+        placeholder = "%s"
 
         artists_to_rescan = {}
         candidate_tracks = 0
@@ -3187,7 +3169,7 @@ def _authenticate_navidrome(username, password):
                         salt = "sptnr-auth"
                         token = hashlib.md5((password + salt).encode()).hexdigest()
                         auth_url = f"{base_url}/rest/ping?u={nav_user}&t={token}&s={salt}&v=1.16.0&c=popularr"
-                        resp = requests.get(auth_url, timeout=5)
+                        resp = requests.get(auth_url, timeout=2)
                         if resp.status_code == 200 and "ok" in resp.text.lower():
                             return True
                     except:
@@ -3205,7 +3187,7 @@ def _authenticate_navidrome(username, password):
             salt = "sptnr-auth"
             token = hashlib.md5((password + salt).encode()).hexdigest()
             auth_url = f"{base_url}/rest/ping?u={username}&t={token}&s={salt}&v=1.16.0&c=popularr"
-            resp = requests.get(auth_url, timeout=5)
+            resp = requests.get(auth_url, timeout=2)
             if resp.status_code == 200 and "ok" in resp.text.lower():
                 return True
         except:
@@ -3310,102 +3292,69 @@ def _is_pg_startup_unavailable_error(error) -> bool:
 
 
 def get_db():
-    """Get a database connection (PostgreSQL if configured, else SQLite)."""
+    """Get a PostgreSQL database connection."""
     global _schema_updated, _pg_startup_backoff_until
-    if PG_HOST and PG_USER and PG_DATABASE:
-        # Connect to PostgreSQL
-        if not _ensure_psycopg2_loaded() or psycopg2 is None:
-            raise RuntimeError("psycopg2 not available - install with: pip install psycopg2-binary")
+    if not _ensure_psycopg2_loaded() or psycopg2 is None:
+        raise RuntimeError("psycopg2 not available - install with: pip install psycopg2-binary")
 
-        now = time.monotonic()
-        if _pg_startup_backoff_until and now < _pg_startup_backoff_until:
-            wait_left = max(1, int(_pg_startup_backoff_until - now))
-            raise RuntimeError(f"PostgreSQL startup backoff active; retry in ~{wait_left}s")
+    now = time.monotonic()
+    if _pg_startup_backoff_until and now < _pg_startup_backoff_until:
+        wait_left = max(1, int(_pg_startup_backoff_until - now))
+        raise RuntimeError(f"PostgreSQL startup backoff active; retry in ~{wait_left}s")
 
-        max_attempts = 3
-        retry_delays = (0.6, 1.0)
-        connect_timeout = int(os.environ.get("PG_CONNECT_TIMEOUT", "5"))
+    options_parts = []
+    idle_timeout_ms = int(os.environ.get("PG_IDLE_IN_TRANSACTION_TIMEOUT_MS", "300000"))
+    if idle_timeout_ms > 0:
+        options_parts.append(f"-c idle_in_transaction_session_timeout={idle_timeout_ms}")
+    options = " ".join(options_parts) or None
 
-        for attempt in range(max_attempts):
-            try:
-                conn = psycopg2.connect(  # type: ignore[name-defined]
-                    host=PG_HOST,
-                    port=PG_PORT,
-                    user=PG_USER,
-                    password=PG_PASSWORD,
-                    dbname=PG_DATABASE,
-                    cursor_factory=psycopg2.extras.RealDictCursor,  # type: ignore[name-defined]
-                    connect_timeout=connect_timeout,
-                )
-                if has_request_context():
-                    tracked = getattr(g, '_request_db_connections', None)
-                    if tracked is None:
-                        tracked = []
-                        setattr(g, '_request_db_connections', tracked)
-                    tracked.append(conn)
-                _pg_startup_backoff_until = 0.0
-                return conn
-            except Exception as e:
-                if _is_pg_startup_unavailable_error(e):
-                    if attempt < (max_attempts - 1):
-                        time.sleep(retry_delays[attempt])
-                        continue
+    max_attempts = 3
+    retry_delays = (0.6, 1.0)
+    connect_timeout = int(os.environ.get("PG_CONNECT_TIMEOUT", "5"))
 
-                    _pg_startup_backoff_until = time.monotonic() + _PG_STARTUP_BACKOFF_SECONDS
-                    raise RuntimeError(
-                        "PostgreSQL is starting up; temporary DB operations are deferred"
-                    ) from e
-                raise
-    else:
-        # Fallback to SQLite
-        db_dir = os.path.dirname(DB_PATH)
-        if db_dir:
-            os.makedirs(db_dir, exist_ok=True)
-        if not _schema_updated:
-            update_schema(DB_PATH)
-            _schema_updated = True
-        conn = sqlite3.connect(DB_PATH, timeout=120.0)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.row_factory = sqlite3.Row
-        if has_request_context():
-            tracked = getattr(g, '_request_db_connections', None)
-            if tracked is None:
-                tracked = []
-                setattr(g, '_request_db_connections', tracked)
-            tracked.append(conn)
-        return conn
+    for attempt in range(max_attempts):
+        try:
+            conn = psycopg2.connect(  # type: ignore[name-defined]
+                host=PG_HOST,
+                port=PG_PORT,
+                user=PG_USER,
+                password=PG_PASSWORD,
+                dbname=PG_DATABASE,
+                cursor_factory=psycopg2.extras.RealDictCursor,  # type: ignore[name-defined]
+                connect_timeout=connect_timeout,
+                options=options,
+            )
+            wrapped = _AutoRollbackPGConnection(conn)
+            if has_request_context():
+                tracked = getattr(g, '_request_db_connections', None)
+                if tracked is None:
+                    tracked = []
+                    setattr(g, '_request_db_connections', tracked)
+                tracked.append(wrapped)
+            _pg_startup_backoff_until = 0.0
+            return wrapped
+        except Exception as e:
+            if _is_pg_startup_unavailable_error(e):
+                if attempt < (max_attempts - 1):
+                    time.sleep(retry_delays[attempt])
+                    continue
+
+                _pg_startup_backoff_until = time.monotonic() + _PG_STARTUP_BACKOFF_SECONDS
+                raise RuntimeError(
+                    "PostgreSQL is starting up; temporary DB operations are deferred"
+                ) from e
+            raise
 
 
 @app.teardown_request
 def _cleanup_request_db_connections(exception=None):
-    """Always close request-scoped DB connections; rollback open transactions first."""
+    """Close all request-scoped DB connections (wrapper auto-rollbacks before close)."""
     tracked = getattr(g, '_request_db_connections', None)
     if not tracked:
         return
-
     while tracked:
         conn = tracked.pop()
         try:
-            try:
-                if _is_postgres_connection(conn):
-                    # If a request errors or disconnects mid-transaction, rollback
-                    # before closing so PostgreSQL doesn't retain an open txn state.
-                    if exception is not None:
-                        conn.rollback()
-                    else:
-                        try:
-                            if (
-                                _ensure_psycopg2_loaded()
-                                and psycopg2 is not None
-                                and conn.status == psycopg2.extensions.STATUS_IN_TRANSACTION  # type: ignore[name-defined]
-                            ):
-                                conn.rollback()
-                        except Exception:
-                            pass
-                elif exception is not None:
-                    conn.rollback()
-            except Exception:
-                pass
             conn.close()
         except Exception:
             pass
@@ -3415,7 +3364,8 @@ def _is_postgres_connection(conn):
     """Return True when the active DB connection is PostgreSQL."""
     if not _ensure_psycopg2_loaded() or psycopg2 is None:
         return False
-    return isinstance(conn, psycopg2.extensions.connection)  # type: ignore[name-defined]
+    underlying = getattr(conn, "_conn", conn)
+    return isinstance(underlying, psycopg2.extensions.connection)  # type: ignore[name-defined]
 
 
 def get_placeholder(conn):
@@ -3443,21 +3393,6 @@ if STARTUP_DIAGNOSTICS:
         print(f"  Database: {PG_DATABASE}")
         print(f"  User: {PG_USER}")
         print(f"  Port: {PG_PORT}")
-        # Try to verify connection
-        try:
-            test_conn = get_db()
-            is_pg = _is_postgres_connection(test_conn)
-            test_conn.close()
-            status = "✓ Connected" if is_pg else "✓ Using SQLite fallback"
-            print(f"  Connection Status: {status}")
-        except Exception as e:
-            print(f"  Connection Status: ✗ Error - {str(e)[:60]}")
-    else:
-        print(f"  Backend: SQLite (no PostgreSQL configured)")
-        print(f"  Database Path: {DB_PATH}")
-        print(f"  ⚠️  WARNING: SQLite backend is NOT recommended for production.")
-        print(f"     SQLite has database locking issues with concurrent access.")
-        print(f"     Please configure PostgreSQL for reliable concurrent operations.")
         # Try to verify connection
         try:
             test_conn = get_db()
@@ -3513,9 +3448,6 @@ def _get_table_columns(cursor, table_name, is_postgres=False):
             elif row and len(row) > 0:
                 cols.add(row[0])
         return {c for c in cols if c}
-
-    cursor.execute(f"PRAGMA table_info({table_name})")
-    return {row[1] for row in (cursor.fetchall() or []) if len(row) > 1}
 
 
 def _get_postgres_column_types(conn, table_name, column_names):
@@ -3733,10 +3665,9 @@ def artists():
     Filter: Only show artists with at least 1 album or EP (excludes artists with only 0 albums/EPs)."""
     conn = get_db()
     cursor = conn.cursor()
-    placeholder = "%s" if _is_postgres_connection(conn) else "?"
+    placeholder = "%s"
     
     # Get total counts for all tracks (including those without artist info)
-    is_pg = _is_postgres_connection(conn)
     cursor.execute("""
         SELECT 
             COUNT(DISTINCT album) as album_count,
@@ -3750,42 +3681,25 @@ def artists():
     # Use COALESCE to fall back to artist field when album_artist is empty
     # Use NULLIF to treat empty strings as NULL for proper COALESCE behavior
     try:
-        if is_pg:
-            cursor.execute("""
-                SELECT 
-                    COALESCE(NULLIF(album_artist, ''), artist) as display_name,
-                    COALESCE(NULLIF(album_artist, ''), artist) as link_artist,
-                    COUNT(DISTINCT album) as album_count,
-                    COUNT(*) as track_count,
-                    COALESCE(SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END), 0) as five_star_count,
-                    MAX(last_scanned) as last_updated
-                FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL 
-                    AND COALESCE(NULLIF(album_artist, ''), artist) != ''
-                GROUP BY COALESCE(NULLIF(album_artist, ''), artist)
-                HAVING COUNT(DISTINCT album) > 0
-                ORDER BY display_name
-            """)
-        else:
-            cursor.execute("""
-                SELECT 
-                    COALESCE(NULLIF(album_artist, ''), artist) as display_name,
-                    COALESCE(NULLIF(album_artist, ''), artist) as link_artist,
-                    COUNT(DISTINCT album) as album_count,
-                    COUNT(*) as track_count,
-                    COALESCE(SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END), 0) as five_star_count,
-                    MAX(last_scanned) as last_updated
-                FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL 
-                    AND COALESCE(NULLIF(album_artist, ''), artist) != ''
-                GROUP BY COALESCE(NULLIF(album_artist, ''), artist) COLLATE NOCASE
-                HAVING album_count > 0
-                ORDER BY display_name COLLATE NOCASE
-            """)
+        cursor.execute("""
+            SELECT 
+                COALESCE(NULLIF(album_artist, ''), artist) as display_name,
+                COALESCE(NULLIF(album_artist, ''), artist) as link_artist,
+                COUNT(DISTINCT album) as album_count,
+                COUNT(*) as track_count,
+                COALESCE(SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END), 0) as five_star_count,
+                MAX(last_scanned) as last_updated
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL 
+                AND COALESCE(NULLIF(album_artist, ''), artist) != ''
+            GROUP BY COALESCE(NULLIF(album_artist, ''), artist)
+            HAVING COUNT(DISTINCT album) > 0
+            ORDER BY display_name
+        """)
         artists_data = [dict(row) for row in cursor.fetchall()]
     except:
         # Fallback for databases without album_artist column
-        collate_nocase = "" if is_pg else " COLLATE NOCASE"
+        collate_nocase = ""
         cursor.execute(f"""
             SELECT 
                 artist as display_name,
@@ -3822,65 +3736,34 @@ def artists():
     duplicate_artist_counts_by_artist = {}  # Track artists with same MBID but different names
     try:
         # Query 1: Find duplicate tracks
-        if is_pg:
-            cursor.execute("""
-                WITH dup_groups AS (
-                    SELECT
-                        COALESCE(NULLIF(album_artist, ''), artist) AS display_name,
-                        album,
-                        LOWER(TRIM(title)) AS norm_title,
-                        LOWER(TRIM(COALESCE(artist, ''))) AS norm_artist,
-                        TRIM(COALESCE(CAST(track_number AS TEXT), '')) AS norm_track_number,
-                        TRIM(COALESCE(CAST(disc_number AS TEXT), '')) AS norm_disc_number,
-                        COUNT(*) AS grp_count
-                    FROM tracks
-                    WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
-                      AND COALESCE(NULLIF(album_artist, ''), artist) != ''
-                      AND title IS NOT NULL
-                      AND TRIM(title) != ''
-                    GROUP BY
-                        COALESCE(NULLIF(album_artist, ''), artist),
-                        album,
-                        LOWER(TRIM(title)),
-                        LOWER(TRIM(COALESCE(artist, ''))),
-                        TRIM(COALESCE(CAST(track_number AS TEXT), '')),
-                        TRIM(COALESCE(CAST(disc_number AS TEXT), ''))
-                    HAVING COUNT(*) > 1
-                )
-                SELECT display_name, COALESCE(SUM(grp_count - 1), 0) AS duplicate_count
-                FROM dup_groups
-                GROUP BY display_name
-            """)
-        else:
-            cursor.execute("""
-                WITH dup_groups AS (
-                    SELECT
-                        COALESCE(NULLIF(album_artist, ''), artist) AS display_name,
-                        album,
-                        LOWER(TRIM(title)) AS norm_title,
-                        LOWER(TRIM(COALESCE(artist, ''))) AS norm_artist,
-                        TRIM(COALESCE(CAST(track_number AS TEXT), '')) AS norm_track_number,
-                        TRIM(COALESCE(CAST(disc_number AS TEXT), '')) AS norm_disc_number,
-                        COUNT(*) AS grp_count
-                    FROM tracks
-                    WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
-                      AND COALESCE(NULLIF(album_artist, ''), artist) != ''
-                      AND title IS NOT NULL
-                      AND TRIM(title) != ''
-                    GROUP BY
-                        COALESCE(NULLIF(album_artist, ''), artist),
-                        album,
-                        LOWER(TRIM(title)),
-                        LOWER(TRIM(COALESCE(artist, ''))),
-                        TRIM(COALESCE(CAST(track_number AS TEXT), '')),
-                        TRIM(COALESCE(CAST(disc_number AS TEXT), ''))
-                    HAVING COUNT(*) > 1
-                )
-                SELECT display_name, IFNULL(SUM(grp_count - 1), 0) AS duplicate_count
-                FROM dup_groups
-                GROUP BY display_name
-            """)
-
+        cursor.execute("""
+            WITH dup_groups AS (
+                SELECT
+                    COALESCE(NULLIF(album_artist, ''), artist) AS display_name,
+                    album,
+                    LOWER(TRIM(title)) AS norm_title,
+                    LOWER(TRIM(COALESCE(artist, ''))) AS norm_artist,
+                    TRIM(COALESCE(CAST(track_number AS TEXT), '')) AS norm_track_number,
+                    TRIM(COALESCE(CAST(disc_number AS TEXT), '')) AS norm_disc_number,
+                    COUNT(*) AS grp_count
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
+                  AND COALESCE(NULLIF(album_artist, ''), artist) != ''
+                  AND title IS NOT NULL
+                  AND TRIM(title) != ''
+                GROUP BY
+                    COALESCE(NULLIF(album_artist, ''), artist),
+                    album,
+                    LOWER(TRIM(title)),
+                    LOWER(TRIM(COALESCE(artist, ''))),
+                    TRIM(COALESCE(CAST(track_number AS TEXT), '')),
+                    TRIM(COALESCE(CAST(disc_number AS TEXT), ''))
+                HAVING COUNT(*) > 1
+            )
+            SELECT display_name, COALESCE(SUM(grp_count - 1), 0) AS duplicate_count
+            FROM dup_groups
+            GROUP BY display_name
+        """)
         for row in cursor.fetchall():
             row_dict = dict(row)
             duplicate_counts_by_artist[row_dict.get("display_name", "")] = int(row_dict.get("duplicate_count") or 0)
@@ -3989,8 +3872,7 @@ def artist_corrections(name):
     artist_name = unquote(name)
     conn = get_db()
     cursor = conn.cursor()
-    is_pg = _is_postgres_connection(conn)
-    placeholder = "%s" if is_pg else "?"
+    placeholder = "%s"
 
     duplicate_groups = []
     missing_tracks = []
@@ -4279,8 +4161,7 @@ def api_artist_corrections_delete_track():
 
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         cursor.execute(
             f"""
@@ -4351,8 +4232,7 @@ def api_album_library_tracks():
 
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         cursor.execute(f"""
             SELECT id, title, track_number, disc_number, file_path
@@ -4380,8 +4260,7 @@ def api_album_missing_tracks():
 
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         # Get library track count and MB MBID for this album
         try:
@@ -4563,8 +4442,7 @@ def api_album_title_mismatches():
 
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         # Get MusicBrainz MBID and library tracks for this album
         try:
@@ -4718,8 +4596,7 @@ def api_artist_corrections_albums():
 
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         try:
             cursor.execute(f"""
@@ -4788,8 +4665,7 @@ def artist_genre_management(name):
     artist_name = unquote(name)
     conn = get_db()
     cursor = conn.cursor()
-    is_pg = _is_postgres_connection(conn)
-    placeholder = "%s" if is_pg else "?"
+    placeholder = "%s"
 
     try:
         cursor.execute(
@@ -4903,8 +4779,7 @@ def api_artist_genre_management_save():
 
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         updated = 0
         failed = 0
@@ -5013,8 +4888,7 @@ def api_track_match_missing():
 
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         cursor.execute(f"""
             SELECT id, file_path, title, track_number, album, artist, album_artist
@@ -5099,9 +4973,8 @@ def api_search():
         
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        collate_nocase = "" if is_pg else " COLLATE NOCASE"
-        placeholder = "%s" if is_pg else "?"
+        collate_nocase = ""
+        placeholder = "%s"
         
         # Prepare search patterns: exact, starts-with, contains
         exact_pattern = query
@@ -5215,111 +5088,61 @@ def artist_detail(name):
         
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        
         # Get albums for this artist with type information
         # Query by COALESCE(album_artist, artist) to handle cases where album_artist is empty
         # Use NULLIF to treat empty strings as NULL for proper COALESCE behavior
-        if is_pg:
-            cursor.execute("""
-                SELECT 
-                    album,
-                    COUNT(*) as track_count,
-                    AVG(stars) as avg_stars,
-                    COALESCE(SUM(CASE WHEN is_single THEN 1 ELSE 0 END), 0) as singles_count,
-                    MAX(last_scanned) as last_updated,
-                    MIN(year) as album_year,
-                    MAX(spotify_album_type) as album_type,
-                    MAX(COALESCE(NULLIF(album_artist, ''), artist)) as album_artist,
-                    MAX(musicbrainz_album_mbid) as musicbrainz_album_mbid,
-                    MAX(discogs_release_id) as discogs_release_id
-                FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-                GROUP BY album
-                ORDER BY (MIN(year) IS NULL), MIN(year) DESC NULLS LAST, album
-            """, (name,))
-        else:
-            cursor.execute("""
-                SELECT 
-                    album,
-                    COUNT(*) as track_count,
-                    AVG(stars) as avg_stars,
-                    COALESCE(SUM(CASE WHEN is_single THEN 1 ELSE 0 END), 0) as singles_count,
-                    MAX(last_scanned) as last_updated,
-                    MIN(year) as album_year,
-                    MAX(spotify_album_type) as album_type,
-                    MAX(COALESCE(NULLIF(album_artist, ''), artist)) as album_artist,
-                    MAX(musicbrainz_album_mbid) as musicbrainz_album_mbid,
-                    MAX(discogs_release_id) as discogs_release_id
-                FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
-                GROUP BY album
-                ORDER BY (album_year IS NULL), album_year DESC, album COLLATE NOCASE
-            """, (name,))
+        cursor.execute("""
+            SELECT 
+                album,
+                COUNT(*) as track_count,
+                AVG(stars) as avg_stars,
+                COALESCE(SUM(CASE WHEN is_single THEN 1 ELSE 0 END), 0) as singles_count,
+                MAX(last_scanned) as last_updated,
+                MIN(year) as album_year,
+                MAX(spotify_album_type) as album_type,
+                MAX(COALESCE(NULLIF(album_artist, ''), artist)) as album_artist,
+                MAX(musicbrainz_album_mbid) as musicbrainz_album_mbid,
+                MAX(discogs_release_id) as discogs_release_id
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+            GROUP BY album
+            ORDER BY (MIN(year) IS NULL), MIN(year) DESC NULLS LAST, album
+        """, (name,))
         albums_data = cursor.fetchall()
         
         # Get artist stats with additional metrics
         # Query by COALESCE(album_artist, artist) to handle cases where album_artist is empty
         # Use NULLIF to treat empty strings as NULL for proper COALESCE behavior
-        if is_pg:
-            cursor.execute(f"""
-                SELECT 
-                    COUNT(*) as track_count,
-                    COUNT(DISTINCT album) as album_count,
-                    AVG(stars) as avg_stars,
-                    SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END) as five_star_count,
-                    SUM(COALESCE(duration, 0)) as total_duration,
-                    MIN(year) as earliest_year,
-                    MAX(year) as latest_year,
-                    MAX(musicbrainz_artist_id) as musicbrainz_artist_id,
-                    MAX(spotify_artist_id) as spotify_artist_id,
-                    MAX(lastfm_artist_mbid) as lastfm_artist_mbid,
-                    MAX(discogs_artist_id) as discogs_artist_id,
-                    MAX(discogs_release_id) as discogs_release_id
-                FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-            """, (name,))
-        else:
-            cursor.execute("""
-                SELECT 
-                    COUNT(*) as track_count,
-                    COUNT(DISTINCT album) as album_count,
-                    AVG(stars) as avg_stars,
-                    SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END) as five_star_count,
-                    SUM(COALESCE(duration, 0)) as total_duration,
-                    MIN(year) as earliest_year,
-                    MAX(year) as latest_year,
-                    MAX(musicbrainz_artist_id) as musicbrainz_artist_id,
-                    MAX(spotify_artist_id) as spotify_artist_id,
-                    MAX(lastfm_artist_mbid) as lastfm_artist_mbid,
-                    MAX(discogs_artist_id) as discogs_artist_id,
-                    MAX(discogs_release_id) as discogs_release_id
-                FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
-            """, (name,))
-        
+        cursor.execute(f"""
+            SELECT 
+                COUNT(*) as track_count,
+                COUNT(DISTINCT album) as album_count,
+                AVG(stars) as avg_stars,
+                SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END) as five_star_count,
+                SUM(COALESCE(duration, 0)) as total_duration,
+                MIN(year) as earliest_year,
+                MAX(year) as latest_year,
+                MAX(musicbrainz_artist_id) as musicbrainz_artist_id,
+                MAX(spotify_artist_id) as spotify_artist_id,
+                MAX(lastfm_artist_mbid) as lastfm_artist_mbid,
+                MAX(discogs_artist_id) as discogs_artist_id,
+                MAX(discogs_release_id) as discogs_release_id
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+        """, (name,))
         artist_stats = cursor.fetchone()
         
         # If artist ID not found in tracks, try to get it from album MusicBrainz IDs as fallback
         if artist_stats and not dict(artist_stats).get('musicbrainz_artist_id'):
             try:
                 # Look for any album with a MusicBrainz release ID
-                if is_pg:
-                    cursor.execute("""
-                        SELECT DISTINCT musicbrainz_album_mbid 
-                        FROM tracks 
-                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s 
-                        AND musicbrainz_album_mbid IS NOT NULL AND musicbrainz_album_mbid != ''
-                        LIMIT 1
-                    """, (name,))
-                else:
-                    cursor.execute("""
-                        SELECT DISTINCT musicbrainz_album_mbid 
-                        FROM tracks 
-                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? 
-                        AND musicbrainz_album_mbid IS NOT NULL AND musicbrainz_album_mbid != ''
-                        LIMIT 1
-                    """, (name,))
+                cursor.execute("""
+                    SELECT DISTINCT musicbrainz_album_mbid 
+                    FROM tracks 
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s 
+                    AND musicbrainz_album_mbid IS NOT NULL AND musicbrainz_album_mbid != ''
+                    LIMIT 1
+                """, (name,))
                 album_mbid_row = cursor.fetchone()
                 
                 if album_mbid_row:
@@ -5349,20 +5172,12 @@ def artist_detail(name):
                                         
                                         # Save to database so it persists
                                         try:
-                                            if is_pg:
-                                                cursor.execute("""
-                                                    UPDATE tracks
-                                                    SET musicbrainz_artist_id = %s, lastfm_artist_mbid = %s
-                                                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-                                                    AND (musicbrainz_artist_id IS NULL OR musicbrainz_artist_id = '')
-                                                """, (artist_id, artist_id, name))
-                                            else:
-                                                cursor.execute("""
-                                                    UPDATE tracks
-                                                    SET musicbrainz_artist_id = ?, lastfm_artist_mbid = ?
-                                                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
-                                                    AND (musicbrainz_artist_id IS NULL OR musicbrainz_artist_id = '')
-                                                """, (artist_id, artist_id, name))
+                                            cursor.execute("""
+                                                UPDATE tracks
+                                                SET musicbrainz_artist_id = %s, lastfm_artist_mbid = %s
+                                                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+                                                AND (musicbrainz_artist_id IS NULL OR musicbrainz_artist_id = '')
+                                            """, (artist_id, artist_id, name))
                                             conn.commit()
                                             logging.debug(f"Saved artist ID {artist_id} to {name} tracks")
                                         except Exception as e:
@@ -5373,98 +5188,52 @@ def artist_detail(name):
                 logging.debug(f"Fallback artist ID lookup failed: {e}")
         
         # Get missing releases from database cache
-        if is_pg:
-            cursor.execute("""
-                SELECT release_id, title, primary_type, first_release_date, cover_art_url, category
-                FROM missing_releases
-                WHERE artist = %s
-                ORDER BY first_release_date DESC
-            """, (name,))
-        else:
-            cursor.execute("""
-                SELECT release_id, title, primary_type, first_release_date, cover_art_url, category
-                FROM missing_releases
-                WHERE artist = ?
-                ORDER BY first_release_date DESC
-            """, (name,))
+        cursor.execute("""
+            SELECT release_id, title, primary_type, first_release_date, cover_art_url, category
+            FROM missing_releases
+            WHERE artist = %s
+            ORDER BY first_release_date DESC
+        """, (name,))
         missing_releases_data = cursor.fetchall()
 
         # Top tracks by z-score (fallback to popularity ordering if z-score column is unavailable)
         try:
-            if is_pg:
-                cursor.execute("""
-                    SELECT
-                        id,
-                        title,
-                        album,
-                        COALESCE(popularity_score, 0) as popularity_score,
-                        COALESCE(stars, 0) as stars,
-                        COALESCE(artist_z_score, 0) as artist_z_score,
-                        CASE WHEN is_single THEN 1 ELSE 0 END as is_single,
-                        COALESCE(track_number, 0) as track_number,
-                        COALESCE(disc_number, 1) as disc_number,
-                        COALESCE(duration, 0) as duration
-                    FROM tracks
-                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-                    ORDER BY COALESCE(artist_z_score, 0) DESC, COALESCE(popularity_score, 0) DESC
-                    LIMIT 10
-                """, (name,))
-            else:
-                cursor.execute("""
-                    SELECT
-                        id,
-                        title,
-                        album,
-                        COALESCE(popularity_score, 0) as popularity_score,
-                        COALESCE(stars, 0) as stars,
-                        COALESCE(artist_z_score, 0) as artist_z_score,
-                        COALESCE(is_single, 0) as is_single,
-                        COALESCE(track_number, 0) as track_number,
-                        COALESCE(disc_number, 1) as disc_number,
-                        COALESCE(duration, 0) as duration
-                    FROM tracks
-                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
-                    ORDER BY COALESCE(artist_z_score, 0) DESC, COALESCE(popularity_score, 0) DESC
-                    LIMIT 10
-                """, (name,))
+            cursor.execute("""
+                SELECT
+                    id,
+                    title,
+                    album,
+                    COALESCE(popularity_score, 0) as popularity_score,
+                    COALESCE(stars, 0) as stars,
+                    COALESCE(artist_z_score, 0) as artist_z_score,
+                    CASE WHEN is_single THEN 1 ELSE 0 END as is_single,
+                    COALESCE(track_number, 0) as track_number,
+                    COALESCE(disc_number, 1) as disc_number,
+                    COALESCE(duration, 0) as duration
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+                ORDER BY COALESCE(artist_z_score, 0) DESC, COALESCE(popularity_score, 0) DESC
+                LIMIT 10
+            """, (name,))
             top_tracks = cursor.fetchall()
         except Exception:
-            if is_pg:
-                cursor.execute("""
-                    SELECT
-                        id,
-                        title,
-                        album,
-                        COALESCE(popularity_score, 0) as popularity_score,
-                        COALESCE(stars, 0) as stars,
-                        0 as artist_z_score,
-                        CASE WHEN is_single THEN 1 ELSE 0 END as is_single,
-                        COALESCE(track_number, 0) as track_number,
-                        COALESCE(disc_number, 1) as disc_number,
-                        COALESCE(duration, 0) as duration
-                    FROM tracks
-                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-                    ORDER BY COALESCE(popularity_score, 0) DESC, COALESCE(stars, 0) DESC
-                    LIMIT 10
-                """, (name,))
-            else:
-                cursor.execute("""
-                    SELECT
-                        id,
-                        title,
-                        album,
-                        COALESCE(popularity_score, 0) as popularity_score,
-                        COALESCE(stars, 0) as stars,
-                        0 as artist_z_score,
-                        COALESCE(is_single, 0) as is_single,
-                        COALESCE(track_number, 0) as track_number,
-                        COALESCE(disc_number, 1) as disc_number,
-                        COALESCE(duration, 0) as duration
-                    FROM tracks
-                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
-                    ORDER BY COALESCE(popularity_score, 0) DESC, COALESCE(stars, 0) DESC
-                    LIMIT 10
-                """, (name,))
+            cursor.execute("""
+                SELECT
+                    id,
+                    title,
+                    album,
+                    COALESCE(popularity_score, 0) as popularity_score,
+                    COALESCE(stars, 0) as stars,
+                    0 as artist_z_score,
+                    CASE WHEN is_single THEN 1 ELSE 0 END as is_single,
+                    COALESCE(track_number, 0) as track_number,
+                    COALESCE(disc_number, 1) as disc_number,
+                    COALESCE(duration, 0) as duration
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+                ORDER BY COALESCE(popularity_score, 0) DESC, COALESCE(stars, 0) DESC
+                LIMIT 10
+            """, (name,))
             top_tracks = cursor.fetchall()
         
         # Deduplicate top tracks by title (keep first occurrence)
@@ -5488,78 +5257,43 @@ def artist_detail(name):
             top_tracks = deduped_tracks
 
         # Albums where this artist appears as a featured/track artist but is not the album artist
-        if is_pg:
-            cursor.execute("""
-                SELECT
-                    album,
-                    COALESCE(NULLIF(album_artist, ''), artist) as album_artist,
-                    COUNT(*) as track_count,
-                    AVG(COALESCE(stars, 0)) as avg_stars,
-                    MIN(year) as album_year,
-                    MAX(spotify_album_type) as album_type,
-                    MAX(last_scanned) as last_updated
-                FROM tracks
-                WHERE artist = %s
-                  AND COALESCE(NULLIF(album_artist, ''), artist) != %s
-                GROUP BY album, COALESCE(NULLIF(album_artist, ''), artist)
-                ORDER BY (MIN(year) IS NULL), MIN(year) DESC NULLS LAST, album
-            """, (name, name))
-        else:
-            cursor.execute("""
-                SELECT
-                    album,
-                    COALESCE(NULLIF(album_artist, ''), artist) as album_artist,
-                    COUNT(*) as track_count,
-                    AVG(COALESCE(stars, 0)) as avg_stars,
-                    MIN(year) as album_year,
-                    MAX(spotify_album_type) as album_type,
-                    MAX(last_scanned) as last_updated
-                FROM tracks
-                WHERE artist = ?
-                  AND COALESCE(NULLIF(album_artist, ''), artist) != ?
-                GROUP BY album, COALESCE(NULLIF(album_artist, ''), artist)
-                ORDER BY (album_year IS NULL), album_year DESC, album COLLATE NOCASE
-            """, (name, name))
+        cursor.execute("""
+            SELECT
+                album,
+                COALESCE(NULLIF(album_artist, ''), artist) as album_artist,
+                COUNT(*) as track_count,
+                AVG(COALESCE(stars, 0)) as avg_stars,
+                MIN(year) as album_year,
+                MAX(spotify_album_type) as album_type,
+                MAX(last_scanned) as last_updated
+            FROM tracks
+            WHERE artist = %s
+              AND COALESCE(NULLIF(album_artist, ''), artist) != %s
+            GROUP BY album, COALESCE(NULLIF(album_artist, ''), artist)
+            ORDER BY (MIN(year) IS NULL), MIN(year) DESC NULLS LAST, album
+        """, (name, name))
         appears_on_albums = cursor.fetchall()
         
         # Get potential compilation albums using cached compilation detection from background scan
         # Combined with fallback local heuristics in case scan hasn't run yet
         # IMPORTANT: Filter by album artist identity (not track artist) so featured appearances
         # are handled separately under "Appears On".
-        if is_pg:
-            cursor.execute("""
-                SELECT 
-                    album,
-                    COUNT(*) as track_count,
-                    AVG(stars) as avg_stars,
-                    COALESCE(SUM(CASE WHEN is_single THEN 1 ELSE 0 END), 0) as singles_count,
-                    MAX(last_scanned) as last_updated,
-                    MIN(year) as album_year,
-                    MAX(spotify_album_type) as album_type,
-                    MAX(COALESCE(NULLIF(album_artist, ''), artist)) as album_artist,
-                    MAX(is_compilation) as is_compilation
-                FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-                GROUP BY album
-                ORDER BY (MIN(year) IS NULL), MIN(year) DESC NULLS LAST, album
-            """, (name,))
-        else:
-            cursor.execute("""
-                SELECT 
-                    album,
-                    COUNT(*) as track_count,
-                    AVG(stars) as avg_stars,
-                    COALESCE(SUM(CASE WHEN is_single THEN 1 ELSE 0 END), 0) as singles_count,
-                    MAX(last_scanned) as last_updated,
-                    MIN(year) as album_year,
-                    MAX(spotify_album_type) as album_type,
-                    MAX(COALESCE(NULLIF(album_artist, ''), artist)) as album_artist,
-                    MAX(is_compilation) as is_compilation
-                FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
-                GROUP BY album
-                ORDER BY (album_year IS NULL), album_year DESC, album COLLATE NOCASE
-            """, (name,))
+        cursor.execute("""
+            SELECT 
+                album,
+                COUNT(*) as track_count,
+                AVG(stars) as avg_stars,
+                COALESCE(SUM(CASE WHEN is_single THEN 1 ELSE 0 END), 0) as singles_count,
+                MAX(last_scanned) as last_updated,
+                MIN(year) as album_year,
+                MAX(spotify_album_type) as album_type,
+                MAX(COALESCE(NULLIF(album_artist, ''), artist)) as album_artist,
+                MAX(is_compilation) as is_compilation
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+            GROUP BY album
+            ORDER BY (MIN(year) IS NULL), MIN(year) DESC NULLS LAST, album
+        """, (name,))
         potential_albums = cursor.fetchall()
         
         # Filter to only include albums that are actually compilations
@@ -5583,7 +5317,7 @@ def artist_detail(name):
                 compilation_albums.append(album_dict)
         
         # Define placeholder here to ensure it's available for all subsequent queries
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         # Get artist metadata (country, image, bio) from artists table if it exists
         artist_country = None
@@ -6299,7 +6033,7 @@ def api_artist_exists():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         # Check if artist exists using the same logic as the artist listing page
         # Look for artist as main artist or album artist
@@ -6330,8 +6064,7 @@ def api_artist_missing_releases():
 
     conn = get_db()
     cursor = conn.cursor()
-    is_pg = _is_postgres_connection(conn)
-    placeholder = "%s" if is_pg else "?"
+    placeholder = "%s"
     
     # Use canonical artist identity for all comparisons (album_artist preferred)
     artist_compare_expr = "COALESCE(NULLIF(album_artist, ''), artist)"
@@ -6414,49 +6147,29 @@ def api_artist_missing_releases():
 
     # Persist latest artist-level missing releases so they survive page reloads/restarts.
     try:
-        if is_pg:
-            cursor.execute(
-                f"DELETE FROM missing_releases WHERE LOWER(artist) = LOWER({placeholder})",
-                (artist,)
-            )
-            cursor.execute("SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM missing_releases")
-            next_id_row = cursor.fetchone()
-            next_missing_release_id = int(next_id_row.get("next_id", 1)) if isinstance(next_id_row, dict) else int(next_id_row[0] if next_id_row else 1)
-            for item in missing:
-                cursor.execute(f"""
-                    INSERT INTO missing_releases
-                    (id, artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
-                    VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
-                """, (
-                    next_missing_release_id,
-                    artist,
-                    item.get("id", ""),
-                    item.get("title", ""),
-                    item.get("primary_type", "Album"),
-                    item.get("first_release_date", ""),
-                    item.get("cover_art_url", ""),
-                    item.get("category", "Album")
-                ))
-                next_missing_release_id += 1
-        else:
-            cursor.execute(
-                "DELETE FROM missing_releases WHERE LOWER(artist) = LOWER(?)",
-                (artist,)
-            )
-            for item in missing:
-                cursor.execute("""
-                    INSERT OR REPLACE INTO missing_releases
-                    (artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                """, (
-                    artist,
-                    item.get("id", ""),
-                    item.get("title", ""),
-                    item.get("primary_type", "Album"),
-                    item.get("first_release_date", ""),
-                    item.get("cover_art_url", ""),
-                    item.get("category", "Album")
-                ))
+        cursor.execute(
+            f"DELETE FROM missing_releases WHERE LOWER(artist) = LOWER({placeholder})",
+            (artist,)
+        )
+        cursor.execute("SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM missing_releases")
+        next_id_row = cursor.fetchone()
+        next_missing_release_id = int(next_id_row.get("next_id", 1)) if isinstance(next_id_row, dict) else int(next_id_row[0] if next_id_row else 1)
+        for item in missing:
+            cursor.execute(f"""
+                INSERT INTO missing_releases
+                (id, artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
+                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
+            """, (
+                next_missing_release_id,
+                artist,
+                item.get("id", ""),
+                item.get("title", ""),
+                item.get("primary_type", "Album"),
+                item.get("first_release_date", ""),
+                item.get("cover_art_url", ""),
+                item.get("category", "Album")
+            ))
+            next_missing_release_id += 1
         conn.commit()
     except Exception as persist_error:
         logging.warning(f"[MISSING_RELEASES] Could not persist artist missing releases for {artist}: {persist_error}")
@@ -6646,9 +6359,7 @@ def api_scan_all_missing_releases():
         try:
             conn = get_db()
             cursor = conn.cursor()
-            placeholder = "%s" if _is_postgres_connection(conn) else "?"
-            is_pg = _is_postgres_connection(conn)
-
+            placeholder = "%s"
             # Get canonical artist identities from album_artist when available.
             # This avoids scanning featured track artists that do not represent a real catalog owner.
             cursor.execute("""
@@ -6807,42 +6518,27 @@ def api_scan_all_missing_releases():
                         
                         # Insert missing release into database with DB-aware upsert
                         try:
-                            if is_pg:
-                                cursor.execute(
-                                    f"DELETE FROM missing_releases WHERE LOWER(artist) = LOWER({placeholder}) AND release_id = {placeholder}",
-                                    (artist_name, rg.get("id", ""))
-                                )
-                                cursor.execute("SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM missing_releases")
-                                next_id_row = cursor.fetchone()
-                                next_missing_release_id = int(next_id_row.get("next_id", 1)) if isinstance(next_id_row, dict) else int(next_id_row[0] if next_id_row else 1)
-                                cursor.execute(f"""
-                                    INSERT INTO missing_releases 
-                                    (id, artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
-                                    VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
-                                """, (
-                                    next_missing_release_id,
-                                    artist_name,
-                                    rg.get("id", ""),
-                                    rg.get("title", ""),
-                                    rg.get("primary_type", "Album"),
-                                    rg.get("first_release_date", ""),
-                                    cover_art_url,
-                                    category
-                                ))
-                            else:
-                                cursor.execute("""
-                                    INSERT OR REPLACE INTO missing_releases 
-                                    (artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                                """, (
-                                    artist_name,
-                                    rg.get("id", ""),
-                                    rg.get("title", ""),
-                                    rg.get("primary_type", "Album"),
-                                    rg.get("first_release_date", ""),
-                                    cover_art_url,
-                                    category
-                                ))
+                            cursor.execute(
+                                f"DELETE FROM missing_releases WHERE LOWER(artist) = LOWER({placeholder}) AND release_id = {placeholder}",
+                                (artist_name, rg.get("id", ""))
+                            )
+                            cursor.execute("SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM missing_releases")
+                            next_id_row = cursor.fetchone()
+                            next_missing_release_id = int(next_id_row.get("next_id", 1)) if isinstance(next_id_row, dict) else int(next_id_row[0] if next_id_row else 1)
+                            cursor.execute(f"""
+                                INSERT INTO missing_releases 
+                                (id, artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
+                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
+                            """, (
+                                next_missing_release_id,
+                                artist_name,
+                                rg.get("id", ""),
+                                rg.get("title", ""),
+                                rg.get("primary_type", "Album"),
+                                rg.get("first_release_date", ""),
+                                cover_art_url,
+                                category
+                            ))
                             total_missing += 1
                         except Exception as e:
                             logging.warning(f"[MISSING_RELEASES] Error inserting release {rg.get('title')}: {e}")
@@ -6917,8 +6613,7 @@ def api_fetch_artist_country():
         # Update artists table
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         # Ensure artist exists in artists table
         cursor.execute(f"SELECT id FROM artists WHERE name = {placeholder}", (artist_name,))
@@ -6963,8 +6658,7 @@ def api_update_artist_country():
         # Update artists table
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         # Ensure artist exists in artists table
         cursor.execute(f"SELECT id FROM artists WHERE name = {placeholder}", (artist_name,))
@@ -6993,7 +6687,6 @@ def api_update_artist_country():
     except Exception as e:
         logging.error(f"[ARTIST_COUNTRY_UPDATE] Error: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
-
 
 
 def update_audio_file_genres(file_path, genres_list):
@@ -7055,8 +6748,7 @@ def api_apply_country_as_genre():
         # Get artist country
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         cursor.execute(f"SELECT country FROM artists WHERE name = {placeholder}", (artist_name,))
         artist_row = cursor.fetchone()
@@ -7114,7 +6806,7 @@ def api_apply_country_as_genre():
                     # Update database - use consistent delimiter
                     conn = get_db()
                     cursor = conn.cursor()
-                    placeholder = "%s" if _is_postgres_connection(conn) else "?"
+                    placeholder = "%s"
                     new_genre = GENRE_DELIMITER.join(existing_genres)
                     cursor.execute(f"UPDATE tracks SET genre = {placeholder} WHERE id = {placeholder}", (new_genre, track_id))
                     conn.commit()
@@ -7152,11 +6844,10 @@ def api_cached_missing_releases():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         # Check if missing_releases table exists
-        if not _table_exists(cursor, 'missing_releases', is_postgres=is_pg):
+        if not _table_exists(cursor, 'missing_releases', is_postgres=True):
             conn.close()
             return jsonify({
                 "artist": artist,
@@ -7209,8 +6900,7 @@ def api_cleanup_false_positive_missing():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         # Get all existing albums
         cursor.execute(f"""
@@ -7268,8 +6958,7 @@ def api_artist_bio():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         # Return cached biography from database only - no online calls
         cursor.execute(f"""
@@ -7320,16 +7009,11 @@ def api_artist_singles_count():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         # Handle boolean type in PostgreSQL vs integer in SQLite
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
-        if is_pg:
-            cursor.execute(f"SELECT COUNT(*) as count FROM tracks WHERE artist = {placeholder} AND is_single = TRUE", (artist_name,))
-        else:
-            cursor.execute(f"SELECT COUNT(*) as count FROM tracks WHERE artist = {placeholder} AND is_single = 1", (artist_name,))
-        
+        placeholder = "%s"
+        cursor.execute(f"SELECT COUNT(*) as count FROM tracks WHERE artist = {placeholder} AND is_single = TRUE", (artist_name,))
         row = cursor.fetchone()
         conn.close()
         
@@ -7355,35 +7039,20 @@ def api_artist_covered_by():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         # Find tracks where original_cover_artist matches AND the performing artist is different
-        if is_pg:
-            cursor.execute(
-                f"""
-                SELECT id, title, artist, album, year,
-                       original_cover_artist, is_cover_reason
-                FROM tracks
-                WHERE original_cover_artist ILIKE {placeholder}
-                  AND LOWER(COALESCE(album_artist, artist)) != LOWER({placeholder})
-                ORDER BY artist, title
-                """,
-                (artist_name, artist_name),
-            )
-        else:
-            cursor.execute(
-                f"""
-                SELECT id, title, artist, album, year,
-                       original_cover_artist, is_cover_reason
-                FROM tracks
-                WHERE LOWER(original_cover_artist) = LOWER({placeholder})
-                  AND LOWER(COALESCE(album_artist, artist)) != LOWER({placeholder})
-                ORDER BY artist, title
-                """,
-                (artist_name, artist_name),
-            )
-
+        cursor.execute(
+            f"""
+            SELECT id, title, artist, album, year,
+                   original_cover_artist, is_cover_reason
+            FROM tracks
+            WHERE original_cover_artist ILIKE {placeholder}
+              AND LOWER(COALESCE(album_artist, artist)) != LOWER({placeholder})
+            ORDER BY artist, title
+            """,
+            (artist_name, artist_name),
+        )
         rows = cursor.fetchall() or []
         conn.close()
 
@@ -7482,8 +7151,7 @@ def api_artist_favourite():
     """
     conn = get_db()
     cursor = conn.cursor()
-    is_pg = _is_postgres_connection(conn)
-    placeholder = "%s" if is_pg else "?"
+    placeholder = "%s"
 
     try:
         if request.method == "GET":
@@ -7491,16 +7159,10 @@ def api_artist_favourite():
             if not artist_name:
                 conn.close()
                 return jsonify({"error": "Artist name required"}), 400
-            if is_pg:
-                cursor.execute(
-                    f"SELECT id FROM bookmarks WHERE type = {placeholder} AND LOWER(name) = LOWER({placeholder})",
-                    ("artist_favourite", artist_name),
-                )
-            else:
-                cursor.execute(
-                    f"SELECT id FROM bookmarks WHERE type = {placeholder} AND LOWER(name) = LOWER({placeholder})",
-                    ("artist_favourite", artist_name),
-                )
+            cursor.execute(
+                f"SELECT id FROM bookmarks WHERE type = {placeholder} AND LOWER(name) = LOWER({placeholder})",
+                ("artist_favourite", artist_name),
+            )
             row = cursor.fetchone()
             conn.close()
             return jsonify({"is_favourite": row is not None})
@@ -7511,22 +7173,16 @@ def api_artist_favourite():
             if not artist_name:
                 conn.close()
                 return jsonify({"error": "Artist name required"}), 400
-            if is_pg:
-                _insert_bookmark_resilient(
-                    conn,
-                    f"""
-                    INSERT INTO bookmarks (type, name)
-                    VALUES ({placeholder}, {placeholder})
-                    ON CONFLICT DO NOTHING
-                    """,
-                    # ON CONFLICT DO NOTHING handles the UNIQUE(type, name, artist, album, track_id) constraint
-                    ("artist_favourite", artist_name),
-                )
-            else:
-                cursor.execute(
-                    "INSERT OR IGNORE INTO bookmarks (type, name) VALUES (?, ?)",
-                    ("artist_favourite", artist_name),
-                )
+            _insert_bookmark_resilient(
+                conn,
+                f"""
+                INSERT INTO bookmarks (type, name)
+                VALUES ({placeholder}, {placeholder})
+                ON CONFLICT DO NOTHING
+                """,
+                # ON CONFLICT DO NOTHING handles the UNIQUE(type, name, artist, album, track_id) constraint
+                ("artist_favourite", artist_name),
+            )
             conn.commit()
             conn.close()
             return jsonify({"success": True, "is_favourite": True})
@@ -7536,16 +7192,10 @@ def api_artist_favourite():
             if not artist_name:
                 conn.close()
                 return jsonify({"error": "Artist name required"}), 400
-            if is_pg:
-                cursor.execute(
-                    f"DELETE FROM bookmarks WHERE type = {placeholder} AND LOWER(name) = LOWER({placeholder})",
-                    ("artist_favourite", artist_name),
-                )
-            else:
-                cursor.execute(
-                    f"DELETE FROM bookmarks WHERE type = {placeholder} AND LOWER(name) = LOWER({placeholder})",
-                    ("artist_favourite", artist_name),
-                )
+            cursor.execute(
+                f"DELETE FROM bookmarks WHERE type = {placeholder} AND LOWER(name) = LOWER({placeholder})",
+                ("artist_favourite", artist_name),
+            )
             conn.commit()
             conn.close()
             return jsonify({"success": True, "is_favourite": False})
@@ -7569,35 +7219,22 @@ def _is_artist_favourited(artist_name: str) -> bool:
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         # Check bookmarks
-        if is_pg:
-            cursor.execute(
-                f"SELECT 1 FROM bookmarks WHERE type = {placeholder} AND LOWER(name) = LOWER({placeholder}) LIMIT 1",
-                ("artist_favourite", artist_name),
-            )
-        else:
-            cursor.execute(
-                f"SELECT 1 FROM bookmarks WHERE type = {placeholder} AND LOWER(name) = LOWER({placeholder}) LIMIT 1",
-                ("artist_favourite", artist_name),
-            )
+        cursor.execute(
+            f"SELECT 1 FROM bookmarks WHERE type = {placeholder} AND LOWER(name) = LOWER({placeholder}) LIMIT 1",
+            ("artist_favourite", artist_name),
+        )
         if cursor.fetchone():
             conn.close()
             return True
 
         # Check user_loved_artists
-        if is_pg:
-            cursor.execute(
-                f"SELECT 1 FROM user_loved_artists WHERE LOWER(artist) = LOWER({placeholder}) AND is_loved = TRUE LIMIT 1",
-                (artist_name,),
-            )
-        else:
-            cursor.execute(
-                f"SELECT 1 FROM user_loved_artists WHERE LOWER(artist) = LOWER({placeholder}) AND is_loved = 1 LIMIT 1",
-                (artist_name,),
-            )
+        cursor.execute(
+            f"SELECT 1 FROM user_loved_artists WHERE LOWER(artist) = LOWER({placeholder}) AND is_loved = TRUE LIMIT 1",
+            (artist_name,),
+        )
         result = cursor.fetchone() is not None
         conn.close()
         return result
@@ -7677,13 +7314,11 @@ def api_create_essential_playlist():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         # Get all singles with high confidence
         # Handle boolean type in PostgreSQL vs integer in SQLite
-        is_pg = _is_postgres_connection(conn)
-        if is_pg:
-            cursor.execute("""
+        cursor.execute("""
                 SELECT id, title, album, stars, score, single_confidence 
                 FROM tracks 
                 WHERE artist = %s AND is_single = TRUE
@@ -7698,22 +7333,6 @@ def api_create_essential_playlist():
                     stars DESC
                 LIMIT 50
             """, (artist_name,))
-        else:
-            cursor.execute("""
-                SELECT id, title, album, stars, score, single_confidence 
-                FROM tracks 
-                WHERE artist = ? AND is_single = 1
-                ORDER BY 
-                CASE single_confidence 
-                    WHEN 'high' THEN 3
-                    WHEN 'medium' THEN 2
-                    WHEN 'low' THEN 1
-                    ELSE 0
-                END DESC,
-                score DESC,
-                stars DESC
-            LIMIT 50
-        """, (artist_name,))
         
         singles = cursor.fetchall()
         conn.close()
@@ -7749,8 +7368,7 @@ def api_artist_image():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         # First check artists table (populated by scans)
         cursor.execute(f"""
@@ -7794,19 +7412,13 @@ def api_artist_image():
             if image_url:
                 # Cache the result in artist_images table for future requests
                 try:
-                    if is_pg:
-                        cursor.execute("""
-                            INSERT INTO artist_images (artist_name, image_url, updated_at)
-                            VALUES (%s, %s, CURRENT_TIMESTAMP)
-                            ON CONFLICT (artist_name) DO UPDATE SET
-                                image_url = EXCLUDED.image_url,
-                                updated_at = CURRENT_TIMESTAMP
-                        """, (artist_name, image_url))
-                    else:
-                        cursor.execute("""
-                            INSERT OR REPLACE INTO artist_images (artist_name, image_url, updated_at)
-                            VALUES (?, ?, ?)
-                        """, (artist_name, image_url, datetime.now().isoformat()))
+                    cursor.execute("""
+                        INSERT INTO artist_images (artist_name, image_url, updated_at)
+                        VALUES (%s, %s, CURRENT_TIMESTAMP)
+                        ON CONFLICT (artist_name) DO UPDATE SET
+                            image_url = EXCLUDED.image_url,
+                            updated_at = CURRENT_TIMESTAMP
+                    """, (artist_name, image_url))
                     conn.commit()
                 except Exception as cache_err:
                     logging.debug(f"[ARTIST IMAGE] Failed to cache AudioDB image for {artist_name}: {cache_err}")
@@ -7908,9 +7520,7 @@ def api_artist_set_image():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
-        is_pg = _is_postgres_connection(conn)
-        
+        placeholder = "%s"
         # Create artist_images table if it doesn't exist
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS artist_images (
@@ -7921,20 +7531,13 @@ def api_artist_set_image():
         """)
         
         # Insert or update with DB-aware upsert
-        if is_pg:
-            cursor.execute(f"""
-                INSERT INTO artist_images (artist_name, image_url, updated_at)
-                VALUES ({placeholder}, {placeholder}, CURRENT_TIMESTAMP)
-                ON CONFLICT (artist_name) DO UPDATE SET
-                    image_url = EXCLUDED.image_url,
-                    updated_at = CURRENT_TIMESTAMP
-            """, (artist_name, image_url))
-        else:
-            cursor.execute("""
-                INSERT OR REPLACE INTO artist_images (artist_name, image_url, updated_at)
-                VALUES (?, ?, ?)
-            """, (artist_name, image_url, datetime.now().isoformat()))
-        
+        cursor.execute(f"""
+            INSERT INTO artist_images (artist_name, image_url, updated_at)
+            VALUES ({placeholder}, {placeholder}, CURRENT_TIMESTAMP)
+            ON CONFLICT (artist_name) DO UPDATE SET
+                image_url = EXCLUDED.image_url,
+                updated_at = CURRENT_TIMESTAMP
+        """, (artist_name, image_url))
         conn.commit()
         conn.close()
         
@@ -7967,8 +7570,7 @@ def api_artist_update_ids():
         
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         # Update all tracks for this artist with the new IDs
         # Only update non-NULL values
@@ -8030,11 +7632,10 @@ def api_album_update_ids():
         
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         # Use canonical MusicBrainz album MBID column.
-        track_columns = _get_table_columns(cursor, "tracks", is_postgres=is_pg)
+        track_columns = _get_table_columns(cursor, "tracks", is_postgres=True)
 
         mb_album_column = "musicbrainz_album_mbid" if "musicbrainz_album_mbid" in track_columns else None
 
@@ -8107,7 +7708,7 @@ def api_album_bulk_delete():
         
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         deleted_count = 0
         
@@ -8173,7 +7774,7 @@ def api_album_bulk_tag():
         
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         updated_count = 0
         failed_files = []
@@ -8187,8 +7788,7 @@ def api_album_bulk_tag():
         for track_id in track_ids:
             try:
                 # Get track info
-                is_pg = _is_postgres_connection(conn)
-                placeholder = "%s" if is_pg else "?"
+                placeholder = "%s"
                 cursor.execute(f"SELECT title, genres, beets_path, file_path FROM tracks WHERE id = {placeholder}", (track_id,))
                 result = cursor.fetchone()
                 
@@ -8406,7 +8006,7 @@ def api_update_album_tags(album, artist):
             # Get track IDs to sync
             conn = get_db()
             cursor = conn.cursor()
-            placeholder = "%s" if _is_postgres_connection(conn) else "?"
+            placeholder = "%s"
 
             if selected_track_ids:
                 id_placeholders = ", ".join([placeholder for _ in selected_track_ids])
@@ -8492,8 +8092,7 @@ def api_get_track_genres(track_id):
         
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         cursor.execute(f"""
             SELECT * FROM tracks WHERE id = {placeholder}
@@ -8544,8 +8143,7 @@ def api_get_album_genres(album, artist):
         
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         # Get all tracks for this album
         tracks = []
@@ -8595,8 +8193,7 @@ def api_get_artist_genres(artist):
         
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         # Get all tracks for this artist
         cursor.execute(f"""
@@ -8695,8 +8292,7 @@ def api_get_similar_artists(artist):
         
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         # Get similar artists from database
         cursor.execute(f"""
@@ -8886,7 +8482,7 @@ def api_library_similar_artists():
         
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         # Get all artists with their similar artists
         cursor.execute("""
@@ -8951,8 +8547,7 @@ def api_library_similar_artists():
                     pass
 
         # Check which similar artists are in the collection
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         all_names = list(similar_cache.keys())
         in_collection = _get_artists_in_collection(cursor, [similar_cache[k]['name'] for k in all_names], placeholder)
         conn.close()
@@ -9001,8 +8596,7 @@ def api_debug_album_genres(album, artist):
         
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         rows = []
         # Get all tracks for this album
@@ -9076,7 +8670,6 @@ def api_debug_album_genres(album, artist):
         logging.error(f"[DEBUG GENRES] Error: {e}")
         import traceback
         return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
-
 
 
 @app.route("/api/album/search-art")
@@ -9230,8 +8823,6 @@ def api_album_set_art():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        
         # Create album_art table if it doesn't exist
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS album_art (
@@ -9244,21 +8835,14 @@ def api_album_set_art():
         """)
         
         # Insert or update
-        if is_pg:
-            cursor.execute("""
-                INSERT INTO album_art (artist_name, album_name, image_url, updated_at)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (artist_name, album_name)
-                DO UPDATE SET
-                    image_url = EXCLUDED.image_url,
-                    updated_at = EXCLUDED.updated_at
-            """, (artist_name, album_name, image_url, datetime.now().isoformat()))
-        else:
-            cursor.execute("""
-                INSERT OR REPLACE INTO album_art (artist_name, album_name, image_url, updated_at)
-                VALUES (?, ?, ?, ?)
-            """, (artist_name, album_name, image_url, datetime.now().isoformat()))
-        
+        cursor.execute("""
+            INSERT INTO album_art (artist_name, album_name, image_url, updated_at)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (artist_name, album_name)
+            DO UPDATE SET
+                image_url = EXCLUDED.image_url,
+                updated_at = EXCLUDED.updated_at
+        """, (artist_name, album_name, image_url, datetime.now().isoformat()))
         conn.commit()
         conn.close()
         
@@ -9617,9 +9201,7 @@ def api_add_artist():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
-        is_pg = _is_postgres_connection(conn)
-        
+        placeholder = "%s"
         # Check if artist already exists in tracks
         cursor.execute(f"SELECT COUNT(*) FROM tracks WHERE artist = {placeholder}", (artist_name,))
         result = cursor.fetchone()
@@ -9667,42 +9249,27 @@ def api_add_artist():
             
             # Insert into missing_releases with DB-aware upsert
             try:
-                if is_pg:
-                    cursor.execute(
-                        f"DELETE FROM missing_releases WHERE LOWER(artist) = LOWER({placeholder}) AND release_id = {placeholder}",
-                        (artist_name, rg.get("id", ""))
-                    )
-                    cursor.execute("SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM missing_releases")
-                    next_id_row = cursor.fetchone()
-                    next_missing_release_id = int(next_id_row.get("next_id", 1)) if isinstance(next_id_row, dict) else int(next_id_row[0] if next_id_row else 1)
-                    cursor.execute(f"""
-                        INSERT INTO missing_releases 
-                        (id, artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
-                        VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
-                    """, (
-                        next_missing_release_id,
-                        artist_name,
-                        rg.get("id", ""),
-                        rg.get("title", ""),
-                        rg.get("primary_type", "Album"),
-                        rg.get("first_release_date", ""),
-                        rg.get("cover_art_url", ""),
-                        category
-                    ))
-                else:
-                    cursor.execute("""
-                        INSERT OR REPLACE INTO missing_releases 
-                        (artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                    """, (
-                        artist_name,
-                        rg.get("id", ""),
-                        rg.get("title", ""),
-                        rg.get("primary_type", "Album"),
-                        rg.get("first_release_date", ""),
-                        rg.get("cover_art_url", ""),
-                        category
-                    ))
+                cursor.execute(
+                    f"DELETE FROM missing_releases WHERE LOWER(artist) = LOWER({placeholder}) AND release_id = {placeholder}",
+                    (artist_name, rg.get("id", ""))
+                )
+                cursor.execute("SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM missing_releases")
+                next_id_row = cursor.fetchone()
+                next_missing_release_id = int(next_id_row.get("next_id", 1)) if isinstance(next_id_row, dict) else int(next_id_row[0] if next_id_row else 1)
+                cursor.execute(f"""
+                    INSERT INTO missing_releases 
+                    (id, artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
+                    VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
+                """, (
+                    next_missing_release_id,
+                    artist_name,
+                    rg.get("id", ""),
+                    rg.get("title", ""),
+                    rg.get("primary_type", "Album"),
+                    rg.get("first_release_date", ""),
+                    rg.get("cover_art_url", ""),
+                    category
+                ))
                 added_count += 1
             except Exception as e:
                 logging.error(f"[ADD_ARTIST] Error inserting release {rg.get('title')}: {e}")
@@ -9711,19 +9278,12 @@ def api_add_artist():
         
         # Create artist_stats entry if it doesn't exist (so artist appears on artists page)
         if existing_count == 0:
-            if is_pg:
-                cursor.execute(f"""
-                    INSERT INTO artist_stats 
-                    (artist_name, last_updated)
-                    VALUES ({placeholder}, CURRENT_TIMESTAMP)
-                    ON CONFLICT (artist_name) DO NOTHING
-                """, (artist_name,))
-            else:
-                cursor.execute("""
-                    INSERT OR IGNORE INTO artist_stats 
-                    (artist_name, last_updated)
-                    VALUES (?, CURRENT_TIMESTAMP)
-                """, (artist_name,))
+            cursor.execute(f"""
+                INSERT INTO artist_stats 
+                (artist_name, last_updated)
+                VALUES ({placeholder}, CURRENT_TIMESTAMP)
+                ON CONFLICT (artist_name) DO NOTHING
+            """, (artist_name,))
             conn.commit()
         
         conn.close()
@@ -9755,14 +9315,13 @@ def album_detail(artist, album):
         
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         # Query by COALESCE(album_artist, artist) to match how artists are listed
         # Use NULLIF to treat empty strings as NULL for proper COALESCE behavior
         # Try both COALESCE and plain artist for backwards compatibility with old links
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
-        collate_nocase = "" if is_pg else " COLLATE NOCASE"
+        placeholder = "%s"
+        collate_nocase = ""
         tracks_data = None
         for artist_clause in ["COALESCE(NULLIF(album_artist, ''), artist)", "artist"]:
             cursor.execute(f"""
@@ -9860,19 +9419,11 @@ def album_detail(artist, album):
             }
         
         # Count singles in this album (based on is_single from single detection)
-        is_pg = _is_postgres_connection(conn)
-        if is_pg:
-            cursor.execute("""
-                SELECT COUNT(*) as singles_count
-                FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s AND is_single = TRUE
-            """, (artist, album))
-        else:
-            cursor.execute("""
-                SELECT COUNT(*) as singles_count
-                FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ? AND is_single = 1
-            """, (artist, album))
+        cursor.execute("""
+            SELECT COUNT(*) as singles_count
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s AND is_single = TRUE
+        """, (artist, album))
         singles_row = cursor.fetchone()
         album_data['singles_count'] = singles_row['singles_count'] if singles_row else 0
         
@@ -10122,8 +9673,7 @@ def _run_artist_scan_pipeline(artist_name: str, force: bool = False):
         conn = get_db()
         try:
             cursor = conn.cursor()
-            is_pg = _is_postgres_connection(conn)
-            placeholder = "%s" if is_pg else "?"
+            placeholder = "%s"
             cursor.execute(f"SELECT artist_id FROM artist_stats WHERE artist_name = {placeholder}", (artist_name,))
             row = cursor.fetchone()
             artist_id = row['artist_id'] if row else None
@@ -10146,8 +9696,7 @@ def _run_artist_scan_pipeline(artist_name: str, force: bool = False):
             conn = get_db()
             try:
                 cursor = conn.cursor()
-                is_pg = _is_postgres_connection(conn)
-                placeholder = "%s" if is_pg else "?"
+                placeholder = "%s"
                 cursor.execute(f"SELECT COUNT(*) as cnt FROM tracks WHERE artist = {placeholder}", (artist_name,))
                 result = cursor.fetchone()
                 track_count = result['cnt'] if result else 0
@@ -10232,15 +9781,11 @@ def _auto_detect_album_type(artist_name: str, album_name: str):
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         # Get current album type, track counts, and Discogs format data
         # Use database-appropriate boolean comparison for the is_single column
-        if is_pg:
-            is_single_expr = "CASE WHEN is_single THEN 1 ELSE 0 END"
-        else:
-            is_single_expr = "CASE WHEN COALESCE(is_single, 0) = 1 THEN 1 ELSE 0 END"
+        is_single_expr = "CASE WHEN is_single THEN 1 ELSE 0 END"
         cursor.execute(f"""
             SELECT 
                 COUNT(*) as total_tracks,
@@ -10400,8 +9945,7 @@ def _run_album_scan_pipeline(artist_name: str, album_name: str, force: bool = Fa
         conn = get_db()
         try:
             cursor = conn.cursor()
-            is_pg = _is_postgres_connection(conn)
-            placeholder = "%s" if is_pg else "?"
+            placeholder = "%s"
             cursor.execute(f"SELECT artist_id FROM artist_stats WHERE artist_name = {placeholder}", (artist_name,))
             row = cursor.fetchone()
             artist_id = row['artist_id'] if row else None
@@ -10423,8 +9967,7 @@ def _run_album_scan_pipeline(artist_name: str, album_name: str, force: bool = Fa
             conn = get_db()
             try:
                 cursor = conn.cursor()
-                is_pg = _is_postgres_connection(conn)
-                placeholder = "%s" if is_pg else "?"
+                placeholder = "%s"
                 cursor.execute(f"SELECT COUNT(*) as cnt FROM tracks WHERE artist = {placeholder} AND album = {placeholder}", (artist_name, album_name))
                 result = cursor.fetchone()
                 track_count = result['cnt'] if result else 0
@@ -10466,7 +10009,6 @@ def _run_album_scan_pipeline(artist_name: str, album_name: str, force: bool = Fa
         log_unified(f"Traceback: {traceback.format_exc()}")
 
 
-
 @app.route("/album/<path:artist>/<path:album>/edit", methods=["POST"])
 def album_edit(artist, album):
     """Update album metadata for all tracks in the album"""
@@ -10504,8 +10046,7 @@ def album_edit(artist, album):
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         # Update all tracks in this album
         update_fields = []
@@ -10876,9 +10417,8 @@ def api_get_duplicate_artists(artist):
     
     try:
         conn = get_db()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) if is_pg else conn.cursor()
+        placeholder = "%s"
+        cursor = conn.cursor()
         
         # Get the MBID for the current artist (use the same album_artist fallback as Artists page)
         cursor.execute("""
@@ -10991,7 +10531,7 @@ def api_merge_duplicate_artists():
         if not candidates:
             conn = get_db()
             cursor = conn.cursor()
-            placeholder = "%s" if _is_postgres_connection(conn) else "?"
+            placeholder = "%s"
             cursor.execute(f"""
                 SELECT DISTINCT COALESCE(NULLIF(album_artist, ''), artist) AS variation
                 FROM tracks
@@ -11097,8 +10637,7 @@ def track_detail(track_id):
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         cursor.execute(f"SELECT * FROM tracks WHERE id = {placeholder}", (track_id,))
         track = cursor.fetchone()
@@ -11204,8 +10743,7 @@ def track_edit(track_id):
     """Update track metadata and write to audio file"""
     conn = get_db()
     cursor = conn.cursor()
-    is_pg = _is_postgres_connection(conn)
-    placeholder = "%s" if is_pg else "?"
+    placeholder = "%s"
     
     # Get form data - ensure all string fields have defaults to avoid None when calling .strip()
     title = request.form.get("title", "").strip() or None
@@ -11455,11 +10993,10 @@ def api_toggle_manual_single(track_id):
     try:
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         # Get current value
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         cursor.execute(f"SELECT single_manual_override FROM tracks WHERE id = {placeholder}", (track_id,))
         result = cursor.fetchone()
         
@@ -12316,7 +11853,7 @@ def bookmarks():
         conn = get_db()
         cursor = conn.cursor()
         
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
 
         if filter_type in ("artist", "album", "track"):
             if filter_type == "artist":
@@ -12372,9 +11909,7 @@ def api_bookmarks():
     """Get all bookmarks or add a new bookmark"""
     conn = get_db()
     cursor = conn.cursor()
-    placeholder = "%s" if _is_postgres_connection(conn) else "?"
-    is_pg = _is_postgres_connection(conn)
-    
+    placeholder = "%s"
     if request.method == "GET":
         try:
             cursor.execute("""
@@ -12414,18 +11949,11 @@ def api_bookmarks():
             if not bookmark_type or not name:
                 return jsonify({"success": False, "error": "Missing required fields"}), 400
             
-            if is_pg:
-                _insert_bookmark_resilient(conn, f"""
-                    INSERT INTO bookmarks (type, name, artist, album, track_id)
-                    VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
-                    ON CONFLICT DO NOTHING
-                """, (bookmark_type, name, artist, album, track_id))
-            else:
-                cursor.execute("""
-                    INSERT OR IGNORE INTO bookmarks (type, name, artist, album, track_id)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (bookmark_type, name, artist, album, track_id))
-            
+            _insert_bookmark_resilient(conn, f"""
+                INSERT INTO bookmarks (type, name, artist, album, track_id)
+                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
+                ON CONFLICT DO NOTHING
+            """, (bookmark_type, name, artist, album, track_id))
             conn.commit()
             bookmark_id = cursor.lastrowid if hasattr(cursor, 'lastrowid') else None
             conn.close()
@@ -12443,7 +11971,7 @@ def api_delete_bookmark(bookmark_id):
     try:
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         cursor.execute(f"DELETE FROM bookmarks WHERE id = {placeholder}", (bookmark_id,))
         conn.commit()
@@ -12457,7 +11985,6 @@ def api_delete_bookmark(bookmark_id):
     except Exception as e:
         logging.error(f"Error deleting bookmark: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
-
 
 
 @app.route("/config", methods=["GET", "POST"])
@@ -12545,7 +12072,6 @@ def config_editor():
     if not raw:
         raw = yaml.safe_dump(config, sort_keys=False, allow_unicode=False) if config else ""
     return render_template("config.html", config=config, config_raw=raw, CONFIG_PATH=CONFIG_PATH, needs_setup=needs_setup)
-
 
 
 @app.route("/config/env", methods=["GET"])
@@ -13280,7 +12806,7 @@ def api_stats():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         cursor.execute("SELECT COUNT(DISTINCT artist) FROM tracks")
         artist_result = cursor.fetchone()
@@ -13743,7 +13269,7 @@ def api_track_count():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
 
         def _scalar_value(row):
             if row is None:
@@ -13890,8 +13416,7 @@ def api_track_favourite():
     """
     conn = get_db()
     cursor = conn.cursor()
-    is_pg = _is_postgres_connection(conn)
-    placeholder = "%s" if is_pg else "?"
+    placeholder = "%s"
     
     try:
         if request.method == "GET":
@@ -13915,17 +13440,11 @@ def api_track_favourite():
                 conn.close()
                 return jsonify({"error": "Track ID required"}), 400
             
-            if is_pg:
-                _insert_bookmark_resilient(
-                    conn,
-                    f"INSERT INTO bookmarks (type, track_id) VALUES ({placeholder}, {placeholder}) ON CONFLICT DO NOTHING",
-                    ("track_favourite", track_id),
-                )
-            else:
-                cursor.execute(
-                    "INSERT OR IGNORE INTO bookmarks (type, track_id) VALUES (?, ?)",
-                    ("track_favourite", track_id),
-                )
+            _insert_bookmark_resilient(
+                conn,
+                f"INSERT INTO bookmarks (type, track_id) VALUES ({placeholder}, {placeholder}) ON CONFLICT DO NOTHING",
+                ("track_favourite", track_id),
+            )
             conn.commit()
             conn.close()
             return jsonify({"success": True, "is_favourite": True})
@@ -13963,8 +13482,7 @@ def api_album_favourite():
     """
     conn = get_db()
     cursor = conn.cursor()
-    is_pg = _is_postgres_connection(conn)
-    placeholder = "%s" if is_pg else "?"
+    placeholder = "%s"
     
     try:
         if request.method == "GET":
@@ -13990,17 +13508,11 @@ def api_album_favourite():
                 conn.close()
                 return jsonify({"error": "Artist and album required"}), 400
             
-            if is_pg:
-                _insert_bookmark_resilient(
-                    conn,
-                    f"INSERT INTO bookmarks (type, artist, album) VALUES ({placeholder}, {placeholder}, {placeholder}) ON CONFLICT DO NOTHING",
-                    ("album_favourite", artist, album),
-                )
-            else:
-                cursor.execute(
-                    "INSERT OR IGNORE INTO bookmarks (type, artist, album) VALUES (?, ?, ?)",
-                    ("album_favourite", artist, album),
-                )
+            _insert_bookmark_resilient(
+                conn,
+                f"INSERT INTO bookmarks (type, artist, album) VALUES ({placeholder}, {placeholder}, {placeholder}) ON CONFLICT DO NOTHING",
+                ("album_favourite", artist, album),
+            )
             conn.commit()
             conn.close()
             return jsonify({"success": True, "is_favourite": True})
@@ -14729,7 +14241,7 @@ def api_musicbrainz_search():
         try:
             conn = get_db()
             cursor = conn.cursor()
-            placeholder = "%s" if _is_postgres_connection(conn) else "?"
+            placeholder = "%s"
             
             # Search local missing releases with either broad term mode or artist-only mode.
             if artist_only:
@@ -14884,8 +14396,7 @@ def api_musicbrainz_download():
         
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         # Verify session exists if provided
         if session_id:
@@ -14912,23 +14423,14 @@ def api_musicbrainz_download():
         
         # Create managed_downloads entry
         download_query = f"{artist} - {release_title}"
-        if is_pg:
-            cursor.execute(f"""
-                INSERT INTO managed_downloads 
-                (release_id, release_title, artist, method, status, download_query, persistent_search, max_retries, session_id, created_at, updated_at)
-                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued', {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                RETURNING id
-            """, (release_id, release_title, artist, method, download_query, 1 if persistent_search else 0, max_retries, session_id))
-            tracking_row = cursor.fetchone()
-            tracking_id = _row_get(tracking_row, 'id', 0)
-        else:
-            cursor.execute(f"""
-                INSERT INTO managed_downloads 
-                (release_id, release_title, artist, method, status, download_query, persistent_search, max_retries, session_id, created_at, updated_at)
-                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued', {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            """, (release_id, release_title, artist, method, download_query, 1 if persistent_search else 0, max_retries, session_id))
-            tracking_id = cursor.lastrowid
-        
+        cursor.execute(f"""
+            INSERT INTO managed_downloads 
+            (release_id, release_title, artist, method, status, download_query, persistent_search, max_retries, session_id, created_at, updated_at)
+            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued', {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+        """, (release_id, release_title, artist, method, download_query, 1 if persistent_search else 0, max_retries, session_id))
+        tracking_row = cursor.fetchone()
+        tracking_id = _row_get(tracking_row, 'id', 0)
         # Add all tracks to download_queue to ensure they're tracked
         # under a single import_group (queue folder) for this release request.
         import_group = f"mb_{artist}_{release_title}_{release_id}".replace(' ', '_')[:100]
@@ -14965,29 +14467,17 @@ def api_musicbrainz_download():
                         search_query = f"{track_artist} - {track_title}".strip()
                         
                         # Add to download_queue
-                        if is_pg:
-                            cursor.execute(f"""
-                                INSERT INTO download_queue
-                                (artist, album, title, search_query, source, status,
-                                 import_group, import_type,
-                                 release_id, release_source, track_number, album_artist, year, created_at, updated_at)
-                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued', {placeholder}, 'album', {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder},
-                                       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                                RETURNING id
-                            """, (track_artist, release_title, track_title, search_query, queue_source, import_group, release_id, 'musicbrainz', track_number, artist, release_year))
-                            queue_row = cursor.fetchone()
-                            queue_id = queue_row[0] if queue_row else None
-                        else:
-                            cursor.execute(f"""
-                                INSERT INTO download_queue
-                                (artist, album, title, search_query, source, status,
-                                 import_group, import_type,
-                                 release_id, release_source, track_number, album_artist, year, created_at, updated_at)
-                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued', {placeholder}, 'album', {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder},
-                                       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                            """, (track_artist, release_title, track_title, search_query, queue_source, import_group, release_id, 'musicbrainz', track_number, artist, release_year))
-                            queue_id = cursor.lastrowid
-                        
+                        cursor.execute(f"""
+                            INSERT INTO download_queue
+                            (artist, album, title, search_query, source, status,
+                             import_group, import_type,
+                             release_id, release_source, track_number, album_artist, year, created_at, updated_at)
+                            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued', {placeholder}, 'album', {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder},
+                                   CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                            RETURNING id
+                        """, (track_artist, release_title, track_title, search_query, queue_source, import_group, release_id, 'musicbrainz', track_number, artist, release_year))
+                        queue_row = cursor.fetchone()
+                        queue_id = queue_row[0] if queue_row else None
                         if queue_id:
                             queue_ids.append(queue_id)
         
@@ -15026,27 +14516,18 @@ def _simple_mb_download(release_id, release_title, artist, method, persistent_se
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         download_query = f"{artist} - {release_title}"
         
-        if is_pg:
-            cursor.execute(f"""
-                INSERT INTO managed_downloads 
-                (release_id, release_title, artist, method, status, download_query, persistent_search, max_retries, session_id, created_at, updated_at)
-                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued', {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                RETURNING id
-            """, (release_id, release_title, artist, method, download_query, 1 if persistent_search else 0, max_retries, session_id))
-            tracking_row = cursor.fetchone()
-            tracking_id = _row_get(tracking_row, 'id', 0)
-        else:
-            cursor.execute(f"""
-                INSERT INTO managed_downloads 
-                (release_id, release_title, artist, method, status, download_query, persistent_search, max_retries, session_id, created_at, updated_at)
-                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued', {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            """, (release_id, release_title, artist, method, download_query, 1 if persistent_search else 0, max_retries, session_id))
-            tracking_id = cursor.lastrowid
+        cursor.execute(f"""
+            INSERT INTO managed_downloads 
+            (release_id, release_title, artist, method, status, download_query, persistent_search, max_retries, session_id, created_at, updated_at)
+            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued', {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+        """, (release_id, release_title, artist, method, download_query, 1 if persistent_search else 0, max_retries, session_id))
+        tracking_row = cursor.fetchone()
+        tracking_id = _row_get(tracking_row, 'id', 0)
         conn.commit()
         conn.close()
         
@@ -15079,7 +14560,7 @@ def _initiate_slskd_download_bg(tracking_id, query):
         if not slskd_config.get("enabled"):
             conn = get_db()
             cursor = conn.cursor()
-            placeholder = "%s" if _is_postgres_connection(conn) else "?"
+            placeholder = "%s"
             cursor.execute(f"""
                 UPDATE managed_downloads 
                 SET status = 'error', error_message = 'Soulseek not enabled', updated_at = CURRENT_TIMESTAMP
@@ -15098,7 +14579,7 @@ def _initiate_slskd_download_bg(tracking_id, query):
         if not search_id:
             conn = get_db()
             cursor = conn.cursor()
-            placeholder = "%s" if _is_postgres_connection(conn) else "?"
+            placeholder = "%s"
             cursor.execute(f"""
                 UPDATE managed_downloads 
                 SET status = 'error', error_message = 'Failed to start search', updated_at = CURRENT_TIMESTAMP
@@ -15111,7 +14592,7 @@ def _initiate_slskd_download_bg(tracking_id, query):
         # Store search_id and update status
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         cursor.execute(f"""
             UPDATE managed_downloads 
             SET status = 'searching', external_id = {placeholder}, updated_at = CURRENT_TIMESTAMP
@@ -15240,7 +14721,7 @@ def _initiate_slskd_download_bg(tracking_id, query):
         try:
             conn = get_db()
             cursor = conn.cursor()
-            placeholder = "%s" if _is_postgres_connection(conn) else "?"
+            placeholder = "%s"
             cursor.execute(f"""
                 UPDATE managed_downloads 
                 SET status = 'error', error_message = {placeholder}, updated_at = CURRENT_TIMESTAMP
@@ -15254,7 +14735,7 @@ def _initiate_slskd_download_bg(tracking_id, query):
 
 def _initiate_slskd_download(tracking_id, query, cursor, conn):
     """Helper to initiate a Soulseek download"""
-    placeholder = "%s" if _is_postgres_connection(conn) else "?"
+    placeholder = "%s"
     try:
         cfg = get_config()
         slskd_config = cfg.get("slskd", {})
@@ -15440,7 +14921,7 @@ def _initiate_qbit_download_bg(tracking_id, query):
         if not qbit_config.get("enabled"):
             conn = get_db()
             cursor = conn.cursor()
-            placeholder = "%s" if _is_postgres_connection(conn) else "?"
+            placeholder = "%s"
             cursor.execute(f"""
                 UPDATE managed_downloads 
                 SET status = 'error', error_message = 'qBittorrent not enabled', updated_at = CURRENT_TIMESTAMP
@@ -15457,7 +14938,7 @@ def _initiate_qbit_download_bg(tracking_id, query):
         # Update status to searching
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         cursor.execute(f"""
             UPDATE managed_downloads 
             SET status = 'searching', updated_at = CURRENT_TIMESTAMP
@@ -15603,7 +15084,7 @@ def _initiate_qbit_download_bg(tracking_id, query):
         try:
             conn = get_db()
             cursor = conn.cursor()
-            placeholder = "%s" if _is_postgres_connection(conn) else "?"
+            placeholder = "%s"
             cursor.execute(f"""
                 UPDATE managed_downloads 
                 SET status = 'error', error_message = {placeholder}, updated_at = CURRENT_TIMESTAMP
@@ -15617,7 +15098,7 @@ def _initiate_qbit_download_bg(tracking_id, query):
 
 def _initiate_qbit_download(tracking_id, query, cursor, conn):
     """Helper to initiate a qBittorrent download"""
-    placeholder = "%s" if _is_postgres_connection(conn) else "?"
+    placeholder = "%s"
     try:
         cfg = get_config()
         qbit_config = cfg.get("qbittorrent", {})
@@ -15809,7 +15290,7 @@ def api_create_playlist_download_session():
             current_user = session.get("username", "unknown")
             conn = get_db()
             cursor = conn.cursor()
-            placeholder = "%s" if _is_postgres_connection(conn) else "?"
+            placeholder = "%s"
             
             if _is_postgres_connection(conn):
                 cursor.execute(f"""
@@ -15853,7 +15334,7 @@ def api_get_playlist_download_session(session_id):
     try:
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         # Get session info
         cursor.execute(f"""
@@ -15930,8 +15411,7 @@ def api_cancel_playlist_download_session(session_id):
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         # Check if session exists
         cursor.execute(f"SELECT id FROM playlist_download_sessions WHERE id = {placeholder}", (session_id,))
@@ -15975,7 +15455,7 @@ def api_list_playlist_download_sessions():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         # Get all sessions, ordered by most recent first
         cursor.execute("""
@@ -16027,8 +15507,7 @@ def api_musicbrainz_downloads():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         cursor.execute("""
             SELECT id, release_id, release_title, artist, method, status, 
@@ -16094,7 +15573,7 @@ def api_musicbrainz_retry(download_id):
     try:
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         cursor.execute(f"""
             SELECT release_id, release_title, artist, method, download_query
@@ -16139,7 +15618,7 @@ def api_musicbrainz_remove(download_id):
     try:
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         cursor.execute(f"""
             UPDATE managed_downloads 
@@ -16219,7 +15698,7 @@ def api_get_release_details(release_id):
         
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         # Get release info
         cursor.execute(f"""
@@ -16270,8 +15749,7 @@ def api_get_release_queue_items(release_id):
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         cursor.execute(f"""
             SELECT id, artist, title, status, track_number,
@@ -16317,8 +15795,7 @@ def api_get_releases_status():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         # Get all active releases
         cursor.execute("""
@@ -16525,7 +16002,7 @@ def api_finalize_release(release_id):
         
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         # Get database ID from release_id
         cursor.execute(f"""
@@ -16605,7 +16082,7 @@ def api_slskd_search_results(download_id):
     try:
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         # Verify download exists and is awaiting selection
         cursor.execute(f"""
@@ -16663,7 +16140,7 @@ def api_slskd_download_file():
         
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         # Get the selected result
         cursor.execute(f"""
@@ -16761,7 +16238,7 @@ def api_slskd_search_again(download_id):
         
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         # Get the original download
         cursor.execute(f"""
@@ -17087,7 +16564,7 @@ def api_metadata():
                 
                 conn = get_db()
                 cursor = conn.cursor()
-                placeholder = "%s" if _is_postgres_connection(conn) else "?"
+                placeholder = "%s"
                 cursor.execute(f"""
                     SELECT 
                         AVG(stars) as avg_stars,
@@ -17114,7 +16591,7 @@ def api_metadata():
             # Artist metadata
             conn = get_db()
             cursor = conn.cursor()
-            placeholder = "%s" if _is_postgres_connection(conn) else "?"
+            placeholder = "%s"
             cursor.execute(f"""
                 SELECT 
                     COUNT(DISTINCT album) as album_count,
@@ -17186,7 +16663,7 @@ def _fetch_album_art_from_musicbrainz(artist_name: str, album_name: str) -> byte
         # Try to get MBID from database
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         cursor.execute(f"""
             SELECT musicbrainz_album_mbid FROM tracks 
             WHERE artist = {placeholder} AND album = {placeholder} AND musicbrainz_album_mbid IS NOT NULL
@@ -17354,28 +16831,18 @@ def _save_album_art_to_db(artist_name: str, album_name: str, image_data: bytes, 
             
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-
-        if is_pg:
-            _ensure_album_art_pg_schema(conn, cursor)
-            cursor.execute("""
-                INSERT INTO album_art 
-                (artist_name, album_name, image_data, image_mime_type, source, downloaded_at)
-                VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-                ON CONFLICT (artist_name, album_name)
-                DO UPDATE SET
-                    image_data = EXCLUDED.image_data,
-                    image_mime_type = EXCLUDED.image_mime_type,
-                    source = EXCLUDED.source,
-                    downloaded_at = EXCLUDED.downloaded_at
-            """, (artist_name, album_name, image_data, mime_type, source))
-        else:
-            cursor.execute("""
-                INSERT OR REPLACE INTO album_art 
-                (artist_name, album_name, image_data, image_mime_type, source, downloaded_at)
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            """, (artist_name, album_name, image_data, mime_type, source))
-
+        _ensure_album_art_pg_schema(conn, cursor)
+        cursor.execute("""
+            INSERT INTO album_art 
+            (artist_name, album_name, image_data, image_mime_type, source, downloaded_at)
+            VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (artist_name, album_name)
+            DO UPDATE SET
+                image_data = EXCLUDED.image_data,
+                image_mime_type = EXCLUDED.image_mime_type,
+                source = EXCLUDED.source,
+                downloaded_at = EXCLUDED.downloaded_at
+        """, (artist_name, album_name, image_data, mime_type, source))
         conn.commit()
         conn.close()
         
@@ -17451,7 +16918,6 @@ def _fetch_album_art_from_itunes(artist_name: str, album_name: str) -> bytes | N
     except Exception as e:
         log_debug(f"Failed to fetch album art from iTunes: {e}")
         return None
-
 
 
 @app.route("/api/album-art-placeholder")
@@ -17810,9 +17276,8 @@ def api_album_tracklist():
         log_debug(f"Checking local database for tracklist: {artist} - {album}")
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
-        collate_nocase = "" if is_pg else " COLLATE NOCASE"
+        placeholder = "%s"
+        collate_nocase = ""
         
         # Get tracks from the album in the database.
         # Prefer album artist identity; fall back to track artist for legacy rows.
@@ -18012,8 +17477,7 @@ def api_album_tracklist_match():
         log_debug(f"Matching tracklist for {artist} - {album}")
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         # Get all tracks for this album from the database
         cursor.execute(f"""
@@ -18616,11 +18080,10 @@ def api_downloads_move_individual_track(track_index):
         if result.get('success') and folder_path:
             try:
                 cursor = conn.cursor()
-                is_pg = _is_postgres_connection(conn)
-                placeholder = "%s" if is_pg else "?"
+                placeholder = "%s"
 
                 # Only attempt tracking when folder tracking tables exist.
-                if _table_exists(cursor, 'folder_album_matches', is_postgres=is_pg) and _table_exists(cursor, 'folder_track_matches', is_postgres=is_pg):
+                if _table_exists(cursor, 'folder_album_matches', is_postgres=True) and _table_exists(cursor, 'folder_track_matches', is_postgres=True):
                     abs_folder_path = os.path.abspath(folder_path)
                     release_id = release_metadata.get('id')
                     release_source = release_metadata.get('source', 'musicbrainz')
@@ -18656,31 +18119,18 @@ def api_downloads_move_individual_track(track_index):
                             (release_id, release_source, release_artist, release_album, release_date, merged_total, folder_match_id)
                         )
                     else:
-                        if is_pg:
-                            cursor.execute(
-                                """
-                                INSERT INTO folder_album_matches
-                                (folder_path, mb_release_id, mb_source, artist, album, release_date,
-                                 total_expected_tracks, matched_tracks_count, status)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, 0, 'organizing')
-                                RETURNING id
-                                """,
-                                (abs_folder_path, release_id, release_source, release_artist, release_album, release_date, total_expected_tracks)
-                            )
-                            inserted_row = cursor.fetchone()
-                            folder_match_id = _row_get(inserted_row, 'id', 0)
-                        else:
-                            cursor.execute(
-                                f"""
-                                INSERT INTO folder_album_matches
-                                (folder_path, mb_release_id, mb_source, artist, album, release_date,
-                                 total_expected_tracks, matched_tracks_count, status)
-                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 0, 'organizing')
-                                """,
-                                (abs_folder_path, release_id, release_source, release_artist, release_album, release_date, total_expected_tracks)
-                            )
-                            folder_match_id = cursor.lastrowid
-
+                        cursor.execute(
+                            """
+                            INSERT INTO folder_album_matches
+                            (folder_path, mb_release_id, mb_source, artist, album, release_date,
+                             total_expected_tracks, matched_tracks_count, status)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, 0, 'organizing')
+                            RETURNING id
+                            """,
+                            (abs_folder_path, release_id, release_source, release_artist, release_album, release_date, total_expected_tracks)
+                        )
+                        inserted_row = cursor.fetchone()
+                        folder_match_id = _row_get(inserted_row, 'id', 0)
                     source_file = result.get('source_file') or track.get('file_path')
                     destination_file = result.get('destination_file')
                     track_number = track.get('track_number')
@@ -19072,8 +18522,7 @@ def api_downloads_get_queue():
             try:
                 conn = get_db()
                 cursor = conn.cursor()
-                is_pg = _is_postgres_connection(conn)
-                placeholder = "%s" if is_pg else "?"
+                placeholder = "%s"
 
                 cursor.execute(
                     f"""
@@ -19307,15 +18756,13 @@ def api_downloads_clear_queue():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-
         folder_count = 0
         track_count = 0
         queue_count = 0
 
-        has_folder_albums = _table_exists(cursor, 'folder_album_matches', is_postgres=is_pg)
-        has_folder_tracks = _table_exists(cursor, 'folder_track_matches', is_postgres=is_pg)
-        has_download_queue = _table_exists(cursor, 'download_queue', is_postgres=is_pg)
+        has_folder_albums = _table_exists(cursor, 'folder_album_matches', is_postgres=True)
+        has_folder_tracks = _table_exists(cursor, 'folder_track_matches', is_postgres=True)
+        has_download_queue = _table_exists(cursor, 'download_queue', is_postgres=True)
 
         # Count before deleting (only for tables that exist).
         if has_folder_albums:
@@ -19364,7 +18811,7 @@ def api_debug_queue_stats():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         # Get total count
         cursor.execute("SELECT COUNT(*) as total FROM download_queue")
@@ -19456,8 +18903,7 @@ def api_downloads_batch_group():
         
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         def _normalize_artist_name(value):
             if value is None:
@@ -19560,8 +19006,7 @@ def api_downloads_manage_queue_item(queue_id):
         from download_queue_manager import clear_queue_events_for_items
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         data = request.get_json()
         action = data.get('action', 'delete')  # delete, retry, fail
@@ -19825,10 +19270,8 @@ def api_downloads_folder_status():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-
         # Gracefully handle environments where folder-tracking migration was not applied yet.
-        if not _table_exists(cursor, 'folder_album_matches', is_postgres=is_pg):
+        if not _table_exists(cursor, 'folder_album_matches', is_postgres=True):
             conn.close()
             return jsonify({
                 "success": True,
@@ -19837,7 +19280,7 @@ def api_downloads_folder_status():
                 "message": "folder_album_matches table not found"
             })
 
-        if not _table_exists(cursor, 'folder_track_matches', is_postgres=is_pg):
+        if not _table_exists(cursor, 'folder_track_matches', is_postgres=True):
             conn.close()
             return jsonify({
                 "success": True,
@@ -19870,7 +19313,7 @@ def api_downloads_folder_status():
             folder_id = _row_get(row, 'id', 0)
             
             # Get matched tracks for this folder
-            placeholder = "%s" if is_pg else "?"
+            placeholder = "%s"
             cursor.execute(f"""
                 SELECT file_path, organized_path, track_number, track_title, track_artist
                 FROM folder_track_matches
@@ -19944,9 +19387,7 @@ def api_downloads_folder_duplicates():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-
-        if not _table_exists(cursor, 'folder_album_matches', is_postgres=is_pg):
+        if not _table_exists(cursor, 'folder_album_matches', is_postgres=True):
             conn.close()
             return jsonify({
                 "success": True,
@@ -19975,7 +19416,7 @@ def api_downloads_folder_duplicates():
             mb_source = _row_get(row, 'mb_source', 1)
             
             # Get all folders for this release
-            placeholder = "%s" if is_pg else "?"
+            placeholder = "%s"
             cursor.execute(f"""
                 SELECT 
                     id, folder_path, total_expected_tracks, 
@@ -20059,7 +19500,7 @@ def api_downloads_folder_merge():
         
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         # Get primary folder info
         cursor.execute(f"""
@@ -20652,7 +20093,7 @@ def api_queue_imported():
         
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         # Get recently organized/imported tracks from download_queue.
         # Only return items that were explicitly added with a MusicBrainz/Discogs
@@ -20721,8 +20162,7 @@ def api_queue_delete(queue_id):
         from download_queue_manager import clear_queue_events_for_items
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         delete_download_file = request.args.get('delete_download_file', '0').lower() in {'1', 'true', 'yes'}
         downloads_root = os.path.abspath(_resolve_downloads_monitor_dir(get_config()))
@@ -20816,8 +20256,7 @@ def api_queue_cleanup_copied_sources():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         downloads_root = os.path.abspath(_resolve_downloads_monitor_dir(get_config()))
 
@@ -20933,8 +20372,7 @@ def api_queue_delete_folder():
 
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         like_prefix = folder_abs.rstrip(os.sep) + os.sep + "%"
         cursor.execute(
@@ -20965,11 +20403,7 @@ def api_queue_delete_folder():
 
         deleted_queue_items = 0
         if remove_queue_items and queue_ids_deleted:
-            if is_pg:
-                cursor.execute("DELETE FROM download_queue WHERE id = ANY(%s)", (queue_ids_deleted,))
-            else:
-                in_params = ",".join([placeholder] * len(queue_ids_deleted))
-                cursor.execute(f"DELETE FROM download_queue WHERE id IN ({in_params})", tuple(queue_ids_deleted))
+            cursor.execute("DELETE FROM download_queue WHERE id = ANY(%s)", (queue_ids_deleted,))
             deleted_queue_items = cursor.rowcount
             # Clean up event logs for deleted queue items
             clear_queue_events_for_items(queue_ids_deleted)
@@ -21057,8 +20491,7 @@ def api_queue_clear():
 
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         # First, get the IDs of items to be deleted so we can clean up their event logs
         select_query = f"SELECT id FROM download_queue WHERE status != {placeholder}"
@@ -21140,17 +20573,15 @@ def api_queue_purge_all():
 
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-
         queue_count = 0
         folder_count = 0
         track_count = 0
         events_count = 0
 
-        has_download_queue = _table_exists(cursor, 'download_queue', is_postgres=is_pg)
-        has_folder_albums = _table_exists(cursor, 'folder_album_matches', is_postgres=is_pg)
-        has_folder_tracks = _table_exists(cursor, 'folder_track_matches', is_postgres=is_pg)
-        has_queue_events = _table_exists(cursor, 'queue_events', is_postgres=is_pg)
+        has_download_queue = _table_exists(cursor, 'download_queue', is_postgres=True)
+        has_folder_albums = _table_exists(cursor, 'folder_album_matches', is_postgres=True)
+        has_folder_tracks = _table_exists(cursor, 'folder_track_matches', is_postgres=True)
+        has_queue_events = _table_exists(cursor, 'queue_events', is_postgres=True)
 
         if has_download_queue:
             cursor.execute("SELECT COUNT(*) FROM download_queue")
@@ -21236,8 +20667,7 @@ def api_queue_retry_all_failed():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         cursor.execute(
             f"""UPDATE download_queue
@@ -21258,8 +20688,6 @@ def api_queue_retry_all_failed():
     except Exception as e:
         logging.error(f"Error retrying all failed: {e}")
         return jsonify({"error": str(e)}), 400
-
-
 
 
 def _queue_sanitize_component(value):
@@ -21413,8 +20841,7 @@ def api_queue_organize(queue_id):
             try:
                 rconn = get_db()
                 rcursor = rconn.cursor()
-                is_pg_local = _is_postgres_connection(rconn)
-                placeholder_local = "%s" if is_pg_local else "?"
+                placeholder_local = "%s"
 
                 # Prefer queue_id mapping because it gives exact track_number/title for this queue item.
                 rcursor.execute(f"""
@@ -21455,7 +20882,7 @@ def api_queue_organize(queue_id):
         conn = get_db()
         cursor = conn.cursor()
 
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         cursor.execute(f"""
             SELECT id, file_path, artist, album, title, release_id,
                    album_artist, year, track_number, found_filename
@@ -21646,9 +21073,7 @@ def api_queue_organize_group():
         # Get all items in this group from completed queue
         conn = get_db()
         cursor = conn.cursor()
-        
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         cursor.execute(f"""
             SELECT id, file_path, artist, album, title, track_number, disc_number, album_artist, year
@@ -21715,8 +21140,7 @@ def api_queue_organize_group():
                 try:
                     mb_conn = get_db()
                     mb_cursor = mb_conn.cursor()
-                    mb_is_pg = _is_postgres_connection(mb_conn)
-                    mb_placeholder = "%s" if mb_is_pg else "?"
+                    mb_placeholder = "%s"
 
                     mb_cursor.execute(
                         f"""
@@ -22090,8 +21514,7 @@ def _move_to_music_task_get(task_id):
 def _perform_queue_move_to_music(queue_id):
     """Core move-to-music logic shared by sync and async API paths."""
     conn = get_db()
-    is_pg = _is_postgres_connection(conn)
-    placeholder = "%s" if is_pg else "?"
+    placeholder = "%s"
     cursor = conn.cursor()
     cursor.execute(
         f"SELECT status, file_path, matched_file_path, music_file_path, found_filename FROM download_queue WHERE id = {placeholder}",
@@ -22172,9 +21595,8 @@ def _perform_queue_move_to_music(queue_id):
             }, 400
 
         conn2 = get_db()
-        is_pg_conn2 = _is_postgres_connection(conn2)
-        placeholder_conn2 = "%s" if is_pg_conn2 else "?"
-        cursor2 = conn2.cursor(cursor_factory=psycopg2.extras.RealDictCursor) if is_pg_conn2 else conn2.cursor()
+        placeholder_conn2 = "%s"
+        cursor2 = conn2.cursor()
         cursor2.execute(f"SELECT * FROM download_queue WHERE id = {placeholder_conn2}", (queue_id,))
         queue_item = cursor2.fetchone()
         if queue_item and not isinstance(queue_item, dict):
@@ -22434,8 +21856,6 @@ def api_queue_matched_releases():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-
         artist_filter = (request.args.get('artist') or '').strip()
         album_filter = (request.args.get('album') or '').strip()
         try:
@@ -22445,8 +21865,8 @@ def api_queue_matched_releases():
         limit = max(10, min(requested_limit, 250))
 
         release_uuid_expr = "COALESCE(NULLIF(release_mbid, ''), NULLIF(release_id, ''))"
-        release_uuid_length_expr = f"char_length({release_uuid_expr})" if is_pg else f"length({release_uuid_expr})"
-        placeholder = "%s" if is_pg else "?"
+        release_uuid_length_expr = f"char_length({release_uuid_expr})"
+        placeholder = "%s"
 
         active_statuses = (
             'queued', 'searching', 'downloading',
@@ -22603,8 +22023,7 @@ def api_queue_update_album_mbid():
         # Update existing queue items
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         mbid_import_group = f"mbid_{new_mbid}"
 
         cursor.execute(
@@ -22696,8 +22115,7 @@ def api_queue_send_to_download(queue_id):
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         # Verify item exists and is in 'queried' status
         cursor.execute(
@@ -22774,8 +22192,7 @@ def api_queue_apply_mbid_match(queue_id):
 
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         cursor.execute(
             f"SELECT artist, album FROM download_queue WHERE id = {placeholder}",
@@ -22962,8 +22379,7 @@ def api_queue_apply_mbid_match_batch():
 
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         # Resolve fallback artist/album from first queue item when caller did not pass values.
         first_queue_id = queue_ids[0]
@@ -23094,8 +22510,7 @@ def api_queue_reset_match(queue_id):
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         cursor.execute(
             f"""
@@ -23157,11 +22572,9 @@ def api_queue_cleanup_invalid_mbids():
 
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-
-        placeholder = "%s" if is_pg else "?"
-        length_expr = "char_length" if is_pg else "length"
-        current_ts_expr = "CURRENT_TIMESTAMP" if is_pg else "datetime('now')"
+        placeholder = "%s"
+        length_expr = "char_length"
+        current_ts_expr = "CURRENT_TIMESTAMP"
         valid_uuid_like = "________-____-____-____-____________"
 
         invalid_condition = (
@@ -23287,7 +22700,7 @@ def api_lastfm_sync_status():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         current_user = session.get("username", "default_user")
         
@@ -23380,7 +22793,7 @@ def api_lastfm_sync_now():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         cursor.execute("SELECT DISTINCT artist, album FROM tracks WHERE artist IS NOT NULL AND album IS NOT NULL")
         for row in cursor.fetchall():
@@ -23413,7 +22826,7 @@ def api_lastfm_sync_now():
     # Store recommendations in database with batch insert to reduce lock contention
     conn = get_db()
     cursor = conn.cursor()
-    placeholder = "%s" if _is_postgres_connection(conn) else "?"
+    placeholder = "%s"
     
     artists_count = 0
     albums_count = 0
@@ -23496,8 +22909,7 @@ def api_lastfm_sync_now():
                 filtered_count += 1
         
         # Now execute all operations in a single transaction to avoid lock contention
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
-        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s"
         try:
             # Clear old recommendations for this user
             cursor.execute(f"DELETE FROM lastfm_recommendations WHERE username = {placeholder}", (username_val,))
@@ -23528,21 +22940,13 @@ def api_lastfm_sync_now():
             ))
             
             # Update scheduler config with last sync time with DB-aware upsert
-            if is_pg:
-                cursor.execute(f"""
-                    INSERT INTO lastfm_scheduler_config 
-                    (username, last_sync)
-                    VALUES ({placeholder}, CURRENT_TIMESTAMP)
-                    ON CONFLICT (username) DO UPDATE SET
-                        last_sync = CURRENT_TIMESTAMP
-                """, (username_val,))
-            else:
-                cursor.execute("""
-                    INSERT OR REPLACE INTO lastfm_scheduler_config 
-                    (username, last_sync)
-                    VALUES (?, ?)
-                """, (username_val, datetime.now()))
-            
+            cursor.execute(f"""
+                INSERT INTO lastfm_scheduler_config 
+                (username, last_sync)
+                VALUES ({placeholder}, CURRENT_TIMESTAMP)
+                ON CONFLICT (username) DO UPDATE SET
+                    last_sync = CURRENT_TIMESTAMP
+            """, (username_val,))
             conn.commit()
             conn.close()
             
@@ -23586,7 +22990,7 @@ def api_lastfm_recommendations():
         
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         # Get cached recommendations
         cursor.execute(f"""
@@ -23728,7 +23132,7 @@ def api_lastfm_create_playlist():
         # Get database connection
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         for rec in rec_list:
             if rec_type == "tracks":
@@ -23978,7 +23382,7 @@ def api_listenbrainz_sync_now():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         cursor.execute("SELECT DISTINCT artist, title FROM tracks WHERE artist IS NOT NULL AND title IS NOT NULL")
         for row in cursor.fetchall():
@@ -23995,7 +23399,7 @@ def api_listenbrainz_sync_now():
     # Store recommendations in database
     conn = get_db()
     cursor = conn.cursor()
-    placeholder = "%s" if _is_postgres_connection(conn) else "?"
+    placeholder = "%s"
     
     tracks_count = 0
     filtered_count = 0
@@ -24030,7 +23434,7 @@ def api_listenbrainz_sync_now():
                 filtered_count += 1
         
         # Execute transaction
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         try:
             # Clear old recommendations for this user
             cursor.execute(f"DELETE FROM listenbrainz_recommendations WHERE username = {placeholder}", (username_val,))
@@ -24137,7 +23541,7 @@ def api_listenbrainz_sync_now():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         cursor.execute("SELECT DISTINCT artist, title FROM tracks WHERE artist IS NOT NULL AND title IS NOT NULL")
         for row in cursor.fetchall():
@@ -24154,7 +23558,7 @@ def api_listenbrainz_sync_now():
     # Store recommendations in database
     conn = get_db()
     cursor = conn.cursor()
-    placeholder = "%s" if _is_postgres_connection(conn) else "?"
+    placeholder = "%s"
     
     tracks_count = 0
     filtered_count = 0
@@ -24189,7 +23593,7 @@ def api_listenbrainz_sync_now():
                 filtered_count += 1
         
         # Execute transaction
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         try:
             # Clear old recommendations for this user
             cursor.execute(f"DELETE FROM listenbrainz_recommendations WHERE username = {placeholder}", (username_val,))
@@ -24256,7 +23660,7 @@ def api_listenbrainz_recommendations_cached():
         
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         # Get recommendations ordered by synced_at (most recent first)
         cursor.execute(f"""
@@ -24515,7 +23919,7 @@ def metadata_compare():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         # Get album mismatches (where Navidrome and Beets data differ)
         cursor.execute("""
@@ -24621,7 +24025,7 @@ def accept_navidrome_data():
         
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         # Mark all tracks in this album as locked from Beets overwrites
         cursor.execute(f"""
@@ -24656,45 +24060,24 @@ def apply_musicbrainz_data():
         
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         # Update tracks with MusicBrainz data
-        if is_pg:
-            cursor.execute("""
-                UPDATE tracks 
-                SET 
-                    year = %s,
-                    musicbrainz_genres = %s
-                WHERE artist = %s AND album = %s
-                RETURNING id
-            """, (
-                mb_data.get("year"),
-                ",".join(mb_data.get("genres", [])),
-                artist,
-                album
-            ))
-        else:
-            cursor.execute("""
-                UPDATE tracks 
-                SET 
-                    year = ?,
-                    musicbrainz_genres = ?
-                WHERE artist = ? AND album = ?
-            """, (
-                mb_data.get("year"),
-                ",".join(mb_data.get("genres", [])),
-                artist,
-                album
-            ))
-        
+        cursor.execute("""
+            UPDATE tracks 
+            SET 
+                year = %s,
+                musicbrainz_genres = %s
+            WHERE artist = %s AND album = %s
+            RETURNING id
+        """, (
+            mb_data.get("year"),
+            ",".join(mb_data.get("genres", [])),
+            artist,
+            album
+        ))
         # Get IDs of updated tracks for file sync
-        if is_pg:
-            updated_ids = [row[0] for row in cursor.fetchall()]
-        else:
-            cursor.execute("SELECT id FROM tracks WHERE artist = ? AND album = ?", (artist, album))
-            updated_ids = [row[0] for row in cursor.fetchall()]
-        
+        updated_ids = [row[0] for row in cursor.fetchall()]
         conn.commit()
         
         # Sync tags to files
@@ -24783,7 +24166,7 @@ def api_playlist_import():
         
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
 
         for spotify_track in spotify_tracks:
             # Use enhanced matching from playlist_matcher
@@ -24951,8 +24334,6 @@ def get_spotify_playlist_tracks(playlist_id):
     except Exception as e:
         logging.error(f"Error fetching Spotify playlist: {str(e)}")
         raise
-
-
 
 
 @app.route("/api/track/discogs", methods=["POST"])
@@ -25127,8 +24508,7 @@ def api_get_track(track_id):
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         cursor.execute(f"""
             SELECT id, title, artist, album, genres, stars, is_single, 
                    single_confidence, duration, track_number, disc_number,
@@ -25194,7 +24574,7 @@ def track_genre_recommendations():
         # Get track info
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         cursor.execute(f"""
             SELECT artist, album, title, 
                    spotify_genres, lastfm_tags, discogs_genres, 
@@ -25230,7 +24610,7 @@ def track_genre_recommendations():
         # Get artist-level genres
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         cursor.execute(f"""
             SELECT DISTINCT spotify_genres, lastfm_tags, discogs_genres, 
                    musicbrainz_genres, navidrome_genres
@@ -25302,12 +24682,11 @@ def api_album_track_recommendations(artist, album):
         
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         # Get all tracks in the album with their metadata and genres
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
-        collate_nocase = "" if is_pg else " COLLATE NOCASE"
+        placeholder = "%s"
+        collate_nocase = ""
         cursor.execute(f"""
             SELECT 
                 id, title, artist, track_number,
@@ -25627,8 +25006,7 @@ def api_album_musicbrainz_compare():
         # Fetch library tracks for this album
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         cursor.execute(f"""
             SELECT id, title, track_number, disc_number, artist, year, mbid, file_path
@@ -25888,8 +25266,7 @@ def api_album_spotify_genres():
         # Get Spotify artist genres from tracks in this album
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         # Try to get spotify_artist_genres column, fall back to spotify_genres if column doesn't exist
         try:
@@ -25948,11 +25325,10 @@ def api_album_apply_mbid():
         
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         # Detect compatible MBID column for mixed schema deployments.
-        track_columns = _get_table_columns(cursor, "tracks", is_postgres=is_pg)
+        track_columns = _get_table_columns(cursor, "tracks", is_postgres=True)
         mb_album_column = None
         if "musicbrainz_album_mbid" in track_columns:
             mb_album_column = "musicbrainz_album_mbid"
@@ -26025,17 +25401,14 @@ def api_album_apply_discogs_id():
         for attempt in range(max_retries):
             try:
                 conn = get_db()
-                is_pg = _is_postgres_connection(conn)
-                placeholder = "%s" if is_pg else "?"
-                if not is_pg:
-                    conn.isolation_level = None  # Autocommit mode for sqlite
+                placeholder = "%s"
                 cursor = conn.cursor()
-                placeholder = "%s" if _is_postgres_connection(conn) else "?"
+                placeholder = "%s"
                 
                 # Update all tracks in this album with Discogs ID and is_single flag if detected
                 if is_single:
                     # If Discogs detected this as a Single, mark tracks as singles with high confidence and set 5★ rating
-                    is_single_true = "TRUE" if is_pg else "1"
+                    is_single_true = "TRUE"
                     cursor.execute(
                         f"UPDATE tracks SET discogs_album_id = {placeholder}, is_single = {is_single_true}, single_confidence = 'high', single_sources = CASE WHEN single_sources IS NULL THEN 'discogs' ELSE single_sources || ',discogs' END, stars = 5 WHERE artist = {placeholder} AND album = {placeholder}",
                         (discogs_id, artist, album)
@@ -26061,17 +25434,6 @@ def api_album_apply_discogs_id():
                     "message": f"Updated {rows_updated} tracks with Discogs ID" + (" and marked as single with 5★ rating" if is_single else ""),
                     "rows_updated": rows_updated
                 }), 200
-            except sqlite3.OperationalError as e:
-                last_error = e
-                if "database is locked" in str(e):
-                    if attempt < max_retries - 1:
-                        logger.warning(f"Database locked on apply-discogs-id, retry {attempt + 1}/{max_retries}")
-                        time.sleep(retry_delay)
-                        retry_delay *= 2  # Exponential backoff
-                    else:
-                        logger.error(f"Database locked after {max_retries} retries: {e}")
-                else:
-                    raise
             except Exception as inner_e:
                 last_error = inner_e
                 raise
@@ -26149,7 +25511,7 @@ def api_album_apply_genres():
         # Get all tracks in the album from database
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         cursor.execute(f"""
             SELECT id, title, file_path
             FROM tracks
@@ -26252,57 +25614,36 @@ def api_album_add_to_missing_releases():
         
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
-        is_pg = _is_postgres_connection(conn)
-        
+        placeholder = "%s"
         # Check if missing_releases table exists
-        if is_pg:
-            cursor.execute("""
-                SELECT tablename FROM pg_tables 
-                WHERE tablename='missing_releases'
-            """)
-        else:
-            cursor.execute("""
-                SELECT name FROM sqlite_master 
-                WHERE type='table' AND name='missing_releases'
-            """)
+        cursor.execute("""
+            SELECT tablename FROM pg_tables 
+            WHERE tablename='missing_releases'
+        """)
         if not cursor.fetchone():
             conn.close()
             return jsonify({"error": "Missing releases table not found"}), 500
         
         # Insert or update the album in missing_releases with DB-aware upsert
-        if is_pg:
-            generated_release_id = f"{artist}-{album}".lower().replace(" ", "-")
-            cursor.execute(
-                f"DELETE FROM missing_releases WHERE LOWER(artist) = LOWER({placeholder}) AND release_id = {placeholder}",
-                (artist, generated_release_id)
-            )
-            cursor.execute("SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM missing_releases")
-            next_id_row = cursor.fetchone()
-            next_missing_release_id = int(next_id_row.get("next_id", 1)) if isinstance(next_id_row, dict) else int(next_id_row[0] if next_id_row else 1)
-            cursor.execute(f"""
-                INSERT INTO missing_releases 
-                (id, artist, release_id, title, first_release_date, category, last_checked)
-                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'Album', CURRENT_TIMESTAMP)
-            """, (
-                next_missing_release_id,
-                artist,
-                generated_release_id,
-                album,
-                year if year else None
-            ))
-        else:
-            cursor.execute("""
-                INSERT OR REPLACE INTO missing_releases 
-                (artist, release_id, title, first_release_date, category, last_checked)
-                VALUES (?, ?, ?, ?, 'Album', CURRENT_TIMESTAMP)
-            """, (
-                artist,
-                f"{artist}-{album}".lower().replace(" ", "-"),
-                album,
-                year if year else None
-            ))
-        
+        generated_release_id = f"{artist}-{album}".lower().replace(" ", "-")
+        cursor.execute(
+            f"DELETE FROM missing_releases WHERE LOWER(artist) = LOWER({placeholder}) AND release_id = {placeholder}",
+            (artist, generated_release_id)
+        )
+        cursor.execute("SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM missing_releases")
+        next_id_row = cursor.fetchone()
+        next_missing_release_id = int(next_id_row.get("next_id", 1)) if isinstance(next_id_row, dict) else int(next_id_row[0] if next_id_row else 1)
+        cursor.execute(f"""
+            INSERT INTO missing_releases 
+            (id, artist, release_id, title, first_release_date, category, last_checked)
+            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'Album', CURRENT_TIMESTAMP)
+        """, (
+            next_missing_release_id,
+            artist,
+            generated_release_id,
+            album,
+            year if year else None
+        ))
         conn.commit()
         conn.close()
         
@@ -26337,7 +25678,7 @@ def api_artist_apply_genres():
         # Use COALESCE with album_artist to match artist page logic
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         cursor.execute(f"""
             SELECT id, title, album, file_path
             FROM tracks
@@ -26715,8 +26056,7 @@ def api_remove_genres():
 
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         # Build WHERE clause
         if album_name:
@@ -26870,8 +26210,7 @@ def api_track_update_metadata():
         
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         # Build database update with provided fields
         db_updates = {}
@@ -27050,8 +26389,7 @@ def api_recent_genre_updates():
 
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         # Get total count
         cursor.execute("SELECT COUNT(*) AS count FROM genre_updates")
@@ -27182,7 +26520,7 @@ def playlists_create(playlist_type):
         try:
             conn = get_db()
             cursor = conn.cursor()
-            placeholder = "%s" if _is_postgres_connection(conn) else "?"
+            placeholder = "%s"
             
             # Query to get all genres and count songs
             # Genres are stored as comma-separated values in the 'genres' field
@@ -27475,9 +26813,8 @@ def api_playlist_search_songs():
             try:
                 conn = get_db()
                 cursor = conn.cursor()
-                is_pg = _is_postgres_connection(conn)
-                placeholder = "%s" if is_pg else "?"
-                collate_nocase = "" if is_pg else " COLLATE NOCASE"
+                placeholder = "%s"
+                collate_nocase = ""
 
                 where_clauses = []
                 params = []
@@ -27827,80 +27164,41 @@ def _fetch_listenbrainz_feed_tracks(listenbrainz_username, rec_type, lb_token=No
 
 def _ensure_listenbrainz_playlist_tables(conn):
     cursor = conn.cursor()
-    is_pg = _is_postgres_connection(conn)
-    if is_pg:
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS listenbrainz_playlist_tracks (
-                id SERIAL PRIMARY KEY,
-                username TEXT NOT NULL,
-                listenbrainz_username TEXT NOT NULL,
-                playlist_key TEXT NOT NULL,
-                playlist_name TEXT NOT NULL,
-                track_uid TEXT NOT NULL,
-                artist_name TEXT,
-                track_name TEXT,
-                release_name TEXT,
-                recording_mbid TEXT,
-                release_mbid TEXT,
-                source TEXT,
-                week_key TEXT,
-                match_status TEXT NOT NULL,
-                local_track_id INTEGER,
-                file_path TEXT,
-                queue_id INTEGER,
-                synced_at TEXT NOT NULL,
-                metadata TEXT
-            )""")
-        cursor.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_lb_playlist_unique
-            ON listenbrainz_playlist_tracks (username, playlist_key, track_uid)""")
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS listenbrainz_playlist_scheduler_state (
-                username TEXT PRIMARY KEY,
-                last_synced_week TEXT,
-                last_synced_at TEXT,
-                last_rematch_at TEXT
-            )""")
-    else:
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS listenbrainz_playlist_tracks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL,
-                listenbrainz_username TEXT NOT NULL,
-                playlist_key TEXT NOT NULL,
-                playlist_name TEXT NOT NULL,
-                track_uid TEXT NOT NULL,
-                artist_name TEXT,
-                track_name TEXT,
-                release_name TEXT,
-                recording_mbid TEXT,
-                release_mbid TEXT,
-                source TEXT,
-                week_key TEXT,
-                match_status TEXT NOT NULL,
-                local_track_id INTEGER,
-                file_path TEXT,
-                queue_id INTEGER,
-                synced_at TEXT NOT NULL,
-                metadata TEXT,
-                UNIQUE(username, playlist_key, track_uid)
-            )""")
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS listenbrainz_playlist_scheduler_state (
-                username TEXT PRIMARY KEY,
-                last_synced_week TEXT,
-                last_synced_at TEXT,
-                last_rematch_at TEXT
-            )""")
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS listenbrainz_playlist_tracks (
+            id SERIAL PRIMARY KEY,
+            username TEXT NOT NULL,
+            listenbrainz_username TEXT NOT NULL,
+            playlist_key TEXT NOT NULL,
+            playlist_name TEXT NOT NULL,
+            track_uid TEXT NOT NULL,
+            artist_name TEXT,
+            track_name TEXT,
+            release_name TEXT,
+            recording_mbid TEXT,
+            release_mbid TEXT,
+            source TEXT,
+            week_key TEXT,
+            match_status TEXT NOT NULL,
+            local_track_id INTEGER,
+            file_path TEXT,
+            queue_id INTEGER,
+            synced_at TEXT NOT NULL,
+            metadata TEXT
+        )""")
+    cursor.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_lb_playlist_unique
+        ON listenbrainz_playlist_tracks (username, playlist_key, track_uid)""")
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS listenbrainz_playlist_scheduler_state (
+            username TEXT PRIMARY KEY,
+            last_synced_week TEXT,
+            last_synced_at TEXT,
+            last_rematch_at TEXT
+        )""")
     # Add last_rematch_at column if it doesn't exist yet (migration)
     try:
-        if is_pg:
-            cursor.execute("ALTER TABLE listenbrainz_playlist_scheduler_state ADD COLUMN IF NOT EXISTS last_rematch_at TEXT")
-        else:
-            cursor.execute("PRAGMA table_info(listenbrainz_playlist_scheduler_state)")
-            cols = [r[1] if isinstance(r, (list, tuple)) else r.get("name") for r in (cursor.fetchall() or [])]
-            if "last_rematch_at" not in cols:
-                cursor.execute("ALTER TABLE listenbrainz_playlist_scheduler_state ADD COLUMN last_rematch_at TEXT")
+        cursor.execute("ALTER TABLE listenbrainz_playlist_scheduler_state ADD COLUMN IF NOT EXISTS last_rematch_at TEXT")
     except Exception:
         pass
     conn.commit()
@@ -27968,15 +27266,10 @@ def _save_playlist_rows(conn, app_username, listenbrainz_username, playlist_key,
         )
     now_iso = datetime.now().isoformat()
     playlist_name = _playlist_output_name(listenbrainz_username, playlist_key)
-    is_pg = _is_postgres_connection(conn)
     cols = "(username, listenbrainz_username, playlist_key, playlist_name, track_uid, artist_name, track_name, release_name, recording_mbid, release_mbid, source, week_key, match_status, local_track_id, file_path, queue_id, synced_at, metadata)"
     vals = ", ".join([placeholder] * 18)
     insert_sql = f"INSERT INTO listenbrainz_playlist_tracks {cols} VALUES ({vals})"
-    if is_pg:
-        conflict_sql = " ON CONFLICT (username, playlist_key, track_uid) DO NOTHING"
-    else:
-        insert_sql = insert_sql.replace("INSERT INTO", "INSERT OR IGNORE INTO", 1)
-        conflict_sql = ""
+    conflict_sql = " ON CONFLICT (username, playlist_key, track_uid) DO NOTHING"
     for track in tracks:
         cursor.execute(
             insert_sql + conflict_sql,
@@ -28799,7 +28092,7 @@ def api_search_musicbrainz_release():
             try:
                 conn = get_db()
                 cursor = conn.cursor()
-                placeholder = "%s" if _is_postgres_connection(conn) else "?"
+                placeholder = "%s"
                 cursor.execute(
                     f"""
                     SELECT MAX(musicbrainz_artist_id) AS mbid
@@ -29270,7 +28563,5 @@ if __name__ == "__main__":
     
     # Start Flask application
     app.run(debug=False, host="0.0.0.0", port=5000)
-
-
 
 

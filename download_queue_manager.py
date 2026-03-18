@@ -1526,7 +1526,7 @@ def get_queue(status=None, source=None, limit=50):
             is_pg = bool(app_is_postgres_connection(conn))
         except Exception:
             conn = get_db()
-            is_pg = isinstance(conn, psycopg2.extensions.connection)
+            is_pg = _is_postgres_connection(conn)
 
         if is_pg:
             cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -1647,7 +1647,7 @@ def update_queue_item(queue_id, **kwargs):
                 is_pg = bool(app_is_postgres_connection(conn))
             except Exception:
                 conn = get_db()
-                is_pg = isinstance(conn, psycopg2.extensions.connection)
+                is_pg = _is_postgres_connection(conn)
             
             cursor = conn.cursor()
             placeholder = "%s" if is_pg else "?"
@@ -1848,7 +1848,7 @@ def mark_as_failed(queue_id, reason, retry_delay_minutes=30):
                 is_pg = bool(app_is_postgres_connection(conn))
             except Exception:
                 conn = get_db()
-                is_pg = isinstance(conn, psycopg2.extensions.connection)
+                is_pg = _is_postgres_connection(conn)
             
             cursor = conn.cursor()
             placeholder = "%s" if is_pg else "?"
@@ -1971,7 +1971,7 @@ def migrate_existing_queue_items_to_grouped_setup(limit=None):
             is_pg = bool(app_is_postgres_connection(conn))
         except Exception:
             conn = get_db()
-            is_pg = isinstance(conn, psycopg2.extensions.connection)
+            is_pg = _is_postgres_connection(conn)
 
         cursor = conn.cursor()
         placeholder = "%s" if is_pg else "?"
@@ -3413,7 +3413,7 @@ def check_downloads_folder():
             is_pg = bool(app_is_postgres_connection(conn))
         except Exception:
             conn = get_db()
-            is_pg = isinstance(conn, psycopg2.extensions.connection)
+            is_pg = _is_postgres_connection(conn)
 
         if is_pg:
             cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -3845,7 +3845,7 @@ def reconcile_album_files_with_queue(artist, album, release_mbid=None, delete_un
             is_pg = bool(app_is_postgres_connection(conn))
         except Exception:
             conn = get_db()
-            is_pg = isinstance(conn, psycopg2.extensions.connection)
+            is_pg = _is_postgres_connection(conn)
 
         if is_pg:
             cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -5271,7 +5271,7 @@ def check_and_remove_failed_downloads():
         
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if isinstance(conn, psycopg2.extensions.connection) else "?"
+        placeholder = "%s" if _is_postgres_connection(conn) else "?"
         
         for download in downloads:
             try:
@@ -5391,7 +5391,7 @@ def cleanup_imported(days=7):
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = isinstance(conn, psycopg2.extensions.connection)
+        is_pg = _is_postgres_connection(conn)
         placeholder = "%s" if is_pg else "?"
         
         cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()

@@ -940,7 +940,7 @@ def fetch_artist_metadata(artist_name: str, verbose: bool = False):
             
             # Update all tracks with this artist
             cursor.execute("""
-                UPDATE tracks SET artist_country = ? WHERE artist = ?
+                UPDATE tracks SET artist_country = %s WHERE artist = %s
             """, (artist_country, artist_name))
             
             logging.debug(f"DB: Updated country for artist {artist_name} and all their tracks")

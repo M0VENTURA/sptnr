@@ -15,7 +15,8 @@ def _is_postgres_connection(conn):
     """Detect if connection is PostgreSQL."""
     try:
         import psycopg2
-        return isinstance(conn, psycopg2.extensions.connection)
+        underlying = getattr(conn, "_conn", conn)
+        return isinstance(underlying, psycopg2.extensions.connection)
     except (ImportError, AttributeError):
         return False
 
