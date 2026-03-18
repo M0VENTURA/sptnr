@@ -7292,13 +7292,27 @@ def popularity_scan(
                 conn.commit()
                 log_debug(f"Committed all changes for album: {album}")
                 
-                # Log album scan with scan type that matches the active mode.
-                scan_history_type = 'singles' if singles_only else 'popularity'
-                log_album_scan(artist, album, scan_history_type, album_scanned, 'completed')
-                log_debug(
-                    f"Logged album scan to scan_history - album: {album}, "
-                    f"scan_type: {scan_history_type}, tracks_scanned: {album_scanned}"
-                )
+                # Log album scan types for Recent Scans badges.
+                # In normal popularity mode we also run singles detection, so log both.
+                if singles_only:
+                    log_album_scan(artist, album, 'singles', singles_processed, 'completed')
+                    log_debug(
+                        f"Logged album scan to scan_history - album: {album}, "
+                        f"scan_type: singles, tracks_scanned: {singles_processed}"
+                    )
+                else:
+                    log_album_scan(artist, album, 'popularity', album_scanned, 'completed')
+                    log_debug(
+                        f"Logged album scan to scan_history - album: {album}, "
+                        f"scan_type: popularity, tracks_scanned: {album_scanned}"
+                    )
+
+                    singles_tracks_scanned = singles_processed if singles_processed > 0 else album_scanned
+                    log_album_scan(artist, album, 'singles', singles_tracks_scanned, 'completed')
+                    log_debug(
+                        f"Logged album scan to scan_history - album: {album}, "
+                        f"scan_type: singles, tracks_scanned: {singles_tracks_scanned}"
+                    )
 
             # After all albums processed for this artist, show artist scan completion summary
             # (Individual album details were logged immediately after each album scan)
