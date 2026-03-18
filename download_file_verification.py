@@ -122,7 +122,9 @@ def _ensure_columns_in_table(columns_to_add):
         # with cursor_factory=RealDictCursor as the default, which would make
         # row[0] raise KeyError instead of returning the first column.
         import psycopg2.extensions as _pg_ext
-        cursor = conn.cursor(_pg_ext.cursor) if _is_postgres_connection(conn) else conn.cursor()
+        # cursor_factory= keyword is required; passing the type positionally is
+        # mis-interpreted by psycopg2 as a cursor name (str), raising TypeError.
+        cursor = conn.cursor(cursor_factory=_pg_ext.cursor) if _is_postgres_connection(conn) else conn.cursor()
 
         # Check if download_queue table exists
         cursor.execute(
