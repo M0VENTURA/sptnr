@@ -296,11 +296,24 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     Returns float score in [0, 1]. Higher is better.
     """
     filename_norm = _normalize_match_text(filename)
+    # Compute the basename early so it can be used for title-token matching.
+    # Title tokens must appear in the *filename* (not merely in a parent folder)
+    # to count as evidence.  Using the full path here causes false positives when
+    # an album folder is named after a track — e.g. searching for the song
+    # "Alisha Rules the World" must NOT match
+    # "Alisha's Attic/Alisha Rules The World/01-02 Intense.flac" just because the
+    # album folder shares the title.
+    # Normalize path separators first: Soulseek delivers Windows-style backslash
+    # paths even when running on Linux, so os.path.basename would otherwise
+    # return the whole path unchanged.
+    basename_norm = _normalize_match_text(os.path.basename(filename.replace('\\', '/')))
     artist_norm = _normalize_match_text(queue_item.get('artist'))
     title_norm = _normalize_match_text(queue_item.get('title'))
     album_norm = _normalize_match_text(queue_item.get('album'))
     title_tokens = _tokenize_meaningful(title_norm)
-    filename_tokens = set(_tokenize_meaningful(filename_norm))
+    # Use basename tokens (not full-path tokens) so that a folder whose name
+    # coincidentally matches the requested title does not inflate the ratio.
+    filename_tokens = set(_tokenize_meaningful(basename_norm))
 
     if not artist_norm or not title_norm or not filename_norm:
         return 0.0
@@ -341,7 +354,7 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     # folder is named after a track (e.g. folder "This Is The Sound" and the
     # file being "02. Skindred - You Got This.flac"), title_norm matches the
     # path but NOT the filename — so we should not reward it as a strong signal.
-    basename_norm = _normalize_match_text(os.path.basename(filename))
+    # (basename_norm was computed near the top of this function.)
     if title_norm in filename_norm and title_norm in basename_norm:
         score += 0.25
     elif title_norm in basename_norm:
