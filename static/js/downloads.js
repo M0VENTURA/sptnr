@@ -596,14 +596,14 @@ async function searchMusicBrainzRelease(event, artist, album, upcomingReleaseId 
   }
 
   if (infoEl && infoArtistEl && infoAlbumEl) {
-    infoArtistEl.textContent = artist;
-    infoAlbumEl.textContent = album;
-    // Conditionally show hyphen separator only if album is provided
-    if (album && album.trim()) {
-      infoEl.innerHTML = `Searching <strong>${escapeHtml(artist)}</strong> - <strong>${escapeHtml(album)}</strong>`;
-    } else {
-      infoEl.innerHTML = `Searching <strong>${escapeHtml(artist)}</strong>`;
-    }
+    infoArtistEl.textContent = artist || '';
+    infoAlbumEl.textContent = album || '';
+    infoEl.style.display = 'block';
+  } else if (infoEl) {
+    // Fallback for pages where child spans are absent
+    infoEl.innerHTML = (album && album.trim())
+      ? `Searching <strong>${escapeHtml(artist)}</strong> — <strong>${escapeHtml(album)}</strong>`
+      : `Searching <strong>${escapeHtml(artist)}</strong>`;
     infoEl.style.display = 'block';
   }
 

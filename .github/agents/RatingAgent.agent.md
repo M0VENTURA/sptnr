@@ -904,3 +904,135 @@ Download integrations (slskd, qBittorrent) are **policy-gated** — only enabled
 | Config | `config/config.yaml`, `templates/config.html` |
 | Tag writing | `mp3scanner.py`, `scan_mp3_import.py` |
 | Watcher | `music_watcher.py`, `downloads_watcher.py` |
+
+---
+
+## 13) MusicBrainz search modal — canonical reference
+
+The MB release search modal is reused across artist, album, track, and downloads pages. Understanding its structure prevents regressions when touching any of those templates.
+
+### Shared partials (preferred for new pages)
+
+| File | Purpose |
+|------|---------|
+| `templates/_musicbrainz_search_modal.html` | Canonical modal HTML — include with `{% include %}` |
+| `templates/_musicbrainz_search_functions.html` | Canonical JS (`searchMusicBrainzRelease`, `displayMusicBrainzResults`) — used by artist/album/track pages |
+
+### Legacy copy (downloads pages only)
+
+`static/js/downloads.js` contains an older copy of `searchMusicBrainzRelease()` that is **shared between `downloads.html` and `downloads_monitor.html`**. Do not duplicate it; fix it in place.
+
+### Required element IDs
+
+Every page that opens the modal must have **all** of these in its DOM:
+
+| Element ID | Type | Purpose |
+|------------|------|---------|
+| `musicBrainzModal` | `div.modal` | Bootstrap modal root |
+| `mbSearchInfo` | `div.alert` | Info banner shown while searching |
+| `mbSearchArtist` | `strong` (child of `mbSearchInfo`) | Artist name text |
+| `mbSearchAlbum` | `strong` (child of `mbSearchInfo`) | Album / query text |
+| `mbSearchStatus` | `div` | Spinner / loading message |
+| `mbSearchError` | `div.alert-danger` | Error display |
+| `mbSearchResults` | `div` | Results injected here |
+
+> ⚠️ Missing `mbSearchArtist` / `mbSearchAlbum` inside `mbSearchInfo` causes the info banner to silently not render. The canonical structure inside `mbSearchInfo` is:
+> ```html
+> Searching <strong id="mbSearchArtist"></strong> — <strong id="mbSearchAlbum"></strong>
+> ```
+
+### Per-page notes
+
+| Template | Modal source | JS source |
+|----------|-------------|-----------|
+| `downloads.html` | Inline modal (matches canonical structure) | `downloads.js` |
+| `downloads_monitor.html` | Inline modal (matches canonical structure) | `downloads.js` |
+| `artist.html` | Inline modal (own copy, may differ for artist-browse flows) | Inline `<script>` using `_musicbrainz_search_functions.html` logic |
+| Other pages | `{% include '_musicbrainz_search_modal.html' %}` | `{% include '_musicbrainz_search_functions.html' %}` |
+
+### `searchMusicBrainzRelease()` signature (downloads.js variant)
+
+```js
+async function searchMusicBrainzRelease(event, artist, album, upcomingReleaseId)
+```
+
+- `event` — may be `null` (safe, null-guarded)
+- `upcomingReleaseId` — when set, stores context in `window.currentUpcomingReleaseContext` for post-search actions
+- Calls `POST /api/upcoming-releases/search-musicbrainz` then Discogs fallback
+- `displayMusicBrainzResults()` injects result cards into `mbSearchResults`
+
+---
+
+## 14) Download queue — full lifecycle reference
+
+### 14.1 Queue flow phases
+
+```
+add_to_queue()
+  ↓ status = 'queued'
+queue_processor (picks up item)
+  ↓ status = 'searching'
+slskd search (api_clients/slskd.py)
+  ↓ results scored → best candidate selected
+  ↓ status = 'downloading'
+slskd download (file lands in staging folder)
+  ↓ status = 'importing'
+download_file_manager.organize_file()
+  ↓ moves file to music library, writes tags
+  ↓ status = 'completed' / 'failed'
+```
+
+MusicBrainz direct import uses a parallel flow:
+`musicbrainz_import.py` → `musicbrainz_release_manager.py` → `musicbrainz_finalizer.py`
+
+### 14.2 Module ownership
+
+| Module | Owns |
+|--------|------|
+| `queue_processor.py` | Main processing loop; search + download orchestration |
+| `download_queue_manager.py` | Queue CRUD: `add_to_queue`, `update_queue_item`, `mark_failed`, `get_queue_items` |
+| `download_retry_manager.py` | Retry logic; manages `retry_count` and backoff |
+| `download_file_manager.py` | Organizes staged files into library; writes ID3/Vorbis tags |
+| `download_file_verification.py` | Hash verification before/after move |
+| `download_folder_grouping.py` | Groups download folder contents into logical releases |
+| `download_monitor_enhancements.py` | Real-time status monitoring helpers |
+| `downloads_watcher.py` | Filesystem watcher for new files in staging area |
+
+### 14.3 `queue_events` event types
+
+Events are appended to the `queue_events` table; never modified in place. Consumers read them to reconstruct history.
+
+| `event_type` value | When emitted |
+|--------------------|-------------|
+| `search_started` | Slskd search request sent |
+| `search_completed` | Search returned results |
+| `search_failed` | Search timed out or errored |
+| `download_started` | File download initiated via slskd |
+| `download_completed` | File appears in staging area |
+| `download_failed` | Download error or timeout |
+| `import_started` | `organize_file()` called |
+| `import_completed` | File moved to library, DB updated |
+| `import_failed` | Organization/tagging error |
+| `retry_queued` | Item re-queued after failure |
+| `cancelled` | User or processor cancelled item |
+
+### 14.4 Candidate scoring / format priority
+
+`queue_processor.py` scores slskd search results and selects the best candidate using:
+
+- **Format priority**: FLAC > MP3 320 kbps > MP3 VBR/lower
+- **Similarity thresholds** (against Navidrome metadata):
+  - Title: `_NAV_TITLE_SIMILARITY_THRESHOLD = 0.85` (85 %)
+  - Artist: `_NAV_ARTIST_SIMILARITY_THRESHOLD = 0.75` (75 %)
+- **Duplicate guard**: `downloaded_files` hash lookup prevents re-downloading identical files
+- **`import_group`**: Field on `download_queue` rows — links items from the same folder/release batch (value: `mbid_<release_mbid>` when MB-matched, else a folder path hash)
+
+### 14.5 Queue API tracing endpoints
+
+| Route | Use |
+|-------|-----|
+| `GET /api/queue/status` | Current counts by status |
+| `GET /api/queue/events` | Full audit trail from `queue_events` |
+| `GET /api/queue-processor/status` | Whether processor loop is running |
+| `POST /api/queue-processor/restart` | Restart a stuck processor |
+| `GET /api/scan-logs` | Combined scan + queue log stream |

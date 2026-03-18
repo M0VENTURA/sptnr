@@ -73,6 +73,9 @@
         <i class="bi bi-calendar-event"></i> Upcoming Album Releases
       </h5>
       <div class="d-flex align-items-center gap-2 flex-wrap">
+        <button class="btn btn-sm btn-outline-success" id="autoMatchAllMonitorBtn" onclick="autoMatchAllUpcomingReleasesMonitor(this)" title="Auto-match MusicBrainz MBID for all unmatched releases">
+          <i class="bi bi-magic"></i> Auto Match All
+        </button>
         <button class="btn btn-sm btn-primary" onclick="scrapeUpcomingReleasesMonitor()">
           <i class="bi bi-download"></i> Update from Wikipedia
         </button>
@@ -334,7 +337,7 @@
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body">
-          <div id="mbSearchInfo" class="alert alert-info" style="display:none;"></div>
+          <div id="mbSearchInfo" class="alert alert-info mb-3" style="display:none;">Searching <strong id="mbSearchArtist"></strong> — <strong id="mbSearchAlbum"></strong></div>
           <div id="mbSearchStatus" class="alert alert-secondary" style="display:none;"></div>
           <div id="mbSearchError" class="alert alert-danger" style="display:none;"></div>
           <div id="mbSearchResults"></div>
@@ -709,7 +712,7 @@ async function refreshUpcomingReleasesMonitor() {
                       <th>Album</th>
                       <th>Date</th>
                       <th>MBID</th>
-                      <th style="width: 220px;">Action</th>
+                      <th>Action</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -733,16 +736,10 @@ async function refreshUpcomingReleasesMonitor() {
             <td><small>${escapeHtml(release.release_date || 'TBA')}</small></td>
             <td>${mbidStatus}</td>
             <td>
-              <div class="d-flex gap-1 flex-wrap">
-                <button type="button" class="btn btn-sm btn-outline-success" title="Auto match MBID"
-                  onclick="matchUpcomingReleaseMonitor(${Number(release.id) || 0})">
-                  <i class="bi bi-magic"></i> Auto
-                </button>
-                <button type="button" class="btn btn-sm btn-outline-primary" title="Choose a MusicBrainz match"
-                  onclick="searchUpcomingReleaseFromEncoded('${artistEnc}', '${albumEnc}', ${Number(release.id) || 0})">
-                  <i class="bi bi-search"></i> Choose
-                </button>
-              </div>
+              <button type="button" class="btn btn-sm btn-outline-info" title="Search MusicBrainz — match MBID or queue for download"
+                onclick="searchUpcomingReleaseFromEncoded('${artistEnc}', '${albumEnc}', ${Number(release.id) || 0})">
+                <i class="bi bi-search"></i> Search / Download
+              </button>
             </td>
           </tr>
         `;
