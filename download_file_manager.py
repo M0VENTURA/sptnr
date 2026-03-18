@@ -356,6 +356,31 @@ def copy_file_to_music(source_file_path, queue_item, music_dir):
                 'metadata_updated': False
             }
         
+        source_ext = os.path.splitext(source_file_path)[1].lower()
+
+        # Keep conversion behavior aligned with the queue move/import flow so
+        # manual per-track copies do not bypass FLAC -> MP3 settings.
+        convert_requested = False
+        queue_id = queue_item.get('id')
+        transfer_download_to_music = None
+        _apply_release_year_mtime = None
+        try:
+            from download_queue_manager import (
+                _apply_release_year_mtime,
+                _read_download_conversion_settings,
+                transfer_download_to_music,
+            )
+            conversion_settings = _read_download_conversion_settings()
+            convert_requested = bool(
+                conversion_settings.get('enabled')
+                and conversion_settings.get('mode') == 'flac_to_mp3'
+                and source_ext == '.flac'
+            )
+        except Exception as conv_cfg_err:
+            logger.debug(f"Could not load download conversion settings; falling back to direct copy: {conv_cfg_err}")
+
+        target_ext = '.mp3' if convert_requested else source_ext
+
         # Prepare metadata for update
         metadata = {
             'title': queue_item.get('title', 'Unknown'),
@@ -369,7 +394,7 @@ def copy_file_to_music(source_file_path, queue_item, music_dir):
             'composer': queue_item.get('composer'),
             'isrc': queue_item.get('isrc'),
             'cover_art_url': queue_item.get('cover_art_url'),
-            'ext': os.path.splitext(source_file_path)[1].lower(),
+            'ext': target_ext,
             'source_file_path': source_file_path
         }
         
@@ -390,15 +415,37 @@ def copy_file_to_music(source_file_path, queue_item, music_dir):
                 'metadata_updated': metadata_updated
             }
         
-        # Copy file
-        shutil.copy2(source_file_path, target_path)
-        logger.info(f"✅ Copied file: {source_file_path} → {target_path}")
+        # Import file using the same conversion-aware transfer helper as the
+        # queue processor. This converts FLACs to MP3 when configured instead
+        # of blindly copying the original FLAC into /music.
+        if convert_requested and transfer_download_to_music is not None:
+            transfer_result = transfer_download_to_music(source_file_path, target_path, queue_id=queue_id)
+            if not transfer_result.get('success'):
+                return {
+                    'success': False,
+                    'target_path': None,
+                    'error': transfer_result.get('error') or 'FLAC conversion failed',
+                    'metadata_updated': metadata_updated
+                }
+
+            target_path = transfer_result.get('target_path') or target_path
+
+            # Re-apply tags to the converted MP3 to ensure all fields, artwork,
+            # and writer data are present on the final library file.
+            metadata['ext'] = os.path.splitext(target_path)[1].lower() or '.mp3'
+            final_metadata_updated = update_file_metadata(target_path, metadata)
+            metadata_updated = metadata_updated or final_metadata_updated
+            logger.info(f"✅ Converted/imported file: {source_file_path} → {target_path}")
+        else:
+            shutil.copy2(source_file_path, target_path)
+            logger.info(f"✅ Copied file: {source_file_path} → {target_path}")
 
         # Set file mtime to the release year from MusicBrainz so the library
         # reflects the original release date rather than the copy date.
         try:
-            from download_queue_manager import _apply_release_year_mtime
-            _apply_release_year_mtime(target_path, metadata.get('year'))
+            if _apply_release_year_mtime is None:
+                from download_queue_manager import _apply_release_year_mtime
+            _apply_release_year_mtime(target_path, metadata.get('year'), queue_id=queue_id)
         except Exception:
             pass
         
