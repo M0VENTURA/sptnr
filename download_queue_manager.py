@@ -1342,7 +1342,7 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                     VALUES (%s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, %s, %s, %s, %s,
                             %s, %s, %s, %s, %s, %s, %s, %s,
                             %s, %s, %s,
-                            %s,
+                            %s, %s,
                             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     RETURNING id
                     """,
@@ -1373,7 +1373,7 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                     VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, NULL, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder},
                             {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder},
                             {placeholder}, {placeholder}, {placeholder},
-                            {placeholder},
+                            {placeholder}, {placeholder},
                             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """,
                     (artist, title, album, search_query, source, initial_status, priority, import_group, import_type,
