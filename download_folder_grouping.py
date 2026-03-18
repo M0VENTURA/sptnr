@@ -16,6 +16,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
+from database_abstraction import is_postgres_connection
 
 logger = logging.getLogger(__name__)
 
@@ -592,9 +593,13 @@ def organize_folder_to_music(folder_path, tracks, release_metadata, music_dir="/
         
         # Track folder match in database if connection provided
         folder_match_id = None
+        is_pg = False
+        placeholder = "?"
         if db_conn:
             try:
                 cursor = db_conn.cursor()
+            is_pg = is_postgres_connection(db_conn)
+            placeholder = "%s" if is_pg else "?"
                 
                 # Get absolute folder path for tracking
                 from pathlib import Path
@@ -610,30 +615,41 @@ def organize_folder_to_music(folder_path, tracks, release_metadata, music_dir="/
                 
                 # Check for existing folder match
                 cursor.execute(
-                    "SELECT id FROM folder_album_matches WHERE folder_path = ?",
+                    f"SELECT id FROM folder_album_matches WHERE folder_path = {placeholder}",
                     (abs_folder_path,)
                 )
                 existing = cursor.fetchone()
                 
                 if existing:
                     # Update existing match
-                    folder_match_id = existing[0]
-                    cursor.execute("""
+                    folder_match_id = existing.get('id') if hasattr(existing, 'keys') else existing[0]
+                    cursor.execute(f"""
                         UPDATE folder_album_matches
-                        SET mb_release_id = ?, mb_source = ?, artist = ?, album = ?,
-                            release_date = ?, total_expected_tracks = ?, status = 'organizing',
+                        SET mb_release_id = {placeholder}, mb_source = {placeholder}, artist = {placeholder}, album = {placeholder},
+                            release_date = {placeholder}, total_expected_tracks = {placeholder}, status = 'organizing',
                             updated_at = CURRENT_TIMESTAMP
-                        WHERE id = ?
+                        WHERE id = {placeholder}
                     """, (mb_release_id, mb_source, artist, album, release_date, total_tracks, folder_match_id))
                 else:
                     # Create new folder match record
-                    cursor.execute("""
-                        INSERT INTO folder_album_matches 
-                        (folder_path, mb_release_id, mb_source, artist, album, release_date, 
-                         total_expected_tracks, matched_tracks_count, status)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'organizing')
-                    """, (abs_folder_path, mb_release_id, mb_source, artist, album, release_date, total_tracks))
-                    folder_match_id = cursor.lastrowid
+                    if is_pg:
+                        cursor.execute(f"""
+                            INSERT INTO folder_album_matches 
+                            (folder_path, mb_release_id, mb_source, artist, album, release_date, 
+                             total_expected_tracks, matched_tracks_count, status)
+                            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 0, 'organizing')
+                            RETURNING id
+                        """, (abs_folder_path, mb_release_id, mb_source, artist, album, release_date, total_tracks))
+                        inserted = cursor.fetchone()
+                        folder_match_id = inserted.get('id') if hasattr(inserted, 'keys') else inserted[0]
+                    else:
+                        cursor.execute(f"""
+                            INSERT INTO folder_album_matches 
+                            (folder_path, mb_release_id, mb_source, artist, album, release_date, 
+                             total_expected_tracks, matched_tracks_count, status)
+                            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 0, 'organizing')
+                        """, (abs_folder_path, mb_release_id, mb_source, artist, album, release_date, total_tracks))
+                        folder_match_id = cursor.lastrowid
                 
                 db_conn.commit()
                 logger.info(f"Tracked folder match in database: ID {folder_match_id}")
@@ -723,11 +739,11 @@ def organize_folder_to_music(folder_path, tracks, release_metadata, music_dir="/
                 if db_conn and folder_match_id:
                     try:
                         cursor = db_conn.cursor()
-                        cursor.execute("""
+                        cursor.execute(f"""
                             INSERT INTO folder_track_matches
                             (folder_match_id, file_path, organized_path, track_number, 
                              track_title, track_artist, organized_at)
-                            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
                         """, (folder_match_id, source_file, dest_file, track_number, 
                               track_title, track_artist))
                         db_conn.commit()
@@ -743,10 +759,10 @@ def organize_folder_to_music(folder_path, tracks, release_metadata, music_dir="/
         if db_conn and folder_match_id:
             try:
                 cursor = db_conn.cursor()
-                cursor.execute("""
+                cursor.execute(f"""
                     UPDATE folder_album_matches
-                    SET matched_tracks_count = ?, status = 'completed', updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
+                    SET matched_tracks_count = {placeholder}, status = 'completed', updated_at = CURRENT_TIMESTAMP
+                    WHERE id = {placeholder}
                 """, (len(organized_files), folder_match_id))
                 db_conn.commit()
                 logger.info(f"Updated folder match status: {len(organized_files)} tracks organized")
