@@ -598,8 +598,8 @@ def organize_folder_to_music(folder_path, tracks, release_metadata, music_dir="/
         if db_conn:
             try:
                 cursor = db_conn.cursor()
-            is_pg = is_postgres_connection(db_conn)
-            placeholder = "%s" if is_pg else "?"
+                is_pg = is_postgres_connection(db_conn)
+                placeholder = "%s" if is_pg else "?"
                 
                 # Get absolute folder path for tracking
                 from pathlib import Path
