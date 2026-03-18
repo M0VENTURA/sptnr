@@ -10831,18 +10831,18 @@ def api_get_duplicate_artists(artist):
         placeholder = "%s" if is_pg else "?"
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) if is_pg else conn.cursor()
         
-                # Get the MBID for the current artist (use the same album_artist fallback as Artists page)
-                cursor.execute("""
-                        SELECT DISTINCT musicbrainz_artist_id
-                        FROM tracks
-                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
-                            AND musicbrainz_artist_id IS NOT NULL
-                            AND musicbrainz_artist_id != ''
-                        LIMIT 1
-                """.format(placeholder=placeholder), (artist,))
+        # Get the MBID for the current artist (use the same album_artist fallback as Artists page)
+        cursor.execute("""
+            SELECT DISTINCT musicbrainz_artist_id
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                AND musicbrainz_artist_id IS NOT NULL
+                AND musicbrainz_artist_id != ''
+            LIMIT 1
+        """.format(placeholder=placeholder), (artist,))
         
         artist_mbid_row = cursor.fetchone()
-                artist_mbid = _row_get(artist_mbid_row, 'musicbrainz_artist_id', 0) if artist_mbid_row else None
+        artist_mbid = _row_get(artist_mbid_row, 'musicbrainz_artist_id', 0) if artist_mbid_row else None
         
         duplicates = []
         
