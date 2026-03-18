@@ -467,14 +467,13 @@ document.addEventListener('DOMContentLoaded', function() {
         normalized = normalized.replace(/\.(\d{3})\d+/, '.$1');
         normalized = normalized.replace(/([+-]\d{2})(\d{2})$/, '$1:$2');
 
+        // If timestamp has no timezone suffix, treat it as UTC.
+        if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?$/.test(normalized)) {
+            normalized += 'Z';
+        }
+
         var d = new Date(normalized);
         if (!isNaN(d.getTime())) return d;
-
-        // Fallback: if timestamp has no timezone suffix, assume UTC.
-        if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?$/.test(normalized)) {
-            d = new Date(normalized + 'Z');
-            if (!isNaN(d.getTime())) return d;
-        }
 
         return null;
     }
