@@ -55,6 +55,16 @@ cleanup() {
 # Setup signal handlers
 trap cleanup SIGTERM SIGINT EXIT
 
+# Pre-flight syntax check — fail fast before Gunicorn tries to load the module.
+# This surfaces stale/corrupt source immediately instead of looping through
+# "Worker failed to boot" errors with no actionable message.
+echo "Running pre-flight syntax check on app.py..."
+if ! python3 -m py_compile app.py; then
+    echo "✗ FATAL: app.py has a syntax error (shown above). Fix and rebuild the image."
+    exit 1
+fi
+echo "✓ app.py syntax OK"
+
 # Start Flask app in foreground (this blocks)
 echo "Starting Flask web application (port 5000)..."
 exec gunicorn \
