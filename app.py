@@ -14856,13 +14856,22 @@ def api_musicbrainz_download():
         
         # Create managed_downloads entry
         download_query = f"{artist} - {release_title}"
-        cursor.execute(f"""
-            INSERT INTO managed_downloads 
-            (release_id, release_title, artist, method, status, download_query, persistent_search, max_retries, session_id, created_at, updated_at)
-            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued', {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        """, (release_id, release_title, artist, method, download_query, 1 if persistent_search else 0, max_retries, session_id))
-        
-        tracking_id = cursor.lastrowid
+        if is_pg:
+            cursor.execute(f"""
+                INSERT INTO managed_downloads 
+                (release_id, release_title, artist, method, status, download_query, persistent_search, max_retries, session_id, created_at, updated_at)
+                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued', {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                RETURNING id
+            """, (release_id, release_title, artist, method, download_query, 1 if persistent_search else 0, max_retries, session_id))
+            tracking_row = cursor.fetchone()
+            tracking_id = _row_get(tracking_row, 'id', 0)
+        else:
+            cursor.execute(f"""
+                INSERT INTO managed_downloads 
+                (release_id, release_title, artist, method, status, download_query, persistent_search, max_retries, session_id, created_at, updated_at)
+                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued', {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """, (release_id, release_title, artist, method, download_query, 1 if persistent_search else 0, max_retries, session_id))
+            tracking_id = cursor.lastrowid
         
         # Add all tracks to download_queue to ensure they're tracked
         # under a single import_group (queue folder) for this release request.
@@ -14966,13 +14975,22 @@ def _simple_mb_download(release_id, release_title, artist, method, persistent_se
         
         download_query = f"{artist} - {release_title}"
         
-        cursor.execute(f"""
-            INSERT INTO managed_downloads 
-            (release_id, release_title, artist, method, status, download_query, persistent_search, max_retries, session_id, created_at, updated_at)
-            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued', {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        """, (release_id, release_title, artist, method, download_query, 1 if persistent_search else 0, max_retries, session_id))
-        
-        tracking_id = cursor.lastrowid
+        if is_pg:
+            cursor.execute(f"""
+                INSERT INTO managed_downloads 
+                (release_id, release_title, artist, method, status, download_query, persistent_search, max_retries, session_id, created_at, updated_at)
+                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued', {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                RETURNING id
+            """, (release_id, release_title, artist, method, download_query, 1 if persistent_search else 0, max_retries, session_id))
+            tracking_row = cursor.fetchone()
+            tracking_id = _row_get(tracking_row, 'id', 0)
+        else:
+            cursor.execute(f"""
+                INSERT INTO managed_downloads 
+                (release_id, release_title, artist, method, status, download_query, persistent_search, max_retries, session_id, created_at, updated_at)
+                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued', {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """, (release_id, release_title, artist, method, download_query, 1 if persistent_search else 0, max_retries, session_id))
+            tracking_id = cursor.lastrowid
         conn.commit()
         conn.close()
         
@@ -15737,13 +15755,22 @@ def api_create_playlist_download_session():
             cursor = conn.cursor()
             placeholder = "%s" if _is_postgres_connection(conn) else "?"
             
-            cursor.execute(f"""
-                INSERT INTO playlist_download_sessions 
-                (session_name, user, status, total_tracks, priority_queue, created_at, updated_at)
-                VALUES ({placeholder}, {placeholder}, 'in_progress', {placeholder}, {placeholder}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            """, (session_name, current_user, total_tracks, 1 if priority_queue else 0))
-            
-            session_id = cursor.lastrowid
+            if _is_postgres_connection(conn):
+                cursor.execute(f"""
+                    INSERT INTO playlist_download_sessions 
+                    (session_name, user, status, total_tracks, priority_queue, created_at, updated_at)
+                    VALUES ({placeholder}, {placeholder}, 'in_progress', {placeholder}, {placeholder}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    RETURNING id
+                """, (session_name, current_user, total_tracks, 1 if priority_queue else 0))
+                session_row = cursor.fetchone()
+                session_id = _row_get(session_row, 'id', 0)
+            else:
+                cursor.execute(f"""
+                    INSERT INTO playlist_download_sessions 
+                    (session_name, user, status, total_tracks, priority_queue, created_at, updated_at)
+                    VALUES ({placeholder}, {placeholder}, 'in_progress', {placeholder}, {placeholder}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """, (session_name, current_user, total_tracks, 1 if priority_queue else 0))
+                session_id = cursor.lastrowid
             conn.commit()
             conn.close()
             
