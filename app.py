@@ -19127,10 +19127,39 @@ def api_downloads_get_queue():
                 normalized_count += cursor.rowcount or 0
 
                 # Safety net: reset 'matched' items whose source file no longer exists
-                # on disk.  This prevents queue entries from showing "Match confirmed and
+                # on disk. This prevents queue entries from showing "Match confirmed and
                 # ready to move to music" indefinitely when the file was deleted after
                 # the match was confirmed.
                 try:
+                    try:
+                        from download_queue_manager import get_downloads_dir
+                        downloads_root = get_downloads_dir()
+                    except Exception:
+                        downloads_root = os.environ.get("DOWNLOADS_DIR", "/downloads")
+
+                    def _existing_match_path(path_value):
+                        path_value = (path_value or "").strip()
+                        if not path_value:
+                            return ""
+
+                        if os.path.isfile(path_value):
+                            return path_value
+
+                        if os.path.isabs(path_value):
+                            return ""
+
+                        resolved_path = os.path.join(downloads_root, path_value)
+                        if os.path.isfile(resolved_path):
+                            return resolved_path
+
+                        basename_value = os.path.basename(path_value)
+                        if basename_value and basename_value != path_value:
+                            resolved_basename = os.path.join(downloads_root, basename_value)
+                            if os.path.isfile(resolved_basename):
+                                return resolved_basename
+
+                        return ""
+
                     cursor.execute(
                         """
                         SELECT id, file_path, matched_file_path, music_file_path, found_filename
@@ -19140,6 +19169,7 @@ def api_downloads_get_queue():
                             TRIM(COALESCE(file_path, '')) != ''
                             OR TRIM(COALESCE(matched_file_path, '')) != ''
                             OR TRIM(COALESCE(music_file_path, '')) != ''
+                            OR TRIM(COALESCE(found_filename, '')) != ''
                           )
                         """
                     )
@@ -19149,13 +19179,15 @@ def api_downloads_get_queue():
                         mrow_file_path = _row_get(mrow, 'file_path', 1) or ''
                         mrow_matched_file_path = _row_get(mrow, 'matched_file_path', 2) or ''
                         mrow_music_file_path = _row_get(mrow, 'music_file_path', 3) or ''
+                        mrow_found_filename = _row_get(mrow, 'found_filename', 4) or ''
                         existing_match_paths = [
                             path_value for path_value in (
                                 mrow_file_path,
                                 mrow_matched_file_path,
                                 mrow_music_file_path,
+                                mrow_found_filename,
                             )
-                            if path_value and os.path.isfile(path_value)
+                            if _existing_match_path(path_value)
                         ]
                         if not existing_match_paths:
                             cursor.execute(
