@@ -66,29 +66,15 @@ def _log_pg_startup_once(message: str, interval_seconds: int = 30):
 
 
 def _get_db_connection():
-    """Get database connection via app abstraction, with strict PG behavior."""
-    pg_configured = _is_postgres_configured()
+    """Get database connection via helpers abstraction.
 
-    try:
-        from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
-
-        conn = app_get_db()
-        if pg_configured and not app_is_postgres_connection(conn):
-            raise RuntimeError(
-                "PostgreSQL is configured but app DB connection is not PostgreSQL"
-            )
-        return conn
-    except Exception:
-        if pg_configured:
-            raise
-
-    # SQLite fallback when PostgreSQL is not configured.
-    import sqlite3
-
-    db_path = os.environ.get("DB_PATH", "/database/sptnr.db")
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    return conn
+    Uses helpers.db_utils.get_db_connection to avoid a circular import: this
+    module is imported by app.py at module level and its ensure_* functions are
+    called before app.py has finished initialising, so 'from app import get_db'
+    would fail with 'partially initialised module' errors.
+    """
+    from helpers.db_utils import get_db_connection as _helper_get_db
+    return _helper_get_db()
 
 
 def _cursor(conn):
