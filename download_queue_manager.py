@@ -148,6 +148,19 @@ _mb_enrichment_executor = concurrent.futures.ThreadPoolExecutor(
     max_workers=_MB_ENRICH_MAX_WORKERS,
     thread_name_prefix="mb-enrich",
 )
+
+# Timeout (seconds) allowed for a single file transfer operation (shutil.move /
+# ffmpeg conversion).  Prevents large files from freezing the queue processor
+# indefinitely when the music and downloads directories reside on different
+# filesystems and a byte-by-byte copy is required.
+_TRANSFER_TIMEOUT_SECONDS = 3600  # 1 hour
+
+# Dedicated thread-pool for blocking file-transfer operations so they never
+# freeze the main queue-processor event loop.
+_transfer_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=2,
+    thread_name_prefix="file-transfer",
+)
 _mb_enrichment_lock = threading.Lock()
 _mb_enrichment_inflight = set()
 
@@ -537,6 +550,36 @@ def _build_original_archive_path(source_path, downloads_root, original_subfolder
     return unique_candidate
 
 
+def _apply_release_year_mtime(file_path, year, queue_id=None):
+    """Set the file's modification time to January 1st of the release year.
+
+    This ensures music files in the library reflect the original MusicBrainz
+    release date rather than the current date (i.e. when the file was copied).
+
+    Args:
+        file_path: Absolute path to the file whose mtime should be updated.
+        year: Release year as a string or integer (e.g. '2019' or 2019).
+              Nothing is changed when the year is missing or invalid.
+        queue_id: Optional queue item ID for log messages.
+    """
+    if not file_path or not year:
+        return
+    try:
+        year_int = int(str(year).strip()[:4])
+        if year_int < 1900 or year_int > 2100:
+            return
+        ts = datetime(year_int, 1, 1).timestamp()
+        os.utime(file_path, (ts, ts))
+        logger.debug(
+            f"[MOVE] Queue {queue_id or 'unknown'}: set mtime to {year_int}-01-01 for {file_path}"
+        )
+    except Exception as utime_err:
+        logger.debug(
+            f"[MOVE] Queue {queue_id or 'unknown'}: could not set release-year mtime "
+            f"({year!r}): {utime_err}"
+        )
+
+
 def transfer_download_to_music(source_path, dest_path, queue_id=None):
     """Move or convert a downloaded file into the music library destination.
 
@@ -584,7 +627,19 @@ def transfer_download_to_music(source_path, dest_path, queue_id=None):
             final_dest_path,
         ]
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=_TRANSFER_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            return {
+                "success": False,
+                "target_path": None,
+                "error": f"FLAC to MP3 conversion timed out after {_TRANSFER_TIMEOUT_SECONDS}s",
+            }
         except FileNotFoundError:
             return {
                 "success": False,
@@ -632,7 +687,17 @@ def transfer_download_to_music(source_path, dest_path, queue_id=None):
             "converted": True,
         }
 
-    shutil.move(source_path, final_dest_path)
+    try:
+        future = _transfer_executor.submit(shutil.move, source_path, final_dest_path)
+        future.result(timeout=_TRANSFER_TIMEOUT_SECONDS)
+    except concurrent.futures.TimeoutError:
+        return {
+            "success": False,
+            "target_path": None,
+            "error": f"File transfer timed out after {_TRANSFER_TIMEOUT_SECONDS}s: {source_path}",
+        }
+    except Exception as move_err:
+        return {"success": False, "target_path": None, "error": f"File move failed: {move_err}"}
     return {
         "success": True,
         "target_path": final_dest_path,
@@ -2720,6 +2785,11 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
 
         final_target = transfer_result.get('target_path')
         logger.info(f"[MOVE] {file_path} → {final_target}")
+
+        # Set the file's modification time to the release year from MusicBrainz
+        # so the library reflects the original release date rather than today.
+        _apply_release_year_mtime(final_target, year, queue_id=queue_item_dict.get('id'))
+
         # Remove the (now empty) parent download directory to keep /downloads tidy.
         _remove_empty_download_dirs(file_path, get_downloads_dir())
         return {

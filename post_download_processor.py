@@ -506,7 +506,11 @@ def rename_and_move_file(file_path, metadata):
     """
     try:
         music_dir = get_music_dir()
-        from download_queue_manager import get_import_destination_path, transfer_download_to_music
+        from download_queue_manager import (
+            get_import_destination_path,
+            transfer_download_to_music,
+            _apply_release_year_mtime,
+        )
         
         # Get file extension
         ext = os.path.splitext(file_path)[1].lower()
@@ -560,6 +564,10 @@ def rename_and_move_file(file_path, metadata):
                 }
             target_path = transfer_result.get('target_path') or target_path
             logger.info(f"Moved: {file_path} -> {target_path}")
+
+            # Set the file's modification time to the release year from MusicBrainz
+            # so the library reflects the original release date rather than today.
+            _apply_release_year_mtime(target_path, year if year != 'Unknown' else None)
         else:
             logger.info(f"File already in correct location: {target_path}")
         
