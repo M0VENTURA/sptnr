@@ -1064,37 +1064,80 @@ def get_queued_items(limit=10):
 
 
 def claim_queued_items(limit=10):
-    """Atomically claim queued rows for this worker using FOR UPDATE SKIP LOCKED."""
+    """Claim queued rows for this worker with backend-safe SQL."""
     try:
         cleanup_stuck_searching_items()
 
         conn = get_db()
         cursor = conn.cursor()
-
+        placeholder = _get_placeholder(conn)
         now = datetime.now().isoformat()
-        cursor.execute(
-            """
-            WITH candidates AS (
+
+        if _is_postgres_connection(conn):
+            cursor.execute(
+                """
+                WITH candidates AS (
+                    SELECT id
+                    FROM download_queue
+                    WHERE status = 'queued'
+                      AND (next_retry_at IS NULL OR next_retry_at <= %s)
+                    ORDER BY priority ASC, retry_count ASC, next_retry_at ASC NULLS FIRST, created_at ASC
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT %s
+                )
+                UPDATE download_queue dq
+                SET status = 'searching',
+                    updated_at = CURRENT_TIMESTAMP
+                FROM candidates c
+                WHERE dq.id = c.id
+                RETURNING dq.*
+                """,
+                (now, int(limit)),
+            )
+            rows = cursor.fetchall() or []
+            items = [dict(row) for row in rows]
+        else:
+            # SQLite fallback: select candidate IDs first, then update them in one statement.
+            cursor.execute(
+                """
                 SELECT id
                 FROM download_queue
                 WHERE status = 'queued'
-                  AND (next_retry_at IS NULL OR next_retry_at <= %s)
-                ORDER BY priority ASC, retry_count ASC, next_retry_at ASC NULLS FIRST, created_at ASC
-                FOR UPDATE SKIP LOCKED
-                LIMIT %s
+                  AND (next_retry_at IS NULL OR next_retry_at <= ?)
+                ORDER BY priority ASC, retry_count ASC, next_retry_at ASC, created_at ASC
+                LIMIT ?
+                """,
+                (now, int(limit)),
             )
-            UPDATE download_queue dq
-            SET status = 'searching',
-                updated_at = CURRENT_TIMESTAMP
-            FROM candidates c
-            WHERE dq.id = c.id
-            RETURNING dq.*
-            """,
-            (now, int(limit)),
-        )
+            id_rows = cursor.fetchall() or []
+            row_ids = [r['id'] if hasattr(r, 'keys') else r[0] for r in id_rows]
+            if not row_ids:
+                conn.close()
+                return []
 
-        rows = cursor.fetchall() or []
-        items = [dict(row) for row in rows]
+            in_params = ",".join([placeholder] * len(row_ids))
+            cursor.execute(
+                f"""
+                UPDATE download_queue
+                SET status = 'searching',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id IN ({in_params})
+                """,
+                tuple(row_ids),
+            )
+
+            cursor.execute(
+                f"""
+                SELECT *
+                FROM download_queue
+                WHERE id IN ({in_params})
+                ORDER BY priority ASC, retry_count ASC, next_retry_at ASC, created_at ASC
+                """,
+                tuple(row_ids),
+            )
+            rows = cursor.fetchall() or []
+            items = [dict(row) for row in rows]
+
         conn.commit()
         conn.close()
         return items

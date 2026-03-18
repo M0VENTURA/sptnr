@@ -66,16 +66,53 @@ def _log_pg_startup_once(message: str, interval_seconds: int = 30):
 
 
 def _get_db_connection():
-    """Get database connection with proper row factory."""
-    conn = psycopg2.connect(
-        host=os.environ.get("PG_HOST", "sptnr-postgres"),
-        user=os.environ.get("PG_USER", "sptnr"),
-        password=os.environ.get("PG_PASSWORD", ""),
-        dbname=os.environ.get("PG_DATABASE", "sptnr"),
-        port=int(os.environ.get("PG_PORT", "5432")),
-        connect_timeout=10,
-    )
+    """Get database connection via app abstraction, with strict PG behavior."""
+    pg_configured = _is_postgres_configured()
+
+    try:
+        from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
+
+        conn = app_get_db()
+        if pg_configured and not app_is_postgres_connection(conn):
+            raise RuntimeError(
+                "PostgreSQL is configured but app DB connection is not PostgreSQL"
+            )
+        return conn
+    except Exception:
+        if pg_configured:
+            raise
+
+    # SQLite fallback when PostgreSQL is not configured.
+    import sqlite3
+
+    db_path = os.environ.get("DB_PATH", "/database/sptnr.db")
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
     return conn
+
+
+def _cursor(conn):
+    """Return a dict-capable cursor for PG and a standard cursor for SQLite."""
+    if _is_postgres_connection(conn):
+        return conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    return conn.cursor()
+
+
+def _placeholder(conn):
+    return "%s" if _is_postgres_connection(conn) else "?"
+
+
+def _row_get(row, key, default=None):
+    if row is None:
+        return default
+    if hasattr(row, "get"):
+        return row.get(key, default)
+    if hasattr(row, "keys"):
+        try:
+            return row[key]
+        except Exception:
+            return default
+    return default
 
 
 def _ensure_columns_in_table(columns_to_add):
@@ -259,13 +296,14 @@ def verify_file_in_music(queue_id, target_path):
 
         # Update queue item with verification timestamp
         conn = _get_db_connection()
-        cursor = conn.cursor()
+        cursor = _cursor(conn)
+        placeholder = _placeholder(conn)
 
-        update_sql = """
-            UPDATE download_queue 
-            SET verified_in_music_at = %s,
-                music_file_path = %s
-            WHERE id = %s
+        update_sql = f"""
+            UPDATE download_queue
+            SET verified_in_music_at = {placeholder},
+                music_file_path = {placeholder}
+            WHERE id = {placeholder}
         """
 
         try:
@@ -300,15 +338,16 @@ def mark_queue_item_moved(queue_id, target_path):
     """
     try:
         conn = _get_db_connection()
-        cursor = conn.cursor()
+        cursor = _cursor(conn)
+        placeholder = _placeholder(conn)
 
         moved_at = datetime.now().isoformat()
 
-        update_sql = """
-            UPDATE download_queue 
-            SET moved_at = %s,
-                music_file_path = %s
-            WHERE id = %s
+        update_sql = f"""
+            UPDATE download_queue
+            SET moved_at = {placeholder},
+                music_file_path = {placeholder}
+            WHERE id = {placeholder}
         """
 
         cursor.execute(update_sql, (moved_at, target_path, queue_id))
@@ -334,10 +373,11 @@ def requeue_missing_file(queue_id):
     """
     try:
         conn = _get_db_connection()
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cursor = _cursor(conn)
+        placeholder = _placeholder(conn)
 
         # Get the queue item first
-        select_sql = "SELECT * FROM download_queue WHERE id = %s"
+        select_sql = f"SELECT * FROM download_queue WHERE id = {placeholder}"
         cursor.execute(select_sql, (queue_id,))
         item = cursor.fetchone()
 
@@ -347,12 +387,12 @@ def requeue_missing_file(queue_id):
             return False
 
         # Mark as completed so it can be retried
-        update_sql = """
-            UPDATE download_queue 
+        update_sql = f"""
+            UPDATE download_queue
             SET status = 'completed',
                 verified_in_music_at = NULL,
                 moved_at = NULL
-            WHERE id = %s
+            WHERE id = {placeholder}
         """
 
         cursor.execute(update_sql, (queue_id,))
@@ -385,16 +425,17 @@ def _reset_matched_item_to_queued(queue_id):
     """
     try:
         conn = _get_db_connection()
-        cursor = conn.cursor()
+        cursor = _cursor(conn)
+        placeholder = _placeholder(conn)
 
         cursor.execute(
-            """
+            f"""
             UPDATE download_queue
             SET status = 'queued',
                 file_path = NULL,
                 found_filename = NULL,
                 failure_reason = 'Matched file no longer exists on disk; re-queued for download'
-            WHERE id = %s AND status = 'matched'
+            WHERE id = {placeholder} AND status = 'matched'
             """,
             (queue_id,),
         )
@@ -489,10 +530,10 @@ def check_missing_moved_files(minutes_old=30):
             )
 
         for item in old_files:
-            queue_id = item.get('id')
-            music_file_path = item.get('music_file_path')
-            artist = item.get('artist', 'Unknown')
-            title = item.get('title', 'Unknown')
+            queue_id = _row_get(item, 'id')
+            music_file_path = _row_get(item, 'music_file_path')
+            artist = _row_get(item, 'artist', 'Unknown')
+            title = _row_get(item, 'title', 'Unknown')
 
             if not music_file_path:
                 continue
@@ -511,10 +552,10 @@ def check_missing_moved_files(minutes_old=30):
 
         # Check matched items whose source file is gone
         for item in matched_with_path:
-            queue_id = item.get('id')
-            file_path = item.get('file_path', '')
-            artist = item.get('artist', 'Unknown')
-            title = item.get('title', 'Unknown')
+            queue_id = _row_get(item, 'id')
+            file_path = _row_get(item, 'file_path', '')
+            artist = _row_get(item, 'artist', 'Unknown')
+            title = _row_get(item, 'title', 'Unknown')
 
             if not file_path:
                 continue
