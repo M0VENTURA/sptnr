@@ -507,6 +507,9 @@ def rename_and_move_file(file_path, metadata):
     try:
         music_dir = get_music_dir()
         from download_queue_manager import (
+            _normalize_album_artist_for_path,
+            _read_track_file_name_format,
+            _sanitize_path_component,
             get_import_destination_path,
             transfer_download_to_music,
             _apply_release_year_mtime,
@@ -523,23 +526,53 @@ def rename_and_move_file(file_path, metadata):
         title = metadata.get('title', Path(file_path).stem).strip()
         year = str(metadata.get('year') or 'Unknown').strip()
         
-        # Build directory structure: [album_artist]/[year] - [album]/
-        artist_dir = os.path.join(music_dir, sanitize_filename(album_artist))
-        album_dir = os.path.join(artist_dir, sanitize_filename(f"{year} - {album}"))
-        
-        # Create directories
-        os.makedirs(album_dir, exist_ok=True)
-        
-        # Build filename: [track_number]. [artist] - [title].[ext]
-        filename = sanitize_filename(f"{track_number}. {artist} - {title}{ext}")
-        target_path = os.path.join(album_dir, filename)
+        file_name_format = _read_track_file_name_format()
+        format_vars = {
+            'track_number': track_number,
+            'artist': _sanitize_path_component(artist) or 'Unknown Artist',
+            'album_artist': _sanitize_path_component(_normalize_album_artist_for_path(album_artist)) or 'Unknown Artist',
+            'title': _sanitize_path_component(title) or Path(file_path).stem,
+            'album': _sanitize_path_component(album) or 'Unknown Album',
+            'year': year[:4] if year and len(year) >= 4 else (year or 'Unknown'),
+        }
+        fallback_rel = (
+            f"{format_vars['album_artist']}/{format_vars['year']} - {format_vars['album']}/"
+            f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}"
+        )
+
+        try:
+            relative_path = file_name_format.format(**format_vars)
+        except Exception:
+            relative_path = fallback_rel
+
+        if not isinstance(relative_path, str) or not relative_path.strip():
+            relative_path = fallback_rel
+
+        relative_path = relative_path.strip().replace('\\', '/').lstrip('/')
+        safe_parts = []
+        for part in relative_path.split('/'):
+            clean = _sanitize_path_component(part)
+            if clean and clean not in ('.', '..'):
+                safe_parts.append(clean)
+
+        if not safe_parts:
+            safe_parts = [
+                format_vars['album_artist'],
+                f"{format_vars['year']} - {format_vars['album']}",
+                f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}",
+            ]
+
+        safe_parts[-1] = f"{safe_parts[-1]}{ext}"
+        target_path = os.path.join(music_dir, *safe_parts)
+        target_dir = os.path.dirname(target_path)
+        os.makedirs(target_dir, exist_ok=True)
         target_path = get_import_destination_path(file_path, target_path)
         filename = os.path.basename(target_path)
         
         # Handle duplicate filenames - move to Duplicates subfolder
         if os.path.exists(target_path) and os.path.abspath(file_path) != os.path.abspath(target_path):
             # Create Duplicates subfolder within the album
-            duplicates_dir = os.path.join(album_dir, "Duplicates")
+            duplicates_dir = os.path.join(target_dir, "Duplicates")
             os.makedirs(duplicates_dir, exist_ok=True)
             
             # Find next available duplicate number

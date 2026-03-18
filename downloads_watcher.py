@@ -121,7 +121,14 @@ def organize_file(file_path, metadata):
     /Music/Artist Name/Release Year - Album Name/Track Number. Artist Name - Song Title.mp3
     """
     try:
+        from download_queue_manager import (
+            _normalize_album_artist_for_path,
+            _read_track_file_name_format,
+            _sanitize_path_component,
+        )
+
         artist = metadata.get('artist', 'Unknown Artist').strip() or 'Unknown Artist'
+        album_artist = metadata.get('album_artist', artist).strip() or artist
         album = metadata.get('album', 'Unknown Album').strip() or 'Unknown Album'
         title = metadata.get('title', Path(file_path).stem).strip() or Path(file_path).stem
         year = metadata.get('year', metadata.get('date', '')).strip()
@@ -134,24 +141,55 @@ def organize_file(file_path, metadata):
         
         track_num = determine_track_number(metadata)
         
-        # Build directory structure
-        artist_dir = os.path.join(MUSIC_DIR, sanitize_filename(artist))
-        album_dir = os.path.join(artist_dir, sanitize_filename(f"{year} - {album}"))
-        
-        # Create directories
-        os.makedirs(album_dir, exist_ok=True)
-        
-        # Build filename: TrackNumber. Artist Name - Song Title.mp3
-        filename = sanitize_filename(f"{track_num}. {artist} - {title}.mp3")
-        target_path = os.path.join(album_dir, filename)
+        file_name_format = _read_track_file_name_format()
+        format_vars = {
+            'track_number': track_num,
+            'artist': _sanitize_path_component(artist) or 'Unknown Artist',
+            'album_artist': _sanitize_path_component(_normalize_album_artist_for_path(album_artist)) or 'Unknown Artist',
+            'title': _sanitize_path_component(title) or Path(file_path).stem,
+            'album': _sanitize_path_component(album) or 'Unknown Album',
+            'year': year or 'Unknown',
+        }
+        fallback_rel = (
+            f"{format_vars['album_artist']}/{format_vars['year']} - {format_vars['album']}/"
+            f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}"
+        )
+        try:
+            relative_path = file_name_format.format(**format_vars)
+        except Exception:
+            relative_path = fallback_rel
+
+        if not isinstance(relative_path, str) or not relative_path.strip():
+            relative_path = fallback_rel
+
+        relative_path = relative_path.strip().replace('\\', '/').lstrip('/')
+        safe_parts = []
+        for part in relative_path.split('/'):
+            clean = _sanitize_path_component(part)
+            if clean and clean not in ('.', '..'):
+                safe_parts.append(clean)
+
+        if not safe_parts:
+            safe_parts = [
+                format_vars['album_artist'],
+                f"{format_vars['year']} - {format_vars['album']}",
+                f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}",
+            ]
+
+        ext = os.path.splitext(file_path)[1].lower() or '.mp3'
+        safe_parts[-1] = f"{safe_parts[-1]}{ext}"
+        target_path = os.path.join(MUSIC_DIR, *safe_parts)
+        target_dir = os.path.dirname(target_path)
+        os.makedirs(target_dir, exist_ok=True)
         
         # Handle duplicate filenames
         if os.path.exists(target_path):
+            filename = os.path.basename(target_path)
             base, ext = os.path.splitext(filename)
             counter = 1
-            while os.path.exists(os.path.join(album_dir, f"{base}_{counter}{ext}")):
+            while os.path.exists(os.path.join(target_dir, f"{base}_{counter}{ext}")):
                 counter += 1
-            target_path = os.path.join(album_dir, f"{base}_{counter}{ext}")
+            target_path = os.path.join(target_dir, f"{base}_{counter}{ext}")
         
         # Move file
         shutil.move(file_path, target_path)
