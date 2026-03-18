@@ -119,7 +119,8 @@
     }
 
     .navbar-toggler {
-      margin-left: auto;
+      margin-left: 0;
+      margin-right: 0.5rem;
       flex-shrink: 0;
     }
 
@@ -1094,12 +1095,12 @@
 <body>
   <nav class="navbar navbar-expand-lg navbar-dark fixed-top">
     <div class="container-fluid">
-      <a class="navbar-brand" href="{{ url_for('dashboard') }}">
-        <i class="bi bi-music-note-beamed"></i> Popularr
-      </a>
       <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
         <span class="navbar-toggler-icon"></span>
       </button>
+      <a class="navbar-brand" href="{{ url_for('dashboard') }}">
+        <i class="bi bi-music-note-beamed"></i> Popularr
+      </a>
       <div class="collapse navbar-collapse" id="navbarNav">
         <ul class="navbar-nav ms-auto">
           <li class="nav-item">
