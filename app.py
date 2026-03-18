@@ -28480,9 +28480,29 @@ def api_upcoming_releases():
                     release["in_queue"] = (artist_key, album_key) in queue_albums
             except Exception as queue_err:
                 logging.warning(f"Could not check download queue for upcoming releases: {queue_err}")
+        # MBID-based collection check: if a release has a matched release_group_mbid
+        # and that MBID exists in the tracks table, the album is already in the collection.
+        try:
+            mbid_releases = [r for r in releases if r.get("release_group_mbid")]
+            if mbid_releases:
+                conn_mbid = get_db()
+                ph = "%s" if _is_postgres_connection(conn_mbid) else "?"
+                mbids = list({r["release_group_mbid"] for r in mbid_releases})
+                placeholders = ", ".join([ph] * len(mbids))
+                cursor_mbid = conn_mbid.cursor()
+                cursor_mbid.execute(
+                    f"SELECT DISTINCT musicbrainz_releasegroupid FROM tracks "
+                    f"WHERE musicbrainz_releasegroupid IN ({placeholders})",
+                    mbids,
+                )
+                matched_mbids = {row[0] for row in (cursor_mbid.fetchall() or [])}
+                conn_mbid.close()
                 for release in releases:
-                    release["in_queue"] = False
-        
+                    if release.get("release_group_mbid") in matched_mbids:
+                        release["album_in_collection"] = True
+        except Exception as mbid_err:
+            logging.warning(f"Could not perform MBID-based collection check for upcoming releases: {mbid_err}")
+
         # Group by month for UI display
         grouped = {}
         for release in releases:

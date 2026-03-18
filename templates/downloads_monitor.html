@@ -538,6 +538,46 @@ async function matchUpcomingReleaseMonitor(releaseId) {
   }
 }
 
+async function autoMatchAllUpcomingReleasesMonitor(btn) {
+  const origHtml = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span> Matching...';
+  let matched = 0, failed = 0;
+  try {
+    const filterCollection = document.getElementById('upcomingFilterCollectionMonitor')?.checked || false;
+    const data = await fetchJsonOrThrow(
+      `/api/upcoming-releases?collection=${filterCollection}&include_queue=true`,
+      {},
+      20000
+    );
+    const unmatched = (data.releases || []).filter(r => !r.release_group_mbid);
+    if (unmatched.length === 0) {
+      btn.innerHTML = '<i class="bi bi-check-circle"></i> All matched';
+      setTimeout(() => { btn.disabled = false; btn.innerHTML = origHtml; }, 2000);
+      return;
+    }
+    for (const release of unmatched) {
+      try {
+        const resp = await fetch(`/api/upcoming-releases/${release.id}/match`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}'
+        });
+        const d = await resp.json();
+        if (resp.ok && d.success) { matched++; } else { failed++; }
+      } catch (_) { failed++; }
+    }
+    await refreshUpcomingReleasesMonitor();
+    btn.innerHTML = `<i class="bi bi-check-circle"></i> ${matched} matched${failed ? `, ${failed} failed` : ''}`;
+    setTimeout(() => { btn.disabled = false; btn.innerHTML = origHtml; }, 3000);
+  } catch (err) {
+    console.error('Auto-match all failed:', err);
+    btn.disabled = false;
+    btn.innerHTML = origHtml;
+    alert('Auto-match failed: ' + err.message);
+  }
+}
+
 async function clearUpcomingReleasesMonitor() {
   if (!confirm('Are you sure you want to clear all upcoming releases from the database? This cannot be undone.')) {
     return;
