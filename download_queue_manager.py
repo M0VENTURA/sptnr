@@ -1515,13 +1515,24 @@ def get_queue(status=None, source=None, limit=50):
     global _queue_schema_checked, _queue_columns_cache
 
     try:
-        conn = get_db()
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        is_pg = False
+        try:
+            from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
+            conn = app_get_db()
+            is_pg = bool(app_is_postgres_connection(conn))
+        except Exception:
+            conn = get_db()
+            is_pg = isinstance(conn, psycopg2.extensions.connection)
+
+        if is_pg:
+            cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        else:
+            cursor = conn.cursor()
 
         # Run the canonical schema self-heal pass so all queue columns
         # (including copied_individually/release_year) are present.
         try:
-            _ensure_download_queue_columns(conn, cursor, is_pg=True)
+            _ensure_download_queue_columns(conn, cursor, is_pg=is_pg)
         except Exception as schema_err:
             logger.warning(f"get_queue schema ensure failed (continuing): {schema_err}")
             try:
@@ -1533,13 +1544,20 @@ def get_queue(status=None, source=None, limit=50):
         # cannot raise TypeError when Postgres has transient failures.
         if not _queue_columns_cache:
             try:
-                cursor.execute("""
-                    SELECT column_name FROM information_schema.columns
-                    WHERE table_name = 'download_queue' AND table_schema = 'public'
-                """)
-                _queue_columns_cache = [
-                    row.get('column_name') for row in cursor.fetchall() if row.get('column_name')
-                ]
+                if is_pg:
+                    cursor.execute("""
+                        SELECT column_name FROM information_schema.columns
+                        WHERE table_name = 'download_queue' AND table_schema = 'public'
+                    """)
+                    _queue_columns_cache = [
+                        row.get('column_name') for row in cursor.fetchall() if row.get('column_name')
+                    ]
+                else:
+                    cursor.execute("PRAGMA table_info(download_queue)")
+                    _queue_columns_cache = [
+                        (row[1] if isinstance(row, (list, tuple)) else row['name'])
+                        for row in cursor.fetchall()
+                    ]
             except Exception as col_err:
                 logger.warning(f"get_queue could not refresh column cache: {col_err}")
                 try:
@@ -1550,7 +1568,7 @@ def get_queue(status=None, source=None, limit=50):
 
         columns = _queue_columns_cache or []
 
-        placeholder = "%s"
+        placeholder = "%s" if is_pg else "?"
 
         conditions = []
         params = []
@@ -1566,8 +1584,14 @@ def get_queue(status=None, source=None, limit=50):
             params.append(status)
         else:
             # Default: return active statuses only (not completed/failed/archived).
-            conditions.append(f"status = ANY({placeholder})")
-            params.append(list(_ACTIVE_QUEUE_STATUSES))
+            active_statuses = list(_ACTIVE_QUEUE_STATUSES)
+            if is_pg:
+                conditions.append(f"status = ANY({placeholder})")
+                params.append(active_statuses)
+            else:
+                in_phs = ', '.join(placeholder for _ in active_statuses)
+                conditions.append(f"status IN ({in_phs})")
+                params.extend(active_statuses)
 
         query = "SELECT * FROM download_queue"
         if conditions:
@@ -3378,9 +3402,21 @@ def check_downloads_folder():
             _prune_empty_download_folders(downloads_dir)
         
         completed_items = []
-        conn = get_db()
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        
+        is_pg = False
+        try:
+            from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
+            conn = app_get_db()
+            is_pg = bool(app_is_postgres_connection(conn))
+        except Exception:
+            conn = get_db()
+            is_pg = isinstance(conn, psycopg2.extensions.connection)
+
+        if is_pg:
+            cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        else:
+            cursor = conn.cursor()
+        ph = "%s" if is_pg else "?"
+
         # Get all active queue items (not yet completed or imported)
         cursor.execute("""
             SELECT * FROM download_queue 
@@ -3466,15 +3502,15 @@ def check_downloads_folder():
                     return None
 
                 cursor.execute(
-                    """
+                    f"""
                     SELECT file_path,
                            CASE
-                             WHEN %s != '' AND LOWER(COALESCE(album, '')) = LOWER(%s) THEN 0
+                             WHEN {ph} != '' AND LOWER(COALESCE(album, '')) = LOWER({ph}) THEN 0
                              ELSE 1
                            END AS album_rank
                     FROM tracks
-                    WHERE LOWER(COALESCE(artist, '')) = LOWER(%s)
-                      AND LOWER(COALESCE(title, '')) = LOWER(%s)
+                    WHERE LOWER(COALESCE(artist, '')) = LOWER({ph})
+                      AND LOWER(COALESCE(title, '')) = LOWER({ph})
                       AND file_path IS NOT NULL
                       AND file_path != ''
                       AND file_path NOT LIKE '__queued_for_download__%'
@@ -3798,9 +3834,20 @@ def reconcile_album_files_with_queue(artist, album, release_mbid=None, delete_un
             result['error'] = 'artist and album are required'
             return result
 
-        conn = get_db()
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        placeholder = '%s'
+        is_pg = False
+        try:
+            from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
+            conn = app_get_db()
+            is_pg = bool(app_is_postgres_connection(conn))
+        except Exception:
+            conn = get_db()
+            is_pg = isinstance(conn, psycopg2.extensions.connection)
+
+        if is_pg:
+            cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        else:
+            cursor = conn.cursor()
+        placeholder = "%s" if is_pg else "?"
 
         if mbid:
             cursor.execute(
