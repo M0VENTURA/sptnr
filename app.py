@@ -10827,20 +10827,22 @@ def api_get_duplicate_artists(artist):
     
     try:
         conn = get_db()
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) if is_pg else conn.cursor()
         
                 # Get the MBID for the current artist (use the same album_artist fallback as Artists page)
                 cursor.execute("""
                         SELECT DISTINCT musicbrainz_artist_id
                         FROM tracks
-                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
                             AND musicbrainz_artist_id IS NOT NULL
                             AND musicbrainz_artist_id != ''
                         LIMIT 1
-                """, (artist,))
+                """.format(placeholder=placeholder), (artist,))
         
         artist_mbid_row = cursor.fetchone()
-        artist_mbid = artist_mbid_row['musicbrainz_artist_id'] if artist_mbid_row else None
+                artist_mbid = _row_get(artist_mbid_row, 'musicbrainz_artist_id', 0) if artist_mbid_row else None
         
         duplicates = []
         
@@ -10851,18 +10853,21 @@ def api_get_duplicate_artists(artist):
                     COALESCE(NULLIF(album_artist, ''), artist) as artist,
                     COUNT(*) as track_count
                 FROM tracks
-                WHERE musicbrainz_artist_id = %s
+                WHERE musicbrainz_artist_id = {placeholder}
                 GROUP BY COALESCE(NULLIF(album_artist, ''), artist)
                 ORDER BY track_count DESC
-            """, (artist_mbid,))
+            """.format(placeholder=placeholder), (artist_mbid,))
             
             variations_data = cursor.fetchall()
             
             if len(variations_data) > 1:
                 # Multiple variations found - this is a duplicate artist scenario
-                canonical_mb = fetch_musicbrainz_artist_name(artist_mbid) or variations_data[0]['artist']
-                variations = [v['artist'] for v in variations_data]
-                track_counts = {v['artist']: v['track_count'] for v in variations_data}
+                canonical_mb = fetch_musicbrainz_artist_name(artist_mbid) or _row_get(variations_data[0], 'artist', 0)
+                variations = [_row_get(v, 'artist', 0) for v in variations_data]
+                track_counts = {
+                    _row_get(v, 'artist', 0): _row_get(v, 'track_count', 1)
+                    for v in variations_data
+                }
                 
                 duplicates.append({
                     'mbid': artist_mbid,
