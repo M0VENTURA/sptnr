@@ -186,6 +186,23 @@ def update_artist_name(old_artist, new_artist, mbid, dry_run=False):
         'moved_files': 0,
         'errors': []
     }
+
+    def _resolve_music_path(path_value):
+        """Resolve a DB path to an existing on-disk file path under MUSIC_ROOT when needed."""
+        raw = str(path_value or "").strip()
+        if not raw:
+            return None
+
+        normalized = os.path.normpath(raw)
+        if os.path.exists(normalized):
+            return normalized
+
+        if not os.path.isabs(normalized):
+            candidate = os.path.normpath(os.path.join(MUSIC_DIR, normalized))
+            if os.path.exists(candidate):
+                return candidate
+
+        return None
     
     try:
         # Get all tracks where either artist or album_artist matches the source variant.
@@ -209,6 +226,8 @@ def update_artist_name(old_artist, new_artist, mbid, dry_run=False):
             try:
                 track_id = track['id']
                 file_path = track['file_path']
+                beets_path = track.get('beets_path')
+                resolved_file_path = _resolve_music_path(file_path) or _resolve_music_path(beets_path)
                 old_track_artist = track['artist'] or old_artist
                 old_album_artist = track['album_artist'] or old_track_artist
                 new_track_artist = new_artist if old_track_artist == old_artist else old_track_artist
@@ -223,9 +242,18 @@ def update_artist_name(old_artist, new_artist, mbid, dry_run=False):
                         WHERE id = %s
                     """, (new_track_artist, new_album_artist, track_id))
                     stats['updated_db'] += 1
+
+                    # Persist normalized absolute path when a relative DB path resolved on disk.
+                    if resolved_file_path and resolved_file_path != file_path:
+                        cursor.execute("""
+                            UPDATE tracks
+                            SET file_path = %s,
+                                beets_path = %s
+                            WHERE id = %s
+                        """, (resolved_file_path, resolved_file_path, track_id))
                 
                 # Update MP3 tags if file exists
-                if file_path and os.path.exists(file_path):
+                if resolved_file_path and os.path.exists(resolved_file_path):
                     try:
                         from helpers.tag_manager import update_file_tags
                         
@@ -235,20 +263,23 @@ def update_artist_name(old_artist, new_artist, mbid, dry_run=False):
                         }
                         
                         if not dry_run:
-                            update_file_tags(file_path, tag_updates)
+                            update_file_tags(resolved_file_path, tag_updates)
                         
                         stats['updated_files'] += 1
-                        logger.debug(f"Updated tags: {track['title']} in {file_path}")
+                        logger.debug(f"Updated tags: {track['title']} in {resolved_file_path}")
                     
                     except Exception as e:
-                        error_msg = f"Failed to update tags for {file_path}: {e}"
+                        error_msg = f"Failed to update tags for {resolved_file_path}: {e}"
                         logger.warning(error_msg)
                         stats['errors'].append(error_msg)
+                elif file_path or beets_path:
+                    missing_hint = file_path or beets_path
+                    stats['errors'].append(f"Track '{track.get('title')}' not found on disk: {missing_hint}")
                 
                 # Reorganize file if album artist changed
-                if new_album_artist != old_album_artist and file_path:
+                if new_album_artist != old_album_artist and resolved_file_path:
                     try:
-                        old_dir = os.path.dirname(file_path)
+                        old_dir = os.path.dirname(resolved_file_path)
                         
                         # Build new path: /music/<new_artist>/<year> - <album>/
                         new_artist_dir = os.path.join(MUSIC_DIR, new_album_artist)
@@ -259,11 +290,11 @@ def update_artist_name(old_artist, new_artist, mbid, dry_run=False):
                         if os.path.normpath(old_dir) != os.path.normpath(new_album_dir):
                             os.makedirs(new_album_dir, exist_ok=True)
                             
-                            filename = os.path.basename(file_path)
+                            filename = os.path.basename(resolved_file_path)
                             new_file_path = os.path.join(new_album_dir, filename)
                             
                             # Handle filename conflicts
-                            if os.path.exists(new_file_path) and new_file_path != file_path:
+                            if os.path.exists(new_file_path) and new_file_path != resolved_file_path:
                                 base, ext = os.path.splitext(filename)
                                 counter = 1
                                 while os.path.exists(os.path.join(new_album_dir, f"{base}_{counter}{ext}")):
@@ -271,7 +302,7 @@ def update_artist_name(old_artist, new_artist, mbid, dry_run=False):
                                 new_file_path = os.path.join(new_album_dir, f"{base}_{counter}{ext}")
                             
                             if not dry_run:
-                                shutil.move(file_path, new_file_path)
+                                shutil.move(resolved_file_path, new_file_path)
                                 # Update database with new path
                                 cursor.execute("""
                                     UPDATE tracks
@@ -280,10 +311,10 @@ def update_artist_name(old_artist, new_artist, mbid, dry_run=False):
                                 """, (new_file_path, new_file_path, track_id))
                             
                             stats['moved_files'] += 1
-                            logger.info(f"Moving: {file_path} → {new_file_path}")
+                            logger.info(f"Moving: {resolved_file_path} → {new_file_path}")
                     
                     except Exception as e:
-                        error_msg = f"Failed to move file {file_path}: {e}"
+                        error_msg = f"Failed to move file {resolved_file_path}: {e}"
                         logger.warning(error_msg)
                         stats['errors'].append(error_msg)
             
