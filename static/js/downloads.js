@@ -70,10 +70,31 @@ function formatBytes(bytes) {
   return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
 }
 
-function formatDuration(seconds) {
-  if (!seconds) return 'Unknown';
-  const mins = Math.floor(seconds / 60);
+function formatDuration(rawValue) {
+  if (rawValue == null || rawValue === '') return 'Unknown';
+
+  const n = Number(rawValue);
+  if (!Number.isFinite(n) || n <= 0) return 'Unknown';
+
+  // MusicBrainz values can be seconds, milliseconds, or microseconds
+  // depending on endpoint/proxy path. Normalize to seconds.
+  let seconds;
+  if (n >= 100000000) {
+    seconds = n / 1000000; // likely microseconds
+  } else if (n >= 100000) {
+    seconds = n / 1000; // likely milliseconds
+  } else {
+    seconds = n; // likely seconds
+  }
+
+  seconds = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(seconds / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
   const secs = seconds % 60;
+
+  if (hours > 0) {
+    return `${hours}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  }
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
