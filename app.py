@@ -20,7 +20,6 @@ ALL_ENV_VARS = [
     "SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET", "SPOTIFY_WEIGHT", "LASTFM_WEIGHT", "AGE_WEIGHT",
     "LASTFMAPIKEY", "NAV_BASE_URL", "NAV_USER", "NAV_PASS", "YOUTUBE_API_KEY", "GOOGLE_CSE_ID", "GOOGLE_API_KEY",
     "TRUSTED_CHANNEL_IDS", "DISCOGS_TOKEN", "AI_API_KEY", "DEV_BOOST_WEIGHT", "AUDIODB_API_KEY", "WEB_API_KEY",
-    "ENABLE_WEB_API_KEY", "MP3_PROGRESS_FILE", "BEETS_LOG_PATH", "SEARCHAPI_IO_KEY",
     "PG_HOST", "PG_PORT", "PG_USER", "PG_PASSWORD", "PG_DATABASE"
 ]
 
@@ -35,7 +34,6 @@ try:
 except ImportError:
     psycopg2 = None  # type: ignore[assignment]
     psql = None  # type: ignore[assignment]
-
 
 def _ensure_psycopg2_loaded() -> bool:
     """Attempt lazy-load of psycopg2 so migration works without app restart after install."""
@@ -18717,10 +18715,52 @@ def api_downloads_get_queue():
                 except Exception as matched_norm_err:
                     logging.debug(f"[QUEUE_NORMALIZE] Skipped matched-file normalization: {matched_norm_err}")
 
+                # Safety net: repair legacy rows where a MusicBrainz release match
+                # incorrectly overwrote the queue status to 'matched' even though no
+                # file path had ever been linked. Those rows should stay operationally
+                # queued (or unmatched for local-file workflows), not look like a
+                # confirmed file match.
+                try:
+                    cursor.execute(
+                        """
+                        SELECT id, source
+                        FROM download_queue
+                        WHERE status = 'matched'
+                          AND TRIM(COALESCE(file_path, '')) = ''
+                          AND TRIM(COALESCE(matched_file_path, '')) = ''
+                          AND TRIM(COALESCE(music_file_path, '')) = ''
+                          AND TRIM(COALESCE(found_filename, '')) = ''
+                        """
+                    )
+                    metadata_only_matches = cursor.fetchall() or []
+                    for mrow in metadata_only_matches:
+                        mrow_id = _row_get(mrow, 'id', 0)
+                        mrow_source = (_row_get(mrow, 'source', 1) or '').strip().lower()
+                        restored_status = 'unmatched' if mrow_source == 'local' else 'queued'
+                        cursor.execute(
+                            f"""
+                            UPDATE download_queue
+                            SET status = {placeholder},
+                                failure_reason = 'Auto-corrected: release match had no linked file path',
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = {placeholder}
+                            """,
+                            (restored_status, mrow_id),
+                        )
+                        normalized_count += 1
+                        logging.info(
+                            f"[QUEUE_NORMALIZE] Reset metadata-only matched item {mrow_id} "
+                            f"to {restored_status} — release matched but no file path was linked"
+                        )
+                except Exception as metadata_only_match_err:
+                    logging.debug(
+                        f"[QUEUE_NORMALIZE] Skipped metadata-only matched normalization: {metadata_only_match_err}"
+                    )
+
                 if normalized_count:
                     conn.commit()
                     logging.info(
-                        f"[QUEUE_NORMALIZE] Corrected {normalized_count} in_collection rows not under /music"
+                        f"[QUEUE_NORMALIZE] Corrected {normalized_count} queue row(s) with invalid file-linked state"
                     )
 
                 conn.close()
@@ -22260,7 +22300,10 @@ def api_queue_apply_mbid_match(queue_id):
                 album_artist = {placeholder},
                 album = {placeholder},
                 release_year = {placeholder},
-                status = 'matched',
+                status = CASE
+                    WHEN TRIM(COALESCE(status, '')) = '' OR status = 'matched' THEN 'queued'
+                    ELSE status
+                END,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = {placeholder}
             """,
@@ -22452,8 +22495,8 @@ def api_queue_apply_mbid_match_batch():
                 release_year = COALESCE(release_year, {placeholder}),
                 import_group = {placeholder},
                 status = CASE
-                    WHEN status IN ('completed', 'in_collection', 'imported') THEN status
-                    ELSE 'matched'
+                    WHEN TRIM(COALESCE(status, '')) = '' OR status = 'matched' THEN 'queued'
+                    ELSE status
                 END,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id IN ({ids_placeholders})

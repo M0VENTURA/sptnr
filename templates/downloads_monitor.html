@@ -1778,7 +1778,9 @@ function buildQueueTrackStatusDetail(track, group) {
     queued: 'Waiting in queue for processing.',
     searching: 'Searching configured providers for this track.',
     downloading: 'Download is currently in progress.',
-    matched: 'Match confirmed and ready to move to music.',
+    matched: filePath
+      ? 'File match confirmed and ready to move to music.'
+      : 'Release match selected, but no file is linked yet.',
     completed: 'Processing completed successfully.',
     duplicate: 'Likely duplicate of existing queue or library content.',
     possible_duplicate: 'Potential duplicate detected; review before moving.',
@@ -2207,12 +2209,16 @@ async function loadFolderGroups(options = {}) {
       const matchedSelection = folderMatchSelections[group.folder_path];
       const isQueueItem = group.is_queue_item === true;
       const queueStatus = String(group.queue_item_status || '').toLowerCase();
+      const groupHasLinkedPath = Array.isArray(group.tracks) && group.tracks.some(track => {
+        const pathValue = track?.file_path || track?.matched_file_path || track?.music_file_path || track?.source_file_path || track?.found_filename;
+        return String(pathValue || '').trim() !== '';
+      });
       const queueStatusBadge = isQueueItem ? (() => {
         const map = {
           queued: ['secondary', 'Queued'],
           searching: ['info', 'Searching'],
           downloading: ['primary', 'Downloading'],
-          matched: ['success', 'Matched'],
+          matched: groupHasLinkedPath ? ['success', 'Matched'] : ['info', 'Release Matched'],
           completed: ['success', 'Completed'],
           duplicate: ['warning', 'Duplicate'],
           unmatched: ['dark', 'Unmatched'],
