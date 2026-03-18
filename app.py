@@ -22035,8 +22035,13 @@ def _move_to_music_task_get(task_id):
 def _perform_queue_move_to_music(queue_id):
     """Core move-to-music logic shared by sync and async API paths."""
     conn = get_db()
+    is_pg = _is_postgres_connection(conn)
+    placeholder = "%s" if is_pg else "?"
     cursor = conn.cursor()
-    cursor.execute("SELECT status, file_path, matched_file_path, music_file_path, found_filename FROM download_queue WHERE id = %s", (queue_id,))
+    cursor.execute(
+        f"SELECT status, file_path, matched_file_path, music_file_path, found_filename FROM download_queue WHERE id = {placeholder}",
+        (queue_id,),
+    )
     row = cursor.fetchone()
     conn.close()
 
@@ -22112,9 +22117,14 @@ def _perform_queue_move_to_music(queue_id):
             }, 400
 
         conn2 = get_db()
-        cursor2 = conn2.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cursor2.execute("SELECT * FROM download_queue WHERE id = %s", (queue_id,))
+        is_pg_conn2 = _is_postgres_connection(conn2)
+        placeholder_conn2 = "%s" if is_pg_conn2 else "?"
+        cursor2 = conn2.cursor(cursor_factory=psycopg2.extras.RealDictCursor) if is_pg_conn2 else conn2.cursor()
+        cursor2.execute(f"SELECT * FROM download_queue WHERE id = {placeholder_conn2}", (queue_id,))
         queue_item = cursor2.fetchone()
+        if queue_item and not isinstance(queue_item, dict):
+            column_names = [col[0] for col in cursor2.description]
+            queue_item = dict(zip(column_names, queue_item))
         conn2.close()
 
         if not queue_item:
