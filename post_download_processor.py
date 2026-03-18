@@ -692,9 +692,9 @@ def update_track_with_mb_metadata(queue_item, target_path):
             # Find track in tracks table (artist, album, title match)
             cursor.execute("""
                 SELECT id FROM tracks
-                WHERE LOWER(artist) = LOWER(?)
-                  AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(?, ''))
-                  AND LOWER(title) = LOWER(?)
+                                WHERE LOWER(artist) = LOWER(%s)
+                                    AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(%s, ''))
+                                    AND LOWER(title) = LOWER(%s)
                 ORDER BY last_scanned DESC NULLS LAST, id DESC
                 LIMIT 1
             """, (artist, album or '', title))
@@ -709,7 +709,7 @@ def update_track_with_mb_metadata(queue_item, target_path):
                         id, artist, album, title, album_artist,
                         mbid, suggested_mbid, isrc, file_path,
                         score, stars, is_single, last_scanned
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s,
                               0, 0, 0, CURRENT_TIMESTAMP)
                 """, (track_id, artist, album, title, queue_item.get('album_artist') or artist,
                       recording_mbid, release_mbid, isrc, target_path))
@@ -721,12 +721,12 @@ def update_track_with_mb_metadata(queue_item, target_path):
                 cursor.execute("""
                     UPDATE tracks
                     SET
-                        mbid = COALESCE(?, mbid),
-                        suggested_mbid = COALESCE(?, suggested_mbid),
-                        isrc = COALESCE(?, isrc),
-                        file_path = ?,
+                        mbid = COALESCE(%s, mbid),
+                        suggested_mbid = COALESCE(%s, suggested_mbid),
+                        isrc = COALESCE(%s, isrc),
+                        file_path = %s,
                         last_scanned = CURRENT_TIMESTAMP
-                    WHERE id = ?
+                    WHERE id = %s
                 """, (recording_mbid, release_mbid, isrc, target_path, track_id))
                 
                 logger.info(f"Queue {queue_id}: Updated track {track_id} with MB metadata - MBID: {recording_mbid}, Release: {release_mbid}")
