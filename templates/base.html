@@ -108,6 +108,7 @@
       padding-left: max(0.75rem, env(safe-area-inset-left));
       padding-right: max(0.75rem, env(safe-area-inset-right));
       flex-wrap: nowrap;
+      justify-content: flex-start;
     }
 
     .navbar-brand {
@@ -147,6 +148,7 @@
 
     .navbar .navbar-collapse {
       justify-content: flex-end;
+      margin-left: auto;
     }
 
     #navSearchForm .input-group {
@@ -1108,7 +1110,7 @@
               <i class="bi bi-speedometer2"></i> Dashboard
             </a>
           </li>
-          <li class="nav-item">
+          <li class="nav-item d-none d-lg-flex align-items-center">
             <form class="d-flex" id="navSearchForm" onsubmit="navSearch(event)">
               <div class="input-group input-group-sm" style="width: 220px;">
                 <input
@@ -1539,7 +1541,10 @@
 
     function navSearch(event) {
       event.preventDefault();
-      const query = document.getElementById('navSearchInput').value.trim();
+      const submittedForm = event && event.target ? event.target : null;
+      const activeInput = submittedForm ? submittedForm.querySelector('input[type="text"]') : null;
+      const fallbackInput = document.getElementById('navSearchInput');
+      const query = ((activeInput && activeInput.value) || (fallbackInput && fallbackInput.value) || '').trim();
       if (query) {
         window.location.href = '/search?q=' + encodeURIComponent(query);
       }

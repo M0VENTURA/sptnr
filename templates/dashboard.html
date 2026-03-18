@@ -12,23 +12,36 @@
         <div>
             <h1 class="h2 mb-1">
                 <i class="bi bi-speedometer2"></i> Dashboard
-                <a href="/help/FEATURES_DASHBOARD" class="btn btn-sm btn-outline-success ms-2" title="Help for Dashboard">
-                    <i class="bi bi-question-circle"></i> Help
-                </a>
             </h1>
             <p class="text-muted mb-0">Music library overview and scan controls</p>
+            <form class="dashboard-mobile-search d-lg-none mt-2" onsubmit="navSearch(event)">
+                <div class="input-group input-group-sm">
+                    <input
+                        type="text"
+                        id="dashboardTopSearchInput"
+                        class="form-control form-control-sm"
+                        placeholder="Search library..."
+                        autocomplete="off"
+                        aria-label="Search library"
+                    />
+                    <button class="btn btn-outline-secondary btn-sm" type="submit" title="Search">
+                        <i class="bi bi-search"></i>
+                    </button>
+                </div>
+            </form>
+
+            <!-- User Selector (if multiple users configured) -->
+            {% if nav_users and nav_users|length > 1 %}
+            <div class="dashboard-user-switch mt-2">
+                <select class="form-select" id="userSelector" onchange="switchUser(this.value)">
+                    {% for user in nav_users %}
+                    <option value="{{ loop.index0 }}">{{ user.user }} @ {{ user.base_url }}</option>
+                    {% endfor %}
+                </select>
+                <small class="text-muted">Switch user context</small>
+            </div>
+            {% endif %}
         </div>
-        <!-- User Selector (if multiple users configured) -->
-        {% if nav_users and nav_users|length > 1 %}
-        <div>
-            <select class="form-select" id="userSelector" onchange="switchUser(this.value)" style="width: 220px;">
-                {% for user in nav_users %}
-                <option value="{{ loop.index0 }}">{{ user.user }} @ {{ user.base_url }}</option>
-                {% endfor %}
-            </select>
-            <small class="text-muted">Switch user context</small>
-        </div>
-        {% endif %}
     </div>
     
     {% if error %}
@@ -256,6 +269,25 @@
         font-size: 0.85rem;
         color: var(--text-secondary, #b0b0b0);
         font-weight: 500;
+    }
+
+    .dashboard-mobile-search {
+        max-width: 420px;
+    }
+
+    .dashboard-user-switch {
+        max-width: 320px;
+    }
+
+    .dashboard-user-switch .form-select {
+        width: 100%;
+    }
+
+    @media (max-width: 768px) {
+        .dashboard-mobile-search,
+        .dashboard-user-switch {
+            max-width: 100%;
+        }
     }
 
     /* Table and card dark theme fixes */
