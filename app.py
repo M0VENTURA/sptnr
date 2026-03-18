@@ -64,7 +64,7 @@ from contextlib import closing
 from collections import OrderedDict
 import json
 import yaml
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response, send_file, session, abort
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response, send_file, session, abort, g, has_request_context
 from werkzeug.exceptions import HTTPException
 import traceback
 from datetime import datetime
@@ -3337,6 +3337,12 @@ def get_db():
                     cursor_factory=psycopg2.extras.RealDictCursor,  # type: ignore[name-defined]
                     connect_timeout=connect_timeout,
                 )
+                if has_request_context():
+                    tracked = getattr(g, '_request_db_connections', None)
+                    if tracked is None:
+                        tracked = []
+                        setattr(g, '_request_db_connections', tracked)
+                    tracked.append(conn)
                 _pg_startup_backoff_until = 0.0
                 return conn
             except Exception as e:
@@ -3361,7 +3367,48 @@ def get_db():
         conn = sqlite3.connect(DB_PATH, timeout=120.0)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.row_factory = sqlite3.Row
+        if has_request_context():
+            tracked = getattr(g, '_request_db_connections', None)
+            if tracked is None:
+                tracked = []
+                setattr(g, '_request_db_connections', tracked)
+            tracked.append(conn)
         return conn
+
+
+@app.teardown_request
+def _cleanup_request_db_connections(exception=None):
+    """Always close request-scoped DB connections; rollback open transactions first."""
+    tracked = getattr(g, '_request_db_connections', None)
+    if not tracked:
+        return
+
+    while tracked:
+        conn = tracked.pop()
+        try:
+            try:
+                if _is_postgres_connection(conn):
+                    # If a request errors or disconnects mid-transaction, rollback
+                    # before closing so PostgreSQL doesn't retain an open txn state.
+                    if exception is not None:
+                        conn.rollback()
+                    else:
+                        try:
+                            if (
+                                _ensure_psycopg2_loaded()
+                                and psycopg2 is not None
+                                and conn.status == psycopg2.extensions.STATUS_IN_TRANSACTION  # type: ignore[name-defined]
+                            ):
+                                conn.rollback()
+                        except Exception:
+                            pass
+                elif exception is not None:
+                    conn.rollback()
+            except Exception:
+                pass
+            conn.close()
+        except Exception:
+            pass
 
 
 def _is_postgres_connection(conn):
