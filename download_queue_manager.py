@@ -1205,15 +1205,19 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         # Use the instance-configured DB method.
         # If PostgreSQL is configured but cannot be resolved, fail fast instead of silently falling back to SQLite.
         is_pg = False
-        pg_configured = bool(os.environ.get("PG_HOST") and os.environ.get("PG_USER") and os.environ.get("PG_DATABASE"))
+        pg_configured = bool(is_postgres_configured())
         try:
             from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
             conn = app_get_db()
             is_pg = bool(app_is_postgres_connection(conn))
-        except Exception:
+        except Exception as app_db_err:
             if pg_configured:
-                raise RuntimeError("PostgreSQL is configured for this instance, but queue manager could not acquire app DB connection")
+                logger.warning(
+                    "[add_to_queue] app DB connection unavailable (%s); falling back to queue manager DB helper",
+                    app_db_err,
+                )
             conn = get_db()
+            is_pg = bool(_is_postgres_connection(conn))
         cursor = conn.cursor()
 
         logger.debug(f"[add_to_queue] Using {'PostgreSQL' if is_pg else 'SQLite'} backend")

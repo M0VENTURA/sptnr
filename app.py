@@ -2661,7 +2661,9 @@ def _scan_new_navidrome_files_since_last_import(max_newest_albums: int = 80):
     conn = None
     try:
         conn = get_db()
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        is_pg = _is_postgres_connection(conn)
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) if is_pg else conn.cursor()
+        placeholder = "%s" if is_pg else "?"
 
         artists_to_rescan = {}
         candidate_tracks = 0
@@ -20476,6 +20478,12 @@ def api_queue_add_batch():
             logging.error(
                 f"[QUEUE_BATCH] All {failed_count} batch add items failed (import_group={import_group_id}, import_type={import_type})"
             )
+            if failed_details:
+                # Keep this compact in logs while still surfacing actionable causes.
+                logging.error(
+                    "[QUEUE_BATCH] Sample failure reasons: %s",
+                    failed_details[:3],
+                )
             return jsonify({
                 "success": False,
                 "error": "Failed to add any items to queue",
