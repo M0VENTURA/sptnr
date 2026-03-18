@@ -5180,7 +5180,7 @@ def get_completed_queue(limit=50):
 
         cursor.execute(f"""
             SELECT * FROM download_queue 
-            WHERE status IN ('completed', 'unmatched', 'possible_duplicate')
+            WHERE status IN ('completed', 'unmatched', 'possible_duplicate', 'moving')
             ORDER BY updated_at DESC
             LIMIT {placeholder}
         """, (limit,))

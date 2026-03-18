@@ -21584,10 +21584,22 @@ def _perform_queue_move_to_music(queue_id):
     )
 
     if item_status == 'matched':
-        from download_monitor_enhancements import move_to_music_collection
-        result = move_to_music_collection(queue_id)
-        if 'error' in result:
-            return {"success": False, "error": result['error']}, 400
+        from download_queue_manager import _try_claim_for_move, _release_move_claim
+        if not _try_claim_for_move(queue_id, 'matched'):
+            return {
+                "success": False,
+                "error": "Move already in progress by another process. Please wait a moment and refresh.",
+                "in_progress": True,
+            }, 409
+        try:
+            from download_monitor_enhancements import move_to_music_collection
+            result = move_to_music_collection(queue_id)
+            if 'error' in result:
+                _release_move_claim(queue_id, restore_status='matched')
+                return {"success": False, "error": result['error']}, 400
+        except Exception:
+            _release_move_claim(queue_id, restore_status='matched')
+            raise
 
         _delete_queue_entry(queue_id)
         return {
@@ -21598,7 +21610,7 @@ def _perform_queue_move_to_music(queue_id):
         }, 200
 
     if item_status in ('completed', 'pending_match', 'in_collection'):
-        from download_queue_manager import move_single_track_to_music_dir, update_queue_item
+        from download_queue_manager import _try_claim_for_move, _release_move_claim, move_single_track_to_music_dir, update_queue_item
         from download_file_verification import verify_file_in_music, mark_queue_item_moved
 
         if item_status == 'in_collection' and file_in_music:
@@ -21638,8 +21650,21 @@ def _perform_queue_move_to_music(queue_id):
                 "error": f"Queue item {queue_id} is marked completed but has no file_path. Cannot move to music directory until file is found.",
             }, 400
 
-        move_result = move_single_track_to_music_dir(dict(queue_item))
+        if not _try_claim_for_move(queue_id, item_status):
+            return {
+                "success": False,
+                "error": "Move already in progress by another process. Please wait a moment and refresh.",
+                "in_progress": True,
+            }, 409
+
+        try:
+            move_result = move_single_track_to_music_dir(dict(queue_item))
+        except Exception:
+            _release_move_claim(queue_id, restore_status=item_status)
+            raise
+
         if not move_result.get('success'):
+            _release_move_claim(queue_id, restore_status=item_status)
             return {"success": False, "error": move_result.get('error', 'Move failed')}, 500
 
         target_path = move_result['target_path']

@@ -4529,7 +4529,7 @@ async function loadQueueStatus() {
 
     // Separate items by status
     const active = data.active.filter(item => ['queued', 'searching', 'downloading'].includes(item.status));
-    const completed = data.completed.filter(item => ['completed', 'unmatched', 'possible_duplicate'].includes(item.status) && item.file_path);
+    const completed = data.completed.filter(item => ['completed', 'unmatched', 'possible_duplicate', 'moving'].includes(item.status) && item.file_path);
     const failed = data.active.filter(item => item.status === 'failed');
 
     // ── Update stats bar ──
@@ -4759,6 +4759,7 @@ function renderCompletedQueue(completed) {
           const alreadyCopied = item.copied_individually;
           const hasFile = item.file_path || item.found_filename;
           const isDuplicate = item.status === 'possible_duplicate';
+          const isMoving = item.status === 'moving';
           html += `
                 <div class="d-flex justify-content-between align-items-start py-2 border-bottom">
                   <div class="d-flex gap-2 flex-grow-1">
@@ -4769,18 +4770,21 @@ function renderCompletedQueue(completed) {
                       ${alreadyCopied ? '<small class="badge bg-info text-dark ms-1">Already Copied</small>' : ''}
                       ${item.status === 'unmatched' ? '<small class="badge bg-warning text-dark ms-1"><i class="bi bi-exclamation-triangle"></i> Unmatched</small>' : ''}
                       ${isDuplicate ? '<small class="badge bg-danger ms-1"><i class="bi bi-files"></i> Duplicate</small>' : ''}
+                      ${isMoving ? '<small class="badge bg-warning text-dark ms-1"><span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Moving…</small>' : ''}
                     </div>
                   </div>
                   <div class="d-flex gap-1 flex-wrap justify-content-end">
                     <button class="btn btn-sm btn-outline-primary" onclick="openEditTrackFromDownloads(${item.id})" title="Edit track metadata">
                       <i class="bi bi-pencil"></i>
                     </button>
-                    ${alreadyCopied
-                      ? '<span class="badge bg-info text-dark align-self-center"><i class="bi bi-check-circle"></i> Copied</span>'
-                      : `<button class="btn btn-sm btn-success" onclick="organizeFile(${item.id})"
-                                 title="${hasFile ? 'Copy to music library' : 'Find file in downloads folder and transfer'}">
-                           <i class="bi bi-${hasFile ? 'folder-check' : 'search'}"></i> Transfer
-                         </button>`
+                    ${isMoving
+                      ? '<button class="btn btn-sm btn-secondary" disabled title="Move in progress"><span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span></button>'
+                      : (alreadyCopied
+                          ? '<span class="badge bg-info text-dark align-self-center"><i class="bi bi-check-circle"></i> Copied</span>'
+                          : `<button class="btn btn-sm btn-success" onclick="organizeFile(${item.id})"
+                                     title="${hasFile ? 'Copy to music library' : 'Find file in downloads folder and transfer'}">
+                               <i class="bi bi-${hasFile ? 'folder-check' : 'search'}"></i> Transfer
+                             </button>`)
                     }
                     <div class="dropdown">
                       <button class="btn btn-sm btn-outline-danger dropdown-toggle" data-bs-toggle="dropdown"><i class="bi bi-trash"></i></button>
@@ -4795,17 +4799,21 @@ function renderCompletedQueue(completed) {
 
         // Count how many are already individually copied
         const copiedCount = group.items.filter(i => i.copied_individually).length;
+        const movingCount = group.items.filter(i => i.status === 'moving').length;
         const pendingCount = group.items.length - copiedCount;
         const organizeLabel = copiedCount > 0
           ? `<i class="bi bi-folder-check"></i> Copy Remaining (${pendingCount})`
           : `<i class="bi bi-folder-check"></i> Copy All to Library`;
+        const groupMoveDisabled = movingCount > 0 ? ' disabled' : '';
+        const groupMoveTitle = movingCount > 0 ? 'Move in progress' : 'Copy remaining tracks to music library';
 
         html += `
               </div>
             </div>
             <div class="d-flex gap-2 mt-2 pt-2 border-top align-items-center">
               ${copiedCount > 0 ? `<small class="text-muted me-auto"><i class="bi bi-check-circle text-info"></i> ${copiedCount} already copied</small>` : ''}
-              <button class="btn btn-sm btn-success${copiedCount > 0 ? '' : ' flex-grow-1'}" onclick="organizeGroup('${group.groupId}')" title="Copy remaining tracks to music library">
+              ${movingCount > 0 ? `<small class="text-muted me-auto"><span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> ${movingCount} moving…</small>` : ''}
+              <button class="btn btn-sm btn-success${copiedCount > 0 ? '' : ' flex-grow-1'}${groupMoveDisabled}" onclick="organizeGroup('${group.groupId}')" title="${groupMoveTitle}"${groupMoveDisabled}>
                 ${organizeLabel}
               </button>
               <button class="btn btn-sm btn-outline-danger" onclick="deleteGroup('${group.groupId}')">
@@ -4819,6 +4827,7 @@ function renderCompletedQueue(completed) {
           const alreadyCopied = item.copied_individually;
           const hasFile = item.file_path || item.found_filename;
           const isDuplicate = item.status === 'possible_duplicate';
+          const isMoving = item.status === 'moving';
           html += `
           <div class="list-group-item">
             <div class="d-flex justify-content-between align-items-start">
@@ -4831,18 +4840,21 @@ function renderCompletedQueue(completed) {
                   ${alreadyCopied ? '<span class="badge bg-info text-dark mt-1"><i class="bi bi-check-circle"></i> Already Copied</span>' : ''}
                   ${item.status === 'unmatched' ? '<span class="badge bg-warning text-dark mt-1"><i class="bi bi-exclamation-triangle"></i> Unmatched – no queue item found</span>' : ''}
                   ${isDuplicate ? '<span class="badge bg-danger mt-1"><i class="bi bi-files"></i> Duplicate – already exists in queue/library</span>' : ''}
+                  ${isMoving ? '<span class="badge bg-warning text-dark mt-1"><span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Moving…</span>' : ''}
                 </div>
               </div>
               <div class="d-flex gap-1 align-items-start">
                 <button class="btn btn-sm btn-outline-primary" onclick="openEditTrackFromDownloads(${item.id})" title="Edit track metadata">
                   <i class="bi bi-pencil"></i>
                 </button>
-                ${alreadyCopied
-                  ? '<span class="badge bg-info text-dark align-self-center"><i class="bi bi-check-circle"></i> Copied</span>'
-                  : `<button class="btn btn-sm btn-success" onclick="organizeFile(${item.id})"
-                             title="${hasFile ? 'Copy to music library' : 'Find file in downloads folder and transfer'}">
-                       <i class="bi bi-${hasFile ? 'folder-check' : 'search'}"></i> Transfer
-                     </button>`
+                ${isMoving
+                  ? '<button class="btn btn-sm btn-secondary" disabled title="Move in progress"><span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span></button>'
+                  : (alreadyCopied
+                      ? '<span class="badge bg-info text-dark align-self-center"><i class="bi bi-check-circle"></i> Copied</span>'
+                      : `<button class="btn btn-sm btn-success" onclick="organizeFile(${item.id})"
+                                 title="${hasFile ? 'Copy to music library' : 'Find file in downloads folder and transfer'}">
+                             <i class="bi bi-${hasFile ? 'folder-check' : 'search'}"></i> Transfer
+                           </button>`)
                 }
                 <div class="dropdown">
                   <button class="btn btn-sm btn-outline-danger dropdown-toggle" data-bs-toggle="dropdown"><i class="bi bi-trash"></i></button>
@@ -4955,7 +4967,8 @@ function renderQueueItem(item, statusColor) {
     'completed': '✅ Downloaded',
     'imported': '📁 Imported',
     'failed': '❌ Failed',
-    'unmatched': '⚠️ Unmatched'
+    'unmatched': '⚠️ Unmatched',
+    'moving': '⏳ Moving…'
   }[item.status] || item.status;
 
   const statusBg = {
@@ -4988,12 +5001,17 @@ function renderQueueItem(item, statusColor) {
   const tnBadge = item.track_number ? `<span class="badge bg-light text-dark border" title="Track #">T${escapeHtml(String(item.track_number))}</span>` : '';
 
   const hasFile = item.file_path || item.found_filename;
-  const copyBtn = !item.copied_individually
-    ? `<button class="btn btn-sm btn-outline-success" onclick="organizeFile(${item.id})"
-              title="${hasFile ? 'Copy to music library' : 'Find file in downloads folder and transfer to library'}">
-         <i class="bi bi-${hasFile ? 'folder-check' : 'search'}"></i>
+  const isMoving = item.status === 'moving';
+  const copyBtn = isMoving
+    ? `<button class="btn btn-sm btn-outline-secondary" disabled title="Move in progress">
+         <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
        </button>`
-    : '';
+    : (!item.copied_individually
+        ? `<button class="btn btn-sm btn-outline-success" onclick="organizeFile(${item.id})"
+                  title="${hasFile ? 'Copy to music library' : 'Find file in downloads folder and transfer to library'}">
+             <i class="bi bi-${hasFile ? 'folder-check' : 'search'}"></i>
+           </button>`
+        : '');
 
   return `
     <div class="list-group-item">

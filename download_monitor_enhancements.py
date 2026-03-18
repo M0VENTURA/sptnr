@@ -442,7 +442,7 @@ def move_to_music_collection(queue_id):
         if not queue_item:
             return {'error': 'Queue item not found'}
         
-        if queue_item['status'] != 'matched':
+        if queue_item['status'] not in ('matched', 'moving'):
             return {'error': f"Track must be matched first (current status: {queue_item['status']})"}
         
         source_path = queue_item.get('matched_file_path') or queue_item.get('file_path')
