@@ -2419,6 +2419,55 @@ def _prune_empty_download_folders(downloads_root):
     return removed
 
 
+def _try_claim_for_move(queue_id, expected_status):
+    """Atomically claim a queue item for moving by setting its status to 'moving'.
+
+    Uses a conditional UPDATE (WHERE status = expected_status) so that only one
+    caller — whether the background queue processor or the UI button — can
+    successfully claim the item.  The other caller will see rowcount == 0 and
+    skip its move attempt, preventing the same file from being moved twice (once
+    as FLAC and once converted to MP3).
+
+    Returns True if this caller successfully claimed the item, False if someone
+    else already claimed or moved it.
+    """
+    try:
+        is_pg = False
+        try:
+            from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
+            conn = app_get_db()
+            is_pg = bool(app_is_postgres_connection(conn))
+        except Exception:
+            conn = get_db()
+            is_pg = _is_postgres_connection(conn)
+
+        placeholder = "%s" if is_pg else "?"
+        cursor = conn.cursor()
+        cursor.execute(
+            f"UPDATE download_queue SET status = 'moving', updated_at = CURRENT_TIMESTAMP "
+            f"WHERE id = {placeholder} AND status = {placeholder}",
+            (queue_id, expected_status),
+        )
+        rowcount = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return rowcount > 0
+    except Exception as e:
+        logger.warning(f"[MOVE_CLAIM] Could not claim queue {queue_id} (expected={expected_status}): {e}")
+        return False
+
+
+def _release_move_claim(queue_id, restore_status='completed', file_path=None):
+    """Release a 'moving' claim back to a previous status after a failed move."""
+    try:
+        kwargs = {'status': restore_status}
+        if file_path:
+            kwargs['file_path'] = file_path
+        update_queue_item(queue_id, **kwargs)
+    except Exception as e:
+        logger.warning(f"[MOVE_CLAIM] Could not release claim for queue {queue_id}: {e}")
+
+
 def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
     """
     Move a single completed track from /downloads into /music using configured naming format.
@@ -3711,6 +3760,15 @@ def check_downloads_folder():
                             'moved': False
                         })
                     else:
+                        # Atomically claim this item for moving so we don't race with
+                        # the background queue processor or a concurrent UI button press.
+                        # Only the caller that flips status to 'moving' proceeds.
+                        if not _try_claim_for_move(queue_item['id'], 'completed'):
+                            logger.info(
+                                f"[MOVE] Queue {queue_item['id']}: already claimed by another "
+                                f"process for moving — skipping"
+                            )
+                            continue
                         # Immediately move the file to /music
                         item_for_move = dict(queue_item)
                         item_for_move['file_path'] = match_path
@@ -3811,8 +3869,9 @@ def check_downloads_folder():
                         else:
                             logger.warning(
                                 f"[MOVE] Queue {queue_item['id']}: could not move file "
-                                f"({move_result.get('error')}), keeping as 'completed'"
+                                f"({move_result.get('error')}), releasing claim back to 'completed'"
                             )
+                            _release_move_claim(queue_item['id'], restore_status='completed', file_path=match_path)
                             completed_items.append({
                                 'queue_id': queue_item['id'],
                                 'filename': match_found,
@@ -4742,43 +4801,51 @@ def auto_discover_and_queue_files():
                                 f"leaving as completed for manual approval"
                             )
                         else:
-                            # Apply the stored MusicBrainz metadata to the file before moving.
-                            try:
-                                from post_download_processor import update_file_metadata_with_albumart
-                                stored_metadata = {
-                                    'title': item_for_move.get('title'),
-                                    'artist': item_for_move.get('artist'),
-                                    'album_artist': item_for_move.get('album_artist') or item_for_move.get('artist'),
-                                    'album': item_for_move.get('album'),
-                                    'year': item_for_move.get('year'),
-                                    'track_number': item_for_move.get('track_number'),
-                                }
-                                update_file_metadata_with_albumart(full_path, stored_metadata)
+                            # Atomically claim before moving to prevent race with UI button.
+                            if not _try_claim_for_move(matched_pending['id'], 'completed'):
                                 logger.info(
-                                    f"[AUTO-DISCOVER] Queue {matched_pending['id']}: applied stored MusicBrainz metadata to file"
-                                )
-                            except Exception as meta_err:
-                                logger.warning(
-                                    f"[AUTO-DISCOVER] Queue {matched_pending['id']}: could not apply stored metadata before move: {meta_err}"
-                                )
-                            move_result = move_single_track_to_music_dir(item_for_move)
-                            if move_result['success']:
-                                update_queue_item(
-                                    matched_pending['id'],
-                                    status='imported',
-                                    file_path=move_result['target_path'],
-                                    copied_individually=1,
-                                    copied_individually_at=datetime.now().isoformat()
-                                )
-                                logger.info(
-                                    f"[AUTO-DISCOVER] Matched & moved: {artist} - {title} "
-                                    f"→ {move_result['target_path']}"
+                                    f"[AUTO-DISCOVER] Queue {matched_pending['id']}: already "
+                                    f"claimed by another process — skipping"
                                 )
                             else:
-                                logger.warning(
-                                    f"[AUTO-DISCOVER] Matched but could not move {filename}: "
-                                    f"{move_result.get('error')}"
-                                )
+                                # Apply the stored MusicBrainz metadata to the file before moving.
+                                try:
+                                    from post_download_processor import update_file_metadata_with_albumart
+                                    stored_metadata = {
+                                        'title': item_for_move.get('title'),
+                                        'artist': item_for_move.get('artist'),
+                                        'album_artist': item_for_move.get('album_artist') or item_for_move.get('artist'),
+                                        'album': item_for_move.get('album'),
+                                        'year': item_for_move.get('year'),
+                                        'track_number': item_for_move.get('track_number'),
+                                    }
+                                    update_file_metadata_with_albumart(full_path, stored_metadata)
+                                    logger.info(
+                                        f"[AUTO-DISCOVER] Queue {matched_pending['id']}: applied stored MusicBrainz metadata to file"
+                                    )
+                                except Exception as meta_err:
+                                    logger.warning(
+                                        f"[AUTO-DISCOVER] Queue {matched_pending['id']}: could not apply stored metadata before move: {meta_err}"
+                                    )
+                                move_result = move_single_track_to_music_dir(item_for_move)
+                                if move_result['success']:
+                                    update_queue_item(
+                                        matched_pending['id'],
+                                        status='imported',
+                                        file_path=move_result['target_path'],
+                                        copied_individually=1,
+                                        copied_individually_at=datetime.now().isoformat()
+                                    )
+                                    logger.info(
+                                        f"[AUTO-DISCOVER] Matched & moved: {artist} - {title} "
+                                        f"→ {move_result['target_path']}"
+                                    )
+                                else:
+                                    logger.warning(
+                                        f"[AUTO-DISCOVER] Matched but could not move {filename}: "
+                                        f"{move_result.get('error')}"
+                                    )
+                                    _release_move_claim(matched_pending['id'], restore_status='completed', file_path=full_path)
                     stats['queued'] += 1
                     continue
 
