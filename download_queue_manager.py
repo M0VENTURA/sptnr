@@ -4411,9 +4411,11 @@ def auto_discover_and_queue_files():
             # back without aborting the entire outer transaction.  This prevents
             # "InFailedSqlTransaction" cascades from causing every subsequent
             # file to fail with a confusing error.
+            savepoint_active = False
             if is_pg:
                 try:
                     cursor.execute("SAVEPOINT _adq_file")
+                    savepoint_active = True
                 except Exception:
                     pass
             try:
@@ -4820,6 +4822,11 @@ def auto_discover_and_queue_files():
                     (artist, title, album, album_artist, track_number, disc_number, year, duration, filename, full_path, release_group),
                     context="auto_discover unmatched insert"
                 )
+                # execute_write_with_retry calls conn.commit(), which ends the
+                # transaction and removes any savepoints.  Clear the flag so the
+                # RELEASE SAVEPOINT below is skipped (avoiding a PostgreSQL error
+                # log for a savepoint that no longer exists).
+                savepoint_active = False
 
                 inserted_sig = _queue_signature(artist, title)
                 if inserted_sig:
@@ -4868,28 +4875,28 @@ def auto_discover_and_queue_files():
                 else:
                     logger.info(f"⚠️  Unmatched [{metadata_status}]: {artist} - {title} from {os.path.basename(os.path.dirname(full_path))}/{filename}")
 
-                # Release the SAVEPOINT if it still exists.  execute_write_with_retry
-                # calls conn.commit() which ends the transaction and removes the savepoint;
-                # attempting to release a non-existent savepoint raises a SQL error that
-                # leaves the new transaction in a failed state.  Roll back on failure to
-                # keep the connection clean for the next file.
-                if is_pg:
-                    try:
-                        cursor.execute("RELEASE SAVEPOINT _adq_file")
-                    except Exception:
-                        try:
-                            conn.rollback()
-                        except Exception:
-                            pass
+                # Only release the savepoint when it is still active (i.e. the
+                # commit inside execute_write_with_retry has not already removed it).
+                # Attempting to RELEASE a non-existent savepoint produces a
+                # PostgreSQL ERROR log entry even when the exception is caught in
+                # Python, leaving the new transaction in a failed state.
+                if is_pg and savepoint_active:
+                    cursor.execute("RELEASE SAVEPOINT _adq_file")
 
             except psycopg2.IntegrityError as e:
                 # A duplicate row was inserted concurrently (race condition between parallel scans).
                 # This is non-fatal: the file is already tracked in the queue.  Roll back, log at
                 # INFO level and count as already-queued rather than as an error.
                 if is_pg:
-                    try:
-                        cursor.execute("ROLLBACK TO SAVEPOINT _adq_file")
-                    except Exception:
+                    if savepoint_active:
+                        try:
+                            cursor.execute("ROLLBACK TO SAVEPOINT _adq_file")
+                        except Exception:
+                            try:
+                                conn.rollback()
+                            except Exception:
+                                pass
+                    else:
                         try:
                             conn.rollback()
                         except Exception:
@@ -4906,9 +4913,15 @@ def auto_discover_and_queue_files():
             except Exception as e:
                 import traceback as _tb
                 if is_pg:
-                    try:
-                        cursor.execute("ROLLBACK TO SAVEPOINT _adq_file")
-                    except Exception:
+                    if savepoint_active:
+                        try:
+                            cursor.execute("ROLLBACK TO SAVEPOINT _adq_file")
+                        except Exception:
+                            try:
+                                conn.rollback()
+                            except Exception:
+                                pass
+                    else:
                         try:
                             conn.rollback()
                         except Exception:
