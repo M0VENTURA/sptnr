@@ -8,23 +8,24 @@
          data-launch-on-startup="{{ 'true' if launch_on_startup else 'false' }}"
          data-first-full-scan-done="{{ 'true' if first_full_scan_done else 'false' }}"
          hidden></div>
-    <div class="mb-4 d-flex justify-content-between align-items-start">
+    <div class="mb-4">
         <div>
             <h1 class="h2 mb-1">
                 <i class="bi bi-speedometer2"></i> Dashboard
             </h1>
             <p class="text-muted mb-0">Music library overview and scan controls</p>
             <form class="dashboard-mobile-search d-lg-none mt-2" onsubmit="navSearch(event)">
-                <div class="input-group input-group-sm">
+                <div class="input-group">
                     <input
                         type="text"
                         id="dashboardTopSearchInput"
-                        class="form-control form-control-sm"
+                        class="form-control"
                         placeholder="Search library..."
                         autocomplete="off"
                         aria-label="Search library"
+                        style="font-size:16px;min-height:44px;"
                     />
-                    <button class="btn btn-outline-secondary btn-sm" type="submit" title="Search">
+                    <button class="btn btn-outline-secondary" type="submit" title="Search" style="min-height:44px;">
                         <i class="bi bi-search"></i>
                     </button>
                 </div>
@@ -272,18 +273,22 @@
     }
 
     .dashboard-mobile-search {
-        max-width: 420px;
+        width: 100%;
+        max-width: 480px;
     }
 
     .dashboard-user-switch {
-        max-width: 320px;
+        width: 100%;
+        max-width: 360px;
     }
 
     .dashboard-user-switch .form-select {
         width: 100%;
+        font-size: 16px; /* prevent iOS zoom */
+        min-height: 44px;
     }
 
-    @media (max-width: 768px) {
+    @media (max-width: 576px) {
         .dashboard-mobile-search,
         .dashboard-user-switch {
             max-width: 100%;

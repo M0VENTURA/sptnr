@@ -28,8 +28,9 @@
       background: linear-gradient(135deg, var(--primary-bg) 0%, var(--secondary-bg) 100%);
       color: var(--text-primary);
       padding-top: 4rem;
-      min-height: 100vh;
+      min-height: 100dvh;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen", "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue", sans-serif;
+      overflow-x: hidden; /* prevent horizontal scroll on narrow phones */
     }
 
     /* Ensure all text is readable - override Bootstrap defaults */
@@ -613,6 +614,93 @@
       pointer-events: none;
     }
 
+    /* ---- Collapsed navbar: all phones & tablets (< 992px) ---- */
+    @media (max-width: 991.98px) {
+      /* Drop-down panel occupies full width below the fixed bar */
+      .navbar-collapse.show,
+      .navbar-collapse.collapsing {
+        background: rgba(18, 18, 18, 0.98);
+        border-top: 1px solid var(--border-color);
+        padding: 0.25rem 0 0.5rem;
+        max-height: calc(100dvh - 56px);
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+
+      /* Stack items vertically, full width */
+      .navbar .navbar-nav {
+        flex-direction: column !important;
+        align-items: stretch !important;
+        flex-wrap: wrap !important;
+        width: 100%;
+        gap: 0 !important;
+      }
+
+      .navbar .navbar-nav .nav-item {
+        width: 100%;
+      }
+
+      /* Big touch targets for every link */
+      .navbar .navbar-nav .nav-link {
+        white-space: normal !important;
+        padding: 0.875rem 1.25rem !important;
+        min-height: 48px;
+        font-size: 0.95rem;
+        border-bottom: 1px solid rgba(255,255,255,0.06) !important;
+        border-radius: 0;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      .navbar .navbar-nav .nav-link.active {
+        border-left: 3px solid var(--spotify-green);
+        background-color: rgba(29, 185, 84, 0.08);
+        padding-left: calc(1.25rem - 3px) !important;
+        border-bottom: 1px solid rgba(255,255,255,0.06) !important;
+      }
+
+      /* Dropdowns expand inline, no floating */
+      .navbar .navbar-nav .dropdown-menu {
+        position: static !important;
+        display: none;
+        width: 100%;
+        background-color: rgba(0,0,0,0.25) !important;
+        border: none !important;
+        border-left: 2px solid var(--border-color) !important;
+        margin: 0 0 0 1.25rem !important;
+        padding: 0 !important;
+        border-radius: 0 !important;
+        box-shadow: none !important;
+      }
+
+      .navbar .navbar-nav .dropdown-menu.show {
+        display: block;
+      }
+
+      .navbar .navbar-nav .dropdown-menu .dropdown-item {
+        min-height: 44px;
+        display: flex;
+        align-items: center;
+        padding: 0.625rem 1rem;
+        background-color: transparent !important;
+        border-bottom: 1px solid rgba(255,255,255,0.04) !important;
+      }
+
+      .navbar .navbar-nav .dropdown-divider {
+        border-color: rgba(255,255,255,0.08);
+        margin: 0;
+      }
+
+      .navbar .navbar-nav .dropdown-header {
+        padding: 0.5rem 1rem 0.25rem;
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--text-tertiary) !important;
+      }
+    }
+
     /* Mobile Responsive Improvements */
     @media (max-width: 576px) {
       body {
@@ -878,16 +966,6 @@
       .col-md-3, .col-md-4, .col-md-6 {
         padding-left: 0.25rem;
         padding-right: 0.25rem;
-      }
-
-      .d-flex.justify-content-between {
-        flex-direction: column;
-        gap: 0.75rem;
-      }
-
-      .d-flex.align-items-start {
-        flex-direction: column;
-        align-items: flex-start !important;
       }
 
       /* Better spacing for two-column layouts */
