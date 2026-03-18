@@ -229,50 +229,50 @@ def search_and_update_musicbrainz(queue_id, artist, title, album):
 
         if not cover_art_url:
             try:
-                                if is_pg:
-                                        cursor.execute(
-                                                """
-                                                SELECT cover_art_url
-                                                FROM download_queue
-                                                WHERE cover_art_url IS NOT NULL
-                                                    AND cover_art_url <> ''
-                                                    AND (
-                                                        release_mbid = %s
-                                                        OR release_id = %s
-                                                        OR (
-                                                                LOWER(COALESCE(album_artist, artist, '')) = LOWER(COALESCE(%s, ''))
-                                                                AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(%s, ''))
-                                                        )
-                                                    )
-                                                ORDER BY updated_at DESC NULLS LAST, id DESC
-                                                LIMIT 1
-                                                """,
-                                                (release_mbid, release_mbid, release_artist, album),
-                                        )
-                                else:
-                                        cursor.execute(
-                                                """
-                                                SELECT cover_art_url
-                                                FROM download_queue
-                                                WHERE cover_art_url IS NOT NULL
-                                                    AND cover_art_url <> ''
-                                                    AND (
-                                                        release_mbid = ?
-                                                        OR release_id = ?
-                                                        OR (
-                                                                LOWER(COALESCE(album_artist, artist, '')) = LOWER(COALESCE(?, ''))
-                                                                AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(?, ''))
-                                                        )
-                                                    )
-                                                ORDER BY updated_at DESC, id DESC
-                                                LIMIT 1
-                                                """,
-                                                (release_mbid, release_mbid, release_artist, album),
-                                        )
+                if is_pg:
+                    cursor.execute(
+                        """
+                        SELECT cover_art_url
+                        FROM download_queue
+                        WHERE cover_art_url IS NOT NULL
+                            AND cover_art_url <> ''
+                            AND (
+                                release_mbid = %s
+                                OR release_id = %s
+                                OR (
+                                    LOWER(COALESCE(album_artist, artist, '')) = LOWER(COALESCE(%s, ''))
+                                    AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(%s, ''))
+                                )
+                            )
+                        ORDER BY updated_at DESC NULLS LAST, id DESC
+                        LIMIT 1
+                        """,
+                        (release_mbid, release_mbid, release_artist, album),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        SELECT cover_art_url
+                        FROM download_queue
+                        WHERE cover_art_url IS NOT NULL
+                            AND cover_art_url <> ''
+                            AND (
+                                release_mbid = ?
+                                OR release_id = ?
+                                OR (
+                                    LOWER(COALESCE(album_artist, artist, '')) = LOWER(COALESCE(?, ''))
+                                    AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(?, ''))
+                                )
+                            )
+                        ORDER BY updated_at DESC, id DESC
+                        LIMIT 1
+                        """,
+                        (release_mbid, release_mbid, release_artist, album),
+                    )
                 existing_q = cursor.fetchone()
-                                cover_art_candidate = _row_value(existing_q, 'cover_art_url', 0)
-                                if cover_art_candidate:
-                                        cover_art_url = cover_art_candidate
+                cover_art_candidate = _row_value(existing_q, 'cover_art_url', 0)
+                if cover_art_candidate:
+                    cover_art_url = cover_art_candidate
                     logger.info(
                         f"[MB_ENRICH] Queue {queue_id}: reused existing queue cover_art_url"
                     )
@@ -283,50 +283,50 @@ def search_and_update_musicbrainz(queue_id, artist, title, album):
 
         if not cover_art_url:
             try:
-                                if is_pg:
-                                        cursor.execute(
-                                                """
-                                                SELECT cover_art_url
-                                                FROM tracks
-                                                WHERE cover_art_url IS NOT NULL
-                                                    AND cover_art_url <> ''
-                                                    AND (
-                                                        release_group_mbid = %s
-                                                        OR suggested_mbid = %s
-                                                        OR (
-                                                                LOWER(COALESCE(album_artist, artist, '')) = LOWER(COALESCE(%s, ''))
-                                                                AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(%s, ''))
-                                                        )
-                                                    )
-                                                ORDER BY last_scanned DESC NULLS LAST, id DESC
-                                                LIMIT 1
-                                                """,
-                                                (release_mbid, release_mbid, release_artist, album),
-                                        )
-                                else:
-                                        cursor.execute(
-                                                """
-                                                SELECT cover_art_url
-                                                FROM tracks
-                                                WHERE cover_art_url IS NOT NULL
-                                                    AND cover_art_url <> ''
-                                                    AND (
-                                                        release_group_mbid = ?
-                                                        OR suggested_mbid = ?
-                                                        OR (
-                                                                LOWER(COALESCE(album_artist, artist, '')) = LOWER(COALESCE(?, ''))
-                                                                AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(?, ''))
-                                                        )
-                                                    )
-                                                ORDER BY last_scanned DESC, id DESC
-                                                LIMIT 1
-                                                """,
-                                                (release_mbid, release_mbid, release_artist, album),
-                                        )
+                if is_pg:
+                    cursor.execute(
+                        """
+                        SELECT cover_art_url
+                        FROM tracks
+                        WHERE cover_art_url IS NOT NULL
+                            AND cover_art_url <> ''
+                            AND (
+                                release_group_mbid = %s
+                                OR suggested_mbid = %s
+                                OR (
+                                    LOWER(COALESCE(album_artist, artist, '')) = LOWER(COALESCE(%s, ''))
+                                    AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(%s, ''))
+                                )
+                            )
+                        ORDER BY last_scanned DESC NULLS LAST, id DESC
+                        LIMIT 1
+                        """,
+                        (release_mbid, release_mbid, release_artist, album),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        SELECT cover_art_url
+                        FROM tracks
+                        WHERE cover_art_url IS NOT NULL
+                            AND cover_art_url <> ''
+                            AND (
+                                release_group_mbid = ?
+                                OR suggested_mbid = ?
+                                OR (
+                                    LOWER(COALESCE(album_artist, artist, '')) = LOWER(COALESCE(?, ''))
+                                    AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(?, ''))
+                                )
+                            )
+                        ORDER BY last_scanned DESC, id DESC
+                        LIMIT 1
+                        """,
+                        (release_mbid, release_mbid, release_artist, album),
+                    )
                 existing_t = cursor.fetchone()
-                                cover_art_candidate = _row_value(existing_t, 'cover_art_url', 0)
-                                if cover_art_candidate:
-                                        cover_art_url = cover_art_candidate
+                cover_art_candidate = _row_value(existing_t, 'cover_art_url', 0)
+                if cover_art_candidate:
+                    cover_art_url = cover_art_candidate
                     logger.info(
                         f"[MB_ENRICH] Queue {queue_id}: reused existing track cover_art_url"
                     )
