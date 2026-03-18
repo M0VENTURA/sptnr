@@ -3855,19 +3855,19 @@ def artists():
             row_dict = dict(row)
             missing_counts_by_artist[row_dict.get("display_name", "")] = int(row_dict.get("missing_count") or 0)
         
-        # Query 3: Find duplicate artists (same MBID, different album_artist names)
+                # Query 3: Find duplicate artists (same MBID, different album_artist names)
         # Note: Using album_artist instead of track artist to avoid flagging compilations/features
         cursor.execute("""
             SELECT 
-                COALESCE(album_artist, artist) as effective_artist,
+                                COALESCE(NULLIF(album_artist, ''), artist) as effective_artist,
                 COUNT(DISTINCT musicbrainz_artist_id) as mbid_count,
                 COUNT(*) as track_count
             FROM tracks
             WHERE musicbrainz_artist_id IS NOT NULL 
               AND musicbrainz_artist_id != ''
-              AND COALESCE(album_artist, artist) IS NOT NULL
-              AND TRIM(COALESCE(album_artist, artist)) != ''
-            GROUP BY COALESCE(album_artist, artist)
+                            AND COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
+                            AND TRIM(COALESCE(NULLIF(album_artist, ''), artist)) != ''
+                        GROUP BY COALESCE(NULLIF(album_artist, ''), artist)
         """)
         
         artist_mbid_map = {}  # Map artist name to their MBID(s)
@@ -3881,13 +3881,13 @@ def artists():
         cursor.execute("""
             SELECT 
                 musicbrainz_artist_id,
-                COUNT(DISTINCT COALESCE(album_artist, artist)) as distinct_artist_names,
+                COUNT(DISTINCT COALESCE(NULLIF(album_artist, ''), artist)) as distinct_artist_names,
                 COUNT(*) as total_tracks
             FROM tracks
             WHERE musicbrainz_artist_id IS NOT NULL 
               AND musicbrainz_artist_id != ''
             GROUP BY musicbrainz_artist_id
-            HAVING COUNT(DISTINCT COALESCE(album_artist, artist)) > 1
+            HAVING COUNT(DISTINCT COALESCE(NULLIF(album_artist, ''), artist)) > 1
         """)
         
         # Build map of MBID -> list of artist names
@@ -3901,7 +3901,7 @@ def artists():
         # Get list of album artists by MBID to populate duplicate_artist_counts_by_artist
         cursor.execute("""
             SELECT DISTINCT
-                COALESCE(album_artist, artist) as effective_artist,
+                COALESCE(NULLIF(album_artist, ''), artist) as effective_artist,
                 musicbrainz_artist_id
             FROM tracks
             WHERE musicbrainz_artist_id IS NOT NULL 
@@ -10829,13 +10829,15 @@ def api_get_duplicate_artists(artist):
         conn = get_db()
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         
-        # Get the MBID for the current artist (check album_artist first, fallback to artist)
-        cursor.execute("""
-            SELECT DISTINCT musicbrainz_artist_id
-            FROM tracks
-            WHERE (album_artist = %s OR artist = %s) AND musicbrainz_artist_id IS NOT NULL
-            LIMIT 1
-        """, (artist, artist))
+                # Get the MBID for the current artist (use the same album_artist fallback as Artists page)
+                cursor.execute("""
+                        SELECT DISTINCT musicbrainz_artist_id
+                        FROM tracks
+                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+                            AND musicbrainz_artist_id IS NOT NULL
+                            AND musicbrainz_artist_id != ''
+                        LIMIT 1
+                """, (artist,))
         
         artist_mbid_row = cursor.fetchone()
         artist_mbid = artist_mbid_row['musicbrainz_artist_id'] if artist_mbid_row else None
@@ -10846,11 +10848,11 @@ def api_get_duplicate_artists(artist):
             # Get all album_artist name variations for this MBID (not track artist)
             cursor.execute("""
                 SELECT 
-                    COALESCE(album_artist, artist) as artist,
+                    COALESCE(NULLIF(album_artist, ''), artist) as artist,
                     COUNT(*) as track_count
                 FROM tracks
                 WHERE musicbrainz_artist_id = %s
-                GROUP BY COALESCE(album_artist, artist)
+                GROUP BY COALESCE(NULLIF(album_artist, ''), artist)
                 ORDER BY track_count DESC
             """, (artist_mbid,))
             
