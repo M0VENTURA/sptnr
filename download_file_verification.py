@@ -117,14 +117,20 @@ def _ensure_columns_in_table(columns_to_add):
 
     try:
         conn = _get_db_connection()
-        cursor = conn.cursor()
+        # Use an explicit plain tuple cursor regardless of the connection's default
+        # cursor_factory. helpers.db_utils.get_db_connection opens PG connections
+        # with cursor_factory=RealDictCursor as the default, which would make
+        # row[0] raise KeyError instead of returning the first column.
+        import psycopg2.extensions as _pg_ext
+        cursor = conn.cursor(_pg_ext.cursor) if _is_postgres_connection(conn) else conn.cursor()
 
         # Check if download_queue table exists
         cursor.execute(
             "SELECT EXISTS(SELECT FROM information_schema.tables WHERE table_name = 'download_queue')"
         )
 
-        if not cursor.fetchone()[0]:
+        exists_row = cursor.fetchone()
+        if not exists_row or not exists_row[0]:
             logger.warning("download_queue table does not exist yet")
             conn.close()
             return False
