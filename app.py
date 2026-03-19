@@ -546,6 +546,18 @@ ensure_verification_columns()
 # Required by download_monitor_enhancements.py and /api/queue/<id>/apply-mbid-match.
 ensure_queue_mbid_columns()
 
+
+def _is_pg_startup_unavailable_error(error) -> bool:
+    """Return True for transient PostgreSQL startup/recovery availability errors."""
+    message = str(error).lower()
+    markers = (
+        "the database system is starting up",
+        "the database system is in recovery mode",
+        "cannot connect now",
+        "terminating connection due to administrator command",
+    )
+    return any(marker in message for marker in markers)
+
 # Verify the migration worked
 verification = verify_album_artist_column()
 if not verification["exists"]:
@@ -3512,18 +3524,6 @@ _pg_startup_backoff_until = 0.0
 _PG_STARTUP_BACKOFF_SECONDS = float(os.environ.get("PG_STARTUP_BACKOFF_SECONDS", "20"))
 
 
-def _is_pg_startup_unavailable_error(error) -> bool:
-    """Return True for transient PostgreSQL startup/recovery availability errors."""
-    message = str(error).lower()
-    markers = (
-        "the database system is starting up",
-        "the database system is in recovery mode",
-        "cannot connect now",
-        "terminating connection due to administrator command",
-    )
-    return any(marker in message for marker in markers)
-
-
 def get_db():
     """Get a PostgreSQL database connection."""
     global _schema_updated, _pg_startup_backoff_until
@@ -4488,6 +4488,8 @@ def api_album_library_tracks():
 @app.route("/api/album/missing-tracks")
 def api_album_missing_tracks():
     """Check which tracks are in the MusicBrainz release but missing from the library for an album."""
+    artist = ""
+    album = ""
     try:
         artist = request.args.get("artist", "").strip()
         album = request.args.get("album", "").strip()
@@ -4670,6 +4672,8 @@ def api_album_title_mismatches():
     Duration tolerance: tracks whose durations differ by more than 5 seconds are
     considered a length mismatch.
     """
+    artist = ""
+    album = ""
     try:
         artist = request.args.get("artist", "").strip()
         album = request.args.get("album", "").strip()
@@ -8132,7 +8136,7 @@ def api_album_update_ids():
         placeholder = "%s"
 
         # Use canonical MusicBrainz album MBID column.
-        track_columns = _get_table_columns(cursor, "tracks", is_postgres=True)
+        track_columns = _get_table_columns(cursor, "tracks", is_postgres=True) or set()
 
         mb_album_column = "musicbrainz_album_mbid" if "musicbrainz_album_mbid" in track_columns else None
 
@@ -26510,7 +26514,7 @@ def api_album_apply_mbid():
         placeholder = "%s"
 
         # Detect compatible MBID column for mixed schema deployments.
-        track_columns = _get_table_columns(cursor, "tracks", is_postgres=True)
+        track_columns = _get_table_columns(cursor, "tracks", is_postgres=True) or set()
         mb_album_column = None
         if "musicbrainz_album_mbid" in track_columns:
             mb_album_column = "musicbrainz_album_mbid"
