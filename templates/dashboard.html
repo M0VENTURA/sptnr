@@ -79,9 +79,16 @@
             <h5 class="card-title mb-0">
                 <i class="bi bi-calendar-event"></i> Recently Added & Announced Releases
             </h5>
-            <a href="/downloads/monitor#upcomingReleasesMonitorCard" class="btn btn-sm btn-info">
-                <i class="bi bi-arrow-right"></i> View All
-            </a>
+            <div class="d-flex align-items-center gap-2 flex-wrap justify-content-end">
+                <div class="btn-group btn-group-sm" role="group" aria-label="Upcoming release filters" id="upcomingBannerFilterGroup">
+                    <button type="button" class="btn btn-info" id="upcomingFilterAll" onclick="setUpcomingBannerFilter('all')">All</button>
+                    <button type="button" class="btn btn-outline-info" id="upcomingFilterCollection" onclick="setUpcomingBannerFilter('collection')">Collection</button>
+                    <button type="button" class="btn btn-outline-info" id="upcomingFilterRecommended" onclick="setUpcomingBannerFilter('recommended')">Recommended</button>
+                </div>
+                <a href="/downloads/monitor#upcomingReleasesMonitorCard" class="btn btn-sm btn-info">
+                    <i class="bi bi-arrow-right"></i> View All
+                </a>
+            </div>
         </div>
         <div class="card-body">
             <div id="upcomingBannerContent" style="max-height: 300px; overflow-y: auto;">
@@ -1027,9 +1034,50 @@ async function addUpcomingReleaseToQueueDashboard(encodedArtist, encodedAlbum, e
     }
 }
 
+let dashboardUpcomingFilter = 'all';
+
+function _upcomingFilterEndpoint() {
+    const params = new URLSearchParams();
+    params.set('include_queue', 'true');
+    if (dashboardUpcomingFilter === 'collection') {
+        params.set('collection', 'true');
+    } else if (dashboardUpcomingFilter === 'recommended') {
+        params.set('recommended', 'true');
+    }
+    return `/api/upcoming-releases?${params.toString()}`;
+}
+
+function _renderUpcomingFilterButtons() {
+    const map = {
+        all: document.getElementById('upcomingFilterAll'),
+        collection: document.getElementById('upcomingFilterCollection'),
+        recommended: document.getElementById('upcomingFilterRecommended')
+    };
+
+    Object.entries(map).forEach(([key, btn]) => {
+        if (!btn) {
+            return;
+        }
+        const active = key === dashboardUpcomingFilter;
+        btn.classList.toggle('btn-info', active);
+        btn.classList.toggle('btn-outline-info', !active);
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+}
+
+function setUpcomingBannerFilter(filter) {
+    const allowed = ['all', 'collection', 'recommended'];
+    dashboardUpcomingFilter = allowed.includes(filter) ? filter : 'all';
+    _renderUpcomingFilterButtons();
+    try {
+        sessionStorage.setItem('dashboardUpcomingFilter', dashboardUpcomingFilter);
+    } catch (_) {}
+    loadUpcomingReleasesBanner();
+}
+
 async function loadUpcomingReleasesBanner() {
     try {
-        const endpoint = '/api/upcoming-releases?collection=false&include_queue=true';
+        const endpoint = _upcomingFilterEndpoint();
         const data = await fetchJsonOrThrow(endpoint);
         clearApiError(endpoint);
         
@@ -1132,7 +1180,8 @@ async function loadUpcomingReleasesBanner() {
         }
         
     } catch (error) {
-        logApiError('/api/upcoming-releases?collection=false&include_queue=true', 'Error loading upcoming releases', error);
+        const endpoint = _upcomingFilterEndpoint();
+        logApiError(endpoint, 'Error loading upcoming releases', error);
         document.getElementById('upcomingBannerContent').innerHTML = `
             <p class="text-muted text-center text-danger"><i class="bi bi-exclamation-triangle"></i> Error loading releases</p>
         `;
@@ -1144,6 +1193,14 @@ const launchOnStartup = dashboardFlagsEl?.dataset.launchOnStartup === 'true';
 const firstFullScanDone = dashboardFlagsEl?.dataset.firstFullScanDone === 'true';
 
 document.addEventListener('DOMContentLoaded', function() {
+    try {
+        const storedFilter = sessionStorage.getItem('dashboardUpcomingFilter');
+        if (storedFilter) {
+            dashboardUpcomingFilter = storedFilter;
+        }
+    } catch (_) {}
+    _renderUpcomingFilterButtons();
+
     const bannerTarget = document.getElementById('upcomingBannerContent');
     if (bannerTarget) {
         try {
