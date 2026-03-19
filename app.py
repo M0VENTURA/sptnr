@@ -6445,6 +6445,16 @@ def api_artist_missing_releases():
     except Exception as aq_err:
         logging.debug(f"[AUTO-QUEUE] Error during auto-queue for '{artist}': {aq_err}")
 
+    # Auto-queue missing singles for album artists when those tracks are not already in collection.
+    try:
+        singles_auto_queued = _auto_queue_missing_singles_for_album_artist(artist, missing)
+        if singles_auto_queued:
+            logging.info(
+                f"[AUTO-QUEUE] Auto-queued {singles_auto_queued} missing single(s) for album artist '{artist}'"
+            )
+    except Exception as aq_single_err:
+        logging.debug(f"[AUTO-QUEUE] Error auto-queuing missing singles for '{artist}': {aq_single_err}")
+
     return jsonify({
         "artist": artist,
         "missing": missing,
@@ -6724,6 +6734,7 @@ def api_scan_all_missing_releases():
                     
                     # Fetch MusicBrainz releases, preferring MBID lookups for accuracy.
                     mb_releases = _fetch_musicbrainz_releases(artist_name, artist_mbid=resolved_artist_mbid)
+                    missing_for_artist = []
                     
                     # Check for missing releases AND update cover art for existing albums
                     for rg in mb_releases:
@@ -6776,6 +6787,15 @@ def api_scan_all_missing_releases():
                             category = "Single"
                         else:
                             category = "Album"
+
+                        missing_for_artist.append({
+                            "id": rg.get("id", ""),
+                            "title": rg.get("title", ""),
+                            "primary_type": rg.get("primary_type", ""),
+                            "first_release_date": rg.get("first_release_date", ""),
+                            "cover_art_url": cover_art_url,
+                            "category": category,
+                        })
                         
                         # Insert missing release into database with DB-aware upsert
                         try:
@@ -6805,6 +6825,21 @@ def api_scan_all_missing_releases():
                             logging.warning(f"[MISSING_RELEASES] Error inserting release {rg.get('title')}: {e}")
                     
                     conn.commit()
+
+                    try:
+                        singles_auto_queued = _auto_queue_missing_singles_for_album_artist(artist_name, missing_for_artist)
+                        if singles_auto_queued:
+                            logging.info(
+                                "[AUTO-QUEUE] Auto-queued %s missing single(s) for album artist '%s' during missing scan",
+                                singles_auto_queued,
+                                artist_name,
+                            )
+                    except Exception as auto_single_err:
+                        logging.warning(
+                            "[AUTO-QUEUE] Error auto-queuing missing singles for '%s' during missing scan: %s",
+                            artist_name,
+                            auto_single_err,
+                        )
                     
                     # Rate limiting
                     time.sleep(1.1)  # MusicBrainz rate limit: 1 request per second
@@ -7560,6 +7595,108 @@ def _auto_queue_favourite_artist_releases(artist: str, new_releases: list) -> in
                 )
         except Exception as e:
             logging.warning(f"[AUTO-QUEUE] Failed to queue '{artist} - {release_title}': {e}")
+
+    return queued_count
+
+
+def _is_album_artist_in_collection(artist: str) -> bool:
+    """Return True when artist appears as a canonical album artist in local collection."""
+    if not artist:
+        return False
+
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT 1
+            FROM tracks
+            WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s)
+            LIMIT 1
+        """, (artist,))
+        exists = cursor.fetchone() is not None
+        conn.close()
+        return exists
+    except Exception as exc:
+        logging.debug(f"[AUTO-QUEUE] Could not verify album-artist status for '{artist}': {exc}")
+        return False
+
+
+def _auto_queue_missing_singles_for_album_artist(artist: str, missing_releases: list[dict]) -> int:
+    """Auto-queue missing singles for album artists when the track is not already in collection."""
+    if not artist or not missing_releases:
+        return 0
+    if not _is_album_artist_in_collection(artist):
+        return 0
+
+    existing_track_titles_norm = set()
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT DISTINCT title
+            FROM tracks
+            WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s)
+               OR LOWER(artist) = LOWER(%s)
+        """, (artist, artist))
+        for row in (cursor.fetchall() or []):
+            track_title = _row_get(row, 'title', index=0)
+            norm_track_title = _normalize_release_title(track_title or "")
+            if norm_track_title:
+                existing_track_titles_norm.add(norm_track_title)
+        conn.close()
+    except Exception as exc:
+        logging.warning("[AUTO-QUEUE] Could not load existing titles for '%s': %s", artist, exc)
+
+    queued_count = 0
+    seen_titles = set()
+    from download_queue_manager import add_to_queue
+
+    for release in missing_releases:
+        title = (release.get("title") or "").strip()
+        if not title:
+            continue
+
+        release_bucket = _derive_release_bucket(
+            primary_type=release.get("primary_type") or "",
+            category=release.get("category") or "",
+            title=title,
+        )
+        if release_bucket != "single":
+            continue
+
+        norm_title = _normalize_release_title(title)
+        if not norm_title or norm_title in seen_titles:
+            continue
+        seen_titles.add(norm_title)
+
+        if norm_title in existing_track_titles_norm:
+            logging.info(
+                "[AUTO-QUEUE] Skipping missing single '%s - %s' because it already exists in collection",
+                artist,
+                title,
+            )
+            continue
+
+        first_release_date = str(release.get("first_release_date") or "")
+        release_year = first_release_date[:4] if len(first_release_date) >= 4 and first_release_date[:4].isdigit() else None
+
+        try:
+            result = add_to_queue(
+                artist=artist,
+                title=title,
+                album=None,
+                source="soulseek",
+                priority=4,
+                import_type="song",
+                year=release_year,
+                release_id=release.get("id") or release.get("release_id"),
+                release_source="missing_release_single_auto",
+            )
+            if result and not bool(result.get("already_queued")):
+                queued_count += 1
+                logging.info("[AUTO-QUEUE] Added missing single '%s - %s'", artist, title)
+        except Exception as exc:
+            logging.warning("[AUTO-QUEUE] Failed queuing missing single '%s - %s': %s", artist, title, exc)
 
     return queued_count
 
