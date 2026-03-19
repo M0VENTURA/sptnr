@@ -47,6 +47,16 @@ PG_DATABASE = os.environ.get("PG_DATABASE", "sptnr")
 PG_PORT = os.environ.get("PG_PORT", "5432")
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")  # Kept for backward compatibility logging
 
+_GENERIC_ARTIST_NAMES = {
+    'various artists',
+    'various',
+    'va',
+    'unknown artist',
+    'unknown',
+    'soundtrack',
+    'ost',
+}
+
 # Global state for tracking scan progress (used by /api/downloads/scan-progress)
 _scan_progress = {
     'scanning': False,
@@ -767,6 +777,24 @@ def get_db():
     return conn
 
 
+def _get_postgres_conn_from_app_or_fallback():
+    """Return a PostgreSQL connection, never SQLite."""
+    try:
+        from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
+        conn = app_get_db()
+        if app_is_postgres_connection(conn):
+            return conn
+        try:
+            conn.close()
+        except Exception:
+            pass
+        logger.warning("app.get_db returned a non-Postgres connection; using queue manager PostgreSQL connection")
+    except Exception as app_db_err:
+        logger.debug(f"app.get_db unavailable for queue manager, falling back to direct PostgreSQL connection: {app_db_err}")
+
+    return get_db()
+
+
 def _ensure_download_queue_columns(conn, cursor, is_pg=True):
     """Ensure expected queue columns exist (PostgreSQL and SQLite)"""
     global _queue_schema_checked
@@ -1267,22 +1295,8 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         return None
 
     try:
-        # Use the instance-configured DB method.
-        # If PostgreSQL is configured but cannot be resolved, fail fast instead of silently falling back to SQLite.
-        is_pg = False
-        pg_configured = bool(is_postgres_configured())
-        try:
-            from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
-            conn = app_get_db()
-            is_pg = bool(app_is_postgres_connection(conn))
-        except Exception as app_db_err:
-            if pg_configured:
-                logger.warning(
-                    "[add_to_queue] app DB connection unavailable (%s); falling back to queue manager DB helper",
-                    app_db_err,
-                )
-            conn = get_db()
-            is_pg = bool(_is_postgres_connection(conn))
+        conn = _get_postgres_conn_from_app_or_fallback()
+        is_pg = True
         cursor = conn.cursor()
 
         logger.debug(f"[add_to_queue] Using {'PostgreSQL' if is_pg else 'SQLite'} backend")
@@ -1296,8 +1310,20 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         # Ensure required columns exist for both SQLite and PostgreSQL.
         _ensure_download_queue_columns(conn, cursor, is_pg=is_pg)
         
-        # Search query for Soulseek: artist and title only (no album)
-        search_query = f"{artist} - {title}"
+        # Search query for Soulseek: prefer track artist; avoid generic names.
+        artist_text = str(artist or '').strip()
+        title_text = str(title or '').strip()
+        if artist_text.lower() in _GENERIC_ARTIST_NAMES:
+            if ' - ' in title_text:
+                left, right = [part.strip() for part in title_text.split(' - ', 1)]
+                if left and right and left.lower() not in _GENERIC_ARTIST_NAMES:
+                    search_query = f"{left} - {right}"
+                else:
+                    search_query = title_text
+            else:
+                search_query = title_text
+        else:
+            search_query = f"{artist_text} - {title_text}"
 
         # Normalize duration to seconds. Some MusicBrainz paths supply milliseconds.
         if duration not in (None, ""):
@@ -1517,9 +1543,9 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         # Unique-index dedupe race: return existing active item when available.
         # Use the same artist + title + source cross-album check for consistency.
         try:
-            conn2 = get_db()
+            conn2 = _get_postgres_conn_from_app_or_fallback()
             cursor2 = conn2.cursor()
-            ph2 = "%s" if _is_postgres_connection(conn2) else "?"
+            ph2 = "%s"
             cursor2.execute(
                 f"""
                 SELECT * FROM download_queue
@@ -1584,14 +1610,8 @@ def get_queue(status=None, source=None, limit=50):
     global _queue_schema_checked, _queue_columns_cache
 
     try:
-        is_pg = False
-        try:
-            from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
-            conn = app_get_db()
-            is_pg = bool(app_is_postgres_connection(conn))
-        except Exception:
-            conn = get_db()
-            is_pg = _is_postgres_connection(conn)
+        conn = _get_postgres_conn_from_app_or_fallback()
+        is_pg = True
 
         if is_pg:
             cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -1704,15 +1724,8 @@ def update_queue_item(queue_id, **kwargs):
     for attempt in range(max_retries):
         conn = None
         try:
-            # Try app's get_db first (PostgreSQL-aware)
-            is_pg = False
-            try:
-                from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
-                conn = app_get_db()
-                is_pg = bool(app_is_postgres_connection(conn))
-            except Exception:
-                conn = get_db()
-                is_pg = _is_postgres_connection(conn)
+            conn = _get_postgres_conn_from_app_or_fallback()
+            is_pg = True
             
             cursor = conn.cursor()
             placeholder = "%s" if is_pg else "?"
@@ -1905,15 +1918,8 @@ def mark_as_failed(queue_id, reason, retry_delay_minutes=30):
     
     for attempt in range(max_retries):
         try:
-            # Try app's get_db first (PostgreSQL-aware)
-            is_pg = False
-            try:
-                from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
-                conn = app_get_db()
-                is_pg = bool(app_is_postgres_connection(conn))
-            except Exception:
-                conn = get_db()
-                is_pg = _is_postgres_connection(conn)
+            conn = _get_postgres_conn_from_app_or_fallback()
+            is_pg = True
             
             cursor = conn.cursor()
             placeholder = "%s" if is_pg else "?"
@@ -2028,15 +2034,8 @@ def migrate_existing_queue_items_to_grouped_setup(limit=None):
         Dict with counters and whether migration succeeded.
     """
     try:
-        # Try app's DB first (PostgreSQL-aware)
-        is_pg = False
-        try:
-            from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
-            conn = app_get_db()
-            is_pg = bool(app_is_postgres_connection(conn))
-        except Exception:
-            conn = get_db()
-            is_pg = _is_postgres_connection(conn)
+        conn = _get_postgres_conn_from_app_or_fallback()
+        is_pg = True
 
         cursor = conn.cursor()
         placeholder = "%s" if is_pg else "?"
@@ -3525,20 +3524,10 @@ def check_downloads_folder():
             _prune_empty_download_folders(downloads_dir)
         
         completed_items = []
-        is_pg = False
-        try:
-            from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
-            conn = app_get_db()
-            is_pg = bool(app_is_postgres_connection(conn))
-        except Exception:
-            conn = get_db()
-            is_pg = _is_postgres_connection(conn)
-
-        if is_pg:
-            cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        else:
-            cursor = conn.cursor()
-        ph = "%s" if is_pg else "?"
+        conn = _get_postgres_conn_from_app_or_fallback()
+        is_pg = True
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        ph = "%s"
 
         # Get all active queue items (not yet completed or imported)
         cursor.execute("""
@@ -3967,20 +3956,10 @@ def reconcile_album_files_with_queue(artist, album, release_mbid=None, delete_un
             result['error'] = 'artist and album are required'
             return result
 
-        is_pg = False
-        try:
-            from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
-            conn = app_get_db()
-            is_pg = bool(app_is_postgres_connection(conn))
-        except Exception:
-            conn = get_db()
-            is_pg = _is_postgres_connection(conn)
-
-        if is_pg:
-            cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        else:
-            cursor = conn.cursor()
-        placeholder = "%s" if is_pg else "?"
+        conn = _get_postgres_conn_from_app_or_fallback()
+        is_pg = True
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        placeholder = "%s"
 
         if mbid:
             cursor.execute(
@@ -5171,12 +5150,9 @@ def get_completed_queue(limit=50):
         List of completed/unmatched queue items
     """
     try:
-        conn = get_db()
-
-        from app import _is_postgres_connection as app_is_postgres_connection
-        is_pg = bool(app_is_postgres_connection(conn))
-        placeholder = "%s" if is_pg else "?"
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) if is_pg else conn.cursor()
+        conn = _get_postgres_conn_from_app_or_fallback()
+        placeholder = "%s"
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
         cursor.execute(f"""
             SELECT * FROM download_queue 
@@ -6719,7 +6695,7 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) if is_pg else conn.cursor()
 
         # Ensure late-added queue columns exist before selecting/updating them.
-        _ensure_download_queue_columns(conn, cursor, is_pg=is_pg)
+        _ensure_download_queue_columns(conn, cursor, is_pg=True)
 
         # Fetch all queue items for this album. If copied_individually is missing
         # on a stale DB, retry with a literal fallback column so processing can continue.
@@ -7010,12 +6986,9 @@ def copy_queue_item_file_to_music(queue_id, music_dir=None):
             music_dir = MUSIC_DIR
         
         # Get queue item
-        conn = get_db()
-        cursor = conn.cursor()
-        
-        from app import _is_postgres_connection as app_is_postgres_connection
-        is_pg = bool(app_is_postgres_connection(conn))
-        placeholder = "%s" if is_pg else "?"
+        conn = _get_postgres_conn_from_app_or_fallback()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        placeholder = "%s"
         
         cursor.execute(f"SELECT * FROM download_queue WHERE id = {placeholder}", (queue_id,))
         queue_item = cursor.fetchone()

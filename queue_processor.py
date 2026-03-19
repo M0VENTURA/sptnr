@@ -15,7 +15,6 @@ import requests
 import secrets
 import signal
 import subprocess
-import sqlite3
 import sys
 import time
 import traceback
@@ -107,7 +106,7 @@ def _is_postgres_connection(conn):
 
 
 def _get_placeholder(conn):
-    return "%s" if _is_postgres_connection(conn) else "?"
+    return "%s"
 
 
 def resolve_downloads_dir():
@@ -135,6 +134,16 @@ DOWNLOADS_DIR = resolve_downloads_dir()
 
 # Soulseek queue downloads are intentionally restricted to these formats.
 _SLSKD_ALLOWED_EXTENSIONS = ('.mp3', '.flac')
+
+_GENERIC_ARTIST_NAMES = {
+    'various artists',
+    'various',
+    'va',
+    'unknown artist',
+    'unknown',
+    'soundtrack',
+    'ost',
+}
 
 _DEFAULT_DOWNLOAD_QUALITY_FILTER = {
     'enabled': False,
@@ -593,6 +602,34 @@ def _poll_search_responses(client, search_id, max_poll_attempts=45):
     return gathered
 
 
+def _is_generic_artist_name(value):
+    artist = str(value or '').strip().lower()
+    return artist in _GENERIC_ARTIST_NAMES
+
+
+def _get_effective_track_search_query(queue_item):
+    """Build a Soulseek track query that avoids generic artist tokens."""
+    artist = str(queue_item.get('artist') or '').strip()
+    title = str(queue_item.get('title') or '').strip()
+
+    if not title:
+        return str(queue_item.get('search_query') or '').strip()
+
+    if _is_generic_artist_name(artist):
+        # Some discovered files or compilation rows can store titles like
+        # "Track Artist - Song Title" with artist left as "Various Artists".
+        # Split that when available and search by the extracted track artist.
+        if ' - ' in title:
+            left, right = [part.strip() for part in title.split(' - ', 1)]
+            if left and right and not _is_generic_artist_name(left):
+                return f"{left} - {right}"
+        # No reliable per-track artist available; title-only search is safer
+        # than querying Soulseek as "Various Artists - <title>".
+        return title
+
+    return f"{artist} - {title}"
+
+
 def _get_album_search_query(queue_item):
     album = (queue_item.get('album') or '').strip()
     if not album or album.lower() in ('unknown', 'unknown album'):
@@ -603,6 +640,10 @@ def _get_album_search_query(queue_item):
         or queue_item.get('artist')
         or ''
     ).strip()
+    if _is_generic_artist_name(album_artist):
+        # Compilation-level artists (e.g. Various Artists) produce very broad
+        # album searches and often pollute candidate results.
+        return None
     if album_artist:
         return f"{album_artist} - {album}"
     return album
@@ -1106,69 +1147,28 @@ def claim_queued_items(limit=10):
         placeholder = _get_placeholder(conn)
         now = datetime.now().isoformat()
 
-        if _is_postgres_connection(conn):
-            cursor.execute(
-                """
-                WITH candidates AS (
-                    SELECT id
-                    FROM download_queue
-                    WHERE status = 'queued'
-                      AND (next_retry_at IS NULL OR next_retry_at <= %s)
-                    ORDER BY priority ASC, retry_count ASC, next_retry_at ASC NULLS FIRST, created_at ASC
-                    FOR UPDATE SKIP LOCKED
-                    LIMIT %s
-                )
-                UPDATE download_queue dq
-                SET status = 'searching',
-                    updated_at = CURRENT_TIMESTAMP
-                FROM candidates c
-                WHERE dq.id = c.id
-                RETURNING dq.*
-                """,
-                (now, int(limit)),
-            )
-            rows = cursor.fetchall() or []
-            items = [dict(row) for row in rows]
-        else:
-            # SQLite fallback: select candidate IDs first, then update them in one statement.
-            cursor.execute(
-                """
+        cursor.execute(
+            """
+            WITH candidates AS (
                 SELECT id
                 FROM download_queue
                 WHERE status = 'queued'
-                  AND (next_retry_at IS NULL OR next_retry_at <= ?)
-                ORDER BY priority ASC, retry_count ASC, next_retry_at ASC, created_at ASC
-                LIMIT ?
-                """,
-                (now, int(limit)),
+                  AND (next_retry_at IS NULL OR next_retry_at <= %s)
+                ORDER BY priority ASC, retry_count ASC, next_retry_at ASC NULLS FIRST, created_at ASC
+                FOR UPDATE SKIP LOCKED
+                LIMIT %s
             )
-            id_rows = cursor.fetchall() or []
-            row_ids = [r['id'] if hasattr(r, 'keys') else r[0] for r in id_rows]
-            if not row_ids:
-                return []
-
-            in_params = ",".join([placeholder] * len(row_ids))
-            cursor.execute(
-                f"""
-                UPDATE download_queue
-                SET status = 'searching',
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id IN ({in_params})
-                """,
-                tuple(row_ids),
-            )
-
-            cursor.execute(
-                f"""
-                SELECT *
-                FROM download_queue
-                WHERE id IN ({in_params})
-                ORDER BY priority ASC, retry_count ASC, next_retry_at ASC, created_at ASC
-                """,
-                tuple(row_ids),
-            )
-            rows = cursor.fetchall() or []
-            items = [dict(row) for row in rows]
+            UPDATE download_queue dq
+            SET status = 'searching',
+                updated_at = CURRENT_TIMESTAMP
+            FROM candidates c
+            WHERE dq.id = c.id
+            RETURNING dq.*
+            """,
+            (now, int(limit)),
+        )
+        rows = cursor.fetchall() or []
+        items = [dict(row) for row in rows]
 
         conn.commit()
         return items
@@ -1223,33 +1223,17 @@ def promote_stale_queried_items(min_age_seconds=120, limit=200):
         if not row_ids:
             return 0
 
-        # Update in a single statement to keep churn low.
-        if _is_postgres_connection(conn):
-            cursor.execute(
-                """
-                UPDATE download_queue
-                SET status = 'queued',
-                    updated_at = CURRENT_TIMESTAMP,
-                    failure_reason = COALESCE(failure_reason, 'Auto-promoted from queried by queue processor')
-                WHERE id = ANY(%s)
-                """,
-                (row_ids,),
-            )
-            promoted = cursor.rowcount or 0
-        else:
-            # SQLite fallback path
-            in_params = ",".join([placeholder] * len(row_ids))
-            cursor.execute(
-                f"""
-                UPDATE download_queue
-                SET status = 'queued',
-                    updated_at = CURRENT_TIMESTAMP,
-                    failure_reason = COALESCE(failure_reason, 'Auto-promoted from queried by queue processor')
-                WHERE id IN ({in_params})
-                """,
-                tuple(row_ids),
-            )
-            promoted = cursor.rowcount or 0
+        cursor.execute(
+            """
+            UPDATE download_queue
+            SET status = 'queued',
+                updated_at = CURRENT_TIMESTAMP,
+                failure_reason = COALESCE(failure_reason, 'Auto-promoted from queried by queue processor')
+            WHERE id = ANY(%s)
+            """,
+            (row_ids,),
+        )
+        promoted = cursor.rowcount or 0
 
         conn.commit()
 
@@ -1343,10 +1327,9 @@ def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=30):
     conn = None
     try:
         conn = get_db()
-        is_pg = _is_postgres_connection(conn)
         
         cursor = conn.cursor()
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         # Get current retry_count and max_retries to enforce bounded retry behavior
         cursor.execute(f"SELECT retry_count, max_retries FROM download_queue WHERE id = {placeholder}", (queue_id,))
@@ -1826,7 +1809,9 @@ def _find_location_match_in_music(queue_item):
 def search_and_download(queue_id, queue_item, client):
     """Search Soulseek for queue item and download top result"""
     try:
-        search_query = queue_item['search_query']
+        search_query = _get_effective_track_search_query(queue_item)
+        if not search_query:
+            search_query = str(queue_item.get('search_query') or '').strip()
 
         # Location-first collection check: only trust concrete path matches.
         location_match = _find_location_match_in_music(queue_item)
@@ -2983,6 +2968,10 @@ def run_processor(interval=30):
                 logger.info(f"[STARTUP_MIGRATION] {proc.stdout.strip()}")
             if proc.stderr:
                 logger.debug(f"[STARTUP_MIGRATION] stderr: {proc.stderr.strip()}")
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    f"startup_queue_columns_fast.py failed with exit code {proc.returncode}"
+                )
         else:
             logger.debug("[STARTUP_MIGRATION] startup_queue_columns_fast.py not found, skipping")
     except Exception as migration_err:

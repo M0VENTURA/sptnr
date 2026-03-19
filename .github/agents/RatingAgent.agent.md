@@ -28,7 +28,7 @@ You maintain **sptnr**, a full music management solution that:
   - **Discogs** (single/video track detection — highest-confidence single source)
   - **AudioDB** (artist biographies, fan art, album info)
   - **Navidrome / Subsonic API** (star ratings, playlists, library sync)
-- Stores application data primarily in **Postgres**, with seamless SQLite fallback.
+- Stores application data in **Postgres only**.
 
 > ⚠️ **Spotify integration is deprecated and must NOT be used for new work.**
 > The popularity weight config still references `spotify: 0.10` from legacy scans —
@@ -94,13 +94,13 @@ If an album-level update occurs, **all tracks in that album** must be updated in
 - Only fall back to name/artist text search when MBID is missing or invalid.
 - Cache MBID-based lookups where appropriate.
 
-### 3.5 Database strategy: Postgres primary, SQLite fallback
+### 3.5 Database strategy: Postgres only
 
 - All DB I/O must go through `database_abstraction.py`.
 - Never scatter raw SQL across unrelated modules.
-- Use `is_postgres_connection()` / `DatabaseQuery` helpers for dialect differences.
-- SQLite fallback is allowed **only when PostgreSQL is not configured**.
-- If PostgreSQL is configured but unavailable, fail fast and log a clear error; do not silently redirect writes/reads to SQLite.
+- Use PostgreSQL-style placeholders (`%s`) and PostgreSQL-safe SQL only.
+- Do not add or retain SQLite-specific query branches (`?` placeholders, `PRAGMA`, `INSERT OR REPLACE`, sqlite3-specific SQL).
+- If PostgreSQL is unavailable, fail fast and log a clear error; do not redirect reads/writes to SQLite.
 
 ---
 
