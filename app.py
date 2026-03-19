@@ -2988,6 +2988,7 @@ def _schedule_configured_startup_scan_launch():
 
             scan_type = str(features.get("startup_scan_type", "navidrome") or "navidrome").strip().lower()
             restart = bool(features.get("startup_scan_restart", True))
+            force_enabled = bool(features.get("force", False))
 
             mapping = {
                 "navidrome": ("scan_navidrome", "/scan/navidrome"),
@@ -2999,8 +3000,8 @@ def _schedule_configured_startup_scan_launch():
 
             params = []
             if scan_type != "metadata":
-                params.append("mode=force" if restart else "mode=all")
-            if scan_type == "navidrome":
+                params.append("mode=force" if force_enabled else "mode=all")
+            if scan_type in {"navidrome", "popularity", "combined"}:
                 params.append("restart=1" if restart else "restart=0")
 
             request_path = base_path + (("?" + "&".join(params)) if params else "")
@@ -3011,7 +3012,7 @@ def _schedule_configured_startup_scan_launch():
 
             log_unified(
                 f"[BOOT] Launch on startup: starting {scan_type} "
-                f"({'restart' if restart else 'normal'})"
+                f"({'restart' if restart else 'normal'}, {'force' if force_enabled else 'changes'})"
             )
             with app.test_request_context(request_path, method="POST"):
                 handler()
@@ -11118,6 +11119,7 @@ def scan_popularity_route():
     
     # Get scan mode from query parameters (default: "all")
     mode = request.args.get('mode', 'all')  # all, force, missing, singles, resume, resume_force
+    restart_requested = str(request.args.get('restart', '0')).strip().lower() in ('1', 'true', 'yes', 'on')
     
     with scan_lock:
         # Check if scan is already running
@@ -11160,6 +11162,14 @@ def scan_popularity_route():
                 return redirect(url_for("dashboard"))        
         try:
             db_dir = os.path.dirname(DB_PATH)
+            if restart_requested:
+                checkpoint_path = os.path.join(db_dir, "popularity_scan_checkpoint.json")
+                if os.path.exists(checkpoint_path):
+                    try:
+                        os.remove(checkpoint_path)
+                        logging.info("Restart requested: cleared popularity checkpoint to start from beginning")
+                    except Exception as checkpoint_err:
+                        logging.warning(f"Restart requested but failed to clear popularity checkpoint: {checkpoint_err}")
             
             # Use different progress files for singles-only mode
             if mode == 'singles':
@@ -12891,60 +12901,50 @@ def api_scan_from_artist():
         letter = data.get("letter", "").strip()
         scan_mode = data.get("scan_mode", "changes")  # 'changes' or 'forced'
         
-        # If letter is provided, query Navidrome for first artist starting with that letter
+        # If letter is provided, resolve first matching artist from local library.
+        # This keeps artist-page scans independent from Navidrome availability/state.
         if letter:
             try:
-                # Get Navidrome configuration
-                config_data, _ = _read_yaml(CONFIG_PATH)
-                current_user = session.get("username")
-                navidrome_users = config_data.get("navidrome_users", [])
-                nav_cfg = None
-
-                if navidrome_users and current_user:
-                    nav_cfg = next((u for u in navidrome_users if u.get("user") == current_user), None)
-                if not nav_cfg:
-                    nav_cfg = config_data.get("navidrome", {})
-
-                base_url = nav_cfg.get("base_url")
-                username = nav_cfg.get("user")
-                password = nav_cfg.get("pass")
-                
-                if not (base_url and username and password):
-                    return jsonify({"success": False, "error": "Navidrome not configured"}), 400
-                
-                # Query Navidrome for artists
-                from api_clients.navidrome import NavidromeClient
-                client = NavidromeClient(base_url, username, password)
-                artist_map = client.build_artist_index()
-                
-                if not artist_map:
-                    return jsonify({"success": False, "error": "No artists found in Navidrome"}), 400
-                
-                # Filter artists by letter and get the first one alphabetically
                 letter_upper = letter.upper()
-                matching_artists = []
-                for artist_name in sorted(artist_map.keys(), key=str.lower):
-                    if not artist_name:
-                        continue
-                    first_char = artist_name[0].upper()
-                    # Match letter or '#' for non-alphabetic characters
-                    if letter_upper == '#':
-                        if first_char not in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ':
-                            matching_artists.append(artist_name)
-                    elif first_char == letter_upper:
-                        matching_artists.append(artist_name)
-                
-                if not matching_artists:
-                    return jsonify({"success": False, "error": f"No artists found in Navidrome starting with '{letter}'"}), 400
-                
-                # Use the first artist from Navidrome for this letter
-                artist = matching_artists[0]
-                logging.info(f"Letter '{letter}' scan: Using first artist from Navidrome: '{artist}'")
-                log_unified(f"Popularity Scan - Letter '{letter}' resolved to artist '{artist}'")
+                conn = get_db()
+                cursor = conn.cursor()
+                placeholder = "%s"
+                artist_expr = "COALESCE(NULLIF(album_artist, ''), artist)"
+
+                if letter_upper == '#':
+                    cursor.execute(f"""
+                        SELECT DISTINCT {artist_expr} AS artist_name
+                        FROM tracks
+                        WHERE {artist_expr} IS NOT NULL
+                          AND {artist_expr} <> ''
+                          AND UPPER(SUBSTR({artist_expr}, 1, 1)) NOT BETWEEN 'A' AND 'Z'
+                        ORDER BY LOWER({artist_expr})
+                        LIMIT 1
+                    """)
+                else:
+                    cursor.execute(f"""
+                        SELECT DISTINCT {artist_expr} AS artist_name
+                        FROM tracks
+                        WHERE {artist_expr} IS NOT NULL
+                          AND {artist_expr} <> ''
+                          AND UPPER({artist_expr}) LIKE {placeholder}
+                        ORDER BY LOWER({artist_expr})
+                        LIMIT 1
+                    """, (f"{letter_upper}%",))
+
+                row = cursor.fetchone()
+                conn.close()
+
+                if not row or not row.get('artist_name'):
+                    return jsonify({"success": False, "error": f"No artists found in library starting with '{letter}'"}), 400
+
+                artist = row['artist_name']
+                logging.info(f"Letter '{letter}' scan: Using first artist from library: '{artist}'")
+                log_unified(f"Popularity Scan - Letter '{letter}' resolved to artist '{artist}' from library")
                 
             except Exception as e:
-                logging.error(f"Error querying Navidrome for letter '{letter}': {e}", exc_info=True)
-                return jsonify({"success": False, "error": f"Failed to query Navidrome: {str(e)}"}), 500
+                logging.error(f"Error resolving library artist for letter '{letter}': {e}", exc_info=True)
+                return jsonify({"success": False, "error": f"Failed to resolve artist from library: {str(e)}"}), 500
         
         if not artist:
             return jsonify({"success": False, "error": "Artist name or letter is required"}), 400
@@ -12982,7 +12982,7 @@ def api_scan_from_artist():
                 }
             )
             mode_desc = "Full (Forced)" if force_rescan else "Changes Only"
-            message_suffix = f" (from Navidrome letter '{letter}')" if letter else ""
+            message_suffix = f" (from library letter '{letter}')" if letter else ""
             log_unified(f"Popularity Scan - Starting from artist '{artist}' ({mode_desc}){message_suffix}")
             
             def run_popularity_scan_bg():
@@ -13825,6 +13825,7 @@ def scan_combined():
     
     # Get scan mode from query parameters (default: "all")
     mode = request.args.get('mode', 'all')  # all, force, resume, resume_force
+    restart_requested = str(request.args.get('restart', '0')).strip().lower() in ('1', 'true', 'yes', 'on')
     
     with scan_lock:
         if scan_process_combined is not None:
@@ -13849,6 +13850,13 @@ def scan_combined():
                 try:
                     logging.info(f"Starting combined scan (mode={mode})")
                     from popularity import popularity_scan as scan_popularity_func
+
+                    if restart_requested and os.path.exists(checkpoint_path):
+                        try:
+                            os.remove(checkpoint_path)
+                            logging.info("Restart requested: cleared combined checkpoint to start from beginning")
+                        except Exception as checkpoint_err:
+                            logging.warning(f"Restart requested but failed to clear combined checkpoint: {checkpoint_err}")
                     
                     # Build artist index
                     artist_map = build_artist_index()
@@ -13976,7 +13984,8 @@ def scan_combined():
                 'resume': 'Resume from Last',
                 'resume_force': 'Resume (Forced)'
             }.get(mode, 'Full')
-            flash(f"✅ Combined scan started ({mode_desc} - Navidrome → Popularity → Singles for each artist)", "success")
+            restart_desc = " with restart" if restart_requested else ""
+            flash(f"✅ Combined scan started ({mode_desc}{restart_desc} - Navidrome → Popularity → Singles for each artist)", "success")
         except Exception as e:
             logging.error(f"Error starting combined scan: {e}", exc_info=True)
             flash(f"❌ Error starting combined scan: {str(e)}", "danger")

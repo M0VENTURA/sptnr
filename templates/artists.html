@@ -369,7 +369,7 @@ async function scanLetterArtists(letter) {
     const forceCheck = document.querySelector(`.letter-force-check[data-letter="${letter}"]`);
     const fullScan = !!(forceCheck && forceCheck.checked);
     const scanMode = fullScan ? 'forced' : 'changes';
-    const message = `Start ${fullScan ? 'Full' : 'Changes'} scan from letter "${letter}"?\\n\\nThis will query Navidrome for the first artist starting with "${letter}" and scan from there.`;
+    const message = `Start ${fullScan ? 'Full' : 'Changes'} scan from letter "${letter}"?\\n\\nThis will resolve the first matching artist from your local library and scan from there.`;
     
     if (!confirm(message)) {
         return;

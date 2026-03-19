@@ -1122,7 +1122,7 @@ function startSelectedScan(restart = false) {
     }
 
     const forced = document.getElementById('forcedCheck').checked;
-    const mode = (forced || restart) ? 'force' : 'all';
+    const mode = forced ? 'force' : 'all';
 
     var actionUrl = '';
     if (scanType === 'navidrome') {
@@ -1139,7 +1139,7 @@ function startSelectedScan(restart = false) {
     if (scanType !== 'metadata') {
         url.searchParams.append('mode', mode);
     }
-    if (scanType === 'navidrome') {
+    if (scanType === 'navidrome' || scanType === 'popularity' || scanType === 'combined') {
         url.searchParams.append('restart', restart ? '1' : '0');
     }
 

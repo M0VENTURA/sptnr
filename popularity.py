@@ -1202,6 +1202,11 @@ def calculate_artist_popularity_stats(artist_name: str, conn: sqlite3.Connection
             'top_20_percentile': top_20_threshold   # Top 20% of artist's tracks
         }
     except Exception as e:
+        try:
+            if conn is not None and is_postgres_connection(conn):
+                conn.rollback()
+        except Exception:
+            pass
         log_verbose(f"   Error calculating artist stats: {e}")
         return {
             'avg_popularity': 0,
@@ -2464,6 +2469,11 @@ def detect_single_for_track(
         except ImportError as e:
             if verbose:
                 log_unified(f"   âš  Enhanced detection module not available: {e}")
+            if not owns_connection and conn is not None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
             # Fall through to standard detection
         except Exception as e:
             if verbose:
@@ -2471,6 +2481,11 @@ def detect_single_for_track(
             import traceback
             if verbose:
                 log_unified(f"   Error details: {traceback.format_exc()}")
+            if not owns_connection and conn is not None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
             # Fall through to standard detection
         finally:
             if owns_connection and conn is not None:
@@ -2598,6 +2613,11 @@ def detect_single_for_track(
             
             conn.close()
         except Exception as e:
+            try:
+                if conn is not None and is_postgres_connection(conn):
+                    conn.rollback()
+            except Exception:
+                pass
             if verbose:
                 log_verbose(f"   âš  Could not calculate album mean for popularity filter: {e}")
             # Continue with detection if we can't calculate album mean
