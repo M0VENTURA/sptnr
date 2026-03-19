@@ -271,12 +271,31 @@ def _extract_tag_value(tags, keys):
 
 def _is_musicbrainz_backed(queue_item):
     """Return True when queue item is tied to an expected MusicBrainz track/release."""
+    source = str(queue_item.get('source') or '').strip().lower()
+    release_source = str(queue_item.get('release_source') or '').strip().lower()
+
+    # Discovery rows should never auto-move as "MusicBrainz-backed" unless the
+    # metadata is explicit and authoritative (release_source=musicbrainz).
+    if source == 'discovered' and release_source != 'musicbrainz':
+        return False
+
+    uuid_pattern = re.compile(
+        r"^[0-9a-fA-F]{8}-"
+        r"[0-9a-fA-F]{4}-"
+        r"[0-9a-fA-F]{4}-"
+        r"[0-9a-fA-F]{4}-"
+        r"[0-9a-fA-F]{12}$"
+    )
+
+    def _is_uuid(value):
+        text = str(value or '').strip()
+        return bool(text and uuid_pattern.match(text))
+
     return bool(
-        queue_item.get('release_id')
-        or queue_item.get('release_mbid')
-        or queue_item.get('recording_mbid')
-        or queue_item.get('isrc')
-        or str(queue_item.get('release_source') or '').strip().lower() == 'musicbrainz'
+        release_source == 'musicbrainz'
+        or _is_uuid(queue_item.get('release_id'))
+        or _is_uuid(queue_item.get('release_mbid'))
+        or _is_uuid(queue_item.get('recording_mbid'))
     )
 
 

@@ -15,7 +15,7 @@ import requests
 import os
 import json
 import logging
-from datetime import datetime
+import re
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -286,7 +286,10 @@ class MusicBrainzReleaseManager:
         Returns:
             Path object for the folder
         """
-        folder_name = f"{year} - {artist} - {album}".replace('/', '_').replace('\\', '_')[:200]
+        year_text = str(year).strip() if year not in (None, '') else ''
+        year_match = re.search(r"(19|20)\d{2}", year_text)
+        folder_year = year_match.group(0) if year_match else 'Unknown'
+        folder_name = f"{folder_year} - {artist} - {album}".replace('/', '_').replace('\\', '_')[:200]
         folder_path = self.downloads_dir / folder_name
         folder_path.mkdir(parents=True, exist_ok=True)
         
@@ -576,14 +579,28 @@ class MusicBrainzReleaseManager:
             # Fetch release data
             mb_data = self.fetch_release_from_musicbrainz(release_id)
             
-            # Extract release year
+            # Extract release year from MusicBrainz payload.
+            # For /ws/2/release/{id}, the canonical field is top-level `date`.
             release_year = None
-            if 'releases' in mb_data and mb_data['releases']:
-                date_str = mb_data['releases'][0].get('first-release-date', '')
-                release_year = int(date_str.split('-')[0]) if date_str else None
-            
-            if not release_year:
-                release_year = datetime.now().year
+            date_candidates = []
+
+            top_level_date = mb_data.get('date')
+            if top_level_date:
+                date_candidates.append(str(top_level_date))
+
+            nested_releases = mb_data.get('releases') if isinstance(mb_data.get('releases'), list) else []
+            for rel in nested_releases:
+                if not isinstance(rel, dict):
+                    continue
+                rel_date = rel.get('date') or rel.get('first-release-date')
+                if rel_date:
+                    date_candidates.append(str(rel_date))
+
+            for candidate in date_candidates:
+                match = re.search(r"(19|20)\d{2}", candidate)
+                if match:
+                    release_year = int(match.group(0))
+                    break
             
             # Create monitoring folder
             monitoring_folder = self.create_monitoring_folder(artist, release_title, release_year)
