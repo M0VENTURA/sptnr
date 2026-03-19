@@ -952,13 +952,14 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                     logger.info(f"Auto-removed {removed_dupes} duplicate active download_queue row(s) before dedupe index creation")
                 conn.commit()
 
-                # Drop the existing index before recreating to ensure the WHERE clause is
-                # always up-to-date with the current definition.  IF NOT EXISTS on the CREATE
-                # acts as a safety net in case the drop was silently skipped.
-                cursor.execute(
-                    "DROP INDEX IF EXISTS uq_download_queue_active_identity"
-                )
-                conn.commit()
+                # Avoid DROP+CREATE races across concurrent workers. Acquire a transaction-scoped
+                # advisory lock and only attempt CREATE IF NOT EXISTS.
+                try:
+                    cursor.execute("SELECT pg_advisory_xact_lock(hashtext('uq_download_queue_active_identity'))")
+                except Exception:
+                    # If advisory locks are unavailable for any reason, continue with IF NOT EXISTS.
+                    pass
+
                 cursor.execute(
                     """
                     CREATE UNIQUE INDEX IF NOT EXISTS uq_download_queue_active_identity
@@ -972,7 +973,11 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                     conn.rollback()
                 except Exception:
                     pass
-                logger.warning(f"Could not create active queue dedupe index: {e}")
+                err_text = str(e).lower()
+                if "pg_class_relname_nsp_index" in err_text and "already exists" in err_text:
+                    logger.info("Active queue dedupe index already exists (concurrent startup race avoided)")
+                else:
+                    logger.warning(f"Could not create active queue dedupe index: {e}")
 
             # Re-check after attempted ALTERs. Only mark schema as checked when all
             # required columns are present; otherwise keep retrying on future calls.

@@ -91,6 +91,54 @@ def _ensure_postgres_track_columns(conn):
     return []
 
 
+def _ensure_postgres_musicbrainz_release_conflict_target(conn):
+    cur = conn.cursor()
+    cur.execute("SELECT pg_advisory_xact_lock(hashtext('uq_musicbrainz_releases_release_id'))")
+
+    cur.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1
+            FROM pg_indexes
+            WHERE schemaname = current_schema()
+              AND tablename = 'musicbrainz_releases'
+              AND indexdef ILIKE 'CREATE UNIQUE INDEX% (release_id)%'
+        )
+        """
+    )
+    exists_row = cur.fetchone()
+    has_unique = bool(exists_row and exists_row[0])
+    if has_unique:
+        return []
+
+    cur.execute(
+        """
+        WITH ranked AS (
+            SELECT id,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY release_id
+                       ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST, id DESC
+                   ) AS rn
+            FROM musicbrainz_releases
+            WHERE release_id IS NOT NULL
+        )
+        DELETE FROM musicbrainz_releases m
+        USING ranked r
+        WHERE m.id = r.id
+          AND r.rn > 1
+        """
+    )
+
+    cur.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_musicbrainz_releases_release_id
+        ON musicbrainz_releases (release_id)
+        """
+    )
+    conn.commit()
+    return ["musicbrainz_releases.release_id_unique"]
+
+
 def main():
     try:
         if not _postgres_env_configured():
@@ -101,7 +149,8 @@ def main():
         try:
             queue_added = _ensure_postgres_columns(conn)
             track_added = _ensure_postgres_track_columns(conn)
-            added = queue_added + [f"tracks.{c}" for c in track_added]
+            mb_added = _ensure_postgres_musicbrainz_release_conflict_target(conn)
+            added = queue_added + [f"tracks.{c}" for c in track_added] + mb_added
             if added:
                 print(f"✓ startup schema migration (postgres): added {', '.join(added)}")
             else:

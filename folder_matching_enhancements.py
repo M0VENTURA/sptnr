@@ -80,6 +80,56 @@ def _ensure_release_track_cache_columns(cursor, is_pg: bool) -> None:
         cursor.execute(f"ALTER TABLE musicbrainz_release_tracks ADD COLUMN {column_name} {column_type}")
 
 
+def _ensure_musicbrainz_release_conflict_target(cursor, is_pg: bool) -> None:
+    if not is_pg:
+        return
+
+    # Serialize this schema fix across workers to avoid DDL races on restart.
+    cursor.execute("SELECT pg_advisory_xact_lock(hashtext('uq_musicbrainz_releases_release_id'))")
+
+    cursor.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1
+            FROM pg_indexes
+            WHERE schemaname = current_schema()
+              AND tablename = 'musicbrainz_releases'
+              AND indexdef ILIKE 'CREATE UNIQUE INDEX% (release_id)%'
+        )
+        """
+    )
+    exists_row = cursor.fetchone()
+    has_unique = bool(exists_row and exists_row[0])
+    if has_unique:
+        return
+
+    # If legacy rows contain duplicates, keep the newest row per release_id first.
+    cursor.execute(
+        """
+        WITH ranked AS (
+            SELECT id,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY release_id
+                       ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST, id DESC
+                   ) AS rn
+            FROM musicbrainz_releases
+            WHERE release_id IS NOT NULL
+        )
+        DELETE FROM musicbrainz_releases m
+        USING ranked r
+        WHERE m.id = r.id
+          AND r.rn > 1
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_musicbrainz_releases_release_id
+        ON musicbrainz_releases (release_id)
+        """
+    )
+
+
 def _get_cached_musicbrainz_release_metadata(release_id: str) -> Optional[Dict[str, Any]]:
     conn = None
     try:
@@ -182,6 +232,7 @@ def _cache_musicbrainz_release_metadata(release_id: str, metadata: Dict[str, Any
         placeholder = "%s" if is_pg else "?"
 
         _ensure_release_track_cache_columns(cursor, is_pg)
+        _ensure_musicbrainz_release_conflict_target(cursor, is_pg)
 
         release_title = metadata.get('release_title') or 'Unknown Album'
         release_artist = metadata.get('artist') or ''
