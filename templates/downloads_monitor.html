@@ -2308,11 +2308,25 @@ async function loadFolderGroups(options = {}) {
                     <i class="bi bi-trash"></i> Delete Folder
                   </button>
                 ` : ''}
+                ${(isQueueItem && groupQueueIds.length > 0 && groupMbid) ? `
+                  <button class="btn btn-sm btn-outline-warning me-2"
+                          onclick="openImportMissingTracksModalFromEncoded('${encodeInlineArg(groupMbid)}', '${groupQueueIdsEnc}', '${artistEnc}', '${albumEnc}')"
+                          title="Show MusicBrainz tracks that are not currently in this queue group">
+                    <i class="bi bi-list-check"></i> Import Missing Tracks
+                  </button>
+                ` : ''}
                 ${(isQueueItem && groupQueueIds.length > 0) ? `
                   <button class="btn btn-sm btn-outline-primary me-2"
                           onclick="openFolderQueueMatchModalFromEncoded('${folderPathEnc}', '${artistEnc}', '${albumEnc}', '${encodeInlineArg(groupMbid)}', '${groupQueueIdsEnc}')"
                           title="Change MusicBrainz match for all queue tracks in this folder">
                     <i class="bi bi-arrow-left-right"></i> Change Queue Match
+                  </button>
+                ` : ''}
+                ${(isQueueItem && groupQueueIds.length > 0) ? `
+                  <button class="btn btn-sm btn-outline-danger me-2"
+                          onclick="removeQueueGroupFromEncoded('${folderPathEnc}', '${groupQueueIdsEnc}')"
+                          title="Remove this queue group and delete the linked folder if present">
+                    <i class="bi bi-trash3"></i> Remove Queue
                   </button>
                 ` : ''}
                 <button class="btn btn-sm btn-outline-secondary ms-2" 
@@ -4530,6 +4544,258 @@ async function deleteQueueItem(queueId, deleteDownloadsFile = false) {
 function deleteFolderAndQueueItemsFromEncoded(folderPathEnc) {
   const folderPath = decodeInlineArg(folderPathEnc, '');
   return deleteFolderAndQueueItems(folderPath);
+}
+
+function openImportMissingTracksModalFromEncoded(releaseMbidEnc, queueIdsEnc, artistEnc, albumEnc) {
+  const releaseMbid = decodeInlineArg(releaseMbidEnc, '');
+  const queueIds = decodeInlineArg(queueIdsEnc, []);
+  const artist = decodeInlineArg(artistEnc, '');
+  const album = decodeInlineArg(albumEnc, '');
+  return openImportMissingTracksModal(releaseMbid, queueIds, artist, album);
+}
+
+async function openImportMissingTracksModal(releaseMbid, queueIds, artist, album) {
+  const safeIds = Array.isArray(queueIds)
+    ? queueIds.map(id => Number(id)).filter(id => Number.isFinite(id) && id > 0)
+    : [];
+
+  if (!releaseMbid) {
+    alert('Missing MusicBrainz release ID for this queue group.');
+    return;
+  }
+  if (safeIds.length === 0) {
+    alert('No queue tracks found for this group.');
+    return;
+  }
+
+  const existing = document.getElementById('importMissingTracksModal');
+  if (existing) existing.remove();
+
+  const modalHtml = `
+    <div class="modal fade" id="importMissingTracksModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-xl">
+        <div class="modal-content bg-dark text-light">
+          <div class="modal-header border-secondary">
+            <h5 class="modal-title">Import Missing Tracks</h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div class="small text-muted mb-2">MBID: <span class="text-info">${escapeHtml(releaseMbid)}</span></div>
+            <div class="small text-muted mb-3">Queue Group: ${escapeHtml(artist || 'Unknown Artist')} - ${escapeHtml(album || 'Unknown Album')}</div>
+            <div id="importMissingTracksStatus" class="text-muted">Loading MusicBrainz tracklist...</div>
+            <div id="importMissingTracksResults" class="mt-3"></div>
+          </div>
+          <div class="modal-footer border-secondary">
+            <button type="button" class="btn btn-outline-light btn-sm" onclick="setAllMissingTracksSelection(true)">Select All</button>
+            <button type="button" class="btn btn-outline-light btn-sm" onclick="setAllMissingTracksSelection(false)">Clear</button>
+            <button type="button" class="btn btn-success" id="importMissingTracksSubmitBtn" onclick="importSelectedMissingTracks()" disabled>
+              <i class="bi bi-plus-circle"></i> Add Selected To Queue
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+  const modalEl = document.getElementById('importMissingTracksModal');
+  const modal = new bootstrap.Modal(modalEl);
+  modal.show();
+
+  window.currentMissingTracksContext = {
+    releaseMbid,
+    queueIds: safeIds,
+    artist,
+    album,
+    missingTracks: [],
+  };
+
+  try {
+    const query = new URLSearchParams({
+      release_mbid: releaseMbid,
+      queue_ids: safeIds.join(','),
+    });
+    const data = await fetchJsonOrThrow(`/api/queue/missing-tracks?${query.toString()}`);
+    const missingTracks = Array.isArray(data.missing_tracks) ? data.missing_tracks : [];
+    window.currentMissingTracksContext.missingTracks = missingTracks;
+
+    const statusEl = document.getElementById('importMissingTracksStatus');
+    if (statusEl) {
+      statusEl.innerHTML = `Found <strong>${missingTracks.length}</strong> missing track(s) out of <strong>${data.total_release_tracks || 0}</strong> release track(s).`;
+    }
+
+    renderMissingTracksTable(missingTracks);
+  } catch (error) {
+    console.error('Error loading missing tracks:', error);
+    const statusEl = document.getElementById('importMissingTracksStatus');
+    const resultsEl = document.getElementById('importMissingTracksResults');
+    if (statusEl) statusEl.innerHTML = '<span class="text-danger">Failed to load missing tracks.</span>';
+    if (resultsEl) resultsEl.innerHTML = `<div class="alert alert-danger mb-0">${escapeHtml(error.message)}</div>`;
+  }
+}
+
+function renderMissingTracksTable(missingTracks) {
+  const container = document.getElementById('importMissingTracksResults');
+  const submitBtn = document.getElementById('importMissingTracksSubmitBtn');
+  if (!container) return;
+
+  if (!missingTracks || missingTracks.length === 0) {
+    container.innerHTML = '<div class="alert alert-info mb-0">No missing tracks found. This queue already includes the full MusicBrainz release tracklist.</div>';
+    if (submitBtn) submitBtn.disabled = true;
+    return;
+  }
+
+  const rows = missingTracks.map((track, idx) => {
+    const trackNum = track.track_number != null ? String(track.track_number) : '';
+    const discNum = track.disc_number != null ? String(track.disc_number) : '1';
+    const artist = track.artist || '';
+    const title = track.title || '';
+    const duration = track.duration ? `${Math.floor(Number(track.duration) / 60)}:${String(Number(track.duration) % 60).padStart(2, '0')}` : '-';
+    const key = track.key || `${discNum}:${trackNum}:${title}`;
+    return `
+      <tr>
+        <td class="text-center"><input class="form-check-input missing-track-select" type="checkbox" data-track-key="${escapeHtml(key)}" checked></td>
+        <td>${escapeHtml(discNum)}</td>
+        <td>${escapeHtml(trackNum)}</td>
+        <td>${escapeHtml(title)}</td>
+        <td>${escapeHtml(artist)}</td>
+        <td>${escapeHtml(duration)}</td>
+      </tr>
+    `;
+  }).join('');
+
+  container.innerHTML = `
+    <div class="table-responsive">
+      <table class="table table-sm table-dark table-striped align-middle mb-0">
+        <thead>
+          <tr>
+            <th class="text-center" style="width: 44px;"></th>
+            <th style="width: 80px;">Disc</th>
+            <th style="width: 80px;">Track</th>
+            <th>Title</th>
+            <th>Artist</th>
+            <th style="width: 90px;">Duration</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+
+  container.querySelectorAll('.missing-track-select').forEach((checkbox) => {
+    checkbox.addEventListener('change', updateMissingTracksSelectionState);
+  });
+  updateMissingTracksSelectionState();
+}
+
+function setAllMissingTracksSelection(checked) {
+  document.querySelectorAll('#importMissingTracksResults .missing-track-select').forEach((input) => {
+    input.checked = checked;
+  });
+  updateMissingTracksSelectionState();
+}
+
+function updateMissingTracksSelectionState() {
+  const submitBtn = document.getElementById('importMissingTracksSubmitBtn');
+  if (!submitBtn) return;
+  const checked = document.querySelectorAll('#importMissingTracksResults .missing-track-select:checked').length;
+  submitBtn.disabled = checked === 0;
+  submitBtn.innerHTML = `<i class="bi bi-plus-circle"></i> Add Selected To Queue (${checked})`;
+}
+
+async function importSelectedMissingTracks() {
+  const context = window.currentMissingTracksContext;
+  if (!context || !context.releaseMbid) {
+    alert('Missing import context. Please reopen the modal.');
+    return;
+  }
+
+  const selectedKeys = Array.from(document.querySelectorAll('#importMissingTracksResults .missing-track-select:checked'))
+    .map(input => input.dataset.trackKey)
+    .filter(Boolean);
+
+  if (selectedKeys.length === 0) {
+    alert('Select at least one track to import.');
+    return;
+  }
+
+  try {
+    const data = await fetchJsonOrThrow('/api/queue/import-missing-tracks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        release_mbid: context.releaseMbid,
+        queue_ids: context.queueIds,
+        selected_keys: selectedKeys,
+      })
+    });
+
+    alert(
+      `✅ Missing-track import complete\n\n` +
+      `Added: ${data.added_count || 0}\n` +
+      `Skipped (already queued): ${data.skipped_count || 0}\n` +
+      `Failed: ${data.failed_count || 0}`
+    );
+
+    const modalEl = document.getElementById('importMissingTracksModal');
+    if (modalEl) {
+      const modal = bootstrap.Modal.getInstance(modalEl);
+      if (modal) modal.hide();
+    }
+
+    await loadQueueStatus();
+    await loadFolderGroups({ forceRender: true });
+  } catch (error) {
+    console.error('Error importing missing tracks:', error);
+    alert('❌ Import failed: ' + error.message);
+  }
+}
+
+function removeQueueGroupFromEncoded(folderPathEnc, queueIdsEnc) {
+  const folderPath = decodeInlineArg(folderPathEnc, '');
+  const queueIds = decodeInlineArg(queueIdsEnc, []);
+  return removeQueueGroup(folderPath, queueIds);
+}
+
+async function removeQueueGroup(folderPath, queueIds) {
+  const safeIds = Array.isArray(queueIds)
+    ? queueIds.map(id => Number(id)).filter(id => Number.isFinite(id) && id > 0)
+    : [];
+
+  if (safeIds.length === 0) {
+    alert('No queue items found to remove.');
+    return;
+  }
+
+  const pathNote = folderPath ? `\nFolder: ${folderPath}` : '\nNo matched folder currently linked.';
+  if (!confirm(`Remove this queue group and delete its folder files?\n\nQueue items: ${safeIds.length}${pathNote}`)) {
+    return;
+  }
+
+  try {
+    const data = await fetchJsonOrThrow('/api/queue/group/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        queue_ids: safeIds,
+        folder_path: folderPath || null,
+        remove_files: true,
+      })
+    });
+
+    alert(
+      `✅ Queue group removed\n\n` +
+      `Queue items removed: ${data.deleted_queue_items || 0}\n` +
+      `Files deleted: ${data.deleted_files_count || 0}\n` +
+      `Folders deleted: ${data.deleted_dirs_count || 0}`
+    );
+
+    await loadQueueStatus();
+    await loadFolderGroups({ forceRender: true });
+  } catch (error) {
+    console.error('Error removing queue group:', error);
+    alert('❌ Failed to remove queue group: ' + error.message);
+  }
 }
 
 async function deleteFolderAndQueueItems(folderPath) {

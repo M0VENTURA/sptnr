@@ -20540,6 +20540,163 @@ def api_queue_delete_folder():
         return jsonify({"error": str(e)}), 400
 
 
+@app.route("/api/queue/group/remove", methods=["POST"])
+def api_queue_remove_group():
+    """Remove queue rows for a group and optionally delete linked downloads files/folder."""
+    conn = None
+    try:
+        from download_queue_manager import clear_queue_events_for_items
+
+        data = request.get_json(silent=True) or {}
+        queue_ids_raw = data.get('queue_ids') or []
+        folder_path = (data.get('folder_path') or '').strip()
+        remove_files = bool(data.get('remove_files', True))
+
+        queue_ids = []
+        if isinstance(queue_ids_raw, list):
+            for value in queue_ids_raw:
+                try:
+                    qid = int(value)
+                    if qid > 0:
+                        queue_ids.append(qid)
+                except Exception:
+                    continue
+        queue_ids = list(dict.fromkeys(queue_ids))
+
+        if not queue_ids:
+            return jsonify({"success": False, "error": "queue_ids is required"}), 400
+
+        cfg = get_config()
+        downloads_root = os.path.abspath(_resolve_downloads_monitor_dir(cfg))
+
+        def _is_within_downloads(path_value):
+            try:
+                abs_path = os.path.abspath(path_value)
+                return os.path.commonpath([abs_path, downloads_root]) == downloads_root
+            except Exception:
+                return False
+
+        folder_abs = None
+        if folder_path:
+            candidate = folder_path
+            if not os.path.isabs(candidate):
+                candidate = os.path.join(downloads_root, candidate)
+            candidate = os.path.abspath(candidate)
+            if not _is_within_downloads(candidate):
+                return jsonify({"success": False, "error": "Refusing to remove outside downloads root"}), 400
+            folder_abs = candidate
+
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = "%s"
+
+        ids_placeholders = ", ".join([placeholder] * len(queue_ids))
+        cursor.execute(
+            f"""
+            SELECT id, file_path, matched_file_path
+            FROM download_queue
+            WHERE id IN ({ids_placeholders})
+            """,
+            tuple(queue_ids),
+        )
+        rows = cursor.fetchall() or []
+
+        candidate_files = set()
+        for row in rows:
+            for field_name, field_index in (('file_path', 1), ('matched_file_path', 2)):
+                value = _row_get(row, field_name, field_index)
+                if not value:
+                    continue
+                full = os.path.abspath(str(value))
+                if _is_within_downloads(full):
+                    candidate_files.add(full)
+
+        cursor.execute(
+            f"DELETE FROM download_queue WHERE id IN ({ids_placeholders})",
+            tuple(queue_ids),
+        )
+        deleted_queue_items = int(cursor.rowcount or 0)
+
+        if queue_ids:
+            clear_queue_events_for_items(queue_ids)
+
+        conn.commit()
+        conn.close()
+        conn = None
+
+        deleted_files = []
+        deleted_dirs = []
+
+        def _delete_file_if_exists(path_value):
+            if not remove_files:
+                return False
+            if not path_value or not os.path.isfile(path_value):
+                return False
+            if not _is_within_downloads(path_value):
+                return False
+            try:
+                os.remove(path_value)
+                return not os.path.exists(path_value)
+            except Exception as del_err:
+                logging.warning(f"[QUEUE_GROUP_REMOVE] Failed to delete '{path_value}': {del_err}")
+                return False
+
+        for file_path in sorted(candidate_files):
+            if _delete_file_if_exists(file_path):
+                deleted_files.append(file_path)
+
+        if remove_files and folder_abs and os.path.isdir(folder_abs):
+            for root, _dirs, files in os.walk(folder_abs, topdown=False):
+                for filename in files:
+                    full = os.path.join(root, filename)
+                    if _delete_file_if_exists(full):
+                        deleted_files.append(full)
+
+        def _prune_empty_dirs(start_dir, stop_dir):
+            current = os.path.abspath(start_dir)
+            stop_abs = os.path.abspath(stop_dir)
+            while current and _is_within_downloads(current):
+                if not os.path.isdir(current):
+                    break
+                try:
+                    if os.listdir(current):
+                        break
+                    os.rmdir(current)
+                    deleted_dirs.append(current)
+                except Exception:
+                    break
+                if current == stop_abs:
+                    break
+                parent = os.path.dirname(current)
+                if parent == current:
+                    break
+                current = parent
+
+        for deleted_file in deleted_files:
+            _prune_empty_dirs(os.path.dirname(deleted_file), folder_abs or downloads_root)
+        if folder_abs:
+            _prune_empty_dirs(folder_abs, folder_abs)
+
+        return jsonify({
+            "success": True,
+            "deleted_queue_items": deleted_queue_items,
+            "deleted_files_count": len(deleted_files),
+            "deleted_dirs_count": len(deleted_dirs),
+            "deleted_files": deleted_files,
+            "deleted_dirs": deleted_dirs,
+            "folder": folder_abs,
+        })
+
+    except Exception as e:
+        logging.error(f"Error removing queue group: {e}")
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        return jsonify({"success": False, "error": str(e)}), 400
+
+
 @app.route("/api/queue/clear", methods=["POST", "DELETE"])
 def api_queue_clear():
     """Clear non-imported items from the download queue and their event logs."""
@@ -22148,6 +22305,317 @@ def api_queue_match_targets():
 
     except Exception as e:
         logging.error(f"Error fetching queue match targets: {e}")
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/queue/missing-tracks", methods=["GET"])
+def api_queue_missing_tracks():
+    """Return MusicBrainz release tracks that are not currently present in queue rows."""
+    conn = None
+    try:
+        from folder_matching_enhancements import get_musicbrainz_release_metadata
+
+        release_mbid = (request.args.get('release_mbid') or '').strip()
+        queue_ids_raw = (request.args.get('queue_ids') or '').strip()
+
+        if not release_mbid:
+            return jsonify({"success": False, "error": "release_mbid is required"}), 400
+
+        queue_ids = []
+        if queue_ids_raw:
+            for value in queue_ids_raw.split(','):
+                value = value.strip()
+                if not value:
+                    continue
+                try:
+                    qid = int(value)
+                    if qid > 0:
+                        queue_ids.append(qid)
+                except Exception:
+                    continue
+        queue_ids = list(dict.fromkeys(queue_ids))
+
+        release_metadata = get_musicbrainz_release_metadata(release_mbid) or {}
+        release_tracks = release_metadata.get('tracks') or []
+
+        if not release_tracks:
+            return jsonify({
+                "success": True,
+                "release_mbid": release_mbid,
+                "total_release_tracks": 0,
+                "missing_tracks": [],
+            })
+
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = "%s"
+
+        if queue_ids:
+            ids_placeholders = ", ".join([placeholder] * len(queue_ids))
+            cursor.execute(
+                f"""
+                SELECT id, title, track_number, disc_number, recording_mbid
+                FROM download_queue
+                WHERE id IN ({ids_placeholders})
+                  AND status NOT IN ('removed', 'cancelled', 'deleted')
+                """,
+                tuple(queue_ids),
+            )
+        else:
+            cursor.execute(
+                f"""
+                SELECT id, title, track_number, disc_number, recording_mbid
+                FROM download_queue
+                WHERE COALESCE(NULLIF(release_mbid, ''), NULLIF(release_id, '')) = {placeholder}
+                  AND status NOT IN ('removed', 'cancelled', 'deleted')
+                """,
+                (release_mbid,),
+            )
+
+        queue_rows = cursor.fetchall() or []
+        conn.close()
+        conn = None
+
+        def _norm_text(value):
+            return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", str(value or '').lower())).strip()
+
+        def _queue_track_key(disc_number, track_number, title):
+            disc = str(disc_number or '').strip()
+            track = str(track_number or '').strip()
+            title_norm = _norm_text(title)
+            return f"{disc}:{track}:{title_norm}" if (disc or track or title_norm) else ''
+
+        existing_recording_mbids = set()
+        existing_track_keys = set()
+
+        for row in queue_rows:
+            recording_mbid = (_row_get(row, 'recording_mbid', 4, '') or '').strip()
+            if recording_mbid:
+                existing_recording_mbids.add(recording_mbid.lower())
+
+            key = _queue_track_key(
+                _row_get(row, 'disc_number', 3, ''),
+                _row_get(row, 'track_number', 2, ''),
+                _row_get(row, 'title', 1, ''),
+            )
+            if key:
+                existing_track_keys.add(key)
+
+        missing_tracks = []
+        for track in release_tracks:
+            recording_mbid = str(track.get('recording_mbid') or '').strip()
+            disc_number = track.get('disc_number')
+            track_number = track.get('track_number')
+            title = (track.get('title') or '').strip()
+
+            track_key = _queue_track_key(disc_number, track_number, title)
+            missing = True
+
+            if recording_mbid and recording_mbid.lower() in existing_recording_mbids:
+                missing = False
+            elif track_key and track_key in existing_track_keys:
+                missing = False
+
+            if not missing:
+                continue
+
+            select_key = recording_mbid or track_key or f"{disc_number or ''}:{track_number or ''}:{title}"
+            missing_tracks.append({
+                "key": select_key,
+                "disc_number": disc_number,
+                "track_number": track_number,
+                "title": title,
+                "artist": track.get('artist') or release_metadata.get('artist') or '',
+                "duration": track.get('duration') or 0,
+                "recording_mbid": recording_mbid,
+                "isrc": track.get('isrc') or '',
+            })
+
+        return jsonify({
+            "success": True,
+            "release_mbid": release_mbid,
+            "release_title": release_metadata.get('release_title') or '',
+            "release_artist": release_metadata.get('artist') or '',
+            "release_year": release_metadata.get('release_year'),
+            "total_release_tracks": len(release_tracks),
+            "missing_tracks": missing_tracks,
+        })
+
+    except Exception as e:
+        logging.error(f"Error fetching queue missing tracks: {e}")
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/queue/import-missing-tracks", methods=["POST"])
+def api_queue_import_missing_tracks():
+    """Add selected missing MusicBrainz release tracks back into the download queue."""
+    conn = None
+    try:
+        from folder_matching_enhancements import get_musicbrainz_release_metadata
+        from download_queue_manager import add_to_queue
+
+        payload = request.get_json(force=True, silent=True) or {}
+        release_mbid = (payload.get('release_mbid') or '').strip()
+        selected_keys_raw = payload.get('selected_keys') or []
+        queue_ids_raw = payload.get('queue_ids') or []
+
+        if not release_mbid:
+            return jsonify({"success": False, "error": "release_mbid is required"}), 400
+
+        selected_keys = []
+        if isinstance(selected_keys_raw, list):
+            for key in selected_keys_raw:
+                key_text = str(key or '').strip()
+                if key_text:
+                    selected_keys.append(key_text)
+        selected_keys = list(dict.fromkeys(selected_keys))
+
+        if not selected_keys:
+            return jsonify({"success": False, "error": "selected_keys is required"}), 400
+
+        queue_ids = []
+        if isinstance(queue_ids_raw, list):
+            for value in queue_ids_raw:
+                try:
+                    qid = int(value)
+                    if qid > 0:
+                        queue_ids.append(qid)
+                except Exception:
+                    continue
+        queue_ids = list(dict.fromkeys(queue_ids))
+
+        release_metadata = get_musicbrainz_release_metadata(release_mbid) or {}
+        release_tracks = release_metadata.get('tracks') or []
+        if not release_tracks:
+            return jsonify({"success": False, "error": "No MusicBrainz track metadata available for this release"}), 400
+
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = "%s"
+
+        reference = None
+        if queue_ids:
+            ids_placeholders = ", ".join([placeholder] * len(queue_ids))
+            cursor.execute(
+                f"""
+                SELECT id, artist, album, album_artist, source, import_group, import_type
+                FROM download_queue
+                WHERE id IN ({ids_placeholders})
+                ORDER BY id
+                LIMIT 1
+                """,
+                tuple(queue_ids),
+            )
+            reference = cursor.fetchone()
+
+        conn.close()
+        conn = None
+
+        def _norm_text(value):
+            return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", str(value or '').lower())).strip()
+
+        def _track_key(disc_number, track_number, title):
+            disc = str(disc_number or '').strip()
+            track = str(track_number or '').strip()
+            title_norm = _norm_text(title)
+            return f"{disc}:{track}:{title_norm}" if (disc or track or title_norm) else ''
+
+        selected_set = set(selected_keys)
+
+        ref_artist = (_row_get(reference, 'artist', 1, '') or '').strip() if reference else ''
+        ref_album = (_row_get(reference, 'album', 2, '') or '').strip() if reference else ''
+        ref_album_artist = (_row_get(reference, 'album_artist', 3, '') or '').strip() if reference else ''
+        ref_source = (_row_get(reference, 'source', 4, '') or 'soulseek').strip() if reference else 'soulseek'
+        ref_import_group = (_row_get(reference, 'import_group', 5, '') or '').strip() if reference else ''
+        ref_import_type = (_row_get(reference, 'import_type', 6, '') or 'album').strip() if reference else 'album'
+
+        release_title = (release_metadata.get('release_title') or ref_album or '').strip()
+        release_artist = (release_metadata.get('artist') or ref_album_artist or ref_artist or '').strip()
+        release_year = release_metadata.get('release_year') or None
+        import_group = ref_import_group or f"mbid_{release_mbid}"
+
+        added_count = 0
+        skipped_count = 0
+        failed_count = 0
+        imported_items = []
+        skipped_items = []
+        failed_items = []
+
+        for track in release_tracks:
+            title = (track.get('title') or '').strip()
+            if not title:
+                continue
+
+            recording_mbid = (track.get('recording_mbid') or '').strip()
+            key = recording_mbid or _track_key(track.get('disc_number'), track.get('track_number'), title)
+            if key not in selected_set:
+                continue
+
+            track_artist = (track.get('artist') or release_artist or ref_artist or '').strip()
+            queue_item = add_to_queue(
+                artist=track_artist,
+                title=title,
+                album=release_title,
+                source=ref_source or 'soulseek',
+                priority=5,
+                import_group=import_group,
+                import_type=ref_import_type or 'album',
+                track_number=track.get('track_number'),
+                album_artist=release_artist or track_artist,
+                year=release_year,
+                release_id=release_mbid,
+                release_source='musicbrainz',
+                duration=track.get('duration'),
+                disc_number=track.get('disc_number'),
+                release_mbid=release_mbid,
+                recording_mbid=recording_mbid,
+                isrc=track.get('isrc'),
+            )
+
+            if queue_item and queue_item.get('_queue_outcome') == 'added':
+                added_count += 1
+                imported_items.append({
+                    "queue_id": queue_item.get('id'),
+                    "title": title,
+                    "artist": track_artist,
+                })
+            elif queue_item and queue_item.get('_queue_outcome') == 'duplicate':
+                skipped_count += 1
+                skipped_items.append({
+                    "existing_queue_id": queue_item.get('id'),
+                    "title": title,
+                    "artist": track_artist,
+                })
+            else:
+                failed_count += 1
+                failed_items.append({
+                    "title": title,
+                    "artist": track_artist,
+                })
+
+        return jsonify({
+            "success": True,
+            "release_mbid": release_mbid,
+            "added_count": added_count,
+            "skipped_count": skipped_count,
+            "failed_count": failed_count,
+            "imported_items": imported_items,
+            "skipped_items": skipped_items,
+            "failed_items": failed_items,
+        })
+
+    except Exception as e:
+        logging.error(f"Error importing missing queue tracks: {e}")
         if conn is not None:
             try:
                 conn.close()
