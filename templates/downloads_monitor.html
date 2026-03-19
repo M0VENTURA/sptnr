@@ -2410,6 +2410,7 @@ async function loadFolderGroups(options = {}) {
                     : (group.folder_name || track.album || track.title || '');
                   const inferredArtistEnc = encodeInlineArg(inferredArtist || '');
                   const inferredAlbumEnc = encodeInlineArg(inferredAlbum || '');
+                  const inferredTitleEnc = encodeInlineArg(track.title || '');
                   const showRetry = queueStatusRow === 'failed';
                   const canMoveToMusic = (queueStatusRow === 'matched' || queueStatusRow === 'completed' || queueStatusRow === 'pending_match' || (queueStatusRow === 'in_collection' && isDownloadsBacked)) && queueId > 0;
                   const canSendQueried = queueStatusRow === 'queried' && queueId > 0;
@@ -2419,7 +2420,7 @@ async function loadFolderGroups(options = {}) {
                   moveButtonHtml = `<div class="d-flex flex-column gap-1 align-items-center">
                     ${canMoveToMusic ? `<button class="btn btn-sm btn-outline-success" onclick="moveMatchedToMusic(${queueId})" title="Move to /music and retag from MusicBrainz"><i class="bi bi-box-arrow-right"></i></button>` : ''}
                     ${canSendQueried ? `<button class="btn btn-sm btn-outline-primary" onclick="sendQueriedTrack(${queueId})" title="Send queried track to queue for Soulseek search"><i class="bi bi-send"></i></button>` : ''}
-                    ${canChangeMatch ? `<button class="btn btn-sm btn-outline-info" onclick="openQueueItemMatchModal(${queueId}, '${inferredArtistEnc}', '${inferredAlbumEnc}', '${currentMbidEnc}')" title="Change or set MusicBrainz match for this queue item"><i class="bi bi-arrow-left-right"></i></button>` : ''}
+                    ${canChangeMatch ? `<button class="btn btn-sm btn-outline-info" onclick="openQueueItemMatchModal(${queueId}, '${inferredArtistEnc}', '${inferredAlbumEnc}', '${currentMbidEnc}', '${inferredTitleEnc}')" title="Change or set MusicBrainz match for this queue item"><i class="bi bi-arrow-left-right"></i></button>` : ''}
                     ${canResetMatch ? `<button class="btn btn-sm btn-outline-warning" onclick="resetQueueMatch(${queueId})" title="Reset current match and mark as unmatched"><i class="bi bi-x-circle"></i></button>` : ''}
                     <button class="btn btn-sm btn-outline-info" onclick="searchOtherSourcesFromEncoded('${artistEnc}','${titleEnc}', true)" title="Search manually in Soulseek">
                       <i class="bi bi-search"></i>
@@ -4066,10 +4067,11 @@ async function applyBetterMusicBrainzMatch(oldArtistEnc, oldAlbumEnc, newArtistE
   }
 }
 
-function openQueueItemMatchModal(queueId, artistEnc, albumEnc, currentMbidEnc) {
+function openQueueItemMatchModal(queueId, artistEnc, albumEnc, currentMbidEnc, titleEnc) {
   const artist = decodeInlineArg(artistEnc, '');
   const album = decodeInlineArg(albumEnc, '');
   const currentMbid = decodeInlineArg(currentMbidEnc, '');
+  const title = decodeInlineArg(titleEnc, '');
 
   const existing = document.getElementById('queueItemMatchModal');
   if (existing) existing.remove();
@@ -4084,6 +4086,13 @@ function openQueueItemMatchModal(queueId, artistEnc, albumEnc, currentMbidEnc) {
           </div>
           <div class="modal-body">
             <div class="mb-2 small text-muted">Current MBID: ${escapeHtml(currentMbid || 'None')}</div>
+
+            <div class="alert alert-secondary small" role="alert">
+              <div class="fw-semibold mb-1"><i class="bi bi-music-note-list"></i> Target Queue Song</div>
+              <div id="queueMatchTargetSummary" class="mb-2">Loading queue songs...</div>
+              <label for="queueMatchTargetSelect" class="form-label mb-1">Apply this rematch to</label>
+              <select id="queueMatchTargetSelect" class="form-select form-select-sm"></select>
+            </div>
 
             <!-- Current queue releases -->
             <div class="mb-3">
@@ -4129,8 +4138,78 @@ function openQueueItemMatchModal(queueId, artistEnc, albumEnc, currentMbidEnc) {
   const modal = new bootstrap.Modal(document.getElementById('queueItemMatchModal'));
   modal.show();
 
+  loadQueueMatchTargets(queueId, artist, album, title);
+
   // Load current queue releases immediately
   loadCurrentQueueReleases(queueId, artist, album);
+}
+
+async function loadQueueMatchTargets(queueId, artist, album, fallbackTitle) {
+  const summaryEl = document.getElementById('queueMatchTargetSummary');
+  const selectEl = document.getElementById('queueMatchTargetSelect');
+  if (!summaryEl || !selectEl) return;
+
+  const fallbackLabel = fallbackTitle || '(untitled track)';
+  const defaultOption = `<option value="${queueId}" selected>#${queueId} - ${escapeHtml(fallbackLabel)}</option>`;
+
+  selectEl.innerHTML = defaultOption;
+  selectEl.dataset.initialQueueId = String(queueId);
+  summaryEl.innerHTML = `Queue item #${queueId}: <strong>${escapeHtml(fallbackLabel)}</strong>`;
+
+  try {
+    const apiUrl = `/api/queue/match-targets?artist=${encodeURIComponent(artist || '')}&album=${encodeURIComponent(album || '')}&selected_queue_id=${encodeURIComponent(queueId)}`;
+    const data = await fetchJsonOrThrow(apiUrl);
+    const targets = Array.isArray(data.targets) ? data.targets : [];
+
+    if (!targets.length) {
+      summaryEl.innerHTML = `Queue item #${queueId}: <strong>${escapeHtml(fallbackLabel)}</strong>`;
+      return;
+    }
+
+    const options = targets.map((target) => {
+      const targetId = Number(target.id || 0);
+      const targetTitle = target.title || '(untitled track)';
+      const trackNo = target.track_number ? `#${target.track_number} ` : '';
+      const status = target.status ? ` [${target.status}]` : '';
+      const selected = targetId === Number(queueId) ? ' selected' : '';
+      return `<option value="${targetId}"${selected}>${escapeHtml(`#${targetId} ${trackNo}${targetTitle}${status}`)}</option>`;
+    }).join('');
+
+    selectEl.innerHTML = options;
+    updateQueueMatchTargetSummary();
+    selectEl.addEventListener('change', updateQueueMatchTargetSummary);
+  } catch (error) {
+    console.error('Error loading queue match targets:', error);
+    summaryEl.innerHTML = `Queue item #${queueId}: <strong>${escapeHtml(fallbackLabel)}</strong>`;
+  }
+}
+
+function getSelectedQueueMatchTarget(queueIdFallback) {
+  const selectEl = document.getElementById('queueMatchTargetSelect');
+  if (!selectEl) {
+    return { queueId: Number(queueIdFallback) || 0, label: `#${queueIdFallback}` };
+  }
+
+  const selectedQueueId = Number(selectEl.value || queueIdFallback || 0);
+  const selectedOption = selectEl.options[selectEl.selectedIndex];
+  const selectedLabel = selectedOption ? selectedOption.text : `#${selectedQueueId}`;
+
+  return {
+    queueId: selectedQueueId,
+    label: selectedLabel,
+  };
+}
+
+function updateQueueMatchTargetSummary() {
+  const summaryEl = document.getElementById('queueMatchTargetSummary');
+  const selectEl = document.getElementById('queueMatchTargetSelect');
+  if (!summaryEl || !selectEl) return;
+
+  const selectedOption = selectEl.options[selectEl.selectedIndex];
+  const selectedLabel = selectedOption ? selectedOption.text : '';
+  if (!selectedLabel) return;
+
+  summaryEl.innerHTML = `Selected target: <strong>${escapeHtml(selectedLabel)}</strong>`;
 }
 
 async function loadCurrentQueueReleases(queueId, currentArtist, currentAlbum) {
@@ -4213,9 +4292,23 @@ async function applyQueueItemMusicBrainzMatch(queueId, newArtistEnc, newAlbumEnc
   const newArtist = decodeInlineArg(newArtistEnc, '');
   const newAlbum = decodeInlineArg(newAlbumEnc, '');
   const newMbid = decodeInlineArg(mbidEnc, '');
+  const selectedTarget = getSelectedQueueMatchTarget(queueId);
+  const selectedQueueId = Number(selectedTarget.queueId || 0);
+
+  if (!selectedQueueId) {
+    alert('Please select a queue song to apply this match to.');
+    return;
+  }
+
+  const confirmation = confirm(
+    `Apply this MusicBrainz match to ${selectedTarget.label}?\n\nArtist: ${newArtist || '(keep current)'}\nAlbum: ${newAlbum || '(keep current)'}\nMBID: ${newMbid}`
+  );
+  if (!confirmation) {
+    return;
+  }
 
   try {
-    const data = await fetchJsonOrThrow(`/api/queue/${queueId}/apply-mbid-match`, {
+    const data = await fetchJsonOrThrow(`/api/queue/${selectedQueueId}/apply-mbid-match`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -4226,7 +4319,7 @@ async function applyQueueItemMusicBrainzMatch(queueId, newArtistEnc, newAlbumEnc
     });
 
     if (data.success) {
-      alert('✅ Queue match updated');
+      alert(`✅ Queue match updated for ${selectedTarget.label}`);
       const modalEl = document.getElementById('queueItemMatchModal');
       if (modalEl) {
         const modal = bootstrap.Modal.getInstance(modalEl);

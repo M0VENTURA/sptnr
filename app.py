@@ -22052,6 +22052,110 @@ def api_queue_matched_releases():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route("/api/queue/match-targets", methods=["GET"])
+def api_queue_match_targets():
+    """Return queue items that can be selected as the target song for manual rematch."""
+    conn = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        artist_filter = (request.args.get('artist') or '').strip()
+        album_filter = (request.args.get('album') or '').strip()
+        selected_queue_id_raw = (request.args.get('selected_queue_id') or '').strip()
+
+        try:
+            selected_queue_id = int(selected_queue_id_raw) if selected_queue_id_raw else None
+        except Exception:
+            selected_queue_id = None
+
+        if not artist_filter or not album_filter:
+            return jsonify({"success": False, "error": "artist and album are required"}), 400
+
+        active_statuses = (
+            'queued', 'searching', 'downloading',
+            'matched', 'completed',
+            'unmatched', 'queried',
+            'discovered', 'pending_match',
+            'possible_duplicate', 'duplicate'
+        )
+        status_placeholders = ", ".join(["%s"] * len(active_statuses))
+
+        cursor.execute(
+            f"""
+            SELECT
+                id,
+                artist,
+                title,
+                album,
+                status,
+                track_number,
+                release_mbid,
+                found_filename,
+                created_at
+            FROM download_queue
+            WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s)
+              AND LOWER(COALESCE(NULLIF(album, ''), '')) = LOWER(%s)
+              AND status IN ({status_placeholders})
+            ORDER BY
+                CASE
+                    WHEN %s IS NOT NULL AND id = %s THEN 0
+                    ELSE 1
+                END,
+                COALESCE(track_number, 9999),
+                id
+            LIMIT 250
+            """,
+            (artist_filter, album_filter, *active_statuses, selected_queue_id, selected_queue_id),
+        )
+
+        rows = cursor.fetchall()
+        conn.close()
+        conn = None
+
+        targets = []
+        for row in rows:
+            if isinstance(row, dict):
+                targets.append({
+                    "id": row.get('id'),
+                    "artist": row.get('artist') or '',
+                    "title": row.get('title') or '',
+                    "album": row.get('album') or '',
+                    "status": row.get('status') or '',
+                    "track_number": row.get('track_number'),
+                    "release_mbid": row.get('release_mbid') or '',
+                    "found_filename": row.get('found_filename') or '',
+                    "created_at": row.get('created_at'),
+                })
+            else:
+                targets.append({
+                    "id": row[0],
+                    "artist": row[1] or '',
+                    "title": row[2] or '',
+                    "album": row[3] or '',
+                    "status": row[4] or '',
+                    "track_number": row[5],
+                    "release_mbid": row[6] or '',
+                    "found_filename": row[7] or '',
+                    "created_at": row[8],
+                })
+
+        return jsonify({
+            "success": True,
+            "targets": targets,
+            "selected_queue_id": selected_queue_id,
+        })
+
+    except Exception as e:
+        logging.error(f"Error fetching queue match targets: {e}")
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/musicbrainz/search/releases", methods=["GET"])
 def api_musicbrainz_search_releases():
     """
