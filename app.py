@@ -66,7 +66,7 @@ import yaml
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response, send_file, session, abort, g, has_request_context
 from werkzeug.exceptions import HTTPException
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 import copy
 from functools import wraps
 from helpers.scan_helpers import scan_artist_to_db
@@ -2289,6 +2289,21 @@ def _run_daily_musicbrainz_collection_release_refresh():
                     inserted += 1
                 else:
                     updated += 1
+
+            try:
+                singles_queued = _auto_queue_collection_artist_singles_from_release_groups(artist_name, release_groups)
+                if singles_queued:
+                    logging.info(
+                        "[AUTO-QUEUE] Queued %s current-year single(s) for collection artist '%s'",
+                        singles_queued,
+                        artist_name,
+                    )
+            except Exception as auto_queue_err:
+                logging.warning(
+                    "[AUTO-QUEUE] Error auto-queuing singles for '%s': %s",
+                    artist_name,
+                    auto_queue_err,
+                )
 
             # Respect MusicBrainz API pacing
             time.sleep(1.0)
@@ -5760,39 +5775,20 @@ def artist_detail(name):
             category = (release_dict.get("category") or "").lower()
             title_lower = (release_dict.get("title") or "").lower()
 
-            is_live = (
-                category in ("live album", "live_album", "live")
-                or "live" in primary_type
-                or "live" in title_lower
-                or "unplugged" in title_lower
-            )
-            is_remix = (
-                category in ("remix", "remix album", "remix_album")
-                or "remix" in primary_type
-                or "remix" in title_lower
-            )
-            is_compilation = (
-                category in ("compilation",)
-                or "compilation" in primary_type
-                or "greatest hits" in title_lower
+            is_compilation_by_title = (
+                "greatest hits" in title_lower
                 or "best of" in title_lower
                 or "anthology" in title_lower
                 or "collection" in title_lower
             )
 
-            # Route missing releases by category so dedicated sections can display them.
-            if is_compilation:
-                missing_by_category["compilation"].append(release_dict)
-            elif is_live:
-                missing_by_category["live_album"].append(release_dict)
-            elif is_remix:
-                missing_by_category["remix_album"].append(release_dict)
-            elif primary_type == "ep":
-                missing_by_category["ep"].append(release_dict)
-            elif primary_type == "single":
-                missing_by_category["single"].append(release_dict)
-            elif primary_type == "album" or not primary_type:
-                missing_by_category["album"].append(release_dict)
+            # Category from scan is authoritative when present; fallback to type/title heuristics.
+            release_bucket = _derive_release_bucket(primary_type=primary_type, category=category, title=title_lower)
+            if release_bucket == "album" and is_compilation_by_title:
+                release_bucket = "compilation"
+
+            if release_bucket in ("album", "live_album", "remix_album", "ep", "single", "compilation"):
+                missing_by_category[release_bucket].append(release_dict)
         
         # SAFETY: Remove live albums from missing releases in wrong categories
         missing_live_names = {
@@ -5982,6 +5978,50 @@ def _normalize_artist_name(text: str) -> str:
     text = text.lower()
     text = re.sub(r"[^a-z0-9]+", " ", text)
     return " ".join(text.split())
+
+
+def _normalize_release_category(value: str) -> str:
+    """Normalize release category labels into canonical internal buckets."""
+    normalized = (value or "").strip().lower().replace("-", " ").replace("_", " ")
+    normalized = " ".join(normalized.split())
+    if normalized in ("live", "live album"):
+        return "live_album"
+    if normalized in ("remix", "remix album"):
+        return "remix_album"
+    if normalized == "compilation":
+        return "compilation"
+    if normalized == "ep":
+        return "ep"
+    if normalized == "single":
+        return "single"
+    if normalized == "album":
+        return "album"
+    return ""
+
+
+def _derive_release_bucket(primary_type: str, category: str, title: str = "") -> str:
+    """Derive the most reliable release bucket for artist-page classification."""
+    category_bucket = _normalize_release_category(category)
+    primary = (primary_type or "").strip().lower()
+    title_lower = (title or "").lower()
+
+    # Category is computed from MB primary+secondary types during scan and can correct stale primary_type rows.
+    if category_bucket in ("compilation", "live_album", "remix_album", "ep", "single", "album"):
+        return category_bucket
+
+    if "compilation" in primary:
+        return "compilation"
+    if "live" in primary or "live" in title_lower or "unplugged" in title_lower:
+        return "live_album"
+    if "remix" in primary or "remix" in title_lower:
+        return "remix_album"
+    if primary == "ep":
+        return "ep"
+    if primary == "single":
+        return "single"
+    if primary == "album" or not primary:
+        return "album"
+    return "unknown"
 
 
 def _fetch_musicbrainz_releases(artist_name: str, limit: int = 100, artist_mbid: str | None = None) -> list[dict]:
@@ -7520,6 +7560,78 @@ def _auto_queue_favourite_artist_releases(artist: str, new_releases: list) -> in
                 )
         except Exception as e:
             logging.warning(f"[AUTO-QUEUE] Failed to queue '{artist} - {release_title}': {e}")
+
+    return queued_count
+
+
+def _auto_queue_collection_artist_singles_from_release_groups(artist: str, release_groups: list[dict]) -> int:
+    """Auto-queue current-year singles for collection artists when no same-title album is present."""
+    if not artist or not release_groups:
+        return 0
+
+    current_year = datetime.now().year
+    album_titles_current_year = set()
+    single_candidates = []
+
+    for rg in release_groups:
+        primary_type = (rg.get("primary_type") or "").strip().lower()
+        if primary_type not in ("album", "single"):
+            continue
+
+        parsed_date = _parse_musicbrainz_release_date(rg.get("first_release_date"))
+        if not parsed_date or len(parsed_date) < 4 or not parsed_date[:4].isdigit():
+            continue
+
+        release_year = int(parsed_date[:4])
+        if release_year != current_year:
+            continue
+
+        title = (rg.get("title") or "").strip()
+        norm_title = _normalize_release_title(title)
+        if not norm_title:
+            continue
+
+        secondary = [str(s).lower() for s in (rg.get("secondary_types") or []) if s]
+        if "compilation" in secondary or "live" in secondary or "remix" in secondary:
+            continue
+
+        if primary_type == "album":
+            album_titles_current_year.add(norm_title)
+            continue
+
+        single_candidates.append((title, norm_title, rg.get("id") or ""))
+
+    if not single_candidates:
+        return 0
+
+    queued_count = 0
+    from download_queue_manager import add_to_queue
+
+    for title, norm_title, release_id in single_candidates:
+        if norm_title in album_titles_current_year:
+            continue
+
+        try:
+            result = add_to_queue(
+                artist=artist,
+                title=title,
+                album=None,
+                source="soulseek",
+                priority=4,
+                import_type="song",
+                year=str(current_year),
+                release_id=release_id or None,
+                release_source="musicbrainz_daily_single",
+            )
+            if result:
+                queued_count += 1
+                logging.info(
+                    "[AUTO-QUEUE] Added current-year single '%s - %s' to queue (collection artist)",
+                    artist,
+                    title,
+                )
+        except Exception as exc:
+            logging.warning("[AUTO-QUEUE] Failed to queue single '%s - %s': %s", artist, title, exc)
 
     return queued_count
 
