@@ -1083,15 +1083,299 @@ function searchOtherSources(artist, titleOrAlbum, isQueueItem = false) {
     query = encodeURIComponent(`${artist} ${titleOrAlbum}`);
   }
   
-  // Default to Soulseek for queue items, otherwise MusicBrainz
-  const target = isQueueItem ? 'soulseek' : 'musicbrainz';
-  window.open(`/downloads/search/${target}?q=${query}`, '_blank');
+  // Queue-item manual search now uses an in-page Soulseek modal.
+  if (isQueueItem) {
+    const defaultQuery = decodeURIComponent(query);
+    openSoulseekManualSearchModal(defaultQuery);
+    return;
+  }
+
+  // Non-queue fallback remains the existing page flow.
+  window.open(`/downloads/search/musicbrainz?q=${query}`, '_blank');
 }
 
 function searchOtherSourcesFromEncoded(artistEnc, titleOrAlbumEnc, isQueueItem = false) {
   const artist = decodeInlineArg(artistEnc, '');
   const titleOrAlbum = decodeInlineArg(titleOrAlbumEnc, '');
   return searchOtherSources(artist, titleOrAlbum, isQueueItem === true || isQueueItem === 'true');
+}
+
+function ensureSoulseekManualSearchModal() {
+  const existing = document.getElementById('soulseekManualSearchModal');
+  if (existing) {
+    return existing;
+  }
+
+  const modalHtml = `
+    <div class="modal fade" id="soulseekManualSearchModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-xl">
+        <div class="modal-content bg-dark text-light">
+          <div class="modal-header border-secondary">
+            <h5 class="modal-title"><i class="bi bi-search"></i> Manual Soulseek Search</h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div class="input-group mb-3">
+              <input type="text" id="soulseekManualQuery" class="form-control" placeholder="Artist - Title">
+              <button class="btn btn-success" id="soulseekManualSearchBtn" type="button" onclick="runSoulseekManualSearch()">
+                <i class="bi bi-search"></i> Search
+              </button>
+            </div>
+
+            <div id="soulseekManualStatus" class="small text-muted mb-2">Enter a query and search.</div>
+            <div id="soulseekManualResults"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+  const modalEl = document.getElementById('soulseekManualSearchModal');
+
+  modalEl.addEventListener('hidden.bs.modal', () => {
+    const state = window.soulseekManualSearchState;
+    if (state?.pollTimer) {
+      clearTimeout(state.pollTimer);
+    }
+    window.soulseekManualSearchState = {
+      activeSearchId: null,
+      pollTimer: null,
+      pollingStopped: true,
+    };
+  });
+
+  return modalEl;
+}
+
+function openSoulseekManualSearchModal(defaultQuery = '') {
+  const modalEl = ensureSoulseekManualSearchModal();
+  const queryInput = document.getElementById('soulseekManualQuery');
+  const statusEl = document.getElementById('soulseekManualStatus');
+  const resultsEl = document.getElementById('soulseekManualResults');
+
+  if (queryInput) {
+    queryInput.value = defaultQuery || '';
+  }
+  if (statusEl) {
+    statusEl.textContent = 'Edit query if needed, then click Search.';
+  }
+  if (resultsEl) {
+    resultsEl.innerHTML = '';
+  }
+
+  if (!window.soulseekManualSearchState) {
+    window.soulseekManualSearchState = {
+      activeSearchId: null,
+      pollTimer: null,
+      pollingStopped: false,
+    };
+  }
+
+  const modal = new bootstrap.Modal(modalEl);
+  modal.show();
+}
+
+async function runSoulseekManualSearch() {
+  const queryInput = document.getElementById('soulseekManualQuery');
+  const statusEl = document.getElementById('soulseekManualStatus');
+  const resultsEl = document.getElementById('soulseekManualResults');
+  const searchBtn = document.getElementById('soulseekManualSearchBtn');
+
+  const query = (queryInput?.value || '').trim();
+  if (!query) {
+    alert('Enter search terms first.');
+    return;
+  }
+
+  if (!window.soulseekManualSearchState) {
+    window.soulseekManualSearchState = { activeSearchId: null, pollTimer: null, pollingStopped: false };
+  }
+
+  if (window.soulseekManualSearchState.pollTimer) {
+    clearTimeout(window.soulseekManualSearchState.pollTimer);
+    window.soulseekManualSearchState.pollTimer = null;
+  }
+
+  window.soulseekManualSearchState.activeSearchId = null;
+  window.soulseekManualSearchState.pollingStopped = false;
+
+  if (searchBtn) {
+    searchBtn.disabled = true;
+    searchBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Searching...';
+  }
+  if (statusEl) {
+    statusEl.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Starting search...';
+  }
+  if (resultsEl) {
+    resultsEl.innerHTML = '';
+  }
+
+  try {
+    const startData = await fetchJsonOrThrow('/api/slskd/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query }),
+    });
+
+    const searchId = startData.searchId;
+    if (!searchId) {
+      throw new Error('Search did not return a search ID.');
+    }
+
+    window.soulseekManualSearchState.activeSearchId = searchId;
+    await pollSoulseekManualSearchResults(searchId, 0);
+  } catch (error) {
+    console.error('Manual Soulseek search failed:', error);
+    if (statusEl) {
+      statusEl.innerHTML = `<span class="text-danger">${escapeHtml(error.message)}</span>`;
+    }
+  } finally {
+    if (searchBtn) {
+      searchBtn.disabled = false;
+      searchBtn.innerHTML = '<i class="bi bi-search"></i> Search';
+    }
+  }
+}
+
+async function pollSoulseekManualSearchResults(searchId, attempt) {
+  const statusEl = document.getElementById('soulseekManualStatus');
+  const resultsEl = document.getElementById('soulseekManualResults');
+  const state = window.soulseekManualSearchState || {};
+
+  if (state.pollingStopped || state.activeSearchId !== searchId) {
+    return;
+  }
+
+  try {
+    const data = await fetchJsonOrThrow(`/api/slskd/search/${encodeURIComponent(searchId)}`);
+    const results = Array.isArray(data.results) ? data.results : [];
+    const responseCount = Number(data.responseCount || 0);
+    const isComplete = !!data.isComplete;
+
+    if (statusEl) {
+      statusEl.textContent = `Responses: ${responseCount} | Files: ${results.length} | State: ${data.state || 'searching'}${isComplete ? ' (complete)' : ''}`;
+    }
+
+    renderSoulseekManualSearchResults(results);
+
+    if (!isComplete && attempt < 60) {
+      state.pollTimer = setTimeout(() => {
+        pollSoulseekManualSearchResults(searchId, attempt + 1);
+      }, 1500);
+      window.soulseekManualSearchState = state;
+      return;
+    }
+
+    if (statusEl && isComplete && results.length === 0) {
+      statusEl.textContent = 'Search complete. No files found. Try adjusting the query.';
+    }
+  } catch (error) {
+    console.error('Error polling Soulseek manual search results:', error);
+    if (statusEl) {
+      statusEl.innerHTML = `<span class="text-danger">${escapeHtml(error.message)}</span>`;
+    }
+    if (resultsEl && !resultsEl.innerHTML) {
+      resultsEl.innerHTML = '<div class="alert alert-danger mb-0">Could not load search results.</div>';
+    }
+  }
+}
+
+function renderSoulseekManualSearchResults(results) {
+  const container = document.getElementById('soulseekManualResults');
+  if (!container) return;
+
+  if (!results || results.length === 0) {
+    container.innerHTML = '<div class="text-muted small">No results yet.</div>';
+    return;
+  }
+
+  const rows = results.map((row, idx) => {
+    const username = row.username || '';
+    const filename = row.filename || '';
+    const sizeMb = row.size_mb || '-';
+    const bitrate = row.bitrate || '-';
+    const duration = row.duration || row.length || '-';
+    const size = Number(row.size || 0);
+
+    return `
+      <tr>
+        <td>${escapeHtml(username)}</td>
+        <td style="word-break: break-word;">${escapeHtml(filename)}</td>
+        <td>${escapeHtml(String(sizeMb))}</td>
+        <td>${escapeHtml(String(bitrate))}</td>
+        <td>${escapeHtml(String(duration))}</td>
+        <td class="text-center">
+          <button class="btn btn-sm btn-success" onclick="downloadSoulseekManualResult('${encodeInlineArg(username)}', '${encodeInlineArg(filename)}', ${size}, this)">
+            Select
+          </button>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  container.innerHTML = `
+    <div class="table-responsive">
+      <table class="table table-sm table-dark table-striped align-middle mb-0">
+        <thead>
+          <tr>
+            <th>User</th>
+            <th>Filename</th>
+            <th>Size MB</th>
+            <th>Bitrate</th>
+            <th>Duration</th>
+            <th style="width: 90px;" class="text-center">Action</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function downloadSoulseekManualResult(usernameEnc, filenameEnc, size, buttonEl = null) {
+  const username = decodeInlineArg(usernameEnc, '');
+  const filename = decodeInlineArg(filenameEnc, '');
+  const statusEl = document.getElementById('soulseekManualStatus');
+
+  if (!username || !filename) {
+    alert('Missing Soulseek result details.');
+    return;
+  }
+
+  const btn = buttonEl && buttonEl.tagName ? buttonEl : null;
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+  }
+
+  try {
+    const data = await fetchJsonOrThrow('/api/slskd/download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, filename, size: Number(size || 0) }),
+    });
+
+    if (!data.success) {
+      throw new Error(data.error || 'Failed to enqueue Soulseek download');
+    }
+
+    if (statusEl) {
+      statusEl.innerHTML = `<span class="text-success">Queued: ${escapeHtml(filename)}</span>`;
+    }
+    alert('✅ Soulseek download queued');
+  } catch (error) {
+    console.error('Error queueing Soulseek manual download:', error);
+    if (statusEl) {
+      statusEl.innerHTML = `<span class="text-danger">${escapeHtml(error.message)}</span>`;
+    }
+    alert('❌ Could not queue download: ' + error.message);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Select';
+    }
+  }
 }
 
 function applyMusicBrainzMatchFromEncoded(artistEnc, albumEnc, releaseGroupIdEnc) {
