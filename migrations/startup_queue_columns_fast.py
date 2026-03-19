@@ -41,6 +41,39 @@ def _connect_postgres():
 
 
 def _ensure_postgres_columns(conn):
+    # Ensure the table exists with a minimum viable schema.  On a fresh Postgres
+    # DB (or after a DROP+recreate during troubleshooting) the table may not exist
+    # yet, and the ALTER TABLE statements below would fail with UndefinedTable.
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS download_queue (
+            id          BIGSERIAL PRIMARY KEY,
+            artist      TEXT      NOT NULL,
+            title       TEXT      NOT NULL,
+            album       TEXT,
+            search_query TEXT,
+            source      TEXT      DEFAULT 'soulseek',
+            source_id   TEXT,
+            status      TEXT      DEFAULT 'queued',
+            priority    INTEGER   DEFAULT 5,
+            found_filename TEXT,
+            file_path   TEXT      UNIQUE,
+            metadata    JSONB,
+            retry_count INTEGER   DEFAULT 0,
+            max_retries INTEGER   DEFAULT 5,
+            failure_reason TEXT,
+            last_failure_time TIMESTAMP,
+            retry_delay_minutes INTEGER DEFAULT 30,
+            next_retry_at TIMESTAMP,
+            imported_at TIMESTAMP,
+            created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.commit()
+
     columns = {
         "release_id": "TEXT",
         "release_source": "TEXT",
@@ -61,13 +94,21 @@ def _ensure_postgres_columns(conn):
         "cover_art_url": "TEXT",
     }
 
-    cur = conn.cursor()
     added = []
     for col, col_type in columns.items():
-        cur.execute(f"ALTER TABLE download_queue ADD COLUMN IF NOT EXISTS {col} {col_type}")
-        if cur.rowcount and cur.rowcount > 0:
-            added.append(col)
-    conn.commit()
+        try:
+            cur.execute(
+                f"ALTER TABLE download_queue ADD COLUMN IF NOT EXISTS {col} {col_type}"
+            )
+            conn.commit()
+            if cur.rowcount and cur.rowcount > 0:
+                added.append(col)
+        except Exception as col_err:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            print(f"⚠ Could not add column {col}: {col_err}")
     return added
 
 

@@ -663,6 +663,7 @@ def _get_album_queue_titles(queue_item):
         return set()
 
     titles = set()
+    conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
@@ -694,9 +695,14 @@ def _get_album_queue_titles(queue_item):
             title_norm = _normalize_match_text(title)
             if title_norm:
                 titles.add(title_norm)
-        conn.close()
     except Exception as e:
         logger.debug(f"Could not fetch queued album titles for album-first search: {e}")
+    finally:
+        try:
+            if conn is not None:
+                conn.close()
+        except Exception:
+            pass
 
     return titles
 
@@ -940,6 +946,7 @@ def _load_qbittorrent_config():
 
 def _fallback_queue_item_to_soulseek(queue_id, reason, retry_delay_minutes=5):
     """Switch a queue item to Soulseek and requeue it for a fallback attempt."""
+    conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
@@ -958,12 +965,17 @@ def _fallback_queue_item_to_soulseek(queue_id, reason, retry_delay_minutes=5):
             (reason, next_retry, queue_id),
         )
         conn.commit()
-        conn.close()
         logger.warning(f"Queue {queue_id}: switched to Soulseek fallback ({reason})")
         return True
     except Exception as e:
         logger.error(f"Queue {queue_id}: could not switch to Soulseek fallback: {e}")
         return False
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def search_and_download_qbittorrent(queue_id, queue_item):
@@ -1066,6 +1078,7 @@ def search_and_download_qbittorrent(queue_id, queue_item):
 
 def cleanup_stuck_searching_items():
     """Detect and mark as failed any items stuck in 'searching' for too long"""
+    conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
@@ -1100,17 +1113,22 @@ def cleanup_stuck_searching_items():
         
         conn.close()
         return len(stuck_items)
-        
     except Exception as e:
         logger.error(f"Error cleaning up stuck searching items: {e}")
         return 0
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 def get_queued_items(limit=10):
     """Get items ready to process (queued or scheduled for retry)"""
+    conn = None
     try:
         # First, clean up any items stuck in 'searching' state
         cleanup_stuck_searching_items()
-        
         conn = get_db()
         cursor = conn.cursor()
         placeholder = _get_placeholder(conn)
@@ -1127,13 +1145,16 @@ def get_queued_items(limit=10):
         """.format(placeholder=placeholder), (now, limit))
         
         items = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-        
         return items
-        
     except Exception as e:
         logger.error(f"Error getting queued items: {e}")
         return []
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def claim_queued_items(limit=10):
@@ -1254,6 +1275,7 @@ def promote_stale_queried_items(min_age_seconds=120, limit=200):
 
 def update_queue_status(queue_id, status, **kwargs):
     """Update queue item status"""
+    conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
@@ -1276,17 +1298,21 @@ def update_queue_status(queue_id, status, **kwargs):
         query = f"UPDATE download_queue SET {', '.join(updates)} WHERE id = {placeholder}"
         cursor.execute(query, params)
         conn.commit()
-        conn.close()
-        
         logger.info(f"Updated queue {queue_id} to status: {status}")
         return True
-        
     except Exception as e:
         logger.error(f"Error updating queue status: {e}")
         return False
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 def increment_retry_count(queue_id, retry_delay_minutes=30):
     """Increment retry count and schedule next retry"""
+    conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
@@ -1299,7 +1325,6 @@ def increment_retry_count(queue_id, retry_delay_minutes=30):
         
         row = cursor.fetchone()
         if not row:
-            conn.close()
             return False
         
         retry_count = (row['retry_count'] or 0) + 1
@@ -1313,14 +1338,17 @@ def increment_retry_count(queue_id, retry_delay_minutes=30):
         """, (retry_count, next_retry.isoformat(), queue_id))
         
         conn.commit()
-        conn.close()
-        
         logger.info(f"Queue {queue_id}: retry count now {retry_count}, next retry at {next_retry}")
         return True
-        
     except Exception as e:
         logger.error(f"Error incrementing retry count: {e}")
         return False
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=30):
     """Mark queue item as failed, optionally scheduling retry"""
@@ -1462,6 +1490,7 @@ def check_track_exists_in_db(queue_item):
     if not artist or not title:
         return False, "", None
 
+    conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
@@ -1492,8 +1521,6 @@ def check_track_exists_in_db(queue_item):
             )
 
         row = cursor.fetchone()
-        conn.close()
-
         if row:
             matched = dict(row) if hasattr(row, "keys") else {
                 "id": row[0], "title": row[1], "artist": row[2], "album": row[3],
@@ -1515,6 +1542,12 @@ def check_track_exists_in_db(queue_item):
 
     except Exception as e:
         logger.debug(f"DB existence check error for '{artist} - {title}': {e}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     return False, "", None
 
@@ -1966,6 +1999,7 @@ def check_completed_downloads():
     Fallback: Walk DOWNLOADS_DIR for audio files when slskd is unavailable or
               returns no localFilePath.
     """
+    conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
@@ -2520,6 +2554,12 @@ def check_completed_downloads():
         conn.close()
     except Exception as e:
         logger.error(f"Error in check_completed_downloads: {e}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def process_matched_items(limit=5):

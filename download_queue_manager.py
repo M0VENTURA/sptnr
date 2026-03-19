@@ -905,7 +905,8 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                 if col not in columns:
                     logger.info(f"Adding missing column '{col}' to download_queue")
                     try:
-                        cursor.execute(f"ALTER TABLE download_queue ADD COLUMN {col} {col_type};")
+                        # IF NOT EXISTS prevents failure when a concurrent worker already added the column.
+                        cursor.execute(f"ALTER TABLE download_queue ADD COLUMN IF NOT EXISTS {col} {col_type};")
                         conn.commit()
                     except Exception as e:
                         # Rollback failed ALTER on error to recover transaction
@@ -937,8 +938,29 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                         GROUP BY LOWER(artist), LOWER(COALESCE(album, '')), LOWER(title), COALESCE(source, '')
                         HAVING COUNT(*) > 1
                     )
-                    DELETE FROM download_queue dq
+                                # Re-check after the ALTER loop. Mark schema as checked when all columns
+                                # are confirmed present BEFORE running the optional dedup index step so
+                                # that a dedup failure cannot prevent future calls from skipping the loop.
+                                cursor.execute("""
+                                    SELECT column_name FROM information_schema.columns
+                                    WHERE table_name = 'download_queue'
+                                      AND table_schema = 'public'
+                                """)
+                                _early_columns = set()
+                                for _row in cursor.fetchall():
+                                    _cn = _row.get('column_name') if hasattr(_row, 'get') else (_row[0] if _row else None)
+                                    if _cn:
+                                        _early_columns.add(_cn)
+                                _missing_early = [c for c in required_cols if c not in _early_columns]
+                                if not _missing_early:
+                                    _queue_schema_checked = True
+                                else:
+                                    logger.warning(
+                                        "download_queue schema still missing columns after ALTER pass: %s",
+                                        ", ".join(sorted(_missing_early)),
+                                    )
                     USING duplicate_groups dg
+                                # Prevent duplicate active queue rows under concurrent enqueue requests.
                     WHERE LOWER(dq.artist) = dg.artist_key
                       AND LOWER(COALESCE(dq.album, '')) = dg.album_key
                       AND LOWER(dq.title) = dg.title_key
@@ -979,33 +1001,6 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                 else:
                     logger.warning(f"Could not create active queue dedupe index: {e}")
 
-            # Re-check after attempted ALTERs. Only mark schema as checked when all
-            # required columns are present; otherwise keep retrying on future calls.
-            cursor.execute("""
-                SELECT column_name FROM information_schema.columns
-                WHERE table_name = 'download_queue'
-                  AND table_schema = 'public'
-            """)
-            final_columns = set()
-            for row in cursor.fetchall():
-                if hasattr(row, 'get'):
-                    col_name = row.get('column_name')
-                else:
-                    col_name = row[0] if row and len(row) > 0 else None
-                if col_name:
-                    final_columns.add(col_name)
-            missing_after_ensure = sorted(
-                [col for col in required_cols.keys() if col not in final_columns]
-            )
-
-            if missing_after_ensure:
-                _queue_schema_checked = False
-                logger.warning(
-                    "download_queue schema still missing columns after ensure pass: %s",
-                    ", ".join(missing_after_ensure),
-                )
-            else:
-                _queue_schema_checked = True
         except Exception as e:
             logger.warning(f"Schema check failed: {e}")
             try:

@@ -13,7 +13,7 @@ _PG_FAILURE_BACKOFF_SECONDS = float(os.environ.get("PG_FAILURE_BACKOFF_SECONDS",
 # the slow-checkpoint / VACUUM-blocking effects that follow.
 # Override via PG_IDLE_IN_TRANSACTION_TIMEOUT_MS env-var (0 = disabled).
 _PG_IDLE_IN_TRANSACTION_TIMEOUT_MS = int(
-    os.environ.get("PG_IDLE_IN_TRANSACTION_TIMEOUT_MS", "300000")  # 5 minutes
+    os.environ.get("PG_IDLE_IN_TRANSACTION_TIMEOUT_MS", "60000")  # 60 seconds (was 5 min)
 )
 
 
@@ -32,21 +32,28 @@ class _AutoRollbackPGConnection:
     the wrapper via the ``_conn`` attribute.
     """
 
-    __slots__ = ("_conn",)
+    __slots__ = ("_conn", "_closed")
 
     def __init__(self, conn):
         object.__setattr__(self, "_conn", conn)
+        object.__setattr__(self, "_closed", False)
 
     # ------------------------------------------------------------------
-    # Core override: rollback before close
+    # Core override: rollback before close (idempotent — safe to call twice)
     # ------------------------------------------------------------------
     def close(self):
+        if object.__getattribute__(self, "_closed"):
+            return
+        object.__setattr__(self, "_closed", True)
         conn = object.__getattribute__(self, "_conn")
         try:
             conn.rollback()
         except Exception:
             pass
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Context-manager: matches psycopg2 native behaviour
