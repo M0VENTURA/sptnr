@@ -7572,6 +7572,26 @@ def _auto_queue_collection_artist_singles_from_release_groups(artist: str, relea
     current_year = datetime.now().year
     album_titles_current_year = set()
     single_candidates = []
+    existing_track_titles_norm = set()
+
+    # Build a normalized title set for this artist so we only queue singles that are not already in collection.
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT DISTINCT title
+            FROM tracks
+            WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s)
+               OR LOWER(artist) = LOWER(%s)
+        """, (artist, artist))
+        for row in (cursor.fetchall() or []):
+            track_title = _row_get(row, 'title', index=0)
+            norm_track_title = _normalize_release_title(track_title or "")
+            if norm_track_title:
+                existing_track_titles_norm.add(norm_track_title)
+        conn.close()
+    except Exception as exc:
+        logging.warning("[AUTO-QUEUE] Could not load existing track titles for '%s': %s", artist, exc)
 
     for rg in release_groups:
         primary_type = (rg.get("primary_type") or "").strip().lower()
@@ -7609,6 +7629,13 @@ def _auto_queue_collection_artist_singles_from_release_groups(artist: str, relea
 
     for title, norm_title, release_id in single_candidates:
         if norm_title in album_titles_current_year:
+            continue
+        if norm_title in existing_track_titles_norm:
+            logging.info(
+                "[AUTO-QUEUE] Skipping '%s - %s' because a matching track already exists in collection",
+                artist,
+                title,
+            )
             continue
 
         try:
