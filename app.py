@@ -3676,21 +3676,20 @@ def artists():
     total_stats = cursor.fetchone()
     
     # Filter artists to show only those with at least one album or EP
-    # Use COALESCE to fall back to artist field when album_artist is empty
-    # Use NULLIF to treat empty strings as NULL for proper COALESCE behavior
+    # Use album_artist directly to list only album artists, not track artists
     try:
         cursor.execute("""
             SELECT 
-                COALESCE(NULLIF(album_artist, ''), artist) as display_name,
-                COALESCE(NULLIF(album_artist, ''), artist) as link_artist,
+                album_artist as display_name,
+                album_artist as link_artist,
                 COUNT(DISTINCT album) as album_count,
                 COUNT(*) as track_count,
                 COALESCE(SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END), 0) as five_star_count,
                 MAX(last_scanned) as last_updated
             FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL 
-                AND COALESCE(NULLIF(album_artist, ''), artist) != ''
-            GROUP BY COALESCE(NULLIF(album_artist, ''), artist)
+            WHERE album_artist IS NOT NULL 
+                AND TRIM(album_artist) != ''
+            GROUP BY album_artist
             HAVING COUNT(DISTINCT album) > 0
             ORDER BY display_name
         """)
@@ -3737,7 +3736,7 @@ def artists():
         cursor.execute("""
             WITH dup_groups AS (
                 SELECT
-                    COALESCE(NULLIF(album_artist, ''), artist) AS display_name,
+                    album_artist AS display_name,
                     album,
                     LOWER(TRIM(title)) AS norm_title,
                     LOWER(TRIM(COALESCE(artist, ''))) AS norm_artist,
@@ -3745,12 +3744,12 @@ def artists():
                     TRIM(COALESCE(CAST(disc_number AS TEXT), '')) AS norm_disc_number,
                     COUNT(*) AS grp_count
                 FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
-                  AND COALESCE(NULLIF(album_artist, ''), artist) != ''
+                WHERE album_artist IS NOT NULL
+                  AND TRIM(album_artist) != ''
                   AND title IS NOT NULL
                   AND TRIM(title) != ''
                 GROUP BY
-                    COALESCE(NULLIF(album_artist, ''), artist),
+                    album_artist,
                     album,
                     LOWER(TRIM(title)),
                     LOWER(TRIM(COALESCE(artist, ''))),
@@ -3768,17 +3767,17 @@ def artists():
 
         cursor.execute("""
             SELECT
-                COALESCE(NULLIF(album_artist, ''), artist) AS display_name,
+                album_artist AS display_name,
                 COUNT(*) AS missing_count
             FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
-              AND COALESCE(NULLIF(album_artist, ''), artist) != ''
+            WHERE album_artist IS NOT NULL
+              AND TRIM(album_artist) != ''
               AND (
                     title IS NULL OR TRIM(title) = '' OR
                     album IS NULL OR TRIM(album) = '' OR
                     track_number IS NULL OR TRIM(CAST(track_number AS TEXT)) = ''
                   )
-            GROUP BY COALESCE(NULLIF(album_artist, ''), artist)
+            GROUP BY album_artist
         """)
 
         for row in cursor.fetchall():
@@ -3786,18 +3785,18 @@ def artists():
             missing_counts_by_artist[row_dict.get("display_name", "")] = int(row_dict.get("missing_count") or 0)
         
                 # Query 3: Find duplicate artists (same MBID, different album_artist names)
-        # Note: Using album_artist instead of track artist to avoid flagging compilations/features
+        # Note: Using album_artist directly to only check album artists
         cursor.execute("""
             SELECT 
-                                COALESCE(NULLIF(album_artist, ''), artist) as effective_artist,
+                album_artist as effective_artist,
                 COUNT(DISTINCT musicbrainz_artist_id) as mbid_count,
                 COUNT(*) as track_count
             FROM tracks
             WHERE musicbrainz_artist_id IS NOT NULL 
               AND musicbrainz_artist_id != ''
-                            AND COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
-                            AND TRIM(COALESCE(NULLIF(album_artist, ''), artist)) != ''
-                        GROUP BY COALESCE(NULLIF(album_artist, ''), artist)
+              AND album_artist IS NOT NULL
+              AND TRIM(album_artist) != ''
+            GROUP BY album_artist
         """)
         
         artist_mbid_map = {}  # Map artist name to their MBID(s)
@@ -3811,13 +3810,15 @@ def artists():
         cursor.execute("""
             SELECT 
                 musicbrainz_artist_id,
-                COUNT(DISTINCT COALESCE(NULLIF(album_artist, ''), artist)) as distinct_artist_names,
+                COUNT(DISTINCT album_artist) as distinct_artist_names,
                 COUNT(*) as total_tracks
             FROM tracks
             WHERE musicbrainz_artist_id IS NOT NULL 
               AND musicbrainz_artist_id != ''
+              AND album_artist IS NOT NULL
+              AND TRIM(album_artist) != ''
             GROUP BY musicbrainz_artist_id
-            HAVING COUNT(DISTINCT COALESCE(NULLIF(album_artist, ''), artist)) > 1
+            HAVING COUNT(DISTINCT album_artist) > 1
         """)
         
         # Build map of MBID -> list of artist names
@@ -3831,11 +3832,13 @@ def artists():
         # Get list of album artists by MBID to populate duplicate_artist_counts_by_artist
         cursor.execute("""
             SELECT DISTINCT
-                COALESCE(NULLIF(album_artist, ''), artist) as effective_artist,
+                album_artist as effective_artist,
                 musicbrainz_artist_id
             FROM tracks
             WHERE musicbrainz_artist_id IS NOT NULL 
               AND musicbrainz_artist_id != ''
+              AND album_artist IS NOT NULL
+              AND TRIM(album_artist) != ''
         """)
         
         for row in cursor.fetchall():
