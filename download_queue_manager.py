@@ -6644,6 +6644,7 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
         base_select = f"""
               SELECT id, status, file_path, found_filename, artist, title,
                   album, album_artist, track_number, disc_number, year,
+                  release_id, release_mbid, release_source,
                   {release_year_select},
                   {copied_select}
         """
@@ -6733,23 +6734,49 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
         dest_album = _most_common(albums) or album or 'Unknown Album'
         dest_year = _most_common(years) or ''
 
-        # Clean up year: prefer plausible 4-digit release years only.
-        # This avoids creating wrong year folders from noisy metadata values.
-        year_text = str(dest_year or '').strip()
-        year_match = re.search(r"(19|20)\d{2}", year_text)
-        if year_match:
-            year_candidate = year_match.group(0)
+        def _normalize_year_value(raw_year):
+            year_text = str(raw_year or '').strip()
+            year_match = re.search(r"(19|20)\d{2}", year_text)
+            if not year_match:
+                return None
             try:
-                year_int = int(year_candidate)
-                current_year = datetime.now().year
-                if 1900 <= year_int <= (current_year + 1):
-                    dest_year = str(year_int)
-                else:
-                    dest_year = 'Unknown'
+                year_int = int(year_match.group(0))
             except Exception:
-                dest_year = 'Unknown'
+                return None
+            current_year = datetime.now().year
+            if 1900 <= year_int <= (current_year + 1):
+                return str(year_int)
+            return None
+
+        # Start with queue-provided years, then optionally override from
+        # authoritative MusicBrainz release metadata if the queue year is
+        # missing/invalid or looks like a stale current-year placeholder.
+        normalized_queue_year = _normalize_year_value(dest_year)
+        current_year_str = str(datetime.now().year)
+
+        if not normalized_queue_year or normalized_queue_year == current_year_str:
+            release_ids = []
+            for track in tracks:
+                candidate_id = (track.get('release_mbid') or track.get('release_id') or '').strip()
+                if re.match(r"^[0-9a-fA-F-]{36}$", candidate_id):
+                    release_ids.append(candidate_id)
+            release_ids = list(dict.fromkeys(release_ids))
+
+            authoritative_year = None
+            for mbid in release_ids:
+                try:
+                    from folder_matching_enhancements import get_musicbrainz_release_metadata
+                    release_meta = get_musicbrainz_release_metadata(mbid) or {}
+                    meta_year = _normalize_year_value(release_meta.get('release_year'))
+                    if meta_year:
+                        authoritative_year = meta_year
+                        break
+                except Exception as mb_year_err:
+                    logger.debug(f"[AUTO_MOVE] Could not resolve release year for {mbid}: {mb_year_err}")
+
+            dest_year = authoritative_year or normalized_queue_year or 'Unknown'
         else:
-            dest_year = 'Unknown'
+            dest_year = normalized_queue_year
 
         dest_dir = os.path.join(music_root, dest_album_artist, f"{dest_year} - {dest_album}")
 
