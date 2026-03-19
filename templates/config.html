@@ -406,6 +406,32 @@
           <input type="number" class="form-control" id="mature_track_min_age_years" placeholder="2" value="{{ config.get('features', {}).get('mature_track_min_age_years', 2) }}" min="1" max="50">
           <div class="form-text">Tracks at or above this age keep their existing Last.fm-backed popularity unless listener data is missing. Default: 2 years.</div>
         </div>
+
+        <div class="col-12"><hr class="my-2"></div>
+        <div class="col-12">
+          <h6 class="mb-2"><i class="bi bi-calendar2-week"></i> Daily MusicBrainz Release Refresh</h6>
+          <p class="text-muted small mb-2">Once per daily scheduler cycle, search MusicBrainz for newly announced/recent releases for artists in your collection and add them to Dashboard upcoming/recent cards.</p>
+          <div class="form-check form-switch mb-2">
+            <input class="form-check-input" type="checkbox" id="daily_musicbrainz_release_scan_enabled" {% if config.get('features', {}).get('daily_musicbrainz_release_scan_enabled', True) %}checked{% endif %}>
+            <label class="form-check-label" for="daily_musicbrainz_release_scan_enabled"><strong>Enable Daily MusicBrainz Artist Release Refresh</strong></label>
+          </div>
+        </div>
+        <div class="col-12 col-md-3">
+          <label class="form-label">Lookback (days)</label>
+          <input type="number" class="form-control" id="daily_musicbrainz_release_lookback_days" placeholder="42" value="{{ config.get('features', {}).get('daily_musicbrainz_release_lookback_days', 42) }}" min="1" max="365">
+        </div>
+        <div class="col-12 col-md-3">
+          <label class="form-label">Lookahead (days)</label>
+          <input type="number" class="form-control" id="daily_musicbrainz_release_lookahead_days" placeholder="28" value="{{ config.get('features', {}).get('daily_musicbrainz_release_lookahead_days', 28) }}" min="1" max="365">
+        </div>
+        <div class="col-12 col-md-3">
+          <label class="form-label">Max Artists / Run</label>
+          <input type="number" class="form-control" id="daily_musicbrainz_release_max_artists" placeholder="500" value="{{ config.get('features', {}).get('daily_musicbrainz_release_max_artists', 500) }}" min="1" max="5000">
+        </div>
+        <div class="col-12 col-md-3">
+          <label class="form-label">Releases / Artist</label>
+          <input type="number" class="form-control" id="daily_musicbrainz_release_per_artist_limit" placeholder="100" value="{{ config.get('features', {}).get('daily_musicbrainz_release_per_artist_limit', 100) }}" min="10" max="250">
+        </div>
       </div>
 
       <!-- Retry Scheduler Settings -->
@@ -1202,6 +1228,11 @@ function buildConfigObject() {
         prune_empty_folders: getChecked('downloads_prune_empty_folders', true)
       },
       mature_track_min_age_years: parseInt(getValue('mature_track_min_age_years', '2')) || 2,
+      daily_musicbrainz_release_scan_enabled: getChecked('daily_musicbrainz_release_scan_enabled', true),
+      daily_musicbrainz_release_lookback_days: parseInt(getValue('daily_musicbrainz_release_lookback_days', '42')) || 42,
+      daily_musicbrainz_release_lookahead_days: parseInt(getValue('daily_musicbrainz_release_lookahead_days', '28')) || 28,
+      daily_musicbrainz_release_max_artists: parseInt(getValue('daily_musicbrainz_release_max_artists', '500')) || 500,
+      daily_musicbrainz_release_per_artist_limit: parseInt(getValue('daily_musicbrainz_release_per_artist_limit', '100')) || 100,
       source_discogs_confidence: getValue('source_discogs_confidence', 'high'),
       source_spotify_confidence: getValue('source_spotify_confidence', 'medium'),
       source_musicbrainz_confidence: getValue('source_musicbrainz_confidence', 'medium'),

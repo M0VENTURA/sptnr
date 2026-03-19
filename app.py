@@ -1881,6 +1881,11 @@ def _start_daily_scheduler():
             except Exception as exc:
                 logging.error(f"[DAILY] Error in LB 5am rematch: {exc}", exc_info=True)
 
+            try:
+                _run_daily_musicbrainz_collection_release_refresh()
+            except Exception as exc:
+                logging.error(f"[DAILY] Error in MusicBrainz daily release refresh: {exc}", exc_info=True)
+
         logging.info("[DAILY] Daily scheduler stopped")
 
     _daily_scheduler_thread = threading.Thread(target=_daily_worker, daemon=True, name="daily-scheduler")
@@ -2094,6 +2099,215 @@ def _run_daily_5am_lb_rematch():
         conn.commit()
     except Exception as exc:
         logging.error(f"[LB_REMATCH] Daily rematch error: {exc}", exc_info=True)
+    finally:
+        conn.close()
+
+
+def _parse_musicbrainz_release_date(raw_date: str) -> str | None:
+    """Normalize MusicBrainz release dates to YYYY-MM-DD for storage/filtering."""
+    if not raw_date:
+        return None
+    value = str(raw_date).strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        return value
+    if re.fullmatch(r"\d{4}-\d{2}", value):
+        return f"{value}-01"
+    if re.fullmatch(r"\d{4}", value):
+        return f"{value}-01-01"
+    return None
+
+
+def _run_daily_musicbrainz_collection_release_refresh():
+    """
+    Refresh upcoming/recent releases from MusicBrainz for artists in the collection.
+
+    This augments Wikipedia-based sources with direct MusicBrainz release-group data,
+    then upserts results into `upcoming_releases` so the dashboard can show newly
+    announced and recently released entries with queue actions.
+    """
+    cfg = get_config() or {}
+    features = cfg.get("features", {}) if isinstance(cfg, dict) else {}
+
+    if not bool(features.get("daily_musicbrainz_release_scan_enabled", True)):
+        return
+
+    try:
+        lookback_days = int(features.get("daily_musicbrainz_release_lookback_days", 42) or 42)
+    except Exception:
+        lookback_days = 42
+    try:
+        lookahead_days = int(features.get("daily_musicbrainz_release_lookahead_days", 28) or 28)
+    except Exception:
+        lookahead_days = 28
+    try:
+        max_artists = int(features.get("daily_musicbrainz_release_max_artists", 500) or 500)
+    except Exception:
+        max_artists = 500
+    try:
+        per_artist_limit = int(features.get("daily_musicbrainz_release_per_artist_limit", 100) or 100)
+    except Exception:
+        per_artist_limit = 100
+
+    lookback_days = max(1, min(lookback_days, 365))
+    lookahead_days = max(1, min(lookahead_days, 365))
+    max_artists = max(1, min(max_artists, 5000))
+    per_artist_limit = max(10, min(per_artist_limit, 250))
+
+    today = datetime.now().date()
+    min_date = today - timedelta(days=lookback_days)
+    max_date = today + timedelta(days=lookahead_days)
+
+    conn = get_db()
+    try:
+        _ensure_upcoming_releases_schema(conn)
+        placeholder = "%s"
+        cursor = conn.cursor()
+
+        cursor.execute(f"""
+            SELECT DISTINCT COALESCE(NULLIF(album_artist, ''), artist) AS artist_name
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
+              AND COALESCE(NULLIF(album_artist, ''), artist) <> ''
+            ORDER BY LOWER(COALESCE(NULLIF(album_artist, ''), artist))
+            LIMIT {placeholder}
+        """, (max_artists,))
+        artist_rows = cursor.fetchall() or []
+
+        artists = []
+        for row in artist_rows:
+            artist_name = _row_get(row, "artist_name", 0)
+            if artist_name:
+                artists.append(str(artist_name).strip())
+
+        if not artists:
+            logging.info("[UPCOMING_MB_DAILY] No collection artists found; skipping MusicBrainz refresh")
+            return
+
+        inserted = 0
+        updated = 0
+        scanned_artists = 0
+
+        for artist_name in artists:
+            scanned_artists += 1
+            release_groups = _fetch_musicbrainz_releases(artist_name, limit=per_artist_limit)
+            for rg in release_groups:
+                parsed_date = _parse_musicbrainz_release_date(rg.get("first_release_date"))
+                if not parsed_date:
+                    continue
+
+                try:
+                    release_dt = datetime.strptime(parsed_date, "%Y-%m-%d").date()
+                except ValueError:
+                    continue
+
+                if release_dt < min_date or release_dt > max_date:
+                    continue
+
+                album_name = (rg.get("title") or "").strip()
+                if not album_name:
+                    continue
+
+                release_year = int(parsed_date[:4]) if len(parsed_date) >= 4 and parsed_date[:4].isdigit() else None
+                release_group_mbid = (rg.get("id") or "").strip() or None
+
+                cursor.execute(
+                    f"""
+                    INSERT INTO upcoming_releases (
+                        artist_name,
+                        album_name,
+                        release_date,
+                        release_year,
+                        source,
+                        artist_in_collection,
+                        album_in_collection,
+                        is_new_release,
+                        notes,
+                        release_group_mbid,
+                        mbid_match_status,
+                        mbid_source,
+                        mbid_confidence,
+                        mbid_match_score,
+                        mbid_last_checked_at,
+                        mbid_manual_override,
+                        updated_at
+                    )
+                    VALUES (
+                        {placeholder}, {placeholder}, {placeholder}, {placeholder},
+                        {placeholder}, {placeholder}, {placeholder}, {placeholder},
+                        {placeholder}, {placeholder}, {placeholder}, {placeholder},
+                        {placeholder}, {placeholder}, {placeholder}, {placeholder},
+                        CURRENT_TIMESTAMP
+                    )
+                    ON CONFLICT (artist_name, album_name, release_date) DO UPDATE SET
+                        source = EXCLUDED.source,
+                        artist_in_collection = EXCLUDED.artist_in_collection,
+                        release_year = EXCLUDED.release_year,
+                        release_group_mbid = COALESCE(EXCLUDED.release_group_mbid, upcoming_releases.release_group_mbid),
+                        mbid_match_status = CASE
+                            WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_match_status
+                            ELSE EXCLUDED.mbid_match_status
+                        END,
+                        mbid_source = CASE
+                            WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_source
+                            ELSE EXCLUDED.mbid_source
+                        END,
+                        mbid_confidence = CASE
+                            WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_confidence
+                            ELSE EXCLUDED.mbid_confidence
+                        END,
+                        mbid_match_score = CASE
+                            WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_match_score
+                            ELSE EXCLUDED.mbid_match_score
+                        END,
+                        mbid_last_checked_at = CASE
+                            WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_last_checked_at
+                            ELSE EXCLUDED.mbid_last_checked_at
+                        END,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (
+                        artist_name,
+                        album_name,
+                        parsed_date,
+                        release_year,
+                        "MusicBrainz Daily Collection",
+                        True,
+                        False,
+                        True,
+                        "Added by daily MusicBrainz artist scan",
+                        release_group_mbid,
+                        "matched" if release_group_mbid else "unmatched",
+                        "musicbrainz_daily_scan",
+                        "high" if release_group_mbid else None,
+                        1.0 if release_group_mbid else None,
+                        datetime.now().isoformat(),
+                        False,
+                    ),
+                )
+
+                if cursor.rowcount == 1:
+                    inserted += 1
+                else:
+                    updated += 1
+
+            # Respect MusicBrainz API pacing
+            time.sleep(1.0)
+
+        conn.commit()
+        logging.info(
+            "[UPCOMING_MB_DAILY] Refresh complete: artists=%s inserted=%s updated=%s window=%s..%s",
+            scanned_artists,
+            inserted,
+            updated,
+            min_date.isoformat(),
+            max_date.isoformat(),
+        )
+    except Exception as exc:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logging.error(f"[UPCOMING_MB_DAILY] Refresh failed: {exc}", exc_info=True)
     finally:
         conn.close()
 
@@ -2925,7 +3139,12 @@ def _baseline_config():
             "discogs_min_interval_sec": 0.35,
             "include_user_ratings_on_scan": True,
             "scan_worker_threads": 4,
-            "spotify_prefetch_timeout": 30
+            "spotify_prefetch_timeout": 30,
+            "daily_musicbrainz_release_scan_enabled": True,
+            "daily_musicbrainz_release_lookback_days": 42,
+            "daily_musicbrainz_release_lookahead_days": 28,
+            "daily_musicbrainz_release_max_artists": 500,
+            "daily_musicbrainz_release_per_artist_limit": 100
         }
     }
 
@@ -28471,15 +28690,84 @@ def api_cleanup_duplicates():
 
 @app.route("/api/upcoming-releases", methods=["GET"])
 def api_upcoming_releases():
-    """Get upcoming releases, optionally filtered by collection artists"""
+    """Get upcoming releases with collection/recommended artist annotations."""
     try:
         from wikipedia_releases_scraper import WikipediaReleaseScraper
+        import json as _json
+
+        def _extract_similar_names(raw_value):
+            names = set()
+            if not raw_value:
+                return names
+            try:
+                parsed = _json.loads(raw_value) if isinstance(raw_value, str) else raw_value
+            except Exception:
+                return names
+            if not isinstance(parsed, list):
+                return names
+            for entry in parsed:
+                if isinstance(entry, str):
+                    artist_name = entry.strip()
+                elif isinstance(entry, dict):
+                    artist_name = str(entry.get("name") or entry.get("artist") or "").strip()
+                else:
+                    artist_name = ""
+                if artist_name:
+                    names.add(artist_name.lower())
+            return names
         
         filter_collection = request.args.get("collection", "false").lower() == "true"
+        filter_recommended = request.args.get("recommended", "false").lower() == "true"
         include_queue = request.args.get("include_queue", "false").lower() == "true"
         
         scraper = WikipediaReleaseScraper(db_path=DB_PATH)
-        releases = scraper.get_upcoming_releases(artist_in_collection=filter_collection)
+        releases = scraper.get_upcoming_releases(artist_in_collection=False)
+
+        conn_flags = get_db()
+        cursor_flags = conn_flags.cursor()
+
+        # Build artist sets from local library and similar-artist cache.
+        cursor_flags.execute(
+            "SELECT DISTINCT LOWER(COALESCE(NULLIF(album_artist, ''), artist)) AS artist_key "
+            "FROM tracks "
+            "WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL"
+        )
+        collection_artists = {
+            _row_get(row, 'artist_key', index=0)
+            for row in (cursor_flags.fetchall() or [])
+            if _row_get(row, 'artist_key', index=0)
+        }
+
+        recommended_artists = set()
+        try:
+            cursor_flags.execute(
+                "SELECT similar_artists_lastfm, similar_artists_listenbrainz "
+                "FROM artists "
+                "WHERE similar_artists_lastfm IS NOT NULL OR similar_artists_listenbrainz IS NOT NULL"
+            )
+            for row in (cursor_flags.fetchall() or []):
+                similar_lastfm = _row_get(row, 'similar_artists_lastfm', index=0)
+                similar_listenbrainz = _row_get(row, 'similar_artists_listenbrainz', index=1)
+                recommended_artists.update(_extract_similar_names(similar_lastfm))
+                recommended_artists.update(_extract_similar_names(similar_listenbrainz))
+        except Exception as similar_err:
+            logging.warning(f"Could not load recommended-artist set for upcoming releases: {similar_err}")
+
+        conn_flags.close()
+
+        for release in releases:
+            artist_key = (release.get("artist_name") or "").strip().lower()
+            in_collection = artist_key in collection_artists
+            in_recommended = artist_key in recommended_artists
+
+            # Keep DB-sourced value if already true, but refresh from live sets.
+            release["artist_in_collection"] = bool(release.get("artist_in_collection") or in_collection)
+            release["artist_in_recommended"] = bool(in_recommended)
+
+        if filter_collection:
+            releases = [r for r in releases if r.get("artist_in_collection")]
+        if filter_recommended:
+            releases = [r for r in releases if r.get("artist_in_recommended")]
 
         if include_queue:
             # Optional queue annotation for views that render download-state badges.
@@ -28586,6 +28874,20 @@ def api_scrape_upcoming_releases():
         })
     except Exception as e:
         logging.error(f"Error scraping Wikipedia: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/upcoming-releases/refresh-musicbrainz", methods=["POST"])
+def api_refresh_upcoming_releases_musicbrainz():
+    """Trigger an on-demand MusicBrainz refresh for collection artists."""
+    try:
+        _run_daily_musicbrainz_collection_release_refresh()
+        return jsonify({
+            "success": True,
+            "message": "MusicBrainz collection release refresh completed"
+        })
+    except Exception as e:
+        logging.error(f"Error refreshing MusicBrainz upcoming releases: {str(e)}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 

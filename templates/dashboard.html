@@ -77,7 +77,7 @@
     <div class="card mb-4 border-info">
         <div class="card-header bg-info bg-opacity-10 border-info d-flex justify-content-between align-items-center">
             <h5 class="card-title mb-0">
-                <i class="bi bi-calendar-event"></i> Upcoming & Recent Releases
+                <i class="bi bi-calendar-event"></i> Recently Added & Announced Releases
             </h5>
             <a href="/downloads/monitor#upcomingReleasesMonitorCard" class="btn btn-sm btn-info">
                 <i class="bi bi-arrow-right"></i> View All
@@ -973,44 +973,92 @@ function clearApiError(endpoint) {
 }
 
 // Switch between Navidrome users
+async function addUpcomingReleaseToQueueDashboard(encodedArtist, encodedAlbum, encodedDate, buttonEl) {
+    try {
+        const artist = decodeURIComponent(encodedArtist || '').trim();
+        const album = decodeURIComponent(encodedAlbum || '').trim();
+        const dateText = decodeURIComponent(encodedDate || '').trim();
+        if (!artist || !album) {
+            return;
+        }
+
+        let year = '';
+        if (/^\d{4}/.test(dateText)) {
+            year = dateText.slice(0, 4);
+        }
+
+        if (buttonEl) {
+            buttonEl.disabled = true;
+            buttonEl.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
+        }
+
+        const payload = {
+            artist,
+            title: album,
+            album,
+            import_type: 'album',
+            source: 'qbittorrent',
+            release_source: 'dashboard_upcoming',
+            priority: 5,
+            is_album: true,
+            year: year || null
+        };
+
+        const result = await fetchJsonOrThrow('/api/queue/add', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        if (buttonEl) {
+            buttonEl.disabled = true;
+            buttonEl.classList.remove('btn-outline-primary');
+            buttonEl.classList.add('btn-outline-success');
+            buttonEl.innerHTML = '<i class="bi bi-check2"></i>';
+            buttonEl.title = result?.message || 'Added to queue';
+        }
+    } catch (error) {
+        console.error('Error adding dashboard upcoming release to queue:', error);
+        if (buttonEl) {
+            buttonEl.disabled = false;
+            buttonEl.innerHTML = '<i class="bi bi-plus-circle"></i>';
+            buttonEl.title = 'Failed to add to queue';
+        }
+    }
+}
+
 async function loadUpcomingReleasesBanner() {
     try {
-        const data = await fetchJsonOrThrow('/api/upcoming-releases?collection=true');
-        clearApiError('/api/upcoming-releases?collection=true');
+        const endpoint = '/api/upcoming-releases?collection=false&include_queue=true';
+        const data = await fetchJsonOrThrow(endpoint);
+        clearApiError(endpoint);
         
         if (!data.releases || data.releases.length === 0) {
             document.getElementById('upcomingBannerContent').innerHTML = `
-                <p class="text-muted text-center"><i class="bi bi-info-circle"></i> No upcoming releases from artists in your collection.</p>
+                <p class="text-muted text-center"><i class="bi bi-info-circle"></i> No upcoming or recent releases found.</p>
             `;
             return;
         }
         
-        // Filter to only show albums NOT in collection
-        let releases = data.releases.filter(r => !r.album_in_collection);
-        
-        if (releases.length === 0) {
-            document.getElementById('upcomingBannerContent').innerHTML = `
-                <p class="text-muted text-center"><i class="bi bi-check-circle"></i> You have all upcoming releases from artists in your collection!</p>
-            `;
-            return;
-        }
-        
-        // Filter to last 2 weeks and 1 week ahead
+        let releases = data.releases.slice();
+
+        // Wider dashboard window: last 6 weeks + next 4 weeks.
         const now = new Date();
-        const twoWeeksAgo = new Date(now);
-        twoWeeksAgo.setDate(now.getDate() - 14);
-        const oneWeekAhead = new Date(now);
-        oneWeekAhead.setDate(now.getDate() + 7);
+        const sixWeeksAgo = new Date(now);
+        sixWeeksAgo.setDate(now.getDate() - 42);
+        const fourWeeksAhead = new Date(now);
+        fourWeeksAhead.setDate(now.getDate() + 28);
         
         releases = releases.filter(r => {
             if (!r.release_date || r.release_date === 'Unknown') return false;
             const d = new Date(r.release_date);
-            return d >= twoWeeksAgo && d <= oneWeekAhead;
+            if (Number.isNaN(d.getTime())) return false;
+            return d >= sixWeeksAgo && d <= fourWeeksAhead;
         });
         
         if (releases.length === 0) {
             document.getElementById('upcomingBannerContent').innerHTML = `
-                <p class="text-muted text-center"><i class="bi bi-calendar-check"></i> No releases in the last 2 weeks or next week.</p>
+                <p class="text-muted text-center"><i class="bi bi-calendar-check"></i> No releases in the selected recent/upcoming window.</p>
             `;
             return;
         }
@@ -1020,30 +1068,56 @@ async function loadUpcomingReleasesBanner() {
             const dateA = new Date(a.release_date || '9999-12-31');
             const dateB = new Date(b.release_date || '9999-12-31');
             return dateA - dateB;
-        }).slice(0, 10); // Show only first 10
+        }).slice(0, 25);
         
         let html = '<div class="list-group list-group-flush">';
         
         releases.forEach(release => {
             const releaseDate = release.release_date || 'TBA';
             const isUpcoming = new Date(releaseDate) > new Date();
-            const badge = isUpcoming ? 
+            const statusBadge = isUpcoming ? 
                 '<span class="badge bg-success ms-2">Upcoming</span>' :
                 '<span class="badge bg-primary ms-2">Recent</span>';
-            
-            const searchQuery = encodeURIComponent(`${release.artist_name} ${release.album_name}`);
+
+            const collectionBadge = release.artist_in_collection
+                ? '<span class="badge bg-dark-subtle text-dark ms-2">Artist in Collection</span>'
+                : '';
+            const recommendedBadge = release.artist_in_recommended
+                ? '<span class="badge bg-warning-subtle text-dark ms-2">Artist in Recommended</span>'
+                : '';
+
+            const inCollection = !!release.album_in_collection;
+            const inQueue = !!release.in_queue;
+            const disableAdd = inCollection || inQueue;
+            const addIcon = disableAdd
+                ? '<i class="bi bi-check2-circle"></i>'
+                : '<i class="bi bi-plus-circle"></i>';
+            const addTitle = inCollection
+                ? 'Already in collection'
+                : (inQueue ? 'Already in queue' : 'Add album to queue');
+
+            const encodedArtist = encodeURIComponent(release.artist_name || '');
+            const encodedAlbum = encodeURIComponent(release.album_name || '');
+            const encodedDate = encodeURIComponent(release.release_date || '');
             
             html += `
                 <div class="list-group-item d-flex justify-content-between align-items-start py-2">
                     <div class="flex-grow-1">
                         <h6 class="mb-1" style="font-size: 0.95rem;">
-                            ${releaseDate} ${badge}
+                            ${releaseDate} ${statusBadge} ${collectionBadge} ${recommendedBadge}
                         </h6>
                         <small class="text-muted">${escapeHtml(release.artist_name)} - ${escapeHtml(release.album_name)}</small>
                     </div>
-                    <a href="/downloads/monitor#upcomingReleasesMonitorCard" class="btn btn-sm btn-outline-primary" title="Open upcoming releases in downloads monitor">
-                        <i class="bi bi-download"></i>
-                    </a>
+                    <div class="d-flex align-items-center gap-2">
+                        <button class="btn btn-sm btn-outline-primary" ${disableAdd ? 'disabled' : ''}
+                            title="${addTitle}"
+                            onclick="addUpcomingReleaseToQueueDashboard('${encodedArtist}', '${encodedAlbum}', '${encodedDate}', this)">
+                            ${addIcon}
+                        </button>
+                        <a href="/downloads/monitor#upcomingReleasesMonitorCard" class="btn btn-sm btn-outline-secondary" title="Open in downloads monitor">
+                            <i class="bi bi-arrow-right"></i>
+                        </a>
+                    </div>
                 </div>
             `;
         });
@@ -1058,7 +1132,7 @@ async function loadUpcomingReleasesBanner() {
         }
         
     } catch (error) {
-        logApiError('/api/upcoming-releases?collection=true', 'Error loading upcoming releases', error);
+        logApiError('/api/upcoming-releases?collection=false&include_queue=true', 'Error loading upcoming releases', error);
         document.getElementById('upcomingBannerContent').innerHTML = `
             <p class="text-muted text-center text-danger"><i class="bi bi-exclamation-triangle"></i> Error loading releases</p>
         `;
