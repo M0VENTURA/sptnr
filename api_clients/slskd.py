@@ -707,6 +707,54 @@ class SlskdClient:
             logger.error(f"Slskd get transfer failed for {username}/{transfer_id}: {e}")
             return None
 
+    def find_download(self, username: str = "", filename: str = "", timeout: Optional[int] = None) -> Optional[dict]:
+        """Resolve a transfer entry from the flat downloads list.
+
+        Matching prefers exact normalized filename, then basename. When multiple
+        transfers match the same basename, prefer terminal failed states so retry
+        code clears the stale errored entry before re-queuing.
+        """
+        if not self.enabled:
+            return None
+
+        target_name = str(filename or "").strip().replace('\\', '/').lower()
+        target_base = target_name.rsplit('/', 1)[-1] if target_name else ""
+        target_user = str(username or "").strip()
+
+        matches = []
+        for transfer in self.get_active_downloads(timeout=timeout):
+            transfer_user = str(transfer.get("username") or "").strip()
+            if target_user and transfer_user != target_user:
+                continue
+            transfer_name = str(transfer.get("filename") or "").strip().replace('\\', '/').lower()
+            transfer_base = transfer_name.rsplit('/', 1)[-1] if transfer_name else ""
+            if target_name and transfer_name == target_name:
+                return transfer
+            if target_base and transfer_base == target_base:
+                matches.append(transfer)
+
+        if not matches:
+            return None
+
+        for transfer in matches:
+            state = self._state_text(transfer.get("state") or transfer.get("transferState") or transfer.get("status"))
+            if state in self.FAILED_STATES:
+                return transfer
+
+        return matches[0]
+
+    def remove_download_by_filename(self, username: str = "", filename: str = "", timeout: Optional[int] = None) -> bool:
+        """Resolve a transfer by filename and remove it from slskd."""
+        transfer = self.find_download(username=username, filename=filename, timeout=timeout)
+        if not transfer:
+            return False
+
+        transfer_id = str(transfer.get("id") or "")
+        transfer_user = str(transfer.get("username") or username or "")
+        if not transfer_id or not transfer_user:
+            return False
+        return self.cancel_download(transfer_user, transfer_id, remove=True, timeout=timeout)
+
     def clear_completed_downloads(self, timeout: Optional[int] = None) -> bool:
         """
         Remove all completed (terminal-state) download entries from slskd's list.

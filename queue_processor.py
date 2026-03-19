@@ -929,6 +929,52 @@ def get_slskd_client():
         return None
 
 
+def _clear_stale_slskd_transfer_for_queue_item(queue_item, slskd_client=None, timeout=10):
+    """Remove the lingering slskd transfer entry for a Soulseek queue row.
+
+    This is required before retrying failed downloads because slskd can keep a
+    terminal errored/rejected/cancelled transfer in its queue, and then a fresh
+    enqueue attempt is rejected as already queued.
+    """
+    if not queue_item:
+        return False
+
+    if str(queue_item.get('source') or 'soulseek').strip().lower() != 'soulseek':
+        return False
+
+    found_filename = str(queue_item.get('found_filename') or queue_item.get('file_path') or '').strip()
+    if not found_filename:
+        return False
+
+    client = slskd_client or get_slskd_client()
+    if not client:
+        return False
+
+    try:
+        transfer = client.find_download(filename=found_filename, timeout=timeout)
+        if not transfer:
+            return False
+
+        transfer_id = str(transfer.get('id') or '')
+        transfer_username = str(transfer.get('username') or '')
+        transfer_state = str(transfer.get('state') or '')
+        if not transfer_id or not transfer_username:
+            return False
+
+        removed = client.cancel_download(transfer_username, transfer_id, remove=True, timeout=timeout)
+        if removed:
+            logger.info(
+                f"Queue {queue_item.get('id')}: removed stale slskd transfer {transfer_username}/{transfer_id} "
+                f"before retry (state={transfer_state!r}, file={found_filename!r})"
+            )
+        return removed
+    except Exception as clear_err:
+        logger.warning(
+            f"Queue {queue_item.get('id')}: could not clear stale slskd transfer for {found_filename!r}: {clear_err}"
+        )
+        return False
+
+
 def _load_qbittorrent_config():
     """Load qBittorrent settings from config.yaml with safe defaults."""
     config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
@@ -1360,14 +1406,33 @@ def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=30):
         placeholder = "%s"
         
         # Get current retry_count and max_retries to enforce bounded retry behavior
-        cursor.execute(f"SELECT retry_count, max_retries FROM download_queue WHERE id = {placeholder}", (queue_id,))
+        cursor.execute(
+            f"""
+            SELECT id, source, found_filename, file_path, retry_count, max_retries
+            FROM download_queue
+            WHERE id = {placeholder}
+            """,
+            (queue_id,),
+        )
         row = cursor.fetchone()
         
         if not row:
             return False
+
+        row_dict = dict(row) if hasattr(row, 'keys') else {
+            'id': row[0],
+            'source': row[1],
+            'found_filename': row[2],
+            'file_path': row[3],
+            'retry_count': row[4],
+            'max_retries': row[5],
+        }
+
+        if schedule_retry:
+            _clear_stale_slskd_transfer_for_queue_item(row_dict)
         
-        retry_count = (row['retry_count'] or 0) + 1
-        max_retries = row.get('max_retries') if hasattr(row, 'keys') else (row[1] if len(row) > 1 else None)
+        retry_count = (row_dict.get('retry_count') or 0) + 1
+        max_retries = row_dict.get('max_retries')
         
         if schedule_retry and (not max_retries or retry_count < max_retries):
             next_retry = datetime.now() + timedelta(minutes=retry_delay_minutes)

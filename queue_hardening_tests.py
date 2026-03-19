@@ -489,6 +489,12 @@ class SlskdDownloadTimeoutTests(unittest.TestCase):
         processor_text = _read("queue_processor.py")
         self.assertIn("slskd_client.cancel_download(transfer_username, transfer_id, remove=True)", processor_text)
 
+    def test_mark_failed_clears_stale_slskd_transfer_before_retry(self):
+        """Failed Soulseek rows must remove stale slskd transfers before being re-queued."""
+        processor_text = _read("queue_processor.py")
+        self.assertIn("def _clear_stale_slskd_transfer_for_queue_item", processor_text)
+        self.assertIn("_clear_stale_slskd_transfer_for_queue_item(row_dict)", processor_text)
+
     def test_clear_completed_downloads_method_exists(self):
         """SlskdClient must expose clear_completed_downloads()."""
         slskd_text = _read("api_clients/slskd.py")
