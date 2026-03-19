@@ -2615,6 +2615,16 @@ function openFolderQueueMatchModal(folderPath, artist, album, currentMbid, queue
             <div class="small text-muted mb-2">Queue items affected: ${safeQueueIds.length}</div>
             <div class="small text-muted mb-3">Current MBID: ${escapeHtml(currentMbid || 'None')}</div>
 
+            <div class="alert alert-secondary small" role="alert">
+              <div class="fw-semibold mb-1"><i class="bi bi-music-note-list"></i> Target Queue Songs</div>
+              <div id="folderQueueMatchTargetSummary" class="mb-2">Loading queue songs...</div>
+              <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+                <button class="btn btn-sm btn-outline-light" type="button" onclick="setAllFolderQueueTargets(true)">Select All</button>
+                <button class="btn btn-sm btn-outline-light" type="button" onclick="setAllFolderQueueTargets(false)">Clear</button>
+              </div>
+              <div id="folderQueueMatchTargets" class="small"></div>
+            </div>
+
             <div class="mb-3">
               <h6 class="text-light mb-2"><i class="bi bi-collection"></i> Current Queue Releases</h6>
               <div id="folderQueueCurrentReleases">
@@ -2657,8 +2667,113 @@ function openFolderQueueMatchModal(folderPath, artist, album, currentMbid, queue
   const modal = new bootstrap.Modal(document.getElementById('folderQueueMatchModal'));
   modal.show();
 
+  loadFolderQueueMatchTargets(safeQueueIds, artist, album);
+
   // Keep folder flow aligned with single-item flow: show current queue releases first.
   loadCurrentQueueReleasesForFolder(encodeInlineArg(safeQueueIds), artist, album);
+}
+
+async function loadFolderQueueMatchTargets(queueIds, artist, album) {
+  const container = document.getElementById('folderQueueMatchTargets');
+  const summaryEl = document.getElementById('folderQueueMatchTargetSummary');
+  if (!container || !summaryEl) return;
+
+  const safeQueueIds = Array.isArray(queueIds)
+    ? queueIds.map(id => Number(id)).filter(id => Number.isFinite(id) && id > 0)
+    : [];
+
+  if (safeQueueIds.length === 0) {
+    container.innerHTML = '<div class="text-muted">No queue items found.</div>';
+    summaryEl.textContent = 'No queue songs available.';
+    return;
+  }
+
+  container.dataset.defaultQueueIds = JSON.stringify(safeQueueIds);
+  container.innerHTML = '<div class="text-muted">Loading queue songs...</div>';
+  summaryEl.textContent = `Selected ${safeQueueIds.length} of ${safeQueueIds.length} queue songs`;
+
+  try {
+    const apiUrl = `/api/queue/match-targets?artist=${encodeURIComponent(artist || '')}&album=${encodeURIComponent(album || '')}`;
+    const data = await fetchJsonOrThrow(apiUrl);
+    const targets = Array.isArray(data.targets) ? data.targets : [];
+    const targetById = new Map(targets.map(target => [Number(target.id || 0), target]));
+
+    const targetRows = safeQueueIds.map((queueId) => {
+      const target = targetById.get(queueId) || {};
+      const trackNo = target.track_number ? `#${target.track_number} ` : '';
+      const title = target.title || '(untitled track)';
+      const status = target.status ? ` [${target.status}]` : '';
+      const label = `${trackNo}${title}${status}`;
+      return `
+        <div class="form-check mb-1">
+          <input class="form-check-input folder-queue-target" type="checkbox" id="folderTarget_${queueId}" value="${queueId}" checked>
+          <label class="form-check-label" for="folderTarget_${queueId}">
+            ${escapeHtml(`#${queueId} ${label}`)}
+          </label>
+        </div>
+      `;
+    }).join('');
+
+    container.innerHTML = targetRows;
+    container.querySelectorAll('.folder-queue-target').forEach((checkbox) => {
+      checkbox.addEventListener('change', updateFolderQueueTargetSummary);
+    });
+    updateFolderQueueTargetSummary();
+  } catch (error) {
+    console.error('Error loading folder queue match targets:', error);
+    const fallbackRows = safeQueueIds.map((queueId) => `
+      <div class="form-check mb-1">
+        <input class="form-check-input folder-queue-target" type="checkbox" id="folderTarget_${queueId}" value="${queueId}" checked>
+        <label class="form-check-label" for="folderTarget_${queueId}">${escapeHtml(`#${queueId}`)}</label>
+      </div>
+    `).join('');
+    container.innerHTML = fallbackRows;
+    container.querySelectorAll('.folder-queue-target').forEach((checkbox) => {
+      checkbox.addEventListener('change', updateFolderQueueTargetSummary);
+    });
+    updateFolderQueueTargetSummary();
+  }
+}
+
+function getSelectedFolderQueueTargetIds() {
+  const container = document.getElementById('folderQueueMatchTargets');
+  if (!container) return [];
+
+  const selected = Array.from(container.querySelectorAll('.folder-queue-target:checked'))
+    .map((input) => Number(input.value || 0))
+    .filter((id) => Number.isFinite(id) && id > 0);
+
+  if (selected.length > 0) {
+    return selected;
+  }
+
+  try {
+    const fallback = JSON.parse(container.dataset.defaultQueueIds || '[]');
+    return Array.isArray(fallback)
+      ? fallback.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0)
+      : [];
+  } catch (error) {
+    return [];
+  }
+}
+
+function setAllFolderQueueTargets(checked) {
+  const container = document.getElementById('folderQueueMatchTargets');
+  if (!container) return;
+  container.querySelectorAll('.folder-queue-target').forEach((input) => {
+    input.checked = checked;
+  });
+  updateFolderQueueTargetSummary();
+}
+
+function updateFolderQueueTargetSummary() {
+  const container = document.getElementById('folderQueueMatchTargets');
+  const summaryEl = document.getElementById('folderQueueMatchTargetSummary');
+  if (!container || !summaryEl) return;
+
+  const total = container.querySelectorAll('.folder-queue-target').length;
+  const selected = container.querySelectorAll('.folder-queue-target:checked').length;
+  summaryEl.textContent = `Selected ${selected} of ${total} queue songs`;
 }
 
 async function loadCurrentQueueReleasesForFolder(queueIdsEnc, currentArtist, currentAlbum) {
@@ -2826,8 +2941,26 @@ async function applyFolderQueueMusicBrainzMatch(queueIdsEnc, newArtistEnc, newAl
     return;
   }
 
+  const selectedIds = getSelectedFolderQueueTargetIds();
+  const targetIds = selectedIds.length > 0 ? selectedIds : safeIds;
+
+  if (targetIds.length === 0) {
+    alert('Select at least one queue song to apply this match.');
+    return;
+  }
+
   if (!newMbid) {
     alert('Selected match is missing MBID.');
+    return;
+  }
+
+  const previewIds = targetIds.slice(0, 5).join(', ');
+  const overflowCount = targetIds.length > 5 ? targetIds.length - 5 : 0;
+  const previewText = overflowCount > 0 ? `${previewIds}, +${overflowCount} more` : previewIds;
+  const confirmed = confirm(
+    `Apply this MusicBrainz match to ${targetIds.length} queue song(s)?\n\nQueue IDs: ${previewText}\nArtist: ${newArtist || '(keep current)'}\nAlbum: ${newAlbum || '(keep current)'}\nMBID: ${newMbid}`
+  );
+  if (!confirmed) {
     return;
   }
 
@@ -2836,7 +2969,7 @@ async function applyFolderQueueMusicBrainzMatch(queueIdsEnc, newArtistEnc, newAl
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        queue_ids: safeIds,
+        queue_ids: targetIds,
         new_mbid: newMbid,
         new_artist: newArtist,
         new_album: newAlbum,
@@ -2844,7 +2977,7 @@ async function applyFolderQueueMusicBrainzMatch(queueIdsEnc, newArtistEnc, newAl
     });
 
     const updated = Number(data.updated_count || 0);
-    const failed = Number(data.failed_count || Math.max(safeIds.length - updated, 0));
+    const failed = Number(data.failed_count || Math.max(targetIds.length - updated, 0));
 
     const modalEl = document.getElementById('folderQueueMatchModal');
     if (modalEl) {
