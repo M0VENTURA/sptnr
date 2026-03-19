@@ -78,6 +78,43 @@ class WikipediaReleaseScraper:
         "2026_american": ['day', 'album', 'artist'],             # Day, Album, Artist
     }
     
+    def _load_configured_sources(self) -> Dict:
+        """Load scraper sources from config.yaml; falls back to WIKIPEDIA_SOURCES defaults."""
+        try:
+            import yaml
+            config_paths = [
+                os.environ.get("CONFIG_PATH", ""),
+                "/config/config.yaml",
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "config.yaml"),
+            ]
+            for path in config_paths:
+                if not path or not os.path.exists(path):
+                    continue
+                with open(path, "r") as f:
+                    cfg = yaml.safe_load(f) or {}
+                sources_list = (cfg.get("upcoming_releases") or {}).get("sources", [])
+                if not isinstance(sources_list, list) or not sources_list:
+                    continue
+                loaded = {}
+                for s in sources_list:
+                    if not isinstance(s, dict):
+                        continue
+                    if not s.get("enabled", True):
+                        continue
+                    key = str(s.get("key", "")).strip()
+                    url = str(s.get("url", "")).strip()
+                    name = s.get("name", key)
+                    cols = s.get("columns", ["day", "artist", "album"])
+                    if not key or not url:
+                        continue
+                    loaded[key] = {"url": url, "name": name, "columns": list(cols)}
+                if loaded:
+                    logger.debug(f"Loaded {len(loaded)} upcoming release sources from config")
+                    return loaded
+        except Exception as e:
+            logger.warning(f"Could not load upcoming_releases sources from config: {e}")
+        return WIKIPEDIA_SOURCES
+
     def __init__(self, db_path: str = None):
         # Use provided db_path, environment variable, or default paths
         if db_path:
@@ -107,6 +144,8 @@ class WikipediaReleaseScraper:
         # Initialize MusicBrainz lookup cache
         self._mbz_cache = {}
         self._schema_ensured = False
+        # Load sources from config (falls back to module-level WIKIPEDIA_SOURCES defaults)
+        self._sources = self._load_configured_sources()
         
         self.use_requests = HAS_REQUESTS
         
@@ -411,7 +450,7 @@ class WikipediaReleaseScraper:
             "sources": {}
         }
         
-        for source_key, source_info in WIKIPEDIA_SOURCES.items():
+        for source_key, source_info in self._sources.items():
             logger.info(f"Scraping {source_info['name']}...")
             items = self.scrape_source(source_key, source_info["url"], source_info["name"])
             
@@ -472,7 +511,8 @@ class WikipediaReleaseScraper:
         logger.debug(f"Extracted year {year} from source_key '{source_key}'")
         
         # Get column order for this source
-        column_order = self.SOURCE_COLUMN_ORDERS.get(source_key, ['day', 'artist', 'album'])
+        _src_info = self._sources.get(source_key, {})
+        column_order = _src_info.get('columns', self.SOURCE_COLUMN_ORDERS.get(source_key, ['day', 'artist', 'album']))
         logger.debug(f"Using column order for {source_name}: {column_order}")
         
         # Find all tables on the page

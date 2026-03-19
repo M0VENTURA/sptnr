@@ -828,6 +828,78 @@
     </div>
   </div>
 
+  <!-- Upcoming Releases Sources Section -->
+  <div class="card shadow-sm mb-3" id="upcoming-releases-sources">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <div class="d-flex justify-content-between align-items-center">
+        <div>
+          <h5 class="mb-0"><i class="bi bi-calendar-event"></i> Upcoming Releases Sources</h5>
+          <small class="text-muted">Wikipedia pages scraped for upcoming album release data</small>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="alert alert-info mb-3">
+        <i class="bi bi-info-circle"></i>
+        <strong>How it works:</strong> Each Wikipedia page is a release schedule table.
+        The <strong>column order</strong> tells the scraper which table columns map to
+        <em>day</em>, <em>artist</em>, and <em>album</em>. Use <code>genre</code> to mark
+        a column that should be skipped. The <strong>source key</strong> must include a
+        4-digit year (e.g. <code>2026_rock</code>) so dates are parsed for the correct year.
+        <br class="mt-1">
+        Common column layouts: &nbsp;
+        <code>day, artist, album</code> &nbsp;|&nbsp;
+        <code>day, album, artist</code> &nbsp;|&nbsp;
+        <code>day, artist, album, genre</code>
+      </div>
+
+      <!-- Source list -->
+      <div id="upcomingSourcesList" class="mb-3"></div>
+
+      <!-- Add new source button -->
+      <button type="button" class="btn btn-outline-primary btn-sm" onclick="toggleAddUpcomingSourceForm()">
+        <i class="bi bi-plus-circle"></i> Add Source
+      </button>
+
+      <!-- Add new source form (hidden by default) -->
+      <div id="addUpcomingSourceForm" class="card border-primary mt-3 d-none">
+        <div class="card-header bg-primary bg-opacity-10">
+          <strong><i class="bi bi-plus-circle"></i> New Wikipedia Source</strong>
+        </div>
+        <div class="card-body">
+          <div class="row g-3">
+            <div class="col-12 col-md-4">
+              <label class="form-label fw-bold">Source Key <span class="text-danger">*</span></label>
+              <input type="text" class="form-control" id="newSrcKey" placeholder="e.g. 2026_jazz" autocomplete="off">
+              <div class="form-text">Must include a 4-digit year for date parsing (e.g. <code>2026_jazz</code>)</div>
+            </div>
+            <div class="col-12 col-md-4">
+              <label class="form-label fw-bold">Display Name <span class="text-danger">*</span></label>
+              <input type="text" class="form-control" id="newSrcName" placeholder="e.g. Jazz Music 2026" autocomplete="off">
+            </div>
+            <div class="col-12 col-md-4">
+              <label class="form-label fw-bold">Column Order <span class="text-danger">*</span></label>
+              <input type="text" class="form-control" id="newSrcColumns" value="day, artist, album" autocomplete="off">
+              <div class="form-text">Comma-separated: <code>day</code>, <code>artist</code>, <code>album</code>, <code>genre</code></div>
+            </div>
+            <div class="col-12">
+              <label class="form-label fw-bold">Wikipedia URL <span class="text-danger">*</span></label>
+              <input type="url" class="form-control" id="newSrcUrl" placeholder="https://en.wikipedia.org/wiki/..." autocomplete="off">
+            </div>
+          </div>
+          <div class="mt-3 d-flex gap-2">
+            <button type="button" class="btn btn-primary btn-sm" onclick="addUpcomingSource()">
+              <i class="bi bi-check-circle"></i> Add Source
+            </button>
+            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="toggleAddUpcomingSourceForm()">
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Features & Weights Section - Dynamically Rendered -->
   <div id="featuresWeightsContainer"></div>
 
@@ -890,6 +962,7 @@ const DEFAULT_STRIP_KEYWORDS = [
 // Initialize strip keywords UI on page load
 document.addEventListener('DOMContentLoaded', function() {
   initializeStripKeywords();
+  initUpcomingSourcesUI();
 
   const configUserSelector = document.getElementById('configUserSelector');
   if (configUserSelector) {
@@ -1173,7 +1246,10 @@ function buildConfigObject() {
     ).map(badge => {
       // Extract only the text content, excluding the button
       return badge.childNodes[0].textContent.trim();
-    }).filter(Boolean)
+    }).filter(Boolean),
+    upcoming_releases: {
+      sources: getUpcomingSourcesForSave()
+    }
   };
 }
 
@@ -1850,6 +1926,197 @@ function migrateToPostgres() {
     btn.disabled = false;
     btn.innerHTML = '<i class="bi bi-arrow-right-circle"></i> Migrate to PostgreSQL';
   });
+}
+
+// ============================================================================
+// UPCOMING RELEASES SOURCES
+// ============================================================================
+
+let upcomingSources = [];
+
+function initUpcomingSourcesUI() {
+  const config = window.pageConfig || {};
+  const savedSources = ((config.upcoming_releases || {}).sources || []);
+  if (Array.isArray(savedSources) && savedSources.length > 0) {
+    upcomingSources = savedSources.map(s => Object.assign({}, s));
+  } else {
+    // Built-in defaults (mirrors WIKIPEDIA_SOURCES in wikipedia_releases_scraper.py)
+    upcomingSources = [
+      { key: '2026_albums',      name: 'General 2026 Albums',        url: 'https://en.wikipedia.org/wiki/List_of_2026_albums',            columns: ['day','artist','album','genre'], enabled: true },
+      { key: '2026_heavy_metal', name: 'Heavy Metal 2026',           url: 'https://en.wikipedia.org/wiki/2026_in_heavy_metal_music',      columns: ['day','artist','album'],         enabled: true },
+      { key: '2026_rock',        name: 'Rock Music 2026',            url: 'https://en.wikipedia.org/wiki/2026_in_rock_music',             columns: ['day','artist','album'],         enabled: true },
+      { key: '2026_kpop',        name: 'K-Pop/Korean Music 2026',    url: 'https://en.wikipedia.org/wiki/2026_in_South_Korean_music',     columns: ['day','album','artist'],         enabled: true },
+      { key: '2026_american',    name: 'American Music 2026',        url: 'https://en.wikipedia.org/wiki/2026_in_American_music',         columns: ['day','album','artist'],         enabled: true },
+    ];
+  }
+  renderUpcomingSourcesList();
+}
+
+function renderUpcomingSourcesList() {
+  const container = document.getElementById('upcomingSourcesList');
+  if (!container) return;
+  if (upcomingSources.length === 0) {
+    container.innerHTML = '<p class="text-muted fst-italic">No sources configured. Add a source below.</p>';
+    return;
+  }
+  container.innerHTML = upcomingSources.map((src, idx) => buildUpcomingSourceRow(src, idx)).join('');
+}
+
+function buildUpcomingSourceRow(src, idx) {
+  const enabled = src.enabled !== false;
+  const cols = Array.isArray(src.columns) ? src.columns : ['day','artist','album'];
+  const colBadges = cols.map(c => {
+    if (c === 'genre') {
+      return `<span class="badge bg-secondary" title="Skipped during parsing" style="text-decoration:line-through;">${escapeHtml(c)}</span>`;
+    }
+    return `<span class="badge bg-primary">${escapeHtml(c)}</span>`;
+  }).join(' <i class="bi bi-arrow-right-short text-muted"></i> ');
+
+  return `<div class="border rounded p-3 mb-2" id="srcRow_${idx}" style="background:#f8f9fa;">
+  <div class="d-flex flex-column flex-md-row align-items-md-start gap-3">
+    <div class="form-check form-switch pt-1 flex-shrink-0">
+      <input class="form-check-input" type="checkbox" role="switch" id="srcEnabled_${idx}"
+             ${enabled ? 'checked' : ''} onchange="toggleUpcomingSourceEnabled(${idx})">
+    </div>
+    <div class="flex-grow-1 overflow-hidden">
+      <div class="d-flex flex-wrap align-items-center gap-2 mb-1">
+        <strong>${escapeHtml(src.name)}</strong>
+        <code class="text-muted small">${escapeHtml(src.key)}</code>
+        ${!enabled ? '<span class="badge bg-secondary">Disabled</span>' : ''}
+      </div>
+      <div class="text-muted small mb-2 text-truncate">
+        <i class="bi bi-link-45deg"></i>
+        <a href="${escapeHtml(src.url)}" target="_blank" rel="noopener noreferrer" class="text-muted">${escapeHtml(src.url)}</a>
+      </div>
+      <div class="d-flex flex-wrap align-items-center gap-1">
+        <small class="text-muted me-1">Column order:</small>
+        ${colBadges}
+      </div>
+    </div>
+    <div class="d-flex gap-2 flex-shrink-0">
+      <button type="button" class="btn btn-outline-secondary btn-sm" onclick="editUpcomingSource(${idx})" title="Edit source">
+        <i class="bi bi-pencil"></i>
+      </button>
+      <button type="button" class="btn btn-outline-danger btn-sm" onclick="removeUpcomingSource(${idx})" title="Remove source">
+        <i class="bi bi-trash"></i>
+      </button>
+    </div>
+  </div>
+</div>`;
+}
+
+function toggleUpcomingSourceEnabled(idx) {
+  const cb = document.getElementById(`srcEnabled_${idx}`);
+  if (cb && upcomingSources[idx]) {
+    upcomingSources[idx].enabled = cb.checked;
+  }
+}
+
+function editUpcomingSource(idx) {
+  const src = upcomingSources[idx];
+  if (!src) return;
+  const row = document.getElementById(`srcRow_${idx}`);
+  if (!row) return;
+  const cols = Array.isArray(src.columns) ? src.columns.join(', ') : 'day, artist, album';
+  row.innerHTML = `<div class="row g-2 mb-2">
+    <div class="col-12 col-md-4">
+      <label class="form-label small fw-bold">Source Key</label>
+      <input type="text" class="form-control form-control-sm" id="editSrcKey_${idx}" value="${escapeHtml(src.key)}" placeholder="e.g. 2026_jazz">
+      <div class="form-text">Must include a 4-digit year</div>
+    </div>
+    <div class="col-12 col-md-4">
+      <label class="form-label small fw-bold">Display Name</label>
+      <input type="text" class="form-control form-control-sm" id="editSrcName_${idx}" value="${escapeHtml(src.name)}">
+    </div>
+    <div class="col-12 col-md-4">
+      <label class="form-label small fw-bold">Column Order</label>
+      <input type="text" class="form-control form-control-sm" id="editSrcCols_${idx}" value="${escapeHtml(cols)}">
+      <div class="form-text">e.g. <code>day, artist, album</code></div>
+    </div>
+    <div class="col-12">
+      <label class="form-label small fw-bold">Wikipedia URL</label>
+      <input type="url" class="form-control form-control-sm" id="editSrcUrl_${idx}" value="${escapeHtml(src.url)}">
+    </div>
+  </div>
+  <div class="d-flex gap-2">
+    <button type="button" class="btn btn-primary btn-sm" onclick="saveUpcomingSourceEdit(${idx})">
+      <i class="bi bi-check-circle"></i> Save
+    </button>
+    <button type="button" class="btn btn-outline-secondary btn-sm" onclick="renderUpcomingSourcesList()">
+      Cancel
+    </button>
+  </div>`;
+}
+
+function saveUpcomingSourceEdit(idx) {
+  const key  = (document.getElementById(`editSrcKey_${idx}`)?.value  || '').trim();
+  const name = (document.getElementById(`editSrcName_${idx}`)?.value || '').trim();
+  const url  = (document.getElementById(`editSrcUrl_${idx}`)?.value  || '').trim();
+  const colsRaw = (document.getElementById(`editSrcCols_${idx}`)?.value || '').trim();
+  if (!key || !name || !url) { showToast('Error', 'Key, name, and URL are required', 'warning'); return; }
+  if (!/20[2-9]\d/.test(key)) { showToast('Warning', 'Source key should include a year (e.g. 2026_...) for date parsing', 'warning'); }
+  const cols = parseUpcomingCols(colsRaw);
+  if (!cols.includes('artist') || !cols.includes('album')) {
+    showToast('Error', 'Column order must include both "artist" and "album"', 'warning'); return;
+  }
+  upcomingSources[idx] = { ...upcomingSources[idx], key, name, url, columns: cols };
+  renderUpcomingSourcesList();
+}
+
+function removeUpcomingSource(idx) {
+  const src = upcomingSources[idx];
+  if (!src) return;
+  if (!confirm(`Remove source "${src.name}"?`)) return;
+  upcomingSources.splice(idx, 1);
+  renderUpcomingSourcesList();
+}
+
+function toggleAddUpcomingSourceForm() {
+  const form = document.getElementById('addUpcomingSourceForm');
+  if (form) form.classList.toggle('d-none');
+}
+
+function addUpcomingSource() {
+  const key     = (document.getElementById('newSrcKey')?.value     || '').trim();
+  const name    = (document.getElementById('newSrcName')?.value    || '').trim();
+  const url     = (document.getElementById('newSrcUrl')?.value     || '').trim();
+  const colsRaw = (document.getElementById('newSrcColumns')?.value || '').trim();
+  if (!key || !name || !url) { showToast('Error', 'Key, name, and URL are required', 'warning'); return; }
+  if (upcomingSources.some(s => s.key === key)) {
+    showToast('Error', `Source key "${key}" already exists`, 'warning'); return;
+  }
+  if (!/20[2-9]\d/.test(key)) { showToast('Warning', 'Source key should include a year (e.g. 2026_...) for date parsing', 'warning'); }
+  const cols = parseUpcomingCols(colsRaw || 'day, artist, album');
+  if (!cols.includes('artist') || !cols.includes('album')) {
+    showToast('Error', 'Column order must include both "artist" and "album"', 'warning'); return;
+  }
+  upcomingSources.push({ key, name, url, columns: cols, enabled: true });
+  document.getElementById('newSrcKey').value     = '';
+  document.getElementById('newSrcName').value    = '';
+  document.getElementById('newSrcUrl').value     = '';
+  document.getElementById('newSrcColumns').value = 'day, artist, album';
+  toggleAddUpcomingSourceForm();
+  renderUpcomingSourcesList();
+}
+
+function parseUpcomingCols(raw) {
+  const valid = ['day','artist','album','genre'];
+  return raw.split(',').map(c => c.trim().toLowerCase()).filter(c => valid.includes(c));
+}
+
+function getUpcomingSourcesForSave() {
+  // Sync enabled toggles before collecting
+  upcomingSources.forEach((src, idx) => {
+    const cb = document.getElementById(`srcEnabled_${idx}`);
+    if (cb) src.enabled = cb.checked;
+  });
+  return upcomingSources.map(s => ({
+    key:     s.key,
+    name:    s.name,
+    url:     s.url,
+    columns: Array.isArray(s.columns) ? s.columns : ['day','artist','album'],
+    enabled: s.enabled !== false,
+  }));
 }
 
 // ============================================================================

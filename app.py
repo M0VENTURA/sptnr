@@ -12045,6 +12045,14 @@ def config_editor():
     ]:
         config[key] = _as_dict(config.get(key))
 
+    # Normalize upcoming_releases: keep as dict but ensure sources is a list.
+    ur = config.get('upcoming_releases')
+    if not isinstance(ur, dict):
+        ur = {}
+    if not isinstance(ur.get('sources'), list):
+        ur['sources'] = []
+    config['upcoming_releases'] = ur
+
     # Ensure nested structures used by config.html are also dicts.
     config['features']['retry_scheduler'] = _as_dict(config['features'].get('retry_scheduler'))
     config['features']['download_queue_cleanup_scheduler'] = _as_dict(config['features'].get('download_queue_cleanup_scheduler'))
@@ -12148,7 +12156,8 @@ def config_save_json():
             'features': features,
             'weights': _as_dict(data.get('weights', {})),
             'single_detection': _as_dict(data.get('single_detection', {})),
-            'strip_parentheses_filters': data.get('strip_parentheses_filters', [])
+            'strip_parentheses_filters': data.get('strip_parentheses_filters', []),
+            'upcoming_releases': _as_dict(data.get('upcoming_releases', {}))
         }
         # Always set main navidrome section to first user for compatibility
         if navidrome_users and len(navidrome_users) > 0:
@@ -12170,6 +12179,8 @@ def config_save_json():
                 config_dict['single_detection'] = existing_config['single_detection']
             if 'strip_parentheses_filters' not in data and 'strip_parentheses_filters' in existing_config:
                 config_dict['strip_parentheses_filters'] = existing_config['strip_parentheses_filters']
+            if 'upcoming_releases' not in data and 'upcoming_releases' in existing_config:
+                config_dict['upcoming_releases'] = existing_config['upcoming_releases']
             if 'database' not in data and 'database' in existing_config:
                 config_dict['database'] = existing_config['database']
             if 'logging' not in data and 'logging' in existing_config:

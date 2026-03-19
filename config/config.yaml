@@ -181,4 +181,36 @@ single_detection:
   zscore_high_threshold: 1.0
   standout_gap_z: 0.75  # Minimum z-normalized gap to next track for standout-driven 5★
 
+# Upcoming Releases Sources — Wikipedia pages scraped for upcoming album release data.
+# The source key must contain a 4-digit year (e.g. 2026_rock) for date parsing.
+# columns: left-to-right table columns on the Wikipedia page.
+#   Valid values: day, artist, album, genre  (genre columns are skipped)
+upcoming_releases:
+  sources:
+    - key: "2026_albums"
+      name: "General 2026 Albums"
+      url: "https://en.wikipedia.org/wiki/List_of_2026_albums"
+      columns: [day, artist, album, genre]
+      enabled: true
+    - key: "2026_heavy_metal"
+      name: "Heavy Metal 2026"
+      url: "https://en.wikipedia.org/wiki/2026_in_heavy_metal_music"
+      columns: [day, artist, album]
+      enabled: true
+    - key: "2026_rock"
+      name: "Rock Music 2026"
+      url: "https://en.wikipedia.org/wiki/2026_in_rock_music"
+      columns: [day, artist, album]
+      enabled: true
+    - key: "2026_kpop"
+      name: "K-Pop/Korean Music 2026"
+      url: "https://en.wikipedia.org/wiki/2026_in_South_Korean_music"
+      columns: [day, album, artist]
+      enabled: true
+    - key: "2026_american"
+      name: "American Music 2026"
+      url: "https://en.wikipedia.org/wiki/2026_in_American_music"
+      columns: [day, album, artist]
+      enabled: true
+
 
