@@ -105,6 +105,7 @@ _queue_columns_cache = None  # populated once; avoids repeated information_schem
 
 # Canonical active statuses for queue reads and processor selection.
 _ACTIVE_QUEUE_STATUSES = ('queued', 'searching', 'downloading', 'unmatched', 'queried')
+_ACTIVE_QUEUE_STATUS_SQL = ", ".join(f"'{status}'" for status in _ACTIVE_QUEUE_STATUSES)
 
 # Throttle expensive downloads-folder checks triggered by frequent UI polling.
 _downloads_check_lock = threading.Lock()
@@ -946,14 +947,13 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                 _queue_schema_checked = True
 
             # Prevent duplicate active queue rows under concurrent enqueue requests.
-            # 'in_collection' is treated as a terminal state (like 'completed') and must be
-            # excluded so that re-queueing a track whose prior row was cleared to in_collection
-            # does not trigger a unique-key conflict.
+            # Only active queue states should block re-adding. Non-active rows (failed,
+            # completed, removed, etc.) are historical and must not trigger duplicate blocks.
             try:
                 # First, remove any existing duplicate active rows that would violate the
                 # unique index. Keep the newest row (highest id) per logical identity.
                 cursor.execute(
-                    """
+                    f"""
                     WITH duplicate_groups AS (
                         SELECT
                             LOWER(artist) AS artist_key,
@@ -963,7 +963,7 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                             MAX(id) AS keep_id,
                             COUNT(*) AS row_count
                         FROM download_queue
-                        WHERE status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled', 'in_collection')
+                        WHERE status IN ({_ACTIVE_QUEUE_STATUS_SQL})
                         GROUP BY LOWER(artist), LOWER(COALESCE(album, '')), LOWER(title), COALESCE(source, '')
                         HAVING COUNT(*) > 1
                     )
@@ -973,7 +973,7 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                       AND LOWER(COALESCE(dq.album, '')) = dg.album_key
                       AND LOWER(dq.title) = dg.title_key
                       AND COALESCE(dq.source, '') = dg.source_key
-                      AND dq.status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled', 'in_collection')
+                                            AND dq.status IN ({_ACTIVE_QUEUE_STATUS_SQL})
                       AND dq.id <> dg.keep_id
                     """
                 )
@@ -990,11 +990,40 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                     # If advisory locks are unavailable for any reason, continue with IF NOT EXISTS.
                     pass
 
+                # Rebuild old index definitions that used NOT IN terminal statuses,
+                # otherwise stale failed/matched rows can still block new queue inserts.
                 cursor.execute(
                     """
+                    SELECT indexdef
+                    FROM pg_indexes
+                    WHERE schemaname = 'public'
+                      AND tablename = 'download_queue'
+                      AND indexname = 'uq_download_queue_active_identity'
+                    """
+                )
+                existing_index = cursor.fetchone()
+                if existing_index:
+                    existing_index_def = ""
+                    if hasattr(existing_index, 'get'):
+                        existing_index_def = str(existing_index.get('indexdef') or "")
+                    elif isinstance(existing_index, (list, tuple)) and len(existing_index) > 0:
+                        existing_index_def = str(existing_index[0] or "")
+
+                    index_def_lower = existing_index_def.lower()
+                    active_predicate_matches = (
+                        "where status in" in index_def_lower
+                        and all(f"'{status}'" in index_def_lower for status in _ACTIVE_QUEUE_STATUSES)
+                    )
+                    if not active_predicate_matches:
+                        cursor.execute("DROP INDEX IF EXISTS uq_download_queue_active_identity")
+                        conn.commit()
+                        logger.info("Rebuilt uq_download_queue_active_identity with active-status predicate")
+
+                cursor.execute(
+                    f"""
                     CREATE UNIQUE INDEX IF NOT EXISTS uq_download_queue_active_identity
                     ON download_queue (LOWER(artist), LOWER(COALESCE(album, '')), LOWER(title), source)
-                    WHERE status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled', 'in_collection')
+                    WHERE status IN ({_ACTIVE_QUEUE_STATUS_SQL})
                     """
                 )
                 conn.commit()
@@ -1361,7 +1390,7 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                   AND LOWER(COALESCE(album, '')) = LOWER(COALESCE({placeholder}, ''))
                   AND LOWER(title) = LOWER({placeholder})
                   AND source = {placeholder}
-                  AND status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled', 'in_collection')
+                                    AND status IN ({_ACTIVE_QUEUE_STATUS_SQL})
                 ORDER BY created_at ASC
                 LIMIT 1
                 """,
@@ -1386,7 +1415,7 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
             WHERE LOWER(artist) = LOWER({placeholder})
               AND LOWER(title) = LOWER({placeholder})
               AND source = {placeholder}
-              AND status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled', 'in_collection')
+                            AND status IN ({_ACTIVE_QUEUE_STATUS_SQL})
             ORDER BY created_at ASC
             LIMIT 1
             """,
@@ -1559,7 +1588,7 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                 WHERE LOWER(artist) = LOWER({ph2})
                   AND LOWER(title) = LOWER({ph2})
                   AND source = {ph2}
-                  AND status NOT IN ('completed', 'deleted', 'imported', 'removed', 'cancelled', 'in_collection')
+                                    AND status IN ({_ACTIVE_QUEUE_STATUS_SQL})
                 ORDER BY created_at ASC
                 LIMIT 1
                 """,
