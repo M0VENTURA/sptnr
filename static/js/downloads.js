@@ -76,12 +76,12 @@ function formatDuration(rawValue) {
   const n = Number(rawValue);
   if (!Number.isFinite(n) || n <= 0) return 'Unknown';
 
-  // MusicBrainz values can be seconds, milliseconds, or microseconds
-  // depending on endpoint/proxy path. Normalize to seconds.
+  // MusicBrainz values can be seconds, milliseconds, or microseconds.
+  // Keep this aligned with backend normalization (>10000 => likely ms).
   let seconds;
   if (n >= 100000000) {
     seconds = n / 1000000; // likely microseconds
-  } else if (n >= 100000) {
+  } else if (n > 10000) {
     seconds = n / 1000; // likely milliseconds
   } else {
     seconds = n; // likely seconds
