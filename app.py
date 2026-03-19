@@ -23018,6 +23018,7 @@ def api_queue_apply_mbid_match_batch():
         new_mbid = (data.get('new_mbid') or '').strip()
         new_artist = (data.get('new_artist') or '').strip()
         new_album = (data.get('new_album') or '').strip()
+        expand_tracks = bool(data.get('expand_tracks', False))
 
         queue_ids = []
         if isinstance(queue_ids_raw, list):
@@ -23100,60 +23101,61 @@ def api_queue_apply_mbid_match_batch():
         conn.close()
         conn = None
 
-        # Optional single expansion in the background to mirror single-item flow.
-        def _expand_release_tracks_async(mbid, artist_name, album_name, prefetched_release_metadata=None):
-            try:
-                from folder_matching_enhancements import get_musicbrainz_release_metadata
-                from download_queue_manager import add_to_queue
+        if expand_tracks:
+            # Optional expansion path retained for explicit callers only.
+            def _expand_release_tracks_async(mbid, artist_name, album_name, prefetched_release_metadata=None):
+                try:
+                    from folder_matching_enhancements import get_musicbrainz_release_metadata
+                    from download_queue_manager import add_to_queue
 
-                release_data = prefetched_release_metadata or get_musicbrainz_release_metadata(mbid) or {}
-                release_tracks = release_data.get('tracks', [])
-                inferred_year_raw = release_data.get('release_year')
-                inferred_year = str(inferred_year_raw).strip() if inferred_year_raw not in (None, '') else None
+                    release_data = prefetched_release_metadata or get_musicbrainz_release_metadata(mbid) or {}
+                    release_tracks = release_data.get('tracks', [])
+                    inferred_year_raw = release_data.get('release_year')
+                    inferred_year = str(inferred_year_raw).strip() if inferred_year_raw not in (None, '') else None
 
-                added_tracks = 0
-                for track in release_tracks or []:
-                    track_title = track.get('title', '')
-                    if not track_title:
-                        continue
-                    track_artist = (track.get('artist') or artist_name or '').strip() or artist_name
-                    track_number = track.get('track_number')
-                    disc_number = track.get('disc_number')
-                    recording_mbid = track.get('recording_mbid') or track.get('id')
-                    track_duration = track.get('duration', 0)
-                    if track_duration:
-                        track_duration = track_duration // 1000
+                    added_tracks = 0
+                    for track in release_tracks or []:
+                        track_title = track.get('title', '')
+                        if not track_title:
+                            continue
+                        track_artist = (track.get('artist') or artist_name or '').strip() or artist_name
+                        track_number = track.get('track_number')
+                        disc_number = track.get('disc_number')
+                        recording_mbid = track.get('recording_mbid') or track.get('id')
+                        track_duration = track.get('duration', 0)
+                        if track_duration:
+                            track_duration = track_duration // 1000
 
-                    queued = add_to_queue(
-                        artist=track_artist,
-                        title=track_title,
-                        album=album_name,
-                        album_artist=artist_name,
-                        source='soulseek',
-                        release_mbid=mbid,
-                        release_id=mbid,
-                        release_source='musicbrainz',
-                        track_number=track_number,
-                        disc_number=disc_number,
-                        recording_mbid=recording_mbid,
-                        year=inferred_year,
-                        duration=track_duration,
+                        queued = add_to_queue(
+                            artist=track_artist,
+                            title=track_title,
+                            album=album_name,
+                            album_artist=artist_name,
+                            source='soulseek',
+                            release_mbid=mbid,
+                            release_id=mbid,
+                            release_source='musicbrainz',
+                            track_number=track_number,
+                            disc_number=disc_number,
+                            recording_mbid=recording_mbid,
+                            year=inferred_year,
+                            duration=track_duration,
+                        )
+                        if queued:
+                            added_tracks += 1
+
+                    log_unified(
+                        f"[QUEUE_MATCH_BATCH] Expanded MBID {mbid}: added {added_tracks} track(s)"
                     )
-                    if queued:
-                        added_tracks += 1
+                except Exception as async_err:
+                    logging.warning(f"[QUEUE_MATCH_BATCH] Background release expansion failed for MBID {mbid}: {async_err}")
 
-                log_unified(
-                    f"[QUEUE_MATCH_BATCH] Expanded MBID {mbid}: added {added_tracks} track(s)"
-                )
-            except Exception as async_err:
-                logging.warning(f"[QUEUE_MATCH_BATCH] Background release expansion failed for MBID {mbid}: {async_err}")
-
-        threading.Thread(
-            target=_expand_release_tracks_async,
-            args=(new_mbid, target_artist, target_album, release_metadata),
-            daemon=True,
-            name=f"queue-match-batch-expand-{new_mbid[:8]}",
-        ).start()
+            threading.Thread(
+                target=_expand_release_tracks_async,
+                args=(new_mbid, target_artist, target_album, release_metadata),
+                daemon=True,
+                name=f"queue-match-batch-expand-{new_mbid[:8]}",
+            ).start()
 
         return jsonify({
             "success": True,
@@ -23164,7 +23166,8 @@ def api_queue_apply_mbid_match_batch():
             "release_mbid": new_mbid,
             "artist": target_artist,
             "album": target_album,
-            "tracks_pending": True,
+            "tracks_pending": bool(expand_tracks),
+            "expand_tracks": bool(expand_tracks),
         })
 
     except Exception as e:

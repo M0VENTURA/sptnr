@@ -2987,6 +2987,7 @@ async function applyFolderQueueMusicBrainzMatch(queueIdsEnc, newArtistEnc, newAl
         new_mbid: newMbid,
         new_artist: newArtist,
         new_album: newAlbum,
+        expand_tracks: false,
       })
     });
 
@@ -2999,9 +3000,23 @@ async function applyFolderQueueMusicBrainzMatch(queueIdsEnc, newArtistEnc, newAl
       if (modal) modal.hide();
     }
 
-    alert(`✅ Folder queue match update complete\n\nUpdated: ${updated}\nFailed: ${failed}`);
+    alert(
+      `✅ Folder queue match update complete\n\n` +
+      `Updated: ${updated}\n` +
+      `Failed: ${failed}\n\n` +
+      `Next: choose which missing tracks to add from the matched release.`
+    );
     await loadQueueStatus();
     await loadFolderGroups({ forceRender: true });
+
+    // Prompt for selective add (missing tracks only) instead of re-adding the
+    // full release automatically.
+    await openImportMissingTracksModal(
+      newMbid,
+      targetIds,
+      newArtist || data.artist || '',
+      newAlbum || data.album || ''
+    );
   } catch (error) {
     console.error('Error applying folder queue match:', error);
     alert('❌ Network error: ' + error.message);
