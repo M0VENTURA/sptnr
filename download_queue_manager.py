@@ -916,6 +916,33 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                             pass
                         logger.warning(f"Could not add {col} column: {e}")
 
+            # Re-check after the ALTER loop. Mark schema as checked when all
+            # columns are confirmed present BEFORE running the optional dedup
+            # index step so a dedup failure cannot block future short-circuiting.
+            cursor.execute("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = 'download_queue'
+                  AND table_schema = 'public'
+            """)
+            early_columns = set()
+            for row in cursor.fetchall():
+                if hasattr(row, 'get'):
+                    col_name = row.get('column_name')
+                else:
+                    col_name = row[0] if row and len(row) > 0 else None
+                if col_name:
+                    early_columns.add(col_name)
+
+            missing_early = sorted([c for c in required_cols if c not in early_columns])
+            if missing_early:
+                _queue_schema_checked = False
+                logger.warning(
+                    "download_queue schema still missing columns after ALTER pass: %s",
+                    ", ".join(missing_early),
+                )
+            else:
+                _queue_schema_checked = True
+
             # Prevent duplicate active queue rows under concurrent enqueue requests.
             # 'in_collection' is treated as a terminal state (like 'completed') and must be
             # excluded so that re-queueing a track whose prior row was cleared to in_collection
@@ -938,29 +965,8 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                         GROUP BY LOWER(artist), LOWER(COALESCE(album, '')), LOWER(title), COALESCE(source, '')
                         HAVING COUNT(*) > 1
                     )
-                                # Re-check after the ALTER loop. Mark schema as checked when all columns
-                                # are confirmed present BEFORE running the optional dedup index step so
-                                # that a dedup failure cannot prevent future calls from skipping the loop.
-                                cursor.execute("""
-                                    SELECT column_name FROM information_schema.columns
-                                    WHERE table_name = 'download_queue'
-                                      AND table_schema = 'public'
-                                """)
-                                _early_columns = set()
-                                for _row in cursor.fetchall():
-                                    _cn = _row.get('column_name') if hasattr(_row, 'get') else (_row[0] if _row else None)
-                                    if _cn:
-                                        _early_columns.add(_cn)
-                                _missing_early = [c for c in required_cols if c not in _early_columns]
-                                if not _missing_early:
-                                    _queue_schema_checked = True
-                                else:
-                                    logger.warning(
-                                        "download_queue schema still missing columns after ALTER pass: %s",
-                                        ", ".join(sorted(_missing_early)),
-                                    )
+                    DELETE FROM download_queue dq
                     USING duplicate_groups dg
-                                # Prevent duplicate active queue rows under concurrent enqueue requests.
                     WHERE LOWER(dq.artist) = dg.artist_key
                       AND LOWER(COALESCE(dq.album, '')) = dg.album_key
                       AND LOWER(dq.title) = dg.title_key
@@ -1000,7 +1006,6 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                     logger.info("Active queue dedupe index already exists (concurrent startup race avoided)")
                 else:
                     logger.warning(f"Could not create active queue dedupe index: {e}")
-
         except Exception as e:
             logger.warning(f"Schema check failed: {e}")
             try:

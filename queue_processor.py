@@ -2186,15 +2186,25 @@ def check_completed_downloads():
             logger.warning(f"Downloads directory does not exist: {DOWNLOADS_DIR}")
 
         # ------------------------------------------------------------------
-        # Fetch all items currently in 'downloading' status
+        # Fetch queue items that should be reconciled against slskd/filesystem.
+        # Include soulseek rows that slipped back to queued/searching but still
+        # carry found_filename, because slskd may already have completed them.
         # ------------------------------------------------------------------
         cursor.execute("""
             SELECT * FROM download_queue
             WHERE status = 'downloading'
+               OR (
+                    source = 'soulseek'
+                AND status IN ('queued', 'searching')
+                AND found_filename IS NOT NULL
+                AND TRIM(found_filename) <> ''
+               )
         """)
-        downloading = [dict(row) for row in cursor.fetchall()]
-        if downloading:
-            logger.debug(f"Checking {len(downloading)} items in 'downloading' status")
+        reconcilable_items = [dict(row) for row in cursor.fetchall()]
+        if reconcilable_items:
+            logger.debug(
+                f"Checking {len(reconcilable_items)} queue items for completion reconciliation"
+            )
 
         # Build an active queue snapshot once so we can determine whether a
         # rejected Soulseek file is unmatched against the entire queue, not
@@ -2222,7 +2232,7 @@ def check_completed_downloads():
             return False
 
         newly_completed = []
-        for item in downloading:
+        for item in reconcilable_items:
             match_found = None
             match_meta_state = None
             item_source = (item.get("source") or "soulseek").strip().lower()
