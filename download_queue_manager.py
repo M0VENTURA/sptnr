@@ -797,7 +797,7 @@ def _get_postgres_conn_from_app_or_fallback():
 
 
 def _ensure_download_queue_columns(conn, cursor, is_pg=True):
-    """Ensure expected queue columns exist (PostgreSQL and SQLite)"""
+    """Ensure expected queue columns exist (PostgreSQL only)."""
     global _queue_schema_checked
     if _queue_schema_checked:
         return
@@ -806,57 +806,8 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
         if _queue_schema_checked:
             return
 
-        # --- SQLite branch ---
         if not is_pg:
-            try:
-                cursor.execute("PRAGMA table_info(download_queue)")
-                sqlite_rows = cursor.fetchall()
-                # PRAGMA table_info returns (cid, name, type, notnull, dflt_value, pk)
-                existing_cols = {row[1] for row in sqlite_rows}
-                required_cols_sqlite = {
-                    'search_query': "TEXT",
-                    'source': "TEXT DEFAULT 'soulseek'",
-                    'priority': "INTEGER DEFAULT 5",
-                    'import_group': "TEXT",
-                    'import_type': "TEXT DEFAULT 'song'",
-                    'track_number': "TEXT",
-                    'disc_number': "TEXT",
-                    'album_artist': "TEXT",
-                    'year': "TEXT",
-                    'release_id': "TEXT",
-                    'release_source': "TEXT",
-                    'release_mbid': "TEXT",
-                    'recording_mbid': "TEXT",
-                    'isrc': "TEXT",
-                    'composer': "TEXT",
-                    'genres': "TEXT",
-                    'release_year': "INTEGER",
-                    'duration': "INTEGER",
-                    'matched_file_path': "TEXT",
-                    'in_collection': "INTEGER DEFAULT 0",
-                    'collection_track_id': "TEXT",
-                    'collection_matched_at': "TEXT",
-                    'auto_delete_at': "TIMESTAMP",
-                    'copied_individually': "INTEGER DEFAULT 0",
-                    'copied_individually_at': "TEXT",
-                    'cover_art_url': "TEXT",
-                }
-                for col, col_type in required_cols_sqlite.items():
-                    if col not in existing_cols:
-                        logger.info(f"Adding missing SQLite column '{col}' to download_queue")
-                        try:
-                            cursor.execute(f"ALTER TABLE download_queue ADD COLUMN {col} {col_type}")
-                            conn.commit()
-                        except Exception as e:
-                            try:
-                                conn.rollback()
-                            except Exception:
-                                pass
-                            logger.warning(f"Could not add SQLite column {col}: {e}")
-                _queue_schema_checked = True
-            except Exception as e:
-                logger.warning(f"SQLite schema check failed: {e}")
-            return
+            raise RuntimeError("download_queue schema ensure requires PostgreSQL connection")
 
         try:
             # PostgreSQL column checking
@@ -1046,17 +997,16 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
 
 
 def execute_write_with_retry(cursor, conn, query, params=(), context="database write", max_retries=5, initial_delay=0.1):
-    """Execute a write query with commit retry on transient errors (SQLite lock or psycopg2 serialization)."""
-    import sqlite3 as _sqlite3
+    """Execute a write query with commit retry on transient PostgreSQL errors."""
     delay = initial_delay
     for attempt in range(max_retries):
         try:
             cursor.execute(query, params)
             conn.commit()
             return True
-        except (_sqlite3.OperationalError, psycopg2.OperationalError) as e:
+        except psycopg2.OperationalError as e:
             if attempt < max_retries - 1 and any(
-                kw in str(e).lower() for kw in ('database is locked', 'deadlock', 'could not serialize')
+                kw in str(e).lower() for kw in ('deadlock', 'could not serialize')
             ):
                 logger.warning(
                     f"Database contention during {context}, retrying in {delay:.2f}s "
@@ -1344,7 +1294,7 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
             return None
         
         # Ensure required columns exist for both SQLite and PostgreSQL.
-        _ensure_download_queue_columns(conn, cursor, is_pg=is_pg)
+        _ensure_download_queue_columns(conn, cursor, is_pg=True)
         
         # Search query for Soulseek: prefer track artist; avoid generic names.
         artist_text = str(artist or '').strip()
@@ -1648,16 +1598,12 @@ def get_queue(status=None, source=None, limit=50):
     try:
         conn = _get_postgres_conn_from_app_or_fallback()
         is_pg = True
-
-        if is_pg:
-            cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        else:
-            cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
         # Run the canonical schema self-heal pass so all queue columns
         # (including copied_individually/release_year) are present.
         try:
-            _ensure_download_queue_columns(conn, cursor, is_pg=is_pg)
+            _ensure_download_queue_columns(conn, cursor, is_pg=True)
         except Exception as schema_err:
             logger.warning(f"get_queue schema ensure failed (continuing): {schema_err}")
             try:
@@ -1669,20 +1615,13 @@ def get_queue(status=None, source=None, limit=50):
         # cannot raise TypeError when Postgres has transient failures.
         if not _queue_columns_cache:
             try:
-                if is_pg:
-                    cursor.execute("""
-                        SELECT column_name FROM information_schema.columns
-                        WHERE table_name = 'download_queue' AND table_schema = 'public'
-                    """)
-                    _queue_columns_cache = [
-                        row.get('column_name') for row in cursor.fetchall() if row.get('column_name')
-                    ]
-                else:
-                    cursor.execute("PRAGMA table_info(download_queue)")
-                    _queue_columns_cache = [
-                        (row[1] if isinstance(row, (list, tuple)) else row['name'])
-                        for row in cursor.fetchall()
-                    ]
+                cursor.execute("""
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_name = 'download_queue' AND table_schema = 'public'
+                """)
+                _queue_columns_cache = [
+                    row.get('column_name') for row in cursor.fetchall() if row.get('column_name')
+                ]
             except Exception as col_err:
                 logger.warning(f"get_queue could not refresh column cache: {col_err}")
                 try:
@@ -1693,7 +1632,7 @@ def get_queue(status=None, source=None, limit=50):
 
         columns = _queue_columns_cache or []
 
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         conditions = []
         params = []
@@ -1710,13 +1649,8 @@ def get_queue(status=None, source=None, limit=50):
         else:
             # Default: return active statuses only (not completed/failed/archived).
             active_statuses = list(_ACTIVE_QUEUE_STATUSES)
-            if is_pg:
-                conditions.append(f"status = ANY({placeholder})")
-                params.append(active_statuses)
-            else:
-                in_phs = ', '.join(placeholder for _ in active_statuses)
-                conditions.append(f"status IN ({in_phs})")
-                params.extend(active_statuses)
+            conditions.append(f"status = ANY({placeholder})")
+            params.append(active_statuses)
 
         query = "SELECT * FROM download_queue"
         if conditions:
@@ -1761,14 +1695,13 @@ def update_queue_item(queue_id, **kwargs):
         conn = None
         try:
             conn = _get_postgres_conn_from_app_or_fallback()
-            is_pg = True
-            
+
             cursor = conn.cursor()
-            placeholder = "%s" if is_pg else "?"
+            placeholder = "%s"
 
             # Ensure schema before any queue writes. This prevents missing-column
             # failures on older databases and post-deploy drift.
-            _ensure_download_queue_columns(conn, cursor, is_pg=is_pg)
+            _ensure_download_queue_columns(conn, cursor, is_pg=True)
             
             # Build update query
             updates = []
@@ -1955,10 +1888,9 @@ def mark_as_failed(queue_id, reason, retry_delay_minutes=30):
     for attempt in range(max_retries):
         try:
             conn = _get_postgres_conn_from_app_or_fallback()
-            is_pg = True
-            
+
             cursor = conn.cursor()
-            placeholder = "%s" if is_pg else "?"
+            placeholder = "%s"
             
             # Get current retry count
             cursor.execute(f"SELECT retry_count, max_retries FROM download_queue WHERE id = {placeholder}", (queue_id,))
@@ -2071,10 +2003,9 @@ def migrate_existing_queue_items_to_grouped_setup(limit=None):
     """
     try:
         conn = _get_postgres_conn_from_app_or_fallback()
-        is_pg = True
 
         cursor = conn.cursor()
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         _ensure_download_queue_columns(conn, cursor, is_pg=is_pg)
 
@@ -2467,16 +2398,8 @@ def _try_claim_for_move(queue_id, expected_status):
     else already claimed or moved it.
     """
     try:
-        is_pg = False
-        try:
-            from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
-            conn = app_get_db()
-            is_pg = bool(app_is_postgres_connection(conn))
-        except Exception:
-            conn = get_db()
-            is_pg = _is_postgres_connection(conn)
-
-        placeholder = "%s" if is_pg else "?"
+        conn = _get_postgres_conn_from_app_or_fallback()
+        placeholder = "%s"
         cursor = conn.cursor()
         cursor.execute(
             f"UPDATE download_queue SET status = 'moving', updated_at = CURRENT_TIMESTAMP "
@@ -2929,16 +2852,11 @@ def rename_album_files(artist, album, db_conn, music_dir=None):
     
     try:
         cursor = db_conn.cursor()
-        is_pg = False
-        
-        # Try to detect if this is PostgreSQL
-        try:
-            from app import _is_postgres_connection
-            is_pg = bool(_is_postgres_connection(db_conn))
-        except Exception:
-            pass
-        
-        placeholder = "%s" if is_pg else "?"
+        is_pg = bool(_is_postgres_connection(db_conn))
+        if not is_pg:
+            raise RuntimeError("rename_album_files requires PostgreSQL connection")
+
+        placeholder = "%s"
         
         # Query all tracks for this album
         # Use COALESCE logic like album_detail to match albums by album_artist
@@ -3162,13 +3080,10 @@ def rename_track_file(track_id, db_conn, music_dir=None):
 
     try:
         cursor = db_conn.cursor()
-        is_pg = False
-        try:
-            from app import _is_postgres_connection
-            is_pg = bool(_is_postgres_connection(db_conn))
-        except Exception:
-            pass
-        placeholder = "%s" if is_pg else "?"
+        is_pg = bool(_is_postgres_connection(db_conn))
+        if not is_pg:
+            raise RuntimeError("rename_track_file requires PostgreSQL connection")
+        placeholder = "%s"
 
         cursor.execute(
             f"SELECT id, artist, album, album_artist, title, track_number, disc_number, "
@@ -4341,10 +4256,8 @@ def auto_discover_and_queue_files():
             logger.info(f"[AUTO-DISCOVER] Cleanup: Removed {cleanup_stats['removed']} queue items with missing files")
         stats['cleanup_removed'] = cleanup_stats['removed']
         
-        conn = get_db()
-        from app import _is_postgres_connection as app_is_postgres_connection
-        is_pg = bool(app_is_postgres_connection(conn))
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) if is_pg else conn.cursor()
+        conn = _get_postgres_conn_from_app_or_fallback()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
         def _row_get(row, key, index=None, default=None):
             if row is None:
@@ -4425,19 +4338,15 @@ def auto_discover_and_queue_files():
             return None
         
         # Ensure required columns exist for auto-discovery inserts
-        if is_pg:
-            cursor.execute("""
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_name = 'download_queue' AND table_schema = 'public'
-            """)
-            columns = [
-                (row.get('column_name') if hasattr(row, 'get') else row[0])
-                for row in cursor.fetchall()
-            ]
-        else:
-            cursor.execute("PRAGMA table_info(download_queue)")
-            columns = [row[1] for row in cursor.fetchall()]
+        cursor.execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'download_queue' AND table_schema = 'public'
+        """)
+        columns = [
+            (row.get('column_name') if hasattr(row, 'get') else row[0])
+            for row in cursor.fetchall()
+        ]
         
         required_cols = {
             'track_number': "TEXT",
@@ -5236,17 +5145,8 @@ def cleanup_missing_files():
     for attempt in range(max_retries):
         conn = None
         try:
-            # Try to use the app's PostgreSQL-aware DB connection
-            is_pg = False
-            pg_configured = bool(os.environ.get("PG_HOST") and os.environ.get("PG_USER") and os.environ.get("PG_DATABASE"))
-            try:
-                from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
-                conn = app_get_db()
-                is_pg = bool(app_is_postgres_connection(conn))
-            except Exception:
-                if pg_configured:
-                    raise RuntimeError("PostgreSQL is configured, but cleanup could not connect")
-                conn = get_db()
+            # Always use PostgreSQL queue connection helper.
+            conn = _get_postgres_conn_from_app_or_fallback()
             
             cursor = conn.cursor()
             
@@ -6716,84 +6616,61 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
 
     try:
         conn = get_db()
-
-        from app import _is_postgres_connection as app_is_postgres_connection
-        is_pg = bool(app_is_postgres_connection(conn))
-        placeholder = "%s" if is_pg else "?"
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) if is_pg else conn.cursor()
+        placeholder = "%s"
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
         # Ensure late-added queue columns exist before selecting/updating them.
         _ensure_download_queue_columns(conn, cursor, is_pg=True)
 
-        # Fetch all queue items for this album. If copied_individually is missing
-        # on a stale DB, retry with a literal fallback column so processing can continue.
-        try:
-            if release_id:
-                cursor.execute(
-                    f"""
-                          SELECT id, status, file_path, found_filename, artist, title,
-                              album, album_artist, track_number, disc_number, year,
-                              release_year,
-                           copied_individually
-                    FROM download_queue
-                    WHERE release_id = {placeholder}
-                      AND status NOT IN ('removed', 'cancelled')
-                    ORDER BY track_number ASC, title ASC
-                    """,
-                    (release_id,)
-                )
-            else:
-                cursor.execute(
-                    f"""
-                          SELECT id, status, file_path, found_filename, artist, title,
-                              album, album_artist, track_number, disc_number, year,
-                              release_year,
-                           copied_individually
-                    FROM download_queue
-                    WHERE LOWER(artist) = LOWER({placeholder})
-                      AND LOWER(album)  = LOWER({placeholder})
-                      AND status NOT IN ('removed', 'cancelled')
-                    ORDER BY track_number ASC, title ASC
-                    """,
-                    (artist, album)
-                )
-        except Exception as select_err:
-            if "copied_individually" not in str(select_err).lower():
-                raise
-            try:
-                conn.rollback()
-            except Exception:
-                pass
+        # Build a resilient SELECT from actual schema columns so stale databases
+        # do not explode with UndefinedColumn before self-heal completes.
+        col_cursor = conn.cursor()
+        col_cursor.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'download_queue' AND table_schema = 'public'
+            """
+        )
+        existing_cols = {
+            (r.get('column_name') if hasattr(r, 'get') else r[0])
+            for r in (col_cursor.fetchall() or [])
+        }
+        col_cursor.close()
 
-            if release_id:
-                cursor.execute(
-                    f"""
-                          SELECT id, status, file_path, found_filename, artist, title,
-                              album, album_artist, track_number, disc_number, year,
-                              release_year,
-                           0 AS copied_individually
-                    FROM download_queue
-                    WHERE release_id = {placeholder}
-                      AND status NOT IN ('removed', 'cancelled')
-                    ORDER BY track_number ASC, title ASC
-                    """,
-                    (release_id,)
-                )
-            else:
-                cursor.execute(
-                    f"""
-                          SELECT id, status, file_path, found_filename, artist, title,
-                              album, album_artist, track_number, disc_number, year,
-                              release_year,
-                           0 AS copied_individually
-                    FROM download_queue
-                    WHERE LOWER(artist) = LOWER({placeholder})
-                      AND LOWER(album)  = LOWER({placeholder})
-                      AND status NOT IN ('removed', 'cancelled')
-                    ORDER BY track_number ASC, title ASC
-                    """,
-                    (artist, album)
-                )
+        release_year_select = "release_year" if "release_year" in existing_cols else "NULL AS release_year"
+        copied_select = "copied_individually" if "copied_individually" in existing_cols else "0 AS copied_individually"
+
+        base_select = f"""
+              SELECT id, status, file_path, found_filename, artist, title,
+                  album, album_artist, track_number, disc_number, year,
+                  {release_year_select},
+                  {copied_select}
+        """
+
+        if release_id:
+            cursor.execute(
+                base_select
+                + f"""
+                FROM download_queue
+                WHERE release_id = {placeholder}
+                  AND status NOT IN ('removed', 'cancelled')
+                ORDER BY track_number ASC, title ASC
+                """,
+                (release_id,)
+            )
+        else:
+            cursor.execute(
+                base_select
+                + f"""
+                FROM download_queue
+                WHERE LOWER(artist) = LOWER({placeholder})
+                  AND LOWER(album)  = LOWER({placeholder})
+                  AND status NOT IN ('removed', 'cancelled')
+                ORDER BY track_number ASC, title ASC
+                """,
+                (artist, album)
+            )
 
         rows = cursor.fetchall() or []
         if rows and isinstance(rows[0], dict):

@@ -15759,9 +15759,14 @@ def api_get_release_details(release_id):
 def api_get_release_queue_items(release_id):
     """Get all queue items for a specific release"""
     try:
+        from download_queue_manager import _ensure_download_queue_columns
+
         conn = get_db()
         cursor = conn.cursor()
         placeholder = "%s"
+
+        # Ensure late-added queue columns exist before selecting them.
+        _ensure_download_queue_columns(conn, cursor, is_pg=True)
 
         cursor.execute(f"""
             SELECT id, artist, title, status, track_number,
