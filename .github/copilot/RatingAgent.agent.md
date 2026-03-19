@@ -94,13 +94,13 @@ If an album-level update occurs, **all tracks in that album** must be updated in
 - Only fall back to name/artist text search when MBID is missing or invalid.
 - Cache MBID-based lookups where appropriate.
 
-### 3.5 Database strategy: Postgres primary, SQLite fallback
+### 3.5 Database strategy: Postgres only
 
 - All DB I/O must go through `database_abstraction.py`.
 - Never scatter raw SQL across unrelated modules.
-- Use `is_postgres_connection()` / `DatabaseQuery` helpers for dialect differences.
-- SQLite fallback is allowed **only when PostgreSQL is not configured**.
-- If PostgreSQL is configured but unavailable, fail fast and log a clear error; do not silently redirect writes/reads to SQLite.
+- Use PostgreSQL-style placeholders (`%s`) and PostgreSQL-safe SQL only.
+- Do not add or retain SQLite-specific query branches (`?` placeholders, `PRAGMA`, `INSERT OR REPLACE`, sqlite3-specific SQL).
+- If PostgreSQL is unavailable, fail fast and log a clear error; do not redirect reads/writes to SQLite.
 
 ---
 
@@ -1036,3 +1036,31 @@ Events are appended to the `queue_events` table; never modified in place. Consum
 | `GET /api/queue-processor/status` | Whether processor loop is running |
 | `POST /api/queue-processor/restart` | Restart a stuck processor |
 | `GET /api/scan-logs` | Combined scan + queue log stream |
+
+---
+
+## 15) Recent code adjustments (March 2026)
+
+These are implemented behaviors the agent must preserve in follow-up work.
+
+### 15.1 Postgres-only enforcement
+
+- Treat Postgres as the only supported runtime DB target for new work.
+- Do not introduce new SQLite fallback code paths in routes/services.
+- If touching legacy mixed-dialect sections, prefer tightening toward PostgreSQL-safe SQL and `%s` placeholders.
+
+### 15.2 Missing-release categorization hardening
+
+- Artist-page missing-release bucketing now uses normalized category/type derivation.
+- Preserve helper-based routing logic (`_normalize_release_category`, `_derive_release_bucket`) so albums are not misfiled as singles.
+
+### 15.3 Auto-queue rules for missing singles
+
+- Missing singles may be auto-queued for album artists when discovered by missing-release scans.
+- Auto-queue must skip any single already matched in collection by normalized title.
+- Keep release-type guardrails (single-only for this path) and duplicate-safe queue insertion semantics.
+
+### 15.4 Dashboard upcoming-release filter UX
+
+- Dashboard banner supports `All` / `Collection` / `Recommended` filtering.
+- Keep filter state wired to `/api/upcoming-releases` query params and preserve session-persisted selection.
