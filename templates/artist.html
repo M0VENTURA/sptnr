@@ -1894,7 +1894,7 @@ function formatDuration(rawValue) {
   let seconds;
   if (n >= 100000000) {
     seconds = n / 1000000;
-  } else if (n >= 100000) {
+  } else if (n > 10000) {
     seconds = n / 1000;
   } else {
     seconds = n;
