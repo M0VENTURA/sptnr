@@ -1770,6 +1770,36 @@ def _cleanup_sibling_downloads(queue_item, keep_path):
         )
 
 
+def _safe_delete_download_candidate(file_path, reason, queue_id=None):
+    """Delete a candidate file only when it is within DOWNLOADS_DIR."""
+    if not file_path:
+        return False
+
+    try:
+        abs_file = os.path.abspath(file_path)
+        abs_downloads = os.path.abspath(DOWNLOADS_DIR)
+        within_downloads = os.path.commonpath([abs_downloads, abs_file]) == abs_downloads
+    except Exception:
+        return False
+
+    if not within_downloads or not os.path.isfile(abs_file):
+        return False
+
+    try:
+        os.remove(abs_file)
+        logger.warning(
+            f"Queue {queue_id or 'unknown'}: deleted unmatched Soulseek file {abs_file} "
+            f"(reason={reason})"
+        )
+        return True
+    except Exception as delete_err:
+        logger.warning(
+            f"Queue {queue_id or 'unknown'}: could not delete unmatched Soulseek file "
+            f"{abs_file}: {delete_err}"
+        )
+        return False
+
+
 def _find_location_match_in_music(queue_item):
     """Return /music path when queue source path maps to an existing library file."""
     source_path = (queue_item.get('file_path') or '').strip()
@@ -2082,6 +2112,31 @@ def check_completed_downloads():
         if downloading:
             logger.debug(f"Checking {len(downloading)} items in 'downloading' status")
 
+        # Build an active queue snapshot once so we can determine whether a
+        # rejected Soulseek file is unmatched against the entire queue, not
+        # just the current row being processed.
+        cursor.execute("""
+            SELECT * FROM download_queue
+            WHERE status IN ('queued', 'searching', 'downloading', 'matched', 'unmatched', 'completed')
+        """)
+        active_queue_items = [dict(row) for row in cursor.fetchall()]
+
+        def _matches_any_queue_item(file_path, relative_name=None, exclude_queue_id=None):
+            if not file_path or not os.path.isfile(file_path):
+                return False
+
+            for candidate_item in active_queue_items:
+                candidate_id = candidate_item.get('id')
+                if exclude_queue_id is not None and candidate_id == exclude_queue_id:
+                    continue
+                try:
+                    is_match, _ = _file_matches_queue_item(file_path, candidate_item, relative_name)
+                except Exception:
+                    continue
+                if is_match:
+                    return True
+            return False
+
         newly_completed = []
         for item in downloading:
             match_found = None
@@ -2141,6 +2196,13 @@ def check_completed_downloads():
                         logger.info(
                             f"Queue {item_id}: rejecting slskd-completed file due to queue mismatch: {candidate_rel}"
                         )
+                        if item_source == 'soulseek':
+                            if not _matches_any_queue_item(abs_path, candidate_rel, exclude_queue_id=item_id):
+                                _safe_delete_download_candidate(
+                                    abs_path,
+                                    reason="soulseek download unmatched against queue",
+                                    queue_id=item_id,
+                                )
 
             # 2. Exact filename match against filesystem files
             if match_found is None and found_fn:
@@ -2154,6 +2216,13 @@ def check_completed_downloads():
                             logger.info(
                                 f"Queue {item_id}: rejecting exact filename match due to queue mismatch: {rel_file}"
                             )
+                            if item_source == 'soulseek':
+                                if not _matches_any_queue_item(file_path, rel_file, exclude_queue_id=item_id):
+                                    _safe_delete_download_candidate(
+                                        file_path,
+                                        reason="soulseek filename mismatch against queue",
+                                        queue_id=item_id,
+                                    )
                             continue
                         match_found = rel_file
                         match_meta_state = match_source
