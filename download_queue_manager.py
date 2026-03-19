@@ -2601,11 +2601,13 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
         ext = os.path.splitext(file_path)[1].lower()
 
         # Resolve year with priority:
-        # 1) queue year, 2) embedded file tags, 3) MusicBrainz release metadata
+        # 1) canonical release_year, 2) matched-release year, 3) queue year,
+        # 4) embedded file tags, 5) MusicBrainz release metadata.
+        # Queue-year values are often noisy; prefer release-level metadata first.
         year = _extract_year(
-            queue_item_dict.get('year')
-            or queue_item_dict.get('release_year')
+            queue_item_dict.get('release_year')
             or queue_item_dict.get('mb_matched_year')
+            or queue_item_dict.get('year')
         )
         if not year:
             try:
@@ -6708,8 +6710,9 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
             if release_id:
                 cursor.execute(
                     f"""
-                    SELECT id, status, file_path, found_filename, artist, title,
-                           album, album_artist, track_number, disc_number, year,
+                          SELECT id, status, file_path, found_filename, artist, title,
+                              album, album_artist, track_number, disc_number, year,
+                              release_year,
                            copied_individually
                     FROM download_queue
                     WHERE release_id = {placeholder}
@@ -6721,8 +6724,9 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
             else:
                 cursor.execute(
                     f"""
-                    SELECT id, status, file_path, found_filename, artist, title,
-                           album, album_artist, track_number, disc_number, year,
+                          SELECT id, status, file_path, found_filename, artist, title,
+                              album, album_artist, track_number, disc_number, year,
+                              release_year,
                            copied_individually
                     FROM download_queue
                     WHERE LOWER(artist) = LOWER({placeholder})
@@ -6743,8 +6747,9 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
             if release_id:
                 cursor.execute(
                     f"""
-                    SELECT id, status, file_path, found_filename, artist, title,
-                           album, album_artist, track_number, disc_number, year,
+                          SELECT id, status, file_path, found_filename, artist, title,
+                              album, album_artist, track_number, disc_number, year,
+                              release_year,
                            0 AS copied_individually
                     FROM download_queue
                     WHERE release_id = {placeholder}
@@ -6756,8 +6761,9 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
             else:
                 cursor.execute(
                     f"""
-                    SELECT id, status, file_path, found_filename, artist, title,
-                           album, album_artist, track_number, disc_number, year,
+                          SELECT id, status, file_path, found_filename, artist, title,
+                              album, album_artist, track_number, disc_number, year,
+                              release_year,
                            0 AS copied_individually
                     FROM download_queue
                     WHERE LOWER(artist) = LOWER({placeholder})
@@ -6808,7 +6814,11 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
 
         # Use consistent album artist / year from completed tracks
         album_artists = [t.get('album_artist') or t.get('artist') for t in tracks if t.get('album_artist') or t.get('artist')]
-        years = [t.get('year') for t in tracks if t.get('year')]
+        years = [
+            (t.get('release_year') or t.get('year'))
+            for t in tracks
+            if (t.get('release_year') or t.get('year'))
+        ]
         albums = [t.get('album') for t in tracks if t.get('album')]
 
         def _most_common(lst):
@@ -6824,11 +6834,23 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
         )
         dest_album = _most_common(albums) or album or 'Unknown Album'
         dest_year = _most_common(years) or ''
-        
-        # Clean up year (extract just the year if it's a full date)
-        if dest_year and len(str(dest_year)) >= 4:
-            dest_year = str(dest_year)[:4]
-        elif not dest_year:
+
+        # Clean up year: prefer plausible 4-digit release years only.
+        # This avoids creating wrong year folders from noisy metadata values.
+        year_text = str(dest_year or '').strip()
+        year_match = re.search(r"(19|20)\d{2}", year_text)
+        if year_match:
+            year_candidate = year_match.group(0)
+            try:
+                year_int = int(year_candidate)
+                current_year = datetime.now().year
+                if 1900 <= year_int <= (current_year + 1):
+                    dest_year = str(year_int)
+                else:
+                    dest_year = 'Unknown'
+            except Exception:
+                dest_year = 'Unknown'
+        else:
             dest_year = 'Unknown'
 
         dest_dir = os.path.join(music_root, dest_album_artist, f"{dest_year} - {dest_album}")
