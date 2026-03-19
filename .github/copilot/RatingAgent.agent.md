@@ -1064,3 +1064,292 @@ These are implemented behaviors the agent must preserve in follow-up work.
 
 - Dashboard banner supports `All` / `Collection` / `Recommended` filtering.
 - Keep filter state wired to `/api/upcoming-releases` query params and preserve session-persisted selection.
+
+---
+
+## 16) Tag & Genre Aggregation System (March 2026 implementation)
+
+**Location**: `genre_tag_aggregator.py`, `popularity.py` (collection phase)
+
+### 16.1 Five-source genre/tag collection
+
+During popularity scan, the system collects tags from five sources:
+
+| Source | Collection method | Tag field | Notes |
+|--------|---|---|---|
+| **Spotify** | `popularity.py` → artist data | `spotify_genres` | Uses artist profile genres (deprecated API, legacy) |
+| **Last.fm** | `api_clients/lastfm.py::get_track_tags()` | `lastfm_tags` | User-contributed tags + top tags for track |
+| **ListenBrainz** | `api_clients/audiodb_and_listenbrainz.py::get_recording_tags()` | `listenbrainz_genres` | MB-based genre tags, user-contributed |
+| **Discogs** | `api_clients/discogs.py::get_genres()` | `discogs_genres` | Style and genre fields from release |
+| **MusicBrainz** | `api_clients/musicbrainz.py::get_genres()` | `musicbrainz_genres` | Genre and tag relationships from MB |
+
+### 16.2 Per-track storage and cache invalidation
+
+**Database columns added to `tracks` table**:
+- `spotify_genres` (JSON array)
+- `lastfm_tags` (JSON array)
+- `listenbrainz_genres` (JSON array)
+- `discogs_genres` (JSON array)
+- `musicbrainz_genres` (JSON array)
+- `tags_last_updated` (timestamp) — trigger rescan if older than configurable interval
+
+**Cache strategy**: 
+- First scan collects all source data
+- Subsequent scans only update if timestamp expired OR album changed
+- Tracks from new releases always re-collect (may have been tagged since last scan)
+
+### 16.3 Aggregation endpoints & display strategy
+
+| Endpoint | Purpose | Aggregation |
+|---|---|---|
+| `/api/genres/track/<track_id>` | Single track genres | Union of 5 sources with source attribution |
+| `/api/genres/album/<album>/<artist>` | Album-level genres | Top 25 genres per source, weighted by frequency |
+| `/api/genres/artist/<artist>` | Artist-level genres | Top 30 genres per source across entire catalog |
+
+**Display logic**:
+- Show source icons (Spotify, Last.fm, LB, Discogs, MB) for each genre
+- Click source icon to highlight only that source's genres
+- Use color coding: preferred source is primary color, others are muted
+- Genre frequency: show number of sources confirming each genre
+
+### 16.4 Special handling by album type
+
+- **Compilations/Various Artists**: Aggregate per-track genres only (don't aggregate across unrelated artists)
+- **Live albums**: De-weight studio genre tags from MusicBrainz, prioritize "live" tag detection
+- **Soundtracks**: Highlight composer tags from MusicBrainz, separate from main artist genres
+- **Remixes/Covers**: Flag source indicator (Discogs video track field preferred marker)
+
+---
+
+## 17) Artist Identity System (March 2026 formalization)
+
+**Core files**: `artist_identity.py`, `merge_duplicate_artists.py`, `compilation_manager.py`
+
+### 17.1 Canonical artist resolution
+
+The system maintains multiple artist identity facets:
+
+| Field | Purpose | Priority order |
+|---|---|---|
+| `artist_mbid` | MusicBrainz ID for artist | 1st: use if available |
+| `artist_name` | Canonical name | Fallback to fuzzy match |
+| `album_artist` | Album-level artist credit | Can differ from track artist |
+| `compilation_artist` | Track artist on compilations | May be "Various Artists" |
+
+**Resolution algorithm**:
+1. If MBID exists → lookup canonical name from MB cache
+2. If name fuzzy-matches existing artist (>= 90%) → use existing record
+3. Otherwise → create new artist record with pending MBID lookup
+
+### 17.2 Main vs featured artist distinction
+
+**Main artist**: Primary artist name on release OR album artist field  
+**Featured artist**: Artist appearing in `feat. Artist Name` parenthetical
+
+**Signal sources**:
+- Navidrome `album_artist` field (main)
+- MusicBrainz `artist-credits` (main vs guest relationship type)
+- Discogs artist credits section
+- Last.fm artist tag
+
+**Storage**: Separate `is_main` boolean on artist identity records
+
+**Impact on processing**:
+- Auto-queue for missing singles: **album artists ONLY** (not featured-only artists)
+- Genre aggregation: Per artist (featured artists contribute genres to their own catalog)
+- Star ratings: Context applies to primary artist catalog only
+
+### 17.3 Compilation artist special handling
+
+For tracks on compilations (`album_type = 'compilation'`):
+
+| Field | Value | Behavior |
+|---|---|---|
+| `artist` | "Various Artists" | Album-level grouping |
+| `track_artist` | Actual artist | Per-track artist |
+| `compilation_artist` | "Various Artists" \| actual | Disambiguator for multiple releases with same artist |
+
+**Query optimization**: Separate index on `(compilation_artist, album)` for fast compilation aggregation
+
+### 17.4 Merge operations and impact
+
+`merge_duplicate_artists()` combines two artist records:
+
+1. **Pre-merge**:
+   - Validate: Both records same MBID OR fuzzy match >= 95%
+   - Count affected tracks/albums
+   - Log merge event
+
+2. **Merge execution**:
+   - Update all `tracks.artist` from old → new
+   - Update all `albums.album_artist` from old → new
+   - Copy MBID/metadata from higher-confidence source
+   - Preserve both artist names in alias field (if applicable)
+
+3. **Post-merge**:
+   - Recalculate `artist_stats` for merged artist (union of both catalogs)
+   - Re-trigger popularity scan for all affected tracks
+   - Emit event: `artist_merged` with before/after counts
+
+---
+
+## 18) MusicBrainz Release Group Discovery & Auto-Queue (March 2026)
+
+**Entry point**: Daily background task + `/api/artist/missing-releases` endpoint
+
+### 18.1 Release group fetch workflow
+
+**Frequency**: Daily (configured via `navidrome.sync_wait` in config)  
+**Target**: Fetch recent releases for all collection artists (album artists only)
+
+**Process**:
+```
+For each album artist in collection:
+  → Query MB: all release groups for artist (last 2 years)
+  → For each release group:
+     ├─ Fetch full release data
+     ├─ Categorize: _normalize_release_category() → _derive_release_bucket()
+     ├─ Check local: Album MBID match + title similarity threshold
+     ├─ If missing: Save to missing_releases cache table
+     └─ If new single + auto-queue enabled:
+        ├─ Check if album artist in collection (not featured-only)
+        ├─ Load collection track titles
+        ├─ Try to match release title against existing
+        ├─ If NEW: add_to_queue() with auto-queue=true flag
+        └─ Emit event: autoqueue_initiated | autoqueue_skipped_exists
+```
+
+### 18.2 Release categorization system
+
+**Normalize category** (from MB API response):
+- Input: `primary_type` (Album, Single, EP, Other) + `secondary_types` array
+- Output: Canonical category (single | ep | album | compilation | live | soundtrack)
+
+**Derive bucket** (routing logic):
+- If primary_type == "Single" → **SINGLE** (highest confidence)
+- If secondary contains "Live" or title contains "Live" → **LIVE**
+- If secondary contains "Compilation" → **COMPILATION**
+- If secondary contains "Soundtrack" → **SOUNDTRACK**
+- If "EP" tag present → **EP**
+- Otherwise → **ALBUM**
+
+**Never misfile**: An album should not be routed to singles bucket if `primary_type == "Album"`
+
+### 18.3 Caching & deduplication
+
+**Table**: `missing_releases` (in-memory cache, reset daily)
+
+**Fields**:
+- `artist`, `release_mbid`, `title`
+- `release_type` (bucket)
+- `release_date`
+- `last_checked` (timestamp)
+- `auto_queue_eligible` (bool - album artist not featured-only)
+
+**Dedup logic**: Before adding to missing:
+- Check: Does MBID already exist in our collection?
+  - By album MBID → direct hit
+  - By fuzzy title match >= 90% → probable hit
+  - Otherwise → genuinely missing
+
+---
+
+## 19) Playlist Download & Import System
+
+**Core files**: `playlist_matcher.py`, `playlist_recommendations.py`
+
+### 19.1 Source detection and track matching
+
+**Supported sources**:
+- **Spotify playlists** (via OAuth or URL parse)
+- **Last.fm playlists** (user top tracks, loved tracks)
+- **ListenBrainz playlists** (saved lists)
+- **M3U files** (local playlist files)
+- **Navidrome playlists** (existing playlists in library)
+
+**Track matching strategy**:
+1. Extract track metadata from source (artist, title, duration)
+2. Lookup in Navidrome library: fuzzy match (>= 85% title, >= 75% artist)
+3. If Navidrome match: use that track ID
+4. If no match: add_to_queue() for automated download
+5. Store match confidence + source in queue_match table
+
+### 19.2 Batch download queueing
+
+**Workflow**:
+1. User selects playlist source
+2. Extract track list (paginate for large playlists)
+3. For each track:
+   - Try Navidrome match (fast path)
+   - If miss: create queue item with `import_group = playlist_<source>_<id>`
+4. Return summary:
+   - X tracks already in library
+   - Y tracks queued for download
+   - Z tracks not found in any source (user skip recommendation)
+
+**Deduplication**: Check `downloaded_files` hash table to prevent re-importing same performance
+
+### 19.3 Import group handling
+
+All playlist items share `import_group = playlist_<source>_<date>`:
+- Groups items for batch processing
+- Organize all downloaded files to single destination initially
+- Apply post-import tagging (playlist genre, mood tags from source)
+- Supports partial re-download if some items fail
+
+---
+
+## 20) Configuration & Customization Contract
+
+**File**: `config.yaml` (user-editable, persisted via `config.html` UI)
+
+**Key customizable sections**:
+
+### Weights (popularity algorithm)
+```yaml
+weights:
+  lastfm: 0.30        # Last.fm scrobbles + listeners
+  listenbrainz: 0.35  # ListenBrainz user count
+  age: 0.25           # Release age recency bonus
+  spotify: 0.10       # DEPRECATED - will be removed March 2027
+```
+
+### Single Detection Thresholds
+```yaml
+single_detection:
+  zscore_medium_threshold: 0.6  # Medium confidence gate
+  zscore_high_threshold: 1.0    # High confidence gate
+  standout_gap_z: 0.75          # Outlier detection threshold
+```
+
+### API Integration Enables/Keys
+```yaml
+api_integrations:
+  lastfm:
+    enabled: true
+    api_key: "YOUR_KEY_HERE"
+  discogs:
+    enabled: true
+    token: "YOUR_TOKEN"  # REQUIRED for single detection accuracy
+  # etc for each API
+```
+
+### Quality Filtering for Downloads
+```yaml
+downloads:
+  quality_filter:
+    enabled: true
+    reject_others: true
+    bitrate_tolerance: 5  # +/- kbps allowed
+    priorities:
+      - format: "flac"
+        bitrate_kbps: null  # Accept any bitrate
+      - format: "mp3"
+        bitrate_kbps: 320   # Prefer 320 kbps
+```
+
+**Config validation**: All config changes validated via `config_helpers.py::validate_config()` before persistence
+
+---
+
+**End of RatingAgent Operational Manual**
