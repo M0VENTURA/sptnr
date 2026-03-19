@@ -4466,7 +4466,6 @@ def auto_discover_and_queue_files():
         # Keep queue discovery strict to MP3/FLAC only.
         audio_extensions = {'.mp3', '.flac'}
         discovered_files = []
-        folder_audio_counts = {}
         
         try:
             for root, dirs, files in os.walk(downloads_dir):
@@ -4477,7 +4476,6 @@ def auto_discover_and_queue_files():
                     if file_ext in audio_extensions:
                         full_path = os.path.join(root, filename)
                         rel_path = os.path.relpath(full_path, downloads_dir)
-                        folder_audio_counts[root] = folder_audio_counts.get(root, 0) + 1
                         discovered_files.append({
                             'filename': filename,
                             'full_path': full_path,
@@ -4490,20 +4488,11 @@ def auto_discover_and_queue_files():
             stats['errors'].append(error_msg)
             return stats
         
-        # Only queue entries from folders with more than 4 audio files.
-        filtered_discovered_files = []
-        skipped_by_folder_threshold = 0
-        for file_info in discovered_files:
-            folder_path = os.path.dirname(file_info['full_path'])
-            if folder_audio_counts.get(folder_path, 0) > 4:
-                filtered_discovered_files.append(file_info)
-            else:
-                skipped_by_folder_threshold += 1
+        filtered_discovered_files = discovered_files
 
         stats['scanned'] = len(filtered_discovered_files)
         logger.info(
-            f"[AUTO-DISCOVER] Scanning {len(filtered_discovered_files)} audio files in {downloads_dir} "
-            f"(skipped {skipped_by_folder_threshold} in folders with <=4 files)"
+            f"[AUTO-DISCOVER] Scanning {len(filtered_discovered_files)} audio files in {downloads_dir}"
         )
         
         if len(filtered_discovered_files) == 0:
@@ -4512,7 +4501,7 @@ def auto_discover_and_queue_files():
             if (now_ts - _last_no_audio_log_at) >= _NO_AUDIO_LOG_INTERVAL_SECONDS:
                 logger.info(
                     f"[AUTO-DISCOVER] No eligible audio files found in {downloads_dir} "
-                    f"(requires folders with >4 files; log throttled to once every {_NO_AUDIO_LOG_INTERVAL_SECONDS}s)"
+                    f"(log throttled to once every {_NO_AUDIO_LOG_INTERVAL_SECONDS}s)"
                 )
                 _last_no_audio_log_at = now_ts
             else:
