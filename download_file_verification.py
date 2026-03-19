@@ -206,6 +206,7 @@ def ensure_queue_mbid_columns():
         - in_collection INTEGER: Whether track exists in local library
         - collection_track_id TEXT: ID of matching track in collection
         - collection_matched_at TEXT: Timestamp of collection match
+        - auto_delete_at TIMESTAMP: Scheduled duplicate cleanup time
         - copied_individually INTEGER: Whether file already moved individually
         - copied_individually_at TEXT: Timestamp of individual copy event
     """
@@ -218,6 +219,7 @@ def ensure_queue_mbid_columns():
         ("in_collection", "INTEGER DEFAULT 0"),
         ("collection_track_id", "TEXT"),
         ("collection_matched_at", "TEXT"),
+        ("auto_delete_at", "TIMESTAMP"),
         ("copied_individually", "INTEGER DEFAULT 0"),
         ("copied_individually_at", "TEXT"),
     ])

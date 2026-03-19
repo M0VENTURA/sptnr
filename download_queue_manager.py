@@ -835,6 +835,7 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                     'in_collection': "INTEGER DEFAULT 0",
                     'collection_track_id': "TEXT",
                     'collection_matched_at': "TEXT",
+                    'auto_delete_at': "TIMESTAMP",
                     'copied_individually': "INTEGER DEFAULT 0",
                     'copied_individually_at': "TEXT",
                     'cover_art_url': "TEXT",
@@ -896,6 +897,7 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                 'in_collection': "INTEGER DEFAULT 0",
                 'collection_track_id': "TEXT",
                 'collection_matched_at': "TEXT",
+                'auto_delete_at': "TIMESTAMP",
                 'copied_individually': "INTEGER DEFAULT 0",
                 'copied_individually_at': "TEXT",
                 'cover_art_url': "TEXT",
@@ -4415,7 +4417,8 @@ def auto_discover_and_queue_files():
             'year': "TEXT",
             'found_filename': "TEXT",
             'import_group': "TEXT",
-            'import_type': "TEXT DEFAULT 'song'"
+            'import_type': "TEXT DEFAULT 'song'",
+            'auto_delete_at': "TIMESTAMP",
         }
         
         for col, col_type in required_cols.items():

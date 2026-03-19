@@ -89,6 +89,7 @@ def _ensure_postgres_columns(conn):
         "in_collection": "INTEGER DEFAULT 0",
         "collection_track_id": "TEXT",
         "collection_matched_at": "TEXT",
+        "auto_delete_at": "TIMESTAMP",
         "copied_individually": "INTEGER DEFAULT 0",
         "copied_individually_at": "TEXT",
         "cover_art_url": "TEXT",
