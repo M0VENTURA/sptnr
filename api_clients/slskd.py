@@ -114,20 +114,56 @@ class SlskdClient:
             url = f"{self.base_url}/searches"
             # slskd API uses searchText as the field name
             data = {"searchText": query}
-            resp = self.session.post(url, json=data, headers=self.headers, timeout=timeout)
-            
-            if resp.status_code not in [200, 201]:
-                logger.warning(f"Slskd search start failed: {resp.status_code} - {resp.text[:200]}")
+
+            # slskd enforces a single concurrent search operation; gracefully
+            # wait/retry when the API returns HTTP 429 for that condition.
+            max_attempts = 5
+            for attempt in range(1, max_attempts + 1):
+                resp = self.session.post(url, json=data, headers=self.headers, timeout=timeout)
+
+                if resp.status_code in [200, 201]:
+                    search_response = resp.json()
+                    # Handle both possible response formats
+                    search_id = search_response.get("id") or search_response.get("searchId")
+                    if search_id:
+                        logger.debug(f"Slskd search started: {search_id} for query '{query}'")
+                    else:
+                        logger.warning(f"Slskd search response missing ID: {search_response}")
+                    return search_id
+
+                body_preview = (resp.text or "")[:200]
+                body_lc = body_preview.lower()
+                retryable_429 = (
+                    resp.status_code == 429
+                    and (
+                        "only one concurrent operation" in body_lc
+                        or "wait until the previous request completes" in body_lc
+                    )
+                )
+
+                if retryable_429 and attempt < max_attempts:
+                    retry_after_header = (resp.headers.get("Retry-After") or "").strip()
+                    wait_seconds = 0.8
+                    if retry_after_header:
+                        try:
+                            wait_seconds = max(0.2, float(retry_after_header))
+                        except Exception:
+                            wait_seconds = 0.8
+                    else:
+                        wait_seconds = min(2.0, 0.4 * attempt)
+
+                    logger.info(
+                        f"Slskd search slot busy (attempt {attempt}/{max_attempts}) for '{query}'; "
+                        f"waiting {wait_seconds:.1f}s before retry"
+                    )
+                    time.sleep(wait_seconds)
+                    continue
+
+                logger.warning(f"Slskd search start failed: {resp.status_code} - {body_preview}")
                 return None
-            
-            search_response = resp.json()
-            # Handle both possible response formats
-            search_id = search_response.get("id") or search_response.get("searchId")
-            if search_id:
-                logger.debug(f"Slskd search started: {search_id} for query '{query}'")
-            else:
-                logger.warning(f"Slskd search response missing ID: {search_response}")
-            return search_id
+
+            logger.warning(f"Slskd search start exhausted retries for query '{query}'")
+            return None
         except Exception as e:
             logger.error(f"Slskd search failed for query '{query}': {e}")
             return None
