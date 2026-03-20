@@ -1482,13 +1482,15 @@ def get_top_standout_tracks_with_gap(
     """
     with get_db_connection_context(conn) as db_conn:
         try:
+            from database_abstraction import is_postgres_connection
             cursor = db_conn.cursor()
+            placeholder = "%s" if is_postgres_connection(db_conn) else "?"
             cursor.execute("""
                 SELECT id, title, popularity_score
                 FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ? AND popularity_score > 0
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder} AND popularity_score > 0
                 ORDER BY popularity_score DESC
-            """, (artist, album))
+            """.format(placeholder=placeholder), (artist, album))
             
             album_tracks = cursor.fetchall()
             if not album_tracks or len(album_tracks) < 2:
@@ -1552,6 +1554,10 @@ def get_top_standout_tracks_with_gap(
             
             return top_standouts
         except Exception as e:
+            try:
+                db_conn.rollback()
+            except Exception:
+                pass
             if verbose:
                 logging.debug(f"Top standouts detection error: {e}")
             return set()

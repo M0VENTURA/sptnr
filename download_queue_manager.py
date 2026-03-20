@@ -972,9 +972,19 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
 
                 cursor.execute(
                     f"""
-                    CREATE UNIQUE INDEX IF NOT EXISTS uq_download_queue_active_identity
-                    ON download_queue (LOWER(artist), LOWER(COALESCE(album, '')), LOWER(title), source)
-                    WHERE status IN ({_ACTIVE_QUEUE_STATUS_SQL})
+                    DO $$
+                    BEGIN
+                        IF to_regclass('public.uq_download_queue_active_identity') IS NULL THEN
+                            CREATE UNIQUE INDEX uq_download_queue_active_identity
+                            ON download_queue (LOWER(artist), LOWER(COALESCE(album, '')), LOWER(title), source)
+                            WHERE status IN ({_ACTIVE_QUEUE_STATUS_SQL});
+                        END IF;
+                    EXCEPTION
+                        WHEN duplicate_table OR duplicate_object OR unique_violation THEN
+                            -- Concurrent startup race: another worker created the same index.
+                            NULL;
+                    END
+                    $$;
                     """
                 )
                 conn.commit()
