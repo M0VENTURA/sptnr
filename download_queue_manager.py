@@ -103,6 +103,12 @@ _queue_schema_checked = False
 _queue_schema_lock = threading.Lock()
 _queue_columns_cache = None  # populated once; avoids repeated information_schema queries
 
+# Cache downloads quality filter config to avoid re-reading yaml and logging
+# identical "enabled" messages for every queue-item evaluation.
+_format_filter_config_cache = None
+_format_filter_config_cache_key = None
+_format_filter_last_log_signature = None
+
 # Canonical active statuses for queue reads and processor selection.
 _ACTIVE_QUEUE_STATUSES = ('queued', 'searching', 'downloading', 'unmatched', 'queried')
 _ACTIVE_QUEUE_STATUS_SQL = ", ".join(f"'{status}'" for status in _ACTIVE_QUEUE_STATUSES)
@@ -3202,7 +3208,14 @@ def _load_format_bitrate_config():
         config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
         if not os.path.exists(config_path):
             return config
-        
+
+        # Fast path: return cached config if file path and mtime are unchanged.
+        global _format_filter_config_cache, _format_filter_config_cache_key, _format_filter_last_log_signature
+        mtime = os.path.getmtime(config_path)
+        cache_key = (config_path, mtime)
+        if _format_filter_config_cache_key == cache_key and _format_filter_config_cache is not None:
+            return _format_filter_config_cache
+
         with open(config_path, "r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
         
@@ -3221,8 +3234,19 @@ def _load_format_bitrate_config():
             config['bitrate_tolerance'] = quality_cfg.get("bitrate_tolerance", 5)
             config['reject_others'] = quality_cfg.get("reject_others", False)
             
-            logger.info(f"[FORMAT-FILTER] Enabled with {len(config['priorities'])} priority rule(s): "
-                       f"{config['priorities']}")
+            log_signature = (
+                bool(config['enabled']),
+                tuple((p.get('format'), p.get('bitrate_kbps')) for p in config['priorities'] if isinstance(p, dict)),
+                int(config['bitrate_tolerance']),
+                bool(config['reject_others']),
+            )
+            if _format_filter_last_log_signature != log_signature:
+                logger.info(f"[FORMAT-FILTER] Enabled with {len(config['priorities'])} priority rule(s): "
+                           f"{config['priorities']}")
+                _format_filter_last_log_signature = log_signature
+
+        _format_filter_config_cache = config
+        _format_filter_config_cache_key = cache_key
     except Exception as e:
         logger.warning(f"[FORMAT-FILTER] Error reading config: {e}")
     
@@ -3525,7 +3549,7 @@ def check_downloads_folder():
                         WHERE mbid = %s
                           AND file_path IS NOT NULL
                           AND file_path != ''
-                          AND file_path NOT LIKE '__queued_for_download__%'
+                                                    AND file_path NOT LIKE '__queued_for_download__%%'
                         ORDER BY id DESC
                         LIMIT 1
                         """,
@@ -3556,7 +3580,7 @@ def check_downloads_folder():
                       AND LOWER(COALESCE(title, '')) = LOWER({ph})
                       AND file_path IS NOT NULL
                       AND file_path != ''
-                      AND file_path NOT LIKE '__queued_for_download__%'
+                                            AND file_path NOT LIKE '__queued_for_download__%%'
                     ORDER BY album_rank ASC, id DESC
                     LIMIT 5
                     """,
