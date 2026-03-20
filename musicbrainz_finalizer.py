@@ -12,7 +12,6 @@ Handles the finalization of MusicBrainz releases when all tracks are discovered:
 This system integrates with the background queue processor (runs every 60 seconds).
 """
 
-import sqlite3
 import shutil
 import logging
 import os
@@ -21,7 +20,7 @@ from pathlib import Path
 from datetime import datetime
 from contextlib import closing
 from typing import Any
-from database_abstraction import DatabaseQuery, is_postgres_connection
+from database_abstraction import DatabaseQuery
 from helpers.db_utils import get_db_connection
 
 logging.basicConfig(level=logging.INFO)
@@ -179,9 +178,7 @@ class MusicBrainzFinalizer:
             cursor = conn.cursor()
             
             # Step 1: Get release info
-            from app import _is_postgres_connection as app_is_postgres_connection
-            is_pg = bool(app_is_postgres_connection(conn))
-            placeholder = "%s" if is_pg else "?"
+            placeholder = "%s"
             cursor.execute(f"""
                 SELECT release_title, artist, release_year, monitoring_folder_path,
                        total_tracks, discovered_count
@@ -285,9 +282,7 @@ class MusicBrainzFinalizer:
             cursor = conn.cursor()
             
             # Find matching track in database
-            from app import _is_postgres_connection as app_is_postgres_connection
-            is_pg = bool(app_is_postgres_connection(conn))
-            placeholder = "%s" if is_pg else "?"
+            placeholder = "%s"
             cursor.execute(f"""
                 SELECT track_number, track_title, track_artist
                 FROM musicbrainz_release_tracks
@@ -413,9 +408,7 @@ class MusicBrainzFinalizer:
             conn = self.get_db()
             cursor = conn.cursor()
             
-            from app import _is_postgres_connection as app_is_postgres_connection
-            is_pg = bool(app_is_postgres_connection(conn))
-            placeholder = "%s" if is_pg else "?"
+            placeholder = "%s"
             
             cursor.execute(f"""
                 SELECT id, release_title, artist, release_year,

@@ -11,7 +11,7 @@ manually copied to the music library before the rest of the album
 completed, so the auto-move logic can skip them and the UI can show
 an "Already Copied" badge.
 
-Supports both SQLite and PostgreSQL.
+PostgreSQL-only migration.
 """
 import os
 import sys
@@ -22,28 +22,18 @@ DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 def migrate():
     """Add copied_individually and copied_individually_at columns."""
     try:
-        try:
-            import psycopg2  # noqa: F401
-            from app import get_db, _is_postgres_connection
-            conn = get_db()
-            is_pg = _is_postgres_connection(conn)
-        except (ImportError, Exception):
-            import sqlite3
-            conn = sqlite3.connect(DB_PATH)
-            is_pg = False
+        from app import get_db
+        conn = get_db()
 
         cursor = conn.cursor()
 
         # Discover existing columns
-        if is_pg:
-            cursor.execute("""
-                SELECT column_name FROM information_schema.columns
-                WHERE table_name = 'download_queue'
-            """)
-            columns = [row[0] for row in cursor.fetchall()]
-        else:
-            cursor.execute("PRAGMA table_info(download_queue)")
-            columns = [row[1] for row in cursor.fetchall()]
+        cursor.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'download_queue'
+              AND table_schema = 'public'
+        """)
+        columns = [row[0] for row in cursor.fetchall()]
 
         added_columns = []
 

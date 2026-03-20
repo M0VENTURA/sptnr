@@ -8,7 +8,6 @@ then attributes the original artist and updates track metadata accordingly.
 
 import logging
 import json
-import sqlite3
 import re
 from typing import Optional, Dict, List, Tuple
 from pathlib import Path

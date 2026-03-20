@@ -6,8 +6,9 @@ Reference: https://docs.mp3tag.de/mapping/
 """
 
 import os
-import sqlite3
 from pathlib import Path
+
+from helpers.db_utils import get_db_connection
 
 try:
     from mutagen.id3 import ID3
@@ -530,12 +531,9 @@ def get_track_metadata_from_db(track_id, db_path="/database/sptnr.db"):
         dict: Track info with file path
     """
     try:
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
+        conn = get_db_connection()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
-        cursor.execute(f"SELECT * FROM tracks WHERE id = {placeholder}", (track_id,))
+        cursor.execute("SELECT * FROM tracks WHERE id = %s", (track_id,))
         row = cursor.fetchone()
         conn.close()
         

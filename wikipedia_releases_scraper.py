@@ -5,7 +5,6 @@ Wikipedia Album Release Scraper
 Scrapes upcoming album releases from Wikipedia pages for various genres and regions.
 Parses release tables and stores information in the database.
 """
-import sqlite3
 import logging
 from datetime import datetime
 from typing import List, Dict, Optional
@@ -194,118 +193,63 @@ class WikipediaReleaseScraper:
         is_pg = is_postgres_connection(conn)
         cursor = conn.cursor()
 
-        if is_pg:
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS upcoming_releases (
-                    id SERIAL PRIMARY KEY,
-                    artist_name TEXT NOT NULL,
-                    album_name TEXT NOT NULL,
-                    release_date TEXT,
-                    release_year INTEGER,
-                    source TEXT,
-                    artist_in_collection BOOLEAN DEFAULT FALSE,
-                    album_in_collection BOOLEAN DEFAULT FALSE,
-                    is_new_release BOOLEAN DEFAULT FALSE,
-                    notes TEXT,
-                    url TEXT,
-                    release_group_mbid TEXT,
-                    mbid_match_status TEXT DEFAULT 'unmatched',
-                    mbid_source TEXT,
-                    mbid_confidence TEXT,
-                    mbid_match_score REAL,
-                    mbid_last_checked_at TEXT,
-                    mbid_manual_override BOOLEAN DEFAULT FALSE,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(artist_name, album_name, release_date)
-                )
-                """
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS upcoming_releases (
+                id SERIAL PRIMARY KEY,
+                artist_name TEXT NOT NULL,
+                album_name TEXT NOT NULL,
+                release_date TEXT,
+                release_year INTEGER,
+                source TEXT,
+                artist_in_collection BOOLEAN DEFAULT FALSE,
+                album_in_collection BOOLEAN DEFAULT FALSE,
+                is_new_release BOOLEAN DEFAULT FALSE,
+                notes TEXT,
+                url TEXT,
+                release_group_mbid TEXT,
+                mbid_match_status TEXT DEFAULT 'unmatched',
+                mbid_source TEXT,
+                mbid_confidence TEXT,
+                mbid_match_score REAL,
+                mbid_last_checked_at TEXT,
+                mbid_manual_override BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(artist_name, album_name, release_date)
             )
-        else:
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS upcoming_releases (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    artist_name TEXT NOT NULL,
-                    album_name TEXT NOT NULL,
-                    release_date TEXT,
-                    release_year INTEGER,
-                    source TEXT,
-                    artist_in_collection BOOLEAN DEFAULT FALSE,
-                    album_in_collection BOOLEAN DEFAULT FALSE,
-                    is_new_release BOOLEAN DEFAULT FALSE,
-                    notes TEXT,
-                    url TEXT,
-                    release_group_mbid TEXT,
-                    mbid_match_status TEXT DEFAULT 'unmatched',
-                    mbid_source TEXT,
-                    mbid_confidence TEXT,
-                    mbid_match_score REAL,
-                    mbid_last_checked_at TEXT,
-                    mbid_manual_override BOOLEAN DEFAULT FALSE,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(artist_name, album_name, release_date)
-                )
-                """
-            )
+            """
+        )
 
         existing_columns = set(get_column_names(cursor, "upcoming_releases", is_pg))
         for column_name, column_type in UPCOMING_RELEASE_REQUIRED_COLUMNS.items():
             if column_name not in existing_columns:
                 cursor.execute(f"ALTER TABLE upcoming_releases ADD COLUMN {column_name} {column_type}")
 
-        if is_pg:
-            cursor.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_upcoming_artist_collection
-                ON upcoming_releases(artist_in_collection, release_date DESC)
-                """
-            )
-            cursor.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_upcoming_release_date
-                ON upcoming_releases(release_date)
-                """
-            )
-            cursor.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_upcoming_year
-                ON upcoming_releases(release_year)
-                """
-            )
-            cursor.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_upcoming_release_group_mbid
-                ON upcoming_releases(release_group_mbid)
-                """
-            )
-        else:
-            cursor.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_upcoming_artist_collection
-                ON upcoming_releases(artist_in_collection, release_date DESC)
-                """
-            )
-            cursor.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_upcoming_release_date
-                ON upcoming_releases(release_date)
-                """
-            )
-            cursor.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_upcoming_year
-                ON upcoming_releases(release_year)
-                """
-            )
-            cursor.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_upcoming_release_group_mbid
-                ON upcoming_releases(release_group_mbid)
-                """
-            )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_upcoming_artist_collection
+            ON upcoming_releases(artist_in_collection, release_date DESC)
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_upcoming_release_date
+            ON upcoming_releases(release_date)
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_upcoming_year
+            ON upcoming_releases(release_year)
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_upcoming_release_group_mbid
+            ON upcoming_releases(release_group_mbid)
+            """
+        )
 
         conn.commit()
         self._schema_ensured = True
@@ -416,7 +360,7 @@ class WikipediaReleaseScraper:
             # Query all albums on same date and check normalized names
             cursor = query.execute("""
                 SELECT * FROM upcoming_releases 
-                WHERE release_date = ?
+                WHERE release_date = %s
             """, (release_date,))
             
             rows = cursor.fetchall() or []
@@ -426,7 +370,7 @@ class WikipediaReleaseScraper:
                 if row is None:
                     continue
                 
-                # Convert sqlite3.Row to dict for consistent access
+                # Convert DB rows to dicts for consistent access
                 row_dict = dict(row) if not isinstance(row, dict) else row
                 existing_artist = row_dict.get('artist_name', '')
                 existing_album = row_dict.get('album_name', '')
@@ -1065,8 +1009,8 @@ class WikipediaReleaseScraper:
                     
                     query.execute("""
                         UPDATE upcoming_releases
-                        SET artist_in_collection = ?, album_in_collection = ?, updated_at = CURRENT_TIMESTAMP, album_name = ?
-                        WHERE id = ?
+                        SET artist_in_collection = %s, album_in_collection = %s, updated_at = CURRENT_TIMESTAMP, album_name = %s
+                        WHERE id = %s
                     """, (artist_in_collection, album_in_collection, better_name, existing_id))
                     updated += 1
                 else:
@@ -1075,7 +1019,7 @@ class WikipediaReleaseScraper:
                         INSERT INTO upcoming_releases 
                         (artist_name, album_name, release_date, release_year, source, 
                          artist_in_collection, album_in_collection)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT(artist_name, album_name, release_date) DO UPDATE SET
                         updated_at = CURRENT_TIMESTAMP,
                         artist_in_collection = excluded.artist_in_collection,
@@ -1095,8 +1039,8 @@ class WikipediaReleaseScraper:
                 try:
                     query.execute("""
                         UPDATE upcoming_releases
-                        SET artist_in_collection = ?, album_in_collection = ?, updated_at = CURRENT_TIMESTAMP
-                        WHERE artist_name = ? AND album_name = ? AND release_date = ?
+                        SET artist_in_collection = %s, album_in_collection = %s, updated_at = CURRENT_TIMESTAMP
+                        WHERE artist_name = %s AND album_name = %s AND release_date = %s
                     """, (artist_in_collection, album_in_collection, artist_name, album_name, release_date))
                     updated += 1
                 except Exception as update_error:
@@ -1108,7 +1052,7 @@ class WikipediaReleaseScraper:
                 INSERT INTO release_scrape_history 
                 (source_url, source_name, items_found, items_added, items_updated, 
                  scrape_status, scrape_start, scrape_end)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """, (
                 WIKIPEDIA_SOURCES.get(source_name, {}).get("url", ""),
                 source_name,

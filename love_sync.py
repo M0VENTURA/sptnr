@@ -10,11 +10,11 @@ Features:
 """
 
 import os
-import sqlite3
 import logging
 from datetime import datetime
 from typing import Optional, List, Dict
 from pathlib import Path
+from helpers.db_utils import get_db_connection
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +35,7 @@ class LoveSyncManager:
     
     def get_db_connection(self):
         """Get database connection."""
-        conn = sqlite3.connect(self.db_path, timeout=30.0)
-        conn.row_factory = sqlite3.Row
-        return conn
+        return get_db_connection()
     
     def sync_navidrome_starred_tracks(self, user_id: int, starred_track_ids: List[str]) -> int:
         """
@@ -59,7 +57,7 @@ class LoveSyncManager:
                 UPDATE user_loved_tracks
                 SET is_loved = 0,
                     loved_at = NULL
-                WHERE user_id = ?
+                WHERE user_id = %s
             """, (user_id,))
             
             # Now mark starred tracks as loved
@@ -67,10 +65,10 @@ class LoveSyncManager:
             for track_id in starred_track_ids:
                 cursor.execute("""
                     INSERT INTO user_loved_tracks (user_id, track_id, is_loved, loved_at)
-                    VALUES (?, ?, 1, ?)
+                    VALUES (%s, %s, 1, %s)
                     ON CONFLICT(user_id, track_id) DO UPDATE SET
                         is_loved = 1,
-                        loved_at = ?
+                        loved_at = %s
                 """, (user_id, track_id, datetime.now().isoformat(), datetime.now().isoformat()))
                 updated_count += 1
             
@@ -105,7 +103,7 @@ class LoveSyncManager:
                 UPDATE user_loved_albums
                 SET is_loved = 0,
                     loved_at = NULL
-                WHERE user_id = ?
+                WHERE user_id = %s
             """, (user_id,))
             
             # Mark starred albums as loved
@@ -116,10 +114,10 @@ class LoveSyncManager:
                 if artist and album_name:
                     cursor.execute("""
                         INSERT INTO user_loved_albums (user_id, artist, album, is_loved, loved_at)
-                        VALUES (?, ?, ?, 1, ?)
+                        VALUES (%s, %s, %s, 1, %s)
                         ON CONFLICT(user_id, artist, album) DO UPDATE SET
                             is_loved = 1,
-                            loved_at = ?
+                            loved_at = %s
                     """, (user_id, artist, album_name, datetime.now().isoformat(), datetime.now().isoformat()))
                     updated_count += 1
             
@@ -154,7 +152,7 @@ class LoveSyncManager:
                 UPDATE user_loved_artists
                 SET is_loved = 0,
                     loved_at = NULL
-                WHERE user_id = ?
+                WHERE user_id = %s
             """, (user_id,))
             
             # Mark starred artists as loved
@@ -162,10 +160,10 @@ class LoveSyncManager:
             for artist in starred_artists:
                 cursor.execute("""
                     INSERT INTO user_loved_artists (user_id, artist, is_loved, loved_at)
-                    VALUES (?, ?, 1, ?)
+                    VALUES (%s, %s, 1, %s)
                     ON CONFLICT(user_id, artist) DO UPDATE SET
                         is_loved = 1,
-                        loved_at = ?
+                        loved_at = %s
                 """, (user_id, artist, datetime.now().isoformat(), datetime.now().isoformat()))
                 updated_count += 1
             
@@ -199,10 +197,10 @@ class LoveSyncManager:
             # Mark as loved in database
             cursor.execute("""
                 INSERT INTO user_loved_tracks (user_id, track_id, is_loved, loved_at)
-                VALUES (?, ?, 1, ?)
+                VALUES (%s, %s, 1, %s)
                 ON CONFLICT(user_id, track_id) DO UPDATE SET
                     is_loved = 1,
-                    loved_at = ?
+                    loved_at = %s
             """, (user_id, track_id, datetime.now().isoformat(), datetime.now().isoformat()))
             
             conn.commit()
@@ -242,7 +240,7 @@ class LoveSyncManager:
                 UPDATE user_loved_tracks
                 SET is_loved = 0,
                     loved_at = NULL
-                WHERE user_id = ? AND track_id = ?
+                WHERE user_id = %s AND track_id = %s
             """, (user_id, track_id))
             
             conn.commit()
@@ -279,7 +277,7 @@ class LoveSyncManager:
         try:
             # Get user's ListenBrainz token
             cursor.execute("""
-                SELECT listenbrainz_token FROM navidrome_users WHERE id = ?
+                SELECT listenbrainz_token FROM navidrome_users WHERE id = %s
             """, (user_id,))
             row = cursor.fetchone()
             
@@ -291,7 +289,7 @@ class LoveSyncManager:
             
             # Get track MBID
             cursor.execute("""
-                SELECT mbid FROM tracks WHERE id = ?
+                SELECT mbid FROM tracks WHERE id = %s
             """, (track_id,))
             track_row = cursor.fetchone()
             
@@ -317,9 +315,9 @@ class LoveSyncManager:
             # Update sync status
             cursor.execute("""
                 UPDATE user_loved_tracks
-                SET synced_to_listenbrainz = ?,
-                    last_sync_attempt = ?
-                WHERE user_id = ? AND track_id = ?
+                SET synced_to_listenbrainz = %s,
+                    last_sync_attempt = %s
+                WHERE user_id = %s AND track_id = %s
             """, (1 if success else 0, datetime.now().isoformat(), user_id, track_id))
             
             conn.commit()
@@ -347,7 +345,7 @@ class LoveSyncManager:
         try:
             cursor.execute("""
                 SELECT track_id FROM user_loved_tracks
-                WHERE user_id = ? AND is_loved = 1
+                WHERE user_id = %s AND is_loved = 1
             """, (user_id,))
             
             return [row['track_id'] for row in cursor.fetchall()]
@@ -375,7 +373,7 @@ class LoveSyncManager:
         try:
             cursor.execute("""
                 SELECT is_loved FROM user_loved_tracks
-                WHERE user_id = ? AND track_id = ?
+                WHERE user_id = %s AND track_id = %s
             """, (user_id, track_id))
             
             row = cursor.fetchone()
@@ -395,8 +393,7 @@ def sync_all_users_from_navidrome():
     """
     from api_clients.navidrome import NavidromeClient
     
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = get_db_connection()
     cursor = conn.cursor()
     
     try:

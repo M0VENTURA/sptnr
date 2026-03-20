@@ -10,7 +10,6 @@ Handles the complete flow of downloading entire releases track-by-track:
 5. Finalize releases when complete
 """
 
-import sqlite3
 import requests
 import os
 import json
@@ -85,149 +84,100 @@ class MusicBrainzReleaseManager:
     def ensure_schema(self):
         """Create required MusicBrainz release tables if they are missing."""
         conn = self.get_db()
-        is_pg = is_postgres_connection(conn)
         db_query = DatabaseQuery(conn)
 
         try:
-            if is_pg:
-                db_query.execute("""
-                    CREATE TABLE IF NOT EXISTS musicbrainz_releases (
-                        id BIGSERIAL PRIMARY KEY,
-                        release_id TEXT NOT NULL UNIQUE,
-                        release_title TEXT NOT NULL,
-                        artist TEXT NOT NULL,
-                        release_year INTEGER,
-                        total_tracks INTEGER,
-                        monitoring_folder_path TEXT,
-                        final_folder_path TEXT,
-                        status TEXT DEFAULT 'active',
-                        method TEXT,
-                        discovered_count INTEGER DEFAULT 0,
-                        organized_count INTEGER DEFAULT 0,
-                        finalized_count INTEGER DEFAULT 0,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        finalized_at TIMESTAMP
-                    )
-                """)
-                
-                # Ensure sequence exists for id column (handles migration cases)
-                try:
-                    db_query.execute("""
-                        CREATE SEQUENCE IF NOT EXISTS musicbrainz_releases_id_seq
-                        AS BIGINT START WITH 1 INCREMENT BY 1
-                    """)
-                    db_query.execute("""
-                        ALTER TABLE musicbrainz_releases 
-                        ALTER COLUMN id SET DEFAULT nextval('musicbrainz_releases_id_seq')
-                    """)
-                    db_query.execute("""
-                        SELECT setval('musicbrainz_releases_id_seq', 
-                                     COALESCE((SELECT MAX(id) FROM musicbrainz_releases), 0) + 1)
-                    """)
-                except Exception as seq_error:
-                    logger.debug(f"[SCHEMA] Note: Could not ensure musicbrainz_releases sequence (may already exist): {seq_error}")
-                
-                # Ensure download_queue sequence exists (required for foreign key from musicbrainz_release_tracks)
-                try:
-                    db_query.execute("""
-                        CREATE SEQUENCE IF NOT EXISTS download_queue_id_seq
-                        AS BIGINT START WITH 1 INCREMENT BY 1
-                    """)
-                    db_query.execute("""
-                        ALTER TABLE download_queue 
-                        ALTER COLUMN id SET DEFAULT nextval('download_queue_id_seq')
-                    """)
-                    db_query.execute("""
-                        SELECT setval('download_queue_id_seq', 
-                                     COALESCE((SELECT MAX(id) FROM download_queue), 0) + 1)
-                    """)
-                except Exception as seq_error:
-                    logger.debug(f"[SCHEMA] Note: Could not ensure download_queue sequence (may already exist): {seq_error}")
+            db_query.execute("""
+                CREATE TABLE IF NOT EXISTS musicbrainz_releases (
+                    id BIGSERIAL PRIMARY KEY,
+                    release_id TEXT NOT NULL UNIQUE,
+                    release_title TEXT NOT NULL,
+                    artist TEXT NOT NULL,
+                    release_year INTEGER,
+                    total_tracks INTEGER,
+                    monitoring_folder_path TEXT,
+                    final_folder_path TEXT,
+                    status TEXT DEFAULT 'active',
+                    method TEXT,
+                    discovered_count INTEGER DEFAULT 0,
+                    organized_count INTEGER DEFAULT 0,
+                    finalized_count INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    finalized_at TIMESTAMP
+                )
+            """)
 
+            try:
                 db_query.execute("""
-                    CREATE TABLE IF NOT EXISTS musicbrainz_release_tracks (
-                        id BIGSERIAL PRIMARY KEY,
-                        release_id TEXT NOT NULL,
-                        queue_id BIGINT,
-                        disc_number INTEGER,
-                        track_number INTEGER,
-                        track_title TEXT,
-                        track_artist TEXT,
-                        duration INTEGER,
-                        isrc TEXT,
-                        recording_title TEXT,
-                        recording_mbid TEXT,
-                        found_filename TEXT,
-                        file_path TEXT,
-                        status TEXT DEFAULT 'queued',
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        FOREIGN KEY (release_id) REFERENCES musicbrainz_releases(release_id),
-                        FOREIGN KEY (queue_id) REFERENCES download_queue(id)
-                    )
+                    CREATE SEQUENCE IF NOT EXISTS musicbrainz_releases_id_seq
+                    AS BIGINT START WITH 1 INCREMENT BY 1
                 """)
-                
-                # Ensure musicbrainz_release_tracks sequence exists
-                try:
-                    db_query.execute("""
-                        CREATE SEQUENCE IF NOT EXISTS musicbrainz_release_tracks_id_seq
-                        AS BIGINT START WITH 1 INCREMENT BY 1
-                    """)
-                    db_query.execute("""
-                        ALTER TABLE musicbrainz_release_tracks 
-                        ALTER COLUMN id SET DEFAULT nextval('musicbrainz_release_tracks_id_seq')
-                    """)
-                    db_query.execute("""
-                        SELECT setval('musicbrainz_release_tracks_id_seq', 
-                                     COALESCE((SELECT MAX(id) FROM musicbrainz_release_tracks), 0) + 1)
-                    """)
-                except Exception as seq_error:
-                    logger.debug(f"[SCHEMA] Note: Could not ensure musicbrainz_release_tracks sequence (may already exist): {seq_error}")
-            else:
                 db_query.execute("""
-                    CREATE TABLE IF NOT EXISTS musicbrainz_releases (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        release_id TEXT NOT NULL UNIQUE,
-                        release_title TEXT NOT NULL,
-                        artist TEXT NOT NULL,
-                        release_year INTEGER,
-                        total_tracks INTEGER,
-                        monitoring_folder_path TEXT,
-                        final_folder_path TEXT,
-                        status TEXT DEFAULT 'active',
-                        method TEXT,
-                        discovered_count INTEGER DEFAULT 0,
-                        organized_count INTEGER DEFAULT 0,
-                        finalized_count INTEGER DEFAULT 0,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        finalized_at TIMESTAMP
-                    )
+                    ALTER TABLE musicbrainz_releases 
+                    ALTER COLUMN id SET DEFAULT nextval('musicbrainz_releases_id_seq')
                 """)
+                db_query.execute("""
+                    SELECT setval('musicbrainz_releases_id_seq', 
+                                 COALESCE((SELECT MAX(id) FROM musicbrainz_releases), 0) + 1)
+                """)
+            except Exception as seq_error:
+                logger.debug(f"[SCHEMA] Note: Could not ensure musicbrainz_releases sequence (may already exist): {seq_error}")
 
+            try:
                 db_query.execute("""
-                    CREATE TABLE IF NOT EXISTS musicbrainz_release_tracks (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        release_id TEXT NOT NULL,
-                        queue_id INTEGER,
-                        disc_number INTEGER,
-                        track_number INTEGER,
-                        track_title TEXT,
-                        track_artist TEXT,
-                        duration INTEGER,
-                        isrc TEXT,
-                        recording_title TEXT,
-                        recording_mbid TEXT,
-                        found_filename TEXT,
-                        file_path TEXT,
-                        status TEXT DEFAULT 'queued',
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        FOREIGN KEY (release_id) REFERENCES musicbrainz_releases(release_id),
-                        FOREIGN KEY (queue_id) REFERENCES download_queue(id)
-                    )
+                    CREATE SEQUENCE IF NOT EXISTS download_queue_id_seq
+                    AS BIGINT START WITH 1 INCREMENT BY 1
                 """)
+                db_query.execute("""
+                    ALTER TABLE download_queue 
+                    ALTER COLUMN id SET DEFAULT nextval('download_queue_id_seq')
+                """)
+                db_query.execute("""
+                    SELECT setval('download_queue_id_seq', 
+                                 COALESCE((SELECT MAX(id) FROM download_queue), 0) + 1)
+                """)
+            except Exception as seq_error:
+                logger.debug(f"[SCHEMA] Note: Could not ensure download_queue sequence (may already exist): {seq_error}")
+
+            db_query.execute("""
+                CREATE TABLE IF NOT EXISTS musicbrainz_release_tracks (
+                    id BIGSERIAL PRIMARY KEY,
+                    release_id TEXT NOT NULL,
+                    queue_id BIGINT,
+                    disc_number INTEGER,
+                    track_number INTEGER,
+                    track_title TEXT,
+                    track_artist TEXT,
+                    duration INTEGER,
+                    isrc TEXT,
+                    recording_title TEXT,
+                    recording_mbid TEXT,
+                    found_filename TEXT,
+                    file_path TEXT,
+                    status TEXT DEFAULT 'queued',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (release_id) REFERENCES musicbrainz_releases(release_id),
+                    FOREIGN KEY (queue_id) REFERENCES download_queue(id)
+                )
+            """)
+
+            try:
+                db_query.execute("""
+                    CREATE SEQUENCE IF NOT EXISTS musicbrainz_release_tracks_id_seq
+                    AS BIGINT START WITH 1 INCREMENT BY 1
+                """)
+                db_query.execute("""
+                    ALTER TABLE musicbrainz_release_tracks 
+                    ALTER COLUMN id SET DEFAULT nextval('musicbrainz_release_tracks_id_seq')
+                """)
+                db_query.execute("""
+                    SELECT setval('musicbrainz_release_tracks_id_seq', 
+                                 COALESCE((SELECT MAX(id) FROM musicbrainz_release_tracks), 0) + 1)
+                """)
+            except Exception as seq_error:
+                logger.debug(f"[SCHEMA] Note: Could not ensure musicbrainz_release_tracks sequence (may already exist): {seq_error}")
 
             db_query.execute("""
                 CREATE INDEX IF NOT EXISTS idx_mb_releases_status
@@ -306,8 +256,7 @@ class MusicBrainzReleaseManager:
         """
         conn = self.get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if is_postgres_connection(conn) else "?"
-        is_pg = is_postgres_connection(conn)
+        placeholder = "%s"
         
         try:
             # Check if release already exists
@@ -326,56 +275,41 @@ class MusicBrainzReleaseManager:
                 """, (release_db_id,))
                 logger.info(f"[RELEASE_ENTRY] Updated existing release entry {release_db_id}")
             else:
-                if is_pg:
-                    # PostgreSQL: Use RETURNING to get the auto-generated ID
-                    try:
-                        cursor.execute(f"""
-                            INSERT INTO musicbrainz_releases
-                            (release_id, release_title, artist, release_year, total_tracks,
-                             monitoring_folder_path, status, method, created_at, updated_at)
-                            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'active', {placeholder}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                            RETURNING id
-                        """, (release_id, release_title, artist, release_year, total_tracks,
-                              str(monitoring_folder_path), method))
-                        inserted = cursor.fetchone()
-                        if inserted:
-                            release_db_id = inserted[0] if isinstance(inserted, tuple) else self._row_get(inserted, 'id', 0, None)
-                        else:
-                            raise ValueError("Failed to retrieve inserted release ID from PostgreSQL RETURNING clause")
-                    except Exception as pg_error:
-                        # Fallback: PostgreSQL RETURNING failed, try alternative approach
-                        # Check if it's due to missing id sequence and try to get the max id
-                        if 'null' in str(pg_error).lower() and 'id' in str(pg_error).lower():
-                            logger.warning(f"[RELEASE_ENTRY] PostgreSQL RETURNING failed: {pg_error}, attempting fallback")
-                            # Re-insert without error handling this time to see if it succeeds
-                            cursor.execute(f"""
-                                SELECT COALESCE(MAX(id), 0) + 1 FROM musicbrainz_releases
-                            """)
-                            next_id_result = cursor.fetchone()
-                            next_id = next_id_result[0] if next_id_result else 1
-                            
-                            cursor.execute(f"""
-                                INSERT INTO musicbrainz_releases
-                                (id, release_id, release_title, artist, release_year, total_tracks,
-                                 monitoring_folder_path, status, method, created_at, updated_at)
-                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'active', {placeholder}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                                RETURNING id
-                            """, (next_id, release_id, release_title, artist, release_year, total_tracks,
-                                  str(monitoring_folder_path), method))
-                            inserted = cursor.fetchone()
-                            release_db_id = inserted[0] if inserted else next_id
-                        else:
-                            raise
-                else:
-                    # SQLite: Use lastrowid to get the auto-generated ID
-                    cursor.execute("""
+                try:
+                    cursor.execute(f"""
                         INSERT INTO musicbrainz_releases
                         (release_id, release_title, artist, release_year, total_tracks,
                          monitoring_folder_path, status, method, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, 'active', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'active', {placeholder}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        RETURNING id
                     """, (release_id, release_title, artist, release_year, total_tracks,
                           str(monitoring_folder_path), method))
-                    release_db_id = cursor.lastrowid
+                    inserted = cursor.fetchone()
+                    if inserted:
+                        release_db_id = inserted[0] if isinstance(inserted, tuple) else self._row_get(inserted, 'id', 0, None)
+                    else:
+                        raise ValueError("Failed to retrieve inserted release ID from PostgreSQL RETURNING clause")
+                except Exception as pg_error:
+                    if 'null' in str(pg_error).lower() and 'id' in str(pg_error).lower():
+                        logger.warning(f"[RELEASE_ENTRY] PostgreSQL RETURNING failed: {pg_error}, attempting fallback")
+                        cursor.execute("""
+                            SELECT COALESCE(MAX(id), 0) + 1 FROM musicbrainz_releases
+                        """)
+                        next_id_result = cursor.fetchone()
+                        next_id = next_id_result[0] if next_id_result else 1
+
+                        cursor.execute(f"""
+                            INSERT INTO musicbrainz_releases
+                            (id, release_id, release_title, artist, release_year, total_tracks,
+                             monitoring_folder_path, status, method, created_at, updated_at)
+                            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'active', {placeholder}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                            RETURNING id
+                        """, (next_id, release_id, release_title, artist, release_year, total_tracks,
+                              str(monitoring_folder_path), method))
+                        inserted = cursor.fetchone()
+                        release_db_id = inserted[0] if inserted else next_id
+                    else:
+                        raise
                 
                 if not release_db_id:
                     raise ValueError(f"Failed to get ID for new release: {release_id}")
@@ -407,8 +341,7 @@ class MusicBrainzReleaseManager:
         queue_ids = []
         conn = self.get_db()
         cursor = conn.cursor()
-        is_pg = is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         try:
             # Get release database ID
@@ -474,38 +407,22 @@ class MusicBrainzReleaseManager:
                         search_query = f"{track_artist} - {track_title}".strip()
                         
                         # Add to download_queue with release year, album_artist, and MB IDs
-                        if is_pg:
-                            cursor.execute(f"""
-                                INSERT INTO download_queue
-                                (artist, album, title, search_query, source, status,
-                                 release_id, track_number, disc_number, mb_release_download_id,
-                                 year, album_artist, recording_mbid,
-                                 created_at, updated_at)
-                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'soulseek', 'queued',
-                                        {placeholder}, {placeholder}, {placeholder}, {placeholder},
-                                        {placeholder}, {placeholder}, {placeholder},
-                                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                                RETURNING id
-                            """, (track_artist, album, track_title, search_query,
-                                  release_id, track_number, disc_number, mb_release_db_id,
-                                  release_year, rel_album_artist, recording_mbid))
-                            queue_row = cursor.fetchone()
-                            queue_id = self._row_get(queue_row, 'id', 0, 0)
-                        else:
-                            cursor.execute(f"""
-                                INSERT INTO download_queue
-                                (artist, album, title, search_query, source, status,
-                                 release_id, track_number, disc_number, mb_release_download_id,
-                                 year, album_artist, recording_mbid,
-                                 created_at, updated_at)
-                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'soulseek', 'queued',
-                                        {placeholder}, {placeholder}, {placeholder}, {placeholder},
-                                        {placeholder}, {placeholder}, {placeholder},
-                                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                            """, (track_artist, album, track_title, search_query,
-                                  release_id, track_number, disc_number, mb_release_db_id,
-                                  release_year, rel_album_artist, recording_mbid))
-                            queue_id = cursor.lastrowid
+                        cursor.execute(f"""
+                            INSERT INTO download_queue
+                            (artist, album, title, search_query, source, status,
+                             release_id, track_number, disc_number, mb_release_download_id,
+                             year, album_artist, recording_mbid,
+                             created_at, updated_at)
+                            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'soulseek', 'queued',
+                                    {placeholder}, {placeholder}, {placeholder}, {placeholder},
+                                    {placeholder}, {placeholder}, {placeholder},
+                                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                            RETURNING id
+                        """, (track_artist, album, track_title, search_query,
+                              release_id, track_number, disc_number, mb_release_db_id,
+                              release_year, rel_album_artist, recording_mbid))
+                        queue_row = cursor.fetchone()
+                        queue_id = self._row_get(queue_row, 'id', 0, 0)
                         queue_ids.append(queue_id)
                         
                         # Add to musicbrainz_release_tracks
@@ -522,30 +439,21 @@ class MusicBrainzReleaseManager:
                         # Also add to tracks table with 'downloading' status
                         # This allows the track to appear on artist/album pages as "Downloading"
                         track_id = f"{track_artist}|{album}|{track_title}"
-                        if is_pg:
-                            cursor.execute(f"""
-                                INSERT INTO tracks
-                                (id, artist, album, title, track_number, duration, isrc,
-                                 download_status)
-                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'downloading')
-                                ON CONFLICT (id) DO UPDATE SET
-                                    artist = EXCLUDED.artist,
-                                    album = EXCLUDED.album,
-                                    title = EXCLUDED.title,
-                                    track_number = EXCLUDED.track_number,
-                                    duration = EXCLUDED.duration,
-                                    isrc = EXCLUDED.isrc,
-                                    download_status = EXCLUDED.download_status
-                            """, (track_id, track_artist, album, track_title,
-                                  track_number, duration, isrc))
-                        else:
-                            cursor.execute(f"""
-                                INSERT OR REPLACE INTO tracks
-                                (id, artist, album, title, track_number, duration, isrc,
-                                 download_status)
-                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'downloading')
-                            """, (track_id, track_artist, album, track_title,
-                                  track_number, duration, isrc))
+                        cursor.execute(f"""
+                            INSERT INTO tracks
+                            (id, artist, album, title, track_number, duration, isrc,
+                             download_status)
+                            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'downloading')
+                            ON CONFLICT (id) DO UPDATE SET
+                                artist = EXCLUDED.artist,
+                                album = EXCLUDED.album,
+                                title = EXCLUDED.title,
+                                track_number = EXCLUDED.track_number,
+                                duration = EXCLUDED.duration,
+                                isrc = EXCLUDED.isrc,
+                                download_status = EXCLUDED.download_status
+                        """, (track_id, track_artist, album, track_title,
+                              track_number, duration, isrc))
                         
                         logger.info(f"[QUEUE_ADD] Added track {track_number}: {track_title} (Queue ID: {queue_id})")
                 
@@ -710,7 +618,7 @@ class MusicBrainzReleaseManager:
         """
         conn = self.get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         try:
             cursor.execute(f"""

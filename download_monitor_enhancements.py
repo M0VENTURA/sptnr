@@ -33,31 +33,12 @@ def _is_valid_mbid(value):
 
 
 def get_db():
-    """Get app DB connection with PostgreSQL-first behavior and SQLite fallback."""
-    pg_configured = bool(
-        (os.environ.get("DATABASE_URL") or os.environ.get("PG_DSN") or "").strip()
-        or (
-            (os.environ.get("PG_HOST") or "").strip()
-            and (os.environ.get("PG_USER") or "").strip()
-            and (os.environ.get("PG_DATABASE") or "").strip()
-        )
-    )
-    try:
-        from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
+    """Get the shared PostgreSQL application connection."""
+    from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
 
-        conn = app_get_db()
-        if pg_configured and not app_is_postgres_connection(conn):
-            raise RuntimeError("PostgreSQL is configured but active DB connection is not PostgreSQL")
-        return conn
-    except Exception:
-        if pg_configured:
-            raise
-
-    import sqlite3
-
-    db_path = os.environ.get("DB_PATH", "/database/sptnr.db")
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    conn = app_get_db()
+    if not app_is_postgres_connection(conn):
+        raise RuntimeError("Active DB connection is not PostgreSQL")
     return conn
 
 
@@ -69,7 +50,7 @@ def _is_postgres_connection(conn):
 
 
 def _placeholder(conn):
-    return "%s" if _is_postgres_connection(conn) else "?"
+    return "%s"
 
 
 def _row_value(row, key, index=0, default=None):
@@ -229,46 +210,25 @@ def search_and_update_musicbrainz(queue_id, artist, title, album):
 
         if not cover_art_url:
             try:
-                if is_pg:
-                    cursor.execute(
-                        """
-                        SELECT cover_art_url
-                        FROM download_queue
-                        WHERE cover_art_url IS NOT NULL
-                            AND cover_art_url <> ''
-                            AND (
-                                release_mbid = %s
-                                OR release_id = %s
-                                OR (
-                                    LOWER(COALESCE(album_artist, artist, '')) = LOWER(COALESCE(%s, ''))
-                                    AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(%s, ''))
-                                )
+                cursor.execute(
+                    """
+                    SELECT cover_art_url
+                    FROM download_queue
+                    WHERE cover_art_url IS NOT NULL
+                        AND cover_art_url <> ''
+                        AND (
+                            release_mbid = %s
+                            OR release_id = %s
+                            OR (
+                                LOWER(COALESCE(album_artist, artist, '')) = LOWER(COALESCE(%s, ''))
+                                AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(%s, ''))
                             )
-                        ORDER BY updated_at DESC NULLS LAST, id DESC
-                        LIMIT 1
-                        """,
-                        (release_mbid, release_mbid, release_artist, album),
-                    )
-                else:
-                    cursor.execute(
-                        """
-                        SELECT cover_art_url
-                        FROM download_queue
-                        WHERE cover_art_url IS NOT NULL
-                            AND cover_art_url <> ''
-                            AND (
-                                release_mbid = ?
-                                OR release_id = ?
-                                OR (
-                                    LOWER(COALESCE(album_artist, artist, '')) = LOWER(COALESCE(?, ''))
-                                    AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(?, ''))
-                                )
-                            )
-                        ORDER BY updated_at DESC, id DESC
-                        LIMIT 1
-                        """,
-                        (release_mbid, release_mbid, release_artist, album),
-                    )
+                        )
+                    ORDER BY updated_at DESC NULLS LAST, id DESC
+                    LIMIT 1
+                    """,
+                    (release_mbid, release_mbid, release_artist, album),
+                )
                 existing_q = cursor.fetchone()
                 cover_art_candidate = _row_value(existing_q, 'cover_art_url', 0)
                 if cover_art_candidate:
@@ -283,46 +243,25 @@ def search_and_update_musicbrainz(queue_id, artist, title, album):
 
         if not cover_art_url:
             try:
-                if is_pg:
-                    cursor.execute(
-                        """
-                        SELECT cover_art_url
-                        FROM tracks
-                        WHERE cover_art_url IS NOT NULL
-                            AND cover_art_url <> ''
-                            AND (
-                                release_group_mbid = %s
-                                OR suggested_mbid = %s
-                                OR (
-                                    LOWER(COALESCE(album_artist, artist, '')) = LOWER(COALESCE(%s, ''))
-                                    AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(%s, ''))
-                                )
+                cursor.execute(
+                    """
+                    SELECT cover_art_url
+                    FROM tracks
+                    WHERE cover_art_url IS NOT NULL
+                        AND cover_art_url <> ''
+                        AND (
+                            release_group_mbid = %s
+                            OR suggested_mbid = %s
+                            OR (
+                                LOWER(COALESCE(album_artist, artist, '')) = LOWER(COALESCE(%s, ''))
+                                AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(%s, ''))
                             )
-                        ORDER BY last_scanned DESC NULLS LAST, id DESC
-                        LIMIT 1
-                        """,
-                        (release_mbid, release_mbid, release_artist, album),
-                    )
-                else:
-                    cursor.execute(
-                        """
-                        SELECT cover_art_url
-                        FROM tracks
-                        WHERE cover_art_url IS NOT NULL
-                            AND cover_art_url <> ''
-                            AND (
-                                release_group_mbid = ?
-                                OR suggested_mbid = ?
-                                OR (
-                                    LOWER(COALESCE(album_artist, artist, '')) = LOWER(COALESCE(?, ''))
-                                    AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(?, ''))
-                                )
-                            )
-                        ORDER BY last_scanned DESC, id DESC
-                        LIMIT 1
-                        """,
-                        (release_mbid, release_mbid, release_artist, album),
-                    )
+                        )
+                    ORDER BY last_scanned DESC NULLS LAST, id DESC
+                    LIMIT 1
+                    """,
+                    (release_mbid, release_mbid, release_artist, album),
+                )
                 existing_t = cursor.fetchone()
                 cover_art_candidate = _row_value(existing_t, 'cover_art_url', 0)
                 if cover_art_candidate:
@@ -988,9 +927,9 @@ def check_collection_match(queue_item_dict):
         
         cursor.execute("""
             SELECT id, file_path FROM tracks
-            WHERE LOWER(artist) = LOWER(?)
-            AND LOWER(title) = LOWER(?)
-            AND (release_group_mbid = ? OR suggested_mbid = ?)
+            WHERE LOWER(artist) = LOWER(%s)
+            AND LOWER(title) = LOWER(%s)
+            AND (release_group_mbid = %s OR suggested_mbid = %s)
             LIMIT 1
         """, (queue_item_dict['artist'], queue_item_dict['title'], release_mbid, release_mbid))
         
@@ -1024,10 +963,10 @@ def update_queue_status_to_in_collection(queue_id, collection_track_id):
             UPDATE download_queue
             SET status = 'in_collection',
                 in_collection = 1,
-                collection_track_id = ?,
-                collection_matched_at = datetime('now'),
-                updated_at = datetime('now')
-            WHERE id = ?
+                collection_track_id = %s,
+                collection_matched_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
         """, (collection_track_id, queue_id))
         
         conn.commit()

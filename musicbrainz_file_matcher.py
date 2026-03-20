@@ -12,7 +12,6 @@ Matching Strategy (Priority Order):
 4. Manual verification (if low confidence)
 """
 
-import sqlite3
 import os
 import logging
 import shutil

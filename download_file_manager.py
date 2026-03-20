@@ -7,7 +7,6 @@ Integrates with MusicBrainz data stored in the queue to update file metadata bef
 
 import os
 import shutil
-import sqlite3
 import logging
 from pathlib import Path
 from datetime import datetime

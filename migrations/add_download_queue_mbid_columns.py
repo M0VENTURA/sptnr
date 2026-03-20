@@ -15,7 +15,7 @@ Adds:
 These columns are required by download_monitor_enhancements.py and the
 /api/queue/<id>/apply-mbid-match endpoint in app.py.
 
-Supports both SQLite and PostgreSQL.
+PostgreSQL-only migration.
 """
 import os
 import sys
@@ -26,31 +26,18 @@ DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 def migrate():
     """Add MBID and extended metadata columns to download_queue."""
     try:
-        try:
-            # Check psycopg2 availability to determine if PostgreSQL is usable
-            import psycopg2
-            psycopg2  # confirm import is usable
-            from app import get_db, _is_postgres_connection
-            conn = get_db()
-            is_pg = _is_postgres_connection(conn)
-        except (ImportError, Exception):
-            import sqlite3
-            conn = sqlite3.connect(DB_PATH)
-            is_pg = False
+        from app import get_db
+        conn = get_db()
 
         cursor = conn.cursor()
 
         # Discover existing columns
-        if is_pg:
-            cursor.execute("""
-                SELECT column_name FROM information_schema.columns
-                WHERE table_name = 'download_queue'
-                  AND table_schema = 'public'
-            """)
-            columns = [row[0] for row in cursor.fetchall()]
-        else:
-            cursor.execute("PRAGMA table_info(download_queue)")
-            columns = [row[1] for row in cursor.fetchall()]
+        cursor.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'download_queue'
+              AND table_schema = 'public'
+        """)
+        columns = [row[0] for row in cursor.fetchall()]
 
         new_columns = {
             'release_mbid': "TEXT",

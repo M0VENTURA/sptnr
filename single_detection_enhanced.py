@@ -13,7 +13,6 @@ Author: SPTNR Team
 import re
 import json
 import logging
-import sqlite3
 from typing import Dict, List, Optional, Tuple
 from statistics import mean, stdev, median
 from datetime import datetime
@@ -2638,34 +2637,15 @@ def store_single_detection_result(conn, track_id: str, result: Dict):
     while retry_count < max_retries:
         cursor = None
         try:
-            is_pg = is_postgres_connection(conn)
-            placeholder = "%s" if is_pg else "?"
-
-            # SQLite-specific timeout/WAL settings
-            if not is_pg:
-                try:
-                    conn.execute("PRAGMA busy_timeout = 120000")  # 120 seconds
-                    conn.execute("PRAGMA journal_mode = WAL")  # Ensure WAL mode
-                except Exception:
-                    pass
-                try:
-                    conn.execute("PRAGMA wal_autocheckpoint = 1000")
-                    conn.execute("PRAGMA optimize")
-                except Exception:
-                    pass  # These might fail if WAL isn't available, that's ok
+            placeholder = "%s"
             
             cursor = conn.cursor()
             
-            # Check if new columns exist in schema
-            if is_pg:
-                cursor.execute("""
-                    SELECT column_name FROM information_schema.columns
-                    WHERE table_name = 'tracks' AND column_name IN ('album_z_score', 'artist_z_score')
-                """)
-                existing_cols = {row['column_name'] for row in cursor.fetchall()}
-            else:
-                cursor.execute("PRAGMA table_info(tracks)")
-                existing_cols = {row[1] for row in cursor.fetchall()}
+            cursor.execute("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = 'tracks' AND column_name IN ('album_z_score', 'artist_z_score')
+            """)
+            existing_cols = {row['column_name'] for row in cursor.fetchall()}
             has_album_z = 'album_z_score' in existing_cols
             has_artist_z = 'artist_z_score' in existing_cols
             

@@ -2,7 +2,7 @@
 """
 Migration: Add MusicBrainz release tracking columns to download_queue table
 This enables grouping of album tracks in the Download Monitor UI
-Supports both SQLite and PostgreSQL
+PostgreSQL-only migration
 """
 import os
 import sys
@@ -12,30 +12,18 @@ DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 def migrate():
     """Add release_id, release_source, track_number columns to download_queue"""
     try:
-        # Try PostgreSQL first, fallback to SQLite
-        try:
-            import psycopg2
-            from app import get_db, _is_postgres_connection
-            conn = get_db()
-            is_pg = _is_postgres_connection(conn)
-        except (ImportError, Exception):
-            # Fallback to SQLite
-            import sqlite3
-            conn = sqlite3.connect(DB_PATH)
-            is_pg = False
+        from app import get_db
+        conn = get_db()
         
         cursor = conn.cursor()
         
         # Check if columns already exist
-        if is_pg:
-            cursor.execute("""
-                SELECT column_name FROM information_schema.columns 
-                WHERE table_name = 'download_queue'
-            """)
-            columns = [row[0] for row in cursor.fetchall()]
-        else:
-            cursor.execute("PRAGMA table_info(download_queue)")
-            columns = [row[1] for row in cursor.fetchall()]
+        cursor.execute("""
+            SELECT column_name FROM information_schema.columns 
+            WHERE table_name = 'download_queue'
+              AND table_schema = 'public'
+        """)
+        columns = [row[0] for row in cursor.fetchall()]
         
         added_columns = []
         

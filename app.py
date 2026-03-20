@@ -3839,7 +3839,7 @@ def convert_row_to_json_serializable(obj):
         return None
     
     # Convert Row objects to dicts
-    if hasattr(obj, 'keys') and not isinstance(obj, dict):  # sqlite3.Row object
+    if hasattr(obj, 'keys') and not isinstance(obj, dict):  # row-like mapping object
         obj = dict(obj)
     
     # Recursively process dicts
@@ -5509,7 +5509,7 @@ def artist_detail(name):
             seen_titles = set()
             deduped_tracks = []
             for track in top_tracks:
-                # Normalize sqlite3.Row/dict/tuple access for title
+                # Normalize row/dict/tuple access for title
                 if hasattr(track, 'keys') and not isinstance(track, dict):
                     track_title = dict(track).get('title', '')
                 elif isinstance(track, dict):
@@ -7395,7 +7395,7 @@ def api_artist_covered_by():
 
         covers = []
         for row in rows:
-            # sqlite3.Row supports both name and index access; pg returns RealDictCursor dicts
+            # Support both mapping-style and index-style row access
             try:
                 covers.append({
                     "id": _cover_field(row, "id", 0),

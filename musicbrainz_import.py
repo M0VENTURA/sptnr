@@ -6,8 +6,8 @@ Also supports writing tags back to MP3 files for persistence.
 """
 
 import os
-import sqlite3
 from pathlib import Path
+from helpers.db_utils import get_db_connection
 from helpers.metadata_reader import (
     read_musicbrainz_tags_from_mp3, 
     write_musicbrainz_tags_to_mp3,
@@ -30,6 +30,11 @@ MB_FIELD_MAPPING = {
 
 # Reverse mapping for writing to MP3
 DB_TO_MP3_FIELD_MAPPING = {v: k for k, v in MB_FIELD_MAPPING.items()}
+
+
+def _get_db_connection(_db_path=None):
+    """Return the shared PostgreSQL connection; db_path is retained for compatibility."""
+    return get_db_connection()
 
 
 def import_musicbrainz_tags_for_track(artist, album, title, file_path=None, db_path="/database/sptnr.db"):
@@ -70,7 +75,7 @@ def import_musicbrainz_tags_for_track(artist, album, title, file_path=None, db_p
             }
         
         # Step 3: Update database with the tags
-        conn = sqlite3.connect(db_path, timeout=120.0)
+        conn = _get_db_connection(db_path)
         cursor = conn.cursor()
         
         # Build the UPDATE query dynamically
@@ -79,7 +84,7 @@ def import_musicbrainz_tags_for_track(artist, album, title, file_path=None, db_p
         
         for mp3_field, db_column in MB_FIELD_MAPPING.items():
             if mp3_field in mb_tags:
-                update_sets.append(f"{db_column} = ?")
+                update_sets.append(f"{db_column} = %s")
                 values.append(mb_tags[mp3_field])
         
         if not update_sets:
@@ -98,7 +103,7 @@ def import_musicbrainz_tags_for_track(artist, album, title, file_path=None, db_p
         query = f"""
             UPDATE tracks 
             SET {', '.join(update_sets)}
-            WHERE artist = ? AND album = ? AND title = ?
+            WHERE artist = %s AND album = %s AND title = %s
         """
         
         cursor.execute(query, values)
@@ -136,15 +141,14 @@ def import_musicbrainz_tags_for_album(artist, album, db_path="/database/sptnr.db
         dict: Status with counts {'success': bool, 'total': int, 'imported': int, 'skipped': int}
     """
     try:
-        conn = sqlite3.connect(db_path, timeout=120.0)
-        conn.row_factory = sqlite3.Row
+        conn = _get_db_connection(db_path)
         cursor = conn.cursor()
         
         # Get all tracks for this album
         cursor.execute("""
             SELECT id, artist, album, title, file_path, beets_path 
             FROM tracks 
-            WHERE artist = ? AND album = ?
+            WHERE artist = %s AND album = %s
             ORDER BY track_number
         """, (artist, album))
         
@@ -201,13 +205,12 @@ def import_musicbrainz_tags_for_artist(artist, db_path="/database/sptnr.db", mus
         dict: Status with counts
     """
     try:
-        conn = sqlite3.connect(db_path, timeout=120.0)
-        conn.row_factory = sqlite3.Row
+        conn = _get_db_connection(db_path)
         cursor = conn.cursor()
         
         # Get all albums by artist
         cursor.execute("""
-            SELECT DISTINCT album FROM tracks WHERE artist = ? ORDER BY album
+            SELECT DISTINCT album FROM tracks WHERE artist = %s ORDER BY album
         """, (artist,))
         
         albums = [row['album'] for row in cursor.fetchall()]
@@ -250,8 +253,7 @@ def get_musicbrainz_tags_for_track(artist, album, title, db_path="/database/sptn
         dict: MusicBrainz tags or empty dict if not found
     """
     try:
-        conn = sqlite3.connect(db_path, timeout=120.0)
-        conn.row_factory = sqlite3.Row
+        conn = _get_db_connection(db_path)
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -269,7 +271,7 @@ def get_musicbrainz_tags_for_track(artist, album, title, db_path="/database/sptn
                 musicbrainz_albumstatus,
                 musicbrainz_albumtype
             FROM tracks 
-            WHERE artist = ? AND album = ? AND title = ?
+            WHERE artist = %s AND album = %s AND title = %s
         """, (artist, album, title))
         
         row = cursor.fetchone()
@@ -303,8 +305,7 @@ def get_musicbrainz_tags_for_album(artist, album, db_path="/database/sptnr.db"):
         list: List of dicts with track info and MusicBrainz tags
     """
     try:
-        conn = sqlite3.connect(db_path, timeout=120.0)
-        conn.row_factory = sqlite3.Row
+        conn = _get_db_connection(db_path)
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -321,7 +322,7 @@ def get_musicbrainz_tags_for_album(artist, album, db_path="/database/sptnr.db"):
                 musicbrainz_releasetype,
                 musicbrainz_releasecountry
             FROM tracks 
-            WHERE artist = ? AND album = ?
+            WHERE artist = %s AND album = %s
             ORDER BY track_number
         """, (artist, album))
         
@@ -364,11 +365,11 @@ def update_musicbrainz_tag_in_db(artist, album, title, field_name, field_value, 
                 'message': f"Field '{field_name}' is not a valid MusicBrainz field"
             }
         
-        conn = sqlite3.connect(db_path, timeout=120.0)
+        conn = _get_db_connection(db_path)
         cursor = conn.cursor()
         
         # Update the field
-        query = f"UPDATE tracks SET {field_name} = ? WHERE artist = ? AND album = ? AND title = ?"
+        query = f"UPDATE tracks SET {field_name} = %s WHERE artist = %s AND album = %s AND title = %s"
         cursor.execute(query, (field_value, artist, album, title))
         conn.commit()
         

@@ -585,7 +585,6 @@ def organize_folder_to_music(folder_path, tracks, release_metadata, music_dir="/
     """
     import shutil
     import re
-    import sqlite3
     
     try:
         organized_files = []
@@ -594,12 +593,12 @@ def organize_folder_to_music(folder_path, tracks, release_metadata, music_dir="/
         # Track folder match in database if connection provided
         folder_match_id = None
         is_pg = False
-        placeholder = "?"
+        placeholder = "%s"
         if db_conn:
             try:
                 cursor = db_conn.cursor()
                 is_pg = is_postgres_connection(db_conn)
-                placeholder = "%s" if is_pg else "?"
+                placeholder = "%s"
                 
                 # Get absolute folder path for tracking
                 from pathlib import Path

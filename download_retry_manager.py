@@ -371,13 +371,11 @@ class DownloadRetryManager:
             if rows_deleted > 0:
                 logger.info(f"Cleaned up {rows_deleted} old failed downloads total")
 
-        except sqlite3.OperationalError as e:
-            if "database is locked" in str(e):
+        except Exception as e:
+            if "database is locked" in str(e).lower():
                 logger.debug("Cleanup skipped - database is locked (active scan in progress)")
             else:
                 logger.error(f"Error in cleanup: {e}")
-        except Exception as e:
-            logger.error(f"Error in cleanup: {e}")
 
 
 def run_retry_manager(db_path: str, navidrome_url: str | None = None, navidrome_token: str | None = None) -> Dict:

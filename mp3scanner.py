@@ -5,13 +5,13 @@ Matches files to Navidrome tracks in the database and stores absolute file paths
 """
 
 import os
-import sqlite3
 import logging
 from pathlib import Path
 from mutagen.flac import FLAC
 from mutagen.id3 import ID3
 from difflib import SequenceMatcher
 import json
+from helpers.db_utils import get_db_connection as get_postgres_connection
 
 # Setup logging
 logging.basicConfig(
@@ -27,11 +27,8 @@ MUSIC_ROOT = os.environ.get("MUSIC_ROOT", "/music")
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 
 def get_db_connection():
-    """Get database connection with WAL mode"""
-    conn = sqlite3.connect(DB_PATH, timeout=120.0)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.row_factory = sqlite3.Row
-    return conn
+    """Get PostgreSQL connection."""
+    return get_postgres_connection()
 
 def normalize_title(title):
     """Normalize title for comparison"""
@@ -380,22 +377,22 @@ def match_to_database(audio_files):
             # Update with all metadata fields
             cursor.execute("""
                 UPDATE tracks SET 
-                    file_path = ?, 
-                    duration = ?,
-                    track_number = ?,
-                    disc_number = ?,
-                    year = ?,
-                    album_artist = ?,
-                    bpm = ?,
-                    bitrate = ?,
-                    sample_rate = ?,
-                    isrc = ?,
-                    composer = ?,
-                    comment = ?,
-                    lyrics = ?,
-                    mbid = ?,
-                    writer = CASE WHEN writer IS NULL OR writer = '[]' THEN ? ELSE writer END
-                WHERE id = ?
+                    file_path = %s, 
+                    duration = %s,
+                    track_number = %s,
+                    disc_number = %s,
+                    year = %s,
+                    album_artist = %s,
+                    bpm = %s,
+                    bitrate = %s,
+                    sample_rate = %s,
+                    isrc = %s,
+                    composer = %s,
+                    comment = %s,
+                    lyrics = %s,
+                    mbid = %s,
+                    writer = CASE WHEN writer IS NULL OR writer = '[]' THEN %s ELSE writer END
+                WHERE id = %s
             """, (
                 file_path,
                 matched_metadata.get("duration"),

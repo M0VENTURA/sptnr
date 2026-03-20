@@ -25,7 +25,6 @@ YOUTUBE_ENABLED = False
 AUDIODB_ENABLED = False
 load_config = None
 import logging
-import sqlite3
 import time
 import json
 import re
@@ -363,7 +362,7 @@ def set_track_rating_for_all(track_id, stars):
     Behavior:
       - Uses NavidromeClient API helpers: build_artist_index(), fetch_artist_albums(), fetch_album_tracks()
       - For each track, writes a minimal `track_data` record via `save_to_db()`
-      - Uses INSERT OR REPLACE semantics (so re-running is safe and refreshes `last_scanned`)
+    - Uses UPSERT semantics (so re-running is safe and refreshes `last_scanned`)
     """
     
     def _safe_int(value):
@@ -506,7 +505,7 @@ def set_track_rating_for_all(track_id, stars):
                         cursor_check.execute("""
                             SELECT duration, track_number, year, bitrate 
                             FROM tracks 
-                            WHERE id = ?
+                            WHERE id = %s
                         """, (track_id,))
                         row = cursor_check.fetchone()
                         conn_check.close()
@@ -677,8 +676,13 @@ def update_artist_stats(artist_id, artist_name):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT OR REPLACE INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (artist_id) DO UPDATE SET
+            artist_name = EXCLUDED.artist_name,
+            album_count = EXCLUDED.album_count,
+            track_count = EXCLUDED.track_count,
+            last_updated = EXCLUDED.last_updated
     """, (artist_id, artist_name, album_count, track_count, datetime.now().strftime("%Y-%m-%dT%H:%M:%S")))
     conn.commit()
     conn.close()
@@ -723,7 +727,7 @@ def get_album_last_scanned_from_db(artist_name: str, album_name: str) -> str | N
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT MAX(last_scanned) FROM tracks WHERE artist = ? AND album = ?",
+            "SELECT MAX(last_scanned) FROM tracks WHERE artist = %s AND album = %s",
             (artist_name, album_name),
         )
         row = cursor.fetchone()
@@ -743,7 +747,7 @@ def get_album_track_count_in_db(artist_name: str, album_name: str) -> int:
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT COUNT(*) FROM tracks WHERE artist = ? AND album = ?",
+            "SELECT COUNT(*) FROM tracks WHERE artist = %s AND album = %s",
             (artist_name, album_name),
         )
         count = cursor.fetchone()[0] or 0
@@ -950,8 +954,13 @@ def run_scan(scan_type='full', verbose=False, force=False, dry_run=False):
             conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT OR REPLACE INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (artist_id) DO UPDATE SET
+                    artist_name = EXCLUDED.artist_name,
+                    album_count = EXCLUDED.album_count,
+                    track_count = EXCLUDED.track_count,
+                    last_updated = EXCLUDED.last_updated
             """, (artist_info['id'], name, album_count, track_count, datetime.now().strftime("%Y-%m-%dT%H:%M:%S")))
             conn.commit()
             conn.close()
@@ -1068,8 +1077,13 @@ def run_scan(scan_type='full', verbose=False, force=False, dry_run=False):
                 conn = get_db_connection()
                 cursor = conn.cursor()
                 cursor.execute("""
-                    INSERT OR REPLACE INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (artist_id) DO UPDATE SET
+                        artist_name = EXCLUDED.artist_name,
+                        album_count = EXCLUDED.album_count,
+                        track_count = EXCLUDED.track_count,
+                        last_updated = EXCLUDED.last_updated
                 """, (artist_info['id'], name, album_count, track_count, datetime.now().strftime("%Y-%m-%dT%H:%M:%S")))
                 conn.commit()
                 conn.close()
@@ -1314,8 +1328,8 @@ def enrich_genres_aggressively(artist_name: str, verbose: bool = False):
                 # Update all tracks for this artist with collected genres
                 genres_str = ", ".join(sorted(genres_collected))
                 cursor.execute("""
-                    UPDATE tracks SET genres = ?
-                    WHERE artist = ? AND (genres IS NULL OR genres = '')
+                    UPDATE tracks SET genres = %s
+                    WHERE artist = %s AND (genres IS NULL OR genres = '')
                 """, (genres_str, artist_name))
                 conn.commit()
                 conn.close()

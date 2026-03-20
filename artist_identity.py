@@ -36,9 +36,8 @@ All operations must follow this order to ensure:
 - Star ratings reflect real listener behaviour
 """
 
-import sqlite3
 import logging
-from typing import Dict, List, Tuple, Optional, Set
+from typing import Any, Dict, List, Tuple, Optional, Set
 from statistics import mean, stdev, median
 from dataclasses import dataclass
 
@@ -82,8 +81,9 @@ class ArtistIdentityResolver:
     4. Handle EPs separately (see PopularityCalculator)
     """
 
-    def __init__(self, conn: sqlite3.Connection):
+    def __init__(self, conn: Any):
         self.conn = conn
+        self.placeholder = "%s"
 
     def resolve_identity(
         self,
@@ -327,9 +327,10 @@ class PopularityCalculator:
     - Album-relative vs artist-level vs global popularity hierarchies
     """
 
-    def __init__(self, conn: sqlite3.Connection):
+    def __init__(self, conn: Any):
         self.conn = conn
         self.identity_resolver = ArtistIdentityResolver(conn)
+        self.placeholder = "%s"
 
     def get_popularity_context(
         self,
@@ -571,7 +572,7 @@ class PopularityCalculator:
 
 
 def apply_normalization_order(
-    conn: sqlite3.Connection,
+    conn: Any,
     tracks: List[Dict],
     batch_mode: bool = False
 ) -> List[Dict]:

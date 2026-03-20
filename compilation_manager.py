@@ -5,9 +5,9 @@ Imports featured artists from MP3 tags and creates compilation track listings pe
 """
 
 import os
-import sqlite3
 import json
 from pathlib import Path
+from helpers.db_utils import get_db_connection
 from helpers.metadata_reader import read_mp3_metadata, find_track_file
 
 
@@ -100,21 +100,17 @@ def import_featured_artists_for_track(artist, album, title, file_path=None, db_p
         is_compilation = len(compilation_artists) > 0
         
         # Update database
-        conn = sqlite3.connect(db_path, timeout=120.0)
+        conn = get_db_connection()
         cursor = conn.cursor()
-        
-        from app import _is_postgres_connection as app_is_postgres_connection
-        is_pg = bool(app_is_postgres_connection(conn))
-        placeholder = "%s" if is_pg else "?"
         
         cursor.execute(f"""
             UPDATE tracks 
             SET 
-                featured_artists = {placeholder},
-                performers = {placeholder},
-                is_compilation_track = {placeholder},
-                compilation_artists = {placeholder}
-            WHERE artist = {placeholder} AND album = {placeholder} AND title = {placeholder}
+                featured_artists = %s,
+                performers = %s,
+                is_compilation_track = %s,
+                compilation_artists = %s
+            WHERE artist = %s AND album = %s AND title = %s
         """, (
             json.dumps(featured_artists) if featured_artists else None,
             json.dumps(performers) if performers else None,
@@ -161,19 +157,15 @@ def import_featured_artists_for_album(artist, album, db_path="/database/sptnr.db
         dict: Status with counts
     """
     try:
-        conn = sqlite3.connect(db_path, timeout=120.0)
-        conn.row_factory = sqlite3.Row
+        conn = get_db_connection()
         cursor = conn.cursor()
         
         # Get all tracks for this album
-        from app import _is_postgres_connection as app_is_postgres_connection
-        is_pg = bool(app_is_postgres_connection(conn))
-        placeholder = "%s" if is_pg else "?"
         
         cursor.execute(f"""
             SELECT id, artist, album, title, file_path
             FROM tracks 
-            WHERE artist = {placeholder} AND album = {placeholder}
+            WHERE artist = %s AND album = %s
             ORDER BY track_number
         """, (artist, album))
         
@@ -225,8 +217,7 @@ def get_compilations_for_artist(artist, db_path="/database/sptnr.db"):
         list: List of compilation tracks
     """
     try:
-        conn = sqlite3.connect(db_path, timeout=120.0)
-        conn.row_factory = sqlite3.Row
+        conn = get_db_connection()
         cursor = conn.cursor()
         
         # Find tracks where this artist appears in compilation_artists (featured artist)
@@ -238,8 +229,8 @@ def get_compilations_for_artist(artist, db_path="/database/sptnr.db"):
                 score, stars, navidrome_rating
             FROM tracks 
             WHERE is_compilation_track = 1
-            AND compilation_artists LIKE ?
-            AND LOWER(artist) != LOWER(?)
+            AND compilation_artists LIKE %s
+            AND LOWER(artist) != LOWER(%s)
             ORDER BY album, track_number
         """, (f'%"{artist}"%', artist))
         
@@ -277,8 +268,7 @@ def get_main_tracks_for_artist(artist, db_path="/database/sptnr.db"):
         list: List of album tracks grouped by album
     """
     try:
-        conn = sqlite3.connect(db_path, timeout=120.0)
-        conn.row_factory = sqlite3.Row
+        conn = get_db_connection()
         cursor = conn.cursor()
         
         # Get all tracks where artist is the album artist
@@ -288,7 +278,7 @@ def get_main_tracks_for_artist(artist, db_path="/database/sptnr.db"):
                 featured_artists, compilation_artists,
                 score, stars, navidrome_rating
             FROM tracks 
-            WHERE LOWER(artist) = LOWER(?)
+            WHERE LOWER(artist) = LOWER(%s)
             ORDER BY album, track_number
         """, (artist,))
         

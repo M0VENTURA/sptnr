@@ -10,12 +10,12 @@ Fetches comprehensive metadata from Spotify API including:
 
 import json
 import logging
-import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional
 from api_clients.spotify import SpotifyClient
+from database_abstraction import is_postgres_connection
 from helpers.genre_detector import detect_special_tags, normalize_genres
 
 logger = logging.getLogger(__name__)
@@ -24,19 +24,16 @@ logger = logging.getLogger(__name__)
 class SpotifyMetadataFetcher:
     """Fetches and stores comprehensive Spotify metadata for tracks."""
     
-    def __init__(self, spotify_client: SpotifyClient, db_connection: sqlite3.Connection):
+    def __init__(self, spotify_client: SpotifyClient, db_connection: Any):
         """
         Initialize metadata fetcher.
         
         Args:
             spotify_client: Configured SpotifyClient instance
-            db_connection: SQLite database connection
+            db_connection: Database connection
         """
         self.client = spotify_client
         self.conn = db_connection
-        # Set busy timeout for better concurrent write handling (matching app.py timeout)
-        # This allows other processes (like tag updates) to wait for database locks
-        self.conn.execute("PRAGMA busy_timeout = 120000")  # 120 seconds (matches app.py)
     
     def fetch_and_store_track_metadata(
         self, 
@@ -236,8 +233,9 @@ class SpotifyMetadataFetcher:
             True if metadata should be refreshed
         """
         cursor = self.conn.cursor()
+        placeholder = "%s" if is_postgres_connection(self.conn) else "%s"
         cursor.execute(
-            "SELECT metadata_last_updated FROM tracks WHERE id = ?",
+            f"SELECT metadata_last_updated FROM tracks WHERE id = {placeholder}",
             (db_track_id,)
         )
         row = cursor.fetchone()
@@ -362,10 +360,11 @@ class SpotifyMetadataFetcher:
         }
         
         # Build SQL query
-        set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
+        placeholder = "%s" if is_postgres_connection(self.conn) else "%s"
+        set_clause = ", ".join([f"{k} = {placeholder}" for k in updates.keys()])
         values = list(updates.values()) + [db_track_id]
         
-        sql = f"UPDATE tracks SET {set_clause} WHERE id = ?"
+        sql = f"UPDATE tracks SET {set_clause} WHERE id = {placeholder}"
         
         # Retry logic for database locked errors
         max_retries = 3
@@ -379,8 +378,13 @@ class SpotifyMetadataFetcher:
                 self.conn.commit()
                 logger.debug(f"Stored metadata for track {db_track_id}")
                 return  # Success, exit function
-            except sqlite3.OperationalError as e:
-                if "database is locked" in str(e):
+            except Exception as e:
+                error_text = str(e).lower()
+                if (
+                    "database is locked" in error_text
+                    or "deadlock" in error_text
+                    or "could not serialize access" in error_text
+                ):
                     if attempt < max_retries - 1:
                         # Log retry attempt at debug level to reduce noise
                         logger.debug(f"Database locked while storing metadata for {db_track_id}, retrying ({attempt + 1}/{max_retries})...")
@@ -406,7 +410,7 @@ class SpotifyMetadataFetcher:
 def fetch_metadata_for_artist(
     artist_name: str,
     spotify_client: SpotifyClient,
-    db_connection: sqlite3.Connection,
+    db_connection: Any,
     force_refresh: bool = False
 ) -> int:
     """
@@ -428,7 +432,7 @@ def fetch_metadata_for_artist(
         SELECT id as db_track_id, spotify_id as spotify_track_id, 
                title as track_name, artist as artist_name, album as album_name
         FROM tracks
-        WHERE artist = ? AND spotify_id IS NOT NULL AND spotify_id != ''
+        WHERE artist = %s AND spotify_id IS NOT NULL AND spotify_id != ''
     """, (artist_name,))
     
     tracks = [dict(row) for row in cursor.fetchall()]
@@ -446,7 +450,7 @@ def fetch_metadata_for_artist(
 
 def fetch_metadata_for_all_tracks(
     spotify_client: SpotifyClient,
-    db_connection: sqlite3.Connection,
+    db_connection: Any,
     force_refresh: bool = False,
     artist_filter: Optional[str] = None
 ) -> int:
@@ -470,7 +474,7 @@ def fetch_metadata_for_all_tracks(
             SELECT id as db_track_id, spotify_id as spotify_track_id,
                    title as track_name, artist as artist_name, album as album_name
             FROM tracks
-            WHERE artist = ? AND spotify_id IS NOT NULL AND spotify_id != ''
+            WHERE artist = %s AND spotify_id IS NOT NULL AND spotify_id != ''
         """
         cursor.execute(sql, (artist_filter,))
     else:

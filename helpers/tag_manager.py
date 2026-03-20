@@ -92,8 +92,7 @@ def get_track_tags(track_id: str) -> Dict[str, Any]:
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         # Select editable fields
         fields = ", ".join(EDITABLE_FIELDS)
@@ -148,7 +147,7 @@ def get_album_tags(album: str, artist: str) -> Dict[str, Any]:
         # Get album-level fields (use first track as reference)
         fields = ", ".join(["COUNT(*) as track_count"] + list(ALBUM_LEVEL_FIELDS))
         cursor.execute(
-            f"SELECT {fields} FROM tracks WHERE album = ? AND artist = ? LIMIT 1",
+            f"SELECT {fields} FROM tracks WHERE album = %s AND artist = %s LIMIT 1",
             (album, artist)
         )
         result = cursor.fetchone()
@@ -202,7 +201,7 @@ def check_field_conflicts(album: str, artist: str) -> Dict[str, List[str]]:
         
         # Check album_artist vs albumartist
         cursor.execute(
-            "SELECT DISTINCT album_artist, albumartist FROM tracks WHERE album = ? AND artist = ? ",
+            "SELECT DISTINCT album_artist, albumartist FROM tracks WHERE album = %s AND artist = %s ",
             (album, artist)
         )
         results = cursor.fetchall()
@@ -224,7 +223,7 @@ def check_field_conflicts(album: str, artist: str) -> Dict[str, List[str]]:
         # Check other album-level fields for conflicts
         for field in ["label", "releasecountry", "releasetype"]:
             cursor.execute(
-                f"SELECT DISTINCT {field} FROM tracks WHERE album = ? AND artist = ? AND {field} IS NOT NULL AND {field} != ''",
+                f"SELECT DISTINCT {field} FROM tracks WHERE album = %s AND artist = %s AND {field} IS NOT NULL AND {field} != ''",
                 (album, artist)
             )
             distinct_values = [row[0] for row in cursor.fetchall()]
@@ -308,7 +307,6 @@ def update_album_tags(album: str, artist: str, tag_updates: Dict[str, Any], sele
         Number of tracks updated
     """
     import time
-    import sqlite3
     
     try:
         # Validate and clean updates
@@ -337,8 +335,7 @@ def update_album_tags(album: str, artist: str, tag_updates: Dict[str, Any], sele
         # Build UPDATE statement with DB-aware placeholders
         from database_abstraction import is_postgres_connection
         conn = get_db_connection()
-        is_pg = is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         set_clause = ", ".join([f"{field} = {placeholder}" for field in validated.keys()])
         query_values = list(validated.values()) + [album, artist]
@@ -357,8 +354,8 @@ def update_album_tags(album: str, artist: str, tag_updates: Dict[str, Any], sele
         retry_delay = 0.5  # Start with 500ms
         
         for attempt in range(max_retries):
-            conn = None
             try:
+                conn = get_db_connection()
                 cursor = conn.cursor()
                 cursor.execute(query, query_values)
                 updated_count = cursor.rowcount
@@ -368,8 +365,8 @@ def update_album_tags(album: str, artist: str, tag_updates: Dict[str, Any], sele
                 logger.info(f"Updated {updated_count} tracks in album {artist} - {album}")
                 return updated_count
                 
-            except sqlite3.OperationalError as e:
-                if "database is locked" in str(e):
+            except Exception as e:
+                if "database is locked" in str(e).lower():
                     if attempt < max_retries - 1:
                         logger.debug(f"Database locked while updating album tags, retrying ({attempt + 1}/{max_retries})...")
                         time.sleep(retry_delay)
@@ -380,9 +377,6 @@ def update_album_tags(album: str, artist: str, tag_updates: Dict[str, Any], sele
                 else:
                     logger.error(f"Database error updating album tags: {e}")
                     raise
-            except Exception as e:
-                logger.error(f"Failed to update album tags for {artist} - {album}: {e}")
-                raise
             finally:
                 if conn:
                     try:

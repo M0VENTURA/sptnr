@@ -11,7 +11,6 @@ Features:
 
 import os
 import logging
-import sqlite3
 import requests
 import time
 from typing import Dict, List, Tuple, Optional, Any
@@ -51,20 +50,12 @@ def _safe_int(value, default=None):
 
 
 def _get_table_columns(cursor, table_name: str, is_pg: bool) -> set:
-    if is_pg:
-        cursor.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = %s AND table_schema = current_schema()",
-            (table_name,),
-        )
-        return {str(_row_get(row, 'column_name', 0, '')) for row in cursor.fetchall() if _row_get(row, 'column_name', 0, '')}
-
-    cursor.execute(f"PRAGMA table_info({table_name})")
-    return {
-        str(_row_get(row, 'name', 1, ''))
-        for row in cursor.fetchall()
-        if _row_get(row, 'name', 1, '')
-    }
+    cursor.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = %s AND table_schema = current_schema()",
+        (table_name,),
+    )
+    return {str(_row_get(row, 'column_name', 0, '')) for row in cursor.fetchall() if _row_get(row, 'column_name', 0, '')}
 
 
 def _ensure_release_track_cache_columns(cursor, is_pg: bool) -> None:

@@ -13,10 +13,10 @@ The script:
 """
 
 import os
-import sqlite3
 import logging
 from collections import defaultdict
 from typing import List, Dict, Tuple
+from helpers.db_utils import get_db_connection as shared_get_db_connection
 
 # Import centralized logging
 try:
@@ -42,11 +42,8 @@ DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 
 
 def get_db_connection():
-    """Get database connection with WAL mode"""
-    conn = sqlite3.connect(DB_PATH, timeout=120.0)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.row_factory = sqlite3.Row
-    return conn
+    """Get the shared PostgreSQL database connection."""
+    return shared_get_db_connection()
 
 
 def find_duplicate_tracks(conn) -> Dict[Tuple[str, str, str], List[Dict]]:
@@ -222,7 +219,7 @@ def fix_duplicates(dry_run: bool = True) -> Dict[str, int]:
             if not dry_run:
                 # Delete duplicate tracks
                 for track_id in ids_to_delete:
-                    cursor.execute("DELETE FROM tracks WHERE id = ?", (track_id,))
+                    cursor.execute("DELETE FROM tracks WHERE id = %s", (track_id,))
                     log_debug(f"  Deleted track ID: {track_id}")
         
         stats['albums_affected'] = len(affected_albums)

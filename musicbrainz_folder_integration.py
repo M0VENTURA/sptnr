@@ -6,11 +6,11 @@ Integrates MusicBrainz releases into the existing folder-based monitoring system
 Displays releases as "green" folders with progress tracking and file discovery.
 """
 
-import sqlite3
 import os
 import logging
 from pathlib import Path
 from datetime import datetime
+from helpers.db_utils import get_db_connection
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -164,32 +164,31 @@ def retry_matching_for_release(release_id):
     Returns:
         dict with results of retry attempt
     """
-    conn = sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)
+    conn = get_db_connection()
     cursor = conn.cursor()
     
     try:
-        from app import _is_postgres_connection as app_is_postgres_connection
-        is_pg = bool(app_is_postgres_connection(conn))
-        placeholder = "%s" if is_pg else "?"
-        
         # Get release info
         cursor.execute(f"""
             SELECT id, monitoring_folder_path, total_tracks, discovered_count
             FROM musicbrainz_releases
-            WHERE release_id = {placeholder}
+            WHERE release_id = %s
         """, (release_id,))
         
         release_row = cursor.fetchone()
         if not release_row:
             return {"error": "Release not found"}
         
-        release_db_id, monitor_folder, total_tracks, discovered_count = release_row
+        release_db_id = release_row['id'] if hasattr(release_row, 'get') else release_row[0]
+        monitor_folder = release_row['monitoring_folder_path'] if hasattr(release_row, 'get') else release_row[1]
+        total_tracks = release_row['total_tracks'] if hasattr(release_row, 'get') else release_row[2]
+        discovered_count = release_row['discovered_count'] if hasattr(release_row, 'get') else release_row[3]
         
         # Get all unmatched tracks for this release
         cursor.execute(f"""
             SELECT track_number, track_title, track_artist
             FROM musicbrainz_release_tracks
-            WHERE release_id = {placeholder} AND status != 'discovered' AND status != 'finalized'
+            WHERE release_id = %s AND status != 'discovered' AND status != 'finalized'
         """, (release_id,))
         
         unmatched_tracks = cursor.fetchall()
@@ -205,9 +204,9 @@ def retry_matching_for_release(release_id):
             "discovered_count": discovered_count,
             "unmatched_tracks": [
                 {
-                    "track_number": row[0],
-                    "title": row[1],
-                    "artist": row[2]
+                    "track_number": row['track_number'] if hasattr(row, 'get') else row[0],
+                    "title": row['track_title'] if hasattr(row, 'get') else row[1],
+                    "artist": row['track_artist'] if hasattr(row, 'get') else row[2]
                 }
                 for row in unmatched_tracks
             ],
@@ -231,36 +230,33 @@ def cancel_folder_downloads(folder_path):
     Returns:
         dict with cancellation results
     """
-    conn = sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)
+    conn = get_db_connection()
     cursor = conn.cursor()
     
     try:
-        from app import _is_postgres_connection as app_is_postgres_connection
-        is_pg = bool(app_is_postgres_connection(conn))
-        placeholder = "%s" if is_pg else "?"
-        
         # Check if this is a MusicBrainz release folder
         cursor.execute(f"""
             SELECT id, release_id FROM musicbrainz_releases
-            WHERE monitoring_folder_path = {placeholder}
+            WHERE monitoring_folder_path = %s
         """, (folder_path,))
         
         mb_result = cursor.fetchone()
         
         if mb_result:
-            release_db_id, release_id = mb_result
+            release_db_id = mb_result['id'] if hasattr(mb_result, 'get') else mb_result[0]
+            release_id = mb_result['release_id'] if hasattr(mb_result, 'get') else mb_result[1]
             
             # Remove from queue
             cursor.execute(f"""
                 DELETE FROM download_queue
-                WHERE mb_release_download_id = {placeholder}
+                WHERE mb_release_download_id = %s
             """, (release_db_id,))
             
             # Mark release as cancelled
             cursor.execute(f"""
                 UPDATE musicbrainz_releases
                 SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
-                WHERE id = {placeholder}
+                WHERE id = %s
             """, (release_db_id,))
             
             conn.commit()

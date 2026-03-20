@@ -8,27 +8,24 @@ Run this migration to enable:
 - Auto-merging duplicate folders matching the same album
 - Highlighting matched vs missing tracks in UI
 """
-
-import sqlite3
 import logging
 from pathlib import Path
 
+from app import get_db
+
 logger = logging.getLogger(__name__)
-
-DB_PATH = Path(__file__).parent.parent / "sptnr.db"
-
 
 def run_migration():
     """Create folder tracking tables if they don't exist."""
     try:
-        conn = sqlite3.connect(str(DB_PATH), timeout=120.0)
+        conn = get_db()
         cursor = conn.cursor()
         
         # Table: folder_album_matches
         # Tracks which download folders have been matched to specific albums
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS folder_album_matches (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id BIGSERIAL PRIMARY KEY,
                 folder_path TEXT UNIQUE NOT NULL,
                 mb_release_id TEXT NOT NULL,
                 mb_source TEXT NOT NULL DEFAULT 'musicbrainz',
@@ -47,7 +44,7 @@ def run_migration():
         # Tracks individual files and their relationship to queue items and final destinations
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS folder_track_matches (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id BIGSERIAL PRIMARY KEY,
                 folder_match_id INTEGER NOT NULL,
                 file_path TEXT NOT NULL,
                 organized_path TEXT,

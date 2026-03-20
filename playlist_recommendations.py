@@ -10,10 +10,9 @@ This module creates smart playlists based on:
 
 import logging
 import json
-import sqlite3
 from collections import defaultdict
 from datetime import datetime
-from typing import List, Dict, Tuple
+from typing import Any, List, Dict, Tuple
 from api_clients.lastfm import LastFmClient
 from api_clients.audiodb_and_listenbrainz import ListenBrainzUserClient
 
@@ -23,15 +22,15 @@ logger = logging.getLogger(__name__)
 class PlaylistRecommender:
     """Generate recommended playlists from Last.fm and ListenBrainz data."""
     
-    def __init__(self, lastfm_client: LastFmClient = None, listenbrainz_client: ListenBrainzUserClient = None, 
-                 db_connection = None):
+    def __init__(self, lastfm_client: LastFmClient = None, listenbrainz_client: ListenBrainzUserClient = None,
+                 db_connection: Any = None):
         """
         Initialize playlist recommender.
         
         Args:
             lastfm_client: Configured LastFmClient instance
             listenbrainz_client: Configured ListenBrainzUserClient instance
-            db_connection: SQLite database connection
+            db_connection: Database connection or callable returning one
         """
         self.lastfm = lastfm_client
         self.listenbrainz = listenbrainz_client
@@ -290,7 +289,7 @@ class PlaylistRecommender:
             conn = self.db if not callable(self.db) else self.db()
             cursor = conn.cursor()
             
-            placeholders = ",".join("?" * len(artists))
+            placeholders = ",".join(["%s"] * len(artists))
             cursor.execute(f"""
                 SELECT COUNT(*) FROM tracks
                 WHERE LOWER(artist) IN ({placeholders})
@@ -315,7 +314,7 @@ class PlaylistRecommender:
             conn = self.db if not callable(self.db) else self.db()
             cursor = conn.cursor()
             
-            placeholders = ",".join("?" * len(artists))
+            placeholders = ",".join(["%s"] * len(artists))
             cursor.execute(f"""
                 SELECT id FROM tracks
                 WHERE LOWER(artist) IN ({placeholders})
@@ -343,7 +342,7 @@ class PlaylistRecommender:
             
             cursor.execute("""
                 SELECT id FROM tracks
-                WHERE genre_display = ?
+                WHERE genre_display = %s
                 LIMIT 200
             """, (genre,))
             
@@ -368,7 +367,7 @@ class PlaylistRecommender:
             
             cursor.execute("""
                 SELECT id FROM tracks
-                WHERE stars BETWEEN ? AND ?
+                WHERE stars BETWEEN %s AND %s
                 LIMIT 500
             """, (min_rating, max_rating))
             
