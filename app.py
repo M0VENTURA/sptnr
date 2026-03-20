@@ -23144,6 +23144,7 @@ def api_queue_send_to_download(queue_id):
     Change status from 'queried' to 'queued' to send to download processor
     Used for manually approving auto-queried tracks
     """
+    conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
@@ -23182,6 +23183,7 @@ def api_queue_send_to_download(queue_id):
         
         conn.commit()
         conn.close()
+        conn = None
         
         return jsonify({
             "success": True,
@@ -23191,7 +23193,18 @@ def api_queue_send_to_download(queue_id):
         
     except Exception as e:
         logging.error(f"Error sending queue item to download: {e}")
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @app.route("/api/queue/<int:queue_id>/apply-mbid-match", methods=["POST"])
@@ -23207,20 +23220,10 @@ def api_queue_apply_mbid_match(queue_id):
         if not new_mbid:
             return jsonify({"error": "new_mbid is required"}), 400
 
+        # Keep the request fast: do not block on external metadata lookup before
+        # applying the selected MBID. Any enrichment happens asynchronously.
         release_year = None
         release_metadata = None
-        try:
-            from folder_matching_enhancements import get_musicbrainz_release_metadata
-
-            release_metadata = get_musicbrainz_release_metadata(new_mbid) or {}
-            release_year_raw = release_metadata.get('release_year')
-            release_year = str(release_year_raw).strip() if release_year_raw not in (None, '') else None
-            if not new_artist:
-                new_artist = (release_metadata.get('artist') or '').strip()
-            if not new_album:
-                new_album = (release_metadata.get('release_title') or '').strip()
-        except Exception as mb_err:
-            logging.debug(f"[QUEUE_MATCH] Could not preload release metadata for {new_mbid}: {mb_err}")
 
         conn = get_db()
         cursor = conn.cursor()
@@ -23362,6 +23365,10 @@ def api_queue_apply_mbid_match(queue_id):
         logging.error(traceback.format_exc())
         if conn is not None:
             try:
+                conn.rollback()
+            except Exception:
+                pass
+            try:
                 conn.close()
             except Exception:
                 pass
@@ -23398,20 +23405,11 @@ def api_queue_apply_mbid_match_batch():
         if not new_mbid:
             return jsonify({"error": "new_mbid is required"}), 400
 
+        # Keep the request fast: avoid blocking on external MusicBrainz calls.
+        # Queue rows are updated immediately; optional release expansion can run
+        # asynchronously when explicitly requested.
         release_year = None
         release_metadata = None
-        try:
-            from folder_matching_enhancements import get_musicbrainz_release_metadata
-
-            release_metadata = get_musicbrainz_release_metadata(new_mbid) or {}
-            release_year_raw = release_metadata.get('release_year')
-            release_year = str(release_year_raw).strip() if release_year_raw not in (None, '') else None
-            if not new_artist:
-                new_artist = (release_metadata.get('artist') or '').strip()
-            if not new_album:
-                new_album = (release_metadata.get('release_title') or '').strip()
-        except Exception as mb_err:
-            logging.debug(f"[QUEUE_MATCH_BATCH] Could not preload release metadata for {new_mbid}: {mb_err}")
 
         conn = get_db()
         cursor = conn.cursor()
@@ -23536,6 +23534,10 @@ def api_queue_apply_mbid_match_batch():
         logging.error(traceback.format_exc())
         if conn is not None:
             try:
+                conn.rollback()
+            except Exception:
+                pass
+            try:
                 conn.close()
             except Exception:
                 pass
@@ -23545,6 +23547,7 @@ def api_queue_apply_mbid_match_batch():
 @app.route("/api/queue/<int:queue_id>/reset-match", methods=["POST"])
 def api_queue_reset_match(queue_id):
     """Reset a queue item's current match so it can be rematched manually."""
+    conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
@@ -23581,6 +23584,7 @@ def api_queue_reset_match(queue_id):
         updated = cursor.rowcount > 0
         conn.commit()
         conn.close()
+        conn = None
 
         if not updated:
             return jsonify({"error": "Queue item not found"}), 404
@@ -23592,7 +23596,18 @@ def api_queue_reset_match(queue_id):
         })
     except Exception as e:
         logging.error(f"Error resetting queue match: {e}")
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @app.route("/api/queue/cleanup-invalid-mbids", methods=["POST"])
