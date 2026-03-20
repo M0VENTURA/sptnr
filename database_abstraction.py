@@ -1,38 +1,21 @@
-"""
-Database abstraction utilities for SQLite/PostgreSQL compatibility.
+"""Database abstraction utilities for PostgreSQL-only runtime."""
 
-Provides helper functions to handle syntax differences between SQLite and PostgreSQL,
-including conflict resolution and system table queries.
-"""
-
-import sqlite3
 from typing import Any, Dict, List, Optional, Union
 
 
 def normalize_parameter_marker(query: str, is_postgres: bool) -> str:
-    """
-    Convert parameter markers between SQLite (?) and PostgreSQL (%s).
-    
-    Args:
-        query: SQL query string
-        is_postgres: True if target is PostgreSQL
-    
-    Returns:
-        Query with normalized parameter markers
-    """
-    if is_postgres:
-        return query.replace('?', '%s')
-    return query
+    """Normalize parameter markers to PostgreSQL style (%s)."""
+    return query.replace('?', '%s')
 
 
-def insert_or_replace(table: str, data: Dict[str, Any], is_postgres: bool = False) -> tuple:
+def insert_or_replace(table: str, data: Dict[str, Any], is_postgres: bool = True) -> tuple:
     """
-    Generate INSERT OR REPLACE statement for the target database.
+    Generate PostgreSQL upsert statement for the target database.
     
     Args:
         table: Table name
         data: Dict of column:value pairs
-        is_postgres: True if target is PostgreSQL
+        is_postgres: Unused, retained for backward-compatible call sites
     
     Returns:
         Tuple of (query, values)
@@ -44,35 +27,27 @@ def insert_or_replace(table: str, data: Dict[str, Any], is_postgres: bool = Fals
     cols = list(data.keys())
     vals = list(data.values())
     
-    if is_postgres:
-        # PostgreSQL: INSERT ... ON CONFLICT DO UPDATE
-        cols_str = ', '.join(cols)
-        placeholders = ', '.join(['%s'] * len(cols))
-        update_str = ', '.join([f"{col} = EXCLUDED.{col}" for col in cols])
-        
-        # Assuming 'id' is primary key - adjust if needed
-        query = f"""
-            INSERT INTO {table} ({cols_str})
-            VALUES ({placeholders})
-            ON CONFLICT (id) DO UPDATE SET {update_str}
-        """
-    else:
-        # SQLite: INSERT OR REPLACE
-        cols_str = ', '.join(cols)
-        placeholders = ', '.join(['?'] * len(cols))
-        query = f"INSERT OR REPLACE INTO {table} ({cols_str}) VALUES ({placeholders})"
+    cols_str = ', '.join(cols)
+    placeholders = ', '.join(['%s'] * len(cols))
+    update_str = ', '.join([f"{col} = EXCLUDED.{col}" for col in cols])
+
+    query = f"""
+        INSERT INTO {table} ({cols_str})
+        VALUES ({placeholders})
+        ON CONFLICT (id) DO UPDATE SET {update_str}
+    """
     
     return query.strip(), vals
 
 
-def insert_or_ignore(table: str, data: Dict[str, Any], is_postgres: bool = False) -> tuple:
+def insert_or_ignore(table: str, data: Dict[str, Any], is_postgres: bool = True) -> tuple:
     """
-    Generate INSERT OR IGNORE statement for the target database.
+    Generate PostgreSQL INSERT ... ON CONFLICT DO NOTHING statement.
     
     Args:
         table: Table name
         data: Dict of column:value pairs
-        is_postgres: True if target is PostgreSQL
+        is_postgres: Unused, retained for backward-compatible call sites
     
     Returns:
         Tuple of (query, values)
@@ -80,25 +55,18 @@ def insert_or_ignore(table: str, data: Dict[str, Any], is_postgres: bool = False
     cols = list(data.keys())
     vals = list(data.values())
     
-    if is_postgres:
-        # PostgreSQL: INSERT ... ON CONFLICT DO NOTHING
-        cols_str = ', '.join(cols)
-        placeholders = ', '.join(['%s'] * len(cols))
-        query = f"""
-            INSERT INTO {table} ({cols_str})
-            VALUES ({placeholders})
-            ON CONFLICT DO NOTHING
-        """
-    else:
-        # SQLite: INSERT OR IGNORE
-        cols_str = ', '.join(cols)
-        placeholders = ', '.join(['?'] * len(cols))
-        query = f"INSERT OR IGNORE INTO {table} ({cols_str}) VALUES ({placeholders})"
+    cols_str = ', '.join(cols)
+    placeholders = ', '.join(['%s'] * len(cols))
+    query = f"""
+        INSERT INTO {table} ({cols_str})
+        VALUES ({placeholders})
+        ON CONFLICT DO NOTHING
+    """
     
     return query.strip(), vals
 
 
-def table_exists(cursor: Any, table_name: str, is_postgres: bool = False) -> bool:
+def table_exists(cursor: Any, table_name: str, is_postgres: bool = True) -> bool:
     """
     Check if a table exists in the database.
     
@@ -110,28 +78,19 @@ def table_exists(cursor: Any, table_name: str, is_postgres: bool = False) -> boo
     Returns:
         True if table exists, False otherwise
     """
-    if is_postgres:
-        # PostgreSQL: information_schema
-        cursor.execute("""
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables
-                WHERE table_schema = 'public' AND table_name = %s
-            )
-        """, (table_name,))
-        result = cursor.fetchone()
-        if isinstance(result, dict):
-            return result.get('exists', False)
-        return bool(result[0]) if result else False
-    else:
-        # SQLite: sqlite_master
-        cursor.execute("""
-            SELECT 1 FROM sqlite_master
-            WHERE type='table' AND name = ?
-        """, (table_name,))
-        return cursor.fetchone() is not None
+    cursor.execute("""
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = %s
+        )
+    """, (table_name,))
+    result = cursor.fetchone()
+    if isinstance(result, dict):
+        return result.get('exists', False)
+    return bool(result[0]) if result else False
 
 
-def list_tables(cursor: Any, is_postgres: bool = False) -> List[str]:
+def list_tables(cursor: Any, is_postgres: bool = True) -> List[str]:
     """
     List all tables in the database.
     
@@ -142,23 +101,15 @@ def list_tables(cursor: Any, is_postgres: bool = False) -> List[str]:
     Returns:
         List of table names
     """
-    if is_postgres:
-        # PostgreSQL: information_schema
-        cursor.execute("""
-            SELECT table_name FROM information_schema.tables
-            WHERE table_schema = 'public'
-        """)
-    else:
-        # SQLite: sqlite_master
-        cursor.execute("""
-            SELECT name FROM sqlite_master
-            WHERE type='table' AND name NOT LIKE 'sqlite_%'
-        """)
-    
+    cursor.execute("""
+        SELECT table_name FROM information_schema.tables
+        WHERE table_schema = 'public'
+    """)
+
     return [row[0] if isinstance(row, tuple) else row['table_name'] for row in cursor.fetchall()]
 
 
-def get_column_names(cursor: Any, table_name: str, is_postgres: bool = False) -> List[str]:
+def get_column_names(cursor: Any, table_name: str, is_postgres: bool = True) -> List[str]:
     """
     Get column names for a table.
     
@@ -170,21 +121,13 @@ def get_column_names(cursor: Any, table_name: str, is_postgres: bool = False) ->
     Returns:
         List of column names
     """
-    if is_postgres:
-        # PostgreSQL: information_schema
-        cursor.execute("""
-            SELECT column_name FROM information_schema.columns
-            WHERE table_schema = 'public' AND table_name = %s
-            ORDER BY ordinal_position
-        """, (table_name,))
-    else:
-        # SQLite: PRAGMA table_info
-        cursor.execute(f"PRAGMA table_info({table_name})")
-    
-    if is_postgres:
-        return [row[0] if isinstance(row, tuple) else row['column_name'] for row in cursor.fetchall()]
-    else:
-        return [row[1] if isinstance(row, tuple) else row['name'] for row in cursor.fetchall()]
+    cursor.execute("""
+        SELECT column_name FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = %s
+        ORDER BY ordinal_position
+    """, (table_name,))
+
+    return [row[0] if isinstance(row, tuple) else row['column_name'] for row in cursor.fetchall()]
 
 
 def is_postgres_connection(conn: Any) -> bool:
@@ -198,30 +141,20 @@ def is_postgres_connection(conn: Any) -> bool:
         True if PostgreSQL, False if SQLite
     """
     try:
-        # Check for psycopg2 connection
-        if hasattr(conn, 'isolation_level') and conn.__class__.__name__ == 'connection':
-            # psycopg2 connection
-            return True
-    except:
-        pass
-    
-    # Default to SQLite
-    return isinstance(conn, sqlite3.Connection) is False
+        return bool(hasattr(conn, 'cursor') and conn.__class__.__name__ == 'connection')
+    except Exception:
+        return False
 
 
 class DatabaseQuery:
-    """
-    Query executor that handles SQLite/PostgreSQL compatibility automatically.
-    
-    Automatically converts parameter markers (? to %s) and detects database type.
-    """
+    """PostgreSQL query executor with optional placeholder normalization."""
     
     def __init__(self, conn: Any):
         """
         Initialize query executor.
-        
+
         Args:
-            conn: SQLite or PostgreSQL connection object
+            conn: PostgreSQL connection object
         """
         self.conn = conn
         self.is_postgres = is_postgres_connection(conn)
@@ -239,9 +172,7 @@ class DatabaseQuery:
         """
         cursor = self.conn.cursor()
         
-        # Convert parameter markers if needed
-        if self.is_postgres:
-            query = normalize_parameter_marker(query, True)
+        query = normalize_parameter_marker(query, True)
         
         if params:
             cursor.execute(query, params)

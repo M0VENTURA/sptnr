@@ -647,22 +647,14 @@ def pre_import_sync_album_artists(artist_id: str = None) -> dict:
         # Batch insert new artists in a single transaction
         if new_artists_to_add:
             try:
-                from database_abstraction import is_postgres_connection
-                is_pg = is_postgres_connection(conn)
-                placeholder = "%s" if is_pg else "?"
+                placeholder = "%s"
                 
                 for artist_name in new_artists_to_add:
-                    if is_pg:
-                        cursor.execute(f"""
-                            INSERT INTO artists (id, name)
-                            VALUES ({placeholder}, {placeholder})
-                            ON CONFLICT DO NOTHING
-                        """, (artist_name.lower().replace(' ', '_'), artist_name))
-                    else:
-                        cursor.execute("""
-                            INSERT OR IGNORE INTO artists (id, name)
-                            VALUES (?, ?)
-                        """, (artist_name.lower().replace(' ', '_'), artist_name))
+                    cursor.execute(f"""
+                        INSERT INTO artists (id, name)
+                        VALUES ({placeholder}, {placeholder})
+                        ON CONFLICT DO NOTHING
+                    """, (artist_name.lower().replace(' ', '_'), artist_name))
                     logging.debug(f"Created artist record: {artist_name}")
                 
                 conn.commit()
@@ -738,8 +730,7 @@ def fetch_artist_metadata(artist_name: str, verbose: bool = False):
         
         # Check if artist metadata already exists
         conn = get_db_connection()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         cursor = conn.cursor()
         
         # Create artist_metadata table if it doesn't exist
@@ -885,25 +876,17 @@ def fetch_artist_metadata(artist_name: str, verbose: bool = False):
             cursor = conn.cursor()
             
             # Insert or update artist metadata
-            from database_abstraction import is_postgres_connection
-            is_pg = is_postgres_connection(conn)
-            placeholder = "%s" if is_pg else "?"
-            
-            if is_pg:
-                cursor.execute(f"""
-                    INSERT INTO artist_metadata (artist_name, biography, image_url, updated_at)
-                    VALUES ({placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
-                    ON CONFLICT (artist_name) DO UPDATE SET
-                        biography = EXCLUDED.biography,
-                        image_url = EXCLUDED.image_url,
-                        updated_at = CURRENT_TIMESTAMP
-                """, (artist_name, biography, artist_image_url))
-            else:
-                cursor.execute("""
-                    INSERT OR REPLACE INTO artist_metadata (artist_name, biography, image_url, updated_at)
-                    VALUES (?, ?, ?, ?)
-                """, (artist_name, biography, artist_image_url, datetime.now().isoformat()))
-            logging.debug(f"DB: INSERT OR REPLACE artist_metadata for {artist_name}")
+            placeholder = "%s"
+
+            cursor.execute(f"""
+                INSERT INTO artist_metadata (artist_name, biography, image_url, updated_at)
+                VALUES ({placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
+                ON CONFLICT (artist_name) DO UPDATE SET
+                    biography = EXCLUDED.biography,
+                    image_url = EXCLUDED.image_url,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (artist_name, biography, artist_image_url))
+            logging.debug(f"DB: Upserted artist_metadata for {artist_name}")
             
             conn.commit()
             conn.close()
@@ -917,26 +900,16 @@ def fetch_artist_metadata(artist_name: str, verbose: bool = False):
             cursor = conn.cursor()
             
             # Update or insert artist record
-            from database_abstraction import is_postgres_connection
-            is_pg = is_postgres_connection(conn)
-            placeholder = "%s" if is_pg else "?"
-            
-            if is_pg:
-                cursor.execute(f"""
-                    INSERT INTO artists (name)
-                    VALUES ({placeholder})
-                    ON CONFLICT (name) DO NOTHING
-                """, (artist_name,))
-                cursor.execute(f"""
-                    UPDATE artists SET country = {placeholder} WHERE name = {placeholder}
-                """, (artist_country, artist_name))
-            else:
-                cursor.execute("""
-                    INSERT OR IGNORE INTO artists (name) VALUES (?)
-                """, (artist_name,))
-                cursor.execute("""
-                    UPDATE artists SET country = ? WHERE name = ?
-                """, (artist_country, artist_name))
+            placeholder = "%s"
+
+            cursor.execute(f"""
+                INSERT INTO artists (name)
+                VALUES ({placeholder})
+                ON CONFLICT (name) DO NOTHING
+            """, (artist_name,))
+            cursor.execute(f"""
+                UPDATE artists SET country = {placeholder} WHERE name = {placeholder}
+            """, (artist_country, artist_name))
             
             # Update all tracks with this artist
             cursor.execute("""
@@ -1051,7 +1024,7 @@ def scan_library_to_db(verbose: bool = False, force: bool = False, pre_sync_arti
     Behavior:
       - Uses NavidromeClient API helpers: build_artist_index(), fetch_artist_albums(), fetch_album_tracks()
       - For each track, writes a minimal `track_data` record via `save_to_db()`
-      - Uses INSERT OR REPLACE semantics (so re-running is safe and refreshes `last_scanned`)
+    - Uses upsert semantics (so re-running is safe and refreshes `last_scanned`)
       - Supports auto-resume: If an interrupted scan is detected, resumes from last scanned artist
       - Optional pre-sync of all album artists: If pre_sync_artists=True, batch-creates missing album artists
         before the main import loop (significantly faster than creating per-item during main loop)

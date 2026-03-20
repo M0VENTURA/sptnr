@@ -5,7 +5,6 @@ Tracks individual album scans across different scan types (Navidrome, Popularity
 """
 
 import logging
-import sqlite3
 from datetime import datetime
 import os
 import time
@@ -67,37 +66,27 @@ def _db_target_description() -> str:
         pg_database = (os.environ.get("PG_DATABASE") or "sptnr").strip()
         return f"PostgreSQL {pg_host}:{pg_port}/{pg_database}"
 
-    return f"SQLite {DB_PATH}"
+    return "PostgreSQL (not configured)"
 
 
 def _placeholder(is_pg: bool) -> str:
-    return "%s" if is_pg else "?"
+    return "%s"
 
 
 def _table_exists(cursor, table_name: str, is_pg: bool) -> bool:
-    if is_pg:
-        cursor.execute(
-            """
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables
-                WHERE table_schema = current_schema() AND table_name = %s
-            )
-            """,
-            (table_name,)
-        )
-        row = cursor.fetchone()
-        if isinstance(row, dict):
-            return bool(row.get("exists"))
-        return bool(row[0]) if row else False
-
     cursor.execute(
         """
-        SELECT name FROM sqlite_master
-        WHERE type='table' AND name=?
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = current_schema() AND table_name = %s
+        )
         """,
         (table_name,)
     )
-    return cursor.fetchone() is not None
+    row = cursor.fetchone()
+    if isinstance(row, dict):
+        return bool(row.get("exists"))
+    return bool(row[0]) if row else False
 
 
 def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: int = 0, status: str = "completed", source: str = ""):
@@ -123,79 +112,57 @@ def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: in
             is_pg = _is_postgres_connection(conn)
             placeholder = _placeholder(is_pg)
             cursor = conn.cursor()
-
-            if not is_pg:
-                conn.execute("PRAGMA journal_mode=WAL")
-                conn.execute("PRAGMA busy_timeout=5000")  # 5 second busy timeout
             
             # Create table if it doesn't exist
-            if is_pg:
-                cursor.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS scan_history (
-                        id BIGSERIAL PRIMARY KEY,
-                        artist TEXT NOT NULL,
-                        album TEXT NOT NULL,
-                        scan_type TEXT NOT NULL,
-                        scan_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        tracks_processed INTEGER DEFAULT 0,
-                        status TEXT DEFAULT 'completed',
-                        source TEXT DEFAULT ''
-                    )
-                    """
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS scan_history (
+                    id BIGSERIAL PRIMARY KEY,
+                    artist TEXT NOT NULL,
+                    album TEXT NOT NULL,
+                    scan_type TEXT NOT NULL,
+                    scan_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    tracks_processed INTEGER DEFAULT 0,
+                    status TEXT DEFAULT 'completed',
+                    source TEXT DEFAULT ''
                 )
+                """
+            )
 
-                # Self-heal legacy PostgreSQL schemas where `id` exists but has no default
-                # (e.g., migrated table with BIGINT NOT NULL and no sequence default).
-                cursor.execute(
-                    """
-                    SELECT column_default
-                    FROM information_schema.columns
-                    WHERE table_schema = current_schema()
-                      AND table_name = 'scan_history'
-                      AND column_name = 'id'
-                    """
-                )
-                default_row = cursor.fetchone()
-                if isinstance(default_row, dict):
-                    id_default = default_row.get("column_default")
-                else:
-                    id_default = default_row[0] if default_row else None
-
-                if not id_default:
-                    cursor.execute("CREATE SEQUENCE IF NOT EXISTS scan_history_id_seq")
-                    cursor.execute("SELECT COALESCE(MAX(id), 0) AS max_id FROM scan_history")
-                    max_id_row = cursor.fetchone()
-                    if isinstance(max_id_row, dict):
-                        max_id = int(max_id_row.get("max_id") or 0)
-                    else:
-                        max_id = int(max_id_row[0] if max_id_row else 0)
-
-                    # Ensure sequence starts above current max id.
-                    cursor.execute("SELECT setval('scan_history_id_seq', %s, %s)", (max_id, max_id > 0))
-                    cursor.execute(
-                        """
-                        ALTER TABLE scan_history
-                        ALTER COLUMN id SET DEFAULT nextval('scan_history_id_seq')
-                        """
-                    )
-                    cursor.execute("ALTER SEQUENCE scan_history_id_seq OWNED BY scan_history.id")
-                    logging.info("scan_history.id default was missing; attached scan_history_id_seq")
+            # Self-heal legacy PostgreSQL schemas where `id` exists but has no default.
+            cursor.execute(
+                """
+                SELECT column_default
+                FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = 'scan_history'
+                  AND column_name = 'id'
+                """
+            )
+            default_row = cursor.fetchone()
+            if isinstance(default_row, dict):
+                id_default = default_row.get("column_default")
             else:
+                id_default = default_row[0] if default_row else None
+
+            if not id_default:
+                cursor.execute("CREATE SEQUENCE IF NOT EXISTS scan_history_id_seq")
+                cursor.execute("SELECT COALESCE(MAX(id), 0) AS max_id FROM scan_history")
+                max_id_row = cursor.fetchone()
+                if isinstance(max_id_row, dict):
+                    max_id = int(max_id_row.get("max_id") or 0)
+                else:
+                    max_id = int(max_id_row[0] if max_id_row else 0)
+
+                cursor.execute("SELECT setval('scan_history_id_seq', %s, %s)", (max_id, max_id > 0))
                 cursor.execute(
                     """
-                    CREATE TABLE IF NOT EXISTS scan_history (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        artist TEXT NOT NULL,
-                        album TEXT NOT NULL,
-                        scan_type TEXT NOT NULL,
-                        scan_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                        tracks_processed INTEGER DEFAULT 0,
-                        status TEXT DEFAULT 'completed',
-                        source TEXT DEFAULT ''
-                    )
+                    ALTER TABLE scan_history
+                    ALTER COLUMN id SET DEFAULT nextval('scan_history_id_seq')
                     """
                 )
+                cursor.execute("ALTER SEQUENCE scan_history_id_seq OWNED BY scan_history.id")
+                logging.info("scan_history.id default was missing; attached scan_history_id_seq")
             
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_scan_history_timestamp 
@@ -265,9 +232,6 @@ def was_album_scanned(artist: str, album: str, scan_type: str, days_threshold: i
         conn = get_db_connection()
         is_pg = _is_postgres_connection(conn)
         placeholder = _placeholder(is_pg)
-        if not is_pg:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=5000")  # 5 second busy timeout
         cursor = conn.cursor()
         
         # Check if scan_history table exists
@@ -280,26 +244,15 @@ def was_album_scanned(artist: str, album: str, scan_type: str, days_threshold: i
         # Using LIMIT 1 for efficiency - we only need to know if any record exists
         if days_threshold is not None:
             # Time-based check: only consider scans within the last N days
-            if is_pg:
-                cursor.execute(
-                    f"""
-                    SELECT 1 FROM scan_history
-                    WHERE artist = {placeholder} AND album = {placeholder} AND scan_type = {placeholder} AND status = 'completed'
-                    AND scan_timestamp > (CURRENT_TIMESTAMP - ({placeholder} || ' days')::interval)
-                    LIMIT 1
-                    """,
-                    (artist, album, scan_type, str(days_threshold))
-                )
-            else:
-                cursor.execute(
-                    """
-                    SELECT 1 FROM scan_history
-                    WHERE artist = ? AND album = ? AND scan_type = ? AND status = 'completed'
-                    AND datetime(scan_timestamp) > datetime('now', '-' || ? || ' days')
-                    LIMIT 1
-                    """,
-                    (artist, album, scan_type, days_threshold)
-                )
+            cursor.execute(
+                f"""
+                SELECT 1 FROM scan_history
+                WHERE artist = {placeholder} AND album = {placeholder} AND scan_type = {placeholder} AND status = 'completed'
+                AND scan_timestamp > (CURRENT_TIMESTAMP - ({placeholder} || ' days')::interval)
+                LIMIT 1
+                """,
+                (artist, album, scan_type, str(days_threshold))
+            )
         else:
             # Legacy behavior: check if ever scanned
             cursor.execute(
@@ -336,10 +289,6 @@ def get_recent_album_scans(limit: int = 10):
         conn = get_db_connection()
         is_pg = _is_postgres_connection(conn)
         placeholder = _placeholder(is_pg)
-        if not is_pg:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=5000")  # 5 second busy timeout
-            conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
         # Check if scan_history table exists
@@ -349,14 +298,9 @@ def get_recent_album_scans(limit: int = 10):
 
         # Self-heal: add source column if missing from older schema.
         try:
-            if is_pg:
-                cursor.execute(
-                    "ALTER TABLE scan_history ADD COLUMN IF NOT EXISTS source TEXT DEFAULT ''"
-                )
-            else:
-                cursor.execute(
-                    "ALTER TABLE scan_history ADD COLUMN source TEXT DEFAULT ''"
-                )
+            cursor.execute(
+                "ALTER TABLE scan_history ADD COLUMN IF NOT EXISTS source TEXT DEFAULT ''"
+            )
             conn.commit()
         except Exception:
             pass  # Column already exists
@@ -364,7 +308,7 @@ def get_recent_album_scans(limit: int = 10):
         # PostgreSQL puts NULLs FIRST on DESC by default; old rows
         # inserted before the explicit-timestamp fix (a5abcbb Mar 16)
         # have NULL scan_timestamp and float to the top, hiding newer entries.
-        order_clause = "NULLS LAST" if is_pg else ""
+        order_clause = "NULLS LAST"
         cursor.execute(
             f"""
             SELECT artist, album, scan_type, scan_timestamp, tracks_processed, status, source

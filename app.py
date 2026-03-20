@@ -26,7 +26,6 @@ ALL_ENV_VARS = [
 def get_all_env_vars():
     # Return a dict of all relevant env vars and their current values
     return {var: os.environ.get(var, "") for var in ALL_ENV_VARS}
-import sqlite3
 try:
     import psycopg2
     import psycopg2.extras
@@ -2030,20 +2029,13 @@ def _run_monday_listenbrainz_rss_sync():
                 logging.warning(f"[LB_RSS] Monday sync failed for {app_user}: {result.get('error')}")
                 continue
             now_iso = datetime.now().isoformat()
-            if _is_postgres_connection(conn):
-                cursor.execute("""
-                    INSERT INTO listenbrainz_playlist_scheduler_state (username, last_synced_week, last_synced_at)
-                    VALUES (%s, %s, %s)
-                    ON CONFLICT (username) DO UPDATE
-                    SET last_synced_week = EXCLUDED.last_synced_week,
-                        last_synced_at = EXCLUDED.last_synced_at""",
-                    (app_user, week_key, now_iso))
-            else:
-                cursor.execute("""
-                    INSERT OR REPLACE INTO listenbrainz_playlist_scheduler_state
-                    (username, last_synced_week, last_synced_at)
-                    VALUES (?, ?, ?)""",
-                    (app_user, week_key, now_iso))
+            cursor.execute("""
+                INSERT INTO listenbrainz_playlist_scheduler_state (username, last_synced_week, last_synced_at)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (username) DO UPDATE
+                SET last_synced_week = EXCLUDED.last_synced_week,
+                    last_synced_at = EXCLUDED.last_synced_at""",
+                (app_user, week_key, now_iso))
         conn.commit()
     finally:
         conn.close()
@@ -2096,18 +2088,11 @@ def _run_daily_5am_lb_rematch():
                     except Exception as exc:
                         logging.warning(f"[LB_REMATCH] M3U write failed for {key}: {exc}")
             now_iso = datetime.now().isoformat()
-            if _is_postgres_connection(conn):
-                cursor.execute("""
-                    INSERT INTO listenbrainz_playlist_scheduler_state (username, last_rematch_at)
-                    VALUES (%s, %s)
-                    ON CONFLICT (username) DO UPDATE SET last_rematch_at = EXCLUDED.last_rematch_at""",
-                    (app_user, now_iso))
-            else:
-                cursor.execute("""
-                    INSERT OR REPLACE INTO listenbrainz_playlist_scheduler_state
-                    (username, last_rematch_at)
-                    VALUES (?, ?)""",
-                    (app_user, now_iso))
+            cursor.execute("""
+                INSERT INTO listenbrainz_playlist_scheduler_state (username, last_rematch_at)
+                VALUES (%s, %s)
+                ON CONFLICT (username) DO UPDATE SET last_rematch_at = EXCLUDED.last_rematch_at""",
+                (app_user, now_iso))
         conn.commit()
     except Exception as exc:
         logging.error(f"[LB_REMATCH] Daily rematch error: {exc}", exc_info=True)
@@ -3606,13 +3591,13 @@ def get_placeholder(conn):
     Get the appropriate SQL placeholder for the active database connection.
     
     Returns:
-        str: '%s' for PostgreSQL, '?' for SQLite
+        str: '%s' for PostgreSQL
     
     Usage:
         placeholder = get_placeholder(conn)
         cursor.execute(f"SELECT * FROM table WHERE id = {placeholder}", (id_val,))
     """
-    return "%s" if _is_postgres_connection(conn) else "?"
+    return "%s"
 
 
 # Debug: Log database configuration on startup
@@ -3638,29 +3623,19 @@ if STARTUP_DIAGNOSTICS:
 
 def _table_exists(cursor, table_name, is_postgres=False):
     """Check whether a table exists in the current database."""
-    if is_postgres:
-        cursor.execute(
-            """
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables
-                WHERE table_schema = 'public' AND table_name = %s
-            )
-            """,
-            (table_name,)
-        )
-        row = cursor.fetchone()
-        if isinstance(row, dict):
-            return bool(row.get('exists'))
-        return bool(row[0]) if row else False
-
     cursor.execute(
         """
-        SELECT name FROM sqlite_master
-        WHERE type='table' AND name=?
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = %s
+        )
         """,
         (table_name,)
     )
-    return cursor.fetchone() is not None
+    row = cursor.fetchone()
+    if isinstance(row, dict):
+        return bool(row.get('exists'))
+    return bool(row[0]) if row else False
 
 def _get_table_columns(cursor, table_name, is_postgres=False):
     """Return a set of column names for a table across SQLite/Postgres."""
@@ -12969,34 +12944,8 @@ def api_features_update():
 
 @app.route("/config/migrate_postgres", methods=["POST"])
 def config_migrate_postgres():
-    """Migrate all SQLite tables/data to PostgreSQL and persist PG connection settings."""
+    """Validate and persist PostgreSQL connection settings."""
     global PG_HOST, PG_PORT, PG_USER, PG_PASSWORD, PG_DATABASE
-
-    def _map_sqlite_type_to_pg(sqlite_type: str) -> str:
-        t = (sqlite_type or "").upper()
-        if "INT" in t:
-            return "BIGINT"
-        if any(x in t for x in ["REAL", "FLOA", "DOUB"]):
-            return "DOUBLE PRECISION"
-        if "BLOB" in t:
-            return "BYTEA"
-        if "BOOL" in t:
-            return "BOOLEAN"
-        if "TIMESTAMP" in t or "DATETIME" in t:
-            return "TIMESTAMP"
-        return "TEXT"
-
-    def _safe_artist_id_from_name(artist_name):
-        """Build a deterministic fallback artist_id for legacy rows with null artist_id."""
-        name = (artist_name or "").strip().lower()
-        if not name:
-            return None
-        # Keep IDs portable and deterministic without adding extra dependencies.
-        normalized = "".join(ch if ch.isalnum() else "_" for ch in name)
-        normalized = "_".join(part for part in normalized.split("_") if part)
-        if not normalized:
-            return None
-        return f"artist_{normalized[:96]}"
 
     try:
         if not _ensure_psycopg2_loaded() or psycopg2 is None or psql is None:
@@ -13011,59 +12960,11 @@ def config_migrate_postgres():
         pg_user = str(payload.get("pg_user", "")).strip()
         pg_password = str(payload.get("pg_password", ""))
         pg_database = str(payload.get("pg_database", "")).strip()
-        backup_sqlite_raw = payload.get("backup_sqlite", True)
-
-        if isinstance(backup_sqlite_raw, str):
-            backup_sqlite = backup_sqlite_raw.strip().lower() in ("1", "true", "yes", "on")
-        else:
-            backup_sqlite = bool(backup_sqlite_raw)
-
         if not pg_host or not pg_user or not pg_database:
             return jsonify({
                 "success": False,
                 "error": "pg_host, pg_user, and pg_database are required"
             }), 400
-
-        if not os.path.exists(DB_PATH):
-            return jsonify({"success": False, "error": f"SQLite database not found: {DB_PATH}"}), 400
-
-        backup_path = None
-        if backup_sqlite:
-            backup_dir = os.path.dirname(DB_PATH) or "."
-            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-            backup_filename = f"{os.path.basename(DB_PATH)}.pre_pg_migration_{timestamp}.bak"
-            backup_path = os.path.join(backup_dir, backup_filename)
-
-            try:
-                os.makedirs(backup_dir, exist_ok=True)
-                src_for_backup = sqlite3.connect(DB_PATH)
-                dest_for_backup = sqlite3.connect(backup_path)
-                try:
-                    src_for_backup.backup(dest_for_backup)
-                finally:
-                    try:
-                        dest_for_backup.close()
-                    except Exception:
-                        pass
-                    try:
-                        src_for_backup.close()
-                    except Exception:
-                        pass
-            except Exception as backup_error:
-                # Remove partial backup file if backup was interrupted.
-                try:
-                    if backup_path and os.path.exists(backup_path):
-                        os.remove(backup_path)
-                except Exception:
-                    pass
-                return jsonify({
-                    "success": False,
-                    "error": f"Failed to create SQLite backup before migration: {backup_error}"
-                }), 500
-
-        sqlite_conn = sqlite3.connect(DB_PATH)
-        sqlite_conn.row_factory = sqlite3.Row
-        sqlite_cur = sqlite_conn.cursor()
 
         pg_conn = psycopg2.connect(  # type: ignore[name-defined]
             host=pg_host,
@@ -13072,136 +12973,9 @@ def config_migrate_postgres():
             password=pg_password,
             dbname=pg_database,
         )
-        pg_conn.autocommit = False
-        pg_cur = pg_conn.cursor()
-
-        migrated_tables = 0
-        migrated_rows = 0
-        skipped_rows = 0
-
         try:
-            sqlite_cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
-            tables = [row[0] for row in sqlite_cur.fetchall()]
-
-            for table_name in tables:
-                sqlite_cur.execute(f"PRAGMA table_info({table_name})")
-                columns_info = sqlite_cur.fetchall()
-                if not columns_info:
-                    continue
-
-                column_names = []
-                column_defs = []
-                pk_columns = []
-
-                for col in columns_info:
-                    col_name = col[1]
-                    col_type = _map_sqlite_type_to_pg(col[2])
-                    not_null = bool(col[3])
-                    is_pk = bool(col[5])
-
-                    column_names.append(col_name)
-                    if is_pk:
-                        pk_columns.append(col_name)
-
-                    parts = [psql.Identifier(col_name).as_string(pg_conn), col_type]
-                    if not_null:
-                        parts.append("NOT NULL")
-                    column_defs.append(" ".join(parts))
-
-                if pk_columns:
-                    pk_list = ", ".join(psql.Identifier(c).as_string(pg_conn) for c in pk_columns)
-                    column_defs.append(f"PRIMARY KEY ({pk_list})")
-
-                create_stmt = (
-                    f"CREATE TABLE IF NOT EXISTS {psql.Identifier(table_name).as_string(pg_conn)} "
-                    f"({', '.join(column_defs)})"
-                )
-                pg_cur.execute(create_stmt)
-
-                # Make reruns deterministic for this target DB.
-                pg_cur.execute(psql.SQL("TRUNCATE TABLE {} RESTART IDENTITY CASCADE").format(psql.Identifier(table_name)))
-
-                # Identify boolean columns for type conversion
-                boolean_columns = set()
-                for col in columns_info:
-                    col_name = col[1]
-                    col_type = (col[2] or "").upper()
-                    if "BOOL" in col_type:
-                        boolean_columns.add(col_name)
-
-                required_columns = set(pk_columns)
-                for col in columns_info:
-                    col_name = col[1]
-                    not_null = bool(col[3])
-                    if not_null:
-                        required_columns.add(col_name)
-                
-                sqlite_cur.execute(f"SELECT * FROM {table_name}")
-                rows = sqlite_cur.fetchall()
-                if rows:
-                    insert_stmt = psql.SQL("INSERT INTO {} ({}) VALUES %s").format(
-                        psql.Identifier(table_name),
-                        psql.SQL(", ").join(psql.Identifier(c) for c in column_names),
-                    )
-                    
-                    # Convert SQLite integer booleans (0/1) to PostgreSQL booleans (True/False)
-                    def convert_row(row):
-                        converted = []
-                        for col_name in column_names:
-                            val = row[col_name]
-                            if col_name in boolean_columns and val is not None:
-                                # Convert SQLite integer boolean to Python bool
-                                converted.append(bool(val))
-                            else:
-                                converted.append(val)
-                        return tuple(converted)
-                    
-                    values = []
-                    for row in rows:
-                        row_dict = {c: row[c] for c in column_names}
-
-                        # Repair known legacy corruption in artist_stats where artist_id can be NULL.
-                        if table_name == "artist_stats" and (row_dict.get("artist_id") is None or str(row_dict.get("artist_id")).strip() == ""):
-                            repaired_artist_id = _safe_artist_id_from_name(row_dict.get("artist_name"))
-                            if repaired_artist_id:
-                                row_dict["artist_id"] = repaired_artist_id
-
-                        # Skip rows that still violate required key constraints.
-                        missing_required = False
-                        for required_col in required_columns:
-                            val = row_dict.get(required_col)
-                            if val is None:
-                                missing_required = True
-                                break
-                            if isinstance(val, str) and not val.strip():
-                                missing_required = True
-                                break
-
-                        if missing_required:
-                            skipped_rows += 1
-                            continue
-
-                        values.append(convert_row(row_dict))
-
-                    if not values:
-                        migrated_tables += 1
-                        continue
-
-                    psycopg2.extras.execute_values(pg_cur, insert_stmt.as_string(pg_conn), values, page_size=1000)  # type: ignore[name-defined]
-                    migrated_rows += len(values)
-
-                migrated_tables += 1
-
-            pg_conn.commit()
-
-        except Exception:
-            pg_conn.rollback()
-            raise
+            pg_conn.close()
         finally:
-            try:
-                sqlite_conn.close()
-            except Exception:
-                pass
             try:
                 pg_conn.close()
             except Exception:
@@ -13260,11 +13034,7 @@ def config_migrate_postgres():
 
         return jsonify({
             "success": True,
-            "tables_migrated": migrated_tables,
-            "rows_migrated": migrated_rows,
-            "rows_skipped": skipped_rows,
-            "backup_path": backup_path,
-            "message": "Migration complete",
+            "message": "PostgreSQL configuration saved",
             "requires_restart": True,
             "restart_delay_seconds": 2
         })
@@ -28668,20 +28438,13 @@ def api_listenbrainz_rss_sync():
             cur2 = conn2.cursor()
             now_iso = datetime.now().isoformat()
             week_key = f"{datetime.now().isocalendar().year}-W{datetime.now().isocalendar().week:02d}"
-            if _is_postgres_connection(conn2):
-                cur2.execute("""
-                    INSERT INTO listenbrainz_playlist_scheduler_state (username, last_synced_week, last_synced_at)
-                    VALUES (%s, %s, %s)
-                    ON CONFLICT (username) DO UPDATE
-                    SET last_synced_week = EXCLUDED.last_synced_week,
-                        last_synced_at = EXCLUDED.last_synced_at""",
-                    (app_username, week_key, now_iso))
-            else:
-                cur2.execute("""
-                    INSERT OR REPLACE INTO listenbrainz_playlist_scheduler_state
-                    (username, last_synced_week, last_synced_at)
-                    VALUES (?, ?, ?)""",
-                    (app_username, week_key, now_iso))
+            cur2.execute("""
+                INSERT INTO listenbrainz_playlist_scheduler_state (username, last_synced_week, last_synced_at)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (username) DO UPDATE
+                SET last_synced_week = EXCLUDED.last_synced_week,
+                    last_synced_at = EXCLUDED.last_synced_at""",
+                (app_username, week_key, now_iso))
             conn2.commit()
         finally:
             conn2.close()

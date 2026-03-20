@@ -1147,83 +1147,51 @@ def _add_queue_item_to_tracks_table(conn, cursor, is_pg, artist, title, album, a
         # Generate a deterministic queue placeholder ID only when no existing queued row is present.
         track_id = existing_track_id or f"queue_{queue_id}"
         
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
-        # Use UPSERT pattern to avoid duplicates
-        if is_pg:
-            cursor.execute(f"""
-                INSERT INTO tracks (
-                    id, artist, album, title, album_artist, track_number, year,
-                    duration, disc_number, mbid, suggested_mbid, file_path,
-                    score, spotify_score, lastfm_score, listenbrainz_score, age_score,
-                    stars, is_single, single_confidence, last_scanned
-                ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s,
-                    0, 0, 0, 0, 0,
-                    0, FALSE, 'unknown', CURRENT_TIMESTAMP
-                )
-                ON CONFLICT (id) DO UPDATE SET
-                    artist = EXCLUDED.artist,
-                    album = EXCLUDED.album,
-                    title = EXCLUDED.title,
-                    album_artist = EXCLUDED.album_artist,
-                    track_number = EXCLUDED.track_number,
-                    year = EXCLUDED.year,
-                    duration = EXCLUDED.duration,
-                    disc_number = EXCLUDED.disc_number,
-                    mbid = EXCLUDED.mbid,
-                    suggested_mbid = EXCLUDED.suggested_mbid,
-                    file_path = EXCLUDED.file_path,
-                    last_scanned = CURRENT_TIMESTAMP
-            """, (
-                track_id, artist, album, title, album_artist or artist, track_number, year,
-                duration, disc_number, recording_mbid, release_mbid, file_path_marker
-            ))
-        else:
-            cursor.execute(f"""
-                INSERT OR REPLACE INTO tracks (
-                    id, artist, album, title, album_artist, track_number, year,
-                    duration, disc_number, mbid, suggested_mbid, file_path,
-                    score, spotify_score, lastfm_score, listenbrainz_score, age_score,
-                    stars, is_single, single_confidence, last_scanned
-                ) VALUES (
-                    ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?,
-                    0, 0, 0, 0, 0,
-                    0, 0, 'unknown', datetime('now')
-                )
-            """, (
-                track_id, artist, album, title, album_artist or artist, track_number, year,
-                duration, disc_number, recording_mbid, release_mbid, file_path_marker
-            ))
+        cursor.execute(f"""
+            INSERT INTO tracks (
+                id, artist, album, title, album_artist, track_number, year,
+                duration, disc_number, mbid, suggested_mbid, file_path,
+                score, spotify_score, lastfm_score, listenbrainz_score, age_score,
+                stars, is_single, single_confidence, last_scanned
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s,
+                0, 0, 0, 0, 0,
+                0, FALSE, 'unknown', CURRENT_TIMESTAMP
+            )
+            ON CONFLICT (id) DO UPDATE SET
+                artist = EXCLUDED.artist,
+                album = EXCLUDED.album,
+                title = EXCLUDED.title,
+                album_artist = EXCLUDED.album_artist,
+                track_number = EXCLUDED.track_number,
+                year = EXCLUDED.year,
+                duration = EXCLUDED.duration,
+                disc_number = EXCLUDED.disc_number,
+                mbid = EXCLUDED.mbid,
+                suggested_mbid = EXCLUDED.suggested_mbid,
+                file_path = EXCLUDED.file_path,
+                last_scanned = CURRENT_TIMESTAMP
+        """, (
+            track_id, artist, album, title, album_artist or artist, track_number, year,
+            duration, disc_number, recording_mbid, release_mbid, file_path_marker
+        ))
 
         # Remove stale duplicate queued placeholders for the same track identity,
         # keeping the row we just inserted/updated.
-        if is_pg:
-            cursor.execute(
-                """
-                DELETE FROM tracks
-                WHERE LOWER(artist) = LOWER(%s)
-                  AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(%s, ''))
-                  AND LOWER(title) = LOWER(%s)
-                  AND file_path LIKE '__queued_for_download__%%'
-                  AND id <> %s
-                """,
-                (artist, album, title, track_id),
-            )
-        else:
-            cursor.execute(
-                """
-                DELETE FROM tracks
-                WHERE LOWER(artist) = LOWER(?)
-                  AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(?, ''))
-                  AND LOWER(title) = LOWER(?)
-                  AND file_path LIKE '__queued_for_download__%'
-                  AND id <> ?
-                """,
-                (artist, album, title, track_id),
-            )
+                cursor.execute(
+                        """
+                        DELETE FROM tracks
+                        WHERE LOWER(artist) = LOWER(%s)
+                            AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(%s, ''))
+                            AND LOWER(title) = LOWER(%s)
+                            AND file_path LIKE '__queued_for_download__%%'
+                            AND id <> %s
+                        """,
+                        (artist, album, title, track_id),
+                )
         
         conn.commit()
         logger.debug(f"Synced queue item {queue_id} to tracks table as {track_id}")

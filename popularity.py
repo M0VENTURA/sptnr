@@ -6,7 +6,6 @@ Note: Singles detection is handled separately by sptnr.py rate_artist() function
 """
 
 import os
-import sqlite3
 try:
     import psycopg2
     import psycopg2.extras
@@ -600,7 +599,7 @@ def detect_compilation_album(artist: str, album: str, tracks: list, album_artist
     return False
 
 
-def detect_greatest_hits_album(album: str, artist: str, conn: sqlite3.Connection, album_tracks: list = None) -> bool:
+def detect_greatest_hits_album(album: str, artist: str, conn: object, album_tracks: list = None) -> bool:
     """
     Detect if an album is a greatest hits compilation.
     
@@ -678,7 +677,7 @@ def detect_greatest_hits_album(album: str, artist: str, conn: sqlite3.Connection
     return False
 
 
-def detect_and_queue_missing_tracks(artist: str, album: str, album_tracks: list, release_group_mbid: str = None, conn: sqlite3.Connection = None):
+def detect_and_queue_missing_tracks(artist: str, album: str, album_tracks: list, release_group_mbid: str = None, conn: object = None):
     """
     Detect missing tracks from an album by comparing local tracks with MusicBrainz tracklist.
     Returns a count of missing tracks so UI/workflows can present them for manual action.
@@ -856,7 +855,7 @@ def detect_and_queue_missing_tracks(artist: str, album: str, album_tracks: list,
         return 0
 
 
-def should_skip_spotify_lookup(track_id: str, conn: sqlite3.Connection) -> bool:
+def should_skip_spotify_lookup(track_id: str, conn: object) -> bool:
     """
     Check if Spotify lookup should be skipped based on 24-hour cache.
     
@@ -914,13 +913,13 @@ def should_skip_spotify_lookup(track_id: str, conn: sqlite3.Connection) -> bool:
 
 def row_get(row, key, default=None):
     """
-    Get a value from a sqlite3.Row object with a default fallback.
+    Get a value from a DB row object with a default fallback.
     
-    sqlite3.Row objects don't have a .get() method like dictionaries,
+    Some row objects do not expose a .get() method like dictionaries,
     so this helper provides similar functionality.
     
     Args:
-        row: sqlite3.Row object
+        row: Row object
         key: Column name to retrieve
         default: Default value if key doesn't exist or value is None
         
@@ -979,7 +978,7 @@ def is_track_older_than_years(track_year: int = None, min_age_years: int = 2) ->
         return False
 
 
-def should_freeze_mature_track_popularity(track: sqlite3.Row, min_age_years: int = 2) -> bool:
+def should_freeze_mature_track_popularity(track: object, min_age_years: int = 2) -> bool:
     """
     Skip popularity refresh for mature releases that already have completed Last.fm data.
 
@@ -1006,7 +1005,7 @@ def get_mature_track_freeze_cutoff_years(config: dict = None, default_years: int
         return default_years
 
 
-def popularity_values_changed(track: sqlite3.Row, new_values: dict) -> bool:
+def popularity_values_changed(track: object, new_values: dict) -> bool:
     """Return True when any persisted popularity-related value differs from the current row."""
 
     def _normalize_number(value):
@@ -1051,14 +1050,14 @@ def popularity_values_changed(track: sqlite3.Row, new_values: dict) -> bool:
     return False
 
 
-def should_use_cached_score(track: sqlite3.Row, cache_field: str, last_lookup_field: str = 'last_spotify_lookup') -> bool:
+def should_use_cached_score(track: object, cache_field: str, last_lookup_field: str = 'last_spotify_lookup') -> bool:
     """
     Check if a cached API score should be reused instead of fetching from API.
     
     Uses age-based cache duration - older albums are cached longer.
     
     Args:
-        track: Track row (sqlite3.Row) with cached values
+        track: Track row with cached values
         cache_field: Name of the field containing cached score
         last_lookup_field: Name of the field containing last lookup timestamp
         
@@ -1097,7 +1096,7 @@ def should_use_cached_score(track: sqlite3.Row, cache_field: str, last_lookup_fi
         return False
 
 
-def calculate_artist_popularity_stats(artist_name: str, conn: sqlite3.Connection) -> dict:
+def calculate_artist_popularity_stats(artist_name: str, conn: object) -> dict:
     """
     Calculate artist-level popularity statistics from all albums.
     
@@ -1121,8 +1120,7 @@ def calculate_artist_popularity_stats(artist_name: str, conn: sqlite3.Connection
         - top_20_percentile: Popularity threshold for top 20% of artist's tracks
     """
     try:
-        is_pg = is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         cursor = conn.cursor()
         
         # Try to get album column if it exists, otherwise use empty string
@@ -1135,7 +1133,7 @@ def calculate_artist_popularity_stats(artist_name: str, conn: sqlite3.Connection
             """, (artist_name,))
             rows = cursor.fetchall()
             has_album_column = True
-        except sqlite3.OperationalError as e:
+        except Exception as e:
             # Fallback: album column doesn't exist (OperationalError: no such column: album)
             # Only handle the specific "no such column" error
             if "no such column" in str(e).lower():
@@ -1781,33 +1779,22 @@ if __name__ == "__main__":
         print("log_unified() test failed:", e)
 
 def get_db_connection():
-    """Get database connection (PostgreSQL if configured, else SQLite)."""
-    # Check if PostgreSQL is configured
-    if PG_HOST and PG_USER and PG_DATABASE:
-        # Connect to PostgreSQL
-        if psycopg2 is None:
-            raise RuntimeError("psycopg2 not available - install with: pip install psycopg2-binary")
-        try:
-            conn = psycopg2.connect(
-                host=PG_HOST,
-                port=PG_PORT,
-                user=PG_USER,
-                password=PG_PASSWORD,
-                dbname=PG_DATABASE,
-                cursor_factory=psycopg2.extras.RealDictCursor
-            )
-            return conn
-        except Exception as e:
-            log_debug(f"PostgreSQL connection failed, falling back to SQLite: {e}")
-    
-    # Fallback to SQLite
-    conn = sqlite3.connect(DB_PATH, timeout=120.0, isolation_level='DEFERRED')
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout = 120000")  # 120 seconds
-    conn.execute("PRAGMA synchronous = NORMAL")  # Reduces fsync calls, improves throughput with WAL
-    conn.execute("PRAGMA wal_autocheckpoint = 1000")  # More aggressive checkpointing
-    conn.row_factory = sqlite3.Row
-    return conn
+    """Get PostgreSQL connection only (SQLite is not supported)."""
+    if not (PG_HOST and PG_USER and PG_DATABASE):
+        raise RuntimeError(
+            "PostgreSQL is required. Configure PG_HOST, PG_USER, and PG_DATABASE."
+        )
+    if psycopg2 is None:
+        raise RuntimeError("psycopg2 not available - install with: pip install psycopg2-binary")
+
+    return psycopg2.connect(
+        host=PG_HOST,
+        port=PG_PORT,
+        user=PG_USER,
+        password=PG_PASSWORD,
+        dbname=PG_DATABASE,
+        cursor_factory=psycopg2.extras.RealDictCursor
+    )
 
 
 def _navidrome_scan_running() -> bool:
@@ -2059,22 +2046,14 @@ def fetch_album_art_url_from_musicbrainz(artist: str, album: str) -> str | None:
         conn = get_db_connection()
         db_query = DatabaseQuery(conn)
         
-        # Determine database placeholder syntax.
-        is_pg = is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
-        # Check for column existence (SQLite-specific, but needed for compatibility)
-        track_columns = set()
-        if not is_pg:
-            cursor = db_query.execute("PRAGMA table_info(tracks)")
-            track_columns = {row[1] for row in cursor.fetchall()}
-        else:
-            # For PostgreSQL, use information_schema
-            cursor = db_query.execute("""
-                SELECT column_name FROM information_schema.columns 
-                WHERE table_schema = 'public' AND table_name = 'tracks'
-            """)
-            track_columns = {row['column_name'] for row in cursor.fetchall()}
+        # For PostgreSQL, use information_schema.
+        cursor = db_query.execute("""
+            SELECT column_name FROM information_schema.columns 
+            WHERE table_schema = 'public' AND table_name = 'tracks'
+        """)
+        track_columns = {row['column_name'] for row in cursor.fetchall()}
 
         mb_album_column = "musicbrainz_album_mbid" if "musicbrainz_album_mbid" in track_columns else None
 
@@ -2218,29 +2197,18 @@ def download_and_save_album_art(artist: str, album: str, art_url: str, conn=None
         if cursor is None:
             cursor = conn.cursor()
         
-        # Determine database type for proper placeholder syntax
-        is_pg = is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
-        
-        if is_pg:
-            _ensure_album_art_pg_schema(conn, cursor)
-            cursor.execute("""
-                INSERT INTO album_art 
-                (artist_name, album_name, image_data, image_mime_type, source, downloaded_at)
-                VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-                ON CONFLICT (artist_name, album_name)
-                DO UPDATE SET
-                    image_data = EXCLUDED.image_data,
-                    image_mime_type = EXCLUDED.image_mime_type,
-                    source = EXCLUDED.source,
-                    downloaded_at = EXCLUDED.downloaded_at
-            """, (artist, album, image_data, "image/jpeg", source))
-        else:
-            cursor.execute("""
-                INSERT OR REPLACE INTO album_art 
-                (artist_name, album_name, image_data, image_mime_type, source, downloaded_at)
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            """, (artist, album, image_data, "image/jpeg", source))
+        _ensure_album_art_pg_schema(conn, cursor)
+        cursor.execute("""
+            INSERT INTO album_art 
+            (artist_name, album_name, image_data, image_mime_type, source, downloaded_at)
+            VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (artist_name, album_name)
+            DO UPDATE SET
+                image_data = EXCLUDED.image_data,
+                image_mime_type = EXCLUDED.image_mime_type,
+                source = EXCLUDED.source,
+                downloaded_at = EXCLUDED.downloaded_at
+        """, (artist, album, image_data, "image/jpeg", source))
         
         # Only commit if we created our own connection
         if own_connection:
@@ -2970,7 +2938,7 @@ def blend_top_10_thresholds(lastfm_threshold: int, lastfm_total: int, listenbrai
         return 0, "No data available"
 
 
-def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection, artist_mbid: str = None) -> dict:
+def get_artist_lastfm_context(artist_name: str, conn: object, artist_mbid: str = None) -> dict:
     """
     Pre-fetch Last.fm listener data for all tracks by an artist to enable dynamic weight adjustment.
     
@@ -3451,7 +3419,7 @@ def popularity_scan(
         cursor.execute(sql, sql_params)
 
         tracks_raw = cursor.fetchall()
-        # Convert sqlite3.Row objects to dictionaries to allow item assignment
+        # Convert row objects to dictionaries to allow item assignment
         tracks = [dict(row) for row in tracks_raw]
         log_info(f"Found {len(tracks)} tracks to scan for popularity")
         log_debug(f"Fetched {len(tracks)} tracks from database")
@@ -4269,11 +4237,19 @@ def popularity_scan(
                         
                         # Insert missing release
                         cursor.execute(f"""
-                            INSERT OR REPLACE INTO missing_releases 
+                            INSERT INTO missing_releases 
                             (artist, artist_mbid, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
                             VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
-                        """, (artist, artist_mbid, rg_id, rg_title, 
-                              rg.get("primary-type", ""), rg.get("first-release-date", ""), 
+                            ON CONFLICT (artist, release_id) DO UPDATE SET
+                                artist_mbid = EXCLUDED.artist_mbid,
+                                title = EXCLUDED.title,
+                                primary_type = EXCLUDED.primary_type,
+                                first_release_date = EXCLUDED.first_release_date,
+                                cover_art_url = EXCLUDED.cover_art_url,
+                                category = EXCLUDED.category,
+                                last_checked = EXCLUDED.last_checked
+                        """, (artist, artist_mbid, rg_id, rg_title,
+                              rg.get("primary-type", ""), rg.get("first-release-date", ""),
                               cover_art_url, category))
                         missing_count += 1
                     
@@ -5767,13 +5743,7 @@ def popularity_scan(
                                     track["lastfm_ratio"] = updated_values['lastfm_ratio']
                                     track["lastfm_track_playcount"] = updated_values['lastfm_track_playcount']
 
-                            # Periodic WAL checkpoint every 10 albums to ensure data persists (especially important on Windows)
-                            if not is_postgres_connection(conn) and (album_counter % 10 == 0):
-                                try:
-                                    conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
-                                    log_debug(f"WAL checkpoint performed after {album_counter} albums")
-                                except Exception:
-                                    pass  # Non-critical, full checkpoint will happen at end
+                            # PostgreSQL commits are sufficient for durability here.
                         except Exception as e:
                             # PostgreSQL may abort transaction if previous updates failed
                             log_debug(f"Error batch updating popularity scores: {e}")
@@ -7405,14 +7375,7 @@ def popularity_scan(
         log_debug("Committing final changes to database")
         conn.commit()
         
-        # Force WAL checkpoint to ensure data is written to main database file
-        # This is critical on Windows where WAL files may not auto-checkpoint properly
-        try:
-            if not is_postgres_connection(conn):
-                conn.execute("PRAGMA wal_checkpoint(FULL)")
-                log_debug("WAL checkpoint completed - all changes persisted to main database file")
-        except Exception as e:
-            log_debug(f"WAL checkpoint warning (non-critical): {e}")
+        # PostgreSQL commit above is sufficient; no manual checkpoint required.
 
         log_unified(f"Popularity Scan - Complete: {scanned_count} tracks updated, {skipped_count} albums skipped")
         log_info(f"Popularity scan completed: {scanned_count} tracks updated, {skipped_count} albums skipped (already scanned)")
@@ -7489,7 +7452,7 @@ def _create_nsp_file(playlist_name: str, playlist_data: dict) -> bool:
         return False
 
 
-def detect_covers_for_artist(artist_name: str, conn: sqlite3.Connection) -> int:
+def detect_covers_for_artist(artist_name: str, conn: object) -> int:
     """
     Detect cover songs for an artist by comparing composers.
     

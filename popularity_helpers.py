@@ -36,29 +36,22 @@ _TRACKS_COLUMN_CACHE: Dict[str, set[str]] = {}
 
 def _get_tracks_table_columns(cursor, is_pg: bool) -> set[str]:
     """Return cached set of columns currently present on the tracks table."""
-    cache_key = "postgres" if is_pg else "sqlite"
+    cache_key = "postgres"
     cached = _TRACKS_COLUMN_CACHE.get(cache_key)
     if cached:
         return cached
 
-    if is_pg:
-        cursor.execute(
-            """
-            SELECT column_name
-            FROM information_schema.columns
-            WHERE table_name = 'tracks' AND table_schema = 'public'
-            """
-        )
-        columns = {
-            (row.get("column_name") if hasattr(row, "get") else row[0])
-            for row in cursor.fetchall()
-        }
-    else:
-        cursor.execute("PRAGMA table_info(tracks)")
-        columns = {
-            (row[1] if isinstance(row, (tuple, list)) else row["name"])
-            for row in cursor.fetchall()
-        }
+    cursor.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_name = 'tracks' AND table_schema = 'public'
+        """
+    )
+    columns = {
+        (row.get("column_name") if hasattr(row, "get") else row[0])
+        for row in cursor.fetchall()
+    }
 
     _TRACKS_COLUMN_CACHE[cache_key] = columns
     return columns
@@ -1125,25 +1118,17 @@ def build_artist_index(verbose: bool = False):
         try:
             conn = get_db_connection()
             cursor = conn.cursor()
-            from database_abstraction import is_postgres_connection
-            is_pg = is_postgres_connection(conn)
-            placeholder = "%s" if is_pg else "?"
+            placeholder = "%s"
             
             for artist_name, info in artist_map_from_api.items():
                 artist_id = info.get("id")
-                if is_pg:
-                    cursor.execute(f"""
-                        INSERT INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
-                        VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
-                        ON CONFLICT (artist_id) DO UPDATE SET
-                            album_count = EXCLUDED.album_count,
-                            track_count = EXCLUDED.track_count
-                    """, (artist_id, artist_name, 0, 0, None))
-                else:
-                    cursor.execute("""
-                        INSERT OR REPLACE INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
-                        VALUES (?, ?, ?, ?, ?)
-                    """, (artist_id, artist_name, 0, 0, None))
+                cursor.execute(f"""
+                    INSERT INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
+                    VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
+                    ON CONFLICT (artist_id) DO UPDATE SET
+                        album_count = EXCLUDED.album_count,
+                        track_count = EXCLUDED.track_count
+                """, (artist_id, artist_name, 0, 0, None))
                 if verbose:
                     print(f"   📝 Added artist to index: {artist_name} (ID: {artist_id})")
                     logging.info(f"Added artist to index: {artist_name} (ID: {artist_id})")
