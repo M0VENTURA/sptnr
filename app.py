@@ -3886,21 +3886,74 @@ def artists():
     total_stats = cursor.fetchone()
     
     # Filter artists to show only those with at least one album or EP
-    # Use album_artist directly to list only album artists, not track artists
+    # Derive a canonical album artist per album before aggregating to artist level.
+    # This prevents bad per-track album_artist backfills from leaking track artists
+    # into the top-level artist browser, especially on Various Artists releases.
     try:
         cursor.execute("""
-            SELECT 
-                album_artist as display_name,
-                album_artist as link_artist,
-                COUNT(DISTINCT album) as album_count,
-                COUNT(*) as track_count,
-                COALESCE(SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END), 0) as five_star_count,
-                MAX(last_scanned) as last_updated
-            FROM tracks
-            WHERE album_artist IS NOT NULL 
-                AND TRIM(album_artist) != ''
-            GROUP BY album_artist
-            HAVING COUNT(DISTINCT album) > 0
+            WITH normalized_tracks AS (
+                SELECT
+                    COALESCE(
+                        NULLIF(TRIM(musicbrainz_album_mbid), ''),
+                        LOWER(TRIM(album)) || '|' || COALESCE(NULLIF(TRIM(CAST(year AS TEXT)), ''), '')
+                    ) AS album_key,
+                    album,
+                    CASE
+                        WHEN album_artist IS NOT NULL AND TRIM(album_artist) != '' THEN TRIM(album_artist)
+                        WHEN artist IS NOT NULL AND TRIM(artist) != '' THEN TRIM(artist)
+                        ELSE NULL
+                    END AS candidate_album_artist,
+                    last_scanned AS artist_last_updated,
+                    stars,
+                    CASE
+                        WHEN LOWER(TRIM(COALESCE(album_artist, ''))) IN (
+                            'various artists', 'various', 'v/a', 'va', 'compilation', 'soundtrack', 'original soundtrack'
+                        ) THEN 1
+                        ELSE 0
+                    END AS is_compilation_artist
+                FROM tracks
+                WHERE album IS NOT NULL
+                  AND TRIM(album) != ''
+            ),
+            ranked_album_artists AS (
+                SELECT
+                    album_key,
+                    candidate_album_artist,
+                    COUNT(*) AS matched_track_count,
+                    MAX(artist_last_updated) AS artist_last_updated,
+                    MAX(is_compilation_artist) AS is_compilation_artist,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY album_key
+                        ORDER BY
+                            MAX(is_compilation_artist) DESC,
+                            COUNT(*) DESC,
+                            candidate_album_artist ASC
+                    ) AS artist_rank
+                FROM normalized_tracks
+                WHERE candidate_album_artist IS NOT NULL
+                  AND candidate_album_artist != ''
+                GROUP BY album_key, candidate_album_artist
+            ),
+            canonical_albums AS (
+                SELECT
+                    album_key,
+                    candidate_album_artist AS canonical_album_artist,
+                    artist_last_updated
+                FROM ranked_album_artists
+                WHERE artist_rank = 1
+            )
+            SELECT
+                ca.canonical_album_artist AS display_name,
+                ca.canonical_album_artist AS link_artist,
+                COUNT(DISTINCT ca.album_key) AS album_count,
+                COUNT(nt.album_key) AS track_count,
+                COALESCE(SUM(CASE WHEN nt.stars = 5 THEN 1 ELSE 0 END), 0) AS five_star_count,
+                MAX(ca.artist_last_updated) AS last_updated
+            FROM canonical_albums ca
+            JOIN normalized_tracks nt
+              ON nt.album_key = ca.album_key
+            GROUP BY ca.canonical_album_artist
+            HAVING COUNT(DISTINCT ca.album_key) > 0
             ORDER BY display_name
         """)
         artists_data = [dict(row) for row in cursor.fetchall()]
