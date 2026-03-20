@@ -547,13 +547,20 @@ ensure_queue_mbid_columns()
 
 
 def _is_pg_startup_unavailable_error(error) -> bool:
-    """Return True for transient PostgreSQL startup/recovery availability errors."""
+    """Return True for transient PostgreSQL availability/connectivity errors."""
     message = str(error).lower()
     markers = (
         "the database system is starting up",
         "the database system is in recovery mode",
         "cannot connect now",
         "terminating connection due to administrator command",
+        "timeout expired",
+        "connection timed out",
+        "could not connect to server",
+        "connection refused",
+        "server closed the connection unexpectedly",
+        "startup backoff active",
+        "temporarily unavailable",
     )
     return any(marker in message for marker in markers)
 
@@ -3559,7 +3566,7 @@ def get_db():
 
                 _pg_startup_backoff_until = time.monotonic() + _PG_STARTUP_BACKOFF_SECONDS
                 raise RuntimeError(
-                    "PostgreSQL is starting up; temporary DB operations are deferred"
+                    "PostgreSQL is temporarily unavailable; temporary DB operations are deferred"
                 ) from e
             raise
 
