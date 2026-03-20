@@ -4805,6 +4805,12 @@ async function resetQueueMatch(queueId) {
   }
 }
 
+// Ensure inline onclick handlers can always resolve these queue-match actions.
+window.openQueueItemMatchModal = openQueueItemMatchModal;
+window.searchQueueItemMusicBrainzMatch = searchQueueItemMusicBrainzMatch;
+window.applyQueueItemMusicBrainzMatch = applyQueueItemMusicBrainzMatch;
+window.resetQueueMatch = resetQueueMatch;
+
 async function deleteQueueItem(queueId, deleteDownloadsFile = false) {
   const promptText = deleteDownloadsFile
     ? 'Delete this item from queue and remove its file from /downloads?'
