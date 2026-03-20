@@ -13,11 +13,11 @@ Features:
 
 import os
 import json
-import sqlite3
 import logging
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Tuple
 from pathlib import Path
+from helpers.db_utils import get_db_connection
 
 # Import centralized logging with fallback
 try:
@@ -231,7 +231,7 @@ def get_last_scanned_artist_from_db(db_path: str = "/database/sptnr.db") -> Opti
         Artist name or None
     """
     try:
-        conn = sqlite3.connect(db_path, timeout=120)
+        conn = get_db_connection()
         cursor = conn.cursor()
         
         # First, try to find an artist with an incomplete scan in scan_history

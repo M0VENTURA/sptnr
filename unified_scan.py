@@ -5,12 +5,12 @@ Processes artist-by-artist, then album-by-album in a sequential pipeline.
 """
 
 import os
-import sqlite3
 import logging
 import json
 import time
 from datetime import datetime
 from typing import Dict, Optional, Callable
+from helpers.db_utils import get_db_connection as get_pg_connection
 
 # Import centralized logging
 from helpers.logging_config import setup_logging, log_unified, log_info, log_debug
@@ -148,11 +148,8 @@ class ScanProgress:
 
 
 def get_db_connection():
-    """Get database connection with WAL mode"""
-    conn = sqlite3.connect(DB_PATH, timeout=120.0)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.row_factory = sqlite3.Row
-    return conn
+    """Get PostgreSQL database connection."""
+    return get_pg_connection()
 
 
 def unified_scan_pipeline(
@@ -204,15 +201,15 @@ def unified_scan_pipeline(
 
         if artist_filter:
             sql = """
-                SELECT DISTINCT artist FROM tracks WHERE artist = ?
-                ORDER BY artist COLLATE NOCASE
+                SELECT DISTINCT artist FROM tracks WHERE artist = %s
+                ORDER BY LOWER(artist)
             """
             log_verbose(f"Executing SQL: {sql.strip()} with artist_filter={artist_filter}")
             cursor.execute(sql, (artist_filter,))
         else:
             sql = """
                 SELECT DISTINCT artist FROM tracks
-                ORDER BY artist COLLATE NOCASE
+                ORDER BY LOWER(artist)
             """
             log_verbose(f"Executing SQL: {sql.strip()}")
             cursor.execute(sql)
@@ -225,7 +222,7 @@ def unified_scan_pipeline(
         sql = """
             SELECT COUNT(*) as count FROM tracks
             WHERE 1=1 {}
-        """.format("AND artist = ?" if artist_filter else "")
+        """.format("AND artist = %s" if artist_filter else "")
         log_verbose(f"Executing SQL: {sql.strip()} with artist_filter={artist_filter}")
         cursor.execute(sql, (artist_filter,) if artist_filter else ())
         progress.total_tracks = cursor.fetchone()['count']

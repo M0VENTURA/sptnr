@@ -19,7 +19,6 @@ import logging
 from datetime import datetime, timedelta
 from typing import Dict
 
-import sqlite3
 from helpers.db_utils import get_db_connection, _is_postgres_connection, is_postgres_configured
 
 # Configure logging
@@ -56,16 +55,14 @@ class DownloadRetryManager:
         }
 
     def _open_db(self):
-        """Open DB connection with strict fallback: SQLite only when Postgres is not configured."""
+        """Open PostgreSQL connection."""
         try:
             conn = get_db_connection()
             return conn, bool(_is_postgres_connection(conn))
         except Exception:
             if is_postgres_configured():
                 raise
-            conn = sqlite3.connect(self.db_path, timeout=120.0)
-            conn.row_factory = sqlite3.Row
-            return conn, False
+            raise RuntimeError("PostgreSQL is required for DownloadRetryManager")
 
     @staticmethod
     def _placeholder(is_pg: bool) -> str:
