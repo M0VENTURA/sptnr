@@ -6617,6 +6617,7 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
         result['error'] = "release_id or artist+album required"
         return result
 
+    conn = None
     try:
         conn = get_db()
         placeholder = "%s"
@@ -6880,6 +6881,9 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
                     """,
                     (final_dest, track['id'])
                 )
+                # Commit after each individual track move so the connection is not
+                # held idle-in-transaction for the entire multi-file album loop.
+                conn.commit()
                 result['moved'] += 1
                 logger.info(
                     f"[AUTO_MOVE] Moved {filename} → {final_dest} "
@@ -6887,9 +6891,12 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
                 )
             except Exception as move_err:
                 logger.error(f"[AUTO_MOVE] Failed to move {src}: {move_err}")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
                 result['skipped'] += 1
 
-        conn.commit()
         conn.close()
 
         if result['moved'] > 0:
@@ -6911,6 +6918,12 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
         logger.error(traceback.format_exc())
         result['error'] = str(e)
         return result
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 # ============================================================================
 # Individual File Copying Functions (NEW)
 # Handle copying individual files from downloads to music with MusicBrainz metadata

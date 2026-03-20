@@ -2134,6 +2134,24 @@ def _ensure_album_art_pg_schema(conn, cursor) -> None:
                 downloaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # Fix: if a legacy 'id' column exists with NOT NULL but no default,
+        # the INSERT (which never supplies an id) will always fail with a NOT NULL
+        # violation, aborting the shared scan transaction.  Drop the constraint so
+        # the column accepts NULL when not provided by callers.
+        cursor.execute("""
+            SELECT column_default, is_nullable
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = 'album_art'
+              AND column_name = 'id'
+        """)
+        _id_info = cursor.fetchone()
+        if _id_info is not None:
+            _col_default = (_id_info.get('column_default') if hasattr(_id_info, 'get') else _id_info[0])
+            _is_nullable = (_id_info.get('is_nullable') if hasattr(_id_info, 'get') else _id_info[1])
+            if not _col_default and _is_nullable == 'NO':
+                cursor.execute("ALTER TABLE album_art ALTER COLUMN id DROP NOT NULL")
+                log_debug("[ALBUM_ART] Dropped NOT NULL constraint from legacy id column")
         # Remove duplicate rows (keep the most recently inserted ctid) before
         # adding a unique index, so the CREATE INDEX does not fail on existing data.
         cursor.execute("""
