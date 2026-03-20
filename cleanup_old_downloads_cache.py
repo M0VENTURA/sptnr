@@ -4,43 +4,33 @@ Cleanup script to remove stale download_queue entries with old downloads paths.
 Run this after changing the downloads folder path to clear cached entries.
 """
 
-import sqlite3
 import os
 import logging
+from helpers.db_utils import get_db_connection
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
 
-def _is_postgres_connection(conn):
-    """Detect if connection is PostgreSQL."""
-    try:
-        import psycopg2
-        underlying = getattr(conn, "_conn", conn)
-        return isinstance(underlying, psycopg2.extensions.connection)
-    except (ImportError, AttributeError):
-        return False
-
 def cleanup_old_downloads_paths():
     """Remove download_queue entries that point to old /downloads path instead of /downloads/Music or non-existent files"""
-    
-    db_path = "sptnr.db"
-    if not os.path.exists(db_path):
-        logger.error(f"Database not found at {db_path}")
-        return
-    
+
     conn = None
     try:
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
+        conn = get_db_connection()
         cursor = conn.cursor()
-        
-        # Detect database type
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
-        
+
+        placeholder = "%s"
+
         # Check table exists
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='download_queue'")
-        if not cursor.fetchone():
+        cursor.execute("""
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = current_schema() AND table_name = 'download_queue'
+            ) AS exists
+        """)
+        exists_row = cursor.fetchone()
+        table_exists = exists_row.get("exists") if isinstance(exists_row, dict) else bool(exists_row[0])
+        if not table_exists:
             logger.error("download_queue table not found")
             return
         

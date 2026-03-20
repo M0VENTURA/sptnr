@@ -1,58 +1,60 @@
 #!/usr/bin/env python3
-"""
-Find which database contains Creed tracks.
-"""
+"""Probe PostgreSQL library data for Creed tracks."""
 
-import sqlite3
-import os
+import sys
 
-db_files = [
-    "app.db",
-    "database.db", 
-    "library.db",
-    "music.db",
-    "navidrome.db"
-]
+sys.path.insert(0, ".")
 
-found_creed = False
+from helpers.db_utils import get_db_connection
 
-for db_file in db_files:
-    if not os.path.exists(db_file):
-        continue
-    
+
+def main() -> int:
+    conn = None
     try:
-        conn = sqlite3.connect(db_file)
+        conn = get_db_connection()
         cursor = conn.cursor()
-        
-        # Check if tracks table exists
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tracks'")
-        if not cursor.fetchone():
-            print(f"❌ {db_file}: No 'tracks' table")
-            conn.close()
-            continue
-        
-        # Check for Creed tracks
-        cursor.execute("SELECT COUNT(*) FROM tracks WHERE LOWER(artist) LIKE '%creed%'")
-        count = cursor.fetchone()[0]
-        
-        if count > 0:
-            print(f"✅ {db_file}: Found {count} Creed tracks!")
-            found_creed = True
-            
-            # Get sample
-            cursor.execute("SELECT title, album FROM tracks WHERE LOWER(artist) LIKE '%creed%' LIMIT 5")
-            samples = cursor.fetchall()
-            for title, album in samples:
-                print(f"   - {title} ({album})")
-        else:
-            # Get total track count
-            cursor.execute("SELECT COUNT(*) FROM tracks")
-            total = cursor.fetchone()[0]
-            print(f"⚠️  {db_file}: No Creed tracks (total tracks: {total})")
-        
-        conn.close()
-    except Exception as e:
-        print(f"❌ {db_file}: Error - {e}")
 
-if not found_creed:
-    print("\n❌ No Creed tracks found in any database!")
+        cursor.execute("SELECT COUNT(*) AS count FROM tracks WHERE LOWER(artist) LIKE %s", ("%creed%",))
+        count_row = cursor.fetchone()
+        count = count_row.get("count") if isinstance(count_row, dict) else count_row[0]
+
+        if count and int(count) > 0:
+            print(f"Found {int(count)} Creed tracks in PostgreSQL.")
+            cursor.execute(
+                """
+                SELECT title, album
+                FROM tracks
+                WHERE LOWER(artist) LIKE %s
+                ORDER BY title
+                LIMIT 5
+                """,
+                ("%creed%",),
+            )
+            for row in cursor.fetchall():
+                if isinstance(row, dict):
+                    title = row.get("title")
+                    album = row.get("album")
+                else:
+                    title, album = row
+                print(f"  - {title} ({album})")
+            return 0
+
+        cursor.execute("SELECT COUNT(*) AS total FROM tracks")
+        total_row = cursor.fetchone()
+        total = total_row.get("total") if isinstance(total_row, dict) else total_row[0]
+        print(f"No Creed tracks found in PostgreSQL (total tracks: {int(total or 0)}).")
+        return 1
+
+    except Exception as exc:
+        print(f"Error checking PostgreSQL library: {exc}")
+        return 2
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,41 +1,33 @@
 #!/usr/bin/env python3
 import sys
 sys.path.insert(0, ".")
-import sqlite3
-from pathlib import Path
-
-# Try to find the database
-db_paths = [
-    "/database/sptnr.db",
-    "./database/sptnr.db",
-    str(Path.home() / "AppData/Local/sptnr/data/sptnr.db"),
-]
+from helpers.db_utils import get_db_connection
 
 conn = None
-for path in db_paths:
-    try:
-        if Path(path).exists():
-            conn = sqlite3.connect(path)
-            print(f"Connected to: {path}")
-            break
-    except Exception as e:
-        print(f"Failed to connect to {path}: {e}")
-
-if not conn:
-    print("Could not find database")
+try:
+    conn = get_db_connection()
+    print("Connected to PostgreSQL")
+except Exception as e:
+    print(f"Could not connect to PostgreSQL: {e}")
     sys.exit(1)
 
 try:
     cursor = conn.cursor()
     
     # Get the schema of download_queue table
-    cursor.execute("PRAGMA table_info(download_queue)")
+    cursor.execute("""
+        SELECT column_name, data_type
+        FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'download_queue'
+        ORDER BY ordinal_position
+    """)
     columns = cursor.fetchall()
     
     print("\ndownload_queue table columns:")
     col_names = []
     for row in columns:
-        cid, name, type_, notnull, default_val, pk = row
+        name = row.get("column_name") if isinstance(row, dict) else row[0]
+        type_ = row.get("data_type") if isinstance(row, dict) else row[1]
         col_names.append(name)
         print(f"  {name}: {type_}")
     
@@ -50,8 +42,12 @@ try:
     sample = cursor.fetchone()
     if sample:
         print("\nSample row structure:")
-        for col_name, value in zip(col_names, sample):
-            print(f"  {col_name}: {value}")
+        if isinstance(sample, dict):
+            for col_name in col_names:
+                print(f"  {col_name}: {sample.get(col_name)}")
+        else:
+            for col_name, value in zip(col_names, sample):
+                print(f"  {col_name}: {value}")
     
 finally:
     conn.close()
