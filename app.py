@@ -22597,7 +22597,12 @@ def api_queue_match_targets():
                     WHEN %s IS NOT NULL AND id = %s THEN 0
                     ELSE 1
                 END,
-                COALESCE(track_number, 9999),
+                CASE
+                    WHEN NULLIF(TRIM(COALESCE(track_number, '')), '') ~ '^\\d+$'
+                        THEN TRIM(track_number)::integer
+                    ELSE 9999
+                END,
+                COALESCE(NULLIF(TRIM(track_number), ''), '9999'),
                 id
             LIMIT 250
             """,
