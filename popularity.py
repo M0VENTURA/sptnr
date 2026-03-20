@@ -3080,7 +3080,7 @@ def get_artist_lastfm_context(artist_name: str, conn: object, artist_mbid: str =
         
         if not listeners_list or len(listeners_list) < 2:
             return {
-                'median': 0,
+                'mean': 0,
                 'stdev': 0,
                 'min': 0,
                 'max': 0,
@@ -3568,9 +3568,13 @@ def popularity_scan(
             # Pre-fetch artist's Last.fm context for dynamic weight adjustment
             # This allows us to boost Last.fm weight for tracks that are outliers in the artist's catalogue
             artist_lastfm_context = get_artist_lastfm_context(artist, conn, artist_mbid)
-            if artist_lastfm_context['track_count'] > 0:
-                log_info(f"Artist Last.fm context: {artist_lastfm_context['track_count']} tracks, mean={artist_lastfm_context['mean']:.0f} listeners, stdev={artist_lastfm_context['stdev']:.0f}")
-                log_debug(f"Artist catalogue range: {artist_lastfm_context['min']:.0f} - {artist_lastfm_context['max']:.0f} listeners")
+            if artist_lastfm_context.get('track_count', 0) > 0:
+                context_mean = float(artist_lastfm_context.get('mean', 0) or 0)
+                context_stdev = float(artist_lastfm_context.get('stdev', 0) or 0)
+                context_min = float(artist_lastfm_context.get('min', 0) or 0)
+                context_max = float(artist_lastfm_context.get('max', 0) or 0)
+                log_info(f"Artist Last.fm context: {artist_lastfm_context.get('track_count', 0)} tracks, mean={context_mean:.0f} listeners, stdev={context_stdev:.0f}")
+                log_debug(f"Artist catalogue range: {context_min:.0f} - {context_max:.0f} listeners")
             else:
                 log_debug(f"No Last.fm listener data available for artist {artist} - will use base weights")
             

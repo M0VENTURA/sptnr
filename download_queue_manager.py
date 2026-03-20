@@ -1181,17 +1181,17 @@ def _add_queue_item_to_tracks_table(conn, cursor, is_pg, artist, title, album, a
 
         # Remove stale duplicate queued placeholders for the same track identity,
         # keeping the row we just inserted/updated.
-                cursor.execute(
-                        """
-                        DELETE FROM tracks
-                        WHERE LOWER(artist) = LOWER(%s)
-                            AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(%s, ''))
-                            AND LOWER(title) = LOWER(%s)
-                            AND file_path LIKE '__queued_for_download__%%'
-                            AND id <> %s
-                        """,
-                        (artist, album, title, track_id),
-                )
+        cursor.execute(
+            """
+            DELETE FROM tracks
+            WHERE LOWER(artist) = LOWER(%s)
+                AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(%s, ''))
+                AND LOWER(title) = LOWER(%s)
+                AND file_path LIKE '__queued_for_download__%%'
+                AND id <> %s
+            """,
+            (artist, album, title, track_id),
+        )
         
         conn.commit()
         logger.debug(f"Synced queue item {queue_id} to tracks table as {track_id}")
