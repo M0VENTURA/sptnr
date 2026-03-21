@@ -1170,6 +1170,7 @@ def setup():
                 "source_discogs_confidence": "high",
                 "source_spotify_confidence": "medium",
                 "source_musicbrainz_confidence": "medium",
+                "source_musicbrainz_compilation_confidence": "medium",
                 "source_discogs_video_confidence": "medium",
                 "source_lastfm_confidence": "medium",
                 "source_radio_edit_confidence": "medium",
@@ -14190,6 +14191,16 @@ def scan_combined():
                     # Build artist index
                     artist_map = build_artist_index()
                     artists = list(artist_map.items())
+                    # Sort artists: numbers/symbols first (as '#'), then A-Z, empty names at end
+                    def _combined_scan_sort_key(item):
+                        name = item[0] if item[0] else ''
+                        if not name:
+                            return ('~', '')
+                        first_char = name[0].upper()
+                        if first_char in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ':
+                            return (first_char, name.lower())
+                        return ('#', name.lower())
+                    artists.sort(key=_combined_scan_sort_key)
                     total = len(artists)
                     
                     # Determine force rescan based on mode
