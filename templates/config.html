@@ -1214,32 +1214,36 @@ function buildConfigObject() {
       auto_popularity_scan: getChecked('watcher_auto_popularity', true),
       downloads_watcher_enabled: getChecked('watcher_downloads_enabled', true)
     },
-    features: {
-      retry_scheduler: {
-        interval_seconds: parseInt(getValue('retry_scheduler_interval', '60')) || 60,
-        auto_start: getChecked('retry_scheduler_enabled', true)
-      },
-      download_queue_cleanup_scheduler: {
-        enabled: getChecked('queue_cleanup_scheduler_enabled', true),
-        interval_minutes: parseInt(getValue('queue_cleanup_scheduler_interval_minutes', '60')) || 60
-      },
-      downloads_duplicate_cleanup: {
-        delete_duplicate_files: getChecked('downloads_delete_duplicate_files', true),
-        prune_empty_folders: getChecked('downloads_prune_empty_folders', true)
-      },
-      mature_track_min_age_years: parseInt(getValue('mature_track_min_age_years', '2')) || 2,
-      daily_musicbrainz_release_scan_enabled: getChecked('daily_musicbrainz_release_scan_enabled', true),
-      daily_musicbrainz_release_lookback_days: parseInt(getValue('daily_musicbrainz_release_lookback_days', '42')) || 42,
-      daily_musicbrainz_release_lookahead_days: parseInt(getValue('daily_musicbrainz_release_lookahead_days', '28')) || 28,
-      daily_musicbrainz_release_max_artists: parseInt(getValue('daily_musicbrainz_release_max_artists', '500')) || 500,
-      daily_musicbrainz_release_per_artist_limit: parseInt(getValue('daily_musicbrainz_release_per_artist_limit', '100')) || 100,
-      source_discogs_confidence: getValue('source_discogs_confidence', 'high'),
-      source_spotify_confidence: getValue('source_spotify_confidence', 'medium'),
-      source_musicbrainz_confidence: getValue('source_musicbrainz_confidence', 'medium'),
-      source_discogs_video_confidence: getValue('source_discogs_video_confidence', 'medium'),
-      source_lastfm_confidence: getValue('source_lastfm_confidence', 'medium'),
-      source_radio_edit_confidence: getValue('source_radio_edit_confidence', 'medium')
-    },
+    features: Object.assign(
+      {},
+      (window.currentConfig && window.currentConfig.features) ? window.currentConfig.features : {},
+      {
+        retry_scheduler: {
+          interval_seconds: parseInt(getValue('retry_scheduler_interval', '60')) || 60,
+          auto_start: getChecked('retry_scheduler_enabled', true)
+        },
+        download_queue_cleanup_scheduler: {
+          enabled: getChecked('queue_cleanup_scheduler_enabled', true),
+          interval_minutes: parseInt(getValue('queue_cleanup_scheduler_interval_minutes', '60')) || 60
+        },
+        downloads_duplicate_cleanup: {
+          delete_duplicate_files: getChecked('downloads_delete_duplicate_files', true),
+          prune_empty_folders: getChecked('downloads_prune_empty_folders', true)
+        },
+        mature_track_min_age_years: parseInt(getValue('mature_track_min_age_years', '2')) || 2,
+        daily_musicbrainz_release_scan_enabled: getChecked('daily_musicbrainz_release_scan_enabled', true),
+        daily_musicbrainz_release_lookback_days: parseInt(getValue('daily_musicbrainz_release_lookback_days', '42')) || 42,
+        daily_musicbrainz_release_lookahead_days: parseInt(getValue('daily_musicbrainz_release_lookahead_days', '28')) || 28,
+        daily_musicbrainz_release_max_artists: parseInt(getValue('daily_musicbrainz_release_max_artists', '500')) || 500,
+        daily_musicbrainz_release_per_artist_limit: parseInt(getValue('daily_musicbrainz_release_per_artist_limit', '100')) || 100,
+        source_discogs_confidence: getValue('source_discogs_confidence', 'high'),
+        source_spotify_confidence: getValue('source_spotify_confidence', 'medium'),
+        source_musicbrainz_confidence: getValue('source_musicbrainz_confidence', 'medium'),
+        source_discogs_video_confidence: getValue('source_discogs_video_confidence', 'medium'),
+        source_lastfm_confidence: getValue('source_lastfm_confidence', 'medium'),
+        source_radio_edit_confidence: getValue('source_radio_edit_confidence', 'medium')
+      }
+    ),
     single_detection: {
       zscore_medium_threshold: parseFloat(getValue('zscore_medium_threshold', '0.6')) || 0.6,
       zscore_high_threshold: parseFloat(getValue('zscore_high_threshold', '1.0')) || 1.0,
@@ -1692,25 +1696,26 @@ function renderFeaturesWeights(features, weights) {
 
 function saveFeaturesWeights() {
   // Start with the current config from buildConfigObject (all other sections)
+  // buildConfigObject already merges window.currentConfig.features so all feature flags are preserved
   const config = buildConfigObject();
   
-  // Features
-  const features = {};
+  // Override individual feature fields with the values from the dynamic features form
   document.querySelectorAll('.feature-field').forEach(input => {
     let key = input.name.replace('feature_', '');
     let val = input.value;
     if (input.tagName === 'SELECT') {
-      val = (val === 'true');
+      // Only convert to boolean for boolean-typed options; keep strings (e.g. confidence levels) as-is
+      if (val === 'true' || val === 'false') {
+        val = (val === 'true');
+      }
     } else if (window.currentConfig.features && Array.isArray(window.currentConfig.features[key])) {
       val = val.split(',').map(s => s.trim()).filter(Boolean);
     } else if (!isNaN(val) && val !== '') {
       val = Number(val);
     }
-    features[key] = val;
+    config.features[key] = val;
   });
   
-  // Merge into config (weights are no longer managed here)
-  config.features = features;
   if (window.currentConfig && window.currentConfig.weights) {
     config.weights = window.currentConfig.weights;
   }
