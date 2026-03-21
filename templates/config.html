@@ -686,6 +686,15 @@
               <small class="form-text text-muted">Community-driven metadata</small>
             </div>
             <div class="col-12 col-sm-6 col-lg-4">
+              <label class="form-label form-label-sm">MusicBrainz Compilation Confidence</label>
+              <select class="form-select form-select-sm" id="source_musicbrainz_compilation_confidence">
+                <option value="high" {% if config.get('features', {}).get('source_musicbrainz_compilation_confidence', 'medium') == 'high' %}selected{% endif %}>High</option>
+                <option value="medium" {% if config.get('features', {}).get('source_musicbrainz_compilation_confidence', 'medium') == 'medium' %}selected{% endif %}>Medium</option>
+                <option value="low" {% if config.get('features', {}).get('source_musicbrainz_compilation_confidence', 'medium') == 'low' %}selected{% endif %}>Low</option>
+              </select>
+              <small class="form-text text-muted">Track appears on Various Artists/compilation albums</small>
+            </div>
+            <div class="col-12 col-sm-6 col-lg-4">
               <label class="form-label form-label-sm">Discogs Video Confidence</label>
               <select class="form-select form-select-sm" id="source_discogs_video_confidence">
                 <option value="high" {% if config.get('features', {}).get('source_discogs_video_confidence', 'medium') == 'high' %}selected{% endif %}>High</option>
@@ -1239,6 +1248,7 @@ function buildConfigObject() {
         source_discogs_confidence: getValue('source_discogs_confidence', 'high'),
         source_spotify_confidence: getValue('source_spotify_confidence', 'medium'),
         source_musicbrainz_confidence: getValue('source_musicbrainz_confidence', 'medium'),
+        source_musicbrainz_compilation_confidence: getValue('source_musicbrainz_compilation_confidence', 'medium'),
         source_discogs_video_confidence: getValue('source_discogs_video_confidence', 'medium'),
         source_lastfm_confidence: getValue('source_lastfm_confidence', 'medium'),
         source_radio_edit_confidence: getValue('source_radio_edit_confidence', 'medium')
@@ -1603,12 +1613,14 @@ function renderFeaturesWeights(features, weights) {
       description: 'Configure the confidence level for each single detection source. When a source is set to HIGH, detection will stop searching once that source confirms a track is a single.',
       keys: [
         'source_discogs_confidence', 'source_spotify_confidence', 'source_musicbrainz_confidence',
-        'source_discogs_video_confidence', 'source_lastfm_confidence', 'source_radio_edit_confidence'
+        'source_musicbrainz_compilation_confidence', 'source_discogs_video_confidence',
+        'source_lastfm_confidence', 'source_radio_edit_confidence'
       ],
       explanations: {
         source_discogs_confidence: 'Confidence level for Discogs single detection. Default: high (stops search when confirmed). Set to "low" or "medium" to continue checking other sources.',
         source_spotify_confidence: 'Confidence level for Spotify single detection. Default: medium. Set to "high" to skip remaining sources when Spotify confirms.',
         source_musicbrainz_confidence: 'Confidence level for MusicBrainz single detection. Default: medium. Set to "high" to skip remaining sources when MusicBrainz confirms.',
+        source_musicbrainz_compilation_confidence: 'Confidence level for MusicBrainz compilation detection (track appears on Various Artists/compilation albums). Default: medium. Set to "low" to prevent compilation appearances from counting toward the 2-medium=high rule.',
         source_discogs_video_confidence: 'Confidence level for Discogs music video detection. Default: medium. Set to "high" to skip Last.fm/z-score when video confirms.',
         source_lastfm_confidence: 'Confidence level for Last.fm single detection. Default: medium. Set to "high" to skip z-score inference when Last.fm confirms.',
         source_radio_edit_confidence: 'Confidence level for Radio Edit detection from Spotify. Default: medium. Set to "high" to treat radio edits as high confidence singles.'

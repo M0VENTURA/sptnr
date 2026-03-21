@@ -2617,20 +2617,26 @@ def detect_single_for_track(
     # can resolve against the canonical song entry.
     lookup_title = normalize_title_for_lookup(title)
     
-    # Load discogs token from config if not provided
-    if discogs_token is None:
-        discogs_token = ""
-        try:
-            config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
-            with open(config_path, 'r') as f:
-                config = yaml.safe_load(f)
-            discogs_token = config.get("api_integrations", {}).get("discogs", {}).get("token", "")
-            if discogs_token:
-                if verbose:
-                    log_unified(f"   âœ“ Loaded Discogs token from config.yaml")
-        except Exception as e:
+    # Load discogs token and feature settings from config
+    mb_compilation_confidence = "medium"
+    _feature_config = {}
+    try:
+        config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+        with open(config_path, 'r') as f:
+            _cfg = yaml.safe_load(f)
+        if discogs_token is None:
+            discogs_token = _cfg.get("api_integrations", {}).get("discogs", {}).get("token", "")
+            if discogs_token and verbose:
+                log_unified(f"   ✔ Loaded Discogs token from config.yaml")
+        _feature_config = _cfg.get("features", {}) if isinstance(_cfg, dict) else {}
+    except Exception as e:
+        if discogs_token is None:
+            discogs_token = ""
             # Always log config loading errors, not just in verbose mode
-            log_unified(f"   âš  Could not load Discogs token from config at {config_path}: {e}")
+            log_unified(f"   ⚠  Could not load Discogs token from config at {config_path}: {e}")
+    _raw_mb_comp_conf = _feature_config.get("source_musicbrainz_compilation_confidence", "medium")
+    if isinstance(_raw_mb_comp_conf, str) and _raw_mb_comp_conf.lower() in ("high", "medium", "low"):
+        mb_compilation_confidence = _raw_mb_comp_conf.lower()
     
     # First check: Spotify single detection
     try:
@@ -2722,8 +2728,18 @@ def detect_single_for_track(
                     )
                     if on_compilations:
                         single_sources.append("musicbrainz_compilation")
-                        medium_confidence_sources.append("musicbrainz_compilation")
-                        log_info(f"   ✅ MusicBrainz: Track appears on multiple compilation albums: {title}")
+                        if mb_compilation_confidence == "high":
+                            log_info(f"   ✅ MusicBrainz: Track appears on multiple compilation albums (HIGH confidence): {title}")
+                            return {
+                                "sources": list(dict.fromkeys(single_sources)),
+                                "confidence": "high",
+                                "is_single": True
+                            }
+                        elif mb_compilation_confidence == "medium":
+                            medium_confidence_sources.append("musicbrainz_compilation")
+                            log_info(f"   ✅ MusicBrainz: Track appears on multiple compilation albums: {title}")
+                        else:
+                            log_info(f"   ✅ MusicBrainz: Track appears on multiple compilation albums (low confidence, not counting toward promotion): {title}")
                 except TimeoutError:
                     log_debug(f"   ⏱ MusicBrainz compilation check timed out for {title}")
                 except Exception as e:
