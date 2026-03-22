@@ -6899,7 +6899,60 @@ def popularity_scan(
                         #    lower the metadata bar — a high z-score with only 1 medium source
                         #    such as MusicBrainz or Last.fm is NOT enough for 5 stars)
                         # 3. z-score > 2: may qualify as popularity-only 5★ based on CURRENT run z-score (not persisted status)
-                        
+
+                        # Count evidence sources for star gating upfront so that both the
+                        # high-confidence re-validation below and the z-score gate can use them.
+                        # Do not count internal markers (e.g. iterative_zscore/version_count).
+                        medium_conf_eligible_sources = {
+                            "spotify",
+                            "spotify_album_type",
+                            "musicbrainz",
+                            "musicbrainz_video",
+                            "musicbrainz_compilation",
+                            "discogs",
+                            "discogs_video",
+                            "lastfm",
+                        }
+                        medium_conf_count = len([s for s in single_sources if s in medium_conf_eligible_sources]) if single_sources else 0
+
+                        # True high-confidence metadata sources that can override the
+                        # 2-medium requirement for 0<=z<1.
+                        # Discogs is intentionally the only high-confidence source.
+                        high_conf_eligible_sources = {
+                            "discogs",
+                        }
+                        high_conf_source_count = len([s for s in single_sources if s in high_conf_eligible_sources]) if single_sources else 0
+
+                        # Re-validate stored "high" confidence against current source evidence.
+                        # Prevents stale DB entries from granting an undeserved 5★ when
+                        # source-confidence rules have changed between scans.  The typical case
+                        # is musicbrainz_compilation: it was previously treated as HIGH confidence
+                        # on its own, but now requires 2 medium sources for promotion.  If the
+                        # cached/stored single_confidence="high" is no longer justified by the
+                        # persisted sources (needs either 1 true-high source or 2+ medium sources),
+                        # demote the track and apply the z-score gate so it must earn 5★ the
+                        # same way any other medium-confidence track would.
+                        if is_single and single_confidence == "high":
+                            if not (high_conf_source_count >= 1 or medium_conf_count >= 2):
+                                log_info(
+                                    f"Re-evaluating {title}: stored high confidence not supported by "
+                                    f"current source evidence ({single_sources}) — applying z-score gate"
+                                )
+                                log_debug(
+                                    f"Stale high confidence downgrade — track_id: {track_id}, "
+                                    f"medium_sources: {medium_conf_count}, high_sources: {high_conf_source_count}"
+                                )
+                                single_confidence = "medium"
+                                # Clear is_single so the elif below does not fire and the
+                                # track falls through to the z-score gate in the else branch.
+                                is_single = False
+                                # Queue a DB correction for both positive and negative z-score
+                                # cases.  The positive-z else branch also appends to this list,
+                                # but set() deduplication in the batch update handles that.
+                                single_downgrades.append(track_id)
+
+                        has_high_confidence = (single_confidence == "user" or high_conf_source_count >= 1)
+
                         # Always preserve explicit single confidence for 5★ assignment, even when
                         # a track is excluded from z-score stats (e.g., alternate takes/remasters).
                         if single_confidence == "user":
@@ -6915,29 +6968,6 @@ def popularity_scan(
                         # parenthesized/alternate variants. Exclusion is used only for
                         # statistics baselining, not for confidence gating.
                         else:
-                            # Count evidence sources for star gating.
-                            # Do not count internal markers (e.g. iterative_zscore/version_count).
-                            medium_conf_eligible_sources = {
-                                "spotify",
-                                "spotify_album_type",
-                                "musicbrainz",
-                                "musicbrainz_video",
-                                "musicbrainz_compilation",
-                                "discogs",
-                                "discogs_video",
-                                "lastfm",
-                            }
-                            medium_conf_count = len([s for s in single_sources if s in medium_conf_eligible_sources]) if single_sources else 0
-
-                            # True high-confidence metadata sources that can override the
-                            # 2-medium requirement for 0<=z<1.
-                            # Discogs is intentionally the only high-confidence source.
-                            high_conf_eligible_sources = {
-                                "discogs",
-                            }
-                            high_conf_source_count = len([s for s in single_sources if s in high_conf_eligible_sources]) if single_sources else 0
-                            has_high_confidence = (single_confidence == "user" or high_conf_source_count >= 1)
-                            
                             # Never trust persisted "popular" confidence for star assignment.
                             # It is historical and can become stale when popularity shifts between scans.
                             if single_confidence == "popular":
