@@ -281,7 +281,8 @@ def check_high_confidence_dynamic(
     discogs_video_confirmed: bool,
     lastfm_confirmed: bool,
     radio_edit_found: bool,
-    source_confidence_settings: Dict[str, str]
+    source_confidence_settings: Dict[str, str],
+    musicbrainz_compilation_confirmed: bool = False
 ) -> bool:
     """
     Check if HIGH confidence has been achieved based on current confirmed sources.
@@ -294,6 +295,7 @@ def check_high_confidence_dynamic(
         lastfm_confirmed: Whether Last.fm confirmed
         radio_edit_found: Whether Radio Edit found
         source_confidence_settings: Dict of source names to confidence levels
+        musicbrainz_compilation_confirmed: Whether MusicBrainz VA compilation confirmed
         
     Returns:
         True if HIGH confidence achieved, False otherwise
@@ -324,6 +326,7 @@ def check_high_confidence_dynamic(
         1 for confirmed, setting in [
             (discogs_confirmed, source_confidence_settings.get('discogs')),
             (musicbrainz_confirmed, source_confidence_settings.get('musicbrainz')),
+            (musicbrainz_compilation_confirmed, 'medium'),
             (discogs_video_confirmed, source_confidence_settings.get('discogs_video')),
             (lastfm_confirmed, source_confidence_settings.get('lastfm')),
             (radio_edit_found, source_confidence_settings.get('radio_edit'))
@@ -1790,6 +1793,7 @@ def detect_single_enhanced(
     
     # Declare all source variables first
     musicbrainz_confirmed = False
+    musicbrainz_compilation_confirmed = False
     radio_edit_found = False
     discogs_video_confirmed = False
     lastfm_single_confirmed = False
@@ -1909,8 +1913,29 @@ def detect_single_enhanced(
                 if appears_on_va:
                     result['single_sources'].append('musicbrainz_compilation')
                     result['single_sources_used'].append('musicbrainz_compilation')
+                    musicbrainz_compilation_confirmed = True
                     log_debug(f"[MUSICBRAINZ] ✓ CONFIRMED - Track appears on multiple VA compilations (single indicator)")
                     log_info(f"   ✓ MusicBrainz compilation appearances found: {title}")
+                    
+                    # Check if HIGH confidence reached after this confirmation
+                    if check_high_confidence_dynamic(
+                        discogs_confirmed, musicbrainz_confirmed,
+                        discogs_video_confirmed, lastfm_single_confirmed, radio_edit_found,
+                        source_confidence_settings,
+                        musicbrainz_compilation_confirmed
+                    ):
+                        log_debug(f"[DETECT] Stopping early with HIGH confidence after MusicBrainz compilation confirmation")
+                        result['single_status'] = 'high'
+                        result['single_confidence'] = 'high'
+                        result['is_single'] = True
+                        result['single_confidence_score'] = 1.0
+                        album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
+                        result['z_score'] = album_z
+                        result['album_z_score'] = album_z
+                        artist_mean, artist_stddev, _ = get_cached_artist_stats(conn, artist)
+                        artist_z = calculate_z_score_strict(popularity, artist_mean, artist_stddev)
+                        result['artist_z_score'] = artist_z
+                        return result
                 else:
                     log_debug(f"[MUSICBRAINZ] ✗ No compilation appearances found")
             except Exception as e:
@@ -1925,7 +1950,8 @@ def detect_single_enhanced(
     if not check_high_confidence_dynamic(
         discogs_confirmed, musicbrainz_confirmed, 
         False, False, False,
-        source_confidence_settings
+        source_confidence_settings,
+        musicbrainz_compilation_confirmed
     ):
         if lastfm_client:
             try:
@@ -1943,7 +1969,8 @@ def detect_single_enhanced(
                     if check_high_confidence_dynamic(
                         discogs_confirmed, musicbrainz_confirmed, 
                         False, lastfm_single_confirmed, False,
-                        source_confidence_settings
+                        source_confidence_settings,
+                        musicbrainz_compilation_confirmed
                     ):
                         # HIGH confidence achieved
                         log_debug(f"[DETECT] HIGH confidence achieved from Last.fm confirmation")
@@ -1991,7 +2018,8 @@ def detect_single_enhanced(
                     if lastfm_single_confirmed and check_high_confidence_dynamic(
                         discogs_confirmed, musicbrainz_confirmed, 
                         False, lastfm_single_confirmed, False,
-                        source_confidence_settings
+                        source_confidence_settings,
+                        musicbrainz_compilation_confirmed
                     ):
                         # HIGH confidence achieved
                         log_debug(f"[DETECT] HIGH confidence achieved from Last.fm album track count confirmation")
@@ -2021,7 +2049,8 @@ def detect_single_enhanced(
     current_confidence_high = check_high_confidence_dynamic(
         discogs_confirmed, musicbrainz_confirmed, 
         False, lastfm_single_confirmed, False,
-        source_confidence_settings
+        source_confidence_settings,
+        musicbrainz_compilation_confirmed
     )
     
     if not current_confidence_high:
@@ -2046,7 +2075,8 @@ def detect_single_enhanced(
                         if check_high_confidence_dynamic(
                             discogs_confirmed, musicbrainz_confirmed, 
                             discogs_video_confirmed, lastfm_single_confirmed, False,
-                            source_confidence_settings
+                            source_confidence_settings,
+                            musicbrainz_compilation_confirmed
                         ):
                             # HIGH confidence achieved - can skip Spotify
                             log_debug(f"[DETECT] Stopping early with HIGH confidence after Discogs Video confirmation")
@@ -2089,6 +2119,7 @@ def detect_single_enhanced(
     # Preserve first-pass medium-source confirmations and disable the duplicated
     # second metadata pipeline below to avoid duplicate external calls/sources.
     primary_musicbrainz_confirmed = musicbrainz_confirmed
+    primary_musicbrainz_compilation_confirmed = musicbrainz_compilation_confirmed
     primary_discogs_video_confirmed = discogs_video_confirmed
     primary_lastfm_single_confirmed = lastfm_single_confirmed
     musicbrainz_client = None
@@ -2398,6 +2429,7 @@ def detect_single_enhanced(
     
     # Restore first-pass confirmations after the disabled duplicate pass.
     musicbrainz_confirmed = primary_musicbrainz_confirmed
+    musicbrainz_compilation_confirmed = primary_musicbrainz_compilation_confirmed
     discogs_video_confirmed = primary_discogs_video_confirmed
     lastfm_single_confirmed = primary_lastfm_single_confirmed
 
