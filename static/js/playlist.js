@@ -142,6 +142,10 @@ function setupCreatePageListeners() {
   if (customPlaylistForm) {
     customPlaylistForm.addEventListener('submit', createCustomPlaylist);
   }
+
+  if (document.getElementById('smartPlaylistBuilderForm')) {
+    initSmartPlaylistBuilder();
+  }
 }
 
 // ===============================
@@ -744,6 +748,580 @@ function refreshSmartPlaylistDetail() {
     loadSmartPlaylistDetail();
   }
 }
+
+// ===============================
+// SMART PLAYLIST BUILDER (CREATE PAGE)
+// ===============================
+
+const SPB_FIELDS = [
+  { key: 'title', label: 'Title', type: 'string' },
+  { key: 'album', label: 'Album', type: 'string' },
+  { key: 'artist', label: 'Artist', type: 'string' },
+  { key: 'albumartist', label: 'Album Artist', type: 'string' },
+  { key: 'genre', label: 'Genre', type: 'string' },
+  { key: 'mood', label: 'Mood', type: 'string' },
+  { key: 'rating', label: 'Rating', type: 'number' },
+  { key: 'playcount', label: 'Play Count', type: 'number' },
+  { key: 'year', label: 'Year', type: 'number' },
+  { key: 'duration', label: 'Duration (seconds)', type: 'number' },
+  { key: 'bitrate', label: 'Bitrate', type: 'number' },
+  { key: 'track', label: 'Track Number', type: 'number' },
+  { key: 'discnumber', label: 'Disc Number', type: 'number' },
+  { key: 'loved', label: 'Loved', type: 'boolean' },
+  { key: 'compilation', label: 'Compilation', type: 'boolean' },
+  { key: 'hascoverart', label: 'Has Cover Art', type: 'boolean' },
+  { key: 'lastplayed', label: 'Last Played', type: 'date' },
+  { key: 'dateadded', label: 'Date Added', type: 'date' },
+  { key: 'datemodified', label: 'Date Modified', type: 'date' },
+  { key: 'dateloved', label: 'Date Loved', type: 'date' },
+  { key: 'daterated', label: 'Date Rated', type: 'date' },
+  { key: 'filepath', label: 'File Path', type: 'string' },
+  { key: 'filetype', label: 'File Type', type: 'string' },
+  { key: 'library_id', label: 'Library ID', type: 'string' },
+  { key: 'id', label: 'Playlist ID', type: 'playlist' }
+];
+
+const SPB_SORT_FIELDS = [
+  'random', 'title', 'album', 'artist', 'albumartist',
+  'year', 'rating', 'playcount', 'lastplayed', 'dateadded',
+  'duration', 'bitrate', 'genre', 'mood'
+];
+
+const SPB_OPERATORS = {
+  string: [
+    { key: 'is', label: 'Is exactly' },
+    { key: 'isNot', label: 'Is not' },
+    { key: 'contains', label: 'Contains' },
+    { key: 'notContains', label: 'Does not contain' },
+    { key: 'startsWith', label: 'Starts with' },
+    { key: 'endsWith', label: 'Ends with' }
+  ],
+  number: [
+    { key: 'is', label: 'Is exactly' },
+    { key: 'isNot', label: 'Is not' },
+    { key: 'gt', label: 'Is greater than' },
+    { key: 'lt', label: 'Is less than' },
+    { key: 'inTheRange', label: 'Is in range' }
+  ],
+  boolean: [
+    { key: 'is', label: 'Is' },
+    { key: 'isNot', label: 'Is not' }
+  ],
+  date: [
+    { key: 'before', label: 'Before date' },
+    { key: 'after', label: 'After date' },
+    { key: 'inTheLast', label: 'Within last N days' },
+    { key: 'notInTheLast', label: 'Not within last N days' },
+    { key: 'inTheRange', label: 'In date range' }
+  ],
+  playlist: [
+    { key: 'inPlaylist', label: 'In playlist' },
+    { key: 'notInPlaylist', label: 'Not in playlist' }
+  ]
+};
+
+const SPB_PRESETS = {
+  recently_played: {
+    fileName: 'recently-played',
+    playlist: {
+      name: 'Recently Played',
+      comment: 'Tracks played in the last 30 days',
+      all: [{ inTheLast: { lastplayed: 30 } }],
+      sort: 'lastplayed',
+      order: 'desc',
+      limit: 100
+    }
+  },
+  never_played: {
+    fileName: 'never-played',
+    playlist: {
+      name: 'Never Played',
+      comment: 'Tracks with zero play count',
+      all: [{ is: { playcount: 0 } }],
+      sort: 'random',
+      limit: 200
+    }
+  },
+  loved_tracks: {
+    fileName: 'loved-tracks',
+    playlist: {
+      name: 'Loved Tracks',
+      comment: 'Tracks marked as loved',
+      all: [{ is: { loved: true } }],
+      sort: 'dateloved',
+      order: 'desc',
+      limit: 500
+    }
+  },
+  high_quality_flac: {
+    fileName: 'high-quality-flac',
+    playlist: {
+      name: 'High Quality FLAC',
+      comment: 'Lossless tracks with high bitrate',
+      all: [{ is: { filetype: 'flac' } }, { gt: { bitrate: 900 } }],
+      sort: 'random',
+      limit: 200
+    }
+  },
+  mood_energetic: {
+    fileName: 'mood-energetic',
+    playlist: {
+      name: 'Energetic Mood',
+      comment: 'Tracks with energetic mood tags',
+      any: [
+        { contains: { mood: 'energetic' } },
+        { contains: { mood: 'upbeat' } },
+        { contains: { mood: 'driving' } }
+      ],
+      sort: 'random',
+      limit: 200
+    }
+  }
+};
+
+function spbGetField(fieldKey) {
+  return SPB_FIELDS.find(f => f.key === fieldKey) || null;
+}
+
+function spbCreateSelectOptions(items, placeholder, valueKey = 'key', labelKey = 'label') {
+  let html = `<option value="">${placeholder}</option>`;
+  items.forEach(item => {
+    html += `<option value="${item[valueKey]}">${item[labelKey]}</option>`;
+  });
+  return html;
+}
+
+function spbFieldSelectHtml(selected = '') {
+  let html = '<option value="">Field</option>';
+  SPB_FIELDS.forEach(field => {
+    const selectedAttr = selected === field.key ? ' selected' : '';
+    html += `<option value="${field.key}"${selectedAttr}>${field.label}</option>`;
+  });
+  return html;
+}
+
+function spbSortFieldSelectHtml(selected = '') {
+  let html = '<option value="">Sort field</option>';
+  SPB_SORT_FIELDS.forEach(field => {
+    const selectedAttr = selected === field ? ' selected' : '';
+    html += `<option value="${field}"${selectedAttr}>${field}</option>`;
+  });
+  return html;
+}
+
+function spbAddRule(prefill = null) {
+  const container = document.getElementById('spbRulesContainer');
+  if (!container) return;
+
+  const row = document.createElement('div');
+  row.className = 'border rounded p-2 spb-rule-row';
+  row.innerHTML = `
+    <div class="row g-2 align-items-end">
+      <div class="col-md-4">
+        <label class="form-label mb-1 small">Field</label>
+        <select class="form-select form-select-sm spb-field">${spbFieldSelectHtml(prefill?.field || '')}</select>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label mb-1 small">Operator</label>
+        <select class="form-select form-select-sm spb-operator"><option value="">Operator</option></select>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label mb-1 small">Value</label>
+        <div class="spb-value-wrap"></div>
+      </div>
+      <div class="col-md-1 d-grid">
+        <button type="button" class="btn btn-sm btn-outline-danger spb-remove-rule">X</button>
+      </div>
+    </div>
+  `;
+  container.appendChild(row);
+
+  const fieldEl = row.querySelector('.spb-field');
+  const opEl = row.querySelector('.spb-operator');
+
+  fieldEl.addEventListener('change', () => {
+    spbUpdateOperatorOptions(row);
+    spbUpdateValueInput(row);
+    spbUpdatePreview();
+  });
+
+  opEl.addEventListener('change', () => {
+    spbUpdateValueInput(row);
+    spbUpdatePreview();
+  });
+
+  row.querySelector('.spb-remove-rule').addEventListener('click', () => {
+    row.remove();
+    spbUpdatePreview();
+  });
+
+  row.addEventListener('input', spbUpdatePreview);
+  row.addEventListener('change', spbUpdatePreview);
+
+  spbUpdateOperatorOptions(row, prefill?.operator);
+  spbUpdateValueInput(row, prefill?.value);
+}
+
+function spbUpdateOperatorOptions(row, preselected = '') {
+  const fieldEl = row.querySelector('.spb-field');
+  const opEl = row.querySelector('.spb-operator');
+  const field = spbGetField(fieldEl.value);
+  const operators = field ? SPB_OPERATORS[field.type] || SPB_OPERATORS.string : [];
+
+  opEl.innerHTML = spbCreateSelectOptions(operators, 'Operator');
+  if (preselected) {
+    opEl.value = preselected;
+  }
+}
+
+function spbUpdateValueInput(row, prefillValue = null) {
+  const fieldEl = row.querySelector('.spb-field');
+  const opEl = row.querySelector('.spb-operator');
+  const wrap = row.querySelector('.spb-value-wrap');
+  const field = spbGetField(fieldEl.value);
+  const operator = opEl.value;
+
+  if (!field || !operator) {
+    wrap.innerHTML = '<input type="text" class="form-control form-control-sm spb-value" placeholder="Value" disabled>';
+    return;
+  }
+
+  if (field.type === 'boolean') {
+    wrap.innerHTML = `
+      <select class="form-select form-select-sm spb-value-bool">
+        <option value="true">True</option>
+        <option value="false">False</option>
+      </select>
+    `;
+    if (typeof prefillValue === 'boolean') {
+      wrap.querySelector('.spb-value-bool').value = String(prefillValue);
+    }
+    return;
+  }
+
+  if (operator === 'inTheRange') {
+    const type = field.type === 'date' ? 'date' : 'number';
+    const minVal = Array.isArray(prefillValue) ? (prefillValue[0] ?? '') : '';
+    const maxVal = Array.isArray(prefillValue) ? (prefillValue[1] ?? '') : '';
+    wrap.innerHTML = `
+      <div class="input-group input-group-sm">
+        <input type="${type}" class="form-control spb-value-min" placeholder="Min" value="${minVal}">
+        <span class="input-group-text">to</span>
+        <input type="${type}" class="form-control spb-value-max" placeholder="Max" value="${maxVal}">
+      </div>
+    `;
+    return;
+  }
+
+  if (operator === 'inTheLast' || operator === 'notInTheLast') {
+    const daysVal = typeof prefillValue === 'number' ? prefillValue : '';
+    wrap.innerHTML = `<input type="number" min="0" class="form-control form-control-sm spb-value-days" placeholder="Days" value="${daysVal}">`;
+    return;
+  }
+
+  if (field.type === 'number') {
+    const val = typeof prefillValue === 'number' ? prefillValue : '';
+    wrap.innerHTML = `<input type="number" class="form-control form-control-sm spb-value" placeholder="Number" value="${val}">`;
+    return;
+  }
+
+  if (field.type === 'date') {
+    const val = typeof prefillValue === 'string' ? prefillValue : '';
+    wrap.innerHTML = `<input type="date" class="form-control form-control-sm spb-value" value="${val}">`;
+    return;
+  }
+
+  const val = typeof prefillValue === 'string' ? prefillValue : '';
+  const placeholder = field.type === 'playlist' ? 'Playlist ID' : 'Text value';
+  wrap.innerHTML = `<input type="text" class="form-control form-control-sm spb-value" placeholder="${placeholder}" value="${escapeHtml(val)}">`;
+}
+
+function spbAddSort(prefill = null) {
+  const container = document.getElementById('spbSortContainer');
+  if (!container) return;
+
+  const row = document.createElement('div');
+  row.className = 'border rounded p-2 spb-sort-row';
+  row.innerHTML = `
+    <div class="row g-2 align-items-end">
+      <div class="col-7">
+        <label class="form-label mb-1 small">Field</label>
+        <select class="form-select form-select-sm spb-sort-field">${spbSortFieldSelectHtml(prefill?.field || '')}</select>
+      </div>
+      <div class="col-4">
+        <label class="form-label mb-1 small">Direction</label>
+        <select class="form-select form-select-sm spb-sort-direction">
+          <option value="asc">Ascending</option>
+          <option value="desc">Descending</option>
+        </select>
+      </div>
+      <div class="col-1 d-grid">
+        <button type="button" class="btn btn-sm btn-outline-danger spb-remove-sort">X</button>
+      </div>
+    </div>
+  `;
+
+  container.appendChild(row);
+  if (prefill?.direction) {
+    row.querySelector('.spb-sort-direction').value = prefill.direction;
+  }
+
+  row.querySelector('.spb-remove-sort').addEventListener('click', () => {
+    row.remove();
+    spbUpdatePreview();
+  });
+  row.addEventListener('change', spbUpdatePreview);
+}
+
+function spbParseValue(field, operator, wrap) {
+  if (field.type === 'boolean') {
+    const boolEl = wrap.querySelector('.spb-value-bool');
+    return boolEl ? boolEl.value === 'true' : null;
+  }
+
+  if (operator === 'inTheRange') {
+    const minEl = wrap.querySelector('.spb-value-min');
+    const maxEl = wrap.querySelector('.spb-value-max');
+    if (!minEl || !maxEl || minEl.value === '' || maxEl.value === '') return null;
+    if (field.type === 'number') {
+      return [Number(minEl.value), Number(maxEl.value)];
+    }
+    return [minEl.value, maxEl.value];
+  }
+
+  if (operator === 'inTheLast' || operator === 'notInTheLast') {
+    const daysEl = wrap.querySelector('.spb-value-days');
+    if (!daysEl || daysEl.value === '') return null;
+    return Number(daysEl.value);
+  }
+
+  const valueEl = wrap.querySelector('.spb-value');
+  if (!valueEl || valueEl.value === '') return null;
+  if (field.type === 'number') return Number(valueEl.value);
+  return valueEl.value;
+}
+
+function spbCollectRules() {
+  const rules = [];
+  const rows = document.querySelectorAll('#spbRulesContainer .spb-rule-row');
+  rows.forEach(row => {
+    const fieldKey = row.querySelector('.spb-field')?.value;
+    const operator = row.querySelector('.spb-operator')?.value;
+    const field = spbGetField(fieldKey);
+    const wrap = row.querySelector('.spb-value-wrap');
+    if (!field || !operator || !wrap) return;
+
+    const value = spbParseValue(field, operator, wrap);
+    if (value === null || Number.isNaN(value)) return;
+
+    const cond = {};
+    cond[operator] = {};
+    cond[operator][field.key] = value;
+    rules.push(cond);
+  });
+  return rules;
+}
+
+function spbCollectSorts() {
+  const sorts = [];
+  document.querySelectorAll('#spbSortContainer .spb-sort-row').forEach(row => {
+    const field = row.querySelector('.spb-sort-field')?.value;
+    const direction = row.querySelector('.spb-sort-direction')?.value || 'asc';
+    if (!field) return;
+    sorts.push({ field, direction });
+  });
+  return sorts;
+}
+
+function spbBuildJson() {
+  const name = (document.getElementById('spbPlaylistName')?.value || '').trim();
+  const comment = (document.getElementById('spbComment')?.value || '').trim();
+  const logic = document.getElementById('spbLogic')?.value || 'all';
+  const limitRaw = (document.getElementById('spbLimit')?.value || '').trim();
+  const rules = spbCollectRules();
+  const sorts = spbCollectSorts();
+
+  const json = {};
+  if (name) json.name = name;
+  if (comment) json.comment = comment;
+  if (rules.length > 0) json[logic] = rules;
+
+  if (sorts.length === 1) {
+    json.sort = sorts[0].field;
+    if (sorts[0].field !== 'random') {
+      json.order = sorts[0].direction;
+    }
+  } else if (sorts.length > 1) {
+    json.sort = sorts.map(s => `${s.direction === 'desc' ? '-' : '+'}${s.field}`).join(',');
+  }
+
+  if (limitRaw) {
+    const limit = Number(limitRaw);
+    if (!Number.isNaN(limit) && limit > 0) {
+      json.limit = limit;
+    }
+  }
+
+  return json;
+}
+
+function spbUpdatePreview() {
+  const preview = document.getElementById('spbJsonPreview');
+  if (!preview) return;
+  preview.textContent = JSON.stringify(spbBuildJson(), null, 2);
+}
+
+function spbResetBuilder() {
+  const form = document.getElementById('smartPlaylistBuilderForm');
+  if (!form) return;
+  form.reset();
+  document.getElementById('spbRulesContainer').innerHTML = '';
+  document.getElementById('spbSortContainer').innerHTML = '';
+  spbAddRule();
+  spbAddSort({ field: 'random', direction: 'asc' });
+  spbUpdatePreview();
+}
+
+function spbApplyPreset(key) {
+  const preset = SPB_PRESETS[key];
+  if (!preset) return;
+
+  document.getElementById('spbPlaylistName').value = preset.playlist.name || '';
+  document.getElementById('spbFileName').value = preset.fileName || '';
+  document.getElementById('spbComment').value = preset.playlist.comment || '';
+
+  const logic = preset.playlist.any ? 'any' : 'all';
+  document.getElementById('spbLogic').value = logic;
+
+  const rules = preset.playlist[logic] || [];
+  const rulesContainer = document.getElementById('spbRulesContainer');
+  rulesContainer.innerHTML = '';
+  rules.forEach(rule => {
+    const operator = Object.keys(rule)[0];
+    const payload = rule[operator] || {};
+    const field = Object.keys(payload)[0];
+    const value = payload[field];
+    spbAddRule({ field, operator, value });
+  });
+  if (rules.length === 0) spbAddRule();
+
+  const sortsContainer = document.getElementById('spbSortContainer');
+  sortsContainer.innerHTML = '';
+  const sort = preset.playlist.sort;
+  if (sort) {
+    if (typeof sort === 'string' && sort.includes(',')) {
+      sort.split(',').forEach(part => {
+        const trimmed = part.trim();
+        if (!trimmed) return;
+        const direction = trimmed.startsWith('-') ? 'desc' : 'asc';
+        const field = trimmed.replace(/^[-+]/, '');
+        spbAddSort({ field, direction });
+      });
+    } else {
+      spbAddSort({ field: sort, direction: preset.playlist.order || 'asc' });
+    }
+  } else {
+    spbAddSort({ field: 'random', direction: 'asc' });
+  }
+
+  document.getElementById('spbLimit').value = preset.playlist.limit || '';
+  spbUpdatePreview();
+}
+
+function spbCreateGenreMoodPlaylist(field, value) {
+  const safe = String(value || '').trim();
+  if (!safe) return;
+  const slug = safe.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+
+  document.getElementById('spbPlaylistName').value = `${safe} ${field === 'genre' ? 'Genre' : 'Mood'} Mix`;
+  document.getElementById('spbFileName').value = `${field}-${slug}`;
+  document.getElementById('spbComment').value = `Auto-generated ${field} playlist for ${safe}`;
+  document.getElementById('spbLogic').value = 'all';
+
+  const rulesContainer = document.getElementById('spbRulesContainer');
+  rulesContainer.innerHTML = '';
+  spbAddRule({ field, operator: 'contains', value: safe });
+
+  const sortContainer = document.getElementById('spbSortContainer');
+  sortContainer.innerHTML = '';
+  spbAddSort({ field: 'random', direction: 'asc' });
+  document.getElementById('spbLimit').value = 200;
+
+  spbUpdatePreview();
+}
+
+async function spbSubmitBuilder(event) {
+  event.preventDefault();
+
+  const fileName = (document.getElementById('spbFileName')?.value || '').trim();
+  const playlist = spbBuildJson();
+  if (!fileName) {
+    alert('File name is required');
+    return;
+  }
+  if (!playlist.name) {
+    alert('Playlist name is required');
+    return;
+  }
+
+  try {
+    const response = await fetch('/api/smartplaylist/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fileName, playlist })
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to create smart playlist');
+    }
+    alert(`Smart playlist created: ${data.file_name || fileName + '.nsp'}`);
+    spbResetBuilder();
+    loadSmartPlaylists();
+  } catch (error) {
+    alert(`Error creating smart playlist: ${error.message}`);
+  }
+}
+
+function spbCopyJson() {
+  const preview = document.getElementById('spbJsonPreview');
+  if (!preview) return;
+  navigator.clipboard.writeText(preview.textContent || '{}')
+    .then(() => alert('JSON copied to clipboard'))
+    .catch(() => alert('Could not copy JSON'));
+}
+
+function initSmartPlaylistBuilder() {
+  const form = document.getElementById('smartPlaylistBuilderForm');
+  if (!form || form.dataset.initialized === '1') return;
+  form.dataset.initialized = '1';
+
+  document.getElementById('spbAddRuleBtn')?.addEventListener('click', () => {
+    spbAddRule();
+    spbUpdatePreview();
+  });
+
+  document.getElementById('spbAddSortBtn')?.addEventListener('click', () => {
+    spbAddSort();
+    spbUpdatePreview();
+  });
+
+  document.getElementById('spbPreset')?.addEventListener('change', e => {
+    if (e.target.value) {
+      spbApplyPreset(e.target.value);
+      e.target.value = '';
+    }
+  });
+
+  document.getElementById('spbCopyJsonBtn')?.addEventListener('click', spbCopyJson);
+  document.getElementById('spbResetBtn')?.addEventListener('click', spbResetBuilder);
+  form.addEventListener('submit', spbSubmitBuilder);
+  form.addEventListener('input', spbUpdatePreview);
+  form.addEventListener('change', spbUpdatePreview);
+
+  spbResetBuilder();
+}
+
+window.spbCreateGenreMoodPlaylist = spbCreateGenreMoodPlaylist;
 
 // ===============================
 // SPOTIFY PLAYLIST IMPORT

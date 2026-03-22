@@ -6,6 +6,7 @@ from helpers.db_utils import (
     ensure_writer_column,
     ensure_cover_columns,
     ensure_track_release_year_column,
+    ensure_mood_columns,
     verify_album_artist_column,
 )
 from download_file_verification import ensure_verification_columns, ensure_queue_mbid_columns
@@ -59,7 +60,7 @@ except ImportError:
     ID3 = None
     TagCON = None
 from contextlib import closing
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 import json
 import yaml
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response, send_file, session, abort, g, has_request_context
@@ -537,6 +538,9 @@ ensure_cover_columns()
 
 # Ensure optional release_year column exists in tracks table
 ensure_track_release_year_column()
+
+# Ensure mood scan columns exist in tracks table
+ensure_mood_columns()
 
 # Ensure download file verification columns exist
 ensure_verification_columns()
@@ -1346,6 +1350,7 @@ scan_process = None  # Main scan process (full scan, force, artist-specific)
 scan_process_navidrome = None  # Navidrome sync process
 scan_process_popularity = None  # Popularity scan process
 scan_process_singles = None  # Singles detection process
+scan_process_mood = None  # Mood scan process
 scan_process_combined = None  # Combined scan process (Navidrome + Popularity + Singles per artist)
 scan_process_missing_releases = None  # Missing releases scan process
 scan_process_mp3_import = None  # MP3 metadata import scan process
@@ -3233,6 +3238,7 @@ def _schedule_configured_startup_scan_launch():
                 "navidrome": ("scan_navidrome", "/scan/navidrome"),
                 "metadata": ("scan_mp3_import", "/scan/mp3-import"),
                 "popularity": ("scan_popularity_route", "/scan/popularity"),
+                "mood": ("scan_mood", "/scan/mood"),
                 "combined": ("scan_combined", "/scan/combined"),
             }
             handler_name, base_path = mapping.get(scan_type, ("scan_navidrome", "/scan/navidrome"))
@@ -3240,7 +3246,7 @@ def _schedule_configured_startup_scan_launch():
             params = []
             if scan_type != "metadata":
                 params.append("mode=force" if force_enabled else "mode=all")
-            if scan_type in {"navidrome", "popularity", "combined"}:
+            if scan_type in {"navidrome", "popularity", "mood", "combined"}:
                 params.append("restart=1" if restart else "restart=0")
 
             request_path = base_path + (("?" + "&".join(params)) if params else "")
@@ -3830,6 +3836,72 @@ def dashboard():
                              launch_on_startup=False,
                              first_full_scan_done=False,
                              error=str(e))
+
+
+def _get_genre_mood_analytics(top_n: int = 50):
+    """Aggregate top genres and moods from track metadata."""
+    genre_counter = Counter()
+    mood_counter = Counter()
+    conn = None
+
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT genres, mood FROM tracks")
+        rows = cursor.fetchall() or []
+
+        for row in rows:
+            if isinstance(row, dict):
+                genres_raw = row.get("genres")
+                mood_raw = row.get("mood")
+            elif hasattr(row, "keys"):
+                genres_raw = row["genres"]
+                mood_raw = row["mood"]
+            else:
+                genres_raw = row[0] if len(row) > 0 else None
+                mood_raw = row[1] if len(row) > 1 else None
+
+            if genres_raw:
+                tokens = re.split(r"[\\,;/]+", str(genres_raw))
+                for token in tokens:
+                    genre = token.strip()
+                    if genre:
+                        genre_counter[genre] += 1
+
+            if mood_raw:
+                mood = str(mood_raw).strip()
+                if mood:
+                    mood_counter[mood] += 1
+
+        genres = [{"name": name, "count": count} for name, count in genre_counter.most_common(top_n)]
+        moods = [{"name": name, "count": count} for name, count in mood_counter.most_common(top_n)]
+        return genres, moods
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
+@app.route("/analytics/genres-moods")
+def analytics_genres_moods_page():
+    """Genres/Moods analytics page with top-50 bar charts."""
+    genres, moods = _get_genre_mood_analytics(top_n=50)
+    return render_template("genres_moods_analytics.html", top_genres=genres, top_moods=moods)
+
+
+@app.route("/api/analytics/genres-moods")
+def api_analytics_genres_moods():
+    """Return top genres and moods for analytics visualizations."""
+    try:
+        limit = request.args.get("limit", 50, type=int)
+        limit = max(1, min(limit, 100))
+        genres, moods = _get_genre_mood_analytics(top_n=limit)
+        return jsonify({"genres": genres, "moods": moods})
+    except Exception as e:
+        logging.error(f"Failed to fetch genres/moods analytics: {e}")
+        return jsonify({"genres": [], "moods": [], "error": str(e)}), 500
 
 
 def convert_row_to_json_serializable(obj):
@@ -11836,6 +11908,94 @@ def scan_singles():
     return redirect(url_for("dashboard"))
 
 
+@app.route("/scan/mood", methods=["POST"])
+def scan_mood():
+    """Run AcousticBrainz mood enrichment scan (MBID-first)."""
+    global scan_process_mood
+
+    mode = request.args.get('mode', 'all')
+    force_scan = (mode == 'force')
+
+    with scan_lock:
+        if scan_process_mood is not None:
+            if isinstance(scan_process_mood, dict):
+                thread = scan_process_mood.get('thread')
+                if thread and thread.is_alive():
+                    flash("Mood scan is already running", "warning")
+                    return redirect(url_for("dashboard"))
+            elif hasattr(scan_process_mood, 'is_alive') and scan_process_mood.is_alive():
+                flash("Mood scan is already running", "warning")
+                return redirect(url_for("dashboard"))
+
+        try:
+            db_dir = os.path.dirname(DB_PATH)
+            mood_progress_file = os.path.join(db_dir, "mood_scan_progress.json")
+            _write_progress_file(mood_progress_file, "mood_scan", True, {"status": "starting"})
+
+            def run_mood_scan_bg():
+                try:
+                    from mood_scan import run_mood_scan
+
+                    result = run_mood_scan(force=force_scan, progress_file=mood_progress_file)
+                    if result.get("stopped"):
+                        _write_progress_with_current_artist(
+                            mood_progress_file,
+                            "mood_scan",
+                            False,
+                            {
+                                "status": "stopped",
+                                "exit_code": 0,
+                                "processed_artists": result.get("processed_artists", 0),
+                                "total_artists": result.get("total_artists", 0),
+                                "scanned_tracks": result.get("scanned_tracks", 0),
+                                "updated_tracks": result.get("updated_tracks", 0),
+                                "synced_files": result.get("synced_files", 0),
+                            },
+                        )
+                        logging.info("Mood scan stopped by user request")
+                    else:
+                        _write_progress_with_current_artist(
+                            mood_progress_file,
+                            "mood_scan",
+                            False,
+                            {
+                                "status": "complete",
+                                "exit_code": 0,
+                                "processed_artists": result.get("processed_artists", 0),
+                                "total_artists": result.get("total_artists", 0),
+                                "scanned_tracks": result.get("scanned_tracks", 0),
+                                "updated_tracks": result.get("updated_tracks", 0),
+                                "synced_files": result.get("synced_files", 0),
+                            },
+                        )
+                        _log_scan_session_complete("mood")
+                        logging.info(
+                            "Mood scan completed: %s tracks scanned, %s updated, %s file tags synced",
+                            result.get("scanned_tracks", 0),
+                            result.get("updated_tracks", 0),
+                            result.get("synced_files", 0),
+                        )
+                except Exception as e:
+                    logging.error(f"Error in mood scan: {e}", exc_info=True)
+                    _write_progress_with_current_artist(
+                        mood_progress_file,
+                        "mood_scan",
+                        False,
+                        {"status": "error", "error": str(e), "exit_code": 1},
+                    )
+
+            scan_thread = threading.Thread(target=run_mood_scan_bg, daemon=False)
+            scan_thread.start()
+            scan_process_mood = {'thread': scan_thread, 'type': 'mood'}
+
+            flash(f"✅ Mood scan started ({'Forced' if force_scan else 'Incremental'} mode)", "success")
+        except Exception as e:
+            logging.error(f"Error starting mood scan: {e}", exc_info=True)
+            flash(f"❌ Error starting mood scan: {str(e)}", "danger")
+
+    return redirect(url_for("dashboard"))
+
+
 @app.route("/scan/mp3-import", methods=["POST"])
 def scan_mp3_import():
     """Run MP3 metadata import scan"""
@@ -12038,10 +12198,34 @@ def scan_stop_combined():
     return redirect(url_for("dashboard"))
 
 
+@app.route("/scan/stop-mood", methods=["POST"])
+def scan_stop_mood():
+    """Stop the mood scan."""
+    global scan_process_mood
+
+    with scan_lock:
+        if scan_process_mood is not None:
+            if isinstance(scan_process_mood, dict):
+                thread = scan_process_mood.get('thread')
+                if thread and thread.is_alive():
+                    mood_progress_file = os.path.join(os.path.dirname(DB_PATH), "mood_scan_progress.json")
+                    _request_scan_stop(mood_progress_file, "mood_scan")
+                    scan_process_mood = None
+                    flash("Mood scan stop requested (will finish current track)", "info")
+                else:
+                    flash("No mood scan is currently running", "warning")
+            else:
+                flash("No mood scan is currently running", "warning")
+        else:
+            flash("No mood scan is currently running", "warning")
+
+    return redirect(url_for("dashboard"))
+
+
 @app.route("/scan/stop-all", methods=["POST"])
 def scan_stop_all():
     """Stop all running scans"""
-    global scan_process, scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_combined, scan_process_missing_releases, scan_process_mp3_import
+    global scan_process, scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_mood, scan_process_combined, scan_process_missing_releases, scan_process_mp3_import
     
     stopped_scans = []
     db_dir = os.path.dirname(DB_PATH)
@@ -12114,6 +12298,26 @@ def scan_stop_all():
                         if progress.get('is_running') and "Popularity" not in stopped_scans:
                             _request_scan_stop(single_progress_file, "singles_scan")
                             stopped_scans.append("Singles")
+                except Exception:
+                    pass
+
+        # Stop Mood scan
+        if scan_process_mood is not None:
+            if isinstance(scan_process_mood, dict):
+                thread = scan_process_mood.get('thread')
+                if thread and thread.is_alive():
+                    _request_scan_stop(os.path.join(db_dir, "mood_scan_progress.json"), "mood_scan")
+                    scan_process_mood = None
+                    stopped_scans.append("Mood")
+        else:
+            mood_progress_file = os.path.join(db_dir, "mood_scan_progress.json")
+            if os.path.exists(mood_progress_file):
+                try:
+                    with open(mood_progress_file, 'r') as f:
+                        progress = json.load(f)
+                        if progress.get('is_running'):
+                            _request_scan_stop(mood_progress_file, "mood_scan")
+                            stopped_scans.append("Mood")
                 except Exception:
                     pass
         
@@ -12199,7 +12403,7 @@ def scan_stop_all():
 @app.route("/scan/clear-stuck", methods=["POST"])
 def scan_clear_stuck():
     """Clear all stuck scan progress files"""
-    global scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_combined, scan_process_missing_releases
+    global scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_mood, scan_process_combined, scan_process_missing_releases
     
     with scan_lock:
         db_dir = os.path.dirname(DB_PATH)
@@ -12210,6 +12414,7 @@ def scan_clear_stuck():
             ("navidrome_scan_progress.json", scan_process_navidrome),
             ("popularity_scan_progress.json", scan_process_popularity),
             ("singles_scan_progress.json", scan_process_singles),
+            ("mood_scan_progress.json", scan_process_mood),
             ("combined_scan_progress.json", scan_process_combined),
             ("missing_releases_scan_progress.json", scan_process_missing_releases),
         ]
@@ -12243,6 +12448,8 @@ def scan_clear_stuck():
             scan_process_popularity = None
         if scan_process_singles and not _is_process_alive(scan_process_singles):
             scan_process_singles = None
+        if scan_process_mood and not _is_process_alive(scan_process_mood):
+            scan_process_mood = None
         if scan_process_missing_releases and not _is_process_alive(scan_process_missing_releases):
             scan_process_missing_releases = None
         
@@ -12976,7 +13183,7 @@ def api_features_update():
 
         if "startup_scan_type" in data:
             scan_type = str(data.get("startup_scan_type") or "").strip().lower()
-            if scan_type in {"navidrome", "metadata", "popularity", "combined"}:
+            if scan_type in {"navidrome", "metadata", "popularity", "mood", "combined"}:
                 features["startup_scan_type"] = scan_type
 
         config_data["features"] = features
@@ -13360,7 +13567,7 @@ def api_scan_from_artist():
 @app.route("/api/scan-status")
 def api_scan_status():
     """API endpoint to get status of all scan types"""
-    global scan_process, scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_combined, scan_process_missing_releases
+    global scan_process, scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_mood, scan_process_combined, scan_process_missing_releases
     
     def is_process_running(proc):
         """Check if a process/thread is running, handling both dict and process objects."""
@@ -13402,6 +13609,10 @@ def api_scan_status():
             "singles_scan": {
                 "name": "Single Detection",
                 "running": is_process_running(scan_process_singles)
+            },
+            "mood_scan": {
+                "name": "Mood Scan",
+                "running": is_process_running(scan_process_mood)
             },
             "combined_scan": {
                 "name": "Combined Scan",
@@ -13447,7 +13658,7 @@ def api_recent_scans():
 @app.route("/api/scan-progress")
 def api_scan_progress():
     """API endpoint to get detailed scan progress"""
-    global scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_combined, scan_process_missing_releases
+    global scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_mood, scan_process_combined, scan_process_missing_releases
     
     try:
         from unified_scan import get_scan_progress
@@ -13475,6 +13686,7 @@ def api_scan_progress():
             ("navidrome_scan", os.path.join(db_dir, "navidrome_scan_progress.json"), scan_process_navidrome),
             ("popularity_scan", os.path.join(db_dir, "popularity_scan_progress.json"), scan_process_popularity),
             ("singles_scan", os.path.join(db_dir, "singles_scan_progress.json"), scan_process_singles),
+            ("mood_scan", os.path.join(db_dir, "mood_scan_progress.json"), scan_process_mood),
             ("combined_scan", os.path.join(db_dir, "combined_scan_progress.json"), scan_process_combined),
             ("missing_releases_scan", os.path.join(db_dir, "missing_releases_scan_progress.json"), scan_process_missing_releases),
         ]
@@ -13506,6 +13718,7 @@ def api_scan_progress():
                 "navidrome_scan",
                 "popularity_scan",
                 "singles_scan",
+                "mood_scan",
                 "combined_scan",
                 "missing_releases_scan",
             ]
@@ -27578,8 +27791,9 @@ def playlists_create(playlist_type):
             "user": navidrome_config.get("user")
         }]
     
-    # Get top 20 most used genres for Smart Playlists section
+    # Get top values for Smart Playlists quick builder section
     top_genres = []
+    top_moods = []
     if playlist_type == 'smart':
         try:
             conn = get_db()
@@ -27606,6 +27820,17 @@ def playlists_create(playlist_type):
             # Sort by count (descending) and get top 20
             sorted_genres = sorted(genre_counts.items(), key=lambda x: x[1], reverse=True)[:20]
             top_genres = [{'name': genre, 'count': count} for genre, count in sorted_genres]
+
+            # Get top moods from mood scan data
+            cursor.execute("""
+                SELECT mood, COUNT(*)
+                FROM tracks
+                WHERE mood IS NOT NULL AND mood != ''
+                GROUP BY mood
+                ORDER BY COUNT(*) DESC
+                LIMIT 20
+            """)
+            top_moods = [{'name': row[0], 'count': row[1]} for row in cursor.fetchall()]
             
             conn.close()
         except Exception as e:
@@ -27619,6 +27844,7 @@ def playlists_create(playlist_type):
                          playlist_type=playlist_type,
                          navidrome_users=navidrome_users,
                          top_genres=top_genres,
+                         top_moods=top_moods,
                          spotify_enabled=spotify_enabled,
                          lastfm_enabled=lastfm_enabled)
 

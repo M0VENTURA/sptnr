@@ -112,62 +112,172 @@
 
   {% elif playlist_type == 'smart' %}
   <!-- Smart Playlists Section -->
-  <div class="row">
-    <div class="col-12">
+  <div class="row g-4">
+    <div class="col-12 col-xl-8">
       <div class="card">
-        <div class="card-header">
+        <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
           <h5 class="mb-0">
-            <i class="bi bi-sliders"></i> Smart Playlists
+            <i class="bi bi-magic"></i> Smart Playlist Builder
           </h5>
+          <span class="badge bg-info text-dark">Navidrome .nsp Wizard</span>
         </div>
         <div class="card-body">
-          <p class="text-muted mb-4">
-            Smart playlists automatically update based on rules. Select an existing smart playlist to view or manage it.
-          </p>
+          <p class="text-muted mb-4">Build rule-based playlists with guided fields, operators, presets, sorting, and JSON preview.</p>
 
-          <!-- Smart Playlist Selection -->
-          <div class="row g-3 mb-4">
-            <div class="col-md-6">
+          <form id="smartPlaylistBuilderForm" novalidate>
+            <div class="row g-3 mb-3">
+              <div class="col-md-6">
+                <label for="spbPlaylistName" class="form-label">Playlist Name *</label>
+                <input id="spbPlaylistName" class="form-control" type="text" placeholder="e.g. Recently Played" required>
+              </div>
+              <div class="col-md-6">
+                <label for="spbFileName" class="form-label">File Name *</label>
+                <input id="spbFileName" class="form-control" type="text" placeholder="e.g. recently-played" required>
+              </div>
+              <div class="col-12">
+                <label for="spbComment" class="form-label">Description</label>
+                <textarea id="spbComment" class="form-control" rows="2" placeholder="Optional description"></textarea>
+              </div>
+            </div>
+
+            <div class="card bg-light border-0 mb-3">
+              <div class="card-body">
+                <label for="spbLogic" class="form-label mb-1">Rule Logic</label>
+                <select id="spbLogic" class="form-select">
+                  <option value="all" selected>ALL rules must match (AND)</option>
+                  <option value="any">ANY rule can match (OR)</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="mb-3">
+              <div class="d-flex justify-content-between align-items-center mb-2">
+                <h6 class="mb-0"><i class="bi bi-funnel"></i> Rules</h6>
+                <button type="button" id="spbAddRuleBtn" class="btn btn-sm btn-outline-primary">Add Rule</button>
+              </div>
+              <div id="spbRulesContainer" class="d-flex flex-column gap-2"></div>
+            </div>
+
+            <div class="mb-3">
+              <div class="d-flex justify-content-between align-items-center mb-2">
+                <h6 class="mb-0"><i class="bi bi-sort-down"></i> Sort</h6>
+                <button type="button" id="spbAddSortBtn" class="btn btn-sm btn-outline-secondary">Add Sort Field</button>
+              </div>
+              <div id="spbSortContainer" class="d-flex flex-column gap-2"></div>
+            </div>
+
+            <div class="row g-3 mb-3">
+              <div class="col-md-6">
+                <label for="spbLimit" class="form-label">Track Limit</label>
+                <input id="spbLimit" class="form-control" type="number" min="1" placeholder="Leave blank for no limit">
+              </div>
+              <div class="col-md-6">
+                <label for="spbPreset" class="form-label">Quick Preset</label>
+                <select id="spbPreset" class="form-select">
+                  <option value="">Choose a preset...</option>
+                  <option value="recently_played">Recently Played</option>
+                  <option value="never_played">Never Played</option>
+                  <option value="loved_tracks">Loved Tracks</option>
+                  <option value="high_quality_flac">High Quality FLAC</option>
+                  <option value="mood_energetic">Mood: Energetic</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="mb-3">
+              <label class="form-label">JSON Preview</label>
+              <pre id="spbJsonPreview" class="bg-dark text-light p-3 rounded mb-0" style="max-height: 300px; overflow-y: auto;">{}</pre>
+            </div>
+
+            <div class="d-flex flex-wrap gap-2 justify-content-end">
+              <button type="button" id="spbCopyJsonBtn" class="btn btn-outline-info">Copy JSON</button>
+              <button type="button" id="spbResetBtn" class="btn btn-outline-secondary">Reset</button>
+              <button type="submit" class="btn btn-success">
+                <i class="bi bi-plus-circle"></i> Create Smart Playlist
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-12 col-xl-4">
+      <div class="card mb-4">
+        <div class="card-header">
+          <h6 class="mb-0"><i class="bi bi-folder2-open"></i> Existing Smart Playlists</h6>
+        </div>
+        <div class="card-body">
+          <div class="row g-3 mb-3">
+            <div class="col-12">
               <label for="smartPlaylistDropdown" class="form-label">Available Smart Playlists</label>
               <select id="smartPlaylistDropdown" class="form-select">
                 <option value="">Select a smart playlist...</option>
               </select>
-              <small class="text-muted">Auto-updating playlists from Navidrome</small>
             </div>
-            <div class="col-md-6 d-flex align-items-end">
+            <div class="col-12">
               <button class="btn btn-primary w-100" onclick="loadSmartPlaylistDetail()">
                 <i class="bi bi-folder-open"></i> Load Details
               </button>
             </div>
           </div>
 
-          <!-- Smart Playlist Details -->
           <div id="smartPlaylistDetails" style="display: none;">
             <div class="card">
               <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="mb-0">
+                <h6 class="mb-0">
                   <i class="bi bi-music-note-beamed"></i> <span id="smartPlaylistName">Smart Playlist</span>
-                </h5>
+                </h6>
                 <button class="btn btn-sm btn-outline-secondary" onclick="refreshSmartPlaylistDetail()">
-                  <i class="bi bi-arrow-clockwise"></i> Refresh
+                  <i class="bi bi-arrow-clockwise"></i>
                 </button>
               </div>
               <div class="card-body">
-                <div id="smartPlaylistMetadata" class="mb-3">
-                  <!-- Metadata will be inserted here -->
-                </div>
-                <div id="smartPlaylistTracks" style="max-height: 400px; overflow-y: auto;">
-                  <!-- Track list will be inserted here -->
-                </div>
+                <div id="smartPlaylistMetadata" class="mb-3"></div>
+                <div id="smartPlaylistTracks" style="max-height: 280px; overflow-y: auto;"></div>
               </div>
             </div>
           </div>
 
-          <div id="smartPlaylistEmpty" class="alert alert-info">
-            <i class="bi bi-info-circle"></i> Select a smart playlist to view or manage it
+          <div id="smartPlaylistEmpty" class="alert alert-info mb-0">
+            <i class="bi bi-info-circle"></i> Select a smart playlist to inspect
           </div>
         </div>
       </div>
+
+      {% if top_genres or top_moods %}
+      <div class="card">
+        <div class="card-header">
+          <h6 class="mb-0"><i class="bi bi-lightning-charge"></i> Quick Builders</h6>
+        </div>
+        <div class="card-body">
+          {% if top_genres %}
+          <div class="mb-3">
+            <strong class="d-block mb-2">Top Genres</strong>
+            <div class="d-flex flex-wrap gap-2">
+              {% for genre in top_genres[:10] %}
+              <button type="button" class="btn btn-sm btn-outline-success" onclick="spbCreateGenreMoodPlaylist('genre', '{{ genre.name|e }}')">
+                {{ genre.name }}
+              </button>
+              {% endfor %}
+            </div>
+          </div>
+          {% endif %}
+
+          {% if top_moods %}
+          <div>
+            <strong class="d-block mb-2">Top Moods</strong>
+            <div class="d-flex flex-wrap gap-2">
+              {% for mood in top_moods[:10] %}
+              <button type="button" class="btn btn-sm btn-outline-primary" onclick="spbCreateGenreMoodPlaylist('mood', '{{ mood.name|e }}')">
+                {{ mood.name }}
+              </button>
+              {% endfor %}
+            </div>
+          </div>
+          {% endif %}
+        </div>
+      </div>
+      {% endif %}
     </div>
   </div>
 
