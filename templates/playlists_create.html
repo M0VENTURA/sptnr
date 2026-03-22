@@ -153,8 +153,12 @@
             <div class="mb-3">
               <div class="d-flex justify-content-between align-items-center mb-2">
                 <h6 class="mb-0"><i class="bi bi-funnel"></i> Rules</h6>
-                <button type="button" id="spbAddRuleBtn" class="btn btn-sm btn-outline-primary">Add Rule</button>
+                <div class="d-flex gap-2">
+                  <button type="button" id="spbAddRuleBtn" class="btn btn-sm btn-outline-primary">Add Rule</button>
+                  <button type="button" id="spbAddGroupBtn" class="btn btn-sm btn-outline-dark">Add Group</button>
+                </div>
               </div>
+              <p class="text-muted small mb-2">Use groups for nested logic like: (loved OR high rating) AND recent plays.</p>
               <div id="spbRulesContainer" class="d-flex flex-column gap-2"></div>
             </div>
 

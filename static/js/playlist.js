@@ -880,42 +880,12 @@ const SPB_PRESETS = {
   }
 };
 
-function spbGetField(fieldKey) {
-  return SPB_FIELDS.find(f => f.key === fieldKey) || null;
-}
-
-function spbCreateSelectOptions(items, placeholder, valueKey = 'key', labelKey = 'label') {
-  let html = `<option value="">${placeholder}</option>`;
-  items.forEach(item => {
-    html += `<option value="${item[valueKey]}">${item[labelKey]}</option>`;
-  });
-  return html;
-}
-
-function spbFieldSelectHtml(selected = '') {
-  let html = '<option value="">Field</option>';
-  SPB_FIELDS.forEach(field => {
-    const selectedAttr = selected === field.key ? ' selected' : '';
-    html += `<option value="${field.key}"${selectedAttr}>${field.label}</option>`;
-  });
-  return html;
-}
-
-function spbSortFieldSelectHtml(selected = '') {
-  let html = '<option value="">Sort field</option>';
-  SPB_SORT_FIELDS.forEach(field => {
-    const selectedAttr = selected === field ? ' selected' : '';
-    html += `<option value="${field}"${selectedAttr}>${field}</option>`;
-  });
-  return html;
-}
-
-function spbAddRule(prefill = null) {
-  const container = document.getElementById('spbRulesContainer');
-  if (!container) return;
+function spbAddRule(prefill = null, container = null) {
+  const targetContainer = container || document.getElementById('spbRulesContainer');
+  if (!targetContainer) return;
 
   const row = document.createElement('div');
-  row.className = 'border rounded p-2 spb-rule-row';
+  row.className = 'border rounded p-2 spb-rule-row spb-item';
   row.innerHTML = `
     <div class="row g-2 align-items-end">
       <div class="col-md-4">
@@ -935,6 +905,84 @@ function spbAddRule(prefill = null) {
       </div>
     </div>
   `;
+  targetContainer.appendChild(row);
+
+  const fieldEl = row.querySelector('.spb-field');
+  const opEl = row.querySelector('.spb-operator');
+
+  fieldEl.addEventListener('change', () => {
+    spbUpdateOperatorOptions(row);
+    spbUpdateValueInput(row);
+    spbUpdatePreview();
+  });
+
+  opEl.addEventListener('change', () => {
+    spbUpdateValueInput(row);
+    spbUpdatePreview();
+  });
+
+  row.querySelector('.spb-remove-rule').addEventListener('click', () => {
+    row.remove();
+    spbUpdatePreview();
+  });
+
+  row.addEventListener('input', spbUpdatePreview);
+  row.addEventListener('change', spbUpdatePreview);
+
+  spbUpdateOperatorOptions(row, prefill?.operator);
+  spbUpdateValueInput(row, prefill?.value);
+}
+
+function spbAddGroup(prefill = null, container = null) {
+  const targetContainer = container || document.getElementById('spbRulesContainer');
+  if (!targetContainer) return;
+
+  const group = document.createElement('div');
+  group.className = 'border border-secondary rounded p-2 spb-group-item spb-item';
+  group.innerHTML = `
+    <div class="d-flex justify-content-between align-items-center mb-2">
+      <div class="d-flex align-items-center gap-2">
+        <span class="badge bg-secondary">Group</span>
+        <select class="form-select form-select-sm spb-group-logic" style="width: 180px;">
+          <option value="all">ALL rules must match</option>
+          <option value="any">ANY rule can match</option>
+        </select>
+      </div>
+      <button type="button" class="btn btn-sm btn-outline-danger spb-remove-group">Remove Group</button>
+    </div>
+    <div class="spb-group-rules d-flex flex-column gap-2 mb-2"></div>
+    <div class="d-flex gap-2">
+      <button type="button" class="btn btn-sm btn-outline-primary spb-group-add-rule">Add Rule</button>
+      <button type="button" class="btn btn-sm btn-outline-dark spb-group-add-group">Add Subgroup</button>
+    </div>
+  `;
+  targetContainer.appendChild(group);
+
+  if (prefill?.logic === 'any') {
+    group.querySelector('.spb-group-logic').value = 'any';
+  }
+
+  const groupRules = group.querySelector('.spb-group-rules');
+  group.querySelector('.spb-group-add-rule').addEventListener('click', () => {
+    spbAddRule(null, groupRules);
+    spbUpdatePreview();
+  });
+  group.querySelector('.spb-group-add-group').addEventListener('click', () => {
+    spbAddGroup(null, groupRules);
+    spbUpdatePreview();
+  });
+  group.querySelector('.spb-remove-group').addEventListener('click', () => {
+    group.remove();
+    spbUpdatePreview();
+  });
+  group.querySelector('.spb-group-logic').addEventListener('change', spbUpdatePreview);
+
+  if (Array.isArray(prefill?.conditions) && prefill.conditions.length > 0) {
+    spbRenderConditions(groupRules, prefill.conditions);
+  } else {
+    spbAddRule(null, groupRules);
+  }
+}
   container.appendChild(row);
 
   const fieldEl = row.querySelector('.spb-field');
@@ -1103,24 +1151,62 @@ function spbParseValue(field, operator, wrap) {
 }
 
 function spbCollectRules() {
+  return spbCollectRulesFromContainer(document.getElementById('spbRulesContainer'));
+}
+
+function spbCollectRulesFromContainer(container) {
   const rules = [];
-  const rows = document.querySelectorAll('#spbRulesContainer .spb-rule-row');
-  rows.forEach(row => {
-    const fieldKey = row.querySelector('.spb-field')?.value;
-    const operator = row.querySelector('.spb-operator')?.value;
-    const field = spbGetField(fieldKey);
-    const wrap = row.querySelector('.spb-value-wrap');
-    if (!field || !operator || !wrap) return;
+  if (!container) return rules;
 
-    const value = spbParseValue(field, operator, wrap);
-    if (value === null || Number.isNaN(value)) return;
+  Array.from(container.children).forEach(item => {
+    if (item.classList.contains('spb-rule-row')) {
+      const fieldKey = item.querySelector('.spb-field')?.value;
+      const operator = item.querySelector('.spb-operator')?.value;
+      const field = spbGetField(fieldKey);
+      const wrap = item.querySelector('.spb-value-wrap');
+      if (!field || !operator || !wrap) return;
 
-    const cond = {};
-    cond[operator] = {};
-    cond[operator][field.key] = value;
-    rules.push(cond);
+      const value = spbParseValue(field, operator, wrap);
+      if (value === null || Number.isNaN(value)) return;
+
+      const cond = {};
+      cond[operator] = {};
+      cond[operator][field.key] = value;
+      rules.push(cond);
+      return;
+    }
+
+    if (item.classList.contains('spb-group-item')) {
+      const logic = item.querySelector('.spb-group-logic')?.value || 'all';
+      const groupRules = item.querySelector('.spb-group-rules');
+      const conditions = spbCollectRulesFromContainer(groupRules);
+      if (conditions.length > 0) {
+        const nested = {};
+        nested[logic] = conditions;
+        rules.push(nested);
+      }
+    }
   });
+
   return rules;
+}
+
+function spbRenderConditions(container, conditions) {
+  if (!container || !Array.isArray(conditions)) return;
+  conditions.forEach(condition => {
+    const key = Object.keys(condition || {})[0];
+    if (!key) return;
+
+    if ((key === 'all' || key === 'any') && Array.isArray(condition[key])) {
+      spbAddGroup({ logic: key, conditions: condition[key] }, container);
+      return;
+    }
+
+    const payload = condition[key] || {};
+    const field = Object.keys(payload)[0];
+    if (!field) return;
+    spbAddRule({ field, operator: key, value: payload[field] }, container);
+  });
 }
 
 function spbCollectSorts() {
@@ -1197,13 +1283,7 @@ function spbApplyPreset(key) {
   const rules = preset.playlist[logic] || [];
   const rulesContainer = document.getElementById('spbRulesContainer');
   rulesContainer.innerHTML = '';
-  rules.forEach(rule => {
-    const operator = Object.keys(rule)[0];
-    const payload = rule[operator] || {};
-    const field = Object.keys(payload)[0];
-    const value = payload[field];
-    spbAddRule({ field, operator, value });
-  });
+  spbRenderConditions(rulesContainer, rules);
   if (rules.length === 0) spbAddRule();
 
   const sortsContainer = document.getElementById('spbSortContainer');
@@ -1304,6 +1384,11 @@ function initSmartPlaylistBuilder() {
 
   document.getElementById('spbAddRuleBtn')?.addEventListener('click', () => {
     spbAddRule();
+    spbUpdatePreview();
+  });
+
+  document.getElementById('spbAddGroupBtn')?.addEventListener('click', () => {
+    spbAddGroup();
     spbUpdatePreview();
   });
 
