@@ -784,6 +784,7 @@ const SPB_FIELDS = [
 const SPB_SORT_FIELDS = [
   'random', 'title', 'album', 'artist', 'albumartist',
   'year', 'rating', 'playcount', 'lastplayed', 'dateadded',
+  'datemodified', 'dateloved', 'daterated',
   'duration', 'bitrate', 'genre', 'mood'
 ];
 
@@ -1255,12 +1256,18 @@ async function spbSubmitBuilder(event) {
 
   const fileName = (document.getElementById('spbFileName')?.value || '').trim();
   const playlist = spbBuildJson();
+  const logic = document.getElementById('spbLogic')?.value || 'all';
+  const conditions = Array.isArray(playlist[logic]) ? playlist[logic] : [];
   if (!fileName) {
     alert('File name is required');
     return;
   }
   if (!playlist.name) {
     alert('Playlist name is required');
+    return;
+  }
+  if (conditions.length === 0) {
+    alert('Add at least one valid rule before creating a smart playlist');
     return;
   }
 
