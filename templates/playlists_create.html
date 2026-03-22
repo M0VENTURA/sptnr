@@ -158,7 +158,7 @@
                   <button type="button" id="spbAddGroupBtn" class="btn btn-sm btn-outline-dark">Add Group</button>
                 </div>
               </div>
-              <p class="text-muted small mb-2">Use groups for nested logic like: (loved OR high rating) AND recent plays.</p>
+              <p class="text-muted small mb-2">Use groups for nested logic like: (loved OR high rating) AND recent plays. Drag rules or groups to reorder.</p>
               <div id="spbRulesContainer" class="d-flex flex-column gap-2"></div>
             </div>
 
@@ -658,6 +658,15 @@
     .bg-light {
       background-color: var(--secondary-bg) !important;
     }
+  }
+
+  .spb-item {
+    cursor: move;
+  }
+
+  .spb-dragging {
+    opacity: 0.55;
+    border-style: dashed !important;
   }
 </style>
 

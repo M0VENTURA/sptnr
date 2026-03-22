@@ -822,6 +822,66 @@ const SPB_OPERATORS = {
 };
 
 const SPB_PRESETS = {
+
+  let spbDraggedItem = null;
+
+  function spbEnableDropContainer(container) {
+    if (!container || container.dataset.dndEnabled === '1') return;
+    container.dataset.dndEnabled = '1';
+
+    container.addEventListener('dragover', event => {
+      event.preventDefault();
+      if (!spbDraggedItem) return;
+
+      const afterElement = spbGetDragAfterElement(container, event.clientY);
+      if (!afterElement) {
+        container.appendChild(spbDraggedItem);
+        return;
+      }
+      container.insertBefore(spbDraggedItem, afterElement);
+    });
+
+    container.addEventListener('drop', event => {
+      event.preventDefault();
+      spbUpdatePreview();
+    });
+  }
+
+  function spbGetDragAfterElement(container, mouseY) {
+    const draggableElements = [...container.querySelectorAll(':scope > .spb-item:not(.spb-dragging)')];
+
+    let closest = { offset: Number.NEGATIVE_INFINITY, element: null };
+    draggableElements.forEach(element => {
+      const box = element.getBoundingClientRect();
+      const offset = mouseY - box.top - box.height / 2;
+      if (offset < 0 && offset > closest.offset) {
+        closest = { offset, element };
+      }
+    });
+
+    return closest.element;
+  }
+
+  function spbEnableDragItem(item) {
+    if (!item || item.dataset.dragEnabled === '1') return;
+    item.dataset.dragEnabled = '1';
+    item.setAttribute('draggable', 'true');
+
+    item.addEventListener('dragstart', event => {
+      spbDraggedItem = item;
+      item.classList.add('spb-dragging');
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', 'spb-item');
+      }
+    });
+
+    item.addEventListener('dragend', () => {
+      item.classList.remove('spb-dragging');
+      spbDraggedItem = null;
+      spbUpdatePreview();
+    });
+  }
   recently_played: {
     fileName: 'recently-played',
     playlist: {
@@ -884,6 +944,8 @@ function spbAddRule(prefill = null, container = null) {
   const targetContainer = container || document.getElementById('spbRulesContainer');
   if (!targetContainer) return;
 
+	spbEnableDropContainer(targetContainer);
+
   const row = document.createElement('div');
   row.className = 'border rounded p-2 spb-rule-row spb-item';
   row.innerHTML = `
@@ -929,6 +991,7 @@ function spbAddRule(prefill = null, container = null) {
   row.addEventListener('input', spbUpdatePreview);
   row.addEventListener('change', spbUpdatePreview);
 
+	spbEnableDragItem(row);
   spbUpdateOperatorOptions(row, prefill?.operator);
   spbUpdateValueInput(row, prefill?.value);
 }
@@ -936,6 +999,8 @@ function spbAddRule(prefill = null, container = null) {
 function spbAddGroup(prefill = null, container = null) {
   const targetContainer = container || document.getElementById('spbRulesContainer');
   if (!targetContainer) return;
+
+	spbEnableDropContainer(targetContainer);
 
   const group = document.createElement('div');
   group.className = 'border border-secondary rounded p-2 spb-group-item spb-item';
@@ -976,6 +1041,8 @@ function spbAddGroup(prefill = null, container = null) {
     spbUpdatePreview();
   });
   group.querySelector('.spb-group-logic').addEventListener('change', spbUpdatePreview);
+
+	spbEnableDragItem(group);
 
   if (Array.isArray(prefill?.conditions) && prefill.conditions.length > 0) {
     spbRenderConditions(groupRules, prefill.conditions);
