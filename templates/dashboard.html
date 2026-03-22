@@ -138,6 +138,7 @@
                         <option value="navidrome">Navidrome Import</option>
                         <option value="metadata">Metadata Import</option>
                         <option value="popularity">Popularity and Single Scan</option>
+                        <option value="mood">Mood Scan (AcousticBrainz)</option>
                         <option value="combined">Combined Scan</option>
                     </select>
                     <button id="startScanBtn" class="btn btn-primary btn-sm" onclick="startSelectedScan(false)">
@@ -253,6 +254,9 @@
     <div class="d-flex flex-column flex-md-row gap-2">
         <a href="{{ url_for('artists') }}" class="btn btn-primary flex-grow-1">
             <i class="bi bi-people"></i> <span class="d-none d-sm-inline">Browse Artists</span>
+        </a>
+        <a href="{{ url_for('analytics_genres_moods_page') }}" class="btn btn-outline-info flex-grow-1">
+            <i class="bi bi-bar-chart-line"></i> <span class="d-none d-sm-inline">Genres & Moods</span>
         </a>
         <a href="{{ url_for('config_editor') }}" class="btn btn-outline-secondary flex-grow-1">
             <i class="bi bi-gear"></i> <span class="d-none d-sm-inline">Settings</span>
@@ -597,11 +601,13 @@ document.addEventListener('DOMContentLoaded', function() {
                 const typeName = group.album === 'navidrome' ? 'Navidrome Import'
                     : group.album === 'popularity' ? 'Popularity Scan'
                     : group.album === 'singles' ? 'Singles Scan'
+                    : group.album === 'mood' ? 'Mood Scan'
                     : group.album === 'combined' ? 'Combined Scan'
                     : escapeHtml(group.album);
                 const typeIcon = group.album === 'navidrome' ? 'bi-cloud'
                     : group.album === 'popularity' ? 'bi-graph-up'
                     : group.album === 'singles' ? 'bi-star'
+                    : group.album === 'mood' ? 'bi-emoji-smile'
                     : 'bi-lightning-fill';
                 return `
                     <tr class="table-success bg-opacity-10">
@@ -633,6 +639,8 @@ document.addEventListener('DOMContentLoaded', function() {
                     badgeHtml = '<span class="badge bg-success" title="' + st.timestamp + '"><i class="bi bi-graph-up"></i> Popularity</span>';
                 } else if (st.type === 'singles' || st.type === 'singles_scan' || st.type === 'single_detection') {
                     badgeHtml = '<span class="badge bg-warning text-dark" title="' + st.timestamp + '"><i class="bi bi-star"></i> Singles</span>';
+                } else if (st.type === 'mood' || st.type === 'mood_scan') {
+                    badgeHtml = '<span class="badge bg-secondary" title="' + st.timestamp + '"><i class="bi bi-emoji-smile"></i> Mood</span>';
                 } else if (st.type === 'combined') {
                     badgeHtml = '<span class="badge bg-info text-dark" title="' + st.timestamp + '"><i class="bi bi-lightning-fill"></i> Combined</span>';
                 } else if (st.type === 'unified') {
@@ -786,6 +794,9 @@ document.addEventListener('DOMContentLoaded', function() {
                     if (data.scan_type === 'singles_scan') {
                         activeScanType = 'singles_scan';
                         scanDisplayName = 'Singles Detection';
+                    } else if (data.scan_type === 'mood_scan') {
+                        activeScanType = 'mood_scan';
+                        scanDisplayName = 'Mood Scan';
                     } else if (data.scan_type === 'combined_scan') {
                         activeScanType = 'combined_scan';
                         scanDisplayName = 'Combined Scan';
@@ -801,6 +812,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         'navidrome_scan': { type: 'navidrome_scan', name: 'Navidrome Import' },
                         'popularity_scan': { type: 'popularity_scan', name: 'Popularity and Single Scan' },
                         'singles_scan': { type: 'singles_scan', name: 'Singles Detection' },
+                        'mood_scan': { type: 'mood_scan', name: 'Mood Scan' },
                         'combined_scan': { type: 'combined_scan', name: 'Combined Scan' },
                         'missing_releases_scan': { type: 'missing_releases_scan', name: 'Missing Releases Scan' }
                     };
@@ -840,6 +852,17 @@ document.addEventListener('DOMContentLoaded', function() {
                         details += ` · ${data.current_artist}`;
                     }
                     barColor = activeScanType === 'combined_scan' ? 'bg-info' : 'bg-success';
+                } else if (activeScanType === 'mood_scan' && data.total_artists !== undefined) {
+                    const processedArtists = data.processed_artists || 0;
+                    const totalArtists = data.total_artists || 0;
+                    percent = totalArtists ? Math.round((processedArtists / totalArtists) * 100) : (data.percent_complete || 0);
+                    const scannedTracks = data.scanned_tracks || 0;
+                    const updatedTracks = data.updated_tracks || 0;
+                    details = totalArtists ? `${processedArtists}/${totalArtists} artists · ${updatedTracks}/${scannedTracks} tracks updated` : 'Analyzing track moods';
+                    if (data.current_artist) {
+                        details += ` · ${data.current_artist}`;
+                    }
+                    barColor = 'bg-secondary';
                 } else if (activeScanType === 'missing_releases_scan' && data.total_artists !== undefined) {
                     const processedArtists = data.processed_artists || 0;
                     const totalArtists = data.total_artists || 0;
@@ -878,6 +901,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (currentArtist) {
                     const scanTypeKey = activeScanType === 'navidrome_scan' ? 'navidrome'
                         : activeScanType === 'singles_scan' ? 'singles'
+                        : activeScanType === 'mood_scan' ? 'mood'
                         : activeScanType === 'combined_scan' ? 'combined'
                         : 'popularity';
                     _currentScanningAlbum = {
@@ -1262,6 +1286,8 @@ function startSelectedScan(restart = false) {
         actionUrl = '{{ url_for("scan_mp3_import") }}';
     } else if (scanType === 'popularity') {
         actionUrl = '{{ url_for("scan_popularity_route") }}';
+    } else if (scanType === 'mood') {
+        actionUrl = '{{ url_for("scan_mood") }}';
     } else if (scanType === 'combined') {
         actionUrl = '{{ url_for("scan_combined") }}';
     }
@@ -1270,7 +1296,7 @@ function startSelectedScan(restart = false) {
     if (scanType !== 'metadata') {
         url.searchParams.append('mode', mode);
     }
-    if (scanType === 'navidrome' || scanType === 'popularity' || scanType === 'combined') {
+    if (scanType === 'navidrome' || scanType === 'popularity' || scanType === 'mood' || scanType === 'combined') {
         url.searchParams.append('restart', restart ? '1' : '0');
     }
 

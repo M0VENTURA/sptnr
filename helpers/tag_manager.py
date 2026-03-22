@@ -31,6 +31,7 @@ except ImportError:
     _FLAC_AVAILABLE = False
 
 from .db_utils import get_db_connection, _is_postgres_connection
+from .metadata_reader import find_track_file
 
 
 logger = logging.getLogger(__name__)
@@ -50,7 +51,7 @@ EDITABLE_FIELDS = {
     # Numbering
     "track_number", "tracktotal", "disc_number", "totaldiscs",
     # Content
-    "genres", "work",
+    "genres", "work", "mood",
     # Technical
     "bpm", "isrc", "script",
     # MusicBrainz IDs
@@ -473,6 +474,11 @@ def _write_id3_tags(file_path: str, tags: Dict[str, Any]) -> bool:
                     audio.tags.delall("TCON")
                     if genre_values:
                         audio.tags.add(TCON(encoding=3, text=genre_values))
+            elif field == "mood":
+                frame_key = "TXXX:MOOD"
+                audio.tags.delall(frame_key)
+                if value is not None and str(value).strip():
+                    audio.tags.add(TXXX(encoding=3, desc="MOOD", text=[str(value)]))
             elif field == "comment":
                 audio.tags.delall("COMM")
                 if value is not None and str(value).strip():
@@ -521,6 +527,7 @@ def _write_flac_tags(file_path: str, tags: Dict[str, Any]) -> bool:
             "date": "date",
             "genre": "genre",
             "genres": "genre",
+            "mood": "mood",
             "comment": "comment",
             "mbid": "musicbrainz_trackid",
             "musicbrainz_album_mbid": "musicbrainz_albumid",
@@ -604,7 +611,7 @@ def sync_track_tags_to_file(track_id: str) -> bool:
         cursor.execute(f"""
             SELECT id, title, album, artist, album_artist, albumartist, composer, 
                    year, originalyear, track_number, disc_number, genres, 
-                   comment, mbid, musicbrainz_album_mbid, file_path
+                   mood, comment, mbid, musicbrainz_album_mbid, file_path
             FROM tracks 
             WHERE id = {placeholder}
         """, (track_id,))
@@ -615,12 +622,47 @@ def sync_track_tags_to_file(track_id: str) -> bool:
             logger.warning(f"Track not found: {track_id}")
             return False
         
+        result_fields = [
+            'id', 'title', 'album', 'artist', 'album_artist', 'albumartist',
+            'composer', 'year', 'originalyear', 'track_number', 'disc_number',
+            'genres', 'mood', 'comment', 'mbid', 'musicbrainz_album_mbid', 'file_path'
+        ]
+
+        # Helper to read from dict-like and tuple-like cursor rows.
+        def _row_get(row: Any, field_name: str, index: int) -> Any:
+            if isinstance(row, dict):
+                return row.get(field_name)
+            if hasattr(row, 'keys'):
+                try:
+                    return row[field_name]
+                except Exception:
+                    pass
+            if index < len(row):
+                return row[index]
+            return None
+
         # Extract file path
-        file_path = result['file_path'] if isinstance(result, dict) else result[-1]
+        file_path = _row_get(result, 'file_path', len(result_fields) - 1)
         
+        # Use metadata-based search when path is missing (e.g., legacy rows).
         if not file_path:
-            logger.warning(f"No file path found for track {track_id}")
-            return False
+            title = _row_get(result, 'title', 1)
+            album = _row_get(result, 'album', 2)
+            artist = _row_get(result, 'artist', 3)
+            album_artist = _row_get(result, 'album_artist', 4) or _row_get(result, 'albumartist', 5)
+            music_folder = os.environ.get("MUSIC_FOLDER", "/music")
+
+            # Try album artist first for compilation/Various Artists folder layouts.
+            if album_artist and album and title:
+                file_path = find_track_file(album_artist, album, title, music_root=music_folder, timeout_seconds=5)
+            if not file_path and artist and album and title:
+                file_path = find_track_file(artist, album, title, music_root=music_folder, timeout_seconds=5)
+
+            if file_path:
+                logger.debug(f"Resolved missing file path for track {track_id}: {file_path}")
+            else:
+                logger.warning(f"No file path found for track {track_id}")
+                return False
         
         # Handle relative paths from Navidrome - convert to absolute
         if file_path and not os.path.isabs(file_path):
@@ -632,8 +674,24 @@ def sync_track_tags_to_file(track_id: str) -> bool:
         
         # Check if file exists
         if not os.path.exists(file_path):
-            logger.error(f"Audio file not found: {file_path}")
-            return False
+            title = _row_get(result, 'title', 1)
+            album = _row_get(result, 'album', 2)
+            artist = _row_get(result, 'artist', 3)
+            album_artist = _row_get(result, 'album_artist', 4) or _row_get(result, 'albumartist', 5)
+            music_folder = os.environ.get("MUSIC_FOLDER", "/music")
+
+            fallback_path = None
+            if album_artist and album and title:
+                fallback_path = find_track_file(album_artist, album, title, music_root=music_folder, timeout_seconds=5)
+            if not fallback_path and artist and album and title:
+                fallback_path = find_track_file(artist, album, title, music_root=music_folder, timeout_seconds=5)
+
+            if fallback_path and os.path.exists(fallback_path):
+                file_path = fallback_path
+                logger.debug(f"Resolved moved file path for track {track_id}: {file_path}")
+            else:
+                logger.error(f"Audio file not found: {file_path}")
+                return False
         
         # Prepare tags from database
         tags = {}
@@ -649,28 +707,19 @@ def sync_track_tags_to_file(track_id: str) -> bool:
             'track_number': 'track_number',
             'disc_number': 'disc_number',
             'genres': 'genres',
+            'mood': 'mood',
             'comment': 'comment',
             'mbid': 'mbid',
             'musicbrainz_album_mbid': 'musicbrainz_album_mbid'
         }
-        result_fields = [
-            'id', 'title', 'album', 'artist', 'album_artist', 'albumartist',
-            'composer', 'year', 'originalyear', 'track_number', 'disc_number',
-            'genres', 'comment', 'mbid', 'musicbrainz_album_mbid', 'file_path'
-        ]
         
         # Extract values from result
         for idx, field in enumerate(result_fields):
             if field not in field_mapping:
                 continue
-            if isinstance(result, dict):
-                value = result.get(field)
-            else:
-                if idx >= len(result):
-                    continue
-                value = result[idx]
-                if value is not None and str(value).strip():
-                    tags[field_mapping[field]] = value
+            value = _row_get(result, field, idx)
+            if value is not None and str(value).strip():
+                tags[field_mapping[field]] = value
         
         # If no tags were extracted, return False
         if not tags:

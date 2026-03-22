@@ -86,6 +86,7 @@
                                                 <option value="artist">Artist</option>
                                                 <option value="albumartist">Album Artist</option>
                                                 <option value="genre">Genre</option>
+                                                <option value="mood">Mood</option>
                                             </optgroup>
                                             <optgroup label="Rating & Playback">
                                                 <option value="rating">Rating</option>
@@ -401,6 +402,7 @@ const operatorMap = {
     'artist': ['is', 'isNot', 'contains', 'notContains', 'startsWith', 'endsWith'],
     'albumartist': ['is', 'isNot', 'contains', 'notContains', 'startsWith', 'endsWith'],
     'genre': ['is', 'isNot', 'contains', 'notContains', 'startsWith', 'endsWith'],
+    'mood': ['is', 'isNot', 'contains', 'notContains', 'startsWith', 'endsWith'],
     'comment': ['is', 'isNot', 'contains', 'notContains', 'startsWith', 'endsWith'],
     'filepath': ['is', 'isNot', 'contains', 'notContains', 'startsWith', 'endsWith'],
     
@@ -512,6 +514,7 @@ function addFilter() {
                         <option value="artist">Artist</option>
                         <option value="albumartist">Album Artist</option>
                         <option value="genre">Genre</option>
+                        <option value="mood">Mood</option>
                     </optgroup>
                     <optgroup label="Rating & Playback">
                         <option value="rating">Rating</option>
@@ -657,6 +660,7 @@ function resetForm() {
                             <option value="artist">Artist</option>
                             <option value="albumartist">Album Artist</option>
                             <option value="genre">Genre</option>
+                            <option value="mood">Mood</option>
                         </optgroup>
                         <optgroup label="Rating & Playback">
                             <option value="rating">Rating</option>
