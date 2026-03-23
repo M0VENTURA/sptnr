@@ -1268,7 +1268,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // ===== Scan Controls =====
 
-function startSelectedScan(restart = false) {
+function startSelectedScan(restart = false, forceStart = false) {
     const scanType = document.getElementById('scanTypeSelect').value;
 
     if (!firstFullScanDone && scanType !== 'navidrome') {
@@ -1299,11 +1299,43 @@ function startSelectedScan(restart = false) {
     if (scanType === 'navidrome' || scanType === 'popularity' || scanType === 'mood' || scanType === 'combined') {
         url.searchParams.append('restart', restart ? '1' : '0');
     }
+    if (forceStart) {
+        url.searchParams.append('force_start', '1');
+    }
 
     // Keep startup scan type aligned with the latest user selection when launch-on-startup is enabled.
     const launchBtn = document.getElementById('launchStartupBtn');
     if (launchBtn && launchBtn.dataset.enabled === 'true') {
         updateStartupLaunchFeature(true).catch(() => {});
+    }
+
+    // For popularity scans use fetch so we can intercept the 409 "already running" response
+    // and show a confirmation dialog instead of silently blocking the action.
+    if (scanType === 'popularity') {
+        fetch(url.toString(), { method: 'POST' })
+            .then(function(response) {
+                if (response.status === 409) {
+                    return response.json()
+                        .then(function(data) {
+                            var msg = (data && data.message) ? data.message : 'A scan is already running.';
+                            if (confirm(msg + '\n\nDo you want to start a new scan anyway?')) {
+                                startSelectedScan(restart, true);
+                            }
+                        })
+                        .catch(function() {
+                            if (confirm('A scan is already running.\n\nDo you want to start a new scan anyway?')) {
+                                startSelectedScan(restart, true);
+                            }
+                        });
+                }
+                // On success redirect to dashboard to show flash messages / updated state
+                window.location.href = '/dashboard';
+            })
+            .catch(function(err) {
+                console.error('Error starting popularity scan:', err);
+                alert('Could not start scan. Please check the server logs.');
+            });
+        return;
     }
 
     var form = document.createElement('form');

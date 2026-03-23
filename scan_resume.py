@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 # Progress file paths
 NAVIDROME_PROGRESS_FILE = os.environ.get("NAVIDROME_PROGRESS_FILE", "/database/navidrome_scan_progress.json")
-POPULARITY_PROGRESS_FILE = os.environ.get("PROGRESS_FILE", "/database/scan_progress.json")
+POPULARITY_PROGRESS_FILE = os.environ.get("POPULARITY_PROGRESS_FILE", "/database/popularity_scan_progress.json")
 
 
 def load_scan_progress(scan_type: str = "navidrome") -> Optional[Dict]:
@@ -51,6 +51,8 @@ def load_scan_progress(scan_type: str = "navidrome") -> Optional[Dict]:
     # Get progress file path at runtime to support testing
     if scan_type == "navidrome":
         progress_file = os.environ.get("NAVIDROME_PROGRESS_FILE", "/database/navidrome_scan_progress.json")
+    elif scan_type == "popularity":
+        progress_file = os.environ.get("POPULARITY_PROGRESS_FILE", "/database/popularity_scan_progress.json")
     elif scan_type == "combined":
         progress_file = os.environ.get("COMBINED_PROGRESS_FILE", "/database/combined_scan_progress.json")
     else:
@@ -85,6 +87,8 @@ def save_scan_progress(scan_type: str, progress_data: Dict) -> bool:
     # Get progress file path at runtime to support testing
     if scan_type == "navidrome":
         progress_file = os.environ.get("NAVIDROME_PROGRESS_FILE", "/database/navidrome_scan_progress.json")
+    elif scan_type == "popularity":
+        progress_file = os.environ.get("POPULARITY_PROGRESS_FILE", "/database/popularity_scan_progress.json")
     elif scan_type == "combined":
         progress_file = os.environ.get("COMBINED_PROGRESS_FILE", "/database/combined_scan_progress.json")
     else:
@@ -119,6 +123,8 @@ def clear_scan_progress(scan_type: str = "navidrome") -> bool:
     # Get progress file path at runtime
     if scan_type == "navidrome":
         progress_file = os.environ.get("NAVIDROME_PROGRESS_FILE", "/database/navidrome_scan_progress.json")
+    elif scan_type == "popularity":
+        progress_file = os.environ.get("POPULARITY_PROGRESS_FILE", "/database/popularity_scan_progress.json")
     elif scan_type == "combined":
         progress_file = os.environ.get("COMBINED_PROGRESS_FILE", "/database/combined_scan_progress.json")
     else:

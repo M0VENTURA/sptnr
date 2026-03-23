@@ -3582,6 +3582,18 @@ def popularity_scan(
             
             log_unified(f"Popularity Scan - Scanning Artist {artist} ({len(albums)} album(s))")
             log_debug(f"Processing artist/album group: {artist} with {len(albums)} albums")
+
+            # Mark this artist as in-progress immediately so that if the scan is
+            # interrupted during album processing the checkpoint correctly points to
+            # this artist rather than the previously completed one.
+            save_popularity_progress(
+                processed_artists,
+                total_artists,
+                current_artist=artist,
+                progress_file=progress_file_path,
+                scan_type=progress_scan_type,
+            )
+            log_debug(f"In-progress checkpoint saved for artist: {artist}")
             
             # Get artist MBID from database cache for Last.fm context enrichment
             artist_mbid = None
