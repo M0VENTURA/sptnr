@@ -334,6 +334,24 @@ class CoverDetector:
         normalized = re.sub(r"\s+", " ", normalized)
         return normalized.strip()
 
+    def _extract_name_parts(self, value: str) -> Dict[str, str]:
+        """Extract first token/initial and surname for fuzzy person matching."""
+        normalized = self._normalize_name(value)
+        if not normalized:
+            return {"first": "", "first_initial": "", "last": ""}
+
+        tokens = [tok for tok in normalized.split() if tok]
+        if not tokens:
+            return {"first": "", "first_initial": "", "last": ""}
+
+        first = tokens[0]
+        last = tokens[-1]
+        return {
+            "first": first,
+            "first_initial": first[0] if first else "",
+            "last": last,
+        }
+
     def _names_match(self, left: str, right: str) -> bool:
         """Match names with token overlap to handle middle names and variants."""
         left_norm = self._normalize_name(left)
@@ -343,14 +361,41 @@ class CoverDetector:
         if left_norm == right_norm:
             return True
 
+        # Strong token overlap (ignores single-letter initials).
         left_tokens = {token for token in left_norm.split() if len(token) > 1}
         right_tokens = {token for token in right_norm.split() if len(token) > 1}
         if not left_tokens or not right_tokens:
-            return False
+            # Fall through to surname/initial matching below.
+            left_tokens = {token for token in left_norm.split() if token}
+            right_tokens = {token for token in right_norm.split() if token}
 
         intersection = left_tokens & right_tokens
         min_required = min(len(left_tokens), len(right_tokens))
-        return len(intersection) >= max(2, min_required)
+        if len(intersection) >= max(2, min_required):
+            return True
+
+        # Accept surname-only credits if the surname is sufficiently specific.
+        # Example: "Johnson" should match "Ryan Johnson" in band-member checks.
+        if len(left_tokens) == 1 and len(right_tokens) >= 2:
+            token = next(iter(left_tokens))
+            if token in right_tokens and len(token) >= 4:
+                return True
+        if len(right_tokens) == 1 and len(left_tokens) >= 2:
+            token = next(iter(right_tokens))
+            if token in left_tokens and len(token) >= 4:
+                return True
+
+        # Match abbreviated first names with shared surname.
+        # Example: "L. Cosby" vs "Lewis Cosby".
+        left_parts = self._extract_name_parts(left)
+        right_parts = self._extract_name_parts(right)
+        if left_parts["last"] and right_parts["last"] and left_parts["last"] == right_parts["last"]:
+            if left_parts["first"] == right_parts["first"]:
+                return True
+            if left_parts["first_initial"] and right_parts["first_initial"] and left_parts["first_initial"] == right_parts["first_initial"]:
+                return True
+
+        return False
 
     def _find_original_recording(
         self,
