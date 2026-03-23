@@ -1327,7 +1327,7 @@ async function updateStartupLaunchFeature(enabled) {
     const payload = {
         launch_on_startup: !!enabled,
         startup_scan_type: scanType,
-        startup_scan_restart: true,
+        startup_scan_restart: false,
     };
 
     const resp = await fetch('/api/features/update', {

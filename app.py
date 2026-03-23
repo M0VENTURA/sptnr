@@ -3209,6 +3209,26 @@ def _start_boot_album_artist_sync_only():
 
 def _schedule_configured_startup_scan_launch():
     """Launch configured scan set after reboot when enabled in feature settings."""
+    def _resolve_startup_scan_mode(scan_type, force_enabled, restart_requested):
+        mode = "force" if force_enabled else "all"
+        effective_restart = restart_requested
+        resume_artist = None
+
+        if scan_type not in {"navidrome", "popularity", "combined"}:
+            return mode, effective_restart, resume_artist
+
+        try:
+            from scan_resume import should_resume_scan
+
+            should_resume, resume_artist = should_resume_scan(scan_type)
+            if should_resume:
+                mode = "resume_force" if force_enabled else "resume"
+                effective_restart = False
+        except Exception as resume_err:
+            logging.warning(f"[BOOT] Could not evaluate resume state for {scan_type}: {resume_err}")
+
+        return mode, effective_restart, resume_artist
+
     def _worker():
         try:
             # Delay until module routes are fully loaded.
@@ -3231,7 +3251,7 @@ def _schedule_configured_startup_scan_launch():
                 return
 
             scan_type = str(features.get("startup_scan_type", "navidrome") or "navidrome").strip().lower()
-            restart = bool(features.get("startup_scan_restart", True))
+            restart = bool(features.get("startup_scan_restart", False))
             force_enabled = bool(features.get("force", False))
 
             mapping = {
@@ -3242,12 +3262,13 @@ def _schedule_configured_startup_scan_launch():
                 "combined": ("scan_combined", "/scan/combined"),
             }
             handler_name, base_path = mapping.get(scan_type, ("scan_navidrome", "/scan/navidrome"))
+            mode, effective_restart, resume_artist = _resolve_startup_scan_mode(scan_type, force_enabled, restart)
 
             params = []
             if scan_type != "metadata":
-                params.append("mode=force" if force_enabled else "mode=all")
+                params.append(f"mode={mode}")
             if scan_type in {"navidrome", "popularity", "mood", "combined"}:
-                params.append("restart=1" if restart else "restart=0")
+                params.append("restart=1" if effective_restart else "restart=0")
 
             request_path = base_path + (("?" + "&".join(params)) if params else "")
             handler = globals().get(handler_name)
@@ -3255,9 +3276,12 @@ def _schedule_configured_startup_scan_launch():
                 logging.warning(f"[BOOT] Startup scan launch skipped: handler '{handler_name}' not available")
                 return
 
+            if resume_artist:
+                log_unified(f"[BOOT] Launch on startup: resuming {scan_type} from {resume_artist}")
+
             log_unified(
                 f"[BOOT] Launch on startup: starting {scan_type} "
-                f"({'restart' if restart else 'normal'}, {'force' if force_enabled else 'changes'})"
+                f"({mode}, {'restart' if effective_restart else 'normal'})"
             )
             with app.test_request_context(request_path, method="POST"):
                 handler()
@@ -13203,7 +13227,7 @@ def api_features_update():
             "force": features.get("force", False),
             "launch_on_startup": features.get("launch_on_startup", False),
             "startup_scan_type": features.get("startup_scan_type", "navidrome"),
-            "startup_scan_restart": features.get("startup_scan_restart", True),
+            "startup_scan_restart": features.get("startup_scan_restart", False),
         })
     except Exception as e:
         logging.error(f"Error updating features: {e}")
