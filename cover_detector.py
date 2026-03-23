@@ -440,8 +440,38 @@ class CoverDetector:
                     continue
                 matched_work_ids.add(work_id)
 
+            recordings_by_id: Dict[str, Dict] = {}
+
+            # Title search remains useful as a broad candidate source.
             result = mb.search_recordings(recording=title, limit=25)
-            recordings = result.get('recording-list', [])
+            for rec in result.get('recording-list', []) or []:
+                rec_id = rec.get('id')
+                if rec_id:
+                    recordings_by_id[rec_id] = rec
+
+            # Work-linked expansion prevents wrong matches for common song titles.
+            # Prefer target work ids (from scanned MBID). If missing, use top matched
+            # work ids from title+writer search.
+            work_ids_for_expansion = set(target_work_ids)
+            if not work_ids_for_expansion and matched_work_ids:
+                work_ids_for_expansion.update(list(matched_work_ids)[:10])
+
+            for work_id in work_ids_for_expansion:
+                try:
+                    work_details = mb.get_work_by_id(work_id, includes=['recording-rels'])
+                    work_data = work_details.get('work', {})
+                    for rel in work_data.get('recording-relation-list', []) or []:
+                        rec = rel.get('recording') or {}
+                        rec_id = rec.get('id')
+                        if rec_id and rec_id not in recordings_by_id:
+                            recordings_by_id[rec_id] = {
+                                'id': rec_id,
+                                'title': rec.get('title', ''),
+                            }
+                except Exception:
+                    continue
+
+            recordings = list(recordings_by_id.values())
             if not recordings:
                 return None
 
@@ -529,8 +559,6 @@ class CoverDetector:
 
                 full_recording = details.get('recording', {})
                 recording_title = full_recording.get('title') or recording.get('title') or ''
-                if title_norm and not _titles_match(title, recording_title):
-                    continue
 
                 writer_names = []
 
@@ -566,13 +594,23 @@ class CoverDetector:
 
                 # Highest-confidence path: same underlying work as the scanned track MBID.
                 same_work_match = bool(target_work_ids and (recording_work_ids & target_work_ids))
+                matched_work_match = bool(matched_work_ids and (recording_work_ids & matched_work_ids))
+
+                # For common titles, require either title affinity or work linkage.
+                title_matches = (not title_norm) or _titles_match(title, recording_title)
+                if not title_matches and not same_work_match and not matched_work_match:
+                    continue
 
                 # If the scanned track has known work IDs, constrain candidates to that same work.
                 if target_work_ids and not same_work_match:
                     continue
 
+                # If we have writer-matched work IDs, reject recordings linked to different works.
+                if matched_work_ids and not matched_work_match and not writer_match:
+                    continue
+
                 # Strong signal: recording links to a work returned by title+writer search.
-                if not writer_match and matched_work_ids and (recording_work_ids & matched_work_ids):
+                if not writer_match and matched_work_match:
                     writer_match = True
 
                 artist_credit = full_recording.get('artist-credit', []) or recording.get('artist-credit', [])
