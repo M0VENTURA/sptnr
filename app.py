@@ -12523,6 +12523,8 @@ def scan_clear_stuck():
             scan_process_singles = None
         if scan_process_mood and not _is_process_alive(scan_process_mood):
             scan_process_mood = None
+        if scan_process_combined and not _is_process_alive(scan_process_combined):
+            scan_process_combined = None
         if scan_process_missing_releases and not _is_process_alive(scan_process_missing_releases):
             scan_process_missing_releases = None
         
@@ -14556,7 +14558,8 @@ def scan_combined():
                                 verbose=False, 
                                 force=force_rescan,
                                 artist_filter=artist_name,
-                                stop_progress_file=combined_progress_file
+                                stop_progress_file=combined_progress_file,
+                                caller_scan_type="combined_scan",
                             )
                             if completed is False:
                                 logging.info(f"Combined scan stop detected during popularity step for {artist_name}")
@@ -14596,6 +14599,23 @@ def scan_combined():
                         os.remove(checkpoint_path)
                     _write_progress_with_current_artist(combined_progress_file, "combined_scan", False, {"status": "error", "error": str(e), "exit_code": 1})
                 finally:
+                    # Ensure the combined scan progress file is never left with is_running=True
+                    # after the thread exits. This covers crash scenarios where neither the success
+                    # nor error path wrote a clean final state (e.g. double exception in handlers).
+                    try:
+                        try:
+                            with open(combined_progress_file, 'r', encoding='utf-8') as _f:
+                                _final_state = json.load(_f)
+                        except Exception:
+                            _final_state = {}
+                        if _final_state.get('is_running', False):
+                            _final_state['is_running'] = False
+                            if not _final_state.get('status'):
+                                _final_state['status'] = 'error'
+                            with open(combined_progress_file, 'w', encoding='utf-8') as _f:
+                                json.dump(_final_state, _f)
+                    except Exception as _fe:
+                        logging.error(f"Error in combined scan finally cleanup of progress file: {_fe}")
                     # Clean up thread reference when done
                     with scan_lock:
                         scan_process_combined = None
