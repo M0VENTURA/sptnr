@@ -4596,7 +4596,7 @@ async function loadQueueMatchTargets(queueId, artist, album, fallbackTitle) {
   if (!summaryEl || !selectEl) return;
 
   const fallbackLabel = fallbackTitle || '(untitled track)';
-  const defaultOption = `<option value="${queueId}" selected>#${queueId} - ${escapeHtml(fallbackLabel)}</option>`;
+  const defaultOption = `<option value="${queueId}" data-track-number="" data-title="${escapeHtml(fallbackLabel)}" selected>#${queueId} - ${escapeHtml(fallbackLabel)}</option>`;
 
   selectEl.innerHTML = defaultOption;
   selectEl.dataset.initialQueueId = String(queueId);
@@ -4618,7 +4618,7 @@ async function loadQueueMatchTargets(queueId, artist, album, fallbackTitle) {
       const trackNo = target.track_number ? `#${target.track_number} ` : '';
       const status = target.status ? ` [${target.status}]` : '';
       const selected = targetId === Number(queueId) ? ' selected' : '';
-      return `<option value="${targetId}"${selected}>${escapeHtml(`#${targetId} ${trackNo}${targetTitle}${status}`)}</option>`;
+      return `<option value="${targetId}" data-track-number="${escapeHtml(String(target.track_number || ''))}" data-title="${escapeHtml(targetTitle)}"${selected}>${escapeHtml(`#${targetId} ${trackNo}${targetTitle}${status}`)}</option>`;
     }).join('');
 
     selectEl.innerHTML = options;
@@ -4633,17 +4633,173 @@ async function loadQueueMatchTargets(queueId, artist, album, fallbackTitle) {
 function getSelectedQueueMatchTarget(queueIdFallback) {
   const selectEl = document.getElementById('queueMatchTargetSelect');
   if (!selectEl) {
-    return { queueId: Number(queueIdFallback) || 0, label: `#${queueIdFallback}` };
+    return {
+      queueId: Number(queueIdFallback) || 0,
+      label: `#${queueIdFallback}`,
+      trackNumber: null,
+      title: '',
+    };
   }
 
   const selectedQueueId = Number(selectEl.value || queueIdFallback || 0);
   const selectedOption = selectEl.options[selectEl.selectedIndex];
   const selectedLabel = selectedOption ? selectedOption.text : `#${selectedQueueId}`;
+  const trackNumberRaw = selectedOption ? selectedOption.dataset.trackNumber : '';
+  const trackNumber = Number(trackNumberRaw);
+  const selectedTitle = selectedOption ? (selectedOption.dataset.title || '') : '';
 
   return {
     queueId: selectedQueueId,
     label: selectedLabel,
+    trackNumber: Number.isFinite(trackNumber) ? trackNumber : null,
+    title: selectedTitle,
   };
+}
+
+function parseReleaseTrackNumber(track, index) {
+  const candidates = [
+    track?.track_number,
+    track?.position,
+    track?.number,
+    track?.track,
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate === null || candidate === undefined || candidate === '') continue;
+    const digits = String(candidate).match(/\d+/);
+    if (!digits) continue;
+    const value = Number(digits[0]);
+    if (Number.isFinite(value) && value > 0) {
+      return value;
+    }
+  }
+
+  return index + 1;
+}
+
+function parseReleaseDiscNumber(track) {
+  const candidates = [track?.disc_number, track?.disc, track?.medium_number, track?.medium];
+  for (const candidate of candidates) {
+    if (candidate === null || candidate === undefined || candidate === '') continue;
+    const digits = String(candidate).match(/\d+/);
+    if (!digits) continue;
+    const value = Number(digits[0]);
+    if (Number.isFinite(value) && value > 0) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function getReleaseTrackTitle(track) {
+  return (track?.title || track?.recording_title || '').toString().trim();
+}
+
+function getReleaseRecordingMbid(track) {
+  const mbid = track?.recording_mbid || track?.recording?.id || track?.id || '';
+  return String(mbid || '').trim();
+}
+
+async function chooseQueueTrackAlignmentForRelease(releaseMbid, selectedTarget) {
+  try {
+    const response = await fetch(`/api/downloads/release/${encodeURIComponent('musicbrainz')}/${encodeURIComponent(releaseMbid)}/tracks`);
+    const data = await response.json();
+    const tracks = (data && data.success && Array.isArray(data.tracks)) ? data.tracks : [];
+
+    if (!tracks.length) {
+      return null;
+    }
+
+    const existingModal = document.getElementById('queueTrackAlignmentModal');
+    if (existingModal) existingModal.remove();
+
+    const optionsHtml = tracks.map((track, idx) => {
+      const trackNumber = parseReleaseTrackNumber(track, idx);
+      const trackTitle = getReleaseTrackTitle(track) || '(untitled track)';
+      const selected = selectedTarget?.trackNumber && Number(selectedTarget.trackNumber) === trackNumber ? ' selected' : '';
+      return `<option value="${idx}"${selected}>${escapeHtml(`#${trackNumber} ${trackTitle}`)}</option>`;
+    }).join('');
+
+    const modalHtml = `
+      <div class="modal fade" id="queueTrackAlignmentModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog">
+          <div class="modal-content bg-dark text-light">
+            <div class="modal-header border-secondary">
+              <h5 class="modal-title">Align Queue Song To Release Track</h5>
+              <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+              <p class="small text-muted mb-2">Selected queue song: <strong>${escapeHtml(selectedTarget?.label || '')}</strong></p>
+              <label for="queueTrackAlignmentSelect" class="form-label">Choose track on matched release</label>
+              <select id="queueTrackAlignmentSelect" class="form-select form-select-sm">
+                <option value="" ${selectedTarget?.trackNumber ? '' : 'selected'}>Keep current track mapping</option>
+                ${optionsHtml}
+              </select>
+            </div>
+            <div class="modal-footer border-secondary">
+              <button type="button" class="btn btn-outline-light btn-sm" data-bs-dismiss="modal">Cancel</button>
+              <button type="button" class="btn btn-success btn-sm" id="queueTrackAlignmentApplyBtn">Apply Match</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+
+    return await new Promise((resolve) => {
+      const modalEl = document.getElementById('queueTrackAlignmentModal');
+      const selectEl = document.getElementById('queueTrackAlignmentSelect');
+      const applyBtn = document.getElementById('queueTrackAlignmentApplyBtn');
+      const modal = new bootstrap.Modal(modalEl);
+      let resolved = false;
+
+      const cleanup = () => {
+        if (modalEl) {
+          modalEl.remove();
+        }
+      };
+
+      modalEl.addEventListener('hidden.bs.modal', () => {
+        if (!resolved) {
+          resolved = true;
+          resolve({ cancelled: true });
+        }
+        cleanup();
+      }, { once: true });
+
+      applyBtn?.addEventListener('click', () => {
+        const selectedIndex = selectEl?.value;
+        if (selectedIndex === '' || selectedIndex === null || selectedIndex === undefined) {
+          resolved = true;
+          resolve({
+            target_track_number: null,
+            target_disc_number: null,
+            target_track_title: '',
+            target_recording_mbid: '',
+          });
+          modal.hide();
+          return;
+        }
+
+        const idx = Number(selectedIndex);
+        const track = tracks[idx] || {};
+        resolved = true;
+        resolve({
+          target_track_number: parseReleaseTrackNumber(track, idx),
+          target_disc_number: parseReleaseDiscNumber(track),
+          target_track_title: getReleaseTrackTitle(track),
+          target_recording_mbid: getReleaseRecordingMbid(track),
+        });
+        modal.hide();
+      });
+
+      modal.show();
+    });
+  } catch (error) {
+    console.warn('Could not load release tracks for manual queue alignment:', error);
+    return null;
+  }
 }
 
 function updateQueueMatchTargetSummary() {
@@ -4753,6 +4909,11 @@ async function applyQueueItemMusicBrainzMatch(queueId, newArtistEnc, newAlbumEnc
     return;
   }
 
+  const trackAlignment = await chooseQueueTrackAlignmentForRelease(newMbid, selectedTarget);
+  if (trackAlignment && trackAlignment.cancelled) {
+    return;
+  }
+
   try {
     const data = await fetchJsonOrThrow(`/api/queue/${selectedQueueId}/apply-mbid-match`, {
       method: 'POST',
@@ -4761,6 +4922,10 @@ async function applyQueueItemMusicBrainzMatch(queueId, newArtistEnc, newAlbumEnc
         new_mbid: newMbid,
         new_artist: newArtist,
         new_album: newAlbum,
+        target_track_number: trackAlignment?.target_track_number ?? null,
+        target_disc_number: trackAlignment?.target_disc_number ?? null,
+        target_track_title: trackAlignment?.target_track_title || '',
+        target_recording_mbid: trackAlignment?.target_recording_mbid || '',
       })
     });
 

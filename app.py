@@ -23440,6 +23440,20 @@ def api_queue_apply_mbid_match(queue_id):
         new_mbid = (data.get('new_mbid') or '').strip()
         new_artist = (data.get('new_artist') or '').strip()
         new_album = (data.get('new_album') or '').strip()
+        target_track_title = (data.get('target_track_title') or '').strip()
+        target_recording_mbid = (data.get('target_recording_mbid') or '').strip()
+
+        target_track_number = data.get('target_track_number')
+        try:
+            target_track_number = int(target_track_number) if target_track_number not in (None, '') else None
+        except Exception:
+            target_track_number = None
+
+        target_disc_number = data.get('target_disc_number')
+        try:
+            target_disc_number = int(target_disc_number) if target_disc_number not in (None, '') else None
+        except Exception:
+            target_disc_number = None
 
         if not new_mbid:
             return jsonify({"error": "new_mbid is required"}), 400
@@ -23477,6 +23491,16 @@ def api_queue_apply_mbid_match(queue_id):
                 release_source = 'musicbrainz',
                 album_artist = {placeholder},
                 album = {placeholder},
+                title = CASE
+                    WHEN {placeholder} <> '' THEN {placeholder}
+                    ELSE title
+                END,
+                track_number = COALESCE({placeholder}, track_number),
+                disc_number = COALESCE({placeholder}, disc_number),
+                recording_mbid = CASE
+                    WHEN {placeholder} <> '' THEN {placeholder}
+                    ELSE recording_mbid
+                END,
                 release_year = {placeholder},
                 status = CASE
                     WHEN TRIM(COALESCE(status, '')) = '' OR status = 'matched' THEN 'queued'
@@ -23485,7 +23509,20 @@ def api_queue_apply_mbid_match(queue_id):
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = {placeholder}
             """,
-            (new_mbid, new_mbid, target_artist, target_album, release_year, queue_id)
+            (
+                new_mbid,
+                new_mbid,
+                target_artist,
+                target_album,
+                target_track_title,
+                target_track_title,
+                target_track_number,
+                target_disc_number,
+                target_recording_mbid,
+                target_recording_mbid,
+                release_year,
+                queue_id,
+            )
         )
 
         conn.commit()
@@ -23580,6 +23617,9 @@ def api_queue_apply_mbid_match(queue_id):
             "release_mbid": new_mbid,
             "artist": target_artist,
             "album": target_album,
+            "target_track_number": target_track_number,
+            "target_disc_number": target_disc_number,
+            "target_track_title": target_track_title,
             "tracks_added": 0,
             "tracks_pending": True,
         })
