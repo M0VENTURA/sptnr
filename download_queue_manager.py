@@ -2518,13 +2518,7 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
         # Keep queue item in sync with the resolved source path.
         queue_item_dict['file_path'] = file_path
 
-        if _is_path_within_root(file_path, music_root):
-            return {
-                'success': True,
-                'target_path': file_path,
-                'error': None,
-                'message': 'File already exists in music directory'
-            }
+        source_already_in_music = _is_path_within_root(file_path, music_root)
 
         album_artist = _sanitize_path_component(
             _normalize_album_artist_for_path(
@@ -2772,6 +2766,18 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
             dest_path = os.path.join(music_root, f"{rel_safe}{ext}")
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
 
+        normalized_source = os.path.abspath(os.path.normpath(file_path))
+        normalized_dest = os.path.abspath(os.path.normpath(dest_path))
+        if normalized_source == normalized_dest:
+            _apply_release_year_mtime(normalized_dest, year, queue_id=queue_item_dict.get('id'))
+            return {
+                'success': True,
+                'target_path': normalized_dest,
+                'error': None,
+                'skipped': True,
+                'message': 'File metadata updated in place',
+            }
+
         transfer_result = transfer_download_to_music(file_path, dest_path, queue_id=queue_item_dict.get('id'))
         if not transfer_result.get('success'):
             return {'success': False, 'target_path': None, 'error': transfer_result.get('error')}
@@ -2784,7 +2790,8 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
         _apply_release_year_mtime(final_target, year, queue_id=queue_item_dict.get('id'))
 
         # Remove the (now empty) parent download directory to keep /downloads tidy.
-        _remove_empty_download_dirs(file_path, get_downloads_dir())
+        if not source_already_in_music:
+            _remove_empty_download_dirs(file_path, get_downloads_dir())
         return {
             'success': True,
             'target_path': final_target,

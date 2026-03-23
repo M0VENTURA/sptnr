@@ -23492,7 +23492,11 @@ def api_queue_apply_mbid_match(queue_id):
         placeholder = "%s"
 
         cursor.execute(
-            f"SELECT artist, album FROM download_queue WHERE id = {placeholder}",
+            f"""
+            SELECT artist, album, status, file_path, matched_file_path, music_file_path, found_filename
+            FROM download_queue
+            WHERE id = {placeholder}
+            """,
             (queue_id,)
         )
         row = cursor.fetchone()
@@ -23503,6 +23507,11 @@ def api_queue_apply_mbid_match(queue_id):
 
         current_artist = row.get('artist') if isinstance(row, dict) else row[0]
         current_album = row.get('album') if isinstance(row, dict) else row[1]
+        current_status = row.get('status') if isinstance(row, dict) else row[2]
+        current_file_path = row.get('file_path') if isinstance(row, dict) else row[3]
+        current_matched_file_path = row.get('matched_file_path') if isinstance(row, dict) else row[4]
+        current_music_file_path = row.get('music_file_path') if isinstance(row, dict) else row[5]
+        current_found_filename = row.get('found_filename') if isinstance(row, dict) else row[6]
 
         target_artist = new_artist or current_artist
         target_album = new_album or current_album
@@ -23552,6 +23561,49 @@ def api_queue_apply_mbid_match(queue_id):
         conn.commit()
         conn.close()
         conn = None
+
+        local_file_updated = False
+        local_file_path = None
+        local_file_warning = None
+        had_local_file = any(
+            str(path or '').strip()
+            for path in (current_file_path, current_matched_file_path, current_music_file_path, current_found_filename)
+        )
+        current_status_normalized = str(current_status or '').strip().lower()
+
+        if had_local_file and current_status_normalized in {'completed', 'imported', 'in_collection'}:
+            sync_conn = None
+            try:
+                from download_queue_manager import move_single_track_to_music_dir, update_queue_item
+
+                sync_conn = get_db()
+                sync_cursor = sync_conn.cursor()
+                sync_cursor.execute(f"SELECT * FROM download_queue WHERE id = {placeholder}", (queue_id,))
+                queue_item = sync_cursor.fetchone()
+                if queue_item and not isinstance(queue_item, dict):
+                    column_names = [col[0] for col in sync_cursor.description]
+                    queue_item = dict(zip(column_names, queue_item))
+                sync_conn.close()
+                sync_conn = None
+
+                if queue_item:
+                    move_result = move_single_track_to_music_dir(dict(queue_item))
+                    if move_result.get('success'):
+                        local_file_path = move_result.get('target_path')
+                        if local_file_path:
+                            update_queue_item(queue_id, file_path=local_file_path)
+                        local_file_updated = True
+                    else:
+                        local_file_warning = move_result.get('error') or 'Local file update failed'
+            except Exception as sync_err:
+                logging.warning(f"[QUEUE_MATCH] Local file update failed for queue {queue_id}: {sync_err}")
+                local_file_warning = str(sync_err)
+            finally:
+                if sync_conn is not None:
+                    try:
+                        sync_conn.close()
+                    except Exception:
+                        pass
 
         # Kick off background enrichment so UI returns quickly.
         def _expand_release_tracks_async(mbid, artist_name, album_name, qid, prefetched_release_metadata=None):
@@ -23644,6 +23696,9 @@ def api_queue_apply_mbid_match(queue_id):
             "target_track_number": target_track_number,
             "target_disc_number": target_disc_number,
             "target_track_title": target_track_title,
+            "local_file_updated": local_file_updated,
+            "local_file_path": local_file_path,
+            "warning": local_file_warning,
             "tracks_added": 0,
             "tracks_pending": True,
         })

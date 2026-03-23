@@ -4930,7 +4930,14 @@ async function applyQueueItemMusicBrainzMatch(queueId, newArtistEnc, newAlbumEnc
     });
 
     if (data.success) {
-      alert(`✅ Queue match updated for ${selectedTarget.label}`);
+      let message = `✅ Queue match updated for ${selectedTarget.label}`;
+      if (data.local_file_updated) {
+        message += '\n\nLocal file tags/path updated.';
+      }
+      if (data.warning) {
+        message += `\n\nWarning: ${data.warning}`;
+      }
+      alert(message);
       const modalEl = document.getElementById('queueItemMatchModal');
       if (modalEl) {
         const modal = bootstrap.Modal.getInstance(modalEl);
