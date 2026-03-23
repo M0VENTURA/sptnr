@@ -9,6 +9,7 @@ This script is intentionally lightweight for container startup:
 
 import os
 import sys
+import time
 
 
 def _postgres_env_configured():
@@ -26,9 +27,15 @@ def _postgres_env_configured():
 def _connect_postgres():
     import psycopg2
 
+    connect_timeout = int(os.environ.get("STARTUP_MIGRATION_CONNECT_TIMEOUT", "5"))
+    pg_options = os.environ.get(
+        "STARTUP_MIGRATION_PG_OPTIONS",
+        "-c lock_timeout=5000 -c statement_timeout=30000 -c application_name=startup_queue_migration",
+    )
+
     dsn = os.environ.get("DATABASE_URL") or os.environ.get("PG_DSN")
     if dsn:
-        return psycopg2.connect(dsn, connect_timeout=5)
+        return psycopg2.connect(dsn, connect_timeout=connect_timeout, options=pg_options)
 
     return psycopg2.connect(
         host=os.environ.get("PG_HOST") or os.environ.get("PGHOST"),
@@ -36,8 +43,20 @@ def _connect_postgres():
         user=os.environ.get("PG_USER") or os.environ.get("PGUSER"),
         password=os.environ.get("PG_PASSWORD") or os.environ.get("PGPASSWORD") or "",
         dbname=os.environ.get("PG_DATABASE") or os.environ.get("PGDATABASE") or "sptnr",
-        connect_timeout=5,
+        connect_timeout=connect_timeout,
+        options=pg_options,
     )
+
+
+def _try_advisory_xact_lock(cur, lock_name: str, attempts: int = 20, sleep_seconds: float = 0.5) -> bool:
+    """Try to acquire a transaction advisory lock without hanging startup forever."""
+    for _ in range(max(1, attempts)):
+        cur.execute("SELECT pg_try_advisory_xact_lock(hashtext(%s))", (lock_name,))
+        row = cur.fetchone()
+        if row and bool(row[0]):
+            return True
+        time.sleep(max(0.05, sleep_seconds))
+    return False
 
 
 def _ensure_postgres_columns(conn):
@@ -135,7 +154,14 @@ def _ensure_postgres_track_columns(conn):
 
 def _ensure_postgres_musicbrainz_release_conflict_target(conn):
     cur = conn.cursor()
-    cur.execute("SELECT pg_advisory_xact_lock(hashtext('uq_musicbrainz_releases_release_id'))")
+    # Avoid indefinite startup hangs if another process is currently migrating.
+    if not _try_advisory_xact_lock(cur, "uq_musicbrainz_releases_release_id"):
+        print(
+            "⚠ startup schema migration (postgres): could not acquire advisory lock for "
+            "musicbrainz_releases unique-index check; skipping this step",
+            flush=True,
+        )
+        return []
 
     cur.execute(
         """
