@@ -2848,6 +2848,52 @@ def _mark_navidrome_first_full_import_complete(scan_source: str = "unknown"):
         logging.warning(f"[NAV_INCREMENTAL] Could not write first-import marker: {exc}")
 
 
+def _has_completed_first_navidrome_import(auto_repair: bool = True) -> bool:
+    """Return True once the first successful full Navidrome import is known.
+
+    The marker file is the primary source of truth. If it is missing after a restart,
+    recover it from a completed Navidrome progress file or from an already-imported
+    library in the database so the dashboard does not re-lock scan controls.
+    """
+    marker_path = _navidrome_first_full_import_marker_path()
+    if os.path.exists(marker_path):
+        return True
+
+    progress_path = os.path.join(os.path.dirname(DB_PATH), "navidrome_scan_progress.json")
+    try:
+        if os.path.exists(progress_path):
+            with open(progress_path, "r", encoding="utf-8") as pf:
+                state = json.load(pf)
+            if state.get("status") == "complete" and int(state.get("exit_code", 0)) == 0:
+                if auto_repair:
+                    _mark_navidrome_first_full_import_complete(scan_source="progress_file_detected")
+                return True
+    except Exception as progress_err:
+        logging.debug(f"[NAV_INCREMENTAL] Could not inspect Navidrome progress file: {progress_err}")
+
+    conn = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM tracks")
+        row = cursor.fetchone()
+        track_count = row[0] if isinstance(row, (list, tuple)) else (row.get('count') if hasattr(row, 'get') else row)
+        if int(track_count or 0) > 0:
+            if auto_repair:
+                _mark_navidrome_first_full_import_complete(scan_source="database_detected")
+            return True
+    except Exception as db_err:
+        logging.debug(f"[NAV_INCREMENTAL] Could not infer first import from database state: {db_err}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    return False
+
+
 def _is_scan_currently_running(proc_ref) -> bool:
     if proc_ref is None:
         return False
@@ -3246,7 +3292,7 @@ def _schedule_configured_startup_scan_launch():
             if not bool(features.get("launch_on_startup", False)):
                 return
 
-            if not os.path.exists(_navidrome_first_full_import_marker_path()):
+            if not _has_completed_first_navidrome_import(auto_repair=True):
                 logging.info("[BOOT] Startup scan launch is locked until first full Navidrome import completes")
                 return
 
@@ -3831,7 +3877,7 @@ def dashboard():
         perpetual = bool(features.get("perpetual", False))
         forced = bool(features.get("force", False))
         launch_on_startup = bool(features.get("launch_on_startup", False))
-        first_full_scan_done = os.path.exists(_navidrome_first_full_import_marker_path())
+        first_full_scan_done = _has_completed_first_navidrome_import(auto_repair=True)
 
         db_path = cfg.get("database", {}).get("path", "/database/sptnr.db")
         dashboard_template = "dashboard_external.html" if db_path != "/database/sptnr.db" else "dashboard.html"
