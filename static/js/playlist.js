@@ -821,67 +821,67 @@ const SPB_OPERATORS = {
   ]
 };
 
+let spbDraggedItem = null;
+
+function spbEnableDropContainer(container) {
+  if (!container || container.dataset.dndEnabled === '1') return;
+  container.dataset.dndEnabled = '1';
+
+  container.addEventListener('dragover', event => {
+    event.preventDefault();
+    if (!spbDraggedItem) return;
+
+    const afterElement = spbGetDragAfterElement(container, event.clientY);
+    if (!afterElement) {
+      container.appendChild(spbDraggedItem);
+      return;
+    }
+    container.insertBefore(spbDraggedItem, afterElement);
+  });
+
+  container.addEventListener('drop', event => {
+    event.preventDefault();
+    spbUpdatePreview();
+  });
+}
+
+function spbGetDragAfterElement(container, mouseY) {
+  const draggableElements = [...container.querySelectorAll(':scope > .spb-item:not(.spb-dragging)')];
+
+  let closest = { offset: Number.NEGATIVE_INFINITY, element: null };
+  draggableElements.forEach(element => {
+    const box = element.getBoundingClientRect();
+    const offset = mouseY - box.top - box.height / 2;
+    if (offset < 0 && offset > closest.offset) {
+      closest = { offset, element };
+    }
+  });
+
+  return closest.element;
+}
+
+function spbEnableDragItem(item) {
+  if (!item || item.dataset.dragEnabled === '1') return;
+  item.dataset.dragEnabled = '1';
+  item.setAttribute('draggable', 'true');
+
+  item.addEventListener('dragstart', event => {
+    spbDraggedItem = item;
+    item.classList.add('spb-dragging');
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', 'spb-item');
+    }
+  });
+
+  item.addEventListener('dragend', () => {
+    item.classList.remove('spb-dragging');
+    spbDraggedItem = null;
+    spbUpdatePreview();
+  });
+}
+
 const SPB_PRESETS = {
-
-  let spbDraggedItem = null;
-
-  function spbEnableDropContainer(container) {
-    if (!container || container.dataset.dndEnabled === '1') return;
-    container.dataset.dndEnabled = '1';
-
-    container.addEventListener('dragover', event => {
-      event.preventDefault();
-      if (!spbDraggedItem) return;
-
-      const afterElement = spbGetDragAfterElement(container, event.clientY);
-      if (!afterElement) {
-        container.appendChild(spbDraggedItem);
-        return;
-      }
-      container.insertBefore(spbDraggedItem, afterElement);
-    });
-
-    container.addEventListener('drop', event => {
-      event.preventDefault();
-      spbUpdatePreview();
-    });
-  }
-
-  function spbGetDragAfterElement(container, mouseY) {
-    const draggableElements = [...container.querySelectorAll(':scope > .spb-item:not(.spb-dragging)')];
-
-    let closest = { offset: Number.NEGATIVE_INFINITY, element: null };
-    draggableElements.forEach(element => {
-      const box = element.getBoundingClientRect();
-      const offset = mouseY - box.top - box.height / 2;
-      if (offset < 0 && offset > closest.offset) {
-        closest = { offset, element };
-      }
-    });
-
-    return closest.element;
-  }
-
-  function spbEnableDragItem(item) {
-    if (!item || item.dataset.dragEnabled === '1') return;
-    item.dataset.dragEnabled = '1';
-    item.setAttribute('draggable', 'true');
-
-    item.addEventListener('dragstart', event => {
-      spbDraggedItem = item;
-      item.classList.add('spb-dragging');
-      if (event.dataTransfer) {
-        event.dataTransfer.effectAllowed = 'move';
-        event.dataTransfer.setData('text/plain', 'spb-item');
-      }
-    });
-
-    item.addEventListener('dragend', () => {
-      item.classList.remove('spb-dragging');
-      spbDraggedItem = null;
-      spbUpdatePreview();
-    });
-  }
   recently_played: {
     fileName: 'recently-played',
     playlist: {
@@ -1049,33 +1049,6 @@ function spbAddGroup(prefill = null, container = null) {
   } else {
     spbAddRule(null, groupRules);
   }
-}
-  container.appendChild(row);
-
-  const fieldEl = row.querySelector('.spb-field');
-  const opEl = row.querySelector('.spb-operator');
-
-  fieldEl.addEventListener('change', () => {
-    spbUpdateOperatorOptions(row);
-    spbUpdateValueInput(row);
-    spbUpdatePreview();
-  });
-
-  opEl.addEventListener('change', () => {
-    spbUpdateValueInput(row);
-    spbUpdatePreview();
-  });
-
-  row.querySelector('.spb-remove-rule').addEventListener('click', () => {
-    row.remove();
-    spbUpdatePreview();
-  });
-
-  row.addEventListener('input', spbUpdatePreview);
-  row.addEventListener('change', spbUpdatePreview);
-
-  spbUpdateOperatorOptions(row, prefill?.operator);
-  spbUpdateValueInput(row, prefill?.value);
 }
 
 function spbUpdateOperatorOptions(row, preselected = '') {
