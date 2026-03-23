@@ -47,7 +47,7 @@ except ImportError as e:
     log_debug(f"MusicBrainz client unavailable: {e}")
     HAVE_MUSICBRAINZ = False
     MusicBrainzClient = None  # type: ignore
-    
+
 try:
     from api_clients.discogs import DiscogsClient  # type: ignore
     HAVE_DISCOGS = True
@@ -225,15 +225,15 @@ def strip_parentheses(title: str) -> str:
 def is_compilation_type(album_type: str) -> bool:
     """
     Check if album type indicates compilation.
-    
+
     Handles both:
     - Old format: 'compilation' (standalone)
     - New MusicBrainz secondary type format: 'album+compilation'
     - MusicBrainz parentheses format: 'album (compilation)'
-    
+
     Args:
         album_type: Album type string from database or MusicBrainz
-        
+
     Returns:
         True if album is a compilation, False otherwise
     """
@@ -250,7 +250,7 @@ def is_compilation_type(album_type: str) -> bool:
 def should_exclude_track_from_stats(title: str, album: str = "") -> bool:
     """
     Determine if a track should be excluded from album/artist statistics calculations.
-    
+
     Excludes tracks that are:
     - Live versions
     - Remixes
@@ -258,24 +258,24 @@ def should_exclude_track_from_stats(title: str, album: str = "") -> bool:
     - Demos
     - Instrumentals
     - Other alternate versions
-    
+
     NOTE: Remastered versions are NOT excluded - they are the same songs and should be
           included in statistics calculations (unlike live/remix versions which are substantially different).
-    
+
     This ensures that album median, mean, stddev calculations reflect the core album tracks
     and are not skewed by bonus/alternate versions.
-    
+
     Args:
         title: Track title to check
         album: Album name to check (optional, for live album detection)
-        
+
     Returns:
         True if track should be excluded from statistics, False otherwise
     """
     # Strip cover attributions and single-release suffixes first so
     # "Song (Radio Edit)" doesn't match "edit" and get excluded from statistics
     base_title = strip_single_release_suffix(strip_cover_attribution(title))
-    
+
     # Check base title and album name for keywords
     combined_text = f"{base_title} {album}".lower()
     return any(keyword in combined_text for keyword in IGNORE_SINGLE_KEYWORDS)
@@ -305,12 +305,12 @@ def strip_remaster_suffix(title: str) -> str:
     # First, remove "/ remastered" or "- remastered" [year] inside parentheticals
     # This preserves other keywords like "radio edit" that appear with remastered
     result = re.sub(r'\s*[/\-]\s*remaster(?:ed)?(?:\s+\d{4})?', '', result, flags=re.IGNORECASE)
-    
+
     # Now remove standalone parenthetical containing "remaster" or "remastered"
     # Use negative lookbehind/lookahead to avoid matching mixed cases already handled above
     # This pattern removes parentheticals where remaster is the ONLY keyword (or with just a year/edition text)
     result = re.sub(r'\s*\([^()]*remaster(?:ed)?[^()]*\)', '', result, flags=re.IGNORECASE)
-    
+
     # Remove trailing "- Remastered [year]" (dash-separated title suffix)
     result = re.sub(r'\s*-\s*remaster(?:ed)?(?:\s+\d{4})?\s*$', '', result, flags=re.IGNORECASE)
     # Clean up empty parentheses left over after stripping
@@ -417,28 +417,28 @@ def is_remastered_only_variant(title: str) -> bool:
 def is_live_or_alternate_album(album: str) -> bool:
     """
     Determine if an album is a live, unplugged, or acoustic album.
-    
+
     This helps identify albums where the recorded versions differ from studio versions,
     such as "Alice in Chains - Unplugged in New York" where tracks should not be matched
     with their studio counterparts.
-    
+
     Only matches format indicators, not "live" as part of the actual album title.
     Examples:
     - "Album (Live)" -> True
     - "Album Live at Venue" -> True
     - "(how to live) AS GHOSTS" -> False
-    
+
     Args:
         album: Album name to check
-        
+
     Returns:
         True if this is a live/unplugged/acoustic album, False otherwise
     """
     if not album:
         return False
-    
+
     album_lower = album.lower()
-    
+
     # More specific live album indicators (avoid matching "live" within titles)
     live_patterns = [
         r'\blive\s+at\b',          # "live at venue"
@@ -457,7 +457,7 @@ def is_live_or_alternate_album(album: str) -> bool:
         r'\bconcert\b',            # "concert" album
         r'\bin\s+concert\b',       # "in concert"
     ]
-    
+
     import re
     return any(re.search(pattern, album_lower) for pattern in live_patterns)
 
@@ -484,32 +484,32 @@ def is_live_or_unplugged_track_title(title: str) -> bool:
 def detect_alternate_takes(tracks: list) -> dict:
     """
     Detect alternate takes in a list of tracks by comparing titles with/without parentheses.
-    
+
     An alternate take is a track whose title:
     1. Ends with a parenthesized suffix (e.g., "Track (Live)")
     2. Has a base version (without parentheses) that matches another track
     3. Appears later in the track list (lower track number or at end of album)
-    
+
     Args:
         tracks: List of track dicts with 'id', 'title', 'track_number' fields
-        
+
     Returns:
         Dict mapping track_id -> base_track_id for all detected alternate takes
     """
     alternate_takes = {}
     title_to_track = {}  # Map base title -> track info
-    
+
     for track in tracks:
         track_id = track['id']
         title = row_get(track, 'title', '')
         track_number = row_get(track, 'track_number', 999)
-        
+
         # Check if this track has parentheses at the end
         if re.match(r'^.*\([^)]*\)$', title):
             # Get base title without parentheses
             base_title = strip_parentheses(title)
             base_title_lower = base_title.lower()
-            
+
             # Check if we have a track with this base title
             if base_title_lower in title_to_track:
                 # This is an alternate take - link to base track
@@ -528,7 +528,7 @@ def detect_alternate_takes(tracks: list) -> dict:
         else:
             # No parentheses - this is a base version
             title_lower = title.lower()
-            
+
             # Check if we already saw an alternate take for this title
             if title_lower in title_to_track:
                 existing_track = title_to_track[title_lower]
@@ -537,33 +537,33 @@ def detect_alternate_takes(tracks: list) -> dict:
                     alternate_takes[existing_track['id']] = track_id
                     # Safe logging - avoid f-string interpolation with user data
                     log_verbose("   Detected alternate take: '%s' -> base: '%s'" % (existing_track['title'], title))
-            
+
             # Record this as the base track
             title_to_track[title_lower] = {
                 'id': track_id,
                 'title': title,
                 'track_number': track_number
             }
-    
+
     return alternate_takes
 
 
 def detect_compilation_album(artist: str, album: str, tracks: list, album_artist: str = None, spotify_album_type: str = None) -> bool:
     """
     Detect if an album is a compilation using local heuristics only (no API calls).
-    
+
     Checks:
     1. album_artist field for Various Artists, Compilation, Soundtrack
     2. Spotify album type is "compilation"
     3. Multiple distinct artists in track listing
-    
+
     Args:
         artist: Primary artist name
         album: Album name
         tracks: List of tracks in the album
         album_artist: Album artist from metadata (if available)
         spotify_album_type: Spotify album type classification
-        
+
     Returns:
         True if album appears to be a compilation, False otherwise
     """
@@ -573,13 +573,13 @@ def detect_compilation_album(artist: str, album: str, tracks: list, album_artist
         if album_artist_lower in ('various artists', 'various artists -', 'various', 'compilation', 'soundtrack'):
             log_debug(f'Compilation detected for "{album}": album_artist="{album_artist}"')
             return True
-    
+
     # Check Spotify/MusicBrainz classification (handles 'compilation', 'album+compilation',
     # 'album (compilation)' and any other composite format containing "compilation")
     if spotify_album_type and is_compilation_type(spotify_album_type):
         log_debug(f'Compilation detected for "{album}": spotify_album_type="{spotify_album_type}"')
         return True
-    
+
     # Check if there are multiple distinct artists in the track listing
     # (indicates compilation even if not explicitly marked)
     try:
@@ -588,36 +588,36 @@ def detect_compilation_album(artist: str, album: str, tracks: list, album_artist
             track_artist = row_get(track, 'artist', '')
             if track_artist and track_artist.lower() != artist.lower():
                 track_artists.add(track_artist.lower())
-        
+
         # If we found 3+ different artists on this album, it's likely a compilation
         if len(track_artists) >= 3:
             log_debug(f'Compilation likely for "{album}": found {len(track_artists)} distinct artists ({", ".join(list(track_artists)[:3])}...)')
             return True
     except Exception as e:
         log_debug(f'Error checking track artists for compilation detection: {e}')
-    
+
     return False
 
 
 def detect_greatest_hits_album(album: str, artist: str, conn: object, album_tracks: list = None) -> bool:
     """
     Detect if an album is a greatest hits compilation.
-    
+
     Checks:
     1. Album name contains greatest hits patterns
     2. Album's average popularity is significantly higher than artist's median (if tracks provided)
-    
+
     Args:
         album: Album name
         artist: Artist name
         conn: Database connection for artist stats lookup
         album_tracks: Optional list of tracks with popularity_score for verification
-        
+
     Returns:
         True if album appears to be a greatest hits compilation, False otherwise
     """
     album_lower = album.lower()
-    
+
     # Check for greatest hits patterns in album name
     greatest_hits_patterns = [
         'greatest hits',
@@ -635,11 +635,11 @@ def detect_greatest_hits_album(album: str, artist: str, conn: object, album_trac
         'complete',
         'definitive'
     ]
-    
+
     for pattern in greatest_hits_patterns:
         if pattern in album_lower:
             log_debug(f'Greatest hits pattern detected in album name: "{album}" contains "{pattern}"')
-            
+
             # If we have tracks, verify with popularity check
             if album_tracks:
                 try:
@@ -653,15 +653,15 @@ def detect_greatest_hits_album(album: str, artist: str, conn: object, album_trac
                         WHERE artist = {placeholder} AND popularity_score > 0
                     """, (artist,))
                     row = cursor.fetchone()
-                    
+
                     if row and row_get(row, 'avg_pop') and row_get(row, 'track_count', 0) > 10:  # Need at least 10 tracks for meaningful comparison
                         artist_avg_pop = row_get(row, 'avg_pop')
-                        
+
                         # Calculate this album's average popularity
                         album_pops = [t.get('popularity_score', 0) for t in album_tracks if t.get('popularity_score')]
                         if album_pops:
                             album_avg_pop = sum(album_pops) / len(album_pops)
-                            
+
                             # If album average is 30%+ higher than artist average, it's likely greatest hits
                             if album_avg_pop > (artist_avg_pop * 1.3):
                                 log_info(f'Greatest hits confirmed: "{album}" avg popularity ({album_avg_pop:.1f}) is {(album_avg_pop/artist_avg_pop - 1)*100:.0f}% higher than artist average ({artist_avg_pop:.1f})')
@@ -670,10 +670,10 @@ def detect_greatest_hits_album(album: str, artist: str, conn: object, album_trac
                                 log_debug(f'Greatest hits name pattern but normal popularity: album={album_avg_pop:.1f} vs artist={artist_avg_pop:.1f}')
                 except Exception as e:
                     log_debug(f'Error verifying greatest hits with popularity check: {e}')
-            
+
             # Name pattern alone is strong indicator
             return True
-    
+
     return False
 
 
@@ -681,20 +681,20 @@ def detect_and_queue_missing_tracks(artist: str, album: str, album_tracks: list,
     """
     Detect missing tracks from an album by comparing local tracks with MusicBrainz tracklist.
     Returns a count of missing tracks so UI/workflows can present them for manual action.
-    
+
     Args:
         artist: Artist name
         album: Album name
         album_tracks: List of track dicts from local database
         release_group_mbid: MusicBrainz release group MBID (optional, faster lookup if provided)
         conn: Database connection (optional, will create new connection if not provided)
-    
+
     Returns:
         Number of missing tracks detected (0 if none or error)
     """
     try:
         from folder_matching_enhancements import get_musicbrainz_release_tracks
-        
+
         # Get release ID if not provided
         if not release_group_mbid:
             # Try to get from database
@@ -713,21 +713,21 @@ def detect_and_queue_missing_tracks(artist: str, album: str, album_tracks: list,
                 mbid_row = cursor.fetchone()
                 if mbid_row:
                     release_group_mbid = row_get(mbid_row, 'musicbrainz_album_mbid')
-        
+
         if not release_group_mbid:
             log_debug(f"No MusicBrainz release ID found for '{artist} - {album}', skipping missing track detection")
             return 0
-        
+
         # Fetch complete tracklist from MusicBrainz
         log_debug(f"Fetching MusicBrainz tracklist for '{artist} - {album}' (MBID: {release_group_mbid})")
         mb_tracks = get_musicbrainz_release_tracks(release_group_mbid, source='musicbrainz')
-        
+
         if not mb_tracks:
             log_debug(f"No tracklist returned from MusicBrainz for '{artist} - {album}'")
             return 0
-        
+
         log_info(f"MusicBrainz shows {len(mb_tracks)} track(s) for '{artist} - {album}', local library has {len(album_tracks)} track(s)")
-        
+
         # Build a consumable local-track pool so duplicate titles are matched
         # one-to-one against MusicBrainz rows instead of via reusable set lookups.
         local_track_entries = []
@@ -766,14 +766,14 @@ def detect_and_queue_missing_tracks(artist: str, album: str, album_tracks: list,
                 if predicate(entry):
                     return remaining_local_entries.pop(idx)
             return None
-        
+
         # Find missing tracks
         missing_tracks = []
         for mb_track in mb_tracks:
             mb_title = mb_track.get('title', '')
             if not mb_title:
                 continue
-            
+
             # Normalize MB track title
             mb_normalized = unicodedata.normalize("NFKD", mb_title)
             mb_normalized = "".join(c for c in mb_normalized if not unicodedata.combining(c))
@@ -793,7 +793,7 @@ def detect_and_queue_missing_tracks(artist: str, album: str, album_tracks: list,
                 mb_normalized_recording = mb_normalized_recording.lower().strip()
                 mb_normalized_recording = re.sub(r'[^a-z0-9]+', ' ', mb_normalized_recording)
                 mb_normalized_recording = ' '.join(mb_normalized_recording.split())
-            
+
             # Determine MB track number
             mb_number = mb_track.get('number')
             mb_track_num = None
@@ -807,7 +807,7 @@ def detect_and_queue_missing_tracks(artist: str, album: str, album_tracks: list,
                 mb_disc_num_int = int(mb_disc_num or 1)
             except (ValueError, TypeError):
                 mb_disc_num_int = 1
-            
+
             matched_entry = None
             if mb_track_num is not None:
                 matched_entry = _pop_local_match(
@@ -831,11 +831,11 @@ def detect_and_queue_missing_tracks(artist: str, album: str, album_tracks: list,
 
             if matched_entry is None:
                 missing_tracks.append(mb_track)
-        
+
         if not missing_tracks:
             log_debug(f"All tracks present for '{artist} - {album}'")
             return 0
-        
+
         # Report missing tracks for manual download workflows
         log_info(f"🔍 Found {len(missing_tracks)} missing track(s) for '{artist} - {album}'")
 
@@ -847,7 +847,7 @@ def detect_and_queue_missing_tracks(artist: str, album: str, album_tracks: list,
         log_info(f"ℹ️ Missing tracks were detected but not auto-queued for '{artist} - {album}'")
 
         return len(missing_tracks)
-        
+
     except Exception as e:
         log_debug(f"Error detecting missing tracks for '{artist} - {album}': {e}")
         import traceback
@@ -858,16 +858,16 @@ def detect_and_queue_missing_tracks(artist: str, album: str, album_tracks: list,
 def should_skip_spotify_lookup(track_id: str, conn: object) -> bool:
     """
     Check if Spotify lookup should be skipped based on 24-hour cache.
-    
+
     Returns True if:
     - Track has last_spotify_lookup timestamp
     - Timestamp is less than 24 hours old
     - Track has valid popularity_score in database
-    
+
     Args:
         track_id: Track ID to check
         conn: Database connection
-        
+
     Returns:
         True if lookup should be skipped (use cached data), False otherwise
     """
@@ -876,35 +876,35 @@ def should_skip_spotify_lookup(track_id: str, conn: object) -> bool:
         placeholder = "%s" if is_pg else "?"
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT last_spotify_lookup, popularity_score 
-            FROM tracks 
+            SELECT last_spotify_lookup, popularity_score
+            FROM tracks
             WHERE id = {placeholder}
         """, (track_id,))
         row = cursor.fetchone()
-        
+
         if not row or not row_get(row, 'last_spotify_lookup'):
             # No cached lookup timestamp
             return False
-        
+
         last_lookup_str = row_get(row, 'last_spotify_lookup')
         popularity_score = row_get(row, 'popularity_score')
-        
+
         # Check if we have a valid popularity score (None or 0 means no valid data)
         if popularity_score is None or popularity_score <= 0:
             return False
-        
+
         # Parse timestamp and check if it's less than 24 hours old
         try:
             last_lookup = datetime.fromisoformat(last_lookup_str)
             age = datetime.now() - last_lookup
-            
+
             if age < timedelta(hours=24):
                 log_verbose(f"   Using cached Spotify data (age: {age.total_seconds() / 3600:.1f}h)")
                 return True
         except (ValueError, TypeError) as e:
             log_verbose(f"   Invalid timestamp format: {last_lookup_str} ({e})")
             return False
-        
+
         return False
     except Exception as e:
         log_verbose(f"   Error checking Spotify cache: {e}")
@@ -914,15 +914,15 @@ def should_skip_spotify_lookup(track_id: str, conn: object) -> bool:
 def row_get(row, key, default=None):
     """
     Get a value from a DB row object with a default fallback.
-    
+
     Some row objects do not expose a .get() method like dictionaries,
     so this helper provides similar functionality.
-    
+
     Args:
         row: Row object
         key: Column name to retrieve
         default: Default value if key doesn't exist or value is None
-        
+
     Returns:
         Value from row or default
     """
@@ -937,26 +937,26 @@ def row_get(row, key, default=None):
 def get_cache_duration_hours(track_year: int = None) -> int:
     """
     Determine cache duration based on track age.
-    
+
     Older albums change less frequently, so we can cache longer:
     - Albums > 3 years old: 7 days (168 hours)
     - Albums 1-3 years old: 3 days (72 hours)
     - Recent albums < 1 year: 24 hours
     - No year data: 24 hours (conservative)
-    
+
     Args:
         track_year: Year the track was released
-        
+
     Returns:
         Cache duration in hours
     """
     if not track_year:
         return 24  # Default: 24 hours
-    
+
     try:
         current_year = datetime.now().year
         age_years = current_year - int(track_year)
-        
+
         if age_years >= 3:
             return 168  # 7 days for albums over 3 years old
         elif age_years >= 1:
@@ -1053,43 +1053,43 @@ def popularity_values_changed(track: object, new_values: dict) -> bool:
 def should_use_cached_score(track: object, cache_field: str, last_lookup_field: str = 'last_spotify_lookup') -> bool:
     """
     Check if a cached API score should be reused instead of fetching from API.
-    
+
     Uses age-based cache duration - older albums are cached longer.
-    
+
     Args:
         track: Track row with cached values
         cache_field: Name of the field containing cached score
         last_lookup_field: Name of the field containing last lookup timestamp
-        
+
     Returns:
         True if cached value should be used, False if API lookup needed
     """
     try:
         cached_value = row_get(track, cache_field)
         last_lookup = row_get(track, last_lookup_field)
-        
+
         # No cached data available
         if not cached_value or cached_value <= 0:
             return False
-        
+
         if not last_lookup:
             return False
-        
+
         # Parse timestamp and check age
         try:
             last_lookup_time = datetime.fromisoformat(last_lookup)
             age = datetime.now() - last_lookup_time
-            
+
             # Determine cache duration based on track year
             cache_duration_hours = get_cache_duration_hours(row_get(track, 'year'))
-            
+
             if age < timedelta(hours=cache_duration_hours):
                 log_debug(f"Using cached {cache_field} (age: {age.total_seconds() / 3600:.1f}h, limit: {cache_duration_hours}h)")
                 return True
         except (ValueError, TypeError) as e:
             log_debug(f"Invalid timestamp in {last_lookup_field}: {last_lookup} ({e})")
             return False
-        
+
         return False
     except Exception as e:
         log_debug(f"Error checking cache for {cache_field}: {e}")
@@ -1099,17 +1099,17 @@ def should_use_cached_score(track: object, cache_field: str, last_lookup_field: 
 def calculate_artist_popularity_stats(artist_name: str, conn: object) -> dict:
     """
     Calculate artist-level popularity statistics from all albums.
-    
+
     This helps identify underperforming albums/singles within an artist's catalog
     AND identify tracks that are standout popular even if not singles.
-    
+
     NOTE: Filters out live/remix/alternate versions to ensure statistics reflect
     the core catalog and are not skewed by bonus tracks or alternate versions.
-    
+
     Args:
         artist_name: Name of the artist
         conn: Database connection
-        
+
     Returns:
         Dict with keys:
         - avg_popularity: Average popularity across all tracks
@@ -1122,13 +1122,13 @@ def calculate_artist_popularity_stats(artist_name: str, conn: object) -> dict:
     try:
         placeholder = "%s"
         cursor = conn.cursor()
-        
+
         # Try to get album column if it exists, otherwise use empty string
         # This ensures backward compatibility with databases that don't have album column
         try:
             cursor.execute(f"""
                 SELECT popularity_score, title, album
-                FROM tracks 
+                FROM tracks
                 WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND popularity_score > 0
             """, (artist_name,))
             rows = cursor.fetchall()
@@ -1139,7 +1139,7 @@ def calculate_artist_popularity_stats(artist_name: str, conn: object) -> dict:
             if "no such column" in str(e).lower():
                 cursor.execute(f"""
                     SELECT popularity_score, title
-                    FROM tracks 
+                    FROM tracks
                     WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND popularity_score > 0
                 """, (artist_name,))
                 rows = cursor.fetchall()
@@ -1147,18 +1147,18 @@ def calculate_artist_popularity_stats(artist_name: str, conn: object) -> dict:
             else:
                 # Re-raise if it's a different OperationalError
                 raise
-        
+
         # Filter out live/remix/alternate tracks before calculating statistics
         scores = []
         for row in rows:
             popularity_score = row_get(row, 'popularity_score', 0)
             title = row_get(row, 'title', '')
             album = row_get(row, 'album', '') if has_album_column else ""
-            
+
             # Exclude live/remix/alternate versions from artist statistics
             if not should_exclude_track_from_stats(title, album):
                 scores.append(popularity_score)
-        
+
         if not scores:
             return {
                 'avg_popularity': 0,
@@ -1168,20 +1168,20 @@ def calculate_artist_popularity_stats(artist_name: str, conn: object) -> dict:
                 'top_15_percentile': 0,
                 'top_20_percentile': 0
             }
-        
+
         # Sort scores to calculate percentiles
         sorted_scores = sorted(scores, reverse=True)
         track_count = len(sorted_scores)
-        
+
         # Calculate percentile thresholds
         # Top 15%: This is approximately 85th percentile (top artists of artist's work)
         # Top 20%: This is approximately 80th percentile (broader standout tracks)
         top_15_index = max(0, int(track_count * 0.15) - 1)  # -1 for 0-based index
         top_20_index = max(0, int(track_count * 0.20) - 1)
-        
+
         top_15_threshold = sorted_scores[top_15_index] if top_15_index < track_count else 0
         top_20_threshold = sorted_scores[top_20_index] if top_20_index < track_count else 0
-        
+
         # Calculate MAD (Median Absolute Deviation)
         # MAD is more robust to outliers than standard deviation
         median_val = median(scores)
@@ -1189,7 +1189,7 @@ def calculate_artist_popularity_stats(artist_name: str, conn: object) -> dict:
         mad_raw = median(absolute_deviations)
         # Scale MAD to be comparable to standard deviation (1.4826 is the constant for normal distribution)
         mad_scaled = mad_raw * 1.4826 if mad_raw > 0 else 0
-        
+
         return {
             'avg_popularity': mean(scores),
             'median_popularity': median(scores),
@@ -1220,40 +1220,40 @@ def calculate_artist_popularity_stats(artist_name: str, conn: object) -> dict:
 def should_exclude_from_stats(tracks_with_scores, alternate_takes_map: dict = None):
     r"""
     Identify tracks that should be excluded from popularity statistics calculation.
-    
+
     Excludes tracks at the end of an album whose titles end with a parenthesized suffix
-    (e.g., "Track Title (Single)", "Track Title (Live in Wacken 2022)"), as these 
+    (e.g., "Track Title (Single)", "Track Title (Live in Wacken 2022)"), as these
     bonus/alternate versions can skew the popularity mean, standard deviation, z-scores,
     and top 50% calculations.
-    
+
     NEW: Also excludes tracks marked as alternate takes (via alternate_takes_map).
-    
+
     Excluded tracks are NOT included in:
         - Mean calculation for the album
         - Standard deviation calculation
         - Z-score calculation
         - Top 50% z-score calculation (used for medium confidence threshold)
-    
+
     A track is excluded if:
         - It appears after the last "normal" track, AND
         - The title matches the pattern: `^.*\([^)]*\)$`
         OR
         - It is marked as an alternate take in alternate_takes_map
-    
+
     Args:
         tracks_with_scores: List of track dictionaries ordered by popularity (descending)
         alternate_takes_map: Optional dict mapping track_id -> base_track_id for alternate takes
-        
+
     Returns:
         Set of track indices to exclude from statistics
     """
-    
+
     if not tracks_with_scores or len(tracks_with_scores) < 3:
         # Don't filter albums with too few tracks
         return set()
-    
+
     excluded_indices = set()
-    
+
     # Exclude tracks marked as alternate takes
     if alternate_takes_map:
         for i, track in enumerate(tracks_with_scores):
@@ -1261,7 +1261,7 @@ def should_exclude_from_stats(tracks_with_scores, alternate_takes_map: dict = No
             if track_id and track_id in alternate_takes_map:
                 excluded_indices.add(i)
                 log_verbose(f"   Excluding alternate take from stats: {track['title']}")
-    
+
     # Check for titles ending with parenthesized suffix
     # Pattern: ^.*\([^)]*\)$ - matches titles that end with (something)
     # Tracks are ordered by popularity DESC, so the end of album (low popularity) is at the end of the list
@@ -1271,11 +1271,11 @@ def should_exclude_from_stats(tracks_with_scores, alternate_takes_map: dict = No
         # Check if title ends with a parenthesized suffix
         if re.match(r'^.*\([^)]*\)$', title):
             tracks_with_suffix.append(i)
-    
+
     # Only exclude if we have multiple tracks with suffix
     if len(tracks_with_suffix) < 2:
         return excluded_indices
-    
+
     # Don't apply suffix-based exclusion when the majority of tracks have parenthetical
     # suffixes - this indicates a fully-formatted album (e.g. deluxe with all tracks as
     # "(remastered 2024)") rather than a few appended bonus tracks.  In those cases every
@@ -1283,15 +1283,15 @@ def should_exclude_from_stats(tracks_with_scores, alternate_takes_map: dict = No
     suffix_ratio_threshold = 0.5
     if len(tracks_with_suffix) >= len(tracks_with_scores) * suffix_ratio_threshold:
         return excluded_indices
-    
+
     # Find consecutive tracks with suffix at the END of the track list
     # Since tracks are sorted by popularity DESC, the last indices are the end of the album
     tracks_with_suffix_set = set(tracks_with_suffix)  # O(1) membership testing
-    
+
     # Build a list of consecutive tracks starting from the last track index
     consecutive_at_end = []
     last_track_idx = len(tracks_with_scores) - 1
-    
+
     # Start from the last track and work backwards
     for i in range(last_track_idx, -1, -1):
         if i in tracks_with_suffix_set:
@@ -1309,21 +1309,21 @@ def should_exclude_from_stats(tracks_with_scores, alternate_takes_map: dict = No
             # We've started building a sequence but hit a track without suffix
             # This means the sequence is not at the end
             break
-    
+
     # Only exclude if we have at least 2 consecutive tracks with suffix at the end
     if len(consecutive_at_end) >= 2:
         excluded_indices.update(consecutive_at_end)
-    
+
     return excluded_indices
 
 
 def get_metadata_sources_info(single_sources):
     """
     Extract metadata information from single_sources list.
-    
+
     Args:
         single_sources: List of sources (e.g., ["discogs", "spotify"])
-        
+
     Returns:
         Dictionary with:
             - has_discogs: bool
@@ -1339,12 +1339,12 @@ def get_metadata_sources_info(single_sources):
     has_musicbrainz = "musicbrainz" in single_sources
     has_lastfm = "lastfm" in single_sources
     has_version_count = "version_count" in single_sources
-    
+
     # Exclude score-based indicators from metadata confirmation
     # Allowed metadata sources: discogs, spotify, musicbrainz, lastfm
     # Excluded: z-score, popularity_zscore, score (these are popularity inference indicators, not metadata)
     has_metadata = has_discogs or has_spotify or has_musicbrainz or has_lastfm
-    
+
     sources_list = []
     if has_discogs:
         sources_list.append("Discogs")
@@ -1356,7 +1356,7 @@ def get_metadata_sources_info(single_sources):
         sources_list.append("Last.fm")
     if has_version_count:
         sources_list.append("Version Count")
-    
+
     return {
         'has_discogs': has_discogs,
         'has_spotify': has_spotify,
@@ -1406,13 +1406,13 @@ def get_top_genres_with_navidrome(sources, nav_genres, title="", album=""):
     """
     Combine online-sourced genres with Navidrome genres for comparison.
     Uses weighted scoring, contextual filtering, and deduplication.
-    
+
     Args:
         sources: Dict of {source_name: [genres]} from various APIs
         nav_genres: List of genres from Navidrome
         title: Track title for contextual boosts
         album: Album name for contextual boosts
-        
+
     Returns:
         Tuple of (online_top_genres, navidrome_cleaned_genres)
     """
@@ -1477,16 +1477,16 @@ _DISCOGS_MIN_INTERVAL = 0.35
 def detect_cover_and_normalize_title(title: str) -> tuple[bool, str]:
     """
     Detect if a track is a cover song based on title patterns and return normalized title.
-    
+
     Detects patterns like:
     - "Song Title (Artist Cover)"
     - "Song Title [Artist Cover]"
     - "Song Title (Cover)"
     - "Song Title [Cover]"
-    
+
     Args:
         title: Original track title
-        
+
     Returns:
         Tuple of (is_cover: bool, normalized_title: str)
         - is_cover: True if title indicates cover version
@@ -1494,12 +1494,12 @@ def detect_cover_and_normalize_title(title: str) -> tuple[bool, str]:
     """
     # Check for cover patterns in parentheses or brackets
     cover_pattern = r'\s*[\(\[](?:.*?\s)?[Cc]over[\)\]]'
-    
+
     is_cover = bool(re.search(cover_pattern, title))
-    
+
     # Normalize title by removing cover notation for API lookups
     normalized_title = re.sub(cover_pattern, '', title).strip()
-    
+
     return is_cover, normalized_title
 
 
@@ -1523,7 +1523,7 @@ def _get_discogs_session():
 def _discogs_search(session, headers, query, kind="release", per_page=15, timeout=(5, 10)):
     """
     Search Discogs database.
-    
+
     Args:
         session: requests.Session object
         headers: Dict with User-Agent and optional Authorization headers
@@ -1531,25 +1531,25 @@ def _discogs_search(session, headers, query, kind="release", per_page=15, timeou
         kind: Type of search (release, master, artist, label)
         per_page: Number of results per page (max 100)
         timeout: Request timeout tuple (connect, read) or single value
-        
+
     Returns:
         List of search results from Discogs API
-        
+
     Raises:
         Exception on API errors or rate limiting
     """
     _throttle_discogs()
-    
+
     search_url = "https://api.discogs.com/database/search"
     params = {
         "q": query,
         "type": kind,
         "per_page": min(per_page, 100)
     }
-    
+
     try:
         response = session.get(search_url, headers=headers, params=params, timeout=timeout)
-        
+
         # Handle rate limiting
         if response.status_code == 429:
             retry_after = int(response.headers.get("Retry-After", 60))
@@ -1558,14 +1558,14 @@ def _discogs_search(session, headers, query, kind="release", per_page=15, timeou
             # Retry once after rate limit
             _throttle_discogs()
             response = session.get(search_url, headers=headers, params=params, timeout=timeout)
-        
+
         response.raise_for_status()
         data = response.json()
         results = data.get("results", [])
-        
+
         logger.debug(f"Discogs search for '{query}' returned {len(results)} results")
         return results
-        
+
     except Exception as e:
         logger.error(f"Discogs search failed for query '{query}': {e}")
         raise
@@ -1599,29 +1599,29 @@ class TimeoutError(Exception):
 def _run_with_timeout(func, timeout_seconds, error_message, *args, **kwargs):
     """
     Execute a function with a timeout using a shared ThreadPoolExecutor.
-    
+
     This is thread-safe and works in background threads (unlike signal-based timeout).
     Uses a shared thread pool to prevent resource exhaustion from creating new
     executors for each call.
-    
+
     Args:
         func: Function to execute
         timeout_seconds: Timeout in seconds
         error_message: Error message if timeout occurs
         *args: Positional arguments for func
         **kwargs: Keyword arguments for func
-    
+
     Returns:
         Result of func(*args, **kwargs)
-    
+
     Raises:
         TimeoutError: If execution exceeds timeout_seconds
-    
+
     Note:
         Tasks that timeout will continue running in the background until completion
         or until the executor shuts down. This can lead to thread pool exhaustion
         if API calls hang for extended periods despite having their own timeouts.
-        
+
         To mitigate this, the api_clients module provides timeout_safe_session with
         reduced retry counts. Future enhancement: modify API clients to use this
         session for calls made within _run_with_timeout.
@@ -1629,7 +1629,7 @@ def _run_with_timeout(func, timeout_seconds, error_message, *args, **kwargs):
     global _timeout_executor
     if _timeout_executor is None:
         raise RuntimeError("Timeout executor has been shut down")
-    
+
     log_verbose(f"[TIMEOUT DEBUG] Submitting task {func.__name__} with timeout {timeout_seconds}s")
     future = _timeout_executor.submit(func, *args, **kwargs)
     log_verbose(f"[TIMEOUT DEBUG] Task submitted, waiting for result...")
@@ -1649,10 +1649,10 @@ def _run_with_timeout(func, timeout_seconds, error_message, *args, **kwargs):
 def api_timeout(seconds: int, error_message: str = "API call timed out"):
     """
     Context manager for API timeout enforcement (no-op for backwards compatibility).
-    
+
     Note: This is kept for backwards compatibility but doesn't enforce timeouts.
     Use _run_with_timeout() function for actual timeout enforcement on API calls.
-    
+
     Args:
         seconds: Timeout in seconds (ignored)
         error_message: Error message (ignored)
@@ -1720,7 +1720,7 @@ except ImportError:
 def calculate_album_stats(conn, artist: str, album: str) -> tuple:
     """
     Calculate album popularity statistics for album-level filtering.
-    
+
     Returns:
         Tuple of (mean, stddev, median, count)
     """
@@ -1732,22 +1732,22 @@ def calculate_album_stats(conn, artist: str, album: str) -> tuple:
         FROM tracks
         WHERE artist = {placeholder} AND album = {placeholder} AND popularity_score > 0
     """, (artist, album))
-    
+
     popularities = [row_get(row, 'popularity_score', 0) for row in cursor.fetchall()]
-    
+
     if len(popularities) < 2:
         return 0.0, 0.0, 0.0, len(popularities)
-    
+
     album_median = median(popularities)
     album_stddev = stdev(popularities)
-    
+
     return album_median, album_stddev, album_median, len(popularities)
 
 
 def calculate_artist_stats(conn, artist: str) -> tuple:
     """
     Calculate artist-level popularity statistics across entire catalogue.
-    
+
     Returns:
         Tuple of (mean, stddev, count)
     """
@@ -1759,15 +1759,15 @@ def calculate_artist_stats(conn, artist: str) -> tuple:
         FROM tracks
         WHERE artist = {placeholder} AND popularity_score > 0
     """, (artist,))
-    
+
     popularities = [row_get(row, 'popularity_score', 0) for row in cursor.fetchall()]
-    
+
     if len(popularities) < 2:
         return 0.0, 0.0, len(popularities)
-    
+
     artist_mean = mean(popularities)
     artist_stddev = stdev(popularities)
-    
+
     return artist_mean, artist_stddev, len(popularities)
 
 
@@ -1811,11 +1811,11 @@ def _navidrome_scan_running() -> bool:
 def sync_track_rating_to_navidrome(track_id: str, stars: int) -> bool:
     """
     Sync a single track rating to Navidrome using the Subsonic API.
-    
+
     Args:
         track_id: Navidrome track ID
         stars: Star rating (1-5)
-        
+
     Returns:
         True if successful, False otherwise
     """
@@ -1824,14 +1824,14 @@ def sync_track_rating_to_navidrome(track_id: str, stars: int) -> bool:
         nav_url = os.environ.get("NAV_BASE_URL", "").strip("/")
         nav_user = os.environ.get("NAV_USER", "")
         nav_pass = os.environ.get("NAV_PASS", "")
-        
+
         # If not in environment, try loading from config file
         if not all([nav_url, nav_user, nav_pass]):
             try:
                 config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
                 with open(config_path, 'r') as f:
                     config = yaml.safe_load(f)
-                
+
                 # Try navidrome_users first (multi-user config)
                 nav_users = config.get('navidrome_users', [])
                 if nav_users and len(nav_users) > 0:
@@ -1848,11 +1848,11 @@ def sync_track_rating_to_navidrome(track_id: str, stars: int) -> bool:
             except Exception as e:
                 log_verbose(f"Failed to load Navidrome config from file: {e}")
                 return False
-        
+
         if not all([nav_url, nav_user, nav_pass]):
             log_verbose("Navidrome credentials not configured, skipping rating sync")
             return False
-        
+
         # Build Subsonic API parameters
         params = {
             "u": nav_user,
@@ -1863,11 +1863,11 @@ def sync_track_rating_to_navidrome(track_id: str, stars: int) -> bool:
             "id": track_id,
             "rating": stars
         }
-        
+
         # Call setRating API
         response = session.get(f"{nav_url}/rest/setRating.view", params=params, timeout=10)
         response.raise_for_status()
-        
+
         # Check if response indicates success
         result = response.json()
         if result.get("subsonic-response", {}).get("status") == "ok":
@@ -1876,7 +1876,7 @@ def sync_track_rating_to_navidrome(track_id: str, stars: int) -> bool:
             error_msg = result.get("subsonic-response", {}).get("error", {}).get("message", "Unknown error")
             log_basic(f"Navidrome API error for track {track_id}: {error_msg}")
             return False
-            
+
     except Exception as e:
         log_basic(f"Failed to sync rating to Navidrome for track {track_id}: {e}")
         return False
@@ -1915,7 +1915,7 @@ def get_resume_artist_from_db():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        
+
         # Get the most recently scanned artist from scan_history table
         cursor.execute("""
             SELECT artist_name, MAX(scan_timestamp) as last_scan
@@ -1925,10 +1925,10 @@ def get_resume_artist_from_db():
             ORDER BY last_scan DESC
             LIMIT 1
         """)
-        
+
         result = cursor.fetchone()
         conn.close()
-        
+
         if result and result[0]:
             return result[0]
         return None
@@ -1940,11 +1940,11 @@ def get_resume_artist_from_db():
 def fetch_album_art_from_audiodb(artist: str, album: str) -> str | None:
     """
     Fetch album art URL from AudioDB as fallback source.
-    
+
     Args:
         artist: Artist name
         album: Album name
-        
+
     Returns:
         Album art URL if found, None otherwise
     """
@@ -1962,18 +1962,18 @@ def fetch_album_art_from_audiodb(artist: str, album: str) -> str | None:
 def fetch_album_art_from_discogs(artist: str, album: str, discogs_token: str = None) -> str | None:
     """
     Fetch album art URL from Discogs as fallback source.
-    
+
     Args:
         artist: Artist name
         album: Album name
         discogs_token: Optional Discogs API token
-        
+
     Returns:
         Album art URL if found, None otherwise
     """
     try:
         from api_clients.discogs import DiscogsClient
-        
+
         if not discogs_token:
             # Try to load from config
             config_path = os.path.join(os.path.dirname(__file__), "config", "config.yaml")
@@ -1981,18 +1981,18 @@ def fetch_album_art_from_discogs(artist: str, album: str, discogs_token: str = N
                 with open(config_path, 'r') as f:
                     config = yaml.safe_load(f) or {}
                     discogs_token = config.get("api_integrations", {}).get("discogs", {}).get("token")
-        
+
         if not discogs_token:
             log_debug(f"[ALBUM_ART_FALLBACK] No Discogs token available, skipping Discogs lookup")
             return None
-        
+
         # Validate token - reject placeholders
         if discogs_token.lower() in ("your_discogs_token", "your_token", "placeholder", "") or len(discogs_token) < 10:
             log_debug(f"[ALBUM_ART_FALLBACK] Discogs token is invalid or placeholder - skipping Discogs lookup")
             return None
-        
+
         client = DiscogsClient(token=discogs_token)
-        
+
         # Search for the album on Discogs
         search_url = "https://api.discogs.com/database/search"
         params = {
@@ -2002,27 +2002,27 @@ def fetch_album_art_from_discogs(artist: str, album: str, discogs_token: str = N
             "token": discogs_token
         }
         headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
-        
+
         resp = requests.get(search_url, params=params, headers=headers, timeout=5)
         resp.raise_for_status()
         data = resp.json()
         results = data.get("results", [])
-        
+
         if not results:
             log_debug(f"[ALBUM_ART_FALLBACK] No Discogs release found for {artist} - {album}")
             return None
-        
+
         # Get the first result
         release = results[0]
         thumb_url = release.get("thumb")
-        
+
         if thumb_url and thumb_url != "":
             log_debug(f"[ALBUM_ART_FALLBACK] Found album art via Discogs for {artist} - {album}")
             return thumb_url
-        
+
         log_debug(f"[ALBUM_ART_FALLBACK] Discogs found release but no thumbnail for {artist} - {album}")
         return None
-        
+
     except Exception as e:
         log_debug(f"[ALBUM_ART_FALLBACK] Discogs lookup failed for {artist} - {album}: {e}")
         return None
@@ -2031,26 +2031,26 @@ def fetch_album_art_from_discogs(artist: str, album: str, discogs_token: str = N
 def fetch_album_art_url_from_musicbrainz(artist: str, album: str) -> str | None:
     """
     Fetch album art URL from MusicBrainz Cover Art Archive.
-    
+
     Args:
         artist: Artist name
         album: Album name
-        
+
     Returns:
         Cover Art Archive URL if found, None otherwise
     """
     try:
         import requests
-        
+
         # Try to get MBID from database using canonical column name.
         conn = get_db_connection()
         db_query = DatabaseQuery(conn)
-        
+
         placeholder = "%s"
 
         # For PostgreSQL, use information_schema.
         cursor = db_query.execute("""
-            SELECT column_name FROM information_schema.columns 
+            SELECT column_name FROM information_schema.columns
             WHERE table_schema = 'public' AND table_name = 'tracks'
         """)
         track_columns = {row['column_name'] for row in cursor.fetchall()}
@@ -2071,9 +2071,9 @@ def fetch_album_art_url_from_musicbrainz(artist: str, album: str) -> str | None:
             )
             result = cursor.fetchone()
         conn.close()
-        
+
         album_mbid = result['album_mbid'] if result else None
-        
+
         # If we don't have MBID, try to search for it
         if not album_mbid:
             try:
@@ -2094,16 +2094,16 @@ def fetch_album_art_url_from_musicbrainz(artist: str, album: str) -> str | None:
             except Exception as e:
                 log_debug(f"[ALBUM_ART] MusicBrainz album search failed: {e}")
                 return None
-        
+
         if not album_mbid:
             log_debug(f"[ALBUM_ART] No MBID found for {artist} - {album}")
             return None
-        
+
         # Construct Cover Art Archive URL
         cover_url = f"https://coverartarchive.org/release-group/{album_mbid}/front-500"
         log_debug(f"[ALBUM_ART] Constructed CAA URL for {artist} - {album}: {cover_url}")
         return cover_url
-        
+
     except Exception as e:
         log_debug(f"[ALBUM_ART] Failed to fetch album art URL from MusicBrainz: {e}")
         return None
@@ -2178,7 +2178,7 @@ def _ensure_album_art_pg_schema(conn, cursor) -> None:
 def download_and_save_album_art(artist: str, album: str, art_url: str, conn=None, cursor=None, source: str = "unknown") -> bool:
     """
     Download album art image from URL and save to database.
-    
+
     Args:
         artist: Artist name
         album: Album name
@@ -2186,38 +2186,38 @@ def download_and_save_album_art(artist: str, album: str, art_url: str, conn=None
         conn: Optional existing database connection (avoids creating new one)
         cursor: Optional existing database cursor
         source: Source of the art URL (musicbrainz, audiodb, discogs, etc.)
-        
+
     Returns:
         True if successfully saved, False otherwise
     """
     own_connection = False
     try:
         import requests
-        
+
         if not art_url:
             return False
-        
+
         # Download image from URL
         resp = requests.get(art_url, timeout=5)
         if resp.status_code != 200:
             log_debug(f"[ALBUM_ART] Failed to download image from {source} for {artist} - {album}: HTTP {resp.status_code}")
             return False
-        
+
         image_data = resp.content
         if not image_data or len(image_data) == 0:
             log_debug(f"[ALBUM_ART] Downloaded image is empty for {artist} - {album}")
             return False
-        
+
         # Save to database
         if conn is None:
             conn = get_db_connection()
             own_connection = True
         if cursor is None:
             cursor = conn.cursor()
-        
+
         _ensure_album_art_pg_schema(conn, cursor)
         cursor.execute("""
-            INSERT INTO album_art 
+            INSERT INTO album_art
             (artist_name, album_name, image_data, image_mime_type, source, downloaded_at)
             VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
             ON CONFLICT (artist_name, album_name)
@@ -2227,16 +2227,16 @@ def download_and_save_album_art(artist: str, album: str, art_url: str, conn=None
                 source = EXCLUDED.source,
                 downloaded_at = EXCLUDED.downloaded_at
         """, (artist, album, image_data, "image/jpeg", source))
-        
+
         # Only commit if we created our own connection
         if own_connection:
             conn.commit()
             conn.close()
-        
-        
+
+
         log_info(f"[ALBUM_ART] Successfully downloaded and saved album art for {artist} - {album} from {source} ({len(image_data)} bytes)")
         return True
-        
+
     except requests.exceptions.Timeout:  # type: ignore
         log_debug(f"[ALBUM_ART] Timeout downloading image from {source} for {artist} - {album}")
         if conn is not None and not own_connection:
@@ -2260,19 +2260,19 @@ def download_and_save_album_art(artist: str, album: str, art_url: str, conn=None
 def fetch_and_save_album_art_with_fallback(artist: str, album: str, conn=None, cursor=None, discogs_token: str = None) -> bool:
     """
     Fetch album art with intelligent fallback strategy.
-    
+
     Tries sources in this order:
     1. MusicBrainz Cover Art Archive (preferred)
     2. AudioDB
     3. Discogs (if token available)
-    
+
     Args:
         artist: Artist name
         album: Album name
         conn: Optional existing database connection
         cursor: Optional existing database cursor
         discogs_token: Optional Discogs API token
-        
+
     Returns:
         True if album art was successfully downloaded, False otherwise
     """
@@ -2281,7 +2281,7 @@ def fetch_and_save_album_art_with_fallback(artist: str, album: str, conn=None, c
         ("audiodb", lambda: fetch_album_art_from_audiodb(artist, album)),
         ("discogs", lambda: fetch_album_art_from_discogs(artist, album, discogs_token)),
     ]
-    
+
     for source_name, fetch_func in sources:
         try:
             art_url = fetch_func()
@@ -2293,7 +2293,7 @@ def fetch_and_save_album_art_with_fallback(artist: str, album: str, conn=None, c
                     log_debug(f"[ALBUM_ART] Download from {source_name} failed, trying next source...")
         except Exception as e:
             log_debug(f"[ALBUM_ART] {source_name} source error for {artist} - {album}: {e}")
-    
+
     log_debug(f"[ALBUM_ART] All fallback sources exhausted for {artist} - {album}")
     return False
 
@@ -2323,10 +2323,10 @@ def detect_single_for_track(
 ) -> dict:
     """
     Detect if a track is a single using multiple data sources.
-    
+
     This is the canonical single detection logic used by popularity.py.
     Other modules should call this function to ensure consistent behavior.
-    
+
     NEW: Enhanced with advanced single detection logic including:
     - ISRC-based track version matching
     - Title+duration matching (⏱2 seconds)
@@ -2336,7 +2336,7 @@ def detect_single_for_track(
     - Global popularity calculation
     - Z-score based final determination
     - Compilation/greatest hits special handling
-    
+
     Args:
         title: Track title
         artist: Artist name
@@ -2352,7 +2352,7 @@ def detect_single_for_track(
         album_type: Album type for advanced detection (optional)
         use_advanced_detection: Enable advanced detection logic (default True)
         zscore_threshold: Z-score threshold for singles based on artist median (default 1.0)
-        
+
     Returns:
         Dict with keys:
             - sources: List of sources that confirmed single (e.g. ['spotify', 'musicbrainz'])
@@ -2375,12 +2375,12 @@ def detect_single_for_track(
             from single_detection_enhanced import detect_single_enhanced, store_single_detection_result
             # get_db_connection is already available in this module
             conn = existing_conn or get_db_connection()
-            
+
             # Get Spotify results if cached
             spotify_search_results = None
             if spotify_results_cache is not None:
                 spotify_search_results = spotify_results_cache.get(title)
-            
+
             # Get API clients
             discogs_client = None
             if discogs_token:
@@ -2391,19 +2391,19 @@ def detect_single_for_track(
                     log_debug(f"[SINGLE DETECTION] Discogs client initialization failed - Discogs single detection unavailable")
             else:
                 log_debug(f"[SINGLE DETECTION] Discogs token not available - Discogs single detection disabled")
-            
+
             musicbrainz_client = None
             if HAVE_MUSICBRAINZ:
                 musicbrainz_client = _get_timeout_safe_musicbrainz_client()
-            
+
             # Get Last.fm client
             detection_lastfm_client = lastfm_client or get_lastfm_client()
-            
+
             # Run enhanced detection
             log_info(f"🔍 [SINGLE DETECTION] Starting enhanced detection for: {title}")
             log_debug(f"[SINGLE DETECTION] Enhanced detection params: isrc={isrc}, duration={duration}, popularity={popularity}, album_type={album_type}")
             log_debug(f"[SINGLE DETECTION] API clients available: discogs={'YES' if discogs_client else 'NO'}, musicbrainz={'YES' if musicbrainz_client else 'NO'}, lastfm={'YES' if lastfm_client else 'NO'}")
-            
+
             result = detect_single_enhanced(
                 conn=conn,
                 track_id=track_id,
@@ -2422,10 +2422,10 @@ def detect_single_for_track(
                 album_is_underperforming=album_is_underperforming,
                 artist_median_popularity=artist_median_popularity
             )
-            
+
             log_info(f"✅ [SINGLE DETECTION] Enhanced detection complete for: {title}")
             log_debug(f"[SINGLE DETECTION] Result: is_single={result.get('is_single')}, confidence={result.get('single_confidence')}, sources={result.get('single_sources')}")
-            
+
             if persist_result:
                 # CRITICAL: Close owned read connection before storing results.
                 # detect_single_enhanced() creates multiple cursors and may leave read locks open.
@@ -2441,12 +2441,12 @@ def detect_single_for_track(
                     log_debug(f"Warning: Could not write single detection result for {track_id}: {write_error}")
                     import traceback
                     log_debug(f"Write error: {traceback.format_exc()}")
-            
+
             # Return in expected format
             # CRITICAL: Deduplicate sources to prevent same source appearing twice
             # (e.g., lastfm appearing twice due to multiple code paths)
             result['single_sources'] = list(dict.fromkeys(result['single_sources']))
-            
+
             return {
                 "sources": result['single_sources'],
                 "confidence": result['single_confidence'],
@@ -2487,7 +2487,7 @@ def detect_single_for_track(
             skip_reason.append(f"album={album}")
         log_info(f"⚠️ [SINGLE DETECTION] Using STANDARD detection path for: {title} (reasons: {', '.join(skip_reason)})")
         log_debug(f"Skipping advanced detection for {title}: {', '.join(skip_reason)}")
-    
+
     # Ignore obvious non-singles by keywords
     # Strip cover attributions AND single-release version suffixes so that
     # "(Radio Edit)" / "(Single Version)" / "(Album Version)" are not caught
@@ -2501,7 +2501,7 @@ def detect_single_for_track(
             "confidence": "low",
             "is_single": False
         }
-    
+
     # ALBUM-LEVEL POPULARITY FILTER (for standard detection path)
     # If album and popularity are provided, check against album mean
     if album and popularity and popularity > 0:
@@ -2510,7 +2510,7 @@ def detect_single_for_track(
             is_pg = is_postgres_connection(conn)
             placeholder = "%s" if is_pg else "?"
             cursor = conn.cursor()
-            
+
             # STAGE 1: Album-level filter (must be album standout)
             # Skip this filter for compilations and greatest hits albums (all tracks are hits)
             is_compilation_or_greatest_hits = (
@@ -2523,24 +2523,24 @@ def detect_single_for_track(
                     log_verbose(f"   ⓘ Skipping album popularity filter for compilation/greatest hits album")
             else:
                 cursor.execute(f"""
-                    SELECT popularity_score 
-                    FROM tracks 
+                    SELECT popularity_score
+                    FROM tracks
                     WHERE artist = {placeholder} AND album = {placeholder} AND popularity_score > 0
                 """, (artist, album))
                 album_popularities = [row['popularity_score'] for row in cursor.fetchall()]
-                
+
                 album_passed = True
                 if album_popularities:
                     from statistics import stdev as stat_stdev, median as stat_median
                     album_median = stat_median(album_popularities)
                     album_stddev = stdev(album_popularities) if len(album_popularities) > 1 else 0
-                    
+
                     # Must be in top 3 of album OR above album median - 0.5*stddev
                     sorted_album = sorted(album_popularities, reverse=True)
                     is_top_3_album = popularity in sorted_album[:3]
                     album_threshold = album_median - (0.5 * album_stddev) if album_stddev > 0 else album_median
                     meets_album_threshold = popularity >= album_threshold
-                    
+
                     if not (is_top_3_album or meets_album_threshold):
                         if verbose:
                             log_verbose(f"   ⊗ Album filter blocked: {title} (pop {popularity:.1f}, album median {album_median:.1f})")
@@ -2551,7 +2551,7 @@ def detect_single_for_track(
                             "is_single": False,
                             "stage_blocked": "album_filter"
                         }
-            
+
             # STAGE 2: Artist-level filter (must be artist standout)
             # Skip this filter for compilations and greatest hits albums
             if is_compilation_or_greatest_hits:
@@ -2559,22 +2559,22 @@ def detect_single_for_track(
                     log_verbose(f"   ⓘ Skipping artist z-score filter for compilation/greatest hits album")
             else:
                 cursor.execute(f"""
-                    SELECT popularity_score 
-                    FROM tracks 
+                    SELECT popularity_score
+                    FROM tracks
                     WHERE artist = {placeholder} AND popularity_score > 0
                 """, (artist,))
                 artist_popularities = [row['popularity_score'] for row in cursor.fetchall()]
                 artist_passed = True
                 artist_zscore = 0.0
                 artist_mean = 0.0
-                
+
                 if len(artist_popularities) >= 5:
                     # Established artist: use artist-level z-score
                     from statistics import stdev as stat_stdev, mean as stat_mean
                     artist_mean = stat_mean(artist_popularities)
                     artist_stddev = stat_stdev(artist_popularities) if len(artist_popularities) > 1 else 1
                     artist_zscore = (popularity - artist_mean) / artist_stddev if artist_stddev > 0 else 0
-                    
+
                     artist_threshold = 0.5  # Configurable threshold
                     if artist_zscore < artist_threshold:
                         if verbose:
@@ -2582,7 +2582,7 @@ def detect_single_for_track(
                         artist_passed = False
                 elif verbose:
                     log_verbose(f"   ⚠ Bootstrap: Artist has {len(artist_popularities)} tracks (< 5), skipping artist filter")
-                
+
                 if artist_popularities and not artist_passed:
                     conn.close()
                     return {
@@ -2596,7 +2596,7 @@ def detect_single_for_track(
                     artist_zscore_value = artist_zscore if 'artist_zscore' in locals() else 0.0
                     if artist_zscore_value > 0:
                         log_verbose(f"   ✓ Passed both filters: {title} (album top 3/threshold, z-score {artist_zscore_value:.2f})")
-            
+
             conn.close()
         except Exception as e:
             try:
@@ -2607,16 +2607,16 @@ def detect_single_for_track(
             if verbose:
                 log_verbose(f"   âš  Could not calculate album mean for popularity filter: {e}")
             # Continue with detection if we can't calculate album mean
-    
+
     single_sources = []
     medium_confidence_sources = []  # Track medium confidence sources for 2 medium = 1 high rule
-    
+
     # Normalize lookup title before external API searches.
     # This removes parenthetical release qualifiers so variants like
     # "Song (live at ...)", "Song (remastered 2024)", or "Song (radio edit)"
     # can resolve against the canonical song entry.
     lookup_title = normalize_title_for_lookup(title)
-    
+
     # Load discogs token and feature settings from config
     mb_compilation_confidence = "medium"
     _feature_config = {}
@@ -2637,14 +2637,14 @@ def detect_single_for_track(
     _raw_mb_comp_conf = _feature_config.get("source_musicbrainz_compilation_confidence", "medium")
     if isinstance(_raw_mb_comp_conf, str) and _raw_mb_comp_conf.lower() in ("high", "medium", "low"):
         mb_compilation_confidence = _raw_mb_comp_conf.lower()
-    
+
     # First check: Spotify single detection
     try:
         # Use cached results if available
         spotify_results = None
         if spotify_results_cache is not None:
             spotify_results = spotify_results_cache.get(title)
-        
+
         if spotify_results is None:
             # Query Spotify
             if verbose:
@@ -2658,16 +2658,16 @@ def detect_single_for_track(
         else:
             if verbose:
                 log_verbose(f"   âœ“ Reusing cached Spotify results for {title}")
-        
+
         if spotify_results and isinstance(spotify_results, list) and len(spotify_results) > 0:
             # Use new sophisticated matching logic
             # Convert duration from seconds to milliseconds if provided
             duration_ms = int(duration * 1000) if duration else None
-            
+
             # Log all releases before filtering if verbose
             if verbose:
                 log_verbose(f"   Spotify returned {len(spotify_results)} releases for {title}")
-            
+
             # Use the sophisticated version-aware matching with improved fuzzy matching
             matched_release = find_matching_spotify_single(
                 spotify_results=spotify_results,
@@ -2679,7 +2679,7 @@ def detect_single_for_track(
                 duration_tolerance_sec=2,
                 logger=logger if verbose else None
             )
-            
+
             if matched_release:
                 single_sources.append("spotify")
                 medium_confidence_sources.append("spotify")
@@ -2697,7 +2697,7 @@ def detect_single_for_track(
     except Exception as e:
         if verbose:
             log_verbose(f"Spotify single check failed for {title}: {e}")
-    
+
     # Second check: MusicBrainz single detection
     if HAVE_MUSICBRAINZ:
         try:
@@ -2717,7 +2717,7 @@ def detect_single_for_track(
                     log_info(f"   âœ“ MusicBrainz confirms single: {title}")
                 else:
                     log_info(f"   â“˜ MusicBrainz does not confirm single: {title}")
-                
+
                 # Check for Various Artists appearances
                 try:
                     on_compilations = _run_with_timeout(
@@ -2744,7 +2744,7 @@ def detect_single_for_track(
                     log_debug(f"   ⏱ MusicBrainz compilation check timed out for {title}")
                 except Exception as e:
                     log_debug(f"   MusicBrainz compilation check error for {title}: {e}")
-                    
+
                 # Check if 2 medium sources = high confidence (early exit)
                 if len(medium_confidence_sources) >= 2:
                     log_info(f"   🎯 EARLY EXIT: 2 medium sources detected ({medium_confidence_sources}), promoting to HIGH")
@@ -2759,7 +2759,7 @@ def detect_single_for_track(
             log_info(f"   âš  MusicBrainz single check failed for {title}: {e}")
     else:
         log_info(f"   â“˜ MusicBrainz client not available")
-    
+
     # Third check: Discogs single detection
     if discogs_token:
         try:
@@ -2789,7 +2789,7 @@ def detect_single_for_track(
     else:
         log_info(f"   â“˜ Discogs token not configured")
         log_debug(f"   Discogs: Token not configured in config.yaml")
-    
+
     # Fourth check: Discogs video detection
     if discogs_token:
         try:
@@ -2820,7 +2820,7 @@ def detect_single_for_track(
     else:
         log_info(f"   â“˜ Discogs token not configured for video detection")
         log_debug(f"   Discogs: Token not configured for video detection")
-    
+
     # Iterative z-score detection (required method)
     iterative_zscore_passed = False
     if album and popularity and popularity > 0 and track_id:
@@ -2844,14 +2844,14 @@ def detect_single_for_track(
                 log_debug(f"   Iterative z-score: {title} did not meet threshold")
         except Exception as e:
             log_debug(f"   Iterative z-score detection error for {title}: {e}")
-    
+
     # Calculate confidence based on sources.
     # Discogs is the only high-confidence source; all other sources are medium.
     has_iterative_zscore = "iterative_zscore" in single_sources
     has_discogs_single = "discogs" in single_sources
     has_discogs_video = "discogs_video" in single_sources
     has_other_sources = any(s in single_sources for s in ["spotify", "musicbrainz", "lastfm"])
-    
+
     # NEW RULE: 2 medium sources = high confidence
     if has_discogs_single or len(medium_confidence_sources) >= 2:
         single_confidence = "high"
@@ -2859,19 +2859,19 @@ def detect_single_for_track(
         single_confidence = "medium"
     else:
         single_confidence = "low"
-    
+
     # Album context rule: downgrade medium -> low if album has >3 tracks
     if single_confidence == "medium" and album_track_count > 3:
         single_confidence = "low"
         if verbose:
             log_verbose(f"   Downgraded {title} confidence to low (album has {album_track_count} tracks)")
-    
+
     # is_single = True only for high confidence singles (Discogs-confirmed)
     is_single = single_confidence == "high"
-    
+
     # Deduplicate sources to ensure no duplicates slip through
     single_sources_dedup = list(dict.fromkeys(single_sources))
-    
+
     return {
         "sources": single_sources_dedup,
         "confidence": single_confidence,
@@ -2882,13 +2882,13 @@ def detect_single_for_track(
 def get_artist_listenbrainz_context(artist_mbid: str) -> dict:
     """
     Fetch ListenBrainz top recordings for an artist to determine top 10% threshold.
-    
+
     Uses ListenBrainz popularity API to get top recordings sorted by listen count.
     This provides a community-based popularity ranking independent of Last.fm.
-    
+
     Args:
         artist_mbid: MusicBrainz ID of the artist
-        
+
     Returns:
         Dict with keys:
         - top_10_percentile_threshold: Listen count for top 10% position
@@ -2898,27 +2898,27 @@ def get_artist_listenbrainz_context(artist_mbid: str) -> dict:
     """
     try:
         import requests
-        
+
         url = f"https://api.listenbrainz.org/1/popularity/top-recordings-for-artist/{artist_mbid}"
-        
+
         response = requests.get(url, timeout=10)
         if response.status_code == 200:
             recordings = response.json()
-            
+
             if not recordings:
                 return {'top_10_percentile_threshold': 0, 'total_recordings': 0, 'source': 'error', 'listen_counts': []}
-            
+
             listen_counts = [r.get('total_listen_count', 0) for r in recordings if r.get('total_listen_count')]
-            
+
             if not listen_counts:
                 return {'top_10_percentile_threshold': 0, 'total_recordings': len(recordings), 'source': 'error', 'listen_counts': []}
-            
+
             total_recordings = len(recordings)
             top_10_count = max(1, total_recordings // 10)
             top_10_threshold = listen_counts[min(top_10_count - 1, len(listen_counts) - 1)]
-            
+
             log_debug(f"ListenBrainz: {total_recordings} total recordings, top 10% = {top_10_count} recordings, threshold: {top_10_threshold} listens")
-            
+
             return {
                 'top_10_percentile_threshold': top_10_threshold,
                 'total_recordings': total_recordings,
@@ -2936,19 +2936,19 @@ def get_artist_listenbrainz_context(artist_mbid: str) -> dict:
 def blend_top_10_thresholds(lastfm_threshold: int, lastfm_total: int, listenbrainz_threshold: int, listenbrainz_total: int) -> tuple:
     """
     Blend thresholds from Last.fm and ListenBrainz for more robust top 10% detection.
-    
+
     Applies weighted averaging based on data availability:
     - Both sources available: 60% Last.fm + 40% ListenBrainz
     - Last.fm only: Use Last.fm
-    - ListenBrainz only: Use ListenBrainz  
+    - ListenBrainz only: Use ListenBrainz
     - Neither: Return 0
-    
+
     Args:
         lastfm_threshold: Top 10% threshold from Last.fm (listener count)
         lastfm_total: Total tracks from Last.fm
         listenbrainz_threshold: Top 10% threshold from ListenBrainz (listen count)
         listenbrainz_total: Total recordings from ListenBrainz
-        
+
     Returns:
         Tuple of (blended_threshold, source_info)
         - blended_threshold: Final threshold to use
@@ -2956,7 +2956,7 @@ def blend_top_10_thresholds(lastfm_threshold: int, lastfm_total: int, listenbrai
     """
     has_lastfm = lastfm_threshold > 0 and lastfm_total > 0
     has_listenbrainz = listenbrainz_threshold > 0 and listenbrainz_total > 0
-    
+
     if has_lastfm and has_listenbrainz:
         # Blend both sources: Last.fm weighted slightly higher as it's more mature
         blended = int((lastfm_threshold * 0.6) + (listenbrainz_threshold * 0.4))
@@ -2975,23 +2975,23 @@ def blend_top_10_thresholds(lastfm_threshold: int, lastfm_total: int, listenbrai
 def get_artist_lastfm_context(artist_name: str, conn: object, artist_mbid: str = None) -> dict:
     """
     Pre-fetch Last.fm listener data for all tracks by an artist to enable dynamic weight adjustment.
-    
+
     Uses artist-level statistics to identify tracks that are outliers in the artist's catalogue,
     allowing intelligent weight redistribution during popularity scoring.
-    
+
     Falls back to Last.fm's top tracks API, then to ListenBrainz if Last.fm has no data.
     Also fetches artist info to determine top 10% threshold.
-    
+
     Example:
         - Colossus by Borknagar: 43,991 Last.fm listeners
         - Borknagar has ~150 total tracks → Top 10% = top 15 tracks
         - Colossus is in top 15 globally AND outlier on album → 5 stars
-    
+
     Args:
         artist_name: Name of the artist
         conn: Database connection
         artist_mbid: MusicBrainz ID for ListenBrainz fallback (optional)
-        
+
     Returns:
         Dict with keys:
         - mean: Average Last.fm listeners across artist's tracks
@@ -3007,18 +3007,18 @@ def get_artist_lastfm_context(artist_name: str, conn: object, artist_mbid: str =
     """
     try:
         cursor = conn.cursor()
-        
+
         # Determine database type for proper placeholder syntax
         is_pg = is_postgres_connection(conn)
         placeholder = "%s" if is_pg else "?"
-        
+
         # Get all tracks by artist with Last.fm listener data
         # Exclude live/remix/alternate versions to avoid skewing stats
         is_single_false_expr = "is_single = FALSE" if is_pg else "is_single = 0"
         cursor.execute(f"""
             SELECT id, title, album, lastfm_track_playcount
             FROM tracks
-            WHERE artist = {placeholder} AND lastfm_track_playcount > 0 AND {is_single_false_expr} 
+            WHERE artist = {placeholder} AND lastfm_track_playcount > 0 AND {is_single_false_expr}
                 AND album NOT IN (
                     SELECT DISTINCT album FROM tracks WHERE artist = {placeholder} AND album_context_live = 1
                 )
@@ -3026,10 +3026,10 @@ def get_artist_lastfm_context(artist_name: str, conn: object, artist_mbid: str =
                     SELECT DISTINCT album FROM tracks WHERE artist = {placeholder} AND discogs_format_descriptions LIKE {placeholder}
                 )
         """, (artist_name, artist_name, artist_name, '%live%'))
-        
+
         tracks = cursor.fetchall()
         listeners_list = [row_get(row, 'lastfm_track_playcount', 0) for row in tracks if row_get(row, 'lastfm_track_playcount', 0) > 0]
-        
+
         # Fetch artist info to get total track count and top 10% threshold
         total_tracks = 0
         top_10_percentile_threshold = 0
@@ -3037,7 +3037,7 @@ def get_artist_lastfm_context(artist_name: str, conn: object, artist_mbid: str =
         try:
             import requests
             from helpers.config_loader import load_config
-            
+
             config = load_config()
             lastfm_api_key = config.get("api_integrations", {}).get("lastfm", {}).get("api_key") if config else None
             if lastfm_api_key:
@@ -3049,16 +3049,16 @@ def get_artist_lastfm_context(artist_name: str, conn: object, artist_mbid: str =
                     "limit": 50,
                     "format": "json"
                 }
-                
+
                 response = requests.get("https://ws.audioscrobbler.com/2.0/", params=params, timeout=10)
                 if response.status_code == 200:
                     data = response.json()
                     top_tracks = data.get("toptracks", {}).get("track", [])
-                    
+
                     # Get total track count from response (if available)
                     toptracks_attr = data.get("toptracks", {}).get("@attr", {})
                     total_tracks = int(toptracks_attr.get("total", 0) or 0)
-                    
+
                     # Extract listener counts and find top 10% threshold
                     api_listeners_list = []
                     for track in top_tracks:
@@ -3066,7 +3066,7 @@ def get_artist_lastfm_context(artist_name: str, conn: object, artist_mbid: str =
                         if listeners > 0:
                             api_listeners_list.append(listeners)
                             listeners_list.append(listeners)
-                    
+
                     # Top 10% threshold = 90th percentile of listener counts
                     if total_tracks > 0:
                         top_10_count = max(1, total_tracks // 10)
@@ -3074,15 +3074,15 @@ def get_artist_lastfm_context(artist_name: str, conn: object, artist_mbid: str =
                         if len(api_listeners_list) >= top_10_count:
                             sorted_listeners = sorted(api_listeners_list, reverse=True)
                             top_10_percentile_threshold = sorted_listeners[min(top_10_count - 1, len(sorted_listeners) - 1)]
-                        
+
                         log_debug(f"Artist info: {artist_name} has {total_tracks} total tracks, top 10% = ~{top_10_count} tracks, threshold: {top_10_percentile_threshold} listeners")
                         threshold_source = "last.fm"
-                    
+
                     if listeners_list:
                         log_debug(f"Added {len(api_listeners_list)} top tracks from Last.fm API for {artist_name}")
         except Exception as e:
             log_debug(f"Failed to fetch Last.fm artist info for {artist_name}: {e}")
-        
+
         # If Last.fm returned no threshold data, try ListenBrainz as fallback
         listenbrainz_threshold = 0
         listenbrainz_total = 0
@@ -3092,7 +3092,7 @@ def get_artist_lastfm_context(artist_name: str, conn: object, artist_mbid: str =
                 if listenbrainz_data['source'] == 'listenbrainz':
                     listenbrainz_threshold = listenbrainz_data['top_10_percentile_threshold']
                     listenbrainz_total = listenbrainz_data['total_recordings']
-                    
+
                     # Use ListenBrainz if Last.fm failed
                     if top_10_percentile_threshold == 0:
                         top_10_percentile_threshold = listenbrainz_threshold
@@ -3101,7 +3101,7 @@ def get_artist_lastfm_context(artist_name: str, conn: object, artist_mbid: str =
                         log_debug(f"Using ListenBrainz as fallback for {artist_name}: threshold={listenbrainz_threshold}, total={listenbrainz_total}")
             except Exception as e:
                 log_debug(f"ListenBrainz fallback failed for {artist_name}: {e}")
-        
+
         # Blend thresholds if both sources have data
         if top_10_percentile_threshold > 0 and listenbrainz_threshold > 0:
             blended_threshold, blend_source = blend_top_10_thresholds(
@@ -3111,7 +3111,7 @@ def get_artist_lastfm_context(artist_name: str, conn: object, artist_mbid: str =
             top_10_percentile_threshold = blended_threshold
             threshold_source = blend_source
             log_debug(f"Threshold blend for {artist_name}: {blend_source}")
-        
+
         if not listeners_list or len(listeners_list) < 2:
             return {
                 'mean': 0,
@@ -3125,20 +3125,20 @@ def get_artist_lastfm_context(artist_name: str, conn: object, artist_mbid: str =
                 'source': 'error',
                 'threshold_source': threshold_source
             }
-        
+
         # Calculate artist-level statistics (using mean-centered z-scores)
         artist_mean = mean(listeners_list)
         artist_stdev = stdev(listeners_list) if len(listeners_list) > 1 else 0
         artist_min = min(listeners_list)
         artist_max = max(listeners_list)
-        
+
         # Calculate z-score for each database track
         track_zscores = {}
         for track_row in tracks:
             track_id = row_get(track_row, 'id')
             title = row_get(track_row, 'title', '')
             listeners = row_get(track_row, 'lastfm_track_playcount', 0)
-            
+
             if artist_stdev > 0:
                 z = (listeners - artist_mean) / artist_stdev
                 track_zscores[track_id] = z
@@ -3146,7 +3146,7 @@ def get_artist_lastfm_context(artist_name: str, conn: object, artist_mbid: str =
                 if abs(z) >= 2.0:
                     in_top_10 = "✓ in top 10%" if listeners >= top_10_percentile_threshold else "✗ not in top 10%"
                     log_debug(f"Artist outlier detected: {title} (z={z:.2f}, listeners={listeners:.0f}, artist_mean={artist_mean:.0f}, {in_top_10})")
-        
+
         return {
             'mean': artist_mean,
             'stdev': artist_stdev,
@@ -3159,7 +3159,7 @@ def get_artist_lastfm_context(artist_name: str, conn: object, artist_mbid: str =
             'source': 'database_plus_api' if listeners_list else 'error',
             'threshold_source': threshold_source
         }
-        
+
     except Exception as e:
         log_debug(f"Error calculating artist Last.fm context: {e}")
         return {
@@ -3186,16 +3186,16 @@ def get_dynamic_weights(
 ) -> tuple:
     """
     Calculate dynamically adjusted weights based on artist catalogue context.
-    
+
     For tracks that are outliers in their artist's catalogue, boost the weight
     of the more reliable source signal (e.g., Last.fm for heavily-streamed tracks).
-    
+
     Example:
         - Colossus: Spotify 28, Last.fm 43,991 listeners (z=3.9 above artist mean)
         - Base weights: Spotify 0.4, Last.fm 0.3
         - Colossus is extreme outlier → boost Last.fm to 0.5 (indicates real popularity)
         - Result: Weighted more toward Last.fm's signal
-    
+
     Args:
         spotify_score: Spotify popularity score (0-100)
         lastfm_score: Last.fm popularity score (0-100)
@@ -3203,28 +3203,28 @@ def get_dynamic_weights(
         track_lastfm_listeners: Track's Last.fm listener count (raw value)
         base_spotify_weight: Default Spotify weight (typically 0.4)
         base_lastfm_weight: Default Last.fm weight (typically 0.3)
-        
+
     Returns:
         Tuple of (adjusted_spotify_weight, adjusted_lastfm_weight)
     """
     try:
         artist_mean = artist_context.get('mean', 0)
         artist_stdev = artist_context.get('stdev', 0)
-        
+
         # If insufficient artist context, return base weights
         if artist_stdev == 0 or artist_mean == 0:
             return (base_spotify_weight, base_lastfm_weight)
-        
+
         # Calculate z-score for this track relative to artist mean
         if track_lastfm_listeners > 0:
             track_zscore = (track_lastfm_listeners - artist_mean) / artist_stdev
         else:
             return (base_spotify_weight, base_lastfm_weight)
-        
+
         # Boost weight for outliers (tracks significantly above/below artist mean)
         # z-score magnitude indicates how unusual this track is
         abs_zscore = abs(track_zscore)
-        
+
         if abs_zscore >= 2.0:
             # Track is 2+ standard deviations from mean (highly unusual in artist's catalogue)
             if track_lastfm_listeners > artist_mean * 1.5:
@@ -3244,17 +3244,17 @@ def get_dynamic_weights(
                 new_lastfm = base_lastfm_weight + weight_freed * 0.3
                 log_debug(f"Outlier adjustment (below mean): Spotify weight {base_spotify_weight:.2f} → {new_spotify:.2f} (z={track_zscore:.2f})")
                 return (min(0.6, new_spotify), max(0.1, new_lastfm))
-        
+
         # Return base weights for normal tracks
         return (base_spotify_weight, base_lastfm_weight)
-        
+
     except Exception as e:
         log_debug(f"Error calculating dynamic weights: {e}")
         return (base_spotify_weight, base_lastfm_weight)
 
 
 def popularity_scan(
-    verbose: bool = False, 
+    verbose: bool = False,
     resume_from: str = None,
     artist_filter: str = None,
     album_filter: str = None,
@@ -3267,7 +3267,7 @@ def popularity_scan(
 ):
     """
     Detect track popularity from external sources.
-    
+
     Args:
         verbose: Enable verbose logging
         resume_from: Artist name to resume from (for interrupted scans)
@@ -3307,7 +3307,7 @@ def popularity_scan(
         log_info("=" * 60)
         log_info(f"Popularity scan started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         log_debug(f"Popularity scan params - verbose: {verbose}, resume: {resume_from}, artist: {artist_filter}, album: {album_filter}, force: {force}, filter_missing: {filter_missing}, singles_only: {singles_only}")
-    
+
     # Log scan mode details to info
     if singles_only:
         log_info("Singles-only mode enabled - will only rescan singles detection")
@@ -3315,7 +3315,7 @@ def popularity_scan(
         log_info("Force rescan mode enabled - will rescan all albums regardless of scan history")
     else:
         log_info("Normal scan mode - will skip albums that were already scanned")
-    
+
     if filter_missing:
         log_info("Filter missing mode enabled - will only scan albums with missing popularity data")
 
@@ -3336,12 +3336,12 @@ def popularity_scan(
             cursor_for_cache = conn_for_cache.cursor()
             cache_is_pg = is_postgres_connection(conn_for_cache)
             cache_placeholder = "%s" if cache_is_pg else "?"
-            
+
             if force:
                 # Clear entire single detection cache on --force
                 log_info("Clearing ALL single detection cache (force scan enabled)")
                 cursor_for_cache.execute("""
-                    UPDATE tracks 
+                    UPDATE tracks
                     SET single_detection_last_updated = NULL
                     WHERE single_manual_override = 0
                 """)
@@ -3353,7 +3353,7 @@ def popularity_scan(
                 for source in clear_single_detection_sources:
                     log_info(f"Clearing single detection cache for source: {source}")
                     cursor_for_cache.execute(f"""
-                        UPDATE tracks 
+                        UPDATE tracks
                         SET single_detection_last_updated = NULL
                         WHERE single_manual_override = 0
                         AND single_sources LIKE {cache_placeholder}
@@ -3361,7 +3361,7 @@ def popularity_scan(
                     cleared_count = cursor_for_cache.rowcount
                     conn_for_cache.commit()
                     log_info(f"Cleared single detection cache for {cleared_count} tracks using source '{source}'")
-            
+
             conn_for_cache.close()
     except Exception as e:
         log_debug(f"Failed to clear single detection cache: {e}")
@@ -3386,7 +3386,7 @@ def popularity_scan(
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        
+
         # Determine database type for proper placeholder syntax
         is_pg = is_postgres_connection(conn)
         placeholder = "%s" if is_pg else "?"
@@ -3425,21 +3425,21 @@ def popularity_scan(
         sql_params.append('__queued_for_download__%')
         sql_conditions.append(f"CAST(id AS TEXT) NOT LIKE {placeholder}")
         sql_params.append('queue_%')
-        
+
         # Only filter by popularity_score if not forcing rescan
         if not (FORCE_RESCAN or force):
             sql_conditions.append("(popularity_score IS NULL OR popularity_score = 0)")
-        
+
         if artist_filter:
             # Artist scans should only include albums owned by that album artist.
             # Fall back to track artist only when album_artist is missing.
             sql_conditions.append(f"(COALESCE(NULLIF(album_artist, ''), artist) = {placeholder})")
             sql_params.append(artist_filter)
-        
+
         if album_filter and artist_filter:
             sql_conditions.append(f"album = {placeholder}")
             sql_params.append(album_filter)
-        
+
         select_clause = (
             "SELECT id, artist, title, album, isrc, duration, spotify_album_type, track_number, mbid, year, "
             "spotify_popularity, spotify_score, lastfm_track_playcount, lastfm_ratio, last_spotify_lookup, "
@@ -3448,7 +3448,7 @@ def popularity_scan(
         )
         where_clause = f" WHERE {' AND '.join(sql_conditions)}" if sql_conditions else ""
         sql = f"{select_clause} FROM tracks{where_clause} ORDER BY artist, album, title"
-        
+
         log_debug(f"Executing SQL: {sql.strip()} with params: {sql_params}")
         cursor.execute(sql, sql_params)
 
@@ -3487,17 +3487,17 @@ def popularity_scan(
         # For collaboration albums with guest artists, ensure all tracks from same album group together
         # Each track still uses its individual track["artist"] field for API lookups
         from collections import defaultdict
-        
+
         # First pass: determine canonical album_artist for each album
         # This ensures tracks with NULL or missing album_artist still group with their album
         album_canonical_artist = {}  # Map of album_name -> canonical_album_artist
-        
+
         for track in tracks:
             album_name = track["album"]
             album_artist_value = track.get('album_artist', '') if isinstance(track, dict) else (
                 track['album_artist'] if hasattr(track, '__getitem__') and 'album_artist' in track.keys() else ''
             )
-            
+
             # If we don't have a canonical artist yet, use the first non-empty album_artist found
             # Otherwise, preserve existing (only update if current is empty and we find a non-empty one)
             if album_name not in album_canonical_artist:
@@ -3506,36 +3506,36 @@ def popularity_scan(
             elif not album_canonical_artist[album_name] and album_artist_value:
                 # Update if canonical is empty but current track has a value
                 album_canonical_artist[album_name] = album_artist_value
-        
+
         log_debug(f"Determined canonical artists for {len(album_canonical_artist)} album(s)")
         for album_name, canonical_artist in list(album_canonical_artist.items())[:5]:  # Log first 5
             log_debug(f"  Album '{album_name}' -> canonical artist: '{canonical_artist}'")
-        
+
         # Second pass: group tracks using canonical album_artist
         artist_album_tracks = defaultdict(lambda: defaultdict(list))
-        
+
         for track in tracks:
             album_name = track["album"]
             # Use the canonical artist we determined in first pass
             grouping_artist = album_canonical_artist.get(album_name, track["artist"])
-            
+
             artist_album_tracks[grouping_artist][album_name].append(track)
-            
+
             log_debug(f"Track grouping: album='{album_name}', grouping_artist='{grouping_artist}', track_artist='{track['artist']}', title='{track['title']}'")
 
         # Handle resume logic
         resume_hit = False if resume_from else True
         if resume_from:
             log_info(f"Resuming scan from artist: {resume_from}")
-        
+
         scanned_count = 0
         skipped_count = 0
-        
+
         # Calculate total artists for progress tracking
         total_artists = len(artist_album_tracks)
         processed_artists = 0
         log_info(f"Found {total_artists} artists to scan")
-        
+
         # Determine which APIs are enabled
         enabled_apis = []
         # Check if Spotify is available based on configuration
@@ -3553,14 +3553,14 @@ def popularity_scan(
             log_debug(f"Could not load API configuration: {e}")
             # If config loading fails, default to Spotify enabled for backward compatibility
             enabled_apis.append("Spotify")
-        
+
         mature_track_freeze_cutoff_years = get_mature_track_freeze_cutoff_years(config, default_years=2)
 
         if enabled_apis:
             log_unified(f"Popularity Scan - Scanning {', '.join(enabled_apis)} for Metadata")
             log_debug(f"Enabled APIs: {enabled_apis}")
         log_debug(f"Mature track popularity freeze cutoff: {mature_track_freeze_cutoff_years} year(s)")
-        
+
         for artist, albums in artist_album_tracks.items():
             if _stop_requested():
                 log_info("Stop requested via progress file; exiting popularity scan before next artist")
@@ -3579,7 +3579,7 @@ def popularity_scan(
                 else:
                     log_debug(f"Skipping {artist} (before resume point)")
                     continue
-            
+
             log_unified(f"Popularity Scan - Scanning Artist {artist} ({len(albums)} album(s))")
             log_debug(f"Processing artist/album group: {artist} with {len(albums)} albums")
 
@@ -3594,14 +3594,14 @@ def popularity_scan(
                 scan_type=progress_scan_type,
             )
             log_debug(f"In-progress checkpoint saved for artist: {artist}")
-            
+
             # Get artist MBID from database cache for Last.fm context enrichment
             artist_mbid = None
             try:
                 cursor.execute(f"""
-                    SELECT musicbrainz_artist_id 
-                    FROM tracks 
-                    WHERE artist = {placeholder} AND musicbrainz_artist_id IS NOT NULL 
+                    SELECT musicbrainz_artist_id
+                    FROM tracks
+                    WHERE artist = {placeholder} AND musicbrainz_artist_id IS NOT NULL
                     LIMIT 1
                 """, (artist,))
                 row = cursor.fetchone()
@@ -3610,7 +3610,7 @@ def popularity_scan(
                     log_debug(f"Using cached MusicBrainz artist ID for {artist}: {artist_mbid}")
             except Exception as e:
                 log_debug(f"Failed to get cached MusicBrainz artist ID for {artist}: {e}")
-            
+
             # Pre-fetch artist's Last.fm context for dynamic weight adjustment
             # This allows us to boost Last.fm weight for tracks that are outliers in the artist's catalogue
             artist_lastfm_context = get_artist_lastfm_context(artist, conn, artist_mbid)
@@ -3623,25 +3623,25 @@ def popularity_scan(
                 log_debug(f"Artist catalogue range: {context_min:.0f} - {context_max:.0f} listeners")
             else:
                 log_debug(f"No Last.fm listener data available for artist {artist} - will use base weights")
-            
+
             # Get Spotify artist ID once per artist (before album loop)
             # Skip for compilation albums (Various Artists, Compilation, Soundtrack)
             # Also skip if Spotify weight is 0 (API calls would be wasted)
             spotify_artist_id = None
             is_compilation_group = artist.lower() in ('various artists', 'various artists -', 'various', 'compilation', 'soundtrack')
-            
+
             if not is_compilation_group and SPOTIFY_WEIGHT > 0:
                 # Lookup Spotify artist ID for non-compilation artists
                 try:
                     # First, try to get cached artist ID from database
                     cursor.execute(f"""
-                        SELECT spotify_artist_id 
-                        FROM tracks 
-                        WHERE artist = {placeholder} AND spotify_artist_id IS NOT NULL 
+                        SELECT spotify_artist_id
+                        FROM tracks
+                        WHERE artist = {placeholder} AND spotify_artist_id IS NOT NULL
                         LIMIT 1
                     """, (artist,))
                     row = cursor.fetchone()
-                    
+
                     if row and row_get(row, 'spotify_artist_id'):
                         spotify_artist_id = row_get(row, 'spotify_artist_id')
                         log_info(f'Using cached Spotify artist ID for {artist}: {spotify_artist_id}')
@@ -3656,29 +3656,29 @@ def popularity_scan(
                                 can_proceed = True  # Successfully waited, can proceed now
                             else:
                                 log_info(f'Skipping Spotify artist ID lookup for {artist} due to rate limits')
-                        
+
                         if can_proceed:
                             spotify_artist_id = _run_with_timeout(
-                                get_spotify_artist_id, 
-                                API_CALL_TIMEOUT, 
+                                get_spotify_artist_id,
+                                API_CALL_TIMEOUT,
                                 f"Spotify artist ID lookup timed out after {API_CALL_TIMEOUT}s",
                                 artist
                             )
                             # Record API request for rate limiting
                             rate_limiter.record_spotify_request()
                             log_debug(f'Spotify API call recorded for rate limiting')
-                            
+
                     if spotify_artist_id:
                         log_info(f'Spotify artist ID found: {spotify_artist_id}')
                         log_debug(f'Updating all tracks for artist {artist} with Spotify artist ID: {spotify_artist_id}')
                         # Batch update all tracks for this artist with the artist ID
                         update_artist_id_for_artist(artist, spotify_artist_id)
-                        
+
                         # Fetch and update Discogs artist ID from Discogs API during popularity scan
                         try:
                             from popularity_helpers import update_discogs_artist_id_for_artist
                             from api_clients.discogs import DiscogsClient
-                            
+
                             # Get Discogs client if available
                             discogs_config = config.get("api_integrations", {}).get("discogs", {})
                             if discogs_config.get("enabled") and discogs_config.get("token"):
@@ -3690,7 +3690,7 @@ def popularity_scan(
                                         f"Discogs artist ID lookup timed out after 12s",
                                         artist
                                     )
-                                    
+
                                     if discogs_artist_id:
                                         log_info(f'Discogs artist ID found: {artist} -> {discogs_artist_id}')
                                         # Update all tracks for this artist
@@ -3706,7 +3706,7 @@ def popularity_scan(
                                 log_debug(f"Discogs not enabled or token missing for artist: {artist}")
                         except Exception as e:
                             log_debug(f"Discogs artist lookup initialization failed for {artist}: {e}")
-                        
+
                     else:
                         log_info(f'No Spotify artist ID found for: {artist}')
                 except TimeoutError as e:
@@ -3717,7 +3717,7 @@ def popularity_scan(
                     log_debug(f"Exception details: {type(e).__name__}: {str(e)}")
             else:
                 log_info(f"Skipping Spotify/Discogs/MusicBrainz lookups for compilation album group: {artist}")
-            
+
             # Fetch and update artist metadata (country, bio, image) for ALL artists
             # This is independent of Spotify lookup success and applies to all artists
             def _get_discogs_bio_from_saved_artist_id() -> str:
@@ -3769,29 +3769,29 @@ def popularity_scan(
                         artist,
                         enabled=True
                     )
-                    
+
                     if artist_country:
                         log_info(f'Artist country found: {artist} -> {artist_country}')
                         # Update or insert artist entry using UPSERT
                         cursor.execute(f"""
-                            INSERT INTO artists (id, name, country) 
+                            INSERT INTO artists (id, name, country)
                             VALUES ({placeholder}, {placeholder}, {placeholder})
                             ON CONFLICT(id) DO UPDATE SET country = excluded.country
                         """, (artist, artist, artist_country))
-                        
+
                         # Update tracks table with artist country
-                        cursor.execute(f"UPDATE tracks SET artist_country = {placeholder} WHERE COALESCE(album_artist, artist) = {placeholder}", 
+                        cursor.execute(f"UPDATE tracks SET artist_country = {placeholder} WHERE COALESCE(album_artist, artist) = {placeholder}",
                                      (artist_country, artist))
                         conn.commit()
                         log_debug(f'Updated artist country in database: {artist} -> {artist_country}')
                     else:
                         log_debug(f'No country information found for artist: {artist}')
-                    
+
                     # Fetch and save artist bio/image from AudioDB during scan
                     if HAVE_AUDIODB:
                         try:
                             log_debug(f'Fetching artist bio and image from AudioDB for: {artist}')
-                            
+
                             # Fetch artist biography
                             artist_bio = _run_with_timeout(
                                 get_artist_biography,
@@ -3800,7 +3800,7 @@ def popularity_scan(
                                 artist,
                                 enabled=True
                             )
-                            
+
                             # Fetch artist image/fanart
                             artist_image = _run_with_timeout(
                                 get_artist_fanart,
@@ -3809,18 +3809,18 @@ def popularity_scan(
                                 artist,
                                 enabled=True
                             )
-                            
+
                             if artist_bio or artist_image:
                                 # Update artist entry with bio and image
                                 cursor.execute(f"""
-                                    INSERT INTO artists (id, name, bio, image_url) 
+                                    INSERT INTO artists (id, name, bio, image_url)
                                     VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder})
-                                    ON CONFLICT(id) DO UPDATE SET 
+                                    ON CONFLICT(id) DO UPDATE SET
                                         bio = excluded.bio,
                                         image_url = excluded.image_url
                                 """, (artist, artist, artist_bio or "", artist_image or ""))
                                 conn.commit()
-                                
+
                                 if artist_bio:
                                     log_info(f'Saved artist bio for {artist} ({len(artist_bio)} chars)')
                                 if artist_image:
@@ -3885,7 +3885,7 @@ def popularity_scan(
 
                                 if selected_bio:
                                     cursor.execute(f"""
-                                        INSERT INTO artists (id, name, bio) 
+                                        INSERT INTO artists (id, name, bio)
                                         VALUES ({placeholder}, {placeholder}, {placeholder})
                                         ON CONFLICT(id) DO UPDATE SET bio = excluded.bio
                                     """, (artist, artist, selected_bio))
@@ -3968,7 +3968,7 @@ def popularity_scan(
                         log_debug(f"No artist bio/image found for {artist} without MusicBrainz")
                 except Exception as e:
                     log_debug(f"MusicBrainz-unavailable artist metadata save failed for {artist}: {e}")
-            
+
             # Load Discogs token ONCE before album loop (needed for both popularity scan and singles detection)
             discogs_token = os.environ.get("DISCOGS_TOKEN", "")
             if not discogs_token:
@@ -3981,7 +3981,7 @@ def popularity_scan(
                         log_debug(f"Loaded Discogs token from config.yaml for use in metadata extraction")
                 except Exception as e:
                     log_debug(f"Could not load Discogs token from config: {e}")
-            
+
             # Validate Discogs token - reject placeholder or empty tokens
             if discogs_token and discogs_token.lower() in ("your_discogs_token", "your_token", "placeholder", ""):
                 log_info(f"⚠ Discogs token is a placeholder ('{discogs_token}') - Discogs features disabled")
@@ -3993,7 +3993,7 @@ def popularity_scan(
                 discogs_token = None  # Disable Discogs if token looks invalid
             elif discogs_token:
                 log_debug(f"✓ Discogs token validated ({len(discogs_token)} chars) - Discogs features enabled")
-            
+
             # Fetch similar artists from Last.fm and ListenBrainz for artist-contextual popularity weighting
             # This enables boosting tracks that are popular among listeners of similar artists
             similar_artists_lastfm = []
@@ -4022,7 +4022,7 @@ def popularity_scan(
                         )
             except Exception as cache_err:
                 log_debug(f"Could not read cached similar artists for {artist}: {cache_err}")
-            
+
             # Fetch similar artists for all artists (including compilations for recommendation purposes)
             try:
                 if similar_artists_cached:
@@ -4033,7 +4033,7 @@ def popularity_scan(
                 if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
                     from api_clients.lastfm import LastFmClient
                     lastfm_client = LastFmClient(lastfm_config.get("api_key"))
-                    
+
                     try:
                         # Check rate limit and wait if needed
                         rate_limiter = get_rate_limiter()
@@ -4042,7 +4042,7 @@ def popularity_scan(
                             log_debug(f"Rate limit hit for similar artists lookup: {reason}, waiting...")
                             if rate_limiter.wait_if_needed_lastfm(max_wait_seconds=2.0):
                                 can_proceed = True
-                        
+
                         if can_proceed:
                             similar_artists_lastfm = _run_with_timeout(
                                 lastfm_client.get_similar_artists,
@@ -4052,7 +4052,7 @@ def popularity_scan(
                                 limit=10
                             )
                             rate_limiter.record_lastfm_request()
-                            
+
                             if similar_artists_lastfm:
                                 log_info(f"Found {len(similar_artists_lastfm)} similar artists for '{artist}' from Last.fm")
                                 log_debug(f"Last.fm similar artists: {[a.get('name') for a in similar_artists_lastfm]}")
@@ -4066,7 +4066,7 @@ def popularity_scan(
                         log_debug(f"Last.fm similar artists lookup failed for {artist}: {e}")
                 else:
                     log_debug(f"Last.fm not enabled or API key missing - skipping Last.fm similar artists lookup")
-                
+
                 # Try ListenBrainz for similar artists using the public API
                 # This requires the artist's MusicBrainz MBID
                 try:
@@ -4081,10 +4081,10 @@ def popularity_scan(
                                     artist="",     # Empty artist parameter when searching for artist name itself
                                     limit=1
                                 )
-                                
+
                                 if artist_mbid:
                                     log_debug(f"Found MusicBrainz MBID for artist '{artist}': {artist_mbid}")
-                                    
+
                                     # Now fetch similar artists from ListenBrainz using the public API
                                     # ListenBrainz similar-artists endpoint: https://labs.api.listenbrainz.org/similar-artists/json
                                     try:
@@ -4096,14 +4096,14 @@ def popularity_scan(
                                         # Use default session to make the request
                                         res = session.get(lb_url, params=params, timeout=(5, 10))
                                         res.raise_for_status()
-                                        
+
                                         lb_results = res.json()
-                                        
+
                                         # Extract similar artists from the response
                                         # ListenBrainz returns: {"payload": {"artists": [{"artist_name": "...", "artist_mbid": "..."}, ...]}}
                                         if lb_results and "payload" in lb_results:
                                             similar_records = lb_results.get("payload", {}).get("artists", [])
-                                            
+
                                             if similar_records:
                                                 similar_artists_listenbrainz = [
                                                     {
@@ -4130,7 +4130,7 @@ def popularity_scan(
                         log_debug(f"MusicBrainz not enabled - skipping ListenBrainz similar artists lookup")
                 except Exception as e:
                     log_debug(f"ListenBrainz similar artists lookup failed for {artist}: {e}")
-                
+
                 # Store similar artists in database and prepare JSON for later use
                 if similar_artists_lastfm or similar_artists_listenbrainz:
                     try:
@@ -4140,12 +4140,12 @@ def popularity_scan(
                             "listenbrainz": similar_artists_listenbrainz,
                             "fetched_at": datetime.now().isoformat()
                         })
-                        
+
                         # Update or insert artist with similar artists data
                         cursor.execute(f"""
                             INSERT INTO artists (id, name, similar_artists_lastfm, similar_artists_listenbrainz, similar_artists_last_updated)
                             VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
-                            ON CONFLICT(id) DO UPDATE SET 
+                            ON CONFLICT(id) DO UPDATE SET
                                 similar_artists_lastfm = excluded.similar_artists_lastfm,
                                 similar_artists_listenbrainz = excluded.similar_artists_listenbrainz,
                                 similar_artists_last_updated = excluded.similar_artists_last_updated
@@ -4172,7 +4172,7 @@ def popularity_scan(
                     if api_key not in ["your_lastfm_api_key", "YOUR_API_KEY", "<your_api_key>", ""]:
                         from api_clients.lastfm import LastFmClient
                         lastfm_client = LastFmClient(api_key)
-                    
+
                     artist_tags = _run_with_timeout(
                         lastfm_client.get_artist_top_tags,
                         8,
@@ -4180,11 +4180,11 @@ def popularity_scan(
                         artist,
                         limit=15
                     )
-                    
+
                     if artist_tags:
                         log_info(f"Found {len(artist_tags)} top tags for '{artist}' from Last.fm")
                         log_debug(f"Artist tags: {[t.get('name') for t in artist_tags]}")
-                        
+
                         # Store Last.fm tags in database
                         try:
                             tags_json = json.dumps([t.get('name') for t in artist_tags])
@@ -4199,12 +4199,12 @@ def popularity_scan(
                         log_debug(f"No top tags found for '{artist}' from Last.fm")
             except Exception as e:
                 log_debug(f"Last.fm artist tags lookup failed for {artist}: {e}")
-            
+
             # Fetch missing releases from MusicBrainz and update database
             try:
                 if HAVE_MUSICBRAINZ:
                     log_debug(f"Checking for missing releases for '{artist}' on MusicBrainz")
-                    
+
                     # Get existing albums for this artist
                     cursor.execute(f"SELECT DISTINCT album FROM tracks WHERE artist = {placeholder}", (artist,))
                     existing_albums = [row_get(row, 'album') for row in cursor.fetchall()]
@@ -4220,42 +4220,42 @@ def popularity_scan(
                             normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
                             normalized = " ".join(normalized.split())
                             existing_norm.add(normalized)
-                    
+
                     # Get artist MBID for more accurate lookup
                     cursor.execute(f"SELECT MAX(musicbrainz_artist_id) FROM tracks WHERE artist = {placeholder}", (artist,))
                     result = cursor.fetchone()
                     artist_mbid = result[0] if result and result[0] else None
-                    
+
                     # Fetch MusicBrainz releases using the client
                     mb_client = _get_timeout_safe_musicbrainz_client()
                     if not mb_client:
                         raise Exception("MusicBrainz client not available")
-                    
+
                     # Build query
                     if artist_mbid:
                         query = f'arid:"{artist_mbid}" AND (primarytype:album OR primarytype:ep OR primarytype:single)'
                     else:
                         query = f'artist:"{artist}" AND (primarytype:album OR primarytype:ep OR primarytype:single)'
-                    
+
                     # Search for release groups
                     import requests
                     headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
                     url = "https://musicbrainz.org/ws/2/release-group"
                     params = {"fmt": "json", "limit": 100, "query": query}
-                    
+
                     response = requests.get(url, headers=headers, params=params, timeout=10)
                     response.raise_for_status()
                     data = response.json()
-                    
+
                     release_groups = data.get("release-groups", []) or []
-                    
+
                     missing_count = 0
                     updated_count = 0
-                    
+
                     for rg in release_groups:
                         rg_id = rg.get("id", "")
                         rg_title = rg.get("title", "")
-                        
+
                         # Normalize title
                         norm_title = unicodedata.normalize("NFKD", rg_title)
                         norm_title = "".join(c for c in norm_title if not unicodedata.combining(c))
@@ -4264,16 +4264,16 @@ def popularity_scan(
                         norm_title = re.sub(r"(?i)\b(remaster(?:ed)?\s*\d{0,4}|remaster|deluxe|live|mono|stereo|edit|mix|version|bonus track)\b", " ", norm_title)
                         norm_title = re.sub(r"[^a-z0-9]+", " ", norm_title)
                         norm_title = " ".join(norm_title.split())
-                        
+
                         cover_art_url = f"https://coverartarchive.org/release-group/{rg_id}/front-500" if rg_id else ""
-                        
+
                         # If album exists in library, skip to next
                         if norm_title and norm_title in existing_norm:
                             continue
-                        
+
                         if not norm_title:
                             continue
-                        
+
                         # Categorize by type
                         secondary = [s.lower() for s in rg.get("secondary-types") or []]
                         primary_type = (rg.get("primary-type") or "").lower()
@@ -4284,10 +4284,10 @@ def popularity_scan(
                             category = "EP"
                         elif primary_type == "single" or "single" in secondary:
                             category = "Single"
-                        
+
                         # Insert missing release
                         cursor.execute(f"""
-                            INSERT INTO missing_releases 
+                            INSERT INTO missing_releases
                             (artist, artist_mbid, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
                             VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
                             ON CONFLICT (artist, release_id) DO UPDATE SET
@@ -4302,30 +4302,30 @@ def popularity_scan(
                               rg.get("primary-type", ""), rg.get("first-release-date", ""),
                               cover_art_url, category))
                         missing_count += 1
-                    
+
                     conn.commit()
-                    
+
                     if missing_count > 0:
                         log_info(f"MusicBrainz: Found {missing_count} missing releases for '{artist}'")
                     else:
                         log_debug(f"No missing releases found for '{artist}'")
-                    
+
                     # Rate limit: wait 1 second after MusicBrainz API call
                     time.sleep(1.0)
-                        
+
             except Exception as e:
                 log_debug(f"Missing releases lookup failed for {artist}: {e}")
-            
+
             album_num = 0
             total_albums = len(albums)
             single_detection_albums_processed = 0
-            
+
             # Calculate milestones for single detection progress tracking
             single_detection_milestone_25 = int(total_albums * 0.25) if total_albums > 0 else 0
             single_detection_milestone_50 = int(total_albums * 0.50) if total_albums > 0 else 0
             single_detection_milestone_75 = int(total_albums * 0.75) if total_albums > 0 else 0
             single_detection_milestones_logged = set()
-            
+
             for album, album_tracks in albums.items():
                 if _stop_requested():
                     log_info(f"Stop requested via progress file; exiting during artist '{artist}'")
@@ -4336,7 +4336,7 @@ def popularity_scan(
                 log_info(f"🎵 ARTIST: {artist}")
                 log_info(f"📊 TRACKS: {len(album_tracks)}")
                 log_info(f"="*80)
-                
+
                 album_num += 1
                 album_scanned = 0  # Initialize before popularity section (may be skipped in singles_only)
                 skip_popularity_for_album = False
@@ -4359,7 +4359,7 @@ def popularity_scan(
                             )
                     except Exception as e:
                         log_debug(f"Failed PostgreSQL transaction-state check for '{artist} - {album}': {e}")
-                
+
                 # Fetch and store album tags from Last.fm
                 try:
                     lastfm_config = get_lastfm_config(config)
@@ -4369,7 +4369,7 @@ def popularity_scan(
                         if api_key not in ["your_lastfm_api_key", "YOUR_API_KEY", "<your_api_key>", ""]:
                             from api_clients.lastfm import LastFmClient
                             lastfm_client = LastFmClient(api_key)
-                        
+
                         album_tags = _run_with_timeout(
                             lastfm_client.get_album_top_tags,
                             8,
@@ -4377,7 +4377,7 @@ def popularity_scan(
                             artist, album,
                             limit=15
                         )
-                        
+
                         if album_tags:
                             log_info(f"Found {len(album_tags)} top tags for '{album}' by '{artist}' from Last.fm")
                             log_debug(f"Album tags: {[t.get('name') for t in album_tags]}")
@@ -4385,7 +4385,7 @@ def popularity_scan(
                             log_debug(f"No top tags found for '{album}' by '{artist}' from Last.fm")
                 except Exception as e:
                     log_debug(f"Last.fm album tags lookup failed for '{album}' by '{artist}': {e}")
-                
+
                 # In singles_only mode, skip popularity scanning and go directly to singles detection
                 if singles_only:
                     log_unified(f'Singles Detection - Scanning Album {album} ({album_num}/{len(albums)})')
@@ -4446,17 +4446,17 @@ def popularity_scan(
 
                         log_unified(f'Popularity Scan - Scanning Album {album} ({album_num}/{len(albums)})')
                         log_info(f'🔎 Starting POPULARITY SCAN for album: "{artist} - {album}"')
-                
+
                 # ALBUM TYPE DETECTION - Do this once per album at the start
                 # Detect album type from MusicBrainz/auto-detection and apply to all tracks
                 log_info(f'🏷️ Starting album type detection for "{artist} - {album}"')
                 log_debug(f'Starting album type detection for "{artist} - {album}"')
-                
+
                 # Get current album type from first track (if any)
                 current_album_type = album_tracks[0].get('spotify_album_type', '') if album_tracks else ''
                 detected_album_type = None
                 type_detection_source = None
-                
+
                 # Auto-detect Various Artists / Compilation / Soundtrack album_artist → Album (Compilation)
                 # These album_artist values indicate multi-artist compilation albums and should all
                 # be treated identically to standard compilations for popularity and single scanning.
@@ -4466,14 +4466,14 @@ def popularity_scan(
                     detected_album_type = 'album+compilation'
                     type_detection_source = f'auto-detected (album_artist: {artist})'
                     log_info(f'✅ AUTO-DETECTED: Compilation album - "{album}" (artist: {artist})')
-                
+
                 # Auto-detect Soundtrack in album name → Album (Soundtrack)
                 # (only when album_artist is NOT already a compilation-type artist)
                 elif 'soundtrack' in album.lower():
                     detected_album_type = 'album+soundtrack'
                     type_detection_source = 'auto-detected (Soundtrack in name)'
                     log_info(f'Auto-detected soundtrack album: "{album}"')
-                
+
                 # Otherwise, fetch from MusicBrainz with Spotify fallback
                 else:
                     try:
@@ -4505,27 +4505,27 @@ def popularity_scan(
                         log_debug(f'Failed to fetch album type from MusicBrainz: {e}')
                         detected_album_type = current_album_type or 'album'
                         type_detection_source = 'fallback (Spotify or default)'
-                
+
                 # Update ALL tracks in this album with the detected type
                 if detected_album_type and detected_album_type != current_album_type:
                     tracks_updated = 0
                     for track in album_tracks:
                         track_id = track["id"]
                         cursor.execute(f"""
-                            UPDATE tracks 
+                            UPDATE tracks
                             SET spotify_album_type = {placeholder}
                             WHERE id = {placeholder}
                         """, (detected_album_type, track_id))
                         tracks_updated += 1
                         # Update the track dict for use in rest of scan
                         track["spotify_album_type"] = detected_album_type
-                    
+
                     if tracks_updated > 0:
                         conn.commit()
                         log_info(f'Updated {tracks_updated} track(s) with album type "{detected_album_type}" (source: {type_detection_source})')
                 else:
                     log_debug(f'Album type unchanged: "{detected_album_type or current_album_type}"')
-                
+
                 # Use the detected type for rest of scan
                 album_type_from_field = detected_album_type or current_album_type or 'album'
                 pre_detected_album_type = album_type_from_field
@@ -4601,11 +4601,11 @@ def popularity_scan(
                 # For compilations/soundtracks/live albums, genres will be fetched per-track (different per track)
                 album_discogs_genres = None
                 album_discogs_genres_json = None
-                
+
                 # Determine if this is a "homogeneous" album type (all tracks share genres)
                 is_homogeneous_album = True
                 album_type_lower = album_type_from_field.lower()
-                
+
                 # Check for heterogeneous types (compilation, soundtrack, live, remix, spoken word)
                 # Handles both '+type' (internal format) and '(type)' (MusicBrainz parentheses format)
                 heterogeneous_markers = [
@@ -4618,20 +4618,20 @@ def popularity_scan(
                 if any(marker in album_type_lower for marker in heterogeneous_markers):
                     is_homogeneous_album = False
                     log_debug(f'Heterogeneous album type detected ("{album_type_from_field}"), will fetch Discogs genres per-track')
-                
+
                 # Fetch album-level Discogs genres for homogeneous albums
                 if is_homogeneous_album and HAVE_DISCOGS and discogs_token:
                     try:
                         # Get Discogs release ID from first track (same for all tracks in album)
                         first_track_discogs_id = row_get(album_tracks[0], 'discogs_release_id') if album_tracks else None
-                        
+
                         if first_track_discogs_id:
                             from api_clients.discogs import DiscogsClient
                             discogs_client_album = DiscogsClient(discogs_token)
-                            
+
                             log_debug(f'Fetching album-level Discogs genres (release ID: {first_track_discogs_id})')
                             album_discogs_genres = discogs_client_album.get_release_genres_by_id(first_track_discogs_id)
-                            
+
                             if album_discogs_genres:
                                 # Convert to JSON for storage
                                 if isinstance(album_discogs_genres, list) and album_discogs_genres:
@@ -4649,7 +4649,7 @@ def popularity_scan(
                         log_info(f'Will fall back to per-track Discogs genre fetching for this album')
                 elif is_homogeneous_album:
                     log_debug(f'Discogs not configured or disabled, skipping album-level genre fetch')
-                
+
                 # Detect if this is a live/unplugged album
                 # When MusicBrainz is the detection source, trust its secondary type exclusively.
                 # Fall back to name-based heuristics only when MusicBrainz data is unavailable.
@@ -4658,23 +4658,23 @@ def popularity_scan(
                     is_live_album = '+live' in album_type_lower or '(live)' in album_type_lower
                 else:
                     is_live_album = '+live' in album_type_from_field or is_live_or_alternate_album(album)
-                
+
                 if is_live_album:
                     log_info(f'Detected live/unplugged album: "{album}"')
                     log_info(f'Track lookups will include album context to avoid matching studio versions')
                     log_debug(f'Live album detection: album="{album}", album_type="{album_type_from_field}"')
-                    
+
                     # Update all track titles in this album to add (Live) suffix if not already present
                     live_tracks_updated = 0
                     for track in album_tracks:
                         track_id = track["id"]
                         original_title = track["title"]
-                        
+
                         # Only add (Live) suffix if it's not already there
                         if not re.search(r'\(live\)', original_title, re.IGNORECASE):
                             new_title = f"{original_title} (Live)"
                             cursor.execute(f"""
-                                UPDATE tracks 
+                                UPDATE tracks
                                 SET title = {placeholder}
                                 WHERE id = {placeholder}
                             """, (new_title, track_id))
@@ -4682,47 +4682,47 @@ def popularity_scan(
                             log_debug(f'Updated track title: "{original_title}" → "{new_title}"')
                             # Update the track dict for use in rest of scan
                             track["title"] = new_title
-                    
+
                     if live_tracks_updated > 0:
                         conn.commit()
                         log_info(f'Updated {live_tracks_updated} track title(s) to add (Live) suffix in album "{album}"')
-                
+
                 # Detect alternate takes for this album (tracks with parentheses matching base tracks)
                 album_tracks_list = list(album_tracks)
                 alternate_takes_map = detect_alternate_takes(album_tracks_list)
-                
+
                 # Save alternate take mappings to database
                 if alternate_takes_map:
                     for alt_track_id, base_track_id in alternate_takes_map.items():
                         cursor.execute(f"""
-                            UPDATE tracks 
+                            UPDATE tracks
                             SET alternate_take = 1, base_track_id = {placeholder}
                             WHERE id = {placeholder}
                         """, (base_track_id, alt_track_id))
                     conn.commit()
                     log_info(f'Detected {len(alternate_takes_map)} alternate take(s) in album')
                     log_debug(f'Alternate takes map: {alternate_takes_map}')
-                
+
                 # Detect if this album is a compilation ONLY if we're scanning a compilation artist
                 # (e.g., Various Artists, Soundtracks, etc.)
                 # This avoids running compilation detection on regular artist popularity scans
                 is_scanning_compilation_artist = artist.lower() in compilation_artists
-                
+
                 # Determine album type for optimized scanning strategy
                 album_type = "regular"  # Default: regular artist album
                 is_compilation = False
-                
+
                 if is_scanning_compilation_artist:
                     # Get album metadata from first track to access album_artist and spotify_album_type
                     sample_track = album_tracks_list[0] if album_tracks_list else {}
                     album_artist = row_get(sample_track, 'album_artist')
                     spotify_album_type = row_get(sample_track, 'spotify_album_type')
-                    
+
                     is_compilation = detect_compilation_album(artist, album, album_tracks_list, album_artist, spotify_album_type)
                     if is_compilation:
                         # Update all tracks in this album to mark as compilation
                         cursor.execute(f"""
-                            UPDATE tracks 
+                            UPDATE tracks
                             SET is_compilation = 1
                             WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
                         """, (artist, album))
@@ -4734,7 +4734,7 @@ def popularity_scan(
                         if not is_compilation_type(album_type_from_field):
                             album_type_from_field = 'album+compilation'
                             log_debug(f'album_type_from_field updated to "album+compilation" for compilation album "{artist} - {album}"')
-                
+
                 # Check if this is a greatest hits album (even for regular artists)
                 if album_type == "regular":
                     is_greatest_hits = detect_greatest_hits_album(album, artist, conn, album_tracks_list)
@@ -4742,26 +4742,26 @@ def popularity_scan(
                         album_type = "greatest_hits"
                         log_info(f'Album type: Greatest Hits - "{artist} - {album}"')
                         log_debug(f'Greatest hits album detected, will run single detection on all tracks')
-                
+
                 log_debug(f'Album type determined: {album_type} for "{artist} - {album}"')
-                
+
                 # Cache Spotify search results for singles detection reuse
                 # Initialize unconditionally for both singles_only and normal mode
                 spotify_results_cache = {}
-                
+
                 # Fetch and cache album art using fallback strategy for this album
                 album_art_url = None
                 if not singles_only:
                     # Reuse the already-loaded/validated token and avoid shadowing it.
                     album_art_discogs_token = discogs_token
-                    
+
                     # Try to fetch and save album art using fallback chain
                     # (MusicBrainz -> AudioDB -> Discogs)
                     if fetch_and_save_album_art_with_fallback(artist, album, conn, cursor, album_art_discogs_token):
                         log_info(f'[ALBUM_ART] Album art successfully downloaded and saved for {artist} - {album}')
                     else:
                         log_debug(f'[ALBUM_ART] Failed to obtain album art from any source for {artist} - {album}')
-                
+
                 # Batch-fetch ListenBrainz popularity data for all tracks with MBIDs
                 # This is more efficient than per-track calls and respects rate limits
                 album_listenbrainz_data = {}  # Map of track_id -> {"total_listen_count": int, "total_user_count": int}
@@ -4770,23 +4770,23 @@ def popularity_scan(
                         # Collect all MBIDs from this album's tracks
                         mbids_to_fetch = []
                         mbid_to_track_id = {}  # Map MBID -> track_id for results
-                        
+
                         for track in album_tracks:
                             track_mbid = row_get(track, 'mbid')
                             if track_mbid:
                                 mbids_to_fetch.append(track_mbid)
                                 mbid_to_track_id[track_mbid] = track["id"]
-                        
+
                         if mbids_to_fetch:
                             log_debug(f'Batch-fetching ListenBrainz popularity for {len(mbids_to_fetch)} recording(s) in album "{album}"')
-                            
+
                             # Import batch function
                             from api_clients.audiodb_and_listenbrainz import get_recording_popularity_batch
                             from api_clients.musicbrainz import _USER_AGENT as MB_USER_AGENT
-                            
+
                             # Call batch API with MusicBrainz user agent for consistency
                             lb_results = get_recording_popularity_batch(mbids_to_fetch, user_agent=MB_USER_AGENT)
-                            
+
                             # Process results and store by track_id
                             for mbid, data in lb_results.items():
                                 track_id = mbid_to_track_id.get(mbid)
@@ -4798,13 +4798,13 @@ def popularity_scan(
                                             "total_user_count": data.get('total_user_count', 0)
                                         }
                                         log_debug(f'ListenBrainz data for track {track_id}: {data.get("total_listen_count")} listens, {data.get("total_user_count")} users')
-                            
+
                             log_info(f'Fetched ListenBrainz popularity for {len(album_listenbrainz_data)} track(s) with MBID data')
-                            
+
                     except Exception as e:
                         log_debug(f'ListenBrainz batch fetch failed for album "{album}": {e}')
                         log_info(f'Continuing without ListenBrainz data for this album')
-                
+
                 # Collect Last.fm data for all album tracks for z-score normalization
                 # This enables us to calculate z-scores relative to the album
                 album_lastfm_data = {}  # Map of track_id -> {"listeners": int, "playcount": int}
@@ -4814,7 +4814,7 @@ def popularity_scan(
                         track_id = track["id"]
                         title = track["title"]
                         track_artist = track["artist"]
-                        
+
                         # Skip if already have cached data
                         cached_lastfm = row_get(track, 'lastfm_track_playcount', 0)
                         if cached_lastfm > 0:
@@ -4824,7 +4824,7 @@ def popularity_scan(
                             }
                             log_debug(f'Using cached Last.fm listeners for {title}: {cached_lastfm}')
                             continue
-                        
+
                         # Fetch from Last.fm API if not cached
                         try:
                             rate_limiter = get_rate_limiter()
@@ -4837,7 +4837,7 @@ def popularity_scan(
                                 else:
                                     # Still at limit after waiting, skip this one
                                     log_debug(f'Rate limit still active for {title} after wait, skipping Last.fm prefetch')
-                            
+
                             if can_proceed:
                                 lastfm_info = _run_with_timeout(
                                     get_lastfm_track_info,
@@ -4846,7 +4846,7 @@ def popularity_scan(
                                     track_artist, normalize_title_for_lookup(title)
                                 )
                                 rate_limiter.record_lastfm_request()
-                                
+
                                 if lastfm_info:
                                     listeners = lastfm_info.get("listeners", 0)
                                     playcount = lastfm_info.get("track_play", 0)
@@ -4864,7 +4864,7 @@ def popularity_scan(
                         except Exception as e:
                             log_debug(f'Failed to fetch Last.fm data for {title}: {e}')
                             album_lastfm_data[track_id] = {"listeners": 0, "playcount": 0}
-                    
+
                     # Log pre-fetch results
                     fetched_listeners = [data["listeners"] for data in album_lastfm_data.values() if data["listeners"] > 0]
                     fetched_tracks = len([data for data in album_lastfm_data.values() if data["listeners"] > 0])
@@ -4872,15 +4872,15 @@ def popularity_scan(
                     log_info(f'Pre-fetch complete for album "{album}": {fetched_tracks} tracks with listener data, {zero_tracks} with zero/unavailable data')
                     if fetched_listeners:
                         log_debug(f'Album listener stats: min={min(fetched_listeners)}, max={max(fetched_listeners)}, avg={sum(fetched_listeners)/len(fetched_listeners):.0f}')
-                    
+
                     # Fetch Last.fm tags, ListenBrainz genres, and Discogs genres for all tracks
                     # This is done batch-style per album to be efficient
                     album_tags_data = {}  # Map of track_id -> {"lastfm_tags": [...], "listenbrainz_genres": [...], "discogs_genres": [...]}
-                    
+
                     # Initialize clients outside the try block to prevent silent failures
                     lastfm_client = None
                     discogs_client = None
-                    
+
                     try:
                         # Get Last.fm client for tag lookups
                         lastfm_config = get_lastfm_config(config)
@@ -4899,7 +4899,7 @@ def popularity_scan(
                                 log_info(f"⚠️ Last.fm is disabled in config.yaml")
                             else:
                                 log_info(f"⚠️ Last.fm API key missing from config.yaml")
-                        
+
                         # Get Discogs client for genre lookups
                         discogs_config = config.get("api_integrations", {}).get("discogs", {})
                         if discogs_config.get("enabled") and discogs_config.get("token"):
@@ -4908,31 +4908,31 @@ def popularity_scan(
                             log_debug(f"Discogs client initialized for batch genre fetching")
                         else:
                             log_debug(f"Discogs client not configured or disabled")
-                            
+
                     except Exception as e:
                         log_debug(f"Error initializing API clients for batch fetch: {e}")
                         log_info(f"Continuing with partial API capabilities for album '{album}'")
-                    
+
                     # Always attempt the batch fetch loop, even if clients failed to initialize
                     try:
                         if lastfm_client or discogs_client:
                             log_info(f'Fetching tags/genres for {len(album_tracks)} track(s) in album "{album}"')
                         else:
                             log_debug(f'No API clients available for batch tag fetch, will use per-track fallback if needed')
-                        
+
                         for track in album_tracks:
                             track_id = track["id"]
                             title = track["title"]
                             track_artist = track["artist"]
                             track_mbid = row_get(track, 'mbid')
                             discogs_release_id = row_get(track, 'discogs_release_id')
-                            
+
                             # Detect cover songs and normalize title for API lookups
                             is_cover_song_tags, normalized_title_tags = detect_cover_and_normalize_title(title)
                             api_lookup_title_tags = normalized_title_tags
-                            
+
                             track_tags = {"lastfm_tags": [], "listenbrainz_genres": [], "discogs_genres": []}
-                            
+
                             # Fetch Last.fm tags
                             if lastfm_client:
                                 try:
@@ -4945,7 +4945,7 @@ def popularity_scan(
                                             can_proceed = True
                                         else:
                                             log_debug(f'Rate limit still active for Last.fm tags ({title}) after wait, skipping')
-                                    
+
                                     if can_proceed:
                                         lastfm_tags = _run_with_timeout(
                                             lastfm_client.get_track_tags,
@@ -4963,7 +4963,7 @@ def popularity_scan(
                                     log_debug(f'Failed to fetch Last.fm tags for "{title}": {e}')
                             else:
                                 log_debug(f'[TAGS] Last.fm client not available for "{title}"')
-                            
+
                             # Fetch ListenBrainz genres (if MBID available)
                             if track_mbid:
                                 try:
@@ -4981,7 +4981,7 @@ def popularity_scan(
                                         log_debug(f'Fetched {len(track_tags["listenbrainz_genres"])} ListenBrainz genres for "{title}"')
                                 except Exception as e:
                                     log_debug(f'Failed to fetch ListenBrainz genres for "{title}": {e}')
-                            
+
                             # Fetch Discogs genres
                             # Use album-level data if available (homogeneous albums), otherwise fetch per-track
                             if album_discogs_genres:
@@ -5011,24 +5011,24 @@ def popularity_scan(
                                         if isinstance(discogs_genres, list) and discogs_genres and isinstance(discogs_genres[0], str):
                                             # Convert string list to dict format
                                             discogs_genres = [{"name": g} for g in discogs_genres]
-                                    
+
                                     if discogs_genres:
                                         track_tags["discogs_genres"] = discogs_genres
                                         log_debug(f'Fetched {len(discogs_genres)} Discogs genres per-track for "{title}" (heterogeneous album)')
                                 except Exception as e:
                                     log_debug(f'Failed to fetch Discogs genres for "{title}": {e}')
-                            
+
                             # Store all tags for this track (including empty lists if nothing was fetched)
                             album_tags_data[track_id] = track_tags
-                        
+
                         if album_tags_data:
                             log_info(f'Tag/genre fetch complete for album "{album}": {len(album_tags_data)} track(s) processed')
-                        
+
                     except Exception as e:
                         log_debug(f'Error during tag/genre batch fetch for album "{album}": {e}')
                         log_info(f'Continuing with per-track fallback for tag/genre data for this album')
 
-                
+
                 # Writer backfill: run independently of popularity scoring so that writer credits
                 # are populated even when the album's popularity was already scanned recently.
                 # This ensures writer data is always kept up to date from MusicBrainz.
@@ -5088,7 +5088,7 @@ def popularity_scan(
                                         )
                                         if mb_writer_names:
                                             break
-                                
+
                                 log_debug(f'MusicBrainz returned {len(mb_writer_names) if mb_writer_names else 0} writer(s) for "{title}"')
 
                                 if mb_writer_names:
@@ -5161,7 +5161,7 @@ def popularity_scan(
                 if not singles_only and not skip_popularity_for_album:
                     # Batch updates for this album (commit once at end instead of per-track)
                     track_updates = []
-                    
+
                     # Track progress within album
                     total_tracks = len(album_tracks)
                     tracks_processed = 0
@@ -5170,7 +5170,7 @@ def popularity_scan(
                     milestone_50 = int(total_tracks * 0.50)
                     milestone_75 = int(total_tracks * 0.75)
                     milestones_logged = set()
-                
+
                 else:
                     # Single-only mode: skip popularity processing, will do singles detection only
                     if skip_popularity_for_album:
@@ -5178,24 +5178,24 @@ def popularity_scan(
                     else:
                         log_info(f"Singles-only mode for album '{album}': all popularity processing skipped")
                     track_updates = []
-                
+
                 if not singles_only and not skip_popularity_for_album:
                     for track in album_tracks:
                         track_id = track["id"]
                         title = track["title"]
                         track_artist = track["artist"]
-                        
+
                         # Skip popularity scoring for tracks already detected as singles
                         # Singles have their own prominence rating, no need for popularity scoring
                         if row_get(track, 'is_single', 0):
                             log_debug(f'Skipping popularity scoring for single: "{title}" (already marked as is_single=1)')
                             continue
-                        
+
                         # Detect cover songs and normalize title for API lookups
                         is_cover_song, normalized_title = detect_cover_and_normalize_title(title)
                         if is_cover_song:
                             log_debug(f'Cover song detected: "{title}" -> normalized to "{normalized_title}" for API lookups')
-                        
+
                         # Use normalized title for API searches to improve match accuracy
                         api_lookup_title = normalized_title
                         # Strip parentheses (featured artist, remix info, etc.) for better search accuracy
@@ -5259,18 +5259,18 @@ def popularity_scan(
                                     use_full_cache = True
                                     log_info(f'Using complete cached popularity score for: {title} (score: {cached_popularity:.1f})')
                                     log_debug(f'Full score cache hit - skipping all API calls for track {track_id}')
-                                
+
                                     # Get cached component scores
                                     cached_spotify_score = row_get(track, 'spotify_score', row_get(track, 'spotify_popularity', 0))
                                     cached_lastfm_ratio = row_get(track, 'lastfm_ratio', 0)
                                     cached_lastfm_listeners = row_get(track, 'lastfm_track_playcount', 0)
-                                
+
                                     # Add to batch update with cached scores (genres remain unchanged when using cache)
                                     track_updates.append((cached_popularity, cached_spotify_score, cached_lastfm_ratio, cached_lastfm_listeners, None, None, None, None, None, album_art_url, track_id))
                                     scanned_count += 1
                                     album_scanned += 1
                                     tracks_processed += 1
-                                
+
                                     # Check milestones
                                     if tracks_processed == milestone_25 and 25 not in milestones_logged:
                                         log_unified(f"Popularity Scan - 25% completed - {tracks_processed}/{total_tracks} songs")
@@ -5284,9 +5284,9 @@ def popularity_scan(
                                         log_unified(f"Popularity Scan - 75% completed - {tracks_processed}/{total_tracks} songs")
                                         log_debug(f"Progress milestone - 75% completed for album {album}")
                                         milestones_logged.add(75)
-                                
+
                                     continue  # Skip to next track
-                    
+
                         # If not using full cache, proceed with individual API lookups
 
                         # Skip Spotify lookup for obvious non-album tracks (live, remix, etc.)
@@ -5298,14 +5298,14 @@ def popularity_scan(
                         if skip_spotify_lookup:
                             log_info(f'Skipping Spotify lookup for: {title} (keyword filter: live/remix/etc.)')
                             log_debug(f'Track "{title}" matched keyword filter for exclusion')
-                    
+
                         # Try to get popularity from Spotify (using cached data or API)
                         log_debug(f'Initiating Spotify lookup for: {title}')
                         spotify_score = 0
                         spotify_search_results = None
                         spotify_release_date = None
                         lastfm_info = {}  # Initialize for genre extraction later
-                    
+
                         # Check if we can use cached Spotify popularity score
                         if not skip_spotify_lookup and not (FORCE_RESCAN or force):
                             if should_use_cached_score(track, 'spotify_popularity', 'last_spotify_lookup'):
@@ -5313,7 +5313,7 @@ def popularity_scan(
                                 skip_spotify_lookup = True
                                 log_info(f'Using cached Spotify popularity for: {title} (score: {spotify_score})')
                                 log_debug(f'Cached Spotify data reused for track {track_id}')
-                    
+
                         try:
                             if "Spotify" in enabled_apis and SPOTIFY_WEIGHT > 0 and spotify_artist_id and not skip_spotify_lookup:
                                 # Check rate limit before making API call
@@ -5325,7 +5325,7 @@ def popularity_scan(
                                     if not rate_limiter.wait_if_needed_spotify(max_wait_seconds=5.0):
                                         log_info(f'Skipping Spotify lookup for {title} due to rate limits')
                                         skip_spotify_lookup = True
-                            
+
                                 if not skip_spotify_lookup:
                                     log_info(f'Searching Spotify for track: {title} by {track_artist}')
                                     # Normalize album name to remove version suffixes for better matching
@@ -5343,16 +5343,16 @@ def popularity_scan(
                                     # Record API request for rate limiting
                                     rate_limiter.record_spotify_request()
                                     log_debug(f'Spotify API request recorded for rate limiting')
-                                
+
                                     # Cache results for singles detection reuse (using title as key)
                                     spotify_results_cache[title] = spotify_search_results
                                     log_debug(f'Cached Spotify results for track: {title}')
-                            
+
                                 # Update last_spotify_lookup timestamp
                                 current_timestamp = datetime.now().isoformat()
                                 try:
                                     cursor.execute(f"""
-                                        UPDATE tracks 
+                                        UPDATE tracks
                                         SET last_spotify_lookup = {placeholder}
                                         WHERE id = {placeholder}
                                     """, (current_timestamp, track_id))
@@ -5362,7 +5362,7 @@ def popularity_scan(
                                     # This can happen with PostgreSQL transaction state issues
                                     log_debug(f'Warning: Failed to update last_spotify_lookup for track {track_id}: {e}')
                                     # Continue anyway - popularity data is more important than timestamp
-                            
+
                                 log_info(f'Spotify search completed. Results count: {len(spotify_search_results) if spotify_search_results else 0}')
                                 if spotify_search_results and isinstance(spotify_search_results, list) and len(spotify_search_results) > 0:
                                     log_debug(f'Processing {len(spotify_search_results)} Spotify search results')
@@ -5377,7 +5377,7 @@ def popularity_scan(
                                             # Duration is stored in seconds, convert to milliseconds
                                             track_duration_ms = int(track_duration * 1000)
                                         track_isrc = row_get(track, "isrc", None)
-                                    
+
                                         log_debug(f'Strict matching - duration_ms: {track_duration_ms}, isrc: {track_isrc}')
                                         best_match = select_best_spotify_match_strict(
                                             spotify_search_results,
@@ -5399,7 +5399,7 @@ def popularity_scan(
                                         best_match = max(spotify_search_results, key=lambda r: r.get('popularity', 0))
                                         # Log only essential fields to reduce log bloat
                                         log_debug(f'Standard matching - best match: {best_match.get("name")}, popularity: {best_match.get("popularity")}')
-                                
+
                                     if best_match:
                                         spotify_score = best_match.get("popularity", 0)
                                         spotify_track_id = best_match.get("id")
@@ -5413,7 +5413,7 @@ def popularity_scan(
                                         spotify_track_id = None
                                         spotify_release_date = None
                                         log_info(f'No Spotify match found for: {title}')
-                                
+
                                     # Skip comprehensive metadata fetch during popularity scan (can be fetched on-demand later)
                                     # This was causing 90s timeouts per track which severely slowed down scans
                                     log_debug(f"Skipping comprehensive metadata fetch for {title} (can be fetched on-demand later)")
@@ -5438,7 +5438,7 @@ def popularity_scan(
                         lastfm_score = 0
                         lastfm_listeners = row_get(track, 'lastfm_track_playcount', 0) or 0
                         skip_lastfm_lookup = skip_spotify_lookup  # Use same filter for Last.fm as Spotify
-                    
+
                         # Check if we can use cached Last.fm listeners
                         if not skip_lastfm_lookup and not (FORCE_RESCAN or force):
                             if should_use_cached_score(track, 'lastfm_track_playcount', 'last_spotify_lookup'):
@@ -5447,11 +5447,11 @@ def popularity_scan(
                                     lastfm_listeners = cached_listeners
                                     # Log raw cached Last.fm listener count before calculation
                                     log_debug(f'Last.fm raw cached data for "{title}": listeners={cached_listeners}')
-                                    
+
                                     # Use z-score calculation for cached data too
                                     album_listeners_list = [data["listeners"] for data in album_lastfm_data.values() if data["listeners"] > 0]
                                     album_playcounts_list = [data["playcount"] for data in album_lastfm_data.values() if data["playcount"] > 0]
-                                    
+
                                     if album_listeners_list and album_playcounts_list:
                                         from popularity_helpers import calculate_lastfm_zscore_popularity
                                         lastfm_score = calculate_lastfm_zscore_popularity(
@@ -5464,10 +5464,10 @@ def popularity_scan(
                                         # Fallback to simple logarithmic scoring if not enough album data
                                         lastfm_score = calculate_lastfm_popularity_score(cached_listeners)
                                         log_info(f'Using cached Last.fm listeners for: {title} (count: {cached_listeners}, score: {lastfm_score:.1f}, fallback mode)')
-                                    
+
                                     skip_lastfm_lookup = True
                                     log_debug(f'Cached Last.fm data reused for track {track_id}')
-                    
+
                         if not skip_lastfm_lookup:  # Fetch from API if not cached
                             try:
                                 # Check rate limit before making API call
@@ -5481,7 +5481,7 @@ def popularity_scan(
                                         can_proceed = True  # Successfully waited, can proceed now
                                     else:
                                         log_info(f'Last.fm rate limit hit for {title}: {reason}, skipping lookup')
-                            
+
                                 # Perform lookup if we can proceed (either initially or after waiting)
                                 if can_proceed:
                                     log_info(f'Getting Last.fm info for: {title} by {track_artist}')
@@ -5495,26 +5495,26 @@ def popularity_scan(
                                     # Record API request for rate limiting
                                     rate_limiter.record_lastfm_request()
                                     log_debug(f'Last.fm API request recorded for rate limiting')
-                                    
+
                                     log_debug(f'Last.fm API response - listeners: {lastfm_info.get("listeners")}, playcount: {lastfm_info.get("track_play", 0)}')
                                     if lastfm_info and lastfm_info.get("listeners"):
                                         listeners = lastfm_info.get("listeners")
                                         playcount = lastfm_info.get("track_play", 0)
                                         lastfm_listeners = listeners
-                                        
+
                                         # Log raw Last.fm listener count before calculation
                                         log_debug(f'Last.fm raw data for "{title}": listeners={listeners}, playcount={playcount}')
-                                        
+
                                         # Store in album_lastfm_data for z-score calculation
                                         album_lastfm_data[track_id] = {
                                             "listeners": listeners,
                                             "playcount": playcount
                                         }
-                                        
+
                                         # Collect all album listener and playcount data for z-score
                                         album_listeners_list = [data["listeners"] for data in album_lastfm_data.values() if data["listeners"] > 0]
                                         album_playcounts_list = [data["playcount"] for data in album_lastfm_data.values() if data["playcount"] > 0]
-                                        
+
                                         # Calculate z-score based popularity
                                         if album_listeners_list and album_playcounts_list:
                                             from popularity_helpers import calculate_lastfm_zscore_popularity
@@ -5563,7 +5563,7 @@ def popularity_scan(
                         listenbrainz_genres_json = None
                         discogs_genres_json = None
                         musicbrainz_genres_json = None
-                        
+
                         # Extract Spotify genres from artist metadata (saved by fetch_comprehensive_metadata)
                         try:
                             spotify_artist_genres = row_get(track, 'spotify_artist_genres')
@@ -5572,7 +5572,7 @@ def popularity_scan(
                                 log_debug(f'Spotify genres available for: {title}')
                         except Exception as e:
                             log_debug(f'Failed to extract Spotify genres: {e}')
-                        
+
                         # Use batch-fetched tag data if available (more efficient than per-track fetches)
                         if track_id in album_tags_data:
                             tags_dict = album_tags_data[track_id]
@@ -5582,7 +5582,7 @@ def popularity_scan(
                             if tags_dict.get("discogs_genres"):
                                 discogs_genres_json = json.dumps(tags_dict["discogs_genres"])
                                 log_debug(f'Using batch-fetched Discogs genres for: {title}')
-                        
+
                         # If batch fetch didn't provide Last.fm tags, try extracting from lastfm_info
                         if not lastfm_tags_json:
                             try:
@@ -5595,7 +5595,7 @@ def popularity_scan(
                                             log_debug(f'Last.fm tags extracted from API for: {title} - {len(tag_names)} tags')
                             except Exception as e:
                                 log_debug(f'Failed to extract Last.fm tags from API: {e}')
-                        
+
                         # Extract Discogs genres (if not already fetched in batch)
                         if not discogs_genres_json and HAVE_DISCOGS and discogs_token:
                             try:
@@ -5609,7 +5609,7 @@ def popularity_scan(
                                         log_debug(f'Discogs genres extracted for: {title} - {len(discogs_genres)} genres')
                             except Exception as e:
                                 log_debug(f'Failed to extract Discogs genres: {e}')
-                        
+
                         # Extract MusicBrainz genres (from recording metadata)
                         if HAVE_MUSICBRAINZ:
                             try:
@@ -5629,13 +5629,13 @@ def popularity_scan(
                         # Only include sources that have data (score > 0)
                         scores = []
                         weights = []
-                        
+
                         # Calculate dynamic weights based on artist catalogue context
                         # This boosts Last.fm weight for tracks that are outliers in the artist's catalogue
                         dynamic_spotify_weight = SPOTIFY_WEIGHT
                         dynamic_lastfm_weight = LASTFM_WEIGHT
                         dynamic_listenbrainz_weight = LISTENBRAINZ_WEIGHT
-                        
+
                         if artist_lastfm_context and artist_lastfm_context.get('track_count', 0) > 0 and listeners > 0:
                             dynamic_spotify_weight, dynamic_lastfm_weight = get_dynamic_weights(
                                 spotify_score, lastfm_score,
@@ -5645,45 +5645,45 @@ def popularity_scan(
                             )
                             if dynamic_spotify_weight != SPOTIFY_WEIGHT or dynamic_lastfm_weight != LASTFM_WEIGHT:
                                 log_info(f"Dynamic weight adjustment for artist context: Spotify {SPOTIFY_WEIGHT:.2f}→{dynamic_spotify_weight:.2f}, Last.fm {LASTFM_WEIGHT:.2f}→{dynamic_lastfm_weight:.2f}")
-                        
+
                         if spotify_score > 0:
                             scores.append(spotify_score)
                             weights.append(dynamic_spotify_weight)
                             log_debug(f'Including Spotify score: {spotify_score} (weight: {dynamic_spotify_weight:.2f})')
-                    
+
                         if lastfm_score > 0:
                             scores.append(lastfm_score)
                             weights.append(dynamic_lastfm_weight)
                             log_debug(f'Including Last.fm score: {lastfm_score} (weight: {dynamic_lastfm_weight:.2f})')
-                        
+
                         # NEW: Include ListenBrainz score if available
                         listenbrainz_score = 0
                         if track_id in album_listenbrainz_data:
                             lb_data = album_listenbrainz_data[track_id]
                             lb_listen_count = lb_data.get('total_listen_count', 0)
                             lb_user_count = lb_data.get('total_user_count', 0)
-                            
+
                             if lb_listen_count > 0:
                                 # Calculate ListenBrainz score using logarithmic scaling (similar to LastFm)
-                                # log10(100) = 2.0 → 25 points  
+                                # log10(100) = 2.0 → 25 points
                                 # log10(1000) = 3.0 → 37.5 points
                                 # log10(10000) = 4.0 → 50 points
                                 listenbrainz_score = min(100.0, max(0.0, 12.5 * math.log10(lb_listen_count)))
-                                
+
                                 scores.append(listenbrainz_score)
                                 weights.append(dynamic_listenbrainz_weight)
                                 log_debug(f'Including ListenBrainz score: {listenbrainz_score:.1f} (listens: {lb_listen_count}, users: {lb_user_count}, weight: {dynamic_listenbrainz_weight:.2f})')
-                    
+
                         if age_score > 0:
                             scores.append(age_score)
                             weights.append(AGE_WEIGHT)
                             log_debug(f'Including age score: {age_score} (weight: {AGE_WEIGHT})')
-                    
+
                         # Calculate weighted average
                         if scores and weights:
                             total_weight = sum(weights)
                             popularity_score = sum(s * w for s, w in zip(scores, weights)) / total_weight
-                            
+
                             # Use weighted popularity score directly (restored to original working method)
                             track_updates.append((popularity_score, spotify_score, lastfm_score, lastfm_listeners, spotify_genres_json, lastfm_tags_json, listenbrainz_genres_json, discogs_genres_json, musicbrainz_genres_json, album_art_url, track_id))
                             scanned_count += 1
@@ -5693,7 +5693,7 @@ def popularity_scan(
                         else:
                             log_info(f"No popularity score found for {artist} - {title}")
                             log_debug(f'No data sources available for scoring')
-                    
+
                         # Track progress and show percentage milestones
                         tracks_processed += 1
                         # Efficient milestone checking using pre-calculated values
@@ -5719,7 +5719,7 @@ def popularity_scan(
                     for update_tuple in track_updates:
                         # Unpack: (popularity_score, spotify_score, lastfm_ratio, lastfm_track_playcount, spotify_genres, lastfm_tags, listenbrainz_genres, discogs_genres, musicbrainz_genres, album_art_url, track_id)
                         popularity_score, spotify_score, lastfm_ratio, lastfm_track_playcount, spotify_genres, lastfm_tags, listenbrainz_genres, discogs_genres, musicbrainz_genres, album_art_url, track_id = update_tuple
-                        
+
                         # Check if we have tags for this track in album_tags_data
                         if track_id in album_tags_data:
                             tags_data = album_tags_data[track_id]
@@ -5733,7 +5733,7 @@ def popularity_scan(
                             if tags_data.get("discogs_genres"):
                                 discogs_genres = json.dumps(tags_data["discogs_genres"])
                                 log_debug(f"Using Discogs genres for track {track_id}: {len(tags_data['discogs_genres'])} genres")
-                        
+
                         # Add "Cover" genre if this is a cover song
                         if is_cover_song:
                             # Add Cover to musicbrainz_genres (most appropriate field for special tags)
@@ -5764,10 +5764,10 @@ def popularity_scan(
                         if not popularity_values_changed(current_track, proposed_values):
                             log_debug(f"Skipping no-op popularity update for track {track_id}: no popularity-related field changes detected")
                             continue
-                        
+
                         # Append merged tuple
                         updated_track_updates.append((popularity_score, spotify_score, lastfm_ratio, lastfm_track_playcount, spotify_genres, lastfm_tags, listenbrainz_genres, discogs_genres, musicbrainz_genres, album_art_url, track_id))
-                    
+
                     if updated_track_updates:
                         try:
                             cursor.executemany(
@@ -5818,11 +5818,11 @@ def popularity_scan(
                         log_info(f"[ALBUM_ART] Album art URL cached for {album}: {album_art_url}")
                     else:
                         log_debug(f"[ALBUM_ART] Album art will be fetched on-demand from Navidrome or Apple Music sources")
-                
+
                 if not singles_only:
                     log_unified(f'Popularity Scan - Popularity Scanning for {album} Complete')
                     log_info(f'Album "{artist} - {album}" scanned. Popularity applied to {album_scanned} tracks')
-                    
+
                     # --- Standout & Star Rating Assignment ---
                     #
                     # This section applies album- and artist-normalized standout detection and star rating assignment.
@@ -5863,11 +5863,11 @@ def popularity_scan(
                                 artist_mad = stat_median_standout(artist_absolute_devs)
                                 artist_mad_scaled = artist_mad * 1.4826  # Scale to be comparable to stddev
                                 artist_spread = max(artist_mad_scaled, MIN_SPREAD)  # Apply floor
-                                
+
                                 sorted_artist_scores = sorted(artist_scores, reverse=True)
                                 def artist_percentile(score):
                                     return (sorted_artist_scores.index(score) + 1) / len(sorted_artist_scores)
-                                
+
                                 # Pre-compute standout clusters for each album to handle multiple singles with similar popularity
                                 album_standout_clusters = {}
                                 unique_albums = set(row_get(t, 'album', '') for t in artist_tracks)
@@ -5877,7 +5877,7 @@ def popularity_scan(
                                         if cluster:
                                             album_standout_clusters[album_name] = cluster
                                             log_debug(f"Album '{album_name}' has {len(cluster)} tracks in standout cluster")
-                                
+
                                 for track in artist_tracks:
                                     track_id = row_get(track, 'id')
                                     track_title = row_get(track, 'title')
@@ -5900,11 +5900,11 @@ def popularity_scan(
                                     track_album_mad_scaled = track_album_mad * 1.4826
                                     track_album_spread = max(track_album_mad_scaled, MIN_SPREAD)
                                     album_z = (score - track_album_median) / track_album_spread if track_album_spread > 0 else 0
-                                    
+
                                     # Check if track is in the standout cluster for this album
                                     # Uses gap-based clustering to handle multiple singles with similar high popularity
                                     is_in_standout_cluster = track_id in album_standout_clusters.get(track_album, set())
-                                    
+
                                     # Require BOTH medium z-score (>= 0.8) AND being in standout cluster
                                     # This ensures tracks are statistically significant AND part of top-performing group
                                     # Handles both single standouts and clusters of multiple singles
@@ -5942,43 +5942,43 @@ def popularity_scan(
                         # Collect recording MBIDs from all tracks that have them
                         mbid_list = []
                         track_mbid_map = {}  # Map MBID -> track_id for updating results
-                        
+
                         for track in album_tracks:
                             track_mbid = track.get('mbid')
                             if track_mbid and track_mbid.strip():  # Only include non-empty MBIDs
                                 mbid_list.append(track_mbid)
                                 track_mbid_map[track_mbid] = track.get('id')
-                        
+
                         if mbid_list:
                             log_debug(f"Bulk tag lookup: Collected {len(mbid_list)} MBIDs from {album} tracks")
-                            
+
                             # Batch MBIDs in groups of 50 (conservative limit for URL length)
                             BATCH_SIZE = 50
                             all_results = {}
-                            
+
                             for batch_start in range(0, len(mbid_list), BATCH_SIZE):
                                 batch_mbids = mbid_list[batch_start:batch_start + BATCH_SIZE]
                                 mbid_query = ",".join(batch_mbids)  # Comma-separated for API
-                                
+
                                 try:
                                     # Call ListenBrainz bulk-tag-lookup API
                                     lb_url = "https://labs.api.listenbrainz.org/bulk-tag-lookup/json"
                                     params = {"recording_mbid": mbid_query}
-                                    
+
                                     res = session.get(lb_url, params=params, timeout=(5, 15))
                                     res.raise_for_status()
                                     batch_results = res.json()
-                                    
+
                                     # Merge batch results
                                     if batch_results:
                                         all_results.update(batch_results)
-                                    
+
                                     log_debug(f"Bulk tag lookup batch {batch_start}-{batch_start + len(batch_mbids)}: Fetched tags for {len(batch_results)} recording(s)")
                                 except Exception as batch_error:
                                     log_debug(f"Bulk tag lookup API call failed for batch {batch_start}-{batch_start + len(batch_mbids)}: {batch_error}")
                                     # Continue with next batch on error
                                     continue
-                            
+
                             # Process and store results
                             if all_results:
                                 tags_updated = 0
@@ -5986,7 +5986,7 @@ def popularity_scan(
                                     track_id = track_mbid_map.get(mbid)
                                     if not track_id:
                                         continue
-                                    
+
                                     # Extract tags from result (format depends on API response structure)
                                     # ListenBrainz returns tag data that includes popularity/count info
                                     tags = []
@@ -6001,11 +6001,11 @@ def popularity_scan(
                                     elif isinstance(tag_data, list):
                                         # If it's already a list, use it directly
                                         tags = tag_data
-                                    
+
                                     if tags:
                                         # Convert tags to JSON format matching existing genre columns
                                         tags_json = json.dumps(tags)
-                                        
+
                                         # Merge with existing musicbrainz_genres if present
                                         cursor.execute(
                                             f"SELECT musicbrainz_genres FROM tracks WHERE id = {placeholder}",
@@ -6013,7 +6013,7 @@ def popularity_scan(
                                         )
                                         existing = cursor.fetchone()
                                         existing_tags = []
-                                        
+
                                         if existing and existing[0]:
                                             try:
                                                 existing_tags = json.loads(existing[0])
@@ -6021,18 +6021,18 @@ def popularity_scan(
                                                     existing_tags = [existing_tags]
                                             except (json.JSONDecodeError, TypeError):
                                                 existing_tags = []
-                                        
+
                                         # Merge and deduplicate tags
                                         merged_tags = list(dict.fromkeys(existing_tags + tags))  # Preserves order, removes duplicates
                                         merged_json = json.dumps(merged_tags)
-                                        
+
                                         # Update track with merged tags
                                         cursor.execute(
                                             f"UPDATE tracks SET musicbrainz_genres = {placeholder} WHERE id = {placeholder}",
                                             (merged_json, track_id)
                                         )
                                         tags_updated += 1
-                                
+
                                 if tags_updated > 0:
                                     conn.commit()
                                     log_info(f"Bulk tag lookup: Updated {tags_updated} tracks with ListenBrainz tags for \"{artist} - {album}\"")
@@ -6053,19 +6053,19 @@ def popularity_scan(
                     clear_artist_stats_cache()
                 except Exception as cache_clear_error:
                     log_debug(f"Could not clear single detection stats cache before album scan: {cache_clear_error}")
-                
+
                 # Use album type already detected at the start of scan (no need to re-fetch from Music Brainz)
                 # The album_type_from_field was set at scan start with MusicBrainz lookup + auto-detection
                 spotify_album_type = row_get(album_tracks[0] if album_tracks else {}, 'spotify_album_type', '')
-                
+
                 # Use the type that was detected and stored at the start of the scan
                 album_type = album_type_from_field or spotify_album_type or 'album'
                 type_source = "populated-at-scan-start"
-                
+
                 is_compilation = is_compilation_type(album_type)
                 log_debug(f'Album context: {len(album_tracks)} total tracks, compilation={is_compilation}, album_type={album_type} (source: {type_source})')
                 singles_detected = 0
-                
+
                 # Log which sources are available for single detection
                 discogs_client_available = bool(discogs_token and _get_timeout_safe_discogs_client(discogs_token))
                 sources_available = []
@@ -6078,23 +6078,23 @@ def popularity_scan(
                     sources_available.append("Discogs Video")
                 log_info(f'Available sources for single detection: {[", ".join(sources_available)]}')
                 log_debug(f'Source details: Spotify=enabled, MB={HAVE_MUSICBRAINZ}, Discogs={discogs_client_available}, Video={discogs_client_available}')
-                
+
                 # Calculate artist-level popularity statistics BEFORE single detection
                 # Reason: We need to determine if this album is underperforming vs the artist's catalog
                 # so that z-score single detection can be conditionally disabled for underperforming albums
                 # while still using metadata-based detection (Discogs, Spotify, MusicBrainz).
                 artist_stats = calculate_artist_popularity_stats(artist, conn)
-                
+
                 # Log artist statistics for reference in single detection decisions
                 log_debug(f'Artist stats - track_count: {artist_stats["track_count"]}, mean: {artist_stats["avg_popularity"]:.1f}, median: {artist_stats["median_popularity"]:.1f}, stddev: {artist_stats["stddev_popularity"]:.1f}')
-                
+
                 # Add top 10% threshold from Last.fm context (from earlier pre-fetch)
                 # This allows star rating to use dual criteria: global top 10% + album outlier
                 artist_stats['top_10_percentile_threshold'] = artist_lastfm_context.get('top_10_percentile_threshold', 0)
                 artist_stats['total_artist_tracks'] = artist_lastfm_context.get('total_tracks', 0)
-                
+
                 artist_median = artist_stats['median_popularity'] if artist_stats['track_count'] > 0 else 0.0
-                
+
                 # Calculate album median to check for underperformance
                 # This enables conditional z-score detection: disabled for underperforming albums,
                 # except when a track is a standout across the entire artist catalogue.
@@ -6109,11 +6109,11 @@ def popularity_scan(
                         popularity_score = row_get(track, 'popularity_score', 0)
                         title = row_get(track, 'title', '')
                         album_name = row_get(track, 'album', '')
-                        
+
                         # Exclude live/remix/alternate versions from album median calculation
                         if popularity_score > 0 and not should_exclude_track_from_stats(title, album_name):
                             album_pops.append(popularity_score)
-                    
+
                     if album_pops and artist_median > 0:
                         album_median = median(album_pops)
                         # Consider album underperforming if median is < UNDERPERFORMING_THRESHOLD of artist median
@@ -6122,7 +6122,7 @@ def popularity_scan(
                             log_info(f"Album is underperforming: median={album_median:.1f} vs artist median={artist_median:.1f}")
                             log_info(f"Z-score single detection will be disabled except for artist-level standouts")
                             log_debug(f"Underperforming album detected - album_median: {album_median}, artist_median: {artist_median}, threshold: {UNDERPERFORMING_THRESHOLD}")
-                
+
                 if artist_stats['track_count'] > 0:
                     log_info(f"Artist-level stats: avg={artist_stats['avg_popularity']:.1f}, median={artist_median:.1f}")
                     log_debug(f"Artist statistics - track_count: {artist_stats['track_count']}, avg: {artist_stats['avg_popularity']}, median: {artist_median}, stddev: {artist_stats.get('stddev_popularity', 0)}")
@@ -6132,7 +6132,7 @@ def popularity_scan(
                     single_detection_lastfm_client = lastfm_client if 'lastfm_client' in locals() and lastfm_client else get_lastfm_client()
                 except Exception as lastfm_client_error:
                     log_debug(f"Could not prepare shared Last.fm client for single detection: {lastfm_client_error}")
-                
+
                 # Capture user-set singles before running automated detection
                 # User-marked singles (is_single=1 with no/empty sources) should be preserved
                 user_set_singles = set()
@@ -6140,7 +6140,7 @@ def popularity_scan(
                     track_id = track["id"]
                     is_single = row_get(track, "is_single", 0)
                     single_sources_json = row_get(track, "single_sources", "[]")
-                    
+
                     # Track is user-set if is_single is truthy but has no automated sources
                     try:
                         sources = json.loads(single_sources_json) if single_sources_json else []
@@ -6152,48 +6152,48 @@ def popularity_scan(
                         if is_single:
                             user_set_singles.add(track_id)
                             log_info(f"Preserving user-set single (malformed sources): {row_get(track, 'title', 'Unknown')}")
-                
+
                 # Batch updates for singles detection
                 singles_updates = []
                 single_detection_timestamp_updates = []
-                
+
                 # Get album track count for context-based confidence adjustment
                 album_track_count = len(album_tracks)
-                
+
                 # Calculate z-scores for all tracks to filter single detection
                 # This enables performance optimization by only scanning tracks likely to be singles
                 track_zscores = {}  # Map of track_id -> z-score
                 top_cluster_tracks = set()  # Track IDs in top z-score cluster (instant 5★)
                 album_median_popularity = 0.0  # Track album median for single detection filtering
-                
+
                 if album_type == "regular" and album_track_count > 1:
                     # Calculate z-scores for regular albums to filter single detection
                     album_pops_for_zscore = []
                     track_ids_for_zscore = []
-                    
+
                     for track in album_tracks:
                         track_id = track["id"]
                         popularity_score = row_get(track, 'popularity_score', 0)
                         title = row_get(track, 'title', '')
                         album_name = row_get(track, 'album', '')
-                        
+
                         # Exclude live/remix/alternate from z-score calculation
                         if popularity_score > 0 and not should_exclude_track_from_stats(title, album_name):
                             album_pops_for_zscore.append(popularity_score)
                             track_ids_for_zscore.append(track_id)
-                    
+
                     if len(album_pops_for_zscore) > 1:
                         from statistics import mean as stat_mean, stdev as stat_stdev, median as stat_median
                         pop_mean = stat_mean(album_pops_for_zscore)
                         pop_stddev = stat_stdev(album_pops_for_zscore) if len(album_pops_for_zscore) > 1 else 0
                         album_median_popularity = stat_median(album_pops_for_zscore)
-                        
+
                         if pop_stddev > 0:
                             # Calculate z-scores
                             for i, track_id in enumerate(track_ids_for_zscore):
                                 z_score = (album_pops_for_zscore[i] - pop_mean) / pop_stddev
                                 track_zscores[track_id] = z_score
-                            
+
                             # Identify top cluster using simple z-score based approach
                             # Top cluster = tracks with z-score > 1.0 in the album
                             try:
@@ -6202,7 +6202,7 @@ def popularity_scan(
                                     for track_id, z_score in track_zscores.items():
                                         if z_score > 1.0:
                                             top_cluster_tracks.add(track_id)
-                                    
+
                                     log_debug(f"Top cluster detection (z > 1.0): {len(top_cluster_tracks)} track(s)")
                                     if top_cluster_tracks:
                                         log_info(f"Top z-score cluster identified: {len(top_cluster_tracks)} track(s) get instant 5★")
@@ -6213,9 +6213,9 @@ def popularity_scan(
                                 log_info(f"Top cluster detection failed: {e}")
                                 import traceback
                                 log_debug(f"Traceback: {traceback.format_exc()}")
-                
+
                 log_debug(f"Album type: {album_type}, will filter single detection accordingly")
-                
+
                 # Track progress within singles detection phase
                 singles_processed = 0
                 # Pre-calculate milestone track counts for efficient checking
@@ -6242,29 +6242,29 @@ def popularity_scan(
                     if (album_type or "").strip().lower() == "regular":
                         album_type = "greatest_hits"
                     log_info(f'Greatest hits adaptive mode enabled from existing state: "{artist} - {album}" ({pre_marked_singles}/{album_track_count} tracks already marked single)')
-                
+
                 for track in album_tracks:
                     track_id = track["id"]
                     title = track["title"]
-                    
+
                     log_debug(f"Processing single detection for track: {title} (ID: {track_id})")
-                    
+
                     # Check single detection cache before running detection
                     single_manual_override = row_get(track, "single_manual_override", 0)
                     single_detection_last_updated = row_get(track, "single_detection_last_updated", None)
-                    
+
                     # Skip re-detection if manually set by user
                     if single_manual_override:
                         log_debug(f"Single detection skipped (user override): {title}")
                         singles_processed += 1
                         continue
-                    
+
                     # Check cache age unless force scanning
                     if not (FORCE_RESCAN or force) and single_detection_last_updated:
                         try:
                             last_run = datetime.fromisoformat(single_detection_last_updated)
                             age_hours = (datetime.now() - last_run).total_seconds() / 3600
-                            
+
                             # Use confidence-based cache TTL
                             current_confidence = row_get(track, "single_confidence", "low")
                             if current_confidence == "high":
@@ -6273,21 +6273,21 @@ def popularity_scan(
                                 cache_ttl = 72   # 3 days
                             else:
                                 cache_ttl = 24   # 1 day for low confidence
-                            
+
                             if age_hours < cache_ttl:
                                 log_debug(f"Single detection cached: {title} (age: {age_hours:.1f}h, TTL: {cache_ttl}h, confidence: {current_confidence})")
                                 singles_processed += 1
                                 continue
                         except Exception as e:
                             log_debug(f"Failed to parse single detection timestamp: {e}")
-                    
+
                     # Filter single detection based on album type and z-scores
                     # This dramatically speeds up scanning by skipping tracks unlikely to be singles
                     skip_single_detection = False
-                    
+
                     album_type_norm = (album_type or "").strip().lower()
                     is_regular_album = album_type_norm in ("regular", "album", "lp", "studio")
-                    
+
                     # Check if this is a greatest hits or compilation album
                     album_lower = album.lower()
                     greatest_hits_patterns = [
@@ -6297,7 +6297,7 @@ def popularity_scan(
                     ]
                     is_greatest_hits_or_compilation = (
                         force_full_single_detection or
-                        is_compilation or 
+                        is_compilation or
                         any(pattern in album_lower for pattern in greatest_hits_patterns)
                     )
 
@@ -6306,10 +6306,10 @@ def popularity_scan(
                     if not is_greatest_hits_or_compilation:
                         # Get pre-calculated z-score (already computed above at line 4595)
                         track_zscore = track_zscores.get(track_id, 0.0)
-                        
+
                         # Check if this is a live album (special rules apply)
                         album_is_live = row_get(track, "album_context_live", 0)
-                        
+
                         # For regular albums, skip single detection if z-score is negative (below album average)
                         # Rationale: Below-average tracks are unlikely to be real singles
                         # Exception: For compilations/greatest hits, run detection on all tracks (different popularity patterns)
@@ -6332,17 +6332,17 @@ def popularity_scan(
                         # Greatest hits/compilation/various artists: Run detection on all tracks
                         # These collections have different popularity patterns, so average tracks can still be genuine singles
                         log_debug(f"Greatest hits/compilation/various artists detected - running single detection on all tracks")
-                    
+
                     # Skip single detection if filtered out
                     if skip_single_detection:
                         singles_processed += 1
                         continue
-                    
+
                     # Get additional fields for advanced detection
                     track_isrc = row_get(track, "isrc", None)
                     track_duration = row_get(track, "duration", None)
                     track_album_type = row_get(track, "spotify_album_type", None)
-                    
+
                     # Short-circuit: if the track's own Spotify album type is 'single',
                     # treat it as a medium-confidence metadata signal. Star assignment should
                     # still be decided by z-score + source-count gates later in the pipeline.
@@ -6382,15 +6382,15 @@ def popularity_scan(
                             singles_detected += 1
                             singles_processed += 1
                             continue
-                    
+
                     # Use the in-memory track score for single detection.
                     # The album popularity phase updates these values before singles detection begins.
                     track_popularity = row_get(track, "popularity_score", 0.0) or 0.0
-                    
+
                     log_info(f"🔍 Running single detection for: {title}")
                     log_debug(f"Single detection params - track: {title}, isrc: {track_isrc}, duration: {track_duration}, popularity: {track_popularity}, album_type: {track_album_type}")
                     log_debug(f"Single detection - is_greatest_hits_or_compilation: {is_greatest_hits_or_compilation}, force_full: {force_full_single_detection}")
-                    
+
                     # Skip single detection for zero-popularity tracks (unless in compilation/greatest hits)
                     # Rationale: Tracks with 0 popularity are unlikely to be real singles, wastes API calls
                     # Exception: Always check compilations since featured tracks have different patterns
@@ -6398,7 +6398,7 @@ def popularity_scan(
                         log_info(f"⏭️ Skipping single detection for '{title}' (popularity: 0 - not a compilation/greatest hits)")
                         singles_processed += 1
                         continue
-                    
+
                     # For Various Artists / compilation albums, use the individual track artist for
                     # single detection. Using the album artist ("Various Artists") would cause detection
                     # to always fail since no singles are released under that name.
@@ -6433,19 +6433,19 @@ def popularity_scan(
                         existing_conn=conn,
                         persist_result=False,
                     )
-                    
+
                     single_sources = detection_result["sources"]
                     single_confidence = detection_result["confidence"]
                     is_single = detection_result["is_single"]
-                    
+
                     if is_single:
                         log_info(f"✅ SINGLE DETECTED: '{title}' - confidence: {single_confidence}, sources: {single_sources}")
                     else:
                         log_info(f"❌ Not a single: '{title}' - confidence: {single_confidence}, sources: {single_sources}")
                     log_debug(f"Single detection result - is_single: {is_single}, confidence: {single_confidence}, sources: {single_sources}")
-                    
+
                     single_detection_timestamp_updates.append((datetime.now().isoformat(), track_id))
-                    
+
                     # Preserve user-set singles: if track was user-marked and detection found nothing, keep it marked
                     if track_id in user_set_singles and not is_single:
                         is_single = True
@@ -6472,7 +6472,7 @@ def popularity_scan(
                             f'({gh_tracks_detected_single}/{gh_tracks_processed} processed tracks detected as single)'
                         )
                         log_debug("Adaptive greatest hits mode now bypasses negative z-score skip for remaining tracks")
-                    
+
                     # Queue single detection results for batch update
                     if is_single or single_sources:
                         # Deduplicate single_sources to prevent duplicate entries in JSON
@@ -6483,7 +6483,7 @@ def popularity_scan(
                             if source not in seen:
                                 unique_sources.append(source)
                                 seen.add(source)
-                        
+
                         # Automatically set stars to 5 for detected singles
                         stars_for_single = 5 if is_single else None
                         singles_updates.append((
@@ -6501,7 +6501,7 @@ def popularity_scan(
                             else:
                                 log_info(f"Single detected: {title} (user-set)")
                             log_debug(f"Single detection confirmed - track_id: {track_id}, confidence: {single_confidence}, sources: {unique_sources}")
-                    
+
                     # Track progress in singles detection
                     singles_processed += 1
                     # Efficient milestone checking using pre-calculated values
@@ -6517,7 +6517,7 @@ def popularity_scan(
                         log_unified(f"Single Detection - 75% completed - {singles_processed}/{album_track_count} tracks")
                         log_debug(f"Progress milestone - 75% completed for singles detection in album {album}")
                         singles_milestones_logged.add(75)
-                
+
                 # Batch update all singles detection results for this album in one commit
                 if singles_updates:
                     # Update with conditional stars setting - only set stars if value is provided (detected singles)
@@ -6525,7 +6525,7 @@ def popularity_scan(
                         if stars_value is not None:
                             # Set both single status and stars for detected singles
                             cursor.execute(
-                                f"""UPDATE tracks 
+                                f"""UPDATE tracks
                                 SET is_single = {placeholder}, single_confidence = {placeholder}, single_sources = {placeholder}, stars = {placeholder}
                                 WHERE id = {placeholder}""",
                                 (is_single, single_confidence, single_sources, stars_value, track_id)
@@ -6533,7 +6533,7 @@ def popularity_scan(
                         else:
                             # Only set single status if no stars update needed
                             cursor.execute(
-                                f"""UPDATE tracks 
+                                f"""UPDATE tracks
                                 SET is_single = {placeholder}, single_confidence = {placeholder}, single_sources = {placeholder}
                                 WHERE id = {placeholder}""",
                                 (is_single, single_confidence, single_sources, track_id)
@@ -6552,29 +6552,29 @@ def popularity_scan(
                     )
                     conn.commit()
                     log_debug(f"Batch committed {len(single_detection_timestamp_updates)} single detection timestamp update(s) for album '{album}'")
-                
+
                 # COVER DETECTION: Detect and mark cover songs based on writer/lyricist uniqueness
                 if HAVE_COVER_DETECTOR and not singles_only:
                     try:
                         log_info(f'Starting cover detection for album "{artist} - {album}"')
-                        
+
                         # Get all tracks for this album with metadata
                         # Note: Use COALESCE to handle album_artist grouping like singles detection does
                         cursor.execute(f"""
                             SELECT id, title, artist, writer, mbid, file_path
-                            FROM tracks 
+                            FROM tracks
                             WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
                             ORDER BY COALESCE(track_number, 0), title
                         """, (artist, album))
                         album_tracks_for_cover = [dict(row) for row in cursor.fetchall()]
-                        
+
                         if album_tracks_for_cover:
                             # Instantiate cover detector with database connection and clients
                             cover_detector = CoverDetector(db_connection=conn, musicbrainz_client=_get_timeout_safe_musicbrainz_client())
-                            
+
                             # Run cover detection for this album
                             covers_detected = cover_detector.detect_covers_for_album(album, artist, album_tracks_for_cover)
-                            
+
                             if covers_detected:
                                 log_info(f'Cover detection complete: {len(covers_detected)} cover(s) detected for "{artist} - {album}"')
                                 log_debug(f'Cover detection results: {covers_detected}')
@@ -6586,7 +6586,7 @@ def popularity_scan(
                         else:
                             log_debug(f'No tracks found for cover detection in album "{artist} - {album}"')
                             covers_found_count = 0
-                            
+
                     except Exception as e:
                         log_debug(f'Cover detection failed for album "{artist} - {album}": {e}')
                         import traceback
@@ -6598,7 +6598,7 @@ def popularity_scan(
                         log_debug(f'Skipping cover detection (singles_only mode active)')
                     elif not HAVE_COVER_DETECTOR:
                         log_debug(f'Skipping cover detection (CoverDetector module unavailable)')
-                
+
                 # Log summary of singles detection
                 high_conf_count = sum(1 for update in singles_updates if update[0] == 1)
                 log_info(f'Singles detection complete: {singles_detected} high-confidence single(s) detected for "{artist} - {album}" ({singles_processed} tracks processed)')
@@ -6644,23 +6644,23 @@ def popularity_scan(
                 try:
                     cursor.execute(f"""
                         SELECT id, title, popularity_score, single_confidence, single_sources, is_single
-                        FROM tracks 
+                        FROM tracks
                         WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
                         ORDER BY COALESCE(popularity_score, 0) DESC
                     """, (artist, album))
-                    
+
                     zscore_update_tracks = cursor.fetchall()
-                    
+
                     if zscore_update_tracks:
                         # Calculate album statistics for z-score
                         from statistics import median as stat_median_post
                         album_pops = [t["popularity_score"] for t in zscore_update_tracks if t["popularity_score"]]
-                        
+
                         if album_pops and len(album_pops) > 1:
                             # Use median + MAD for robust z-score calculation
                             MIN_SPREAD = 10.0  # Prevent flat albums from over-amplifying small differences
                             album_pop_median = stat_median_post(album_pops)
-                            
+
                             # Calculate MAD (Median Absolute Deviation)
                             absolute_deviations = [abs(pop - album_pop_median) for pop in album_pops]
                             album_pop_mad = stat_median_post(absolute_deviations)
@@ -6668,7 +6668,7 @@ def popularity_scan(
                             album_pop_mad_scaled = album_pop_mad * 1.4826
                             # Apply MIN_SPREAD floor to prevent flat-album over-amplification
                             album_pop_spread = max(album_pop_mad_scaled, MIN_SPREAD)
-                            
+
                             zscore_outliers = []
                             for track in zscore_update_tracks:
                                 track_id = track["id"]
@@ -6677,17 +6677,17 @@ def popularity_scan(
                                 track_single_confidence = track["single_confidence"] or ""
                                 track_is_single = track["is_single"] or 0
                                 track_sources_json = track["single_sources"] or "[]"
-                                
+
                                 # Skip high confidence - those are already confirmed
                                 if track_single_confidence == "high":
                                     continue
-                                
+
                                 # Calculate album z-score using median + MAD
                                 if album_pop_spread > 0:
                                     album_zscore =(track_pop - album_pop_median) / album_pop_spread
                                 else:
                                     album_zscore = 0
-                                
+
                                 # Check if this is a strong album outlier
                                 if album_zscore >= 2.0 and track_pop > (album_pop_median * 1.5):
                                     # This is a strong standout - mark as medium confidence unless already marked
@@ -6696,33 +6696,33 @@ def popularity_scan(
                                             track_sources = json.loads(track_sources_json) if track_sources_json else []
                                         except json.JSONDecodeError:
                                             track_sources = []
-                                        
+
                                         # Add zscore as detection source if not already present
                                         if "album_zscore" not in track_sources:
                                             track_sources.append("album_zscore")
-                                        
+
                                         # Update to medium confidence
                                         zscore_outliers.append((
                                             "medium",
                                             json.dumps(track_sources),
                                             track_id
                                         ))
-                                        
+
                                         log_debug(f"Album z-score detection: {track_title} (zscore={album_zscore:.2f}, pop={track_pop:.1f} vs median={album_pop_median:.1f})")
-                            
+
                             # Batch update z-score outliers
                             if zscore_outliers:
                                 for single_confidence, sources, track_id in zscore_outliers:
                                     cursor.execute(f"""
-                                        UPDATE tracks 
+                                        UPDATE tracks
                                         SET single_confidence = {placeholder}, single_sources = {placeholder}
                                         WHERE id = {placeholder}
                                     """, (single_confidence, sources, track_id))
-                                
+
                                 conn.commit()
                                 log_info(f"Album z-score detection: {len(zscore_outliers)} medium-confidence track(s) identified for '{artist} - {album}'")
                                 log_debug(f"Z-score outliers updated: {len(zscore_outliers)} tracks")
-                
+
                 except Exception as e:
                     log_debug(f"Album z-score detection failed for '{album}': {e}")
                     import traceback
@@ -6731,7 +6731,7 @@ def popularity_scan(
                 # Calculate star ratings for album tracks
                 log_info(f'Calculating star ratings for "{artist} - {album}"')
                 log_debug(f'Star rating calculation starting for album: {album}')
-                
+
                 # Note: artist_stats was already calculated before single detection to support
                 # conditional z-score detection. We only need to update the database here.
                 # Just update the artist_stats table with popularity statistics
@@ -6739,14 +6739,14 @@ def popularity_scan(
                     # Update artist_stats table with popularity statistics
                     # Columns: mean_popularity, median_popularity, popularity_stddev, popularity_mad
                     cursor.execute(f"""
-                        UPDATE artist_stats 
+                        UPDATE artist_stats
                         SET mean_popularity = {placeholder}, median_popularity = {placeholder}, popularity_stddev = {placeholder}, popularity_mad = {placeholder}
                         WHERE artist_name = {placeholder}
-                    """, (artist_stats['avg_popularity'], artist_stats['median_popularity'], 
+                    """, (artist_stats['avg_popularity'], artist_stats['median_popularity'],
                           artist_stats['stddev_popularity'], artist_stats['mad_popularity'], artist))
                     conn.commit()
                     log_debug(f"Updated artist_stats table for {artist} - mean: {artist_stats['avg_popularity']:.1f}, median: {artist_stats['median_popularity']:.1f}, stddev: {artist_stats['stddev_popularity']:.1f}, MAD: {artist_stats['mad_popularity']:.1f}")
-                
+
                 # Get all tracks for this album with their popularity scores and single detection
                 # Try matching on artist field first, then fall back to album_artist field
                 # Use COALESCE so NULL popularity scores sort last (same as 0), not first
@@ -6755,46 +6755,46 @@ def popularity_scan(
                     (artist, album)
                 )
                 album_tracks_with_scores = [dict(row) for row in cursor.fetchall()]
-                
+
                 log_debug(f"Retrieved {len(album_tracks_with_scores)} tracks for star rating calculation")
-                
+
                 if album_tracks_with_scores and len(album_tracks_with_scores) > 0:
                     log_debug(f"Processing {len(album_tracks_with_scores)} tracks for star ratings and single detection logging")
                     # Calculate star ratings using the same logic as sptnr.py
                     total_tracks = len(album_tracks_with_scores)
                     band_size = math.ceil(total_tracks / 4)
-                    
+
                     # Identify tracks to exclude from statistics (e.g., bonus tracks with parentheses at end)
                     # Pass alternate_takes_map to exclude those tracks as well
                     excluded_indices = should_exclude_from_stats(album_tracks_with_scores, alternate_takes_map)
-                    
+
                     # Calculate statistics for popularity-based confidence system
                     scores = [t["popularity_score"] if t["popularity_score"] else 0 for t in album_tracks_with_scores]
                     # Filter out excluded tracks when calculating statistics
                     # Complexity is O(n) for iteration; set membership testing is O(1)
                     valid_scores = [s for i, s in enumerate(scores) if s > 0 and i not in excluded_indices]
-                    
+
                     # Log exclusions if any
                     if excluded_indices:
                         excluded_titles = [album_tracks_with_scores[i]["title"] for i in excluded_indices]
                         log_info(f"Excluding {len(excluded_indices)} tracks from statistics: {', '.join(excluded_titles)}")
                         log_debug(f"Excluded track indices: {excluded_indices}")
-                    
+
                     # Note: album_is_underperforming was already calculated before single detection
                     # to support conditional z-score detection. It's not needed for star rating calculation.
                     # The underperformance flag was already used during single detection to determine
                     # whether to apply z-score based single detection for each track.
-                    
+
                     # Import with aliases to avoid shadowing issues from local imports elsewhere
                     from statistics import median as stat_median
-                    
+
                     # MIN_SPREAD floor to prevent flat albums from over-amplifying small differences
                     MIN_SPREAD = 10.0
-                    
+
                     if valid_scores:
                         # Use median + MAD for robust z-score calculation
                         popularity_median = stat_median(valid_scores)
-                        
+
                         # Calculate MAD (Median Absolute Deviation)
                         absolute_deviations = [abs(score - popularity_median) for score in valid_scores]
                         popularity_mad = stat_median(absolute_deviations)
@@ -6802,9 +6802,9 @@ def popularity_scan(
                         popularity_mad_scaled = popularity_mad * 1.4826
                         # Apply MIN_SPREAD floor
                         popularity_spread = max(popularity_mad_scaled, MIN_SPREAD)
-                        
+
                         log_debug(f"Star rating statistics - median: {popularity_median}, MAD: {popularity_mad_scaled:.1f}, spread (with floor): {popularity_spread:.1f}, valid_scores_count: {len(valid_scores)}")
-                        
+
                         # Calculate z-scores for all tracks using median+MAD
                         zscores = []
                         for score in valid_scores:
@@ -6813,7 +6813,7 @@ def popularity_scan(
                             else:
                                 zscore = 0
                             zscores.append(zscore)
-                        
+
                         # Get mean of top 50% z-scores for medium confidence threshold
                         # Use heapq.nlargest for efficiency with large albums
                         if zscores:
@@ -6823,12 +6823,12 @@ def popularity_scan(
                             mean_top50_zscore = stat_mean(top_50_zscores)
                         else:
                             mean_top50_zscore = 0
-                        
+
                         # Load z-score thresholds from config
                         zscore_thresholds = get_zscore_thresholds()
                         high_conf_threshold = popularity_median + zscore_thresholds['high']
                         medium_conf_zscore_threshold = mean_top50_zscore + zscore_thresholds['medium']
-                        
+
                         log_info(f"Album stats: median={popularity_median:.1f}, MAD={popularity_mad_scaled:.1f}, spread={popularity_spread:.1f}")
                         log_debug(f"Confidence thresholds - high: {high_conf_threshold:.1f}, medium_zscore: {medium_conf_zscore_threshold:.2f}")
                     else:
@@ -6838,30 +6838,33 @@ def popularity_scan(
                         high_conf_threshold = DEFAULT_POPULARITY_MEAN + zscore_thresholds['high']
                         medium_conf_zscore_threshold = zscore_thresholds['medium']
                         log_debug(f"Using default thresholds - no valid scores found")
-                    
+
                     # Calculate median score for band-based threshold (legacy)
                     median_score = median(scores) if scores else DEFAULT_POPULARITY_MEAN
                     if median_score == 0:
                         median_score = DEFAULT_POPULARITY_MEAN
                     jump_threshold = median_score * 1.7
                     log_debug(f"Band-based thresholds - median: {median_score}, jump_threshold: {jump_threshold}")
-                    
+
                     star_distribution = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
                     # Keep the exact z-score used during this star pass for unified logging.
                     # This avoids mixing artist-level z-scores with album-level z-scores in output.
                     star_calc_zscores = {}
-                    
+
                     # Batch updates for better performance
                     updates = []
                     # Track which medium-confidence tracks should be upgraded to is_single=1
                     single_upgrades = []
                     # Track medium-confidence tracks that must be downgraded to low and untagged as single
                     single_downgrades = []
+                    # Track IDs whose stored "high" confidence was stale — clear their
+                    # single_detection_last_updated so a fresh rescan runs on the next cycle.
+                    stale_high_conf_track_ids = []
                     # Popularity-only 5★ promotions require a strong outlier signal.
                     # Keep this stricter than album standout tagging to avoid over-promotion.
                     popularity_5star_z_threshold = 2.0
 
-                    
+
                     for i, track_row in enumerate(album_tracks_with_scores):
                         track_id = track_row["id"]
                         title = track_row["title"]
@@ -6870,7 +6873,7 @@ def popularity_scan(
                         single_confidence = track_row["single_confidence"] if track_row["single_confidence"] else "low"
                         single_sources_json = track_row["single_sources"] if track_row["single_sources"] else "[]"
                         is_standout_track = track_row["is_standout_track"] if track_row["is_standout_track"] is not None else 0
-                        
+
                         # Parse single sources (defensive check for valid string)
                         try:
                             if single_sources_json and isinstance(single_sources_json, str):
@@ -6881,29 +6884,29 @@ def popularity_scan(
                             single_sources = []
                             log_debug(f"Failed to parse single_sources JSON for track {track_id}")
                         has_iterative_zscore = "iterative_zscore" in single_sources
-                        
+
                         # Check if this track was excluded from statistics
                         # Excluded tracks should not participate in confidence-based star rating upgrades
                         is_excluded_track = i in excluded_indices
-                        
+
                         # Calculate z-score for this track using median + MAD
                         if popularity_spread > 0 and popularity_score > 0:
                             track_zscore = (popularity_score - popularity_median) / popularity_spread
                         else:
                             track_zscore = 0
                         star_calc_zscores[track_id] = track_zscore
-                        
+
                         log_debug(f"Track star rating calc - {title}: popularity={popularity_score}, zscore={track_zscore}, excluded={is_excluded_track}")
-                        
+
                         # Calculate band-based star rating (baseline)
                         band_index = i // band_size
                         baseline_stars = max(1, 4 - band_index)
                         stars = baseline_stars
-                        
+
                         # Track whether 5★ assignment came from popularity logic vs single detection
                         # Used to determine if downgrade logic should apply
                         is_popularity_based_5star = False
-                        
+
                         # SIMPLIFIED 5-STAR LOGIC BASED ON Z-SCORE AND CONFIDENCE
                         # Rules (unified — z-score is a gate, not a confidence substitute):
                         # 1. z-score 0-1: requires 2 medium confidence sources OR 1 high confidence source
@@ -6962,6 +6965,10 @@ def popularity_scan(
                                 # cases.  The positive-z else branch also appends to this list,
                                 # but set() deduplication in the batch update handles that.
                                 single_downgrades.append(track_id)
+                                # Also queue a cache invalidation so the track gets a full
+                                # rescan on the next cycle rather than being served from a
+                                # stale single_detection_last_updated entry.
+                                stale_high_conf_track_ids.append(track_id)
 
                         has_high_confidence = (single_confidence == "user" or high_conf_source_count >= 1)
 
@@ -7117,23 +7124,23 @@ def popularity_scan(
                                     f"zscore: {track_zscore:.2f}, single_confidence: {single_confidence}"
                                 )
                         # Note: excluded tracks are still evaluated via confidence gates.
-                        
+
                         # Ensure at least 1 star
                         stars = max(stars, 1)
-                        
+
                         # Collect update for batch processing
                         updates.append((stars, track_id))
-                        
+
                         star_distribution[stars] += 1
-                        
+
                         log_debug(f"Final star rating for {title}: {stars} stars")
-                    
+
                     # Batch update all tracks at once for better performance
                     cursor.executemany(
                         f"""UPDATE tracks SET stars = {placeholder} WHERE id = {placeholder}""",
                         updates
                     )
-                    
+
                     # Tag 5-star songs as singles only for high/user confidence.
                     # Medium-confidence promotion is handled exclusively by the explicit gate above
                     # (2 sources for 0<=z<1, 1 source for z>1).
@@ -7152,7 +7159,7 @@ def popularity_scan(
                                 # Tag as single if high/user confidence and not already tagged
                                 if single_confidence in ["high", "user"] and not is_single:
                                     five_star_singles_to_tag.append(track_id)
-                    
+
                     # Tag 5-star high/user-confidence singles
                     if five_star_singles_to_tag:
                         single_true_value = True if is_postgres_connection(conn) else 1
@@ -7162,7 +7169,7 @@ def popularity_scan(
                         )
                         log_info(f"Tagged {len(five_star_singles_to_tag)} 5-star track(s) as singles (high/user confidence)")
                         log_debug(f"5-star singles tagged: {five_star_singles_to_tag}")
-                    
+
                     # Upgrade is_single flag for medium confidence tracks with 2+ sources
                     if single_upgrades:
                         single_true_value = True if is_postgres_connection(conn) else 1
@@ -7184,17 +7191,35 @@ def popularity_scan(
                         )
                         log_info(f"Downgraded {len(set(single_downgrades))} track(s) to low confidence (medium source gate failed)")
                         log_debug(f"Downgraded tracks: {list(set(single_downgrades))}")
-                    
+
+                    # Tracks whose stored "high" confidence was stale need a fresh rescan on
+                    # the next cycle.  Clear single_detection_last_updated so the TTL cache
+                    # does not skip them — they will be scanned again rather than returning
+                    # the now-invalidated cached result.
+                    if stale_high_conf_track_ids:
+                        unique_stale_ids = list(set(stale_high_conf_track_ids))
+                        cursor.executemany(
+                            f"""UPDATE tracks
+                            SET single_detection_last_updated = NULL
+                            WHERE id = {placeholder}""",
+                            ((track_id,) for track_id in unique_stale_ids)
+                        )
+                        log_info(
+                            f"Queued {len(unique_stale_ids)} track(s) for single detection rescan "
+                            f"(confidence downgraded from high — stale evidence)"
+                        )
+                        log_debug(f"Rescan queued (stale high conf): {unique_stale_ids}")
+
                     conn.commit()
                     log_debug(f"Batch committed {len(updates)} star ratings for album '{album}'")
-                    
+
                     # Sync to Navidrome after batch update
                     for stars, track_id in updates:
                         if sync_track_rating_to_navidrome(track_id, stars):
                             log_debug(f"Synced track {track_id} to Navidrome with {stars} stars")
                         else:
                             log_debug(f"Skipped Navidrome sync for track {track_id}")
-                    
+
                     # Log star distribution
                     dist_str = ", ".join([f"{stars}★: {count}" for stars, count in sorted(star_distribution.items(), reverse=True) if count > 0])
                     log_info(f'Star distribution for "{album}": {dist_str}')
@@ -7202,26 +7227,26 @@ def popularity_scan(
                     log_debug(f"About to call log_unified for star distribution: {dist_str}")
                     log_unified(f"Star Ratings - Album '{album}' by {artist}: {dist_str}")
                     log_debug(f"Successfully logged star distribution to unified log")
-                    
+
                     # Generate unified log summary for singles and star ratings
                     # Re-fetch tracks with their final star ratings, single detection, and standout info
                     log_debug(f"Logging categorized tracks for album {album}: singles_count may be 0 if all tracks are non-singles")
                     try:
                         cursor.execute(
-                            f"""SELECT id, title, artist, stars, is_single, single_confidence, single_sources, 
+                            f"""SELECT id, title, artist, stars, is_single, single_confidence, single_sources,
                                       is_standout_track, artist_z_score, popularity_score
-                            FROM tracks 
-                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder} 
+                            FROM tracks
+                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
                             ORDER BY stars DESC, popularity_score DESC""",
                             (artist, album)
                         )
                         final_tracks = cursor.fetchall()
-                        
+
                         # Categorize tracks
                         detected_singles = []        # Detected as singles (has sources) with 5 stars
                         popular_songs = []           # Top cluster 5★ without single detection
                         rest_of_album = []           # All other tracks
-                        
+
                         SOURCE_DISPLAY_NAMES = {
                             "musicbrainz": "MusicBrainz",
                             "discogs": "Discogs",
@@ -7230,7 +7255,7 @@ def popularity_scan(
                             "lastfm": "Lastfm",
                             "iterative_zscore": "Popularity_artist_standout"
                         }
-                        
+
                         for track_row in final_tracks:
                             track_id = track_row["id"]
                             track_title = track_row["title"]
@@ -7253,7 +7278,7 @@ def popularity_scan(
                                     has_album_zscore = True
                                 else:
                                     track_zscore = track_row["artist_z_score"] if track_row["artist_z_score"] else 0
-                            
+
                             # Parse single sources
                             try:
                                 if track_sources_json and isinstance(track_sources_json, str):
@@ -7262,37 +7287,37 @@ def popularity_scan(
                                     track_sources = []
                             except json.JSONDecodeError:
                                 track_sources = []
-                            
+
                             # Check if this track is in the top cluster
                             is_top_cluster = track_id in top_cluster_tracks
-                            
+
                             # Format sources for display (metadata sources only)
                             formatted_sources = [SOURCE_DISPLAY_NAMES.get(s, s.capitalize()) for s in track_sources]
-                            
+
                             # NOTE: Do NOT add popularity-based indicators to source display
                             # Z-scores and top cluster status are shown separately as reason/notes
-                            
+
                             sources_str = "; ".join(formatted_sources) if formatted_sources else ""
-                            
+
                             # Create star rating string (max 5 stars)
                             stars_str = "★" * min(track_stars, 5)
-                            
+
                             # Build reason string (sources + z-score)
                             reason_parts = []
                             if sources_str:
                                 reason_parts.append(sources_str)
                             if has_album_zscore:
                                 reason_parts.append(f"album-z-score: {track_zscore:.2f}")
-                            
+
                             reason_str = " (" + "; ".join(reason_parts) + ")" if reason_parts else ""
-                            
+
                             # Categorize track for display:
                             # - Detected Singles: Has single detection sources (regardless of is_single flag)
                             # - Popular Songs: 5 stars but NO single detection sources (top cluster popular tracks)
                             # - Rest of Album: Everything else
-                            
+
                             has_single_sources = len(track_sources) > 0 and any(s in ["musicbrainz", "discogs", "discogs_video", "spotify", "lastfm"] for s in track_sources)
-                            
+
                             if has_single_sources and track_stars == 5:
                                 # Detected single
                                 detected_singles.append((track_artist, track_title, stars_str, reason_str))
@@ -7302,31 +7327,31 @@ def popularity_scan(
                             else:
                                 # Rest of album
                                 rest_of_album.append((track_artist, track_title, stars_str, reason_str))
-                        
+
                         # Log categorized results for this album (output immediately after album scan)
                         total_logged = len(detected_singles) + len(popular_songs) + len(rest_of_album)
                         log_debug(f"Track categorization for {album}: detected_singles={len(detected_singles)}, popular_songs={len(popular_songs)}, rest={len(rest_of_album)}, total={total_logged}")
-                        
+
                         # Output album results immediately after scanning (not after all albums)
                         try:
                             if detected_singles:
                                 log_unified(f"Single Detection Scan - ===== {album} - Detected Singles =====")
                                 for track_artist, title, stars, reason in detected_singles:
                                     log_unified(f"Single Detection Scan - {stars} {track_artist} - {title}{reason}")
-                            
+
                             if popular_songs:
                                 log_unified(f"Single Detection Scan - ===== {album} - Popular Songs (Not Detected as Single) =====")
                                 for track_artist, title, stars, reason in popular_songs:
                                     log_unified(f"Single Detection Scan - {stars} {track_artist} - {title}{reason}")
-                            
+
                             if rest_of_album:
                                 log_unified(f"Single Detection Scan - ===== {album} - Rest of Album =====")
                                 for track_artist, title, stars, reason in rest_of_album:
                                     log_unified(f"Single Detection Scan - {stars} {track_artist} - {title}{reason}")
-                            
+
                             # Track single detection progress (after logging results for this album)
                             single_detection_albums_processed += 1
-                            
+
                             # Check milestones for single detection progress
                             if single_detection_albums_processed == single_detection_milestone_25 and 25 not in single_detection_milestones_logged:
                                 log_unified(f"Single Detection Scan - 25% completed - {single_detection_albums_processed}/{total_albums} albums")
@@ -7342,26 +7367,26 @@ def popularity_scan(
                                 single_detection_milestones_logged.add(75)
                         except Exception as e:
                             log_debug(f"Exception logging album results for {album}: {type(e).__name__}: {str(e)}")
-                        
+
                     except Exception as e:
                         log_info(f"Error logging categorized tracks for album {album}: {e}")
                         log_debug(f"Exception in track categorization: {type(e).__name__}: {str(e)}")
                         import traceback
                         log_debug(f"Traceback: {traceback.format_exc()}")
-                
+
                 # Update last_scanned timestamp for all tracks in this album
                 current_timestamp = datetime.now().isoformat()
                 cursor.execute(
-                    f"""UPDATE tracks 
-                    SET last_scanned = {placeholder} 
+                    f"""UPDATE tracks
+                    SET last_scanned = {placeholder}
                     WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}""",
                     (current_timestamp, artist, album)
                 )
-                
+
                 # Ensure changes are committed before logging to scan_history to avoid database lock conflicts
                 conn.commit()
                 log_debug(f"Committed all changes for album: {album}")
-                
+
                 # Log album scan types for Recent Scans badges.
                 # In normal popularity mode we also run singles detection, so log both.
                 if singles_only:
@@ -7389,7 +7414,7 @@ def popularity_scan(
             try:
                 log_unified(f"✅ Scan complete for artist '{artist}'")
                 log_debug(f"Artist '{artist}' scan completed. All album details logged above during individual album scans.")
-                
+
             except Exception as e:
                 log_info(f"Error completing artist scan summary for {artist}: {e}")
                 log_debug(f"Exception in artist scan summary: {type(e).__name__}: {str(e)}")
@@ -7398,14 +7423,14 @@ def popularity_scan(
             # Get ALL tracks for this artist (not just 5-star) to properly apply Case A/B logic
             cursor.execute(
                 f"""SELECT id, artist, album, title, stars
-                FROM tracks 
+                FROM tracks
                 WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
                 ORDER BY stars DESC, popularity_score DESC""",
                 (artist,)
             )
             all_artist_tracks = cursor.fetchall()
             log_debug(f"Retrieved {len(all_artist_tracks)} tracks for playlist evaluation for artist: {artist}")
-            
+
             if all_artist_tracks:
                 # Convert to list of dicts for create_or_update_playlist_for_artist
                 tracks_list = [
@@ -7418,7 +7443,7 @@ def popularity_scan(
                     }
                     for t in all_artist_tracks
                 ]
-                
+
                 # Call the actual playlist creation function (applies Case A/B logic)
                 # Logging happens inside the function based on whether playlist was actually created
                 log_debug(f"Calling playlist creation for artist: {artist} with {len(tracks_list)} tracks")
@@ -7454,13 +7479,13 @@ def popularity_scan(
 
         log_debug("Committing final changes to database")
         conn.commit()
-        
+
         # PostgreSQL commit above is sufficient; no manual checkpoint required.
 
         log_unified(f"Popularity Scan - Complete: {scanned_count} tracks updated, {skipped_count} albums skipped")
         log_info(f"Popularity scan completed: {scanned_count} tracks updated, {skipped_count} albums skipped (already scanned)")
         log_debug(f"Scan statistics - scanned: {scanned_count}, skipped: {skipped_count}, total_artists: {total_artists}")
-        
+
         # Write final progress state (marks scan as completed)
         try:
             progress_data = {
@@ -7477,7 +7502,7 @@ def popularity_scan(
         except Exception as e:
             log_info(f"Error writing final progress state: {e}")
             log_debug(f"Progress file error details: {type(e).__name__}: {str(e)}")
-            
+
     except Exception as e:
         log_unified(f"Popularity Scan - Error: {str(e)}")
         log_info(f"Popularity scan failed with error: {str(e)}")
@@ -7517,14 +7542,14 @@ def _create_nsp_file(playlist_name: str, playlist_data: dict) -> bool:
         music_folder = os.environ.get("MUSIC_FOLDER", "/music")
         playlists_dir = os.path.join(music_folder, "Playlists")
         os.makedirs(playlists_dir, exist_ok=True)
-        
+
         safe_name = _sanitize_playlist_name(playlist_name)
         file_path = os.path.join(playlists_dir, f"{safe_name}.nsp")
-        
+
         # Overwrite if exists (allow updates)
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(playlist_data, f, indent=2, ensure_ascii=False)
-        
+
         log_basic(f"ðŸ“ NSP created/updated: {file_path}")
         return True
     except Exception as e:
@@ -7535,7 +7560,7 @@ def _create_nsp_file(playlist_name: str, playlist_data: dict) -> bool:
 def detect_covers_for_artist(artist_name: str, conn: object) -> int:
     """
     Detect cover songs for an artist by comparing composers.
-    
+
     Algorithm:
     1. Get all tracks for the artist with their composers
     2. Find the most common composer (artist's "typical" composer)
@@ -7543,11 +7568,11 @@ def detect_covers_for_artist(artist_name: str, conn: object) -> int:
        - Search for other artists with same song title AND same composer
        - If found, mark as cover
     4. Update is_cover and is_cover_reason fields in database
-    
+
     Args:
         artist_name: Artist name to check
         conn: Database connection
-        
+
     Returns:
         Number of covers detected
     """
@@ -7555,7 +7580,7 @@ def detect_covers_for_artist(artist_name: str, conn: object) -> int:
         cursor = conn.cursor()
         is_pg = is_postgres_connection(conn)
         placeholder = "%s" if is_pg else "?"
-        
+
         # 1. Get all tracks for this artist with composers
         cursor.execute(f"""
             SELECT id, title, composer, artist
@@ -7563,54 +7588,54 @@ def detect_covers_for_artist(artist_name: str, conn: object) -> int:
             WHERE artist = {placeholder} AND composer IS NOT NULL AND composer != ''
             ORDER BY composer
         """, (artist_name,))
-        
+
         artist_tracks = cursor.fetchall()
         if not artist_tracks:
             return 0  # No tracks with composers
-        
+
         # 2. Find the most common composer (artist's typical composer)
         composer_counts = {}
         for track in artist_tracks:
             composer = track[2]  # composer field
             composer_counts[composer] = composer_counts.get(composer, 0) + 1
-        
+
         if not composer_counts:
             return 0
-        
+
         typical_composer = max(composer_counts.items(), key=lambda x: x[1])[0]
         log_debug(f"Artist '{artist_name}' typical composer: '{typical_composer}' (appears {composer_counts[typical_composer]} times)")
-        
+
         covers_detected = 0
-        
+
         # 3. Check each track with a DIFFERENT composer
         for track in artist_tracks:
             track_id, title, composer, artist = track
-            
+
             # Skip if composer matches typical composer
             if composer == typical_composer:
                 continue
-            
+
             # Search for other artists with same title AND same composer
             cursor.execute(f"""
                 SELECT artist FROM tracks
                 WHERE title = {placeholder} AND composer = {placeholder} AND artist != {placeholder} AND composer IS NOT NULL
                 LIMIT 1
             """, (title, composer, artist_name))
-            
+
             other_artist = cursor.fetchone()
-            
+
             if other_artist:
                 # Found another artist with this title + composer combo!
                 # Mark as cover
                 other_artist_name = other_artist[0]
                 reason = f"Cover detected: Original by '{other_artist_name}' (composer: '{composer}')"
-                
+
                 cursor.execute(f"""
                     UPDATE tracks
                     SET is_cover = 1, is_cover_reason = {placeholder}
                     WHERE id = {placeholder}
                 """, (reason, track_id))
-                
+
                 log_debug(f"Cover detected: '{title}' by '{artist_name}' is a cover of original by '{other_artist_name}'")
                 covers_detected += 1
             else:
@@ -7620,12 +7645,12 @@ def detect_covers_for_artist(artist_name: str, conn: object) -> int:
                     SET is_cover = 0, is_cover_reason = NULL
                     WHERE id = {placeholder}
                 """, (track_id,))
-        
+
         if covers_detected > 0:
             log_info(f"Cover Detection - Detected {covers_detected} covers for '{artist_name}'")
-        
+
         return covers_detected
-        
+
     except Exception as e:
         log_info(f"Error detecting covers for artist '{artist_name}': {e}")
         log_debug(f"Cover detection error details: {type(e).__name__}: {str(e)}")
@@ -7751,7 +7776,7 @@ if __name__ == "__main__":
     parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
     parser.add_argument("--force", action="store_true", help="Force re-scan of all albums")
     args = parser.parse_args()
-    
+
     # Print startup banner with configuration
     log_info("\n" + "="*80)
     log_info("🎵 SPTNR POPULARITY SCANNER")
@@ -7764,5 +7789,5 @@ if __name__ == "__main__":
     log_info(f"   - Verbose: {args.verbose}")
     log_info(f"   - Force rescan: {args.force}")
     log_info("="*80 + "\n")
-    
+
     popularity_scan(verbose=args.verbose, force=args.force)
