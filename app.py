@@ -11797,18 +11797,21 @@ def scan_popularity_route():
     # Get scan mode from query parameters (default: "all")
     mode = request.args.get('mode', 'all')  # all, force, missing, singles, resume, resume_force
     restart_requested = str(request.args.get('restart', '0')).strip().lower() in ('1', 'true', 'yes', 'on')
+    force_start = str(request.args.get('force_start', '0')).strip().lower() in ('1', 'true', 'yes', 'on')
     
     with scan_lock:
         # Check if scan is already running
         if scan_process_popularity is not None:
+            scan_already_running = False
             if isinstance(scan_process_popularity, dict):
                 thread = scan_process_popularity.get('thread')
                 if thread and thread.is_alive():
-                    flash("Popularity scan is already running", "warning")
-                    return redirect(url_for("dashboard"))
+                    scan_already_running = True
             elif hasattr(scan_process_popularity, 'is_alive') and scan_process_popularity.is_alive():
-                flash("Popularity scan is already running", "warning")
-                return redirect(url_for("dashboard"))
+                scan_already_running = True
+
+            if scan_already_running and not force_start:
+                return jsonify({"scan_running": True, "message": "A popularity scan is already running."}), 409
 
         # Keep legacy sequencing for SQLite to avoid lock contention.
         # PostgreSQL supports concurrent scans safely, so skip this blocker there.
