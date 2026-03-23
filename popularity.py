@@ -3263,7 +3263,8 @@ def popularity_scan(
     filter_missing: bool = False,
     singles_only: bool = False,
     clear_single_detection_sources: list = None,
-    stop_progress_file: str = None
+    stop_progress_file: str = None,
+    caller_scan_type: str = None,
 ):
     """
     Detect track popularity from external sources.
@@ -3280,6 +3281,8 @@ def popularity_scan(
         clear_single_detection_sources: List of sources to clear from cache (e.g., ['discogs', 'spotify'])
                                        If force=True, all sources are cleared automatically
         stop_progress_file: Optional progress file path used to cooperatively stop an in-flight scan
+        caller_scan_type: When set, use this scan_type in progress writes and skip the final
+                          is_running=False write (the calling scan manages the progress file lifecycle)
     """
 
     def _stop_requested() -> bool:
@@ -3591,7 +3594,7 @@ def popularity_scan(
                 total_artists,
                 current_artist=artist,
                 progress_file=progress_file_path,
-                scan_type=progress_scan_type,
+                scan_type=caller_scan_type or progress_scan_type,
             )
             log_debug(f"In-progress checkpoint saved for artist: {artist}")
 
@@ -4408,12 +4411,18 @@ def popularity_scan(
                                 if total_in_album > 0:
                                     track_ids_in_album = [t["id"] for t in album_tracks]
                                     id_placeholders = ", ".join([placeholder] * len(track_ids_in_album))
+                                    is_single_high_expr = (
+                                        "CASE WHEN is_single AND single_confidence = 'high' THEN 1 ELSE 0 END"
+                                        if is_pg else
+                                        "CASE WHEN COALESCE(is_single, 0) = 1 AND single_confidence = 'high' THEN 1 ELSE 0 END"
+                                    )
                                     cursor.execute(
                                         f"""
                                         SELECT
                                             COUNT(*) AS total,
                                             SUM(CASE WHEN popularity_score > 0 THEN 1 ELSE 0 END) AS scored,
-                                            SUM(CASE WHEN single_detection_last_updated IS NOT NULL THEN 1 ELSE 0 END) AS singles_assessed
+                                            SUM(CASE WHEN single_detection_last_updated IS NOT NULL THEN 1 ELSE 0 END) AS singles_assessed,
+                                            SUM({is_single_high_expr}) AS high_conf_singles
                                         FROM tracks
                                         WHERE id IN ({id_placeholders})
                                         """,
@@ -4423,13 +4432,24 @@ def popularity_scan(
                                     if check_row:
                                         scored_count = int(row_get(check_row, "scored", 0) or 0)
                                         singles_assessed = int(row_get(check_row, "singles_assessed", 0) or 0)
+                                        high_conf_singles = int(row_get(check_row, "high_conf_singles", 0) or 0)
                                         all_scored = scored_count >= total_in_album
                                         all_singles_assessed = singles_assessed >= total_in_album
                                         if all_scored and all_singles_assessed:
-                                            log_unified(f'Popularity Scan - Skipping album "{album}" (no changes detected)')
-                                            log_info(f'Album "{artist} - {album}" unchanged — all {total_in_album} tracks scored & singles assessed, skipping')
-                                            skipped_count += 1
-                                            continue
+                                            if high_conf_singles == 0:
+                                                log_unified(f'Popularity Scan - Skipping album "{album}" (no changes detected)')
+                                                log_info(f'Album "{artist} - {album}" unchanged — all {total_in_album} tracks scored & singles assessed, skipping')
+                                                skipped_count += 1
+                                                continue
+                                            else:
+                                                # High-confidence single tracks present: run the star rating
+                                                # loop to validate stored confidence against current evidence
+                                                # (see stale high-confidence re-validation in star rating pass).
+                                                log_info(
+                                                    f'Album "{artist} - {album}" has {high_conf_singles} high-confidence '
+                                                    f'single(s) — skipping popularity/singles but running star rating validation'
+                                                )
+                                                skip_popularity_for_album = True
                                         elif all_scored:
                                             # Popularity is current but some singles haven't been assessed yet
                                             log_info(f'Album "{artist} - {album}" popularity unchanged — running singles detection only')
@@ -7473,7 +7493,7 @@ def popularity_scan(
                 total_artists,
                 current_artist=artist,
                 progress_file=progress_file_path,
-                scan_type=progress_scan_type,
+                scan_type=caller_scan_type or progress_scan_type,
             )
             log_debug(f"Progress saved - {processed_artists}/{total_artists} artists processed (current: {artist})")
 
@@ -7486,22 +7506,27 @@ def popularity_scan(
         log_info(f"Popularity scan completed: {scanned_count} tracks updated, {skipped_count} albums skipped (already scanned)")
         log_debug(f"Scan statistics - scanned: {scanned_count}, skipped: {skipped_count}, total_artists: {total_artists}")
 
-        # Write final progress state (marks scan as completed)
-        try:
-            progress_data = {
-                "is_running": False,
-                "scan_type": progress_scan_type,
-                "processed_artists": total_artists,
-                "total_artists": total_artists,
-                "percent_complete": 100,
-                "current_artist": None  # Clear current artist when scan completes
-            }
-            with open(progress_file_path, 'w') as f:
-                json.dump(progress_data, f)
-            log_debug(f"Final progress state written to {progress_file_path}")
-        except Exception as e:
-            log_info(f"Error writing final progress state: {e}")
-            log_debug(f"Progress file error details: {type(e).__name__}: {str(e)}")
+        # Write final progress state (marks scan as completed).
+        # Skip this when caller_scan_type is set — in that case the calling scan
+        # (e.g. combined_scan) owns the progress file lifecycle and will write its
+        # own final state. Writing is_running=False here would cause a brief window
+        # where the dashboard incorrectly shows the parent scan as finished.
+        if not caller_scan_type:
+            try:
+                progress_data = {
+                    "is_running": False,
+                    "scan_type": progress_scan_type,
+                    "processed_artists": total_artists,
+                    "total_artists": total_artists,
+                    "percent_complete": 100,
+                    "current_artist": None  # Clear current artist when scan completes
+                }
+                with open(progress_file_path, 'w') as f:
+                    json.dump(progress_data, f)
+                log_debug(f"Final progress state written to {progress_file_path}")
+            except Exception as e:
+                log_info(f"Error writing final progress state: {e}")
+                log_debug(f"Progress file error details: {type(e).__name__}: {str(e)}")
 
     except Exception as e:
         log_unified(f"Popularity Scan - Error: {str(e)}")
