@@ -23594,13 +23594,13 @@ def api_queue_apply_mbid_match(queue_id):
 
         target_track_number = data.get('target_track_number')
         try:
-            target_track_number = int(target_track_number) if target_track_number not in (None, '') else None
+            target_track_number = str(int(target_track_number)) if target_track_number not in (None, '') else None
         except Exception:
             target_track_number = None
 
         target_disc_number = data.get('target_disc_number')
         try:
-            target_disc_number = int(target_disc_number) if target_disc_number not in (None, '') else None
+            target_disc_number = str(int(target_disc_number)) if target_disc_number not in (None, '') else None
         except Exception:
             target_disc_number = None
 
