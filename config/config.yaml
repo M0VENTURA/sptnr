@@ -181,6 +181,14 @@ single_detection:
   zscore_high_threshold: 1.0
   standout_gap_z: 0.75  # Minimum z-normalized gap to next track for standout-driven 5★
 
+# Essentia local ML mood/genre tagging — https://github.com/WB2024/Essentia-to-Metadata
+# Set script_path to the absolute path of tag_music.py to enable the Essentia Mood Scan.
+essentia:
+  script_path: ""  # e.g. "/opt/Essentia-to-Metadata/tag_music.py"
+  models_dir: ""   # Override model directory (leave blank to use Essentia's default ~/essentia_models)
+  mood_threshold: 0.005  # Minimum activation probability for mood tags (Essentia default)
+  per_file_timeout: 300  # Seconds to wait for Essentia to process one file (increase for slow hardware)
+
 # Upcoming Releases Sources — Wikipedia pages scraped for upcoming album release data.
 # The source key must contain a 4-digit year (e.g. 2026_rock) for date parsing.
 # columns: left-to-right table columns on the Wikipedia page.

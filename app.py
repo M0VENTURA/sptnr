@@ -1351,6 +1351,7 @@ scan_process_navidrome = None  # Navidrome sync process
 scan_process_popularity = None  # Popularity scan process
 scan_process_singles = None  # Singles detection process
 scan_process_mood = None  # Mood scan process
+scan_process_essentia_mood = None  # Essentia local-ML mood scan process
 scan_process_combined = None  # Combined scan process (Navidrome + Popularity + Singles per artist)
 scan_process_missing_releases = None  # Missing releases scan process
 scan_process_mp3_import = None  # MP3 metadata import scan process
@@ -12125,6 +12126,117 @@ def scan_mood():
     return redirect(url_for("dashboard"))
 
 
+@app.route("/scan/essentia-mood", methods=["POST"])
+def scan_essentia_mood():
+    """Run Essentia local-ML mood enrichment scan."""
+    global scan_process_essentia_mood
+
+    mode = request.args.get('mode', 'all')
+    force_scan = (mode == 'force')
+
+    with scan_lock:
+        if scan_process_essentia_mood is not None:
+            if isinstance(scan_process_essentia_mood, dict):
+                thread = scan_process_essentia_mood.get('thread')
+                if thread and thread.is_alive():
+                    flash("Essentia mood scan is already running", "warning")
+                    return redirect(url_for("dashboard"))
+            elif hasattr(scan_process_essentia_mood, 'is_alive') and scan_process_essentia_mood.is_alive():
+                flash("Essentia mood scan is already running", "warning")
+                return redirect(url_for("dashboard"))
+
+        try:
+            db_dir = os.path.dirname(DB_PATH)
+            essentia_progress_file = os.path.join(db_dir, "essentia_mood_scan_progress.json")
+            _write_progress_file(essentia_progress_file, "essentia_mood_scan", True, {"status": "starting"})
+
+            def run_essentia_mood_scan_bg():
+                try:
+                    from essentia_mood_scan import run_essentia_mood_scan
+                    from helpers.config_helpers import get_config
+
+                    cfg = get_config()
+                    essentia_cfg = cfg.get("essentia", {}) if isinstance(cfg, dict) else {}
+                    script_path = essentia_cfg.get("script_path", "")
+                    models_dir = essentia_cfg.get("models_dir", "")
+                    mood_threshold = float(essentia_cfg.get("mood_threshold", 0.005))
+                    per_file_timeout = int(essentia_cfg.get("per_file_timeout", 300))
+
+                    result = run_essentia_mood_scan(
+                        script_path=script_path,
+                        models_dir=models_dir,
+                        mood_threshold=mood_threshold,
+                        per_file_timeout=per_file_timeout,
+                        force=force_scan,
+                        progress_file=essentia_progress_file,
+                    )
+                    if result.get("stopped"):
+                        _write_progress_with_current_artist(
+                            essentia_progress_file,
+                            "essentia_mood_scan",
+                            False,
+                            {
+                                "status": "stopped",
+                                "exit_code": 0,
+                                "processed_artists": result.get("processed_artists", 0),
+                                "total_artists": result.get("total_artists", 0),
+                                "scanned_tracks": result.get("scanned_tracks", 0),
+                                "updated_tracks": result.get("updated_tracks", 0),
+                                "synced_files": result.get("synced_files", 0),
+                            },
+                        )
+                        logging.info("Essentia mood scan stopped by user request")
+                    elif result.get("error"):
+                        _write_progress_with_current_artist(
+                            essentia_progress_file,
+                            "essentia_mood_scan",
+                            False,
+                            {"status": "error", "error": result["error"], "exit_code": 1},
+                        )
+                        logging.error("Essentia mood scan error: %s", result["error"])
+                    else:
+                        _write_progress_with_current_artist(
+                            essentia_progress_file,
+                            "essentia_mood_scan",
+                            False,
+                            {
+                                "status": "complete",
+                                "exit_code": 0,
+                                "processed_artists": result.get("processed_artists", 0),
+                                "total_artists": result.get("total_artists", 0),
+                                "scanned_tracks": result.get("scanned_tracks", 0),
+                                "updated_tracks": result.get("updated_tracks", 0),
+                                "synced_files": result.get("synced_files", 0),
+                            },
+                        )
+                        _log_scan_session_complete("essentia_mood")
+                        logging.info(
+                            "Essentia mood scan completed: %s tracks scanned, %s updated, %s file tags synced",
+                            result.get("scanned_tracks", 0),
+                            result.get("updated_tracks", 0),
+                            result.get("synced_files", 0),
+                        )
+                except Exception as e:
+                    logging.error(f"Error in Essentia mood scan: {e}", exc_info=True)
+                    _write_progress_with_current_artist(
+                        essentia_progress_file,
+                        "essentia_mood_scan",
+                        False,
+                        {"status": "error", "error": str(e), "exit_code": 1},
+                    )
+
+            scan_thread = threading.Thread(target=run_essentia_mood_scan_bg, daemon=False)
+            scan_thread.start()
+            scan_process_essentia_mood = {'thread': scan_thread, 'type': 'essentia_mood'}
+
+            flash(f"✅ Essentia mood scan started ({'Forced' if force_scan else 'Incremental'} mode)", "success")
+        except Exception as e:
+            logging.error(f"Error starting Essentia mood scan: {e}", exc_info=True)
+            flash(f"❌ Error starting Essentia mood scan: {str(e)}", "danger")
+
+    return redirect(url_for("dashboard"))
+
+
 @app.route("/scan/mp3-import", methods=["POST"])
 def scan_mp3_import():
     """Run MP3 metadata import scan"""
@@ -12351,10 +12463,34 @@ def scan_stop_mood():
     return redirect(url_for("dashboard"))
 
 
+@app.route("/scan/stop-essentia-mood", methods=["POST"])
+def scan_stop_essentia_mood():
+    """Stop the Essentia mood scan."""
+    global scan_process_essentia_mood
+
+    with scan_lock:
+        if scan_process_essentia_mood is not None:
+            if isinstance(scan_process_essentia_mood, dict):
+                thread = scan_process_essentia_mood.get('thread')
+                if thread and thread.is_alive():
+                    essentia_progress_file = os.path.join(os.path.dirname(DB_PATH), "essentia_mood_scan_progress.json")
+                    _request_scan_stop(essentia_progress_file, "essentia_mood_scan")
+                    scan_process_essentia_mood = None
+                    flash("Essentia mood scan stop requested (will finish current track)", "info")
+                else:
+                    flash("No Essentia mood scan is currently running", "warning")
+            else:
+                flash("No Essentia mood scan is currently running", "warning")
+        else:
+            flash("No Essentia mood scan is currently running", "warning")
+
+    return redirect(url_for("dashboard"))
+
+
 @app.route("/scan/stop-all", methods=["POST"])
 def scan_stop_all():
     """Stop all running scans"""
-    global scan_process, scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_mood, scan_process_combined, scan_process_missing_releases, scan_process_mp3_import
+    global scan_process, scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_mood, scan_process_essentia_mood, scan_process_combined, scan_process_missing_releases, scan_process_mp3_import
     
     stopped_scans = []
     db_dir = os.path.dirname(DB_PATH)
@@ -12449,6 +12585,26 @@ def scan_stop_all():
                             stopped_scans.append("Mood")
                 except Exception:
                     pass
+
+        # Stop Essentia Mood scan
+        if scan_process_essentia_mood is not None:
+            if isinstance(scan_process_essentia_mood, dict):
+                thread = scan_process_essentia_mood.get('thread')
+                if thread and thread.is_alive():
+                    _request_scan_stop(os.path.join(db_dir, "essentia_mood_scan_progress.json"), "essentia_mood_scan")
+                    scan_process_essentia_mood = None
+                    stopped_scans.append("Essentia Mood")
+        else:
+            essentia_progress_file = os.path.join(db_dir, "essentia_mood_scan_progress.json")
+            if os.path.exists(essentia_progress_file):
+                try:
+                    with open(essentia_progress_file, 'r') as f:
+                        progress = json.load(f)
+                        if progress.get('is_running'):
+                            _request_scan_stop(essentia_progress_file, "essentia_mood_scan")
+                            stopped_scans.append("Essentia Mood")
+                except Exception:
+                    pass
         
         # Stop Combined scan
         if scan_process_combined is not None:
@@ -12532,7 +12688,7 @@ def scan_stop_all():
 @app.route("/scan/clear-stuck", methods=["POST"])
 def scan_clear_stuck():
     """Clear all stuck scan progress files"""
-    global scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_mood, scan_process_combined, scan_process_missing_releases
+    global scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_mood, scan_process_essentia_mood, scan_process_combined, scan_process_missing_releases
     
     with scan_lock:
         db_dir = os.path.dirname(DB_PATH)
@@ -12544,6 +12700,7 @@ def scan_clear_stuck():
             ("popularity_scan_progress.json", scan_process_popularity),
             ("singles_scan_progress.json", scan_process_singles),
             ("mood_scan_progress.json", scan_process_mood),
+            ("essentia_mood_scan_progress.json", scan_process_essentia_mood),
             ("combined_scan_progress.json", scan_process_combined),
             ("missing_releases_scan_progress.json", scan_process_missing_releases),
         ]
@@ -13789,7 +13946,7 @@ def api_recent_scans():
 @app.route("/api/scan-progress")
 def api_scan_progress():
     """API endpoint to get detailed scan progress"""
-    global scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_mood, scan_process_combined, scan_process_missing_releases
+    global scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_mood, scan_process_essentia_mood, scan_process_combined, scan_process_missing_releases
     
     try:
         from unified_scan import get_scan_progress
@@ -13818,6 +13975,7 @@ def api_scan_progress():
             ("popularity_scan", os.path.join(db_dir, "popularity_scan_progress.json"), scan_process_popularity),
             ("singles_scan", os.path.join(db_dir, "singles_scan_progress.json"), scan_process_singles),
             ("mood_scan", os.path.join(db_dir, "mood_scan_progress.json"), scan_process_mood),
+            ("essentia_mood_scan", os.path.join(db_dir, "essentia_mood_scan_progress.json"), scan_process_essentia_mood),
             ("combined_scan", os.path.join(db_dir, "combined_scan_progress.json"), scan_process_combined),
             ("missing_releases_scan", os.path.join(db_dir, "missing_releases_scan_progress.json"), scan_process_missing_releases),
         ]
@@ -13850,6 +14008,7 @@ def api_scan_progress():
                 "popularity_scan",
                 "singles_scan",
                 "mood_scan",
+                "essentia_mood_scan",
                 "combined_scan",
                 "missing_releases_scan",
             ]
