@@ -465,7 +465,7 @@
                                         <td style="padding:2px 4px;">
                                             <button type="button" class="btn btn-outline-secondary py-0 px-1"
                                                     style="font-size:0.65rem; line-height:1.2;"
-                                                    onclick="rescanSingleSource('{{ track_id }}', '{{ src_key }}')"
+                                                    onclick="rescanSingleSource('{{ track_id }}', '{{ src_key }}', event)"
                                                     title="Re-check this source on next scan">
                                                 <i class="bi bi-arrow-repeat"></i>
                                             </button>
@@ -822,7 +822,7 @@
         alert('Genre: ' + genre + '\n\nYou can add genre support by adding a genres field to the track editing form.');
     }
 
-    function rescanSingleSource(trackId, source) {
+    function rescanSingleSource(trackId, source, event) {
         const btn = event.currentTarget;
         const originalHtml = btn.innerHTML;
         btn.disabled = true;

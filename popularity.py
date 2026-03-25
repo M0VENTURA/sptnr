@@ -7040,10 +7040,10 @@ def popularity_scan(
                                     stars = baseline_stars
                                     log_info(
                                         f"{stars}-star assignment: {title} "
-                                        f"(0 sources, zscore={track_zscore:.2f} > 1.0, baseline spread preserved)"
+                                        f"({medium_conf_count} source(s), zscore={track_zscore:.2f} > 1.0, baseline spread preserved)"
                                     )
                                     log_debug(
-                                        f"Evidence gate failed (z>1, 0 sources) - track_id: {track_id}, "
+                                        f"Evidence gate failed (z>1, insufficient sources: {medium_conf_count}) - track_id: {track_id}, "
                                         f"sources: {medium_conf_count}, high_sources: {high_conf_source_count}, zscore: {track_zscore:.2f}"
                                     )
                                     single_downgrades.append(track_id)
