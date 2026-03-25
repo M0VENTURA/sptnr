@@ -182,10 +182,12 @@ single_detection:
   standout_gap_z: 0.75  # Minimum z-normalized gap to next track for standout-driven 5★
 
 # Essentia local ML mood/genre tagging — https://github.com/WB2024/Essentia-to-Metadata
-# Set script_path to the absolute path of tag_music.py to enable the Essentia Mood Scan.
+# The official Docker image bundles Essentia-to-Metadata at /opt/Essentia-to-Metadata/tag_music.py
+# and pre-downloads all models to /opt/essentia_models — no manual setup required.
+# Override script_path / models_dir below only if you installed Essentia-to-Metadata elsewhere.
 essentia:
-  script_path: ""  # e.g. "/opt/Essentia-to-Metadata/tag_music.py"
-  models_dir: ""   # Override model directory (leave blank to use Essentia's default ~/essentia_models)
+  script_path: ""  # Leave blank to use the Docker default (/opt/Essentia-to-Metadata/tag_music.py)
+  models_dir: ""   # Leave blank to use the Docker default (/opt/essentia_models)
   mood_threshold: 0.005  # Minimum activation probability for mood tags (Essentia default)
   per_file_timeout: 300  # Seconds to wait for Essentia to process one file (increase for slow hardware)
 
