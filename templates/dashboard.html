@@ -934,8 +934,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     _currentScanningAlbum = null;
                 }
 
-                // Disable start button and show stop button
-                if (startBtn) startBtn.disabled = true;
+                // Show stop button; leave start button enabled so another scan can be started
                 if (stopButton) stopButton.style.display = 'block';
             })
             .catch(error => logApiError('/api/scan-progress', 'Error fetching scan progress', error));
