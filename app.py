@@ -11360,7 +11360,20 @@ def track_detail(track_id):
                         track['writer'] = ", ".join([w.strip() for w in parsed if w.strip()])
             except Exception:
                 pass  # Keep original value if parsing fails
-        
+
+        # Parse single_sources JSON array into a Python list for the template
+        try:
+            import json as json_module
+            sources_raw = track.get('single_sources')
+            if sources_raw and isinstance(sources_raw, str):
+                track['single_sources_list'] = json_module.loads(sources_raw)
+            elif isinstance(sources_raw, list):
+                track['single_sources_list'] = sources_raw
+            else:
+                track['single_sources_list'] = []
+        except Exception:
+            track['single_sources_list'] = []
+
         # Get recommended genres from other tracks with similar titles or artists
         recommended_genres = []
         artist_name = track.get('artist', '')
@@ -11430,7 +11443,9 @@ def track_edit(track_id):
     album = request.form.get("album", "").strip() or None
     album_artist = request.form.get("album_artist", "").strip() or None
     stars = request.form.get("stars", type=int)
-    is_single = request.form.get("is_single") == "on"
+    # is_single is now a dropdown ("true"/"false") but also accept legacy "on" checkbox value
+    is_single_raw = request.form.get("is_single", "false")
+    is_single = is_single_raw in ("true", "on", "1", "yes")
     single_confidence = request.form.get("single_confidence", "low")
     mbid = request.form.get("mbid", "").strip() or None
     suggested_mbid = request.form.get("suggested_mbid", "").strip() or None
@@ -11455,6 +11470,7 @@ def track_edit(track_id):
     
     # Flags
     is_cover = request.form.get("is_cover") == "on"
+    cover_manual_override = request.form.get("cover_manual_override") == "on"
     alternate_take = request.form.get("alternate_take") == "on"
     is_compilation = request.form.get("is_compilation") == "on"
 
@@ -11462,12 +11478,14 @@ def track_edit(track_id):
     normalized_flags = _normalize_track_flag_payload(conn, {
         'is_single': is_single,
         'is_cover': is_cover,
+        'cover_manual_override': cover_manual_override,
         'alternate_take': alternate_take,
         'is_compilation': is_compilation,
         'single_manual_override': True,
     })
     is_single_db = normalized_flags.get('is_single')
     is_cover_db = normalized_flags.get('is_cover')
+    cover_manual_override_db = normalized_flags.get('cover_manual_override')
     alternate_take_db = normalized_flags.get('alternate_take')
     is_compilation_db = normalized_flags.get('is_compilation')
     single_manual_override_db = normalized_flags.get('single_manual_override')
@@ -11489,8 +11507,9 @@ def track_edit(track_id):
                 arranger = {placeholder}, mixer = {placeholder}, producer = {placeholder}, work = {placeholder},
                 track_number = {placeholder}, disc_number = {placeholder}, comment = {placeholder}, isrc = {placeholder},
                 bpm = {placeholder}, bitrate = {placeholder}, sample_rate = {placeholder},
-                is_cover = {placeholder}, alternate_take = {placeholder}, is_compilation = {placeholder},
-                                single_manual_override = {placeholder}
+                is_cover = {placeholder}, cover_manual_override = {placeholder},
+                alternate_take = {placeholder}, is_compilation = {placeholder},
+                single_manual_override = {placeholder}
             WHERE id = {placeholder}
         """, (title, artist, album, album_artist, stars, 
               is_single_db, single_confidence,
@@ -11499,7 +11518,8 @@ def track_edit(track_id):
               arranger, mixer, producer, work,
               track_number, disc_number, comment, isrc,
               bpm, bitrate, sample_rate,
-                            is_cover_db, alternate_take_db, is_compilation_db, single_manual_override_db,
+              is_cover_db, cover_manual_override_db,
+              alternate_take_db, is_compilation_db, single_manual_override_db,
               track_id))
         
         conn.commit()
@@ -11701,6 +11721,42 @@ def api_toggle_manual_single(track_id):
         })
     except Exception as e:
         logging.error(f"Error toggling manual single flag: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/track/<track_id>/rescan-single", methods=["POST"])
+def api_rescan_single_track(track_id):
+    """Force a fresh single detection scan for one track on the next popularity run.
+
+    Clears single_detection_last_updated so the next popularity scan re-evaluates
+    this track regardless of the normal TTL cache.  Optionally accepts a ``source``
+    body param for UI display purposes (ignored at runtime — all sources are checked).
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = "%s"
+
+        cursor.execute(f"SELECT id, title, artist FROM tracks WHERE id = {placeholder}", (track_id,))
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"error": "Track not found"}), 404
+
+        cursor.execute(
+            f"UPDATE tracks SET single_detection_last_updated = NULL WHERE id = {placeholder}",
+            (track_id,)
+        )
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            "success": True,
+            "track_id": track_id,
+            "message": "Single detection cache cleared — track will be re-evaluated on next scan"
+        })
+    except Exception as e:
+        logging.error(f"Error resetting single detection for track {track_id}: {e}")
         return jsonify({"error": str(e)}), 500
 
 

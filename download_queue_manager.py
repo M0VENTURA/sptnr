@@ -5109,14 +5109,8 @@ def get_completed_queue(limit=50):
         """, (limit,))
 
         rows = cursor.fetchall()
-        # Convert rows to dicts
-        if is_pg:
-            # RealDictCursor returns dict-like objects, convert to plain dicts
-            items = [{k: v for k, v in row.items()} for row in rows] if rows else []
-        else:
-            # SQLite cursor returns tuples, need to zip with column names
-            col_names = [d[0] for d in cursor.description]
-            items = [dict(zip(col_names, r)) for r in rows] if rows else []
+        # RealDictCursor always returns dict-like objects (this function always uses PostgreSQL)
+        items = [{k: v for k, v in row.items()} for row in rows] if rows else []
         conn.close()
 
         return items
