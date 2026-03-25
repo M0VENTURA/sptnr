@@ -198,6 +198,59 @@ def _normalize_match_text(value):
     return " ".join(value.split())
 
 
+# Characters that Soulseek's search tokenizer handles poorly.  Apostrophes
+# (both straight U+0027 and curly/smart U+2018/U+2019) are the most common
+# culprit: "Steppin' On" returns zero results while "Steppin On" returns 26.
+# Other directional/typographic quote characters are included for completeness.
+# ASCII hyphens, slashes, parentheses, and brackets are intentionally kept
+# because they appear legitimately in artist names (e.g. "AC/DC") and titles.
+_SLSKD_PROBLEMATIC_PUNCT_RE = re.compile(
+    r"['"  # straight apostrophe + straight double-quote
+    r"\u2018\u2019\u201a\u201b"  # left/right single quotation marks, ‚ ‛
+    r"\u201c\u201d\u201e\u201f"  # left/right double quotation marks, „ ‟
+    r"\u0060\u00b4"              # grave accent, acute accent
+    r"]"
+)
+
+# Broader strip used for the zero-results fallback: removes every character
+# that is not a word character, a space, or an ASCII hyphen.
+_SLSKD_FALLBACK_PUNCT_RE = re.compile(r"[^\w\s\-]")
+
+
+def _sanitize_slskd_query(query: str) -> str:
+    """Strip characters that Soulseek's search tokenizer handles poorly.
+
+    Removes apostrophes and curly/typographic quote characters while keeping
+    hyphens, slashes, parentheses, and other characters that legitimately
+    appear in artist and track names.  Multiple spaces introduced by the
+    removal are collapsed.
+
+    Examples::
+
+        "Steppin' On"         → "Steppin On"
+        "Nothin' But a G Thang" → "Nothin But a G Thang"
+        "AC/DC"               → "AC/DC"        (unchanged)
+        "Don\u2019t Stop Me" → "Dont Stop Me"
+    """
+    if not query:
+        return query
+    cleaned = _SLSKD_PROBLEMATIC_PUNCT_RE.sub("", query)
+    return " ".join(cleaned.split())
+
+
+def _fallback_slskd_query(query: str) -> str:
+    """Aggressively strip all punctuation for a last-resort Soulseek retry.
+
+    Used when the primary sanitized query returns zero results.  Removes every
+    character that is not a word character (letter/digit/underscore), a space,
+    or an ASCII hyphen.
+    """
+    if not query:
+        return query
+    stripped = _SLSKD_FALLBACK_PUNCT_RE.sub(" ", query)
+    return " ".join(stripped.split())
+
+
 def _tokenize_meaningful(value):
     """Tokenize and remove short/common words to reduce false positives."""
     stop_words = {"the", "and", "of", "a", "an", "to", "in", "on", "for", "with"}
@@ -610,12 +663,26 @@ def _is_generic_artist_name(value):
 
 
 def _get_effective_track_search_query(queue_item):
-    """Build a Soulseek track query that avoids generic artist tokens."""
+    """Build a Soulseek track query that avoids generic artist tokens.
+
+    Uses Soulseek phrase-quoting (``"artist" "title"``) so that both terms are
+    matched as exact phrases rather than individual tokens.  Apostrophes and
+    typographic-quote characters are sanitized before quoting so that the
+    resulting tokens align with what peers index.
+
+    Examples::
+
+        artist="Sexing the Cherry", title="Steppin' On"
+        → '"Sexing the Cherry" "Steppin On"'
+
+        artist="Various Artists", title="DJ Mix - Some Track"
+        → '"DJ Mix" "Some Track"'   (generic artist bypassed)
+    """
     artist = str(queue_item.get('artist') or '').strip()
     title = str(queue_item.get('title') or '').strip()
 
     if not title:
-        return str(queue_item.get('search_query') or '').strip()
+        return _sanitize_slskd_query(str(queue_item.get('search_query') or '').strip())
 
     if _is_generic_artist_name(artist):
         # Some discovered files or compilation rows can store titles like
@@ -624,15 +691,25 @@ def _get_effective_track_search_query(queue_item):
         if ' - ' in title:
             left, right = [part.strip() for part in title.split(' - ', 1)]
             if left and right and not _is_generic_artist_name(left):
-                return f"{left} - {right}"
-        # No reliable per-track artist available; title-only search is safer
-        # than querying Soulseek as "Various Artists - <title>".
-        return title
+                return '"{}" "{}"'.format(
+                    _sanitize_slskd_query(left),
+                    _sanitize_slskd_query(right),
+                )
+        # No reliable per-track artist; title-only quoted search is safer.
+        return '"{}"'.format(_sanitize_slskd_query(title))
 
-    return f"{artist} - {title}"
+    return '"{}" "{}"'.format(
+        _sanitize_slskd_query(artist),
+        _sanitize_slskd_query(title),
+    )
 
 
 def _get_album_search_query(queue_item):
+    """Build a Soulseek album-level query using phrase-quoting.
+
+    Returns ``"artist" "album"`` so that the album search benefits from the
+    same exact-phrase matching as per-track queries.
+    """
     album = (queue_item.get('album') or '').strip()
     if not album or album.lower() in ('unknown', 'unknown album'):
         return None
@@ -647,8 +724,11 @@ def _get_album_search_query(queue_item):
         # album searches and often pollute candidate results.
         return None
     if album_artist:
-        return f"{album_artist} - {album}"
-    return album
+        return '"{}" "{}"'.format(
+            _sanitize_slskd_query(album_artist),
+            _sanitize_slskd_query(album),
+        )
+    return '"{}"'.format(_sanitize_slskd_query(album))
 
 
 def _get_album_queue_titles(queue_item):
@@ -1037,7 +1117,8 @@ def search_and_download_qbittorrent(queue_id, queue_item):
         web_url = (qbit_cfg.get("web_url") or "http://localhost:8080").rstrip("/")
         username = qbit_cfg.get("username") or ""
         password = qbit_cfg.get("password") or ""
-        search_query = queue_item.get("search_query") or f"{queue_item.get('artist', '')} - {queue_item.get('title', '')}"
+        _raw_qbit_q = queue_item.get("search_query") or f"{queue_item.get('artist', '')} - {queue_item.get('title', '')}"
+        search_query = _sanitize_slskd_query(_raw_qbit_q)
 
         update_queue_status(queue_id, "searching")
 
@@ -2011,7 +2092,48 @@ def search_and_download(queue_id, queue_item, client):
             # Increased timeout to 45 seconds to handle slow Soulseek peer responses
             responses = _poll_search_responses(client, search_id, max_poll_attempts=45)
             best_result, best_score = _pick_best_candidate_from_responses(responses, queue_item)
-        
+
+        # Pass 2b: unquoted fallback — primary query uses phrase-quotes
+        # ("artist" "title") which some peers don't support.  Retry with the
+        # same sanitized text but without quotes so the tokenizer can still
+        # find files where the phrase-match logic fails.
+        if not best_result and search_query.startswith('"'):
+            unquoted_query = search_query.replace('"', '').strip()
+            unquoted_query = ' '.join(unquoted_query.split())
+            if unquoted_query and unquoted_query != search_query:
+                logger.info(
+                    f"Queue {queue_id}: Quoted query returned no results; "
+                    f"retrying unquoted: '{unquoted_query}'"
+                )
+                uq_id = client.start_search(unquoted_query)
+                if uq_id:
+                    uq_responses = _poll_search_responses(client, uq_id, max_poll_attempts=45)
+                    best_result, best_score = _pick_best_candidate_from_responses(uq_responses, queue_item)
+                    if best_result:
+                        logger.info(
+                            f"Queue {queue_id}: Unquoted query '{unquoted_query}' found a match "
+                            f"(score={best_score:.2f})"
+                        )
+
+        # Pass 2c: full-strip fallback — remove ALL remaining punctuation
+        # (en-dashes, brackets, accents, etc.) for a broadest possible retry.
+        if not best_result:
+            fallback_query = _fallback_slskd_query(search_query.replace('"', ''))
+            fallback_query = ' '.join(fallback_query.split())
+            if fallback_query and fallback_query not in (search_query, search_query.replace('"', '').strip()):
+                logger.info(
+                    f"Queue {queue_id}: Zero results; full-strip retry: '{fallback_query}'"
+                )
+                fallback_id = client.start_search(fallback_query)
+                if fallback_id:
+                    fallback_responses = _poll_search_responses(client, fallback_id, max_poll_attempts=45)
+                    best_result, best_score = _pick_best_candidate_from_responses(fallback_responses, queue_item)
+                    if best_result:
+                        logger.info(
+                            f"Queue {queue_id}: Full-strip query '{fallback_query}' found a match "
+                            f"(score={best_score:.2f})"
+                        )
+
         if not best_result:
             elapsed = (datetime.now() - poll_start_time).total_seconds()
             logger.warning(f"Queue {queue_id}: ✗ No results found after {elapsed:.0f}s of polling")

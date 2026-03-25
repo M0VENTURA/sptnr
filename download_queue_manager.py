@@ -387,7 +387,42 @@ def resolve_music_dir():
     )
 
 
-def _resolve_existing_track_path(file_path, music_root=None):
+# ---------------------------------------------------------------------------
+# Search-query sanitization
+# ---------------------------------------------------------------------------
+# Characters that Soulseek's search tokenizer handles poorly.  Apostrophes
+# (both straight U+0027 and curly/smart U+2018/U+2019) are the most common
+# culprit: "Steppin' On" returns zero results while "Steppin On" returns many.
+_SLSKD_PROBLEMATIC_PUNCT_RE = re.compile(
+    r"['"  # straight apostrophe + straight double-quote
+    r"\u2018\u2019\u201a\u201b"  # left/right single quotation marks, ‚ ‛
+    r"\u201c\u201d\u201e\u201f"  # left/right double quotation marks, „ ‟
+    r"\u0060\u00b4"              # grave accent, acute accent
+    r"]"
+)
+
+
+def _sanitize_search_query_for_slskd(query: str) -> str:
+    """Strip characters that Soulseek's search tokenizer handles poorly.
+
+    Removes apostrophes and curly/typographic quote characters while keeping
+    hyphens, slashes, parentheses, and other characters that legitimately
+    appear in artist and track names.  Multiple spaces introduced by the
+    removal are collapsed.
+
+    Examples::
+
+        "Steppin' On"            → "Steppin On"
+        "Don\u2019t Stop Me Now" → "Dont Stop Me Now"
+        "AC/DC"                  → "AC/DC"   (unchanged)
+    """
+    if not query:
+        return query
+    cleaned = _SLSKD_PROBLEMATIC_PUNCT_RE.sub("", query)
+    return " ".join(cleaned.split())
+
+
+
     """Resolve stored track path to an existing on-disk file path when possible."""
     if not file_path:
         return None
@@ -1281,19 +1316,21 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         _ensure_download_queue_columns(conn, cursor, is_pg=True)
         
         # Search query for Soulseek: prefer track artist; avoid generic names.
+        # Apostrophes and curly/typographic quote characters are stripped here
+        # so the stored search_query is already clean for display and retry use.
         artist_text = str(artist or '').strip()
         title_text = str(title or '').strip()
         if artist_text.lower() in _GENERIC_ARTIST_NAMES:
             if ' - ' in title_text:
                 left, right = [part.strip() for part in title_text.split(' - ', 1)]
                 if left and right and left.lower() not in _GENERIC_ARTIST_NAMES:
-                    search_query = f"{left} - {right}"
+                    search_query = _sanitize_search_query_for_slskd(f"{left} - {right}")
                 else:
-                    search_query = title_text
+                    search_query = _sanitize_search_query_for_slskd(title_text)
             else:
-                search_query = title_text
+                search_query = _sanitize_search_query_for_slskd(title_text)
         else:
-            search_query = f"{artist_text} - {title_text}"
+            search_query = _sanitize_search_query_for_slskd(f"{artist_text} - {title_text}")
 
         # Normalize duration to seconds. Some MusicBrainz paths supply milliseconds.
         if duration not in (None, ""):
