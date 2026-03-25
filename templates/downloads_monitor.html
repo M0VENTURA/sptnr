@@ -1431,7 +1431,9 @@ let lastFolderGroupsRenderSignature = null;
 let folderGroupsRequestInFlight = false;
 
 function encodeInlineArg(value) {
-  return encodeURIComponent(JSON.stringify(value));
+  // encodeURIComponent does not encode apostrophes, but they break single-quoted
+  // JS string arguments embedded in onclick="...func('${arg}')..." attributes.
+  return encodeURIComponent(JSON.stringify(value)).replace(/'/g, '%27');
 }
 
 function decodeInlineArg(value, fallback = null) {
