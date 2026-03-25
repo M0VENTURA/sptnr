@@ -7435,34 +7435,40 @@ def popularity_scan(
                 log_debug(f"Exception in artist scan summary: {type(e).__name__}: {str(e)}")
 
             # After artist scans, evaluate essential playlist for artist (Case A: 10+ five-star OR Case B: 100+ tracks)
-            # Get ALL tracks for this artist (not just 5-star) to properly apply Case A/B logic
-            cursor.execute(
-                f"""SELECT id, artist, album, title, stars
-                FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
-                ORDER BY stars DESC, popularity_score DESC""",
-                (artist,)
-            )
-            all_artist_tracks = cursor.fetchall()
-            log_debug(f"Retrieved {len(all_artist_tracks)} tracks for playlist evaluation for artist: {artist}")
+            # Get ALL tracks for this artist (not just 5-star) to properly apply Case A/B logic.
+            # Also fetch navidrome_rating so user-set 5★ ratings in Navidrome count toward the threshold.
+            try:
+                cursor.execute(
+                    f"""SELECT id, artist, album, title, stars, navidrome_rating
+                    FROM tracks
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                    ORDER BY stars DESC, popularity_score DESC""",
+                    (artist,)
+                )
+                all_artist_tracks = cursor.fetchall()
+                log_debug(f"Retrieved {len(all_artist_tracks)} tracks for playlist evaluation for artist: {artist}")
 
-            if all_artist_tracks:
-                # Convert to list of dicts for create_or_update_playlist_for_artist
-                tracks_list = [
-                    {
-                        "id": t["id"],
-                        "artist": t["artist"],
-                        "album": t["album"],
-                        "title": t["title"],
-                        "stars": int(t["stars"]) if t["stars"] else 0
-                    }
-                    for t in all_artist_tracks
-                ]
+                if all_artist_tracks:
+                    # Convert to list of dicts for create_or_update_playlist_for_artist
+                    tracks_list = [
+                        {
+                            "id": t["id"],
+                            "artist": t["artist"],
+                            "album": t["album"],
+                            "title": t["title"],
+                            "stars": int(t["stars"]) if t["stars"] else 0,
+                            "navidrome_rating": int(t["navidrome_rating"]) if t["navidrome_rating"] else 0,
+                        }
+                        for t in all_artist_tracks
+                    ]
 
-                # Call the actual playlist creation function (applies Case A/B logic)
-                # Logging happens inside the function based on whether playlist was actually created
-                log_debug(f"Calling playlist creation for artist: {artist} with {len(tracks_list)} tracks")
-                create_or_update_playlist_for_artist(artist, tracks_list)
+                    # Call the actual playlist creation function (applies Case A/B logic)
+                    # Logging happens inside the function based on whether playlist was actually created
+                    log_debug(f"Calling playlist creation for artist: {artist} with {len(tracks_list)} tracks")
+                    create_or_update_playlist_for_artist(artist, tracks_list)
+            except Exception as playlist_err:
+                log_info(f"Essential playlist evaluation failed for '{artist}': {playlist_err}")
+                log_debug(f"Playlist evaluation error detail: {type(playlist_err).__name__}: {playlist_err}")
 
             # Legacy composer-based artist-level cover detection is a fallback only.
             # When CoverDetector is available, album-level MBID/work-relation detection
@@ -7695,16 +7701,29 @@ def create_or_update_playlist_for_artist(artist_name: str, tracks: list):
         return
 
     total_tracks = len(tracks)
-    five_star_tracks = [t for t in tracks if (t["stars"] or 0) == 5]
+    # Count a track as five-star if SPTNR's own rating OR the rating stored from
+    # Navidrome (which may include user-set manual ratings) is 5.  This ensures
+    # popularity-based 5★ tracks AND user-rated 5★ tracks both contribute to the
+    # essential-playlist threshold, regardless of how they earned the rating.
+    five_star_tracks = [
+        t for t in tracks
+        if max((t.get("stars") or 0), (t.get("navidrome_rating") or 0)) == 5
+    ]
     playlist_name = f"Essential {artist_name}"
 
     # CASE A - 10+ five-star tracks -> purely 5-star essentials (always update)
     if len(five_star_tracks) >= 10:
         _delete_nsp_file(playlist_name)
+        # Navidrome NSP format requires one field per criterion object.
+        # Split artist and rating into separate "all" entries (AND logic) so
+        # Navidrome evaluates both conditions correctly.
         playlist_data = {
             "name": playlist_name,
             "comment": "Auto-generated by SPTNR",
-            "all": [{"is": {"artist": artist_name, "rating": 5}}],
+            "all": [
+                {"is": {"artist": artist_name}},
+                {"is": {"rating": 5}}
+            ],
             "sort": "random"
         }
         _create_nsp_file(playlist_name, playlist_data)
@@ -7758,7 +7777,7 @@ def refresh_all_playlists_from_db():
 
         for name in artists:
             cursor.execute(
-                f"""SELECT id, artist, album, title, stars
+                f"""SELECT id, artist, album, title, stars, navidrome_rating
                    FROM tracks
                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = {sql_placeholder}""",
                 (name,)
@@ -7775,7 +7794,8 @@ def refresh_all_playlists_from_db():
                     "artist": r['artist'],
                     "album": r['album'],
                     "title": r['title'],
-                    "stars": int(r['stars']) if r['stars'] else 0
+                    "stars": int(r['stars']) if r['stars'] else 0,
+                    "navidrome_rating": int(r['navidrome_rating']) if r['navidrome_rating'] else 0,
                 }
                 for r in rows
             ]
