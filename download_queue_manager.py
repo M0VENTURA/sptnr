@@ -387,6 +387,41 @@ def resolve_music_dir():
     )
 
 
+# ---------------------------------------------------------------------------
+# Search-query sanitization
+# ---------------------------------------------------------------------------
+# Characters that Soulseek's search tokenizer handles poorly.  Apostrophes
+# (both straight U+0027 and curly/smart U+2018/U+2019) are the most common
+# culprit: "Steppin' On" returns zero results while "Steppin On" returns many.
+_SLSKD_PROBLEMATIC_PUNCT_RE = re.compile(
+    r"['"  # straight apostrophe + straight double-quote
+    r"\u2018\u2019\u201a\u201b"  # left/right single quotation marks, ‚ ‛
+    r"\u201c\u201d\u201e\u201f"  # left/right double quotation marks, „ ‟
+    r"\u0060\u00b4"              # grave accent, acute accent
+    r"]"
+)
+
+
+def _sanitize_search_query_for_slskd(query: str) -> str:
+    """Strip characters that Soulseek's search tokenizer handles poorly.
+
+    Removes apostrophes and curly/typographic quote characters while keeping
+    hyphens, slashes, parentheses, and other characters that legitimately
+    appear in artist and track names.  Multiple spaces introduced by the
+    removal are collapsed.
+
+    Examples::
+
+        "Steppin' On"            → "Steppin On"
+        "Don\u2019t Stop Me Now" → "Dont Stop Me Now"
+        "AC/DC"                  → "AC/DC"   (unchanged)
+    """
+    if not query:
+        return query
+    cleaned = _SLSKD_PROBLEMATIC_PUNCT_RE.sub("", query)
+    return " ".join(cleaned.split())
+
+
 def _resolve_existing_track_path(file_path, music_root=None):
     """Resolve stored track path to an existing on-disk file path when possible."""
     if not file_path:
@@ -1281,19 +1316,21 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         _ensure_download_queue_columns(conn, cursor, is_pg=True)
         
         # Search query for Soulseek: prefer track artist; avoid generic names.
+        # Apostrophes and curly/typographic quote characters are stripped here
+        # so the stored search_query is already clean for display and retry use.
         artist_text = str(artist or '').strip()
         title_text = str(title or '').strip()
         if artist_text.lower() in _GENERIC_ARTIST_NAMES:
             if ' - ' in title_text:
                 left, right = [part.strip() for part in title_text.split(' - ', 1)]
                 if left and right and left.lower() not in _GENERIC_ARTIST_NAMES:
-                    search_query = f"{left} - {right}"
+                    search_query = _sanitize_search_query_for_slskd(f"{left} - {right}")
                 else:
-                    search_query = title_text
+                    search_query = _sanitize_search_query_for_slskd(title_text)
             else:
-                search_query = title_text
+                search_query = _sanitize_search_query_for_slskd(title_text)
         else:
-            search_query = f"{artist_text} - {title_text}"
+            search_query = _sanitize_search_query_for_slskd(f"{artist_text} - {title_text}")
 
         # Normalize duration to seconds. Some MusicBrainz paths supply milliseconds.
         if duration not in (None, ""):
@@ -2181,19 +2218,74 @@ def _normalize_album_artist_for_path(value):
 
 
 def _is_musicbrainz_backed(queue_item):
-    """Return True when a queue item was explicitly tied to a MusicBrainz release.
+    """Return True when a queue item was explicitly tied to a MusicBrainz release
+    via the MusicBrainz search modal.
 
-    Only items with MusicBrainz identifiers (or release_source='musicbrainz') are
-    eligible for automatic file moves.  Fuzzy-matched items that have no MusicBrainz
-    anchor must be approved manually in the Downloads UI.
+    Requires ``release_source='musicbrainz'`` to be set — a field that is only
+    written by the MB modal search routes (``api_queue_apply_mbid_match``,
+    ``api_queue_add_batch`` with MB data, etc.).  Items that merely contain a
+    UUID-shaped ``release_id`` from a non-MB source are intentionally excluded
+    so that fuzzy-matched or auto-discovered items do not bypass manual approval.
     """
-    return bool(
-        queue_item.get('release_id')
-        or queue_item.get('release_mbid')
-        or queue_item.get('recording_mbid')
-        or queue_item.get('isrc')
-        or str(queue_item.get('release_source') or '').strip().lower() == 'musicbrainz'
-    )
+    return str(queue_item.get('release_source') or '').strip().lower() == 'musicbrainz'
+
+
+def _is_full_album_ready_for_move(queue_item, cursor=None, placeholder=None):
+    """Return True only when every sibling queue item for the same MusicBrainz
+    release is in a terminal state (completed / imported / in_collection).
+
+    When any sibling is still pending (queued, downloading, etc.) the album is
+    not fully matched yet and no individual track should be auto-moved — the
+    system will only recommend the match and leave the decision to the user.
+
+    Falls back to ``True`` (allow single-track move) when the item has no
+    ``release_mbid`` / ``release_id`` to group by.
+    """
+    release_mbid = str(
+        queue_item.get('release_mbid') or queue_item.get('release_id') or ''
+    ).strip()
+    if not release_mbid:
+        # Standalone track — no album siblings to wait for.
+        return True
+
+    own_conn = cursor is None
+    conn_local = None
+    try:
+        if own_conn:
+            conn_local = _get_postgres_conn_from_app_or_fallback()
+            cursor = conn_local.cursor()
+            placeholder = "%s"
+
+        ph = placeholder or "%s"
+        cursor.execute(
+            f"""
+            SELECT COUNT(*) AS c
+            FROM download_queue
+            WHERE (release_mbid = {ph} OR release_id = {ph})
+              AND status NOT IN (
+                  'completed', 'imported', 'in_collection',
+                  'removed', 'cancelled', 'deleted'
+              )
+            """,
+            (release_mbid, release_mbid),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return True
+        pending = row['c'] if hasattr(row, 'get') and row.get('c') is not None else row[0]
+        return int(pending or 0) == 0
+    except Exception as e:
+        logger.warning(
+            f"[ALBUM_READY] Could not check album completeness for {release_mbid}: {e}"
+        )
+        # Fail safe — do not auto-move when we cannot confirm the album is complete.
+        return False
+    finally:
+        if own_conn and conn_local is not None:
+            try:
+                conn_local.close()
+            except Exception:
+                pass
 
 
 def _build_release_import_group(artist, album):
@@ -3695,11 +3787,27 @@ def check_downloads_folder():
 
                 if updated_item:
                     # Only auto-move items that were explicitly added via the
-                    # MusicBrainz search UI.  Others wait for manual approval.
+                    # MusicBrainz search UI (release_source='musicbrainz') AND only
+                    # when every sibling track for the same release is completed.
+                    # Partial-album matches stay as 'completed' for manual approval.
                     if not _is_musicbrainz_backed(queue_item):
                         logger.info(
                             f"[MOVE] Queue {queue_item['id']}: not from MusicBrainz search — "
                             f"leaving as completed for manual approval"
+                        )
+                        completed_items.append({
+                            'queue_id': queue_item['id'],
+                            'filename': match_found,
+                            'file_path': match_path,
+                            'artist': queue_item['artist'],
+                            'title': queue_item['title'],
+                            'album': queue_item['album'],
+                            'moved': False
+                        })
+                    elif not _is_full_album_ready_for_move(queue_item, cursor=cursor, placeholder=ph):
+                        logger.info(
+                            f"[MOVE] Queue {queue_item['id']}: album not fully matched yet — "
+                            f"leaving as completed until all sibling tracks are ready"
                         )
                         completed_items.append({
                             'queue_id': queue_item['id'],
@@ -4720,11 +4828,17 @@ def auto_discover_and_queue_files():
                     )
                     if updated:
                         # Only auto-move items that were explicitly added via the
-                        # MusicBrainz search UI.  Others wait for manual approval.
+                        # MusicBrainz search UI (release_source='musicbrainz') AND only
+                        # when every sibling track for the same release is completed.
                         if not _is_musicbrainz_backed(matched_pending):
                             logger.info(
                                 f"[AUTO-DISCOVER] Queue {matched_pending['id']}: not from MusicBrainz search — "
                                 f"leaving as completed for manual approval"
+                            )
+                        elif not _is_full_album_ready_for_move(matched_pending, cursor=cursor, placeholder=ph):
+                            logger.info(
+                                f"[AUTO-DISCOVER] Queue {matched_pending['id']}: album not fully matched yet — "
+                                f"leaving as completed until all sibling tracks are ready"
                             )
                         else:
                             # Atomically claim before moving to prevent race with UI button.

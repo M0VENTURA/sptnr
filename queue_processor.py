@@ -198,6 +198,59 @@ def _normalize_match_text(value):
     return " ".join(value.split())
 
 
+# Characters that Soulseek's search tokenizer handles poorly.  Apostrophes
+# (both straight U+0027 and curly/smart U+2018/U+2019) are the most common
+# culprit: "Steppin' On" returns zero results while "Steppin On" returns 26.
+# Other directional/typographic quote characters are included for completeness.
+# ASCII hyphens, slashes, parentheses, and brackets are intentionally kept
+# because they appear legitimately in artist names (e.g. "AC/DC") and titles.
+_SLSKD_PROBLEMATIC_PUNCT_RE = re.compile(
+    r"['"  # straight apostrophe + straight double-quote
+    r"\u2018\u2019\u201a\u201b"  # left/right single quotation marks, ‚ ‛
+    r"\u201c\u201d\u201e\u201f"  # left/right double quotation marks, „ ‟
+    r"\u0060\u00b4"              # grave accent, acute accent
+    r"]"
+)
+
+# Broader strip used for the zero-results fallback: removes every character
+# that is not a word character, a space, or an ASCII hyphen.
+_SLSKD_FALLBACK_PUNCT_RE = re.compile(r"[^\w\s\-]")
+
+
+def _sanitize_slskd_query(query: str) -> str:
+    """Strip characters that Soulseek's search tokenizer handles poorly.
+
+    Removes apostrophes and curly/typographic quote characters while keeping
+    hyphens, slashes, parentheses, and other characters that legitimately
+    appear in artist and track names.  Multiple spaces introduced by the
+    removal are collapsed.
+
+    Examples::
+
+        "Steppin' On"         → "Steppin On"
+        "Nothin' But a G Thang" → "Nothin But a G Thang"
+        "AC/DC"               → "AC/DC"        (unchanged)
+        "Don\u2019t Stop Me" → "Dont Stop Me"
+    """
+    if not query:
+        return query
+    cleaned = _SLSKD_PROBLEMATIC_PUNCT_RE.sub("", query)
+    return " ".join(cleaned.split())
+
+
+def _fallback_slskd_query(query: str) -> str:
+    """Aggressively strip all punctuation for a last-resort Soulseek retry.
+
+    Used when the primary sanitized query returns zero results.  Removes every
+    character that is not a word character (letter/digit/underscore), a space,
+    or an ASCII hyphen.
+    """
+    if not query:
+        return query
+    stripped = _SLSKD_FALLBACK_PUNCT_RE.sub(" ", query)
+    return " ".join(stripped.split())
+
+
 def _tokenize_meaningful(value):
     """Tokenize and remove short/common words to reduce false positives."""
     stop_words = {"the", "and", "of", "a", "an", "to", "in", "on", "for", "with"}
@@ -270,33 +323,16 @@ def _extract_tag_value(tags, keys):
 
 
 def _is_musicbrainz_backed(queue_item):
-    """Return True when queue item is tied to an expected MusicBrainz track/release."""
-    source = str(queue_item.get('source') or '').strip().lower()
-    release_source = str(queue_item.get('release_source') or '').strip().lower()
+    """Return True when a queue item was explicitly tied to a MusicBrainz release
+    via the MusicBrainz search modal.
 
-    # Discovery rows should never auto-move as "MusicBrainz-backed" unless the
-    # metadata is explicit and authoritative (release_source=musicbrainz).
-    if source == 'discovered' and release_source != 'musicbrainz':
-        return False
-
-    uuid_pattern = re.compile(
-        r"^[0-9a-fA-F]{8}-"
-        r"[0-9a-fA-F]{4}-"
-        r"[0-9a-fA-F]{4}-"
-        r"[0-9a-fA-F]{4}-"
-        r"[0-9a-fA-F]{12}$"
-    )
-
-    def _is_uuid(value):
-        text = str(value or '').strip()
-        return bool(text and uuid_pattern.match(text))
-
-    return bool(
-        release_source == 'musicbrainz'
-        or _is_uuid(queue_item.get('release_id'))
-        or _is_uuid(queue_item.get('release_mbid'))
-        or _is_uuid(queue_item.get('recording_mbid'))
-    )
+    Requires ``release_source='musicbrainz'`` to be set — a field that is only
+    written by the MB modal search routes (``api_queue_apply_mbid_match``,
+    ``api_queue_add_batch`` with MB data, etc.).  Items that merely contain a
+    UUID-shaped ``release_id`` from a non-MB source are intentionally excluded
+    so that fuzzy-matched or auto-discovered items do not bypass manual approval.
+    """
+    return str(queue_item.get('release_source') or '').strip().lower() == 'musicbrainz'
 
 
 def _get_duration_match_tolerance(queue_item):
@@ -627,12 +663,26 @@ def _is_generic_artist_name(value):
 
 
 def _get_effective_track_search_query(queue_item):
-    """Build a Soulseek track query that avoids generic artist tokens."""
+    """Build a Soulseek track query that avoids generic artist tokens.
+
+    Uses Soulseek phrase-quoting (``"artist" "title"``) so that both terms are
+    matched as exact phrases rather than individual tokens.  Apostrophes and
+    typographic-quote characters are sanitized before quoting so that the
+    resulting tokens align with what peers index.
+
+    Examples::
+
+        artist="Sexing the Cherry", title="Steppin' On"
+        → '"Sexing the Cherry" "Steppin On"'
+
+        artist="Various Artists", title="DJ Mix - Some Track"
+        → '"DJ Mix" "Some Track"'   (generic artist bypassed)
+    """
     artist = str(queue_item.get('artist') or '').strip()
     title = str(queue_item.get('title') or '').strip()
 
     if not title:
-        return str(queue_item.get('search_query') or '').strip()
+        return _sanitize_slskd_query(str(queue_item.get('search_query') or '').strip())
 
     if _is_generic_artist_name(artist):
         # Some discovered files or compilation rows can store titles like
@@ -641,15 +691,25 @@ def _get_effective_track_search_query(queue_item):
         if ' - ' in title:
             left, right = [part.strip() for part in title.split(' - ', 1)]
             if left and right and not _is_generic_artist_name(left):
-                return f"{left} - {right}"
-        # No reliable per-track artist available; title-only search is safer
-        # than querying Soulseek as "Various Artists - <title>".
-        return title
+                return '"{}" "{}"'.format(
+                    _sanitize_slskd_query(left),
+                    _sanitize_slskd_query(right),
+                )
+        # No reliable per-track artist; title-only quoted search is safer.
+        return '"{}"'.format(_sanitize_slskd_query(title))
 
-    return f"{artist} - {title}"
+    return '"{}" "{}"'.format(
+        _sanitize_slskd_query(artist),
+        _sanitize_slskd_query(title),
+    )
 
 
 def _get_album_search_query(queue_item):
+    """Build a Soulseek album-level query using phrase-quoting.
+
+    Returns ``"artist" "album"`` so that the album search benefits from the
+    same exact-phrase matching as per-track queries.
+    """
     album = (queue_item.get('album') or '').strip()
     if not album or album.lower() in ('unknown', 'unknown album'):
         return None
@@ -664,8 +724,11 @@ def _get_album_search_query(queue_item):
         # album searches and often pollute candidate results.
         return None
     if album_artist:
-        return f"{album_artist} - {album}"
-    return album
+        return '"{}" "{}"'.format(
+            _sanitize_slskd_query(album_artist),
+            _sanitize_slskd_query(album),
+        )
+    return '"{}"'.format(_sanitize_slskd_query(album))
 
 
 def _get_album_queue_titles(queue_item):
@@ -1054,7 +1117,8 @@ def search_and_download_qbittorrent(queue_id, queue_item):
         web_url = (qbit_cfg.get("web_url") or "http://localhost:8080").rstrip("/")
         username = qbit_cfg.get("username") or ""
         password = qbit_cfg.get("password") or ""
-        search_query = queue_item.get("search_query") or f"{queue_item.get('artist', '')} - {queue_item.get('title', '')}"
+        _raw_qbit_q = queue_item.get("search_query") or f"{queue_item.get('artist', '')} - {queue_item.get('title', '')}"
+        search_query = _sanitize_slskd_query(_raw_qbit_q)
 
         update_queue_status(queue_id, "searching")
 
@@ -2028,7 +2092,48 @@ def search_and_download(queue_id, queue_item, client):
             # Increased timeout to 45 seconds to handle slow Soulseek peer responses
             responses = _poll_search_responses(client, search_id, max_poll_attempts=45)
             best_result, best_score = _pick_best_candidate_from_responses(responses, queue_item)
-        
+
+        # Pass 2b: unquoted fallback — primary query uses phrase-quotes
+        # ("artist" "title") which some peers don't support.  Retry with the
+        # same sanitized text but without quotes so the tokenizer can still
+        # find files where the phrase-match logic fails.
+        if not best_result and search_query.startswith('"'):
+            unquoted_query = search_query.replace('"', '').strip()
+            unquoted_query = ' '.join(unquoted_query.split())
+            if unquoted_query and unquoted_query != search_query:
+                logger.info(
+                    f"Queue {queue_id}: Quoted query returned no results; "
+                    f"retrying unquoted: '{unquoted_query}'"
+                )
+                uq_id = client.start_search(unquoted_query)
+                if uq_id:
+                    uq_responses = _poll_search_responses(client, uq_id, max_poll_attempts=45)
+                    best_result, best_score = _pick_best_candidate_from_responses(uq_responses, queue_item)
+                    if best_result:
+                        logger.info(
+                            f"Queue {queue_id}: Unquoted query '{unquoted_query}' found a match "
+                            f"(score={best_score:.2f})"
+                        )
+
+        # Pass 2c: full-strip fallback — remove ALL remaining punctuation
+        # (en-dashes, brackets, accents, etc.) for a broadest possible retry.
+        if not best_result:
+            fallback_query = _fallback_slskd_query(search_query.replace('"', ''))
+            fallback_query = ' '.join(fallback_query.split())
+            if fallback_query and fallback_query not in (search_query, search_query.replace('"', '').strip()):
+                logger.info(
+                    f"Queue {queue_id}: Zero results; full-strip retry: '{fallback_query}'"
+                )
+                fallback_id = client.start_search(fallback_query)
+                if fallback_id:
+                    fallback_responses = _poll_search_responses(client, fallback_id, max_poll_attempts=45)
+                    best_result, best_score = _pick_best_candidate_from_responses(fallback_responses, queue_item)
+                    if best_result:
+                        logger.info(
+                            f"Queue {queue_id}: Full-strip query '{fallback_query}' found a match "
+                            f"(score={best_score:.2f})"
+                        )
+
         if not best_result:
             elapsed = (datetime.now() - poll_start_time).total_seconds()
             logger.warning(f"Queue {queue_id}: ✗ No results found after {elapsed:.0f}s of polling")
@@ -2484,166 +2589,180 @@ def check_completed_downloads():
                 update_queue_status(item_id, 'completed', file_path=file_path, found_filename=match_found)
 
                 # Only auto-move items that were explicitly added via the MusicBrainz
-                # search UI.  Fuzzy-matched downloads without MusicBrainz backing must
-                # wait for the user to approve them in the Downloads UI.
+                # search UI (release_source='musicbrainz') AND only when every sibling
+                # track for the same release is completed.  Partial-album matches stay
+                # as 'completed' for manual approval in the Downloads UI.
                 if not _is_musicbrainz_backed(item):
                     logger.info(
                         f"[AUTO_MOVE] Queue {item_id}: not from MusicBrainz search — "
                         f"leaving as completed for manual approval"
                     )
                 else:
-                    # Atomically claim this item for moving before starting any file
-                    # operations.  If the UI Move button (or another processor cycle)
-                    # already claimed it, we skip rather than double-moving the file.
                     try:
-                        from download_queue_manager import _try_claim_for_move, _release_move_claim
-                        _claim_fn = _try_claim_for_move
-                        _release_fn = _release_move_claim
-                    except Exception:
-                        _claim_fn = None
-                        _release_fn = None
+                        from download_queue_manager import _is_full_album_ready_for_move as _dqm_album_ready
+                        _album_ready = _dqm_album_ready(item, cursor=cursor)
+                    except Exception as _album_check_err:
+                        logger.debug(f"[AUTO_MOVE] Queue {item_id}: could not check album completeness: {_album_check_err}")
+                        _album_ready = False
 
-                    if _claim_fn and not _claim_fn(item_id, 'completed'):
+                    if not _album_ready:
                         logger.info(
-                            f"[AUTO_MOVE] Queue {item_id}: already claimed by another "
-                            f"process for moving — skipping auto-move"
+                            f"[AUTO_MOVE] Queue {item_id}: album not fully matched yet — "
+                            f"leaving as completed until all sibling tracks are ready"
                         )
                     else:
-                        # Immediately move the file to /music
+                        # Atomically claim this item for moving before starting any file
+                        # operations.  If the UI Move button (or another processor cycle)
+                        # already claimed it, we skip rather than double-moving the file.
                         try:
-                            if not move_single_track_to_music_dir or not verify_downloaded_file_metadata:
-                                if _claim_fn:
-                                    _release_fn(item_id, restore_status='completed', file_path=file_path)
-                                raise RuntimeError("Auto-move helpers unavailable")
+                            from download_queue_manager import _try_claim_for_move, _release_move_claim
+                            _claim_fn = _try_claim_for_move
+                            _release_fn = _release_move_claim
+                        except Exception:
+                            _claim_fn = None
+                            _release_fn = None
 
-                            # ── Step 1: Extract duration from file and persist it ──────────
-                            # We do this before verification so the queue item's duration
-                            # is populated for the metadata check below.
-                            if not item.get('duration') and MutagenFile is not None:
-                                try:
-                                    audio = MutagenFile(file_path)
-                                    if audio is not None and audio.info and hasattr(audio.info, 'length'):
-                                        file_duration = _normalize_duration_seconds(audio.info.length)
-                                        if file_duration:
-                                            _safe_update_queue_item(item_id, duration=file_duration)
-                                            # Refresh item dict so the verification step sees the
-                                            # newly-stored duration.
-                                            item = dict(item)
-                                            item['duration'] = file_duration
-                                            logger.debug(
-                                                f"Queue {item_id}: updated duration from file to {file_duration}s"
-                                            )
-                                except Exception as dur_err:
-                                    logger.debug(f"Queue {item_id}: could not extract duration from file: {dur_err}")
-
-                            # ── Step 2: Verify file metadata matches the queue item ────────
-                            # For filename-only matches, a tag mismatch blocks the metadata
-                            # clear (Step 3) — the existing tags are preserved and merged
-                            # rather than replaced.  For all other match types it remains a
-                            # warning so the file is not stranded in /downloads.
-                            meta_mismatch_for_filename_match = False
+                        if _claim_fn and not _claim_fn(item_id, 'completed'):
+                            logger.info(
+                                f"[AUTO_MOVE] Queue {item_id}: already claimed by another "
+                                f"process for moving — skipping auto-move"
+                            )
+                        else:
+                            # Immediately move the file to /music
                             try:
-                                meta_check = verify_downloaded_file_metadata(file_path, item)
-                                if not meta_check['ok']:
-                                    if match_meta_state == 'filename':
-                                        logger.warning(
-                                            f"[AUTO_MOVE] Queue {item_id}: filename-only match but "
-                                            f"existing tags conflict with queue item — "
-                                            f"{meta_check['reason']} "
-                                            f"(detail={meta_check['detail']}) — "
-                                            f"will merge stored metadata without clearing existing tags"
+                                if not move_single_track_to_music_dir or not verify_downloaded_file_metadata:
+                                    if _claim_fn:
+                                        _release_fn(item_id, restore_status='completed', file_path=file_path)
+                                    raise RuntimeError("Auto-move helpers unavailable")
+
+                                # ── Step 1: Extract duration from file and persist it ──────────
+                                # We do this before verification so the queue item's duration
+                                # is populated for the metadata check below.
+                                if not item.get('duration') and MutagenFile is not None:
+                                    try:
+                                        audio = MutagenFile(file_path)
+                                        if audio is not None and audio.info and hasattr(audio.info, 'length'):
+                                            file_duration = _normalize_duration_seconds(audio.info.length)
+                                            if file_duration:
+                                                _safe_update_queue_item(item_id, duration=file_duration)
+                                                # Refresh item dict so the verification step sees the
+                                                # newly-stored duration.
+                                                item = dict(item)
+                                                item['duration'] = file_duration
+                                                logger.debug(
+                                                    f"Queue {item_id}: updated duration from file to {file_duration}s"
+                                                )
+                                    except Exception as dur_err:
+                                        logger.debug(f"Queue {item_id}: could not extract duration from file: {dur_err}")
+
+                                # ── Step 2: Verify file metadata matches the queue item ────────
+                                # For filename-only matches, a tag mismatch blocks the metadata
+                                # clear (Step 3) — the existing tags are preserved and merged
+                                # rather than replaced.  For all other match types it remains a
+                                # warning so the file is not stranded in /downloads.
+                                meta_mismatch_for_filename_match = False
+                                try:
+                                    meta_check = verify_downloaded_file_metadata(file_path, item)
+                                    if not meta_check['ok']:
+                                        if match_meta_state == 'filename':
+                                            logger.warning(
+                                                f"[AUTO_MOVE] Queue {item_id}: filename-only match but "
+                                                f"existing tags conflict with queue item — "
+                                                f"{meta_check['reason']} "
+                                                f"(detail={meta_check['detail']}) — "
+                                                f"will merge stored metadata without clearing existing tags"
+                                            )
+                                            meta_mismatch_for_filename_match = True
+                                        else:
+                                            logger.warning(
+                                                f"[AUTO_MOVE] Queue {item_id}: metadata verification "
+                                                f"WARNING — {meta_check['reason']} "
+                                                f"(detail={meta_check['detail']}) — proceeding with move"
+                                            )
+                                    else:
+                                        logger.debug(
+                                            f"[AUTO_MOVE] Queue {item_id}: metadata OK "
+                                            f"(detail={meta_check['detail']})"
                                         )
-                                        meta_mismatch_for_filename_match = True
+                                except Exception as verify_err:
+                                    logger.debug(f"[AUTO_MOVE] Queue {item_id}: metadata check skipped: {verify_err}")
+
+                                # ── Step 3: Write stored MusicBrainz metadata to file tags ────
+                                # Apply the metadata captured at queue-creation time (track
+                                # number, artist, album, year, etc.) to the file before it is
+                                # moved.  move_single_track_to_music_dir will further enrich
+                                # the tags (cover art, per-track artist from MB release) on top
+                                # of this baseline, but we guarantee the stored metadata is
+                                # written even if the live MB fetch below fails.
+                                # For filename-only matches whose tags contradicted the queue
+                                # item, merge rather than clear to avoid overwriting the
+                                # original tag data with potentially wrong information.
+                                should_clear_tags = not meta_mismatch_for_filename_match
+                                try:
+                                    from post_download_processor import update_file_metadata_with_albumart
+                                    stored_metadata = {
+                                        'title': item.get('title'),
+                                        'artist': item.get('artist'),
+                                        'album_artist': item.get('album_artist') or item.get('artist'),
+                                        'album': item.get('album'),
+                                        'year': item.get('year'),
+                                        'track_number': item.get('track_number'),
+                                        'disc_number': item.get('disc_number'),
+                                    }
+                                    update_file_metadata_with_albumart(
+                                        file_path, stored_metadata, clear_existing_tags=should_clear_tags
+                                    )
+                                    logger.info(
+                                        f"[AUTO_MOVE] Queue {item_id}: applied stored MusicBrainz metadata to file "
+                                        f"(clear_existing_tags={should_clear_tags})"
+                                    )
+                                except Exception as meta_err:
+                                    logger.warning(
+                                        f"[AUTO_MOVE] Queue {item_id}: could not apply stored metadata before move: {meta_err}"
+                                    )
+
+                                # ── Step 4: Move file to /music, enrich tags via live MB API ──
+                                item_for_move = dict(item)
+                                item_for_move['file_path'] = file_path
+                                move_result = move_single_track_to_music_dir(item_for_move)
+                                if move_result['success']:
+                                    target_path = move_result['target_path']
+
+                                    # ── Step 5: Verify the file arrived at the destination ────
+                                    verify_result = verify_file_in_music(item_id, target_path)
+                                    if verify_result['success']:
+                                        mark_queue_item_moved(item_id, target_path)
+                                        _safe_update_queue_item(
+                                            item_id,
+                                            status='imported',
+                                            file_path=target_path,
+                                            copied_individually=1,
+                                            copied_individually_at=datetime.now().isoformat()
+                                        )
+                                        logger.info(f"[AUTO_MOVE] Queue {item_id}: verified and imported to {target_path}")
+
+                                        # ── Step 6: Remove siblings and trigger Navidrome ─────
+                                        # _cleanup_sibling_downloads removes other downloads of
+                                        # the same track that accumulated across retries.
+                                        _cleanup_sibling_downloads(item, keep_path=None)
+                                        _trigger_navidrome_scan()
                                     else:
                                         logger.warning(
-                                            f"[AUTO_MOVE] Queue {item_id}: metadata verification "
-                                            f"WARNING — {meta_check['reason']} "
-                                            f"(detail={meta_check['detail']}) — proceeding with move"
+                                            f"[AUTO_MOVE] Queue {item_id}: file verification failed after move to {target_path}, updating path"
                                         )
-                                else:
-                                    logger.debug(
-                                        f"[AUTO_MOVE] Queue {item_id}: metadata OK "
-                                        f"(detail={meta_check['detail']})"
-                                    )
-                            except Exception as verify_err:
-                                logger.debug(f"[AUTO_MOVE] Queue {item_id}: metadata check skipped: {verify_err}")
-
-                            # ── Step 3: Write stored MusicBrainz metadata to file tags ────
-                            # Apply the metadata captured at queue-creation time (track
-                            # number, artist, album, year, etc.) to the file before it is
-                            # moved.  move_single_track_to_music_dir will further enrich
-                            # the tags (cover art, per-track artist from MB release) on top
-                            # of this baseline, but we guarantee the stored metadata is
-                            # written even if the live MB fetch below fails.
-                            # For filename-only matches whose tags contradicted the queue
-                            # item, merge rather than clear to avoid overwriting the
-                            # original tag data with potentially wrong information.
-                            should_clear_tags = not meta_mismatch_for_filename_match
-                            try:
-                                from post_download_processor import update_file_metadata_with_albumart
-                                stored_metadata = {
-                                    'title': item.get('title'),
-                                    'artist': item.get('artist'),
-                                    'album_artist': item.get('album_artist') or item.get('artist'),
-                                    'album': item.get('album'),
-                                    'year': item.get('year'),
-                                    'track_number': item.get('track_number'),
-                                    'disc_number': item.get('disc_number'),
-                                }
-                                update_file_metadata_with_albumart(
-                                    file_path, stored_metadata, clear_existing_tags=should_clear_tags
-                                )
-                                logger.info(
-                                    f"[AUTO_MOVE] Queue {item_id}: applied stored MusicBrainz metadata to file "
-                                    f"(clear_existing_tags={should_clear_tags})"
-                                )
-                            except Exception as meta_err:
-                                logger.warning(
-                                    f"[AUTO_MOVE] Queue {item_id}: could not apply stored metadata before move: {meta_err}"
-                                )
-
-                            # ── Step 4: Move file to /music, enrich tags via live MB API ──
-                            item_for_move = dict(item)
-                            item_for_move['file_path'] = file_path
-                            move_result = move_single_track_to_music_dir(item_for_move)
-                            if move_result['success']:
-                                target_path = move_result['target_path']
-
-                                # ── Step 5: Verify the file arrived at the destination ────
-                                verify_result = verify_file_in_music(item_id, target_path)
-                                if verify_result['success']:
-                                    mark_queue_item_moved(item_id, target_path)
-                                    _safe_update_queue_item(
-                                        item_id,
-                                        status='imported',
-                                        file_path=target_path,
-                                        copied_individually=1,
-                                        copied_individually_at=datetime.now().isoformat()
-                                    )
-                                    logger.info(f"[AUTO_MOVE] Queue {item_id}: verified and imported to {target_path}")
-
-                                    # ── Step 6: Remove siblings and trigger Navidrome ─────
-                                    # _cleanup_sibling_downloads removes other downloads of
-                                    # the same track that accumulated across retries.
-                                    _cleanup_sibling_downloads(item, keep_path=None)
-                                    _trigger_navidrome_scan()
+                                        _safe_update_queue_item(item_id, status='completed', file_path=target_path)
                                 else:
                                     logger.warning(
-                                        f"[AUTO_MOVE] Queue {item_id}: file verification failed after move to {target_path}, updating path"
+                                        f"[AUTO_MOVE] Queue {item_id}: move to music dir failed, releasing claim"
                                     )
-                                    _safe_update_queue_item(item_id, status='completed', file_path=target_path)
-                            else:
-                                logger.warning(
-                                    f"[AUTO_MOVE] Queue {item_id}: move to music dir failed, releasing claim"
-                                )
+                                    if _claim_fn:
+                                        _release_fn(item_id, restore_status='completed', file_path=file_path)
+                            except Exception as e:
+                                logger.error(f"[AUTO_MOVE] Queue {item_id}: error during auto-move: {e}")
                                 if _claim_fn:
                                     _release_fn(item_id, restore_status='completed', file_path=file_path)
-                        except Exception as e:
-                            logger.error(f"[AUTO_MOVE] Queue {item_id}: error during auto-move: {e}")
-                            if _claim_fn:
-                                _release_fn(item_id, restore_status='completed', file_path=file_path)
-                            else:
-                                _safe_update_queue_item(item_id, status='completed', file_path=file_path)
+                                else:
+                                    _safe_update_queue_item(item_id, status='completed', file_path=file_path)
 
         conn.close()
     except Exception as e:

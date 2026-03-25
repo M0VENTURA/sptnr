@@ -3400,8 +3400,79 @@ def _start_queue_processor_if_needed(force_restart: bool = False) -> bool:
     logging.info(f"[QUEUE_PROCESSOR] Started queue_processor.py with interval={interval}s")
     return True
 
-# Leader election for startup jobs under multi-worker servers (gunicorn).
-_is_startup_leader_worker = _acquire_startup_leader_lock()
+def _auto_resume_interrupted_scans():
+    """Resume any scans that were actively running when the server last stopped.
+
+    This runs unconditionally at boot (regardless of the ``launch_on_startup``
+    feature flag) but is skipped when ``launch_on_startup`` is enabled because
+    ``_schedule_configured_startup_scan_launch`` already handles the resume path
+    in that case.  For each supported scan type we check whether a progress file
+    exists with ``is_running=True`` and a ``last_updated`` timestamp younger
+    than 24 hours.  When such a file is found the scan is restarted in resume
+    mode so that it continues from where it left off.
+    """
+    def _worker():
+        try:
+            delay_raw = os.environ.get("SPTNR_STARTUP_SCAN_DELAY_SECONDS", "3")
+            try:
+                startup_delay_seconds = int(delay_raw)
+            except Exception:
+                startup_delay_seconds = 3
+            startup_delay_seconds = max(0, min(startup_delay_seconds, 300))
+            time.sleep(startup_delay_seconds)
+
+            # Skip: _schedule_configured_startup_scan_launch handles the resume
+            # path when launch_on_startup is enabled, so we avoid a double-start.
+            try:
+                cfg = get_config() or {}
+                features = cfg.get("features", {}) if isinstance(cfg, dict) else {}
+                if bool(features.get("launch_on_startup", False)):
+                    return
+            except Exception:
+                pass
+
+            from scan_resume import detect_interrupted_scan
+
+            resumable = [
+                ("navidrome", "scan_navidrome", "/scan/navidrome"),
+                ("popularity", "scan_popularity_route", "/scan/popularity"),
+                ("combined", "scan_combined", "/scan/combined"),
+            ]
+
+            for scan_type, handler_name, base_path in resumable:
+                try:
+                    progress = detect_interrupted_scan(scan_type)
+                    if not progress:
+                        continue
+
+                    resume_artist = progress.get("current_artist")
+                    handler = globals().get(handler_name)
+                    if not callable(handler):
+                        logging.warning(
+                            f"[BOOT_RESUME] Handler '{handler_name}' not found; skipping auto-resume for {scan_type}"
+                        )
+                        continue
+
+                    params = "mode=resume&restart=0"
+                    request_path = base_path + "?" + params
+                    log_unified(
+                        f"[BOOT_RESUME] Resuming interrupted {scan_type} scan"
+                        + (f" from '{resume_artist}'" if resume_artist else "")
+                    )
+                    with app.test_request_context(request_path, method="POST"):
+                        handler()
+
+                    # Only resume one scan at a time to avoid concurrent scans.
+                    break
+                except Exception as scan_err:
+                    logging.warning(f"[BOOT_RESUME] Could not auto-resume {scan_type}: {scan_err}")
+        except Exception as exc:
+            logging.error(f"[BOOT_RESUME] Auto-resume worker failed: {exc}", exc_info=True)
+
+    threading.Thread(target=_worker, daemon=True, name="boot-scan-resume").start()
+
+
+
 
 
 # Kick off startup background tasks only in the elected leader worker.
@@ -3433,6 +3504,11 @@ if _is_startup_leader_worker:
         _schedule_configured_startup_scan_launch()
     except Exception as e:
         logging.error(f"Failed to schedule startup scan launch: {e}")
+
+    try:
+        _auto_resume_interrupted_scans()
+    except Exception as e:
+        logging.error(f"Failed to schedule auto-resume of interrupted scans: {e}")
 
     try:
         _start_daily_scheduler()
@@ -20552,6 +20628,136 @@ def api_downloads_folder_merge():
 
 # ===== Download Queue Management (New Dynamic Queue System) =====
 
+def _check_track_in_local_collection(artist, title, album=None):
+    """Check whether a track already exists in the local music library.
+
+    Queries the ``tracks`` table (populated by the Navidrome import) using
+    case-insensitive exact matching on artist + title, with an optional album
+    filter.  The ``file_path`` column in that table holds the on-disk path
+    reported by Navidrome (e.g. ``/music/Xandria/2023 - …/03 - Song.flac``).
+
+    Returns:
+        dict:
+            ``found``     – bool
+            ``file_path`` – str | None  (the library path)
+            ``title``     – str | None
+            ``artist``    – str | None
+            ``album``     – str | None
+    """
+    if not artist or not title:
+        return {"found": False}
+
+    artist_lc = artist.strip().lower()
+    title_lc = title.strip().lower()
+
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = "%s"
+
+        if album:
+            album_lc = album.strip().lower()
+            cursor.execute(
+                f"""
+                SELECT title, artist, album, file_path
+                FROM tracks
+                WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = {placeholder}
+                  AND LOWER(title) = {placeholder}
+                  AND LOWER(COALESCE(album, '')) = {placeholder}
+                LIMIT 1
+                """,
+                (artist_lc, title_lc, album_lc),
+            )
+        else:
+            cursor.execute(
+                f"""
+                SELECT title, artist, album, file_path
+                FROM tracks
+                WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = {placeholder}
+                  AND LOWER(title) = {placeholder}
+                LIMIT 1
+                """,
+                (artist_lc, title_lc),
+            )
+
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row:
+            return {"found": False}
+
+        if hasattr(row, 'get'):
+            return {
+                "found": True,
+                "file_path": row.get("file_path"),
+                "title": row.get("title"),
+                "artist": row.get("artist"),
+                "album": row.get("album"),
+            }
+        return {
+            "found": True,
+            "file_path": row[3] if len(row) > 3 else None,
+            "title": row[0] if len(row) > 0 else None,
+            "artist": row[1] if len(row) > 1 else None,
+            "album": row[2] if len(row) > 2 else None,
+        }
+    except Exception as e:
+        logging.debug(f"[COLLECTION_CHECK] {artist} – {title}: {e}")
+        return {"found": False}
+
+
+@app.route("/api/queue/check-collection-batch", methods=["POST"])
+def api_queue_check_collection_batch():
+    """Check which tracks in a list already exist in the local music library.
+
+    Request body::
+
+        {
+          "tracks": [
+            {"artist": "…", "title": "…", "album": "…"},
+            …
+          ]
+        }
+
+    Response::
+
+        {
+          "results": [
+            {
+              "artist": "…", "title": "…", "album": "…",
+              "found": true,
+              "file_path": "/music/…/track.flac"
+            },
+            …
+          ]
+        }
+    """
+    try:
+        data = request.get_json() or {}
+        tracks = data.get("tracks") or []
+        if not isinstance(tracks, list):
+            return jsonify({"error": "tracks must be an array"}), 400
+
+        results = []
+        for t in tracks:
+            artist = str(t.get("artist") or "").strip()
+            title = str(t.get("title") or "").strip()
+            album = str(t.get("album") or "").strip() or None
+            check = _check_track_in_local_collection(artist, title, album)
+            results.append({
+                "artist": artist,
+                "title": title,
+                "album": album,
+                "found": check["found"],
+                "file_path": check.get("file_path"),
+            })
+
+        return jsonify({"results": results})
+    except Exception as e:
+        logging.error(f"[CHECK_COLLECTION] Batch check failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/queue/add", methods=["POST"])
 def api_queue_add():
     """Add song/album to download queue"""
@@ -20637,7 +20843,21 @@ def api_queue_add():
         if not artist or not title:
             logging.warning(f"Queue add missing required fields: artist='{artist}', title='{title}'")
             return jsonify({"error": "Artist and title are required"}), 400
-        
+
+        # Pre-queue collection check: skip download if track already in local library.
+        collection_hit = _check_track_in_local_collection(artist, title, album)
+        if collection_hit["found"]:
+            return jsonify({
+                "success": True,
+                "skipped": True,
+                "in_collection": True,
+                "collection_path": collection_hit.get("file_path"),
+                "message": (
+                    f"{artist} – {title} is already in your library"
+                    + (f" at {collection_hit['file_path']}" if collection_hit.get("file_path") else "")
+                ),
+            })
+
         logging.info(f"Adding to queue: {artist} - {title} (album: {album}, source: {source}, priority: {priority})")
         
         # Add to queue
@@ -20748,6 +20968,8 @@ def api_queue_add_batch():
         failed_tracks = []
         failed_details = []
         skipped_tracks = []
+        in_collection_count = 0
+        in_collection_tracks = []
         schema_self_heal_ran = False
         
         for item_data in items:
@@ -20830,7 +21052,25 @@ def api_queue_add_batch():
                 failed_tracks.append(title or 'Unknown')
                 logging.warning(f"Skipping item with missing fields: artist='{artist}', title='{title}'")
                 continue
-            
+
+            # Pre-queue collection check: skip download if already in local library.
+            collection_hit = _check_track_in_local_collection(artist, title, album)
+            if collection_hit["found"]:
+                in_collection_count += 1
+                in_collection_tracks.append({
+                    "artist": artist,
+                    "title": title,
+                    "album": album,
+                    "file_path": collection_hit.get("file_path"),
+                })
+                skipped_count += 1
+                skipped_tracks.append(title)
+                logging.info(
+                    f"[QUEUE_BATCH] Skipping {artist} – {title}: already in local library "
+                    f"at {collection_hit.get('file_path')}"
+                )
+                continue
+
             try:
                 item = add_to_queue(artist, title, album, source, priority,
                                    import_group=import_group_id, import_type=import_type,
@@ -20905,6 +21145,7 @@ def api_queue_add_batch():
                     except Exception as retry_err:
                         logging.error(f"Retry after schema self-heal failed for '{title}': {retry_err}")
 
+        # When every item was already in the library, treat as full success (nothing to download)
         all_failed = failed_count > 0 and added_count == 0 and skipped_count == 0
         success_value = not all_failed
 
@@ -20926,12 +21167,14 @@ def api_queue_add_batch():
                 "failed": failed_count,
                 "failed_tracks": failed_tracks,
                 "failed_details": failed_details,
+                "in_collection": in_collection_count,
+                "in_collection_tracks": in_collection_tracks,
                 "import_group": import_group_id,
                 "import_type": import_type,
                 "schema_self_heal_ran": schema_self_heal_ran,
                 "message": "Failed to add any items to queue"
             }), 500
-        
+
         return jsonify({
             "success": success_value,
             "added": added_count,
@@ -20940,12 +21183,15 @@ def api_queue_add_batch():
             "failed_tracks": failed_tracks,
             "failed_details": failed_details,
             "skipped_tracks": skipped_tracks,
+            "in_collection": in_collection_count,
+            "in_collection_tracks": in_collection_tracks,
             "import_group": import_group_id,
             "import_type": import_type,
             "schema_self_heal_ran": schema_self_heal_ran,
             "message": (
                 f"Added {added_count} items to queue"
                 + (f", skipped {skipped_count}" if skipped_count > 0 else "")
+                + (f", {in_collection_count} already in library" if in_collection_count > 0 else "")
                 + (f", {failed_count} failed" if failed_count > 0 else "")
             )
         })
@@ -23818,7 +24064,7 @@ def api_queue_apply_mbid_match(queue_id):
                     WHEN {placeholder} <> '' THEN {placeholder}
                     ELSE recording_mbid
                 END,
-                release_year = {placeholder},
+                release_year = COALESCE(release_year, {placeholder}),
                 status = CASE
                     WHEN TRIM(COALESCE(status, '')) = '' OR status = 'matched' THEN 'queued'
                     ELSE status
@@ -23889,87 +24135,6 @@ def api_queue_apply_mbid_match(queue_id):
                     except Exception:
                         pass
 
-        # Kick off background enrichment so UI returns quickly.
-        def _expand_release_tracks_async(mbid, artist_name, album_name, qid, prefetched_release_metadata=None):
-            try:
-                from folder_matching_enhancements import get_musicbrainz_release_metadata
-                from download_queue_manager import add_to_queue
-
-                release_data = prefetched_release_metadata or get_musicbrainz_release_metadata(mbid) or {}
-                release_tracks = release_data.get('tracks', [])
-                added_tracks = 0
-                inferred_year_raw = release_data.get('release_year')
-                inferred_year = str(inferred_year_raw).strip() if inferred_year_raw not in (None, '') else None
-
-                for track in release_tracks or []:
-                    track_title = track.get('title', '')
-                    if not track_title:
-                        continue
-                    track_artist = (track.get('artist') or artist_name or '').strip() or artist_name
-                    track_number = track.get('track_number')
-                    disc_number = track.get('disc_number')
-                    recording_mbid = track.get('recording_mbid') or track.get('id')
-                    track_duration = track.get('duration', 0)
-                    if track_duration:
-                        track_duration = track_duration // 1000
-
-                    queued = add_to_queue(
-                        artist=track_artist,
-                        title=track_title,
-                        album=album_name,
-                        album_artist=artist_name,
-                        source='soulseek',
-                        release_mbid=mbid,
-                        release_id=mbid,
-                        release_source='musicbrainz',
-                        track_number=track_number,
-                        disc_number=disc_number,
-                        recording_mbid=recording_mbid,
-                        year=inferred_year,
-                        duration=track_duration,
-                    )
-                    if queued:
-                        added_tracks += 1
-
-                # Backfill release_year for the selected queue item if discovered.
-                if inferred_year:
-                    year_conn = None
-                    try:
-                        year_conn = get_db()
-                        year_cursor = year_conn.cursor()
-                        year_placeholder = "%s" if _is_postgres_connection(year_conn) else "?"
-                        year_cursor.execute(
-                            f"""
-                            UPDATE download_queue
-                            SET release_year = COALESCE(release_year, {year_placeholder}),
-                                updated_at = CURRENT_TIMESTAMP
-                            WHERE id = {year_placeholder}
-                            """,
-                            (inferred_year, qid),
-                        )
-                        year_conn.commit()
-                    except Exception as year_err:
-                        logging.debug(f"[QUEUE_MATCH] Could not backfill release_year for queue {qid}: {year_err}")
-                    finally:
-                        if year_conn is not None:
-                            try:
-                                year_conn.close()
-                            except Exception:
-                                pass
-
-                log_unified(
-                    f"[QUEUE_MATCH] Expanded MBID {mbid} for queue {qid}: added {added_tracks} track(s)"
-                )
-            except Exception as async_err:
-                logging.warning(f"[QUEUE_MATCH] Background release expansion failed for MBID {mbid}: {async_err}")
-
-        threading.Thread(
-            target=_expand_release_tracks_async,
-            args=(new_mbid, target_artist, target_album, queue_id, release_metadata),
-            daemon=True,
-            name=f"queue-match-expand-{queue_id}",
-        ).start()
-
         return jsonify({
             "success": True,
             "message": "Queue item match updated",
@@ -23984,7 +24149,6 @@ def api_queue_apply_mbid_match(queue_id):
             "local_file_path": local_file_path,
             "warning": local_file_warning,
             "tracks_added": 0,
-            "tracks_pending": True,
         })
     except Exception as e:
         logging.error(f"Error applying queue MBID match: {e}")

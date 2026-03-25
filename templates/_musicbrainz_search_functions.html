@@ -184,9 +184,26 @@ async function searchMusicBrainzRelease(event, artist, album, track) {
 
 // ===== Display Results Function =====
 
+function _mbReleaseDateKey(release) {
+  const raw = release.date || release.year || '';
+  if (!raw) return '';
+  // Normalise to a comparable ISO-style string: "2024" < "2024-05" < "2024-05-10"
+  return String(raw).trim();
+}
+
 function displayMusicBrainzResults(results) {
   const container = document.getElementById('mbSearchResults');
-  
+
+  // Sort newest-first; releases without a date go to the end.
+  results = [...results].sort((a, b) => {
+    const da = _mbReleaseDateKey(a);
+    const db = _mbReleaseDateKey(b);
+    if (!da && !db) return 0;
+    if (!da) return 1;
+    if (!db) return -1;
+    return db.localeCompare(da);
+  });
+
   // Global storage for release data to avoid JSON escaping in HTML attributes
   if (!window.mbReleaseData) {
     window.mbReleaseData = {};
@@ -310,19 +327,32 @@ function displayMusicBrainzResults(results) {
   
   html += '</div>';
   container.innerHTML = html;
-  
+
+  // After rendering, asynchronously check which tracks are already in the
+  // local library and mark them with an "In Library" badge.
+  _checkMBResultsAgainstCollection(container);
+
   // Attach event listeners to download buttons
   container.querySelectorAll('.mb-download-release').forEach(button => {
-    button.addEventListener('click', function() {
+    button.addEventListener('click', async function() {
       const dataKey = this.dataset.releaseKey;
       const releaseData = window.mbReleaseData[dataKey];
-      
+
       if (!releaseData) {
         alert('Error: Release data not found');
         return;
       }
-      
-      downloadMusicBrainzRelease(releaseData.artist, releaseData.album, releaseData.tracks, releaseData.year, releaseData.release_id, releaseData.source);
+
+      const btn = this;
+      const originalHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span> Starting…';
+      try {
+        await downloadMusicBrainzRelease(releaseData.artist, releaseData.album, releaseData.tracks, releaseData.year, releaseData.release_id, releaseData.source);
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
+      }
     });
   });
 
@@ -337,17 +367,29 @@ function displayMusicBrainzResults(results) {
         return;
       }
 
-      const queued = await downloadMusicBrainzRelease(
-        releaseData.artist,
-        releaseData.album,
-        [releaseData.tracks[trackIndex]],
-        releaseData.year,
-        releaseData.release_id,
-        releaseData.source,
-        { closeModal: false, selectionLabel: 'track' }
-      );
-      if (queued) {
-        markMBTrackQueued(container, dataKey, trackIndex);
+      const btn = this;
+      const originalHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
+      try {
+        const queued = await downloadMusicBrainzRelease(
+          releaseData.artist,
+          releaseData.album,
+          [releaseData.tracks[trackIndex]],
+          releaseData.year,
+          releaseData.release_id,
+          releaseData.source,
+          { closeModal: false, selectionLabel: 'track' }
+        );
+        if (queued) {
+          markMBTrackQueued(container, dataKey, trackIndex);
+        } else {
+          btn.disabled = false;
+          btn.innerHTML = originalHtml;
+        }
+      } catch (e) {
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
       }
     });
   });
@@ -365,17 +407,26 @@ function displayMusicBrainzResults(results) {
         return;
       }
 
-      const queued = await downloadMusicBrainzRelease(
-        releaseData.artist,
-        releaseData.album,
-        selectedTracks,
-        releaseData.year,
-        releaseData.release_id,
-        releaseData.source,
-        { closeModal: false, selectionLabel: 'selected tracks' }
-      );
-      if (queued) {
-        selectedIndices.forEach(index => markMBTrackQueued(container, dataKey, index));
+      const btn = this;
+      const originalHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span> Starting…';
+      try {
+        const queued = await downloadMusicBrainzRelease(
+          releaseData.artist,
+          releaseData.album,
+          selectedTracks,
+          releaseData.year,
+          releaseData.release_id,
+          releaseData.source,
+          { closeModal: false, selectionLabel: 'selected tracks' }
+        );
+        if (queued) {
+          selectedIndices.forEach(index => markMBTrackQueued(container, dataKey, index));
+        }
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
       }
     });
   });
@@ -451,6 +502,82 @@ function markMBTrackQueued(container, dataKey, trackIndex) {
   updateMBSelectionUI(container, dataKey);
 }
 
+// ===== Collection (In-Library) Helpers =====
+
+/**
+ * Mark a single track row as already in the local library.
+ * Disables the download button and shows an "In Library" badge with the path.
+ */
+function markMBTrackInCollection(container, dataKey, trackIndex, filePath) {
+  const rowCheckbox = container.querySelector(
+    `.mb-track-select[data-release-key="${dataKey}"][data-track-index="${trackIndex}"]`
+  );
+  if (rowCheckbox) {
+    rowCheckbox.checked = false;
+    rowCheckbox.disabled = true;
+  }
+
+  const rowButton = container.querySelector(
+    `.mb-download-track[data-release-key="${dataKey}"][data-track-index="${trackIndex}"]`
+  );
+  if (rowButton) {
+    rowButton.disabled = true;
+    rowButton.classList.remove('btn-outline-success');
+    rowButton.classList.add('btn-secondary');
+    const pathTip = filePath ? ` title="${escapeHtml(filePath)}"` : '';
+    rowButton.innerHTML = `<i class="bi bi-check-circle-fill"${pathTip}></i> In Library`;
+  }
+
+  updateMBSelectionUI(container, dataKey);
+}
+
+/**
+ * Call /api/queue/check-collection-batch for every track in every rendered
+ * release accordion, then call markMBTrackInCollection for each hit.
+ * Runs asynchronously after displayMusicBrainzResults so it never blocks render.
+ */
+async function _checkMBResultsAgainstCollection(container) {
+  if (!window.mbReleaseData) return;
+
+  // Build a flat list: { dataKey, trackIndex, artist, title, album }
+  const toCheck = [];
+  for (const [dataKey, releaseData] of Object.entries(window.mbReleaseData)) {
+    if (!Array.isArray(releaseData.tracks)) continue;
+    releaseData.tracks.forEach((track, trackIndex) => {
+      toCheck.push({
+        dataKey,
+        trackIndex,
+        artist: releaseData.artist || '',
+        title: track.title || '',
+        album: releaseData.album || '',
+      });
+    });
+  }
+  if (toCheck.length === 0) return;
+
+  try {
+    const resp = await fetch('/api/queue/check-collection-batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tracks: toCheck.map(t => ({ artist: t.artist, title: t.title, album: t.album }))
+      })
+    });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const results = data.results || [];
+    results.forEach((result, i) => {
+      if (result.found && toCheck[i]) {
+        const { dataKey, trackIndex } = toCheck[i];
+        markMBTrackInCollection(container, dataKey, trackIndex, result.file_path);
+      }
+    });
+  } catch (e) {
+    // Collection check is best-effort; silently ignore network errors.
+    console.debug('[MB] Collection check failed:', e);
+  }
+}
+
 // ===== Download Function =====
 
 async function downloadMusicBrainzRelease(artist, album, tracks, year, release_id, source, options = {}) {
@@ -513,35 +640,72 @@ async function downloadMusicBrainzRelease(artist, album, tracks, year, release_i
       const added = data.added || 0;
       const skipped = data.skipped || 0;
       const failed = data.failed || 0;
+      const inCollection = data.in_collection || 0;
+      const inCollectionTracks = data.in_collection_tracks || [];
       const skippedTracks = data.skipped_tracks || [];
       const failedTracks = data.failed_tracks || [];
       const importGroup = data.import_group;
       const importType = data.import_type || 'album';
       
       const label = selectionLabel ? ` ${selectionLabel}` : ' tracks';
-      let message = `✅ Added ${added}${label} from "${album}" to download queue`;
-      if (skipped > 0) {
-        message += `\nℹ️ Skipped ${skipped} already queued tracks`;
-        if (skippedTracks.length > 0) {
-          const skippedList = skippedTracks.slice(0, 5).join(', ');
-          message += `:\n${skippedList}${skippedTracks.length > 5 ? '...' : ''}`;
+      let message = added > 0
+        ? `✅ Added ${added}${label} from "${album}" to download queue`
+        : `ℹ️ No new tracks added for "${album}"`;
+
+      if (inCollection > 0) {
+        message += `\n\n📚 ${inCollection} track(s) already in your library (not re-queued):`;
+        inCollectionTracks.slice(0, 8).forEach(t => {
+          const path = t.file_path ? `\n   ${t.file_path}` : '';
+          message += `\n • ${t.title}${path}`;
+        });
+        if (inCollectionTracks.length > 8) {
+          message += `\n   … and ${inCollectionTracks.length - 8} more`;
         }
       }
+      if (skipped > 0 && skipped > inCollection) {
+        const extraSkipped = skipped - inCollection;
+        message += `\nℹ️ Skipped ${extraSkipped} already queued track(s)`;
+        const extraNames = skippedTracks.filter(t => !inCollectionTracks.some(ic => ic.title === t)).slice(0, 5);
+        if (extraNames.length > 0) message += `: ${extraNames.join(', ')}`;
+      }
       if (failed > 0) {
-        message += `\n⚠️ Failed to add ${failed} tracks`;
+        message += `\n⚠️ Failed to add ${failed} track(s)`;
         if (failedTracks.length > 0) {
-          const failedList = failedTracks.slice(0, 5).join(', ');
-          message += `:\n${failedList}${failedTracks.length > 5 ? '...' : ''}`;
+          message += `: ${failedTracks.slice(0, 5).join(', ')}${failedTracks.length > 5 ? '…' : ''}`;
         }
       }
       
       // Inform user about grouping and organization
       if (added > 0 && importGroup) {
-        message += `\n\n📦 All ${importType} tracks are grouped as: "${album}"`;
+        message += `\n\n📦 Grouped as: "${album}"`;
         message += `\nOnce downloads complete, use "Organize All" in the Completed section to move them to /music`;
       }
       
       alert(message);
+
+      // Mark in-collection tracks in the modal UI (if still open)
+      if (inCollectionTracks.length > 0) {
+        const mbContainer = document.getElementById('mbSearchResults');
+        if (mbContainer && window.mbReleaseData) {
+          inCollectionTracks.forEach(ic => {
+            const icTitle = (ic.title || '').toLowerCase();
+            const icArtist = (ic.artist || '').toLowerCase();
+            const icAlbum = (ic.album || '').toLowerCase();
+            for (const [dataKey, releaseData] of Object.entries(window.mbReleaseData)) {
+              if (!Array.isArray(releaseData.tracks)) continue;
+              const releaseArtist = (releaseData.artist || '').toLowerCase();
+              const releaseAlbum = (releaseData.album || '').toLowerCase();
+              if (icArtist && releaseArtist && !releaseArtist.includes(icArtist) && !icArtist.includes(releaseArtist)) continue;
+              if (icAlbum && releaseAlbum && !releaseAlbum.includes(icAlbum) && !icAlbum.includes(releaseAlbum)) continue;
+              releaseData.tracks.forEach((track, trackIndex) => {
+                if ((track.title || '').toLowerCase() === icTitle) {
+                  markMBTrackInCollection(mbContainer, dataKey, trackIndex, ic.file_path);
+                }
+              });
+            }
+          });
+        }
+      }
       
       // Refresh queue status if the function exists
       if (typeof loadQueueStatus === 'function') {
@@ -550,8 +714,7 @@ async function downloadMusicBrainzRelease(artist, album, tracks, year, release_i
       
       // Notify other tabs/windows to refresh
       try {
-        const timestamp = Date.now();
-        localStorage.setItem('popularr_queue_updated', timestamp.toString());
+        localStorage.setItem('popularr_queue_updated', Date.now().toString());
       } catch (e) {
         console.warn('Could not update localStorage:', e);
       }

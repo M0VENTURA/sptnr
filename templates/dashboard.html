@@ -112,7 +112,7 @@
         <div class="card-body">
             <div class="mb-2">
                 <small class="text-muted">
-                    Select your scan type from the dropdown list below and select start. These are locked out until after the first full scan. For more information, please read the Help option at the top of the page.
+                    Select your scan type from the dropdown list below and select start. For more information, please read the Help option at the top of the page.
                 </small>
             </div>
             <!-- Unified Progress Bar -->
@@ -134,7 +134,7 @@
             <div class="d-flex flex-wrap align-items-center gap-3">
                 <!-- Start Scan Dropdown -->
                 <div class="d-flex align-items-center gap-2">
-                    <select id="scanTypeSelect" class="form-select form-select-sm" style="min-width: 210px;" {{ '' if first_full_scan_done else 'disabled' }}>
+                    <select id="scanTypeSelect" class="form-select form-select-sm" style="min-width: 210px;">
                         <option value="navidrome">Navidrome Import</option>
                         <option value="metadata">Metadata Import</option>
                         <option value="popularity">Popularity and Single Scan</option>
@@ -152,8 +152,7 @@
                             class="btn btn-sm {{ 'btn-success' if launch_on_startup else 'btn-outline-success' }}"
                             data-enabled="{{ 'true' if launch_on_startup else 'false' }}"
                             onclick="toggleLaunchOnStartup()"
-                            title="Automatically launch selected scan set on startup"
-                            {{ '' if first_full_scan_done else 'disabled' }}>
+                            title="Automatically launch selected scan set on startup">
                         <i class="bi bi-power"></i> Launch on startup
                     </button>
                 </div>
@@ -1263,23 +1262,10 @@ document.addEventListener('DOMContentLoaded', function() {
 
     if (!firstFullScanDone) {
         const lockMessage = 'Locked until first full Navidrome scan completes';
-        ['scanTypeSelect', 'launchStartupBtn'].forEach(id => {
-            const el = document.getElementById(id);
-            if (el) {
-                el.disabled = true;
-                el.title = lockMessage;
-            }
-        });
-
-        const startBtn = document.getElementById('startScanBtn');
-        if (startBtn) {
-            startBtn.disabled = false;
-            startBtn.title = 'Run initial Navidrome import';
-        }
-        const restartBtn = document.getElementById('restartScanBtn');
-        if (restartBtn) {
-            restartBtn.disabled = false;
-            restartBtn.title = 'Restart initial Navidrome import from beginning';
+        const launchBtn = document.getElementById('launchStartupBtn');
+        if (launchBtn) {
+            launchBtn.disabled = true;
+            launchBtn.title = lockMessage;
         }
     }
 });
@@ -1289,13 +1275,20 @@ document.addEventListener('DOMContentLoaded', function() {
 function startSelectedScan(restart = false, forceStart = false) {
     const scanType = document.getElementById('scanTypeSelect').value;
 
-    if (!firstFullScanDone && scanType !== 'navidrome') {
-        alert('This scan control is locked until after the first full Navidrome import completes.');
-        return;
-    }
-
     const forced = document.getElementById('forcedCheck').checked;
     const mode = forced ? 'force' : 'all';
+
+    // Prompt for confirmation when a scan is already running (unless this is
+    // already a forced-start after the user confirmed).
+    if (!forceStart && runningScans.size > 0) {
+        const scanNames = Array.from(runningScans).join(', ');
+        if (!confirm(`A scan is already running (${scanNames}).\n\nDo you want to start a new scan anyway?`)) {
+            return;
+        }
+        // User confirmed — re-call with forceStart so we skip this check.
+        startSelectedScan(restart, true);
+        return;
+    }
 
     var actionUrl = '';
     if (scanType === 'navidrome') {
@@ -1329,40 +1322,31 @@ function startSelectedScan(restart = false, forceStart = false) {
         updateStartupLaunchFeature(true).catch(() => {});
     }
 
-    // For popularity scans use fetch so we can intercept the 409 "already running" response
-    // and show a confirmation dialog instead of silently blocking the action.
-    if (scanType === 'popularity') {
-        fetch(url.toString(), { method: 'POST' })
-            .then(function(response) {
-                if (response.status === 409) {
-                    return response.json()
-                        .then(function(data) {
-                            var msg = (data && data.message) ? data.message : 'A scan is already running.';
-                            if (confirm(msg + '\n\nDo you want to start a new scan anyway?')) {
-                                startSelectedScan(restart, true);
-                            }
-                        })
-                        .catch(function() {
-                            if (confirm('A scan is already running.\n\nDo you want to start a new scan anyway?')) {
-                                startSelectedScan(restart, true);
-                            }
-                        });
-                }
-                // On success redirect to dashboard to show flash messages / updated state
-                window.location.href = '/dashboard';
-            })
-            .catch(function(err) {
-                console.error('Error starting popularity scan:', err);
-                alert('Could not start scan. Please check the server logs.');
-            });
-        return;
-    }
-
-    var form = document.createElement('form');
-    form.method = 'POST';
-    form.action = url.toString();
-    document.body.appendChild(form);
-    form.submit();
+    // Use fetch for all scan types so we can intercept 409 "already running"
+    // responses and show a confirmation dialog instead of silently blocking.
+    fetch(url.toString(), { method: 'POST' })
+        .then(function(response) {
+            if (response.status === 409) {
+                return response.json()
+                    .then(function(data) {
+                        var msg = (data && data.message) ? data.message : 'A scan is already running.';
+                        if (confirm(msg + '\n\nDo you want to start a new scan anyway?')) {
+                            startSelectedScan(restart, true);
+                        }
+                    })
+                    .catch(function() {
+                        if (confirm('A scan is already running.\n\nDo you want to start a new scan anyway?')) {
+                            startSelectedScan(restart, true);
+                        }
+                    });
+            }
+            // On success redirect to dashboard to show flash messages / updated state
+            window.location.href = '/dashboard';
+        })
+        .catch(function(err) {
+            console.error('Error starting scan:', err);
+            alert('Could not start scan. Please check the server logs.');
+        });
 }
 
 function _renderLaunchStartupButton(enabled) {
@@ -1396,10 +1380,6 @@ async function updateStartupLaunchFeature(enabled) {
 }
 
 async function toggleLaunchOnStartup() {
-    if (!firstFullScanDone) {
-        alert('Launch on startup is locked until after the first full Navidrome import completes.');
-        return;
-    }
     const btn = document.getElementById('launchStartupBtn');
     if (!btn) return;
     const currentlyEnabled = btn.dataset.enabled === 'true';
