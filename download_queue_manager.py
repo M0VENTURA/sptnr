@@ -3750,11 +3750,27 @@ def check_downloads_folder():
 
                 if updated_item:
                     # Only auto-move items that were explicitly added via the
-                    # MusicBrainz search UI.  Others wait for manual approval.
+                    # MusicBrainz search UI (release_source='musicbrainz') AND only
+                    # when every sibling track for the same release is completed.
+                    # Partial-album matches stay as 'completed' for manual approval.
                     if not _is_musicbrainz_backed(queue_item):
                         logger.info(
                             f"[MOVE] Queue {queue_item['id']}: not from MusicBrainz search — "
                             f"leaving as completed for manual approval"
+                        )
+                        completed_items.append({
+                            'queue_id': queue_item['id'],
+                            'filename': match_found,
+                            'file_path': match_path,
+                            'artist': queue_item['artist'],
+                            'title': queue_item['title'],
+                            'album': queue_item['album'],
+                            'moved': False
+                        })
+                    elif not _is_full_album_ready_for_move(queue_item, cursor=cursor, placeholder=ph):
+                        logger.info(
+                            f"[MOVE] Queue {queue_item['id']}: album not fully matched yet — "
+                            f"leaving as completed until all sibling tracks are ready"
                         )
                         completed_items.append({
                             'queue_id': queue_item['id'],
@@ -4775,11 +4791,17 @@ def auto_discover_and_queue_files():
                     )
                     if updated:
                         # Only auto-move items that were explicitly added via the
-                        # MusicBrainz search UI.  Others wait for manual approval.
+                        # MusicBrainz search UI (release_source='musicbrainz') AND only
+                        # when every sibling track for the same release is completed.
                         if not _is_musicbrainz_backed(matched_pending):
                             logger.info(
                                 f"[AUTO-DISCOVER] Queue {matched_pending['id']}: not from MusicBrainz search — "
                                 f"leaving as completed for manual approval"
+                            )
+                        elif not _is_full_album_ready_for_move(matched_pending, cursor=cursor, placeholder=ph):
+                            logger.info(
+                                f"[AUTO-DISCOVER] Queue {matched_pending['id']}: album not fully matched yet — "
+                                f"leaving as completed until all sibling tracks are ready"
                             )
                         else:
                             # Atomically claim before moving to prevent race with UI button.

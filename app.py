@@ -20628,6 +20628,136 @@ def api_downloads_folder_merge():
 
 # ===== Download Queue Management (New Dynamic Queue System) =====
 
+def _check_track_in_local_collection(artist, title, album=None):
+    """Check whether a track already exists in the local music library.
+
+    Queries the ``tracks`` table (populated by the Navidrome import) using
+    case-insensitive exact matching on artist + title, with an optional album
+    filter.  The ``file_path`` column in that table holds the on-disk path
+    reported by Navidrome (e.g. ``/music/Xandria/2023 - …/03 - Song.flac``).
+
+    Returns:
+        dict:
+            ``found``     – bool
+            ``file_path`` – str | None  (the library path)
+            ``title``     – str | None
+            ``artist``    – str | None
+            ``album``     – str | None
+    """
+    if not artist or not title:
+        return {"found": False}
+
+    artist_lc = artist.strip().lower()
+    title_lc = title.strip().lower()
+
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = "%s"
+
+        if album:
+            album_lc = album.strip().lower()
+            cursor.execute(
+                f"""
+                SELECT title, artist, album, file_path
+                FROM tracks
+                WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = {placeholder}
+                  AND LOWER(title) = {placeholder}
+                  AND LOWER(COALESCE(album, '')) = {placeholder}
+                LIMIT 1
+                """,
+                (artist_lc, title_lc, album_lc),
+            )
+        else:
+            cursor.execute(
+                f"""
+                SELECT title, artist, album, file_path
+                FROM tracks
+                WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = {placeholder}
+                  AND LOWER(title) = {placeholder}
+                LIMIT 1
+                """,
+                (artist_lc, title_lc),
+            )
+
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row:
+            return {"found": False}
+
+        if hasattr(row, 'get'):
+            return {
+                "found": True,
+                "file_path": row.get("file_path"),
+                "title": row.get("title"),
+                "artist": row.get("artist"),
+                "album": row.get("album"),
+            }
+        return {
+            "found": True,
+            "file_path": row[3] if len(row) > 3 else None,
+            "title": row[0] if len(row) > 0 else None,
+            "artist": row[1] if len(row) > 1 else None,
+            "album": row[2] if len(row) > 2 else None,
+        }
+    except Exception as e:
+        logging.debug(f"[COLLECTION_CHECK] {artist} – {title}: {e}")
+        return {"found": False}
+
+
+@app.route("/api/queue/check-collection-batch", methods=["POST"])
+def api_queue_check_collection_batch():
+    """Check which tracks in a list already exist in the local music library.
+
+    Request body::
+
+        {
+          "tracks": [
+            {"artist": "…", "title": "…", "album": "…"},
+            …
+          ]
+        }
+
+    Response::
+
+        {
+          "results": [
+            {
+              "artist": "…", "title": "…", "album": "…",
+              "found": true,
+              "file_path": "/music/…/track.flac"
+            },
+            …
+          ]
+        }
+    """
+    try:
+        data = request.get_json() or {}
+        tracks = data.get("tracks") or []
+        if not isinstance(tracks, list):
+            return jsonify({"error": "tracks must be an array"}), 400
+
+        results = []
+        for t in tracks:
+            artist = str(t.get("artist") or "").strip()
+            title = str(t.get("title") or "").strip()
+            album = str(t.get("album") or "").strip() or None
+            check = _check_track_in_local_collection(artist, title, album)
+            results.append({
+                "artist": artist,
+                "title": title,
+                "album": album,
+                "found": check["found"],
+                "file_path": check.get("file_path"),
+            })
+
+        return jsonify({"results": results})
+    except Exception as e:
+        logging.error(f"[CHECK_COLLECTION] Batch check failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/queue/add", methods=["POST"])
 def api_queue_add():
     """Add song/album to download queue"""
@@ -20713,7 +20843,21 @@ def api_queue_add():
         if not artist or not title:
             logging.warning(f"Queue add missing required fields: artist='{artist}', title='{title}'")
             return jsonify({"error": "Artist and title are required"}), 400
-        
+
+        # Pre-queue collection check: skip download if track already in local library.
+        collection_hit = _check_track_in_local_collection(artist, title, album)
+        if collection_hit["found"]:
+            return jsonify({
+                "success": True,
+                "skipped": True,
+                "in_collection": True,
+                "collection_path": collection_hit.get("file_path"),
+                "message": (
+                    f"{artist} – {title} is already in your library"
+                    + (f" at {collection_hit['file_path']}" if collection_hit.get("file_path") else "")
+                ),
+            })
+
         logging.info(f"Adding to queue: {artist} - {title} (album: {album}, source: {source}, priority: {priority})")
         
         # Add to queue
@@ -20824,6 +20968,8 @@ def api_queue_add_batch():
         failed_tracks = []
         failed_details = []
         skipped_tracks = []
+        in_collection_count = 0
+        in_collection_tracks = []
         schema_self_heal_ran = False
         
         for item_data in items:
@@ -20906,7 +21052,25 @@ def api_queue_add_batch():
                 failed_tracks.append(title or 'Unknown')
                 logging.warning(f"Skipping item with missing fields: artist='{artist}', title='{title}'")
                 continue
-            
+
+            # Pre-queue collection check: skip download if already in local library.
+            collection_hit = _check_track_in_local_collection(artist, title, album)
+            if collection_hit["found"]:
+                in_collection_count += 1
+                in_collection_tracks.append({
+                    "artist": artist,
+                    "title": title,
+                    "album": album,
+                    "file_path": collection_hit.get("file_path"),
+                })
+                skipped_count += 1
+                skipped_tracks.append(title)
+                logging.info(
+                    f"[QUEUE_BATCH] Skipping {artist} – {title}: already in local library "
+                    f"at {collection_hit.get('file_path')}"
+                )
+                continue
+
             try:
                 item = add_to_queue(artist, title, album, source, priority,
                                    import_group=import_group_id, import_type=import_type,
@@ -20981,6 +21145,7 @@ def api_queue_add_batch():
                     except Exception as retry_err:
                         logging.error(f"Retry after schema self-heal failed for '{title}': {retry_err}")
 
+        # When every item was already in the library, treat as full success (nothing to download)
         all_failed = failed_count > 0 and added_count == 0 and skipped_count == 0
         success_value = not all_failed
 
@@ -21002,12 +21167,14 @@ def api_queue_add_batch():
                 "failed": failed_count,
                 "failed_tracks": failed_tracks,
                 "failed_details": failed_details,
+                "in_collection": in_collection_count,
+                "in_collection_tracks": in_collection_tracks,
                 "import_group": import_group_id,
                 "import_type": import_type,
                 "schema_self_heal_ran": schema_self_heal_ran,
                 "message": "Failed to add any items to queue"
             }), 500
-        
+
         return jsonify({
             "success": success_value,
             "added": added_count,
@@ -21016,12 +21183,15 @@ def api_queue_add_batch():
             "failed_tracks": failed_tracks,
             "failed_details": failed_details,
             "skipped_tracks": skipped_tracks,
+            "in_collection": in_collection_count,
+            "in_collection_tracks": in_collection_tracks,
             "import_group": import_group_id,
             "import_type": import_type,
             "schema_self_heal_ran": schema_self_heal_ran,
             "message": (
                 f"Added {added_count} items to queue"
                 + (f", skipped {skipped_count}" if skipped_count > 0 else "")
+                + (f", {in_collection_count} already in library" if in_collection_count > 0 else "")
                 + (f", {failed_count} failed" if failed_count > 0 else "")
             )
         })
