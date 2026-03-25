@@ -143,7 +143,7 @@ class CoverDetector:
                     'is_cover': True,
                     'original_artist': original['artist'],
                     'original_year': original.get('year'),
-                    'writer': differing_writers[0],
+                    'writer': ', '.join(differing_writers),
                     'confidence': original.get('confidence', 'medium')
                 }
                 cover_results.append(result)
