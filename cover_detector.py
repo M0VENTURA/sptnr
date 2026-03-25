@@ -327,7 +327,9 @@ class CoverDetector:
         """Normalize person/group names for robust matching."""
         if not value:
             return ""
-        normalized = value.lower().strip()
+        # Split CamelCase/PascalCase before lowercasing so e.g. "DiFiore" -> "Di Fiore"
+        expanded = re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', value)
+        normalized = expanded.lower().strip()
         normalized = normalized.replace("’", "'")
         normalized = re.sub(r"\b(the|and)\b", " ", normalized)
         normalized = re.sub(r"[^a-z0-9\s]", " ", normalized)
@@ -601,9 +603,13 @@ class CoverDetector:
                 if not title_matches and not same_work_match and not matched_work_match:
                     continue
 
-                # If the scanned track has known work IDs, constrain candidates to that same work.
+                # If the scanned track has known work IDs, prefer same-work recordings,
+                # but do NOT hard-skip recordings with both title and writer matches.
+                # (Cake's cover of "I Will Survive" may link to a different work node
+                #  than Gloria Gaynor's original, but title+writer still confirm it.)
                 if target_work_ids and not same_work_match:
-                    continue
+                    if not (title_matches and writer_match):
+                        continue
 
                 # If we have writer-matched work IDs, reject recordings linked to different works.
                 if matched_work_ids and not matched_work_match and not writer_match:

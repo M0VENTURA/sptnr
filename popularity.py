@@ -6928,11 +6928,9 @@ def popularity_scan(
                         is_popularity_based_5star = False
 
                         # SIMPLIFIED 5-STAR LOGIC BASED ON Z-SCORE AND CONFIDENCE
-                        # Rules (unified — z-score is a gate, not a confidence substitute):
+                        # Rules:
                         # 1. z-score 0-1: requires 2 medium confidence sources OR 1 high confidence source
-                        # 2. z-score > 1: same evidence requirement as z 0-1 (z-score alone does not
-                        #    lower the metadata bar — a high z-score with only 1 medium source
-                        #    such as MusicBrainz or Last.fm is NOT enough for 5 stars)
+                        # 2. z-score > 1: requires only 1 medium confidence source OR 1 high confidence source
                         # 3. z-score > 2: may qualify as popularity-only 5★ based on CURRENT run z-score (not persisted status)
 
                         # Count evidence sources for star gating upfront so that both the
@@ -7017,14 +7015,11 @@ def popularity_scan(
                                 single_confidence = "low"
 
                             # Apply unified z-score + confidence rules.
-                            # Z-score is used only as a gate; both z > 1 and z 0-1
-                            # require the same metadata evidence threshold.
+                            # z > 1: 1 medium source OR 1 high-confidence source is sufficient.
+                            # z 0-1: still requires 2 medium sources OR 1 high-confidence source.
                             if track_zscore > 1.0:
-                                # z-score > 1: still requires 2 medium OR 1 true high-confidence
-                                # metadata source.  A single medium source (e.g. only MusicBrainz
-                                # or only Last.fm) is insufficient — z-score must NOT substitute
-                                # for the missing metadata evidence.
-                                if medium_conf_count >= 2 or high_conf_source_count >= 1:
+                                # z-score > 1: only 1 medium confidence source is required.
+                                if medium_conf_count >= 1 or high_conf_source_count >= 1:
                                     stars = 5
                                     if not is_single:
                                         single_upgrades.append(track_id)
@@ -7038,17 +7033,17 @@ def popularity_scan(
                                             f"(evidence={medium_conf_count}, high_sources={high_conf_source_count}, z-score={track_zscore:.2f} > 1.0)"
                                         )
                                     log_debug(
-                                        f"Evidence gate passed (z>1) - track_id: {track_id}, "
+                                        f"Evidence gate passed (z>1, 1 source sufficient) - track_id: {track_id}, "
                                         f"sources: {medium_conf_count}, high_sources: {high_conf_source_count}, zscore: {track_zscore:.2f}"
                                     )
                                 else:
                                     stars = baseline_stars
                                     log_info(
                                         f"{stars}-star assignment: {title} "
-                                        f"(insufficient metadata evidence for z>1: {medium_conf_count} source(s), zscore={track_zscore:.2f}, baseline spread preserved)"
+                                        f"(0 sources, zscore={track_zscore:.2f} > 1.0, baseline spread preserved)"
                                     )
                                     log_debug(
-                                        f"Evidence gate failed (z>1, only {medium_conf_count} medium source) - track_id: {track_id}, "
+                                        f"Evidence gate failed (z>1, 0 sources) - track_id: {track_id}, "
                                         f"sources: {medium_conf_count}, high_sources: {high_conf_source_count}, zscore: {track_zscore:.2f}"
                                     )
                                     single_downgrades.append(track_id)
