@@ -422,7 +422,7 @@ def _sanitize_search_query_for_slskd(query: str) -> str:
     return " ".join(cleaned.split())
 
 
-
+def _resolve_existing_track_path(file_path, music_root=None):
     """Resolve stored track path to an existing on-disk file path when possible."""
     if not file_path:
         return None
