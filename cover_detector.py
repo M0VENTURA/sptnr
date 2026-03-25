@@ -427,8 +427,21 @@ class CoverDetector:
             # First query works by title+writer. This mirrors the MusicBrainz web
             # Works view and gives us canonical writer-linked work IDs.
             matched_work_ids = set()
+
+            def _canonical_title(value: str) -> str:
+                # Remove common version suffixes like "(demo)", "[live]", "- remaster" so
+                # original recordings still match album track variants.
+                text = str(value or "").strip()
+                text = re.sub(r"\[[^\]]*\]", " ", text)
+                text = re.sub(r"\([^)]*\)", " ", text)
+                text = re.sub(r"\s+-\s+.*$", " ", text)
+                return self._normalize_name(text)
+
+            # Use canonical title (stripped of live/demo/etc. suffixes) for the work
+            # search so that tracks like "War Pigs (live)" resolve to the "War Pigs" work.
+            canonical_search_title = _canonical_title(title) or title
             try:
-                work_result = mb.search_works(work=title, artist=writer, limit=25)
+                work_result = mb.search_works(work=canonical_search_title, artist=writer, limit=25)
             except Exception:
                 work_result = {}
 
@@ -437,7 +450,9 @@ class CoverDetector:
                 if not work_id:
                     continue
                 work_title = work.get('title', '')
-                if work_title and self._normalize_name(work_title) != self._normalize_name(title):
+                # Compare work title against the canonical (suffix-stripped) track title so
+                # that "(live)" / "(demo)" / "- Remaster" variants still match the base work.
+                if work_title and self._normalize_name(work_title) != _canonical_title(title):
                     # Keep this strict to avoid attaching unrelated writer works.
                     continue
                 matched_work_ids.add(work_id)
@@ -445,11 +460,14 @@ class CoverDetector:
             recordings_by_id: Dict[str, Dict] = {}
 
             # Title search remains useful as a broad candidate source.
-            result = mb.search_recordings(recording=title, limit=25)
-            for rec in result.get('recording-list', []) or []:
-                rec_id = rec.get('id')
-                if rec_id:
-                    recordings_by_id[rec_id] = rec
+            try:
+                result = mb.search_recordings(recording=title, limit=25)
+                for rec in result.get('recording-list', []) or []:
+                    rec_id = rec.get('id')
+                    if rec_id:
+                        recordings_by_id[rec_id] = rec
+            except Exception:
+                pass
 
             # Work-linked expansion prevents wrong matches for common song titles.
             # Prefer target work ids (from scanned MBID). If missing, use top matched
@@ -476,15 +494,6 @@ class CoverDetector:
             recordings = list(recordings_by_id.values())
             if not recordings:
                 return None
-
-            def _canonical_title(value: str) -> str:
-                # Remove common version suffixes like "(demo)", "[live]", "- remaster" so
-                # original recordings still match album track variants.
-                text = str(value or "").strip()
-                text = re.sub(r"\[[^\]]*\]", " ", text)
-                text = re.sub(r"\([^)]*\)", " ", text)
-                text = re.sub(r"\s+-\s+.*$", " ", text)
-                return self._normalize_name(text)
 
             def _titles_match(left: str, right: str) -> bool:
                 left_raw = self._normalize_name(left)

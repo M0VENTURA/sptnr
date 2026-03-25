@@ -5905,7 +5905,7 @@ def popularity_scan(
                                     score = row_get(track, 'popularity_score', 0)
                                     if score <= 0 or artist_spread == 0:
                                         cursor.execute(f"""
-                                            UPDATE tracks SET is_standout_track = 0, artist_z_score = 0, stars = 1
+                                            UPDATE tracks SET is_standout_track = 0
                                             WHERE id = {placeholder}
                                         """, (track_id,))
                                         continue
@@ -5945,9 +5945,9 @@ def popularity_scan(
                                     else:
                                         star = 1
                                     cursor.execute(f"""
-                                        UPDATE tracks SET is_standout_track = {placeholder}, artist_z_score = {placeholder}, stars = {placeholder}
+                                        UPDATE tracks SET is_standout_track = {placeholder}
                                         WHERE id = {placeholder}
-                                    """, (1 if is_album_standout or is_artist_standout else 0, artist_z, star, track_id))
+                                    """, (1 if is_album_standout or is_artist_standout else 0, track_id))
                                     log_debug(f"Track: {track_title} | Score: {score:.1f} | Album_z: {album_z:.2f} | Artist_z: {artist_z:.2f} | Album_standout: {is_album_standout} | Artist_standout: {is_artist_standout} | Star: {star}")
                                 conn.commit()
                     except Exception as e:
@@ -7144,7 +7144,7 @@ def popularity_scan(
                         stars = max(stars, 1)
 
                         # Collect update for batch processing
-                        updates.append((stars, track_id))
+                        updates.append((stars, track_zscore, track_id))
 
                         star_distribution[stars] += 1
 
@@ -7152,7 +7152,7 @@ def popularity_scan(
 
                     # Batch update all tracks at once for better performance
                     cursor.executemany(
-                        f"""UPDATE tracks SET stars = {placeholder} WHERE id = {placeholder}""",
+                        f"""UPDATE tracks SET stars = {placeholder}, artist_z_score = {placeholder} WHERE id = {placeholder}""",
                         updates
                     )
 
@@ -7160,7 +7160,7 @@ def popularity_scan(
                     # Medium-confidence promotion is handled exclusively by the explicit gate above
                     # (2 sources for 0<=z<1, 1 source for z>1).
                     five_star_singles_to_tag = []
-                    for stars, track_id in updates:
+                    for stars, _zscore, track_id in updates:
                         if stars == 5:  # Only for 5-star tracks
                             # Fetch the single_confidence for this track
                             cursor.execute(
@@ -7229,7 +7229,7 @@ def popularity_scan(
                     log_debug(f"Batch committed {len(updates)} star ratings for album '{album}'")
 
                     # Sync to Navidrome after batch update
-                    for stars, track_id in updates:
+                    for stars, _zscore, track_id in updates:
                         if sync_track_rating_to_navidrome(track_id, stars):
                             log_debug(f"Synced track {track_id} to Navidrome with {stars} stars")
                         else:
