@@ -3475,6 +3475,9 @@ def _auto_resume_interrupted_scans():
 
 
 
+# Elect a leader worker to run startup background tasks exactly once.
+_is_startup_leader_worker = _acquire_startup_leader_lock()
+
 # Kick off startup background tasks only in the elected leader worker.
 if _is_startup_leader_worker:
     try:
