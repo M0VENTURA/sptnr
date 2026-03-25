@@ -2075,6 +2075,7 @@ function buildQueueTrackStatusDetail(track, group) {
     in_collection: 'Already exists in the library.',
     discovered: 'Discovered in downloads and pending review.',
     pending_match: 'Pending metadata match selection.',
+    copy_recommended: 'Found on a different album locally – copy recommended.',
     failed: 'Processing failed; retry is available.'
   };
 
@@ -2109,6 +2110,10 @@ function classifyTrackPath(pathValue, fieldName) {
     return { kind: 'remote', label: 'Remote path' };
   }
 
+  if (sourceField === 'source_music_path') {
+    return { kind: 'local', label: 'Local music path' };
+  }
+
   if (/^(https?|ftp|smb):\/\//i.test(raw) || raw.startsWith('\\\\')) {
     return { kind: 'remote', label: 'Remote path' };
   }
@@ -2133,7 +2138,8 @@ function buildTrackPathDetailsHtml(track) {
     { field: 'music_file_path', value: track?.music_file_path },
     { field: 'matched_file_path', value: track?.matched_file_path },
     { field: 'file_path', value: track?.file_path },
-    { field: 'source_file_path', value: track?.source_file_path }
+    { field: 'source_file_path', value: track?.source_file_path },
+    { field: 'source_music_path', value: track?.source_music_path }
   ];
 
   const seen = new Set();
@@ -2242,6 +2248,7 @@ async function loadFolderGroups(options = {}) {
           matched_file_path: item.matched_file_path || '',
           found_filename: item.found_filename || '',
           source_file_path: item.source_file_path || '',
+          source_music_path: item.source_music_path || '',
           track_number: item.track_number,
           duration: item.duration || 0,
           release_mbid: item.release_mbid || item.release_id || '',
@@ -2317,6 +2324,7 @@ async function loadFolderGroups(options = {}) {
           matched_file_path: item.matched_file_path || '',
           found_filename: item.found_filename || '',
           source_file_path: item.source_file_path || '',
+          source_music_path: item.source_music_path || '',
           track_number: item.track_number,
           duration: item.duration || 0,
           release_mbid: item.release_mbid || item.release_id || '',
@@ -2712,12 +2720,14 @@ async function loadFolderGroups(options = {}) {
                   const inferredAlbumEnc = encodeInlineArg(inferredAlbum || '');
                   const inferredTitleEnc = encodeInlineArg(track.title || '');
                   const showRetry = queueStatusRow === 'failed';
+                  const canCopyFromLocal = queueStatusRow === 'copy_recommended' && queueId > 0 && !!(track.source_music_path);
                   const canMoveToMusic = (queueStatusRow === 'matched' || queueStatusRow === 'completed' || queueStatusRow === 'pending_match' || (queueStatusRow === 'in_collection' && isDownloadsBacked)) && queueId > 0;
                   const canSendQueried = queueStatusRow === 'queried' && queueId > 0;
                   const canChangeMatch = queueId > 0;
                   const canResetMatch = ['matched', 'completed', 'possible_duplicate', 'unmatched'].includes(queueStatusRow) && queueId > 0;
                   const hasDownloadFile = !!(track.file_path || track.matched_file_path || track.music_file_path || group.matched_folder_path);
                   moveButtonHtml = `<div class="d-flex flex-column gap-1 align-items-center">
+                    ${canCopyFromLocal ? `<button class="btn btn-sm btn-outline-warning" onclick="copyFromLocal(${queueId})" title="Copy from local library and move to this album"><i class="bi bi-copy"></i> Copy</button>` : ''}
                     ${canMoveToMusic ? `<button class="btn btn-sm btn-outline-success" onclick="moveMatchedToMusic(${queueId})" title="Move to /music and retag from MusicBrainz"><i class="bi bi-box-arrow-right"></i></button>` : ''}
                     ${canSendQueried ? `<button class="btn btn-sm btn-outline-primary" onclick="sendQueriedTrack(${queueId})" title="Send queried track to queue for Soulseek search"><i class="bi bi-send"></i></button>` : ''}
                     ${canChangeMatch ? `<button class="btn btn-sm btn-outline-info" onclick="openQueueItemMatchModal(${queueId}, '${inferredArtistEnc}', '${inferredAlbumEnc}', '${currentMbidEnc}', '${inferredTitleEnc}')" title="Change or set MusicBrainz match for this queue item"><i class="bi bi-arrow-left-right"></i></button>` : ''}
@@ -2795,6 +2805,7 @@ async function loadFolderGroups(options = {}) {
                             discovered: ['warning', 'Discovered'],
                             possible_duplicate: ['warning', 'Duplicate'],
                             pending_match: ['warning', 'Pending Match'],
+                            copy_recommended: ['warning', 'Copy Recommended'],
                             failed: ['danger', 'Failed']
                           };
                           const statusPair = statusMap[trackStatus] || ['secondary', trackStatus || 'Unknown'];
@@ -4175,6 +4186,59 @@ async function _pollMoveToMusicTask(taskId, queueId, timeoutMs = 180000) {
     status: 'timeout',
     result: { error: 'Move request is still running. Refresh queue status in a few seconds.' }
   };
+}
+
+async function copyFromLocal(queueId) {
+  // Copy the track from its existing /music path (different album) to /downloads
+  // so it can be re-tagged with the correct MBID release and moved automatically.
+  if (!confirm('Copy this track from your local library to the downloads folder?\n\nIt will be re-tagged with the correct release metadata and moved to the target album automatically.')) {
+    return;
+  }
+
+  try {
+    const data = await fetchJsonOrThrow(`/api/queue/${queueId}/copy-from-local`, { method: 'POST' });
+
+    if (data.success) {
+      showToastIfAvailable('✅ Copied – the track will be tagged and moved automatically.', 'success');
+      setTimeout(() => loadFolderGroups({ forceRender: true }), 3000);
+    } else {
+      alert('❌ Copy failed: ' + (data.error || 'Unknown error'));
+    }
+  } catch (e) {
+    alert('❌ Network error: ' + e.message);
+  }
+}
+
+function showToastIfAvailable(message, type) {
+  // Show a Bootstrap toast if the toast container exists, otherwise fall back to console/alert.
+  const container = document.getElementById('toastContainer');
+  if (!container) {
+    if (type === 'success') {
+      console.info(message);
+    } else {
+      alert(message);
+    }
+    return;
+  }
+  const bg = type === 'success' ? 'bg-success' : (type === 'danger' ? 'bg-danger' : 'bg-secondary');
+  const id = 'toast-' + Date.now();
+  container.insertAdjacentHTML('beforeend', `
+    <div id="${id}" class="toast align-items-center text-white ${bg} border-0" role="alert">
+      <div class="d-flex">
+        <div class="toast-body"></div>
+        <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+      </div>
+    </div>
+  `);
+  const el = document.getElementById(id);
+  if (el) {
+    // Use textContent to avoid XSS when setting dynamic message text.
+    const body = el.querySelector('.toast-body');
+    if (body) body.textContent = message;
+    if (window.bootstrap?.Toast) {
+      new bootstrap.Toast(el, { delay: 4000 }).show();
+    }
+  }
 }
 
 async function moveMatchedToMusic(queueId) {
