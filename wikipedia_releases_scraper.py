@@ -969,8 +969,14 @@ class WikipediaReleaseScraper:
                 if row and self._row_value(row, index=0) and self._row_value(row, index=1)
             }
         except Exception as e:
-            # tracks table may not exist yet, continue without filtering
+            # tracks table may not exist yet, continue without filtering.
+            # IMPORTANT: In PostgreSQL a failed statement aborts the entire transaction.
+            # Roll back here so subsequent INSERT/UPDATE operations can proceed.
             logger.debug(f"Could not query tracks table (may not exist yet): {e}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             artists_in_collection = set()
             albums_in_collection = set()
         
@@ -1007,14 +1013,17 @@ class WikipediaReleaseScraper:
                     # (e.g., prefer "The Wilted EP" over "The Wilted EP(EP)")
                     better_name = album_name if len(album_name) < len(existing_normalized.get('album_name', '')) else existing_normalized.get('album_name')
                     
+                    query.execute("SAVEPOINT sp_release_upsert")
                     query.execute("""
                         UPDATE upcoming_releases
                         SET artist_in_collection = %s, album_in_collection = %s, updated_at = CURRENT_TIMESTAMP, album_name = %s
                         WHERE id = %s
                     """, (artist_in_collection, album_in_collection, better_name, existing_id))
+                    query.execute("RELEASE SAVEPOINT sp_release_upsert")
                     updated += 1
                 else:
                     # Insert new record
+                    query.execute("SAVEPOINT sp_release_upsert")
                     query.execute("""
                         INSERT INTO upcoming_releases 
                         (artist_name, album_name, release_date, release_year, source, 
@@ -1033,9 +1042,15 @@ class WikipediaReleaseScraper:
                         artist_in_collection,
                         album_in_collection,
                     ))
+                    query.execute("RELEASE SAVEPOINT sp_release_upsert")
                     added += 1
             except Exception:
-                # Update existing record on constraint violation
+                # Roll back to the savepoint to clear the aborted-transaction state,
+                # then attempt a plain UPDATE as a fallback.
+                try:
+                    query.execute("ROLLBACK TO SAVEPOINT sp_release_upsert")
+                except Exception:
+                    pass
                 try:
                     query.execute("""
                         UPDATE upcoming_releases
@@ -1044,6 +1059,10 @@ class WikipediaReleaseScraper:
                     """, (artist_in_collection, album_in_collection, artist_name, album_name, release_date))
                     updated += 1
                 except Exception as update_error:
+                    try:
+                        query.execute("ROLLBACK TO SAVEPOINT sp_release_upsert")
+                    except Exception:
+                        pass
                     logger.warning(f"Failed to update release - {artist_name} / {album_name}: {update_error}")
         
         # Log scrape
