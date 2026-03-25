@@ -379,8 +379,8 @@
                             <div class="col-4">
                                 <div class="metadata-label small text-muted">Final Zscore</div>
                                 <div class="metadata-value">
-                                    {% if track.score is not none and track.score != '' %}
-                                        <span class="badge badge-success">{{ track.score|round(3) }}</span>
+                                    {% if track.artist_z_score is not none and track.artist_z_score != '' %}
+                                        <span class="badge badge-success">{{ track.artist_z_score|round(3) }}</span>
                                     {% else %}—{% endif %}
                                 </div>
                             </div>
