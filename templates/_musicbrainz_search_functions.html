@@ -184,9 +184,26 @@ async function searchMusicBrainzRelease(event, artist, album, track) {
 
 // ===== Display Results Function =====
 
+function _mbReleaseDateKey(release) {
+  const raw = release.date || release.year || '';
+  if (!raw) return '';
+  // Normalise to a comparable ISO-style string: "2024" < "2024-05" < "2024-05-10"
+  return String(raw).trim();
+}
+
 function displayMusicBrainzResults(results) {
   const container = document.getElementById('mbSearchResults');
-  
+
+  // Sort newest-first; releases without a date go to the end.
+  results = [...results].sort((a, b) => {
+    const da = _mbReleaseDateKey(a);
+    const db = _mbReleaseDateKey(b);
+    if (!da && !db) return 0;
+    if (!da) return 1;
+    if (!db) return -1;
+    return db.localeCompare(da);
+  });
+
   // Global storage for release data to avoid JSON escaping in HTML attributes
   if (!window.mbReleaseData) {
     window.mbReleaseData = {};
@@ -313,16 +330,25 @@ function displayMusicBrainzResults(results) {
   
   // Attach event listeners to download buttons
   container.querySelectorAll('.mb-download-release').forEach(button => {
-    button.addEventListener('click', function() {
+    button.addEventListener('click', async function() {
       const dataKey = this.dataset.releaseKey;
       const releaseData = window.mbReleaseData[dataKey];
-      
+
       if (!releaseData) {
         alert('Error: Release data not found');
         return;
       }
-      
-      downloadMusicBrainzRelease(releaseData.artist, releaseData.album, releaseData.tracks, releaseData.year, releaseData.release_id, releaseData.source);
+
+      const btn = this;
+      const originalHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span> Starting…';
+      try {
+        await downloadMusicBrainzRelease(releaseData.artist, releaseData.album, releaseData.tracks, releaseData.year, releaseData.release_id, releaseData.source);
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
+      }
     });
   });
 
@@ -337,17 +363,29 @@ function displayMusicBrainzResults(results) {
         return;
       }
 
-      const queued = await downloadMusicBrainzRelease(
-        releaseData.artist,
-        releaseData.album,
-        [releaseData.tracks[trackIndex]],
-        releaseData.year,
-        releaseData.release_id,
-        releaseData.source,
-        { closeModal: false, selectionLabel: 'track' }
-      );
-      if (queued) {
-        markMBTrackQueued(container, dataKey, trackIndex);
+      const btn = this;
+      const originalHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
+      try {
+        const queued = await downloadMusicBrainzRelease(
+          releaseData.artist,
+          releaseData.album,
+          [releaseData.tracks[trackIndex]],
+          releaseData.year,
+          releaseData.release_id,
+          releaseData.source,
+          { closeModal: false, selectionLabel: 'track' }
+        );
+        if (queued) {
+          markMBTrackQueued(container, dataKey, trackIndex);
+        } else {
+          btn.disabled = false;
+          btn.innerHTML = originalHtml;
+        }
+      } catch (e) {
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
       }
     });
   });
@@ -365,17 +403,26 @@ function displayMusicBrainzResults(results) {
         return;
       }
 
-      const queued = await downloadMusicBrainzRelease(
-        releaseData.artist,
-        releaseData.album,
-        selectedTracks,
-        releaseData.year,
-        releaseData.release_id,
-        releaseData.source,
-        { closeModal: false, selectionLabel: 'selected tracks' }
-      );
-      if (queued) {
-        selectedIndices.forEach(index => markMBTrackQueued(container, dataKey, index));
+      const btn = this;
+      const originalHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span> Starting…';
+      try {
+        const queued = await downloadMusicBrainzRelease(
+          releaseData.artist,
+          releaseData.album,
+          selectedTracks,
+          releaseData.year,
+          releaseData.release_id,
+          releaseData.source,
+          { closeModal: false, selectionLabel: 'selected tracks' }
+        );
+        if (queued) {
+          selectedIndices.forEach(index => markMBTrackQueued(container, dataKey, index));
+        }
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
       }
     });
   });

@@ -112,7 +112,7 @@
         <li class="nav-item"><a class="nav-link" href="#artist-stats-section">Stats</a></li>
         <li class="nav-item"><a class="nav-link" href="#artist-similar-section">Similar</a></li>
         <li class="nav-item"><a class="nav-link" href="#artist-top-tracks-section">Top Tracks</a></li>
-        <li class="nav-item"><a class="nav-link" href="#artist-genres-section">Genres</a></li>
+        <li class="nav-item"><a class="nav-link" href="#artist-genres-section">Genres and Moods</a></li>
         <li class="nav-item"><a class="nav-link" href="#albums-section">Albums</a></li>
         <li class="nav-item"><a class="nav-link" href="#artist-covers-section">Covers</a></li>
         <li class="nav-item"><a class="nav-link" href="#artist-appears-on-section">Appears On</a></li>
@@ -311,7 +311,7 @@
     <div class="card">
       <div class="card-header d-flex justify-content-between align-items-center">
         <h5 class="card-title mb-0">
-          <i class="bi bi-collection"></i> Genres
+          <i class="bi bi-collection"></i> Genres and Moods
         </h5>
         <button class="btn btn-sm btn-outline-primary" onclick="fetchArtistGenreRecommendations()" id="fetchArtistGenresBtn">
           <i class="bi bi-cloud-download"></i> Get Online Suggestions
@@ -326,7 +326,7 @@
               ('spotify_genres', 'Spotify', 'success'),
               ('lastfm_tags', 'Last.fm', 'danger'),
               ('listenbrainz_genres', 'ListenBrainz', 'info'),
-              ('discogs_genres', 'Discogs', 'warning'),
+              ('discogs_genres', 'Discogs', 'secondary'),
               ('musicbrainz_genres', 'MusicBrainz', 'primary')
             ] %}
             {% set ns = namespace(has_any=False) %}
@@ -357,14 +357,18 @@
                   {% if genre_sources and genre_sources.get(key) %}
                     <div class="tab-pane fade {{ 'active show' if ns3.first else '' }}"
                          id="artistGenreTab{{ key }}-content" role="tabpanel">
-                      <p class="text-muted small mb-3">Top genres collected during scan</p>
-                      <div class="d-flex flex-wrap gap-2">
-                        {% for genre in genre_sources[key] %}
-                          <span class="badge bg-{{ color }} me-2 mb-2 artist-genre-source-badge">
-                            {{ genre.name }}{% if genre.count %} <small class="text-muted">({{ genre.count }})</small>{% endif %}
-                          </span>
+                      <p class="text-muted small mb-2">Tags/moods collected from {{ label }} during scan · sorted by frequency</p>
+                      <div class="d-flex flex-wrap gap-2 mb-3" id="artistSourceTags_{{ key }}">
+                        {% for genre in genre_sources[key]|sort(reverse=True, attribute='count') %}
+                          <label class="badge bg-{{ color }} genre-source-selectable" style="cursor:pointer;user-select:none;font-size:0.85rem;" title="Click to select">
+                            <input type="checkbox" class="artist-source-tag-check" value="{{ genre.name }}" style="margin-right:0.3rem;cursor:pointer;">
+                            {{ genre.name }}{% if genre.count %} <small class="opacity-75">({{ genre.count }})</small>{% endif %}
+                          </label>
                         {% endfor %}
                       </div>
+                      <button class="btn btn-sm btn-outline-success artist-apply-source-tags-btn" style="display:none" onclick="applySelectedArtistSourceTags()">
+                        <i class="bi bi-check-circle"></i> Save Selected to All Artist Tracks
+                      </button>
                     </div>
                     {% set ns3.first = False %}
                   {% endif %}
@@ -372,9 +376,9 @@
               </div>
             {% else %}
               <div class="alert alert-info mb-0">
-                <i class="bi bi-info-circle"></i> No genres available yet.
-                <br><small>Genres are collected during popularity scans from Spotify, Last.FM, ListenBrainz, Discogs, and MusicBrainz.</small>
-                <br><small class="text-muted mt-2">Next scan will populate genre data.</small>
+                <i class="bi bi-info-circle"></i> No genre/mood data available yet.
+                <br><small>Genres and moods are collected during popularity scans from Spotify, Last.FM, ListenBrainz, Discogs, and MusicBrainz.</small>
+                <br><small class="text-muted mt-2">Next scan will populate this data.</small>
               </div>
             {% endif %}
           </div>
@@ -3209,6 +3213,52 @@ function removeSelectedArtistGenres() {
   }
   
   handleGenreRemoval(artistName, null, selectedGenres, 'artist');
+}
+
+// Toggle apply button visibility when source-tag checkboxes change
+document.addEventListener('change', function(e) {
+  if (e.target && e.target.classList.contains('artist-source-tag-check')) {
+    const pane = e.target.closest('.tab-pane');
+    if (!pane) return;
+    const applyBtn = pane.querySelector('.artist-apply-source-tags-btn');
+    if (!applyBtn) return;
+    const anyChecked = pane.querySelectorAll('.artist-source-tag-check:checked').length > 0;
+    applyBtn.style.display = anyChecked ? '' : 'none';
+  }
+});
+
+function applySelectedArtistSourceTags() {
+  const artistName = {{ artist_name|tojson }};
+  const checked = document.querySelectorAll('.artist-source-tag-check:checked');
+  const selected = Array.from(checked).map(cb => cb.value).filter(Boolean);
+  if (selected.length === 0) {
+    alert('No tags selected');
+    return;
+  }
+  if (!confirm(`Save tags [${selected.join(', ')}] to ALL tracks by ${artistName}?`)) {
+    return;
+  }
+  const btns = document.querySelectorAll('.artist-apply-source-tags-btn');
+  btns.forEach(b => { b.disabled = true; b.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Saving…'; });
+  fetch('/api/artist/apply-genres', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ artist: artistName, genres: selected })
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        alert('✅ ' + (data.message || 'Tags saved to all artist tracks'));
+        location.reload();
+      } else {
+        alert('❌ Error: ' + (data.error || 'Failed to save tags'));
+        btns.forEach(b => { b.disabled = false; b.innerHTML = '<i class="bi bi-check-circle"></i> Save Selected to All Artist Tracks'; });
+      }
+    })
+    .catch(err => {
+      alert('❌ Network error: ' + err.message);
+      btns.forEach(b => { b.disabled = false; b.innerHTML = '<i class="bi bi-check-circle"></i> Save Selected to All Artist Tracks'; });
+    });
 }
 
 // Toggle tracklist visibility

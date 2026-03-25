@@ -2181,19 +2181,74 @@ def _normalize_album_artist_for_path(value):
 
 
 def _is_musicbrainz_backed(queue_item):
-    """Return True when a queue item was explicitly tied to a MusicBrainz release.
+    """Return True when a queue item was explicitly tied to a MusicBrainz release
+    via the MusicBrainz search modal.
 
-    Only items with MusicBrainz identifiers (or release_source='musicbrainz') are
-    eligible for automatic file moves.  Fuzzy-matched items that have no MusicBrainz
-    anchor must be approved manually in the Downloads UI.
+    Requires ``release_source='musicbrainz'`` to be set — a field that is only
+    written by the MB modal search routes (``api_queue_apply_mbid_match``,
+    ``api_queue_add_batch`` with MB data, etc.).  Items that merely contain a
+    UUID-shaped ``release_id`` from a non-MB source are intentionally excluded
+    so that fuzzy-matched or auto-discovered items do not bypass manual approval.
     """
-    return bool(
-        queue_item.get('release_id')
-        or queue_item.get('release_mbid')
-        or queue_item.get('recording_mbid')
-        or queue_item.get('isrc')
-        or str(queue_item.get('release_source') or '').strip().lower() == 'musicbrainz'
-    )
+    return str(queue_item.get('release_source') or '').strip().lower() == 'musicbrainz'
+
+
+def _is_full_album_ready_for_move(queue_item, cursor=None, placeholder=None):
+    """Return True only when every sibling queue item for the same MusicBrainz
+    release is in a terminal state (completed / imported / in_collection).
+
+    When any sibling is still pending (queued, downloading, etc.) the album is
+    not fully matched yet and no individual track should be auto-moved — the
+    system will only recommend the match and leave the decision to the user.
+
+    Falls back to ``True`` (allow single-track move) when the item has no
+    ``release_mbid`` / ``release_id`` to group by.
+    """
+    release_mbid = str(
+        queue_item.get('release_mbid') or queue_item.get('release_id') or ''
+    ).strip()
+    if not release_mbid:
+        # Standalone track — no album siblings to wait for.
+        return True
+
+    own_conn = cursor is None
+    conn_local = None
+    try:
+        if own_conn:
+            conn_local = _get_postgres_conn_from_app_or_fallback()
+            cursor = conn_local.cursor()
+            placeholder = "%s"
+
+        ph = placeholder or "%s"
+        cursor.execute(
+            f"""
+            SELECT COUNT(*) AS c
+            FROM download_queue
+            WHERE (release_mbid = {ph} OR release_id = {ph})
+              AND status NOT IN (
+                  'completed', 'imported', 'in_collection',
+                  'removed', 'cancelled', 'deleted'
+              )
+            """,
+            (release_mbid, release_mbid),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return True
+        pending = row['c'] if hasattr(row, 'get') and row.get('c') is not None else row[0]
+        return int(pending or 0) == 0
+    except Exception as e:
+        logger.warning(
+            f"[ALBUM_READY] Could not check album completeness for {release_mbid}: {e}"
+        )
+        # Fail safe — do not auto-move when we cannot confirm the album is complete.
+        return False
+    finally:
+        if own_conn and conn_local is not None:
+            try:
+                conn_local.close()
+            except Exception:
+                pass
 
 
 def _build_release_import_group(artist, album):
