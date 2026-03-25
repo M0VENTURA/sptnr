@@ -26,6 +26,12 @@ from helpers.tag_manager import sync_track_tags_to_file
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Bundled defaults (set as ENV vars in the official Docker image)
+# ---------------------------------------------------------------------------
+_BUNDLED_SCRIPT_PATH = "/opt/Essentia-to-Metadata/tag_music.py"
+_BUNDLED_MODELS_DIR = "/opt/essentia_models"
+
 
 # ---------------------------------------------------------------------------
 # Helpers shared with mood_scan.py
@@ -195,6 +201,12 @@ def run_essentia_mood_scan(
     # ------------------------------------------------------------------
     script_path = (script_path or "").strip()
     if not script_path:
+        _env = os.environ.get("ESSENTIA_SCRIPT_PATH", "").strip()
+        if _env and os.path.isfile(_env):
+            script_path = _env
+    if not script_path and os.path.isfile(_BUNDLED_SCRIPT_PATH):
+        script_path = _BUNDLED_SCRIPT_PATH
+    if not script_path:
         msg = (
             "Essentia script path is not configured. "
             "Set 'essentia.script_path' in config.yaml to the path of tag_music.py."
@@ -226,6 +238,14 @@ def run_essentia_mood_scan(
     # ------------------------------------------------------------------
     # Build the base subprocess command.
     # ------------------------------------------------------------------
+    models_dir = (models_dir or "").strip()
+    if not models_dir:
+        _env = os.environ.get("ESSENTIA_MODELS_DIR", "").strip()
+        if _env and os.path.isdir(_env):
+            models_dir = _env
+    if not models_dir and os.path.isdir(_BUNDLED_MODELS_DIR):
+        models_dir = _BUNDLED_MODELS_DIR
+
     python_exec = sys.executable
     base_cmd: List[str] = [
         python_exec, script_path,

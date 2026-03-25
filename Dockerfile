@@ -3,7 +3,11 @@ FROM python:3.11-slim
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Australia/Melbourne
 
-# System deps + tzdata + vim + gunicorn + ffmpeg
+# Default paths for the bundled Essentia-to-Metadata installation
+ENV ESSENTIA_SCRIPT_PATH=/opt/Essentia-to-Metadata/tag_music.py
+ENV ESSENTIA_MODELS_DIR=/opt/essentia_models
+
+# System deps + tzdata + vim + gunicorn + ffmpeg + git + wget for Essentia
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tzdata \
     build-essential \
@@ -14,6 +18,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     vim \
     ffmpeg \
+    git \
+    wget \
     && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone \
     && rm -rf /var/lib/apt/lists/*
 
@@ -26,6 +32,26 @@ COPY requirements.txt /app/
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt && \
     pip install --no-cache-dir flask beautifulsoup4 gunicorn pyyaml
+
+# Install Essentia-to-Metadata (https://github.com/WB2024/Essentia-to-Metadata)
+# Clone the repo so tag_music.py is available at the default ESSENTIA_SCRIPT_PATH
+RUN git clone --depth=1 https://github.com/WB2024/Essentia-to-Metadata.git /opt/Essentia-to-Metadata
+
+# Install essentia-tensorflow and its dependencies
+RUN pip install --no-cache-dir essentia-tensorflow numpy
+
+# Download Essentia ML models (~87 MB) to the default ESSENTIA_MODELS_DIR
+RUN mkdir -p /opt/essentia_models && \
+    wget -q --tries=3 --retry-connrefused -P /opt/essentia_models \
+        https://essentia.upf.edu/models/music-style-classification/discogs-effnet/discogs-effnet-bs64-1.pb && \
+    wget -q --tries=3 --retry-connrefused -P /opt/essentia_models \
+        https://essentia.upf.edu/models/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.pb && \
+    wget -q --tries=3 --retry-connrefused -P /opt/essentia_models \
+        https://essentia.upf.edu/models/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.json && \
+    wget -q --tries=3 --retry-connrefused -P /opt/essentia_models \
+        https://essentia.upf.edu/models/classification-heads/mtg_jamendo_moodtheme/mtg_jamendo_moodtheme-discogs-effnet-1.pb && \
+    wget -q --tries=3 --retry-connrefused -P /opt/essentia_models \
+        https://essentia.upf.edu/models/classification-heads/mtg_jamendo_moodtheme/mtg_jamendo_moodtheme-discogs-effnet-1.json
 
 # App files - COPY ALL FILES INCLUDING STATIC FOLDER
 COPY . /app
