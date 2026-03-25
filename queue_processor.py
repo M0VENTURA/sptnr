@@ -75,6 +75,12 @@ _TITLE_VARIANT_TOKENS = {
     "acoustic", "demo", "edit", "instrumental", "intro", "live",
     "mix", "radio", "remaster", "remastered", "remix", "version",
 }
+# Pre-compiled whole-word patterns for each variant token – avoids re-compiling
+# inside loops in _is_remix_or_live_track().
+_TITLE_VARIANT_PATTERNS = {
+    token: re.compile(r'\b' + re.escape(token) + r'\b', re.IGNORECASE)
+    for token in _TITLE_VARIANT_TOKENS
+}
 
 # Minimum similarity score below which a file's artist/title tags are considered
 # a hard mismatch against the queue item.  Scores this low mean it's a completely
@@ -1417,7 +1423,7 @@ def update_queue_status(queue_id, status, **kwargs):
         for key, value in kwargs.items():
             if key in ['found_filename', 'file_path', 'failure_reason', 'retry_count',
                        'last_failure_time', 'source_id', 'source', 'matched_file_path',
-                       'in_collection', 'collection_track_id']:
+                       'in_collection', 'collection_track_id', 'source_music_path']:
                 updates.append(f"{key} = {placeholder}")
                 params.append(value)
         
@@ -1964,6 +1970,145 @@ def _safe_delete_download_candidate(file_path, reason, queue_id=None):
         return False
 
 
+def _is_remix_or_live_track(title, album):
+    """Return True when title or album suggests a remix, live, or alternate version.
+
+    Uses the existing _TITLE_VARIANT_TOKENS set (live, remix, mix, acoustic, demo,
+    etc.).  Checks for both parenthetical/bracketed forms "(Live)" and standalone
+    words in the title or album name.
+    """
+    def _has_variant(text):
+        if not text:
+            return False
+        t = text.lower()
+        for token, pattern in _TITLE_VARIANT_PATTERNS.items():
+            # Accept "(live)", "[remix]", " - live", "/live", " live " etc.
+            if f'({token})' in t or f'[{token}]' in t:
+                return True
+            # Whole-word match anywhere in the string
+            if pattern.search(text):
+                return True
+        return False
+
+    return _has_variant(title) or _has_variant(album)
+
+
+def _check_navidrome_different_album_match(queue_item):
+    """Check if this track exists in Navidrome on a *different* album.
+
+    Returns the source file path in /music when:
+      • title + artist similarity thresholds are met,
+      • song duration matches within tolerance,
+      • the album name does NOT match (same recording on a compilation, etc.),
+      • neither the queued track nor the matched Navidrome song is a remix/live.
+
+    Returns:
+        tuple: (found: bool, source_path: str | None, reason: str)
+    """
+    title = (queue_item.get('title') or '').strip()
+    artist = (queue_item.get('artist') or '').strip()
+    q_album = (queue_item.get('album') or '').strip()
+
+    if not title or not artist:
+        return False, None, ''
+
+    # Never recommend copy for remixes / live tracks – they legitimately differ.
+    if _is_remix_or_live_track(title, q_album):
+        return False, None, ''
+
+    base_url, username, password = _get_navidrome_config()
+    if not base_url:
+        return False, None, ''
+
+    try:
+        auth_params = _build_subsonic_auth_params(username, password)
+        search_params = dict(auth_params)
+        search_params['query'] = f'{artist} {title}'
+        search_params['songCount'] = 10
+        search_params['albumCount'] = 0
+        search_params['artistCount'] = 0
+
+        response = requests.get(
+            f'{base_url}/rest/search3.view',
+            params=search_params,
+            timeout=10,
+        )
+        response.raise_for_status()
+
+        data = response.json()
+        if data.get('subsonic-response', {}).get('status') != 'ok':
+            return False, None, ''
+
+        songs = data.get('subsonic-response', {}).get('searchResult3', {}).get('song', [])
+        if not isinstance(songs, list):
+            songs = [songs] if songs else []
+
+        def _sim(a, b):
+            if not a or not b:
+                return 0.0
+            return SequenceMatcher(None, a.lower().strip(), b.lower().strip()).ratio()
+
+        q_dur = _normalize_duration_seconds(queue_item.get('duration'))
+        music_root = os.path.abspath(os.environ.get('MUSIC_ROOT', '/music'))
+
+        for song in songs:
+            title_sim = _sim(song.get('title', ''), title)
+            artist_sim = _sim(song.get('artist', ''), artist)
+
+            if title_sim < _NAV_TITLE_SIMILARITY_THRESHOLD:
+                continue
+            if artist_sim < _NAV_ARTIST_SIMILARITY_THRESHOLD:
+                continue
+
+            # Duration must match within tolerance when both sides have it.
+            m_dur = _normalize_duration_seconds(song.get('duration'))
+            if q_dur and m_dur:
+                if abs(q_dur - m_dur) > _CONFIRMED_MATCH_DURATION_TOLERANCE_SECONDS:
+                    continue
+            elif q_dur or m_dur:
+                # One side has duration, the other doesn't – cannot confirm.
+                continue
+
+            # Album similarity check: skip if albums are the same.
+            m_album = (song.get('album') or '').strip()
+            if q_album and m_album:
+                if _sim(q_album, m_album) >= _ALBUM_SIMILARITY_THRESHOLD:
+                    # Albums match – this is a full in-collection hit, not a
+                    # different-album case; the regular in-collection path handles it.
+                    continue
+            else:
+                # One or both sides have no album info – cannot confirm albums differ.
+                continue
+
+            # Don't recommend copying a remix/live version from the library.
+            if _is_remix_or_live_track(song.get('title', ''), m_album):
+                continue
+
+            # Construct source path from Navidrome's path field.
+            nav_path = (song.get('path') or '').strip()
+            source_path = None
+            if nav_path:
+                if os.path.isabs(nav_path) and os.path.isfile(nav_path):
+                    source_path = nav_path
+                else:
+                    candidate = os.path.join(music_root, nav_path.lstrip('/'))
+                    candidate = os.path.abspath(candidate)
+                    if os.path.isfile(candidate):
+                        source_path = candidate
+
+            reason = (
+                f"Track '{artist} - {title}' found on a different album in Navidrome: "
+                f"'{song.get('artist')} - {song.get('title')}' (album: '{m_album}')"
+                + (f" | Local path: {source_path}" if source_path else '')
+            )
+            return True, source_path, reason
+
+    except Exception as e:
+        logger.debug(f"Different-album Navidrome check error for '{artist} - {title}': {e}")
+
+    return False, None, ''
+
+
 def _find_location_match_in_music(queue_item):
     """Return /music path when queue source path maps to an existing library file."""
     source_path = (queue_item.get('file_path') or '').strip()
@@ -2038,6 +2183,26 @@ def search_and_download(queue_id, queue_item, client):
                 return False
         else:
             logger.debug(f"Queue {queue_id}: location-only matching enabled; skipping metadata DB/Navidrome checks")
+
+        # Always check whether this recording exists on a different album in Navidrome.
+        # This runs regardless of SPTNR_LOCATION_MATCH_ONLY because it handles a
+        # distinct case (copy/re-tag rather than skip), and can be disabled with
+        # SPTNR_DISABLE_DIFFERENT_ALBUM_COPY=1 if needed.
+        disable_diff_copy = os.environ.get('SPTNR_DISABLE_DIFFERENT_ALBUM_COPY', '0').strip() in ('1', 'true', 'yes', 'on')
+        if not disable_diff_copy:
+            diff_found, diff_source_path, diff_reason = _check_navidrome_different_album_match(queue_item)
+            if diff_found:
+                logger.info(
+                    f"Queue {queue_id}: 📋 Same recording found on a different album in Navidrome "
+                    f"— recommending copy instead of re-download: {diff_reason}"
+                )
+                update_queue_status(
+                    queue_id,
+                    'copy_recommended',
+                    source_music_path=diff_source_path or '',
+                    failure_reason=diff_reason,
+                )
+                return False
 
         logger.info(f"Queue {queue_id}: Searching for '{search_query}'...")
         update_queue_status(queue_id, 'searching')

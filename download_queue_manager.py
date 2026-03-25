@@ -110,7 +110,7 @@ _format_filter_config_cache_key = None
 _format_filter_last_log_signature = None
 
 # Canonical active statuses for queue reads and processor selection.
-_ACTIVE_QUEUE_STATUSES = ('queued', 'searching', 'downloading', 'unmatched', 'queried')
+_ACTIVE_QUEUE_STATUSES = ('queued', 'searching', 'downloading', 'unmatched', 'queried', 'copy_recommended')
 _ACTIVE_QUEUE_STATUS_SQL = ", ".join(f"'{status}'" for status in _ACTIVE_QUEUE_STATUSES)
 
 # Throttle expensive downloads-folder checks triggered by frequent UI polling.
@@ -894,6 +894,7 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                 'copied_individually': "INTEGER DEFAULT 0",
                 'copied_individually_at': "TEXT",
                 'cover_art_url': "TEXT",
+                'source_music_path': "TEXT",
             }
 
             for col, col_type in required_cols.items():

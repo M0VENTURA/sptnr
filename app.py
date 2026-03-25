@@ -21347,6 +21347,78 @@ def api_queue_update(queue_id):
         return jsonify({"error": str(e)}), 400
 
 
+@app.route("/api/queue/<int:queue_id>/copy-from-local", methods=["POST"])
+def api_queue_copy_from_local(queue_id):
+    """Copy a file from its existing /music location to /downloads so it can be
+    re-tagged with the queue's target MBID release and moved to the correct album
+    folder.
+
+    This handles the case where the same recording already exists in the library
+    under a different album (e.g. on a compilation).  The workflow is:
+      1. Copy the source file from /music to /downloads.
+      2. Set queue status to 'matched' so the normal tag-and-move pipeline picks
+         it up automatically on the next processing cycle.
+    """
+    try:
+        import shutil as _shutil
+
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = "%s"
+
+        cursor.execute(f"SELECT * FROM download_queue WHERE id = {placeholder}", (queue_id,))
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row:
+            return jsonify({"success": False, "error": "Queue item not found"}), 404
+
+        item = dict(row) if hasattr(row, 'keys') else {col[0]: row[idx] for idx, col in enumerate(cursor.description or [])}
+
+        source_path = (item.get('source_music_path') or '').strip()
+        if not source_path:
+            return jsonify({"success": False, "error": "No source music path stored for this queue item"}), 400
+        if not os.path.isfile(source_path):
+            return jsonify({"success": False, "error": f"Source file not found on disk: {source_path}"}), 400
+
+        # Resolve /downloads directory.
+        try:
+            from download_queue_manager import get_downloads_dir
+            downloads_dir = get_downloads_dir()
+        except Exception:
+            downloads_dir = os.environ.get('DOWNLOADS_DIR', '/downloads')
+
+        dest_filename = os.path.basename(source_path)
+        dest_path = os.path.join(downloads_dir, dest_filename)
+
+        # Avoid silently overwriting an existing /downloads file.
+        if os.path.exists(dest_path):
+            base, ext = os.path.splitext(dest_filename)
+            dest_path = os.path.join(downloads_dir, f"{base}_local_copy{ext}")
+
+        _shutil.copy2(source_path, dest_path)
+        logging.info(
+            f"[COPY_FROM_LOCAL] Queue {queue_id}: copied '{source_path}' → '{dest_path}'"
+        )
+
+        # Mark as 'matched' with the /downloads copy as the working file so the
+        # normal move-to-music pipeline applies the correct MBID tags and moves it.
+        from download_queue_manager import update_queue_item
+        update_queue_item(queue_id, status='matched', file_path=dest_path)
+
+        return jsonify({
+            "success": True,
+            "message": "File copied to downloads — will be tagged and moved automatically.",
+            "dest_path": dest_path,
+        })
+
+    except Exception as e:
+        logging.error(f"[COPY_FROM_LOCAL] Error for queue {queue_id}: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/queue/<int:queue_id>/delete", methods=["DELETE"])
 def api_queue_delete(queue_id):
     """Delete queue item"""
