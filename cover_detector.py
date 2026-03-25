@@ -111,47 +111,58 @@ class CoverDetector:
         for track_id, info in track_writers.items():
             if track_id in seen_track_ids:
                 continue
-            for writer in info['writers']:
-                # Check if writer is different from album artist
-                if not self._is_writer_same_as_artist(writer, artist):
-                    logger.info(f"Potential cover: '{info['title']}' - lyricist/writer '{writer}' differs from artist '{artist}'")
-                    
-                    # Look up original recording by this writer
-                    original = self._find_original_recording(
-                        info['title'],
-                        writer,
-                        album_artist=artist,
-                        recording_mbid=info.get('mbid')
-                    )
-                    
-                    if original:
-                        result = {
-                            'track_id': track_id,
-                            'title': info['title'],
-                            'is_cover': True,
-                            'original_artist': original['artist'],
-                            'original_year': original.get('year'),
-                            'writer': writer,
-                            'confidence': original.get('confidence', 'medium')
-                        }
-                        cover_results.append(result)
-                        seen_track_ids.add(track_id)
-                        logger.info(f"✓ Cover confirmed: '{info['title']}' originally by '{original['artist']}' ({original.get('year', 'unknown year')})")
-                        
-                        # Get file path from track info if available
-                        track_data = next((t for t in tracks if t.get('id') == track_id), {})
-                        file_path = track_data.get('file_path')
-                        
-                        # Update database and file metadata
-                        self.update_cover_metadata(
-                            track_id=track_id,
-                            title=info['title'],
-                            original_artist=original['artist'],
-                            file_path=file_path
-                        )
-                        break  # Stop after first matching writer for this track
-                    else:
-                        logger.debug(f"No original recording found for '{info['title']}' by writer '{writer}'")
+
+            # Collect all writers that differ from the album artist in one pass so
+            # _find_original_recording is called only once per track (not once per
+            # writer), avoiding redundant MusicBrainz API calls.
+            differing_writers = [
+                w for w in info['writers']
+                if not self._is_writer_same_as_artist(w, artist)
+            ]
+
+            if not differing_writers:
+                continue
+
+            logger.info(
+                f"Potential cover: '{info['title']}' - "
+                f"writer(s) [{', '.join(differing_writers)}] differ from artist '{artist}'"
+            )
+
+            # Look up original recording using all differing writers (tried in order).
+            original = self._find_original_recording(
+                info['title'],
+                differing_writers,
+                album_artist=artist,
+                recording_mbid=info.get('mbid')
+            )
+
+            if original:
+                result = {
+                    'track_id': track_id,
+                    'title': info['title'],
+                    'is_cover': True,
+                    'original_artist': original['artist'],
+                    'original_year': original.get('year'),
+                    'writer': differing_writers[0],
+                    'confidence': original.get('confidence', 'medium')
+                }
+                cover_results.append(result)
+                seen_track_ids.add(track_id)
+                logger.info(f"✓ Cover confirmed: '{info['title']}' originally by '{original['artist']}' ({original.get('year', 'unknown year')})")
+
+                # Get file path from track info if available
+                track_data = next((t for t in tracks if t.get('id') == track_id), {})
+                file_path = track_data.get('file_path')
+
+                # Update database and file metadata
+                self.update_cover_metadata(
+                    track_id=track_id,
+                    title=info['title'],
+                    original_artist=original['artist'],
+                    file_path=file_path
+                )
+            else:
+                logger.debug(f"No original recording found for '{info['title']}' by writer(s) {differing_writers}")
         
         logger.info(f"Cover detection complete: found {len(cover_results)} covers in '{album}'")
         return cover_results
@@ -402,11 +413,16 @@ class CoverDetector:
     def _find_original_recording(
         self,
         title: str,
-        writer: str,
+        writers: List[str],
         album_artist: Optional[str] = None,
         recording_mbid: Optional[str] = None
     ) -> Optional[Dict]:
-        """Find earliest likely original recording for a title/writer pair."""
+        """Find earliest likely original recording for a title/writers pair.
+
+        Tries each writer in sequence for the MusicBrainz works search so that
+        a single call covers all credited co-writers (e.g. all four members of
+        Black Sabbath for "War Pigs") without making redundant API round-trips.
+        """
         try:
             mb = self._configure_musicbrainzngs()
             if mb is None:
@@ -426,6 +442,8 @@ class CoverDetector:
 
             # First query works by title+writer. This mirrors the MusicBrainz web
             # Works view and gives us canonical writer-linked work IDs.
+            # Try each writer in sequence; stop as soon as works are found so we
+            # avoid redundant API calls for co-written songs.
             matched_work_ids = set()
 
             def _canonical_title(value: str) -> str:
@@ -440,28 +458,32 @@ class CoverDetector:
             # Use canonical title (stripped of live/demo/etc. suffixes) for the work
             # search so that tracks like "War Pigs (live)" resolve to the "War Pigs" work.
             canonical_search_title = _canonical_title(title) or title
-            try:
-                work_result = mb.search_works(work=canonical_search_title, artist=writer, limit=25)
-            except Exception:
-                work_result = {}
+            for writer in writers:
+                if matched_work_ids:
+                    break  # Works already found via an earlier writer; no need to continue.
+                try:
+                    work_result = mb.search_works(work=canonical_search_title, artist=writer, limit=25)
+                except Exception:
+                    work_result = {}
 
-            for work in work_result.get('work-list', []) or []:
-                work_id = work.get('id')
-                if not work_id:
-                    continue
-                work_title = work.get('title', '')
-                # Compare work title against the canonical (suffix-stripped) track title so
-                # that "(live)" / "(demo)" / "- Remaster" variants still match the base work.
-                if work_title and self._normalize_name(work_title) != _canonical_title(title):
-                    # Keep this strict to avoid attaching unrelated writer works.
-                    continue
-                matched_work_ids.add(work_id)
+                for work in work_result.get('work-list', []) or []:
+                    work_id = work.get('id')
+                    if not work_id:
+                        continue
+                    work_title = work.get('title', '')
+                    # Compare work title against the canonical (suffix-stripped) track title so
+                    # that "(live)" / "(demo)" / "- Remaster" variants still match the base work.
+                    if work_title and self._normalize_name(work_title) != _canonical_title(title):
+                        # Keep this strict to avoid attaching unrelated writer works.
+                        continue
+                    matched_work_ids.add(work_id)
 
             recordings_by_id: Dict[str, Dict] = {}
 
-            # Title search remains useful as a broad candidate source.
+            # Title search using the canonical (suffix-stripped) title is more reliable
+            # than the raw title for live/demo/remaster variants.
             try:
-                result = mb.search_recordings(recording=title, limit=25)
+                result = mb.search_recordings(recording=canonical_search_title, limit=25)
                 for rec in result.get('recording-list', []) or []:
                     rec_id = rec.get('id')
                     if rec_id:
@@ -601,7 +623,11 @@ class CoverDetector:
                         pass
 
                 writer_names = self._normalize_writer_credits(writer_names)
-                writer_match = any(self._names_match(writer, candidate) for candidate in writer_names)
+                writer_match = any(
+                    self._names_match(w, candidate)
+                    for w in writers
+                    for candidate in writer_names
+                )
 
                 # Highest-confidence path: same underlying work as the scanned track MBID.
                 same_work_match = bool(target_work_ids and (recording_work_ids & target_work_ids))
@@ -724,7 +750,7 @@ class CoverDetector:
             return earliest or earliest_unknown_year or fallback_earliest or fallback_unknown_year
 
         except Exception as e:
-            logger.debug(f"Failed to find original recording for '{title}' by '{writer}': {e}")
+            logger.debug(f"Failed to find original recording for '{title}' by writer(s) {writers}: {e}")
             return None
 
     def update_cover_metadata(self, track_id: str, title: str, original_artist: str,
