@@ -4828,7 +4828,7 @@ def auto_discover_and_queue_files():
                                 f"[AUTO-DISCOVER] Queue {matched_pending['id']}: not from MusicBrainz search — "
                                 f"leaving as completed for manual approval"
                             )
-                        elif not _is_full_album_ready_for_move(matched_pending, cursor=cursor, placeholder=ph):
+                        elif not _is_full_album_ready_for_move(matched_pending, cursor=cursor, placeholder=placeholder):
                             logger.info(
                                 f"[AUTO-DISCOVER] Queue {matched_pending['id']}: album not fully matched yet — "
                                 f"leaving as completed until all sibling tracks are ready"
