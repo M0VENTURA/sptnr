@@ -242,7 +242,8 @@ def save_navidrome_scan_progress(current_artist, processed_artists, total_artist
             "total_artists": total_artists,
             "is_running": True,
             "scan_type": "navidrome_scan",
-            "percent_complete": int((processed_artists / total_artists * 100)) if total_artists > 0 else 0
+            "percent_complete": int((processed_artists / total_artists * 100)) if total_artists > 0 else 0,
+            "last_updated": datetime.now().isoformat(),
         }
         with open(progress_file, 'w') as f:
             json.dump(progress, f, indent=2)
