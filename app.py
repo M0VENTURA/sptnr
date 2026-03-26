@@ -24187,6 +24187,8 @@ def api_queue_apply_mbid_match(queue_id):
                 release_year = COALESCE(release_year, {placeholder}),
                 status = CASE
                     WHEN TRIM(COALESCE(status, '')) = '' OR status = 'matched' THEN 'queued'
+                    WHEN status = 'unmatched' AND TRIM(COALESCE(file_path, '')) != '' THEN 'matched'
+                    WHEN status = 'unmatched' THEN 'queued'
                     ELSE status
                 END,
                 updated_at = CURRENT_TIMESTAMP
@@ -24357,6 +24359,8 @@ def api_queue_apply_mbid_match_batch():
                 import_group = {placeholder},
                 status = CASE
                     WHEN TRIM(COALESCE(status, '')) = '' OR status = 'matched' THEN 'queued'
+                    WHEN status = 'unmatched' AND TRIM(COALESCE(file_path, '')) != '' THEN 'matched'
+                    WHEN status = 'unmatched' THEN 'queued'
                     ELSE status
                 END,
                 updated_at = CURRENT_TIMESTAMP
