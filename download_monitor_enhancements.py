@@ -276,6 +276,19 @@ def search_and_update_musicbrainz(queue_id, artist, title, album):
                     f"[MB_ENRICH] Queue {queue_id}: track cover art reuse failed: {track_art_err}"
                 )
 
+        # Fetch current status and file_path before updating so we can decide
+        # whether to promote the item to 'matched' after setting the MBID.
+        cursor.execute(
+            f"SELECT status, file_path FROM download_queue WHERE id = {ph}",
+            (queue_id,),
+        )
+        current_row = cursor.fetchone()
+        current_status = None
+        current_file_path = None
+        if current_row:
+            current_status = _row_value(current_row, 'status')
+            current_file_path = _row_value(current_row, 'file_path')
+
         # Update original queue item with release-level metadata.
         cursor.execute(
             f"""
@@ -291,6 +304,30 @@ def search_and_update_musicbrainz(queue_id, artist, title, album):
             """,
             (release_mbid, release_mbid, release_year, release_artist, cover_art_url, queue_id),
         )
+
+        # When auto-enrichment confirms an MBID for an item that already has a
+        # file on disk, promote it from 'unmatched'/'pending_match' → 'matched'
+        # so the UI shows it as ready to move rather than still awaiting review.
+        if (
+            current_status in ('unmatched', 'pending_match')
+            and current_file_path
+            and os.path.exists(current_file_path)
+        ):
+            cursor.execute(
+                f"""
+                UPDATE download_queue
+                SET status = 'matched',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = {ph}
+                  AND status IN ('unmatched', 'pending_match')
+                """,
+                (queue_id,),
+            )
+            logger.info(
+                f"[MB_ENRICH] Queue {queue_id}: promoted status "
+                f"'{current_status}' → 'matched' (MBID={release_mbid}, file confirmed)"
+            )
+
         conn.commit()
         conn.close()
         logger.info(
