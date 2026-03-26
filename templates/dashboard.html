@@ -461,6 +461,18 @@
 </style>
 
 <script>
+// Shared mapping from internal scan-type keys to human-readable display names.
+// Used by both the progress-bar detection logic and the "already running" confirm dialog.
+var SCAN_TYPE_DISPLAY_NAMES = {
+    'navidrome_scan': 'Navidrome Import',
+    'popularity_scan': 'Popularity and Single Scan',
+    'singles_scan': 'Singles Detection',
+    'mood_scan': 'Mood Scan',
+    'essentia_mood_scan': 'Mood Scan (Essentia)',
+    'combined_scan': 'Combined Scan',
+    'missing_releases_scan': 'Missing Releases Scan'
+};
+
 document.addEventListener('DOMContentLoaded', function() {
     var initialRecentScans = JSON.parse('{{ recent_scans|default([])|tojson|safe }}');
     var recentScansBody = document.getElementById('recent-scans-body');
@@ -791,36 +803,39 @@ document.addEventListener('DOMContentLoaded', function() {
                 // Detect which scan is running based on data fields present
                 if (data.scanned_albums !== undefined && data.total_albums !== undefined) {
                     activeScanType = 'navidrome_scan';
-                    scanDisplayName = 'Navidrome Import';
+                    scanDisplayName = SCAN_TYPE_DISPLAY_NAMES['navidrome_scan'];
                 } else if (data.processed_artists !== undefined && data.total_artists !== undefined) {
-                    if (data.scan_type === 'singles_scan') {
+                    if (data.scan_type === 'navidrome_scan') {
+                        activeScanType = 'navidrome_scan';
+                        scanDisplayName = SCAN_TYPE_DISPLAY_NAMES['navidrome_scan'];
+                    } else if (data.scan_type === 'singles_scan') {
                         activeScanType = 'singles_scan';
-                        scanDisplayName = 'Singles Detection';
+                        scanDisplayName = SCAN_TYPE_DISPLAY_NAMES['singles_scan'];
                     } else if (data.scan_type === 'mood_scan') {
                         activeScanType = 'mood_scan';
-                        scanDisplayName = 'Mood Scan';
+                        scanDisplayName = SCAN_TYPE_DISPLAY_NAMES['mood_scan'];
                     } else if (data.scan_type === 'essentia_mood_scan') {
                         activeScanType = 'essentia_mood_scan';
-                        scanDisplayName = 'Mood Scan (Essentia)';
+                        scanDisplayName = SCAN_TYPE_DISPLAY_NAMES['essentia_mood_scan'];
                     } else if (data.scan_type === 'combined_scan') {
                         activeScanType = 'combined_scan';
-                        scanDisplayName = 'Combined Scan';
+                        scanDisplayName = SCAN_TYPE_DISPLAY_NAMES['combined_scan'];
                     } else if (data.scan_type === 'missing_releases_scan') {
                         activeScanType = 'missing_releases_scan';
-                        scanDisplayName = 'Missing Releases Scan';
+                        scanDisplayName = SCAN_TYPE_DISPLAY_NAMES['missing_releases_scan'];
                     } else {
                         activeScanType = 'popularity_scan';
-                        scanDisplayName = 'Popularity and Single Scan';
+                        scanDisplayName = SCAN_TYPE_DISPLAY_NAMES['popularity_scan'];
                     }
                 } else {
                     const scanTypeMapping = {
-                        'navidrome_scan': { type: 'navidrome_scan', name: 'Navidrome Import' },
-                        'popularity_scan': { type: 'popularity_scan', name: 'Popularity and Single Scan' },
-                        'singles_scan': { type: 'singles_scan', name: 'Singles Detection' },
-                        'mood_scan': { type: 'mood_scan', name: 'Mood Scan' },
-                        'essentia_mood_scan': { type: 'essentia_mood_scan', name: 'Mood Scan (Essentia)' },
-                        'combined_scan': { type: 'combined_scan', name: 'Combined Scan' },
-                        'missing_releases_scan': { type: 'missing_releases_scan', name: 'Missing Releases Scan' }
+                        'navidrome_scan': { type: 'navidrome_scan', name: SCAN_TYPE_DISPLAY_NAMES['navidrome_scan'] },
+                        'popularity_scan': { type: 'popularity_scan', name: SCAN_TYPE_DISPLAY_NAMES['popularity_scan'] },
+                        'singles_scan': { type: 'singles_scan', name: SCAN_TYPE_DISPLAY_NAMES['singles_scan'] },
+                        'mood_scan': { type: 'mood_scan', name: SCAN_TYPE_DISPLAY_NAMES['mood_scan'] },
+                        'essentia_mood_scan': { type: 'essentia_mood_scan', name: SCAN_TYPE_DISPLAY_NAMES['essentia_mood_scan'] },
+                        'combined_scan': { type: 'combined_scan', name: SCAN_TYPE_DISPLAY_NAMES['combined_scan'] },
+                        'missing_releases_scan': { type: 'missing_releases_scan', name: SCAN_TYPE_DISPLAY_NAMES['missing_releases_scan'] }
                     };
                     const mapping = scanTypeMapping[data.scan_type];
                     if (mapping) {
@@ -1281,7 +1296,7 @@ function startSelectedScan(restart = false, forceStart = false) {
     // Prompt for confirmation when a scan is already running (unless this is
     // already a forced-start after the user confirmed).
     if (!forceStart && runningScans.size > 0) {
-        const scanNames = Array.from(runningScans).join(', ');
+        const scanNames = Array.from(runningScans).map(s => SCAN_TYPE_DISPLAY_NAMES[s] || s).join(', ');
         if (!confirm(`A scan is already running (${scanNames}).\n\nDo you want to start a new scan anyway?`)) {
             return;
         }
