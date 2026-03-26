@@ -1355,6 +1355,7 @@ scan_process_popularity = None  # Popularity scan process
 scan_process_singles = None  # Singles detection process
 scan_process_mood = None  # Mood scan process
 scan_process_essentia_mood = None  # Essentia local-ML mood scan process
+_essentia_download_thread = None   # Background thread for downloading Essentia models/script
 scan_process_combined = None  # Combined scan process (Navidrome + Popularity + Singles per artist)
 scan_process_missing_releases = None  # Missing releases scan process
 scan_process_mp3_import = None  # MP3 metadata import scan process
@@ -12238,6 +12239,7 @@ def scan_essentia_mood():
                             },
                         )
                         logging.info("Essentia mood scan stopped by user request")
+                        log_unified("Essentia Scan - Stopped by user request")
                     elif result.get("error"):
                         _write_progress_with_current_artist(
                             essentia_progress_file,
@@ -12246,6 +12248,7 @@ def scan_essentia_mood():
                             {"status": "error", "error": result["error"], "exit_code": 1},
                         )
                         logging.error("Essentia mood scan error: %s", result["error"])
+                        log_unified(f"Essentia Scan - Error: {result['error']}", level=logging.ERROR)
                     else:
                         _write_progress_with_current_artist(
                             essentia_progress_file,
@@ -12270,6 +12273,7 @@ def scan_essentia_mood():
                         )
                 except Exception as e:
                     logging.error(f"Error in Essentia mood scan: {e}", exc_info=True)
+                    log_unified(f"Essentia Scan - Error: {e}", level=logging.ERROR)
                     _write_progress_with_current_artist(
                         essentia_progress_file,
                         "essentia_mood_scan",
@@ -12547,6 +12551,171 @@ def scan_stop_essentia_mood():
             flash("No Essentia mood scan is currently running", "warning")
 
     return redirect(url_for("dashboard"))
+
+
+@app.route("/api/essentia/download-models", methods=["POST"])
+def api_essentia_download_models():
+    """Download the Essentia-to-Metadata script and ML model files to the container.
+
+    Starts a background thread that:
+      1. git-clones (or git-pulls) https://github.com/WB2024/Essentia-to-Metadata
+         into the directory derived from the configured script_path (or the Docker default).
+      2. Downloads the 5 Essentia ML model files from essentia.upf.edu
+         into the configured models_dir (or the Docker default /opt/essentia_models).
+
+    Returns JSON ``{"status": "started"}`` immediately, or ``{"status": "already_running"}``
+    if a download is already in progress.  Poll ``/api/essentia/download-status`` for progress.
+    """
+    global _essentia_download_thread
+
+    db_dir = os.path.dirname(DB_PATH)
+    progress_file = os.path.join(db_dir, "essentia_download_progress.json")
+
+    _ESSENTIA_MODEL_URLS = [
+        "https://essentia.upf.edu/models/music-style-classification/discogs-effnet/discogs-effnet-bs64-1.pb",
+        "https://essentia.upf.edu/models/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.pb",
+        "https://essentia.upf.edu/models/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.json",
+        "https://essentia.upf.edu/models/classification-heads/mtg_jamendo_moodtheme/mtg_jamendo_moodtheme-discogs-effnet-1.pb",
+        "https://essentia.upf.edu/models/classification-heads/mtg_jamendo_moodtheme/mtg_jamendo_moodtheme-discogs-effnet-1.json",
+    ]
+    _ESSENTIA_REPO_URL = "https://github.com/WB2024/Essentia-to-Metadata.git"
+    _BUNDLED_SCRIPT_DEFAULT = "/opt/Essentia-to-Metadata/tag_music.py"
+    _BUNDLED_MODELS_DEFAULT = "/opt/essentia_models"
+
+    with scan_lock:
+        if _essentia_download_thread is not None and _essentia_download_thread.is_alive():
+            return jsonify({"status": "already_running", "message": "Download already in progress"}), 409
+
+        def _do_download():
+            global _essentia_download_thread
+            try:
+                # Read configured paths from config
+                try:
+                    from helpers.config_helpers import get_config
+                    cfg = get_config()
+                    essentia_cfg = cfg.get("essentia", {}) if isinstance(cfg, dict) else {}
+                    script_path = (essentia_cfg.get("script_path") or "").strip()
+                    models_dir_cfg = (essentia_cfg.get("models_dir") or "").strip()
+                except Exception:
+                    script_path = ""
+                    models_dir_cfg = ""
+
+                # Resolve target directories
+                if script_path:
+                    clone_dir = os.path.dirname(script_path)
+                else:
+                    clone_dir = os.path.dirname(_BUNDLED_SCRIPT_DEFAULT)  # /opt/Essentia-to-Metadata
+
+                target_models_dir = models_dir_cfg if models_dir_cfg else _BUNDLED_MODELS_DEFAULT
+
+                total_files = len(_ESSENTIA_MODEL_URLS)
+
+                # ── Step 1: Clone or update the script repository ───────────────────
+                _write_progress_file(progress_file, "essentia_download", True, {
+                    "status": "cloning_script",
+                    "current_step": f"Cloning Essentia-to-Metadata to {clone_dir}…",
+                    "files_done": 0,
+                    "files_total": total_files,
+                })
+
+                parent_dir = os.path.dirname(clone_dir)
+                if parent_dir:
+                    os.makedirs(parent_dir, exist_ok=True)
+
+                if os.path.isdir(os.path.join(clone_dir, ".git")):
+                    # Repo already present — pull latest changes
+                    result = subprocess.run(
+                        ["git", "-C", clone_dir, "pull", "--ff-only"],
+                        capture_output=True, text=True, timeout=120,
+                    )
+                    if result.returncode != 0:
+                        logging.warning(
+                            "Essentia git pull returned non-zero (non-fatal): %s", result.stderr.strip()
+                        )
+                else:
+                    result = subprocess.run(
+                        ["git", "clone", "--depth=1", _ESSENTIA_REPO_URL, clone_dir],
+                        capture_output=True, text=True, timeout=180,
+                    )
+                    if result.returncode != 0:
+                        raise RuntimeError(f"git clone failed: {result.stderr.strip()[:300]}")
+
+                # ── Step 2: Download model files ─────────────────────────────────────
+                os.makedirs(target_models_dir, exist_ok=True)
+
+                for idx, url in enumerate(_ESSENTIA_MODEL_URLS):
+                    filename = os.path.basename(url)
+                    dest_path = os.path.join(target_models_dir, filename)
+
+                    _write_progress_file(progress_file, "essentia_download", True, {
+                        "status": "downloading_models",
+                        "current_step": f"Downloading {filename} ({idx + 1}/{total_files})…",
+                        "files_done": idx,
+                        "files_total": total_files,
+                    })
+
+                    if os.path.isfile(dest_path):
+                        logging.info("Essentia model already present, skipping: %s", dest_path)
+                    else:
+                        tmp_path = dest_path + ".tmp"
+                        try:
+                            resp = requests.get(url, stream=True, timeout=300)
+                            resp.raise_for_status()
+                            with open(tmp_path, "wb") as fh:
+                                for chunk in resp.iter_content(chunk_size=1 << 20):
+                                    if chunk:
+                                        fh.write(chunk)
+                            os.replace(tmp_path, dest_path)
+                        except Exception:
+                            if os.path.exists(tmp_path):
+                                try:
+                                    os.remove(tmp_path)
+                                except OSError:
+                                    pass
+                            raise
+
+                _write_progress_file(progress_file, "essentia_download", False, {
+                    "status": "complete",
+                    "current_step": "Download complete",
+                    "files_done": total_files,
+                    "files_total": total_files,
+                    "models_dir": target_models_dir,
+                    "script_dir": clone_dir,
+                })
+                from helpers.logging_config import log_unified
+                log_unified(
+                    f"Essentia Scan - Models and script downloaded successfully"
+                    f" (models: {target_models_dir}, script: {clone_dir})"
+                )
+
+            except Exception as exc:
+                logging.error("Essentia model download failed: %s", exc, exc_info=True)
+                _write_progress_file(progress_file, "essentia_download", False, {
+                    "status": "error",
+                    "current_step": f"Error: {exc}",
+                    "error": str(exc),
+                })
+
+        _essentia_download_thread = threading.Thread(
+            target=_do_download, daemon=False, name="essentia-download"
+        )
+        _essentia_download_thread.start()
+
+    return jsonify({"status": "started", "message": "Essentia download started"})
+
+
+@app.route("/api/essentia/download-status")
+def api_essentia_download_status():
+    """Return the current status of the Essentia model/script download."""
+    db_dir = os.path.dirname(DB_PATH)
+    progress_file = os.path.join(db_dir, "essentia_download_progress.json")
+    try:
+        with open(progress_file, "r", encoding="utf-8") as f:
+            return jsonify(json.load(f))
+    except FileNotFoundError:
+        return jsonify({"status": "idle", "is_running": False, "scan_type": "essentia_download"})
+    except Exception as exc:
+        return jsonify({"status": "error", "error": str(exc)}), 500
 
 
 @app.route("/scan/stop-all", methods=["POST"])

@@ -29,6 +29,7 @@ import sys
 from typing import Any, Dict, List, Optional
 
 from helpers.db_utils import get_db_connection, _is_postgres_connection
+from helpers.logging_config import log_unified
 from helpers.tag_manager import sync_track_tags_to_file
 
 logger = logging.getLogger(__name__)
@@ -250,6 +251,7 @@ def run_essentia_mood_scan(
             "Set 'essentia.script_path' in config.yaml to the path of tag_music.py."
         )
         logger.error(msg)
+        log_unified(f"Essentia Scan - Error: {msg}", level=logging.ERROR)
         _write_progress(progress_file, {
             "is_running": False,
             "scan_type": "essentia_mood_scan",
@@ -263,6 +265,7 @@ def run_essentia_mood_scan(
     if not os.path.isfile(script_path):
         msg = f"Essentia script not found at: {script_path}"
         logger.error(msg)
+        log_unified(f"Essentia Scan - Error: {msg}", level=logging.ERROR)
         _write_progress(progress_file, {
             "is_running": False,
             "scan_type": "essentia_mood_scan",
@@ -391,11 +394,27 @@ def run_essentia_mood_scan(
     updated_tracks = 0
     synced_files = 0
     current_artist: Optional[str] = None
+    total_tracks = len(rows)
+
+    log_unified(
+        f"Essentia Scan - Starting Essentia Scan"
+        f" ({total_tracks} track(s) across {total_artists} artist(s))"
+    )
+
+    _essentia_milestones_logged: set = set()
+    _essentia_milestone_25 = max(1, int(total_tracks * 0.25))
+    _essentia_milestone_50 = max(1, int(total_tracks * 0.50))
+    _essentia_milestone_75 = max(1, int(total_tracks * 0.75))
 
     for row in rows:
         if _stop_requested(progress_file):
             conn.commit()
             conn.close()
+            log_unified(
+                f"Essentia Scan - Stopped"
+                f" ({scanned_tracks}/{total_tracks} tracks scanned,"
+                f" {updated_tracks} updated)"
+            )
             _write_progress(progress_file, {
                 "is_running": False,
                 "scan_type": "essentia_mood_scan",
@@ -425,8 +444,23 @@ def run_essentia_mood_scan(
         if artist_key != current_artist:
             current_artist = artist_key
             processed_artists = min(processed_artists + 1, total_artists)
+            log_unified(
+                f"Essentia Scan - Scanning Artist {current_artist}"
+                f" ({processed_artists}/{total_artists})"
+            )
 
         scanned_tracks += 1
+
+        # Milestone progress reporting (25 / 50 / 75 %)
+        if scanned_tracks == _essentia_milestone_25 and 25 not in _essentia_milestones_logged:
+            log_unified(f"Essentia Scan - 25% completed - {scanned_tracks}/{total_tracks} tracks")
+            _essentia_milestones_logged.add(25)
+        elif scanned_tracks == _essentia_milestone_50 and 50 not in _essentia_milestones_logged:
+            log_unified(f"Essentia Scan - 50% completed - {scanned_tracks}/{total_tracks} tracks")
+            _essentia_milestones_logged.add(50)
+        elif scanned_tracks == _essentia_milestone_75 and 75 not in _essentia_milestones_logged:
+            log_unified(f"Essentia Scan - 75% completed - {scanned_tracks}/{total_tracks} tracks")
+            _essentia_milestones_logged.add(75)
 
         # Skip if file no longer exists.
         if not file_path or not os.path.isfile(file_path):
@@ -460,6 +494,11 @@ def run_essentia_mood_scan(
                     result.returncode, file_path,
                     (result.stderr or "").strip()[:300],
                 )
+                log_unified(
+                    f"Essentia Scan - Error processing {os.path.basename(file_path)}"
+                    f" (exit code {result.returncode})",
+                    level=logging.WARNING,
+                )
                 _write_progress(progress_file, {
                     "is_running": True,
                     "scan_type": "essentia_mood_scan",
@@ -474,6 +513,10 @@ def run_essentia_mood_scan(
                 continue
         except subprocess.TimeoutExpired:
             logger.warning("Essentia script timed out for %s", file_path)
+            log_unified(
+                f"Essentia Scan - Timeout processing {os.path.basename(file_path)}",
+                level=logging.WARNING,
+            )
             _write_progress(progress_file, {
                 "is_running": True,
                 "scan_type": "essentia_mood_scan",
@@ -488,6 +531,10 @@ def run_essentia_mood_scan(
             continue
         except Exception as exc:
             logger.warning("Error running Essentia script for %s: %s", file_path, exc)
+            log_unified(
+                f"Essentia Scan - Error processing {os.path.basename(file_path)}: {exc}",
+                level=logging.WARNING,
+            )
             _write_progress(progress_file, {
                 "is_running": True,
                 "scan_type": "essentia_mood_scan",
@@ -583,6 +630,13 @@ def run_essentia_mood_scan(
 
     conn.commit()
     conn.close()
+
+    log_unified(
+        f"Essentia Scan - Completed"
+        f" ({scanned_tracks} tracks scanned,"
+        f" {updated_tracks} updated,"
+        f" {synced_files} file tags synced)"
+    )
 
     return {
         "stopped": False,

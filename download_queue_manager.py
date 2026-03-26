@@ -57,6 +57,24 @@ _GENERIC_ARTIST_NAMES = {
     'ost',
 }
 
+# Compiled regexes for stripping common album edition/subtitle suffixes used in
+# _normalize_album_for_dedup().  They allow duplicate detection to treat names
+# like "Album (Original Soundtrack)" and "Album - Original Soundtrack" as the
+# same album.
+_ALBUM_BRACKET_SUFFIX_RE = re.compile(
+    r'\s*[\(\[][^\)\]]*[\)\]]\s*$',
+)
+_ALBUM_SUBTITLE_KEYWORDS_RE = re.compile(
+    r'[\s\-_:]+(?:'
+    r'original\s+(?:motion\s+picture\s+)?soundtrack|ost'
+    r'|deluxe(?:\s+edition)?|special\s+edition|expanded\s+edition'
+    r'|anniversary\s+edition|complete\s+edition|extended\s+edition'
+    r'|limited\s+edition|bonus\s+(?:disc|tracks?)'
+    r'|remaster(?:ed)?(?:\s+edition)?'
+    r')$',
+    re.IGNORECASE,
+)
+
 # Global state for tracking scan progress (used by /api/downloads/scan-progress)
 _scan_progress = {
     'scanning': False,
@@ -2650,6 +2668,10 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
             'track_number': queue_item_dict.get('track_number'),
             # Default: suppress disc tag until MusicBrainz confirms multi-disc
             'disc_number': None,
+            # MusicBrainz IDs written as TXXX/Vorbis tags so Navidrome can
+            # group tracks by release MBID rather than album name + year.
+            'release_mbid': queue_item_dict.get('release_mbid') or queue_item_dict.get('release_id'),
+            'recording_mbid': queue_item_dict.get('recording_mbid'),
         }
 
         cover_art_data = None
@@ -3858,6 +3880,8 @@ def check_downloads_folder():
                                 'year': queue_item.get('year'),
                                 'track_number': queue_item.get('track_number'),
                                 'disc_number': queue_item.get('disc_number'),
+                                'release_mbid': queue_item.get('release_mbid') or queue_item.get('release_id'),
+                                'recording_mbid': queue_item.get('recording_mbid'),
                             }
                             update_file_metadata_with_albumart(
                                 match_path, stored_metadata, clear_existing_tags=should_clear_tags
@@ -4309,7 +4333,55 @@ def _extract_track_disc_from_filename(filename):
     return None, None
 
 
-def auto_discover_and_queue_files():
+def _parse_folder_name_for_metadata(folder_path):
+    """
+    Parse a folder name to extract artist, album, and year when file tags are
+    absent.
+
+    Supports common folder-name conventions:
+      "Artist - Album (Year)"  →  artist="Artist", album="Album", year="Year"
+      "Artist - Album"         →  artist="Artist", album="Album"
+      "Album (Year)"           →  album="Album", year="Year"
+
+    Only the artist is genuinely optional — the album always defaults to the
+    cleaned folder name so callers always get a non-empty album value.
+
+    Returns a dict with string keys ``'artist'``, ``'album'``, ``'year'``.
+    ``'artist'`` is omitted when no separator is found; ``'year'`` is omitted
+    when no four-digit year is found in parentheses or brackets.
+    """
+    folder_name = os.path.basename(folder_path)
+    if not folder_name:
+        return {}
+
+    # Extract year from "(YYYY)" or "[YYYY]" at the end
+    year_match = re.search(r'[\(\[]((?:19|20)\d{2})[\)\]]\s*$', folder_name)
+    year = year_match.group(1) if year_match else None
+
+    # Strip trailing year bracket so it doesn't pollute the album name
+    clean = re.sub(r'\s*[\(\[]((?:19|20)\d{2})[\)\]]\s*$', '', folder_name).strip()
+
+    result = {}
+    if year:
+        result['year'] = year
+
+    # Try "Artist - Album" split (handle em-dash and en-dash too)
+    sep_match = re.search(r'\s+[-\u2013\u2014]\s+', clean)
+    if sep_match:
+        artist_part = clean[:sep_match.start()].strip()
+        album_part = clean[sep_match.end():].strip()
+        if artist_part and album_part:
+            result['artist'] = artist_part
+            result['album'] = album_part
+            return result
+
+    # Fallback: treat the entire clean name as the album
+    if clean:
+        result['album'] = clean
+    return result
+
+
+
     """
     Scan /downloads folder for audio files and add them to download_queue with status 'discovered'.
     This makes manually added/downloaded files appear in the Download Monitor UI for user review.
@@ -4635,6 +4707,21 @@ def auto_discover_and_queue_files():
                 duration_ms = metadata.get('duration_ms')
                 duration = int(duration_ms / 1000) if duration_ms and duration_ms > 0 else None
 
+                # When file tags are absent or generic, try to fill in artist/album/year
+                # from the parent folder name (e.g. "Grain Of Pain - Behind us all (2026)").
+                # This ensures that all tracks inside the same folder are queued under a
+                # consistent album identity even when their embedded tags are sparse.
+                _folder_meta = None
+                if artist == 'Unknown Artist' or album == 'Unknown Album':
+                    _folder_meta = _parse_folder_name_for_metadata(folder_path)
+                if _folder_meta:
+                    if artist == 'Unknown Artist' and _folder_meta.get('artist'):
+                        artist = _folder_meta['artist']
+                    if album == 'Unknown Album' and _folder_meta.get('album'):
+                        album = _folder_meta['album']
+                    if not year and _folder_meta.get('year'):
+                        year = _folder_meta['year']
+
                 # Fallback track/disc extraction from filename prefixes when tags are missing.
                 file_track_num, file_disc_num = _extract_track_disc_from_filename(filename)
                 if not track_number and file_track_num is not None:
@@ -4654,6 +4741,8 @@ def auto_discover_and_queue_files():
                 # Log metadata extraction status
                 if metadata and not had_metadata_error:
                     logger.debug(f"✅ Metadata read: {artist} - {album} - {title}")
+                elif _folder_meta:
+                    logger.info(f"⚠️  No file tags; derived from folder name: {artist} - {album} - {title}")
                 else:
                     logger.info(f"⚠️  No metadata found (using filename): {filename} → {artist} - {title}")
                 
@@ -4851,6 +4940,9 @@ def auto_discover_and_queue_files():
                                         'album': item_for_move.get('album'),
                                         'year': item_for_move.get('year'),
                                         'track_number': item_for_move.get('track_number'),
+                                        'disc_number': item_for_move.get('disc_number'),
+                                        'release_mbid': item_for_move.get('release_mbid') or item_for_move.get('release_id'),
+                                        'recording_mbid': item_for_move.get('recording_mbid'),
                                     }
                                     update_file_metadata_with_albumart(full_path, stored_metadata)
                                     logger.info(
@@ -5572,34 +5664,60 @@ def cleanup_imported(days=7):
 
 
 def check_album_exists_in_library(album, artist):
-    """
-    Check if an album already exists in the tracks database
-    
+    """Check if an album already exists in the tracks database.
+
+    First attempts an exact (case-insensitive) SQL match.  If that finds
+    nothing, falls back to a normalised comparison via
+    :func:`_normalize_album_for_dedup` so that albums whose names differ
+    only in edition suffixes or punctuation (e.g. ``"Album (OST)"`` vs
+    ``"Album - Original Soundtrack"``) are still detected as duplicates.
+
     Args:
         album: Album name
         artist: Artist or album artist name
-    
+
     Returns:
         bool: True if album exists in library, False otherwise
     """
     try:
         conn = get_db()
         cursor = conn.cursor()
-        
-        # Check if any tracks from this album/artist combo exist
-        from app import _is_postgres_connection as app_is_postgres_connection
-        placeholder = "%s"
-        cursor.execute(f"""
-            SELECT COUNT(*) as count FROM tracks 
-            WHERE LOWER(album) = LOWER({placeholder}) 
-            AND (LOWER(artist) = LOWER({placeholder}) OR LOWER(album_artist) = LOWER({placeholder}))
-        """, (album, artist, artist))
-        
+
+        # Fast path – exact case-insensitive match.
+        cursor.execute(
+            """
+            SELECT COUNT(*) as count FROM tracks
+            WHERE LOWER(album) = LOWER(%s)
+            AND (LOWER(artist) = LOWER(%s) OR LOWER(album_artist) = LOWER(%s))
+            """,
+            (album, artist, artist),
+        )
         result = cursor.fetchone()
+        if result and result['count'] > 0:
+            conn.close()
+            return True
+
+        # Fuzzy pass – normalise both sides to catch subtitle / edition
+        # variants (e.g. "Album (Original Soundtrack)" vs
+        # "Album - Original Soundtrack").
+        norm_input = _normalize_album_for_dedup(album)
+        if norm_input:
+            cursor.execute(
+                """
+                SELECT DISTINCT album FROM tracks
+                WHERE LOWER(artist) = LOWER(%s) OR LOWER(album_artist) = LOWER(%s)
+                LIMIT 500
+                """,
+                (artist, artist),
+            )
+            for row in cursor.fetchall():
+                if _normalize_album_for_dedup(row['album']) == norm_input:
+                    conn.close()
+                    return True
+
         conn.close()
-        
-        return result['count'] > 0 if result else False
-        
+        return False
+
     except Exception as e:
         logger.error(f"Error checking if album exists: {e}")
         return False
@@ -5635,6 +5753,37 @@ def _normalize_match_text(value):
 def _string_similarity(a, b):
     """Return normalized string similarity score (0-1)."""
     return SequenceMatcher(None, _normalize_match_text(a), _normalize_match_text(b)).ratio()
+
+
+def _normalize_album_for_dedup(title: str) -> str:
+    """Strip common edition/subtitle suffixes and normalize separators.
+
+    Used by :func:`check_album_exists_in_library` to detect albums whose
+    names differ only in punctuation convention or appended descriptors.
+
+    Examples::
+
+        "Expedition 33 (Original Soundtrack)"  →  "expedition 33"
+        "Expedition 33 - Original Soundtrack"  →  "expedition 33"
+        "Abbey Road (Remastered)"               →  "abbey road"
+        "Dark Side of the Moon [Deluxe]"        →  "dark side of the moon"
+    """
+    if not title:
+        return ""
+    t = title.strip()
+    # Iteratively strip trailing parenthetical / bracket groups (max 10
+    # iterations to guard against pathologically nested input).
+    prev = None
+    iterations = 0
+    while t != prev and iterations < 10:
+        prev = t
+        t = _ALBUM_BRACKET_SUFFIX_RE.sub("", t).strip()
+        iterations += 1
+    # Strip known subtitle keywords after a separator.
+    t = _ALBUM_SUBTITLE_KEYWORDS_RE.sub("", t).strip()
+    # Collapse any remaining separator characters to a single space.
+    t = re.sub(r'[\s\-_:]+', ' ', t).strip().lower()
+    return t
 
 
 def _extract_lyricist_and_writers(recording_data):
@@ -5728,12 +5877,19 @@ def _extract_lyricist_and_writers(recording_data):
 
 
 def _fetch_musicbrainz_album_candidates(artist, album, limit=5):
-    """Fetch album candidates from MusicBrainz release groups."""
+    """Fetch album candidates from MusicBrainz release groups.
+
+    Enforces the MusicBrainz 1 request-per-second rate limit between every API
+    call.  The function can make up to ``1 + limit * 2`` requests in sequence,
+    so without throttling it will reliably trigger 429 responses and slow down
+    the entire matching pipeline.
+    """
     headers = {
         "User-Agent": MUSICBRAINZ_USER_AGENT
     }
     query = f'releasegroup:"{album}" AND artist:"{artist}"'
 
+    time.sleep(1.0)  # Respect MusicBrainz 1 req/s policy before initial search
     search_resp = session.get(
         "https://musicbrainz.org/ws/2/release-group/",
         params={"query": query, "fmt": "json", "limit": limit},
@@ -5755,6 +5911,7 @@ def _fetch_musicbrainz_album_candidates(artist, album, limit=5):
         artist_credit = " ".join([(ac.get("name") or "") for ac in (rg.get("artist-credit") or [])]).strip() or artist
 
         release_tracks = []
+        time.sleep(1.0)  # Respect MusicBrainz 1 req/s policy before release-group lookup
         release_resp = session.get(
             f"https://musicbrainz.org/ws/2/release-group/{rg_id}/releases",
             params={"fmt": "json", "limit": 1},
@@ -5766,6 +5923,7 @@ def _fetch_musicbrainz_album_candidates(artist, album, limit=5):
             if releases:
                 rel_id = releases[0].get("id")
                 if rel_id:
+                    time.sleep(1.0)  # Respect MusicBrainz 1 req/s policy before release detail
                     track_resp = session.get(
                         f"https://musicbrainz.org/ws/2/release/{rel_id}",
                         params={"fmt": "json", "inc": "recordings+artist-credits+work-level-rels+work-rels+artist-rels"},

@@ -16,6 +16,7 @@ import time
 from typing import Dict, List, Tuple, Optional, Any
 from difflib import SequenceMatcher
 from database_abstraction import DatabaseQuery
+from api_clients import session as _shared_session
 from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
 from helpers.db_utils import get_db_connection, _is_postgres_connection
 
@@ -346,7 +347,7 @@ def _fetch_musicbrainz_tracks(release_id: str) -> List[Dict]:
         
         time.sleep(1.0)  # Respect rate limit
         
-        response = requests.get(
+        response = _shared_session.get(
             f"{base_url}release/{release_id}",
             params={"fmt": "json", "inc": "recordings"},
             headers=headers,
@@ -360,7 +361,7 @@ def _fetch_musicbrainz_tracks(release_id: str) -> List[Dict]:
                 f"attempting release-group browse fallback"
             )
             time.sleep(1.0)
-            browse_response = requests.get(
+            browse_response = _shared_session.get(
                 f"{base_url}release",
                 params={"fmt": "json", "release-group": release_id, "inc": "recordings", "limit": 1},
                 headers=headers,

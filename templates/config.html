@@ -560,6 +560,21 @@
             </div>
           </div>
         </div>
+        <!-- Download Essentia Models & Script -->
+        <div class="col-12 mt-2 pt-2 border-top">
+          <div class="d-flex align-items-center gap-2 flex-wrap">
+            <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-essentia-download" onclick="startEssentiaDownload()">
+              <i class="bi bi-cloud-download"></i> Download Models &amp; Script
+            </button>
+            <span class="text-muted small">Downloads the <a href="https://github.com/WB2024/Essentia-to-Metadata" target="_blank" rel="noopener noreferrer">Essentia-to-Metadata</a> script and ML model files (~87 MB) into the container. Use this if the files are missing from the paths above.</span>
+          </div>
+          <div id="essentia-download-status" class="mt-2 d-none">
+            <div class="progress mb-1" style="height: 6px;">
+              <div class="progress-bar progress-bar-striped progress-bar-animated" id="essentia-download-bar" role="progressbar" style="width: 0%"></div>
+            </div>
+            <small id="essentia-download-status-text" class="text-muted"></small>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -1841,6 +1856,91 @@ function toggleEssentiaGenreSettings() {
   if (panel) panel.classList.toggle('d-none', !cb || !cb.checked);
 }
 
+let _essentiaDownloadPollTimer = null;
+
+function startEssentiaDownload() {
+  const btn = document.getElementById('btn-essentia-download');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span> Starting…';
+
+  fetch('/api/essentia/download-models', { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+      if (data.status === 'already_running') {
+        _essentiaSetStatusText('Download already in progress…');
+        document.getElementById('essentia-download-status').classList.remove('d-none');
+      }
+      pollEssentiaDownloadStatus();
+    })
+    .catch(err => {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-cloud-download"></i> Download Models &amp; Script';
+      showToast('Error', 'Could not start Essentia download: ' + err, 'error');
+    });
+}
+
+function pollEssentiaDownloadStatus() {
+  if (_essentiaDownloadPollTimer) clearTimeout(_essentiaDownloadPollTimer);
+  // Progress bar reserves 10% for the git-clone step and up to 95% for file downloads.
+  const CLONE_PCT = 10;
+  const DOWNLOAD_RANGE_PCT = 85;
+  const EXPECTED_FILES = 5;  // 5 model files from essentia.upf.edu
+  fetch('/api/essentia/download-status')
+    .then(r => r.json())
+    .then(data => {
+      const statusDiv = document.getElementById('essentia-download-status');
+      const bar = document.getElementById('essentia-download-bar');
+      const btn = document.getElementById('btn-essentia-download');
+
+      if (!data || data.status === 'idle') {
+        statusDiv.classList.add('d-none');
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-cloud-download"></i> Download Models &amp; Script';
+        return;
+      }
+
+      statusDiv.classList.remove('d-none');
+      const total = data.files_total || EXPECTED_FILES;
+      const done = data.files_done || 0;
+
+      bar.classList.remove('bg-success', 'bg-danger');
+      bar.classList.add('progress-bar-striped', 'progress-bar-animated');
+
+      if (data.status === 'complete') {
+        bar.style.width = '100%';
+        bar.classList.remove('progress-bar-animated');
+        bar.classList.add('bg-success');
+        _essentiaSetStatusText('✅ Download complete — models saved to ' + (data.models_dir || '/opt/essentia_models'));
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-cloud-download"></i> Download Models &amp; Script';
+      } else if (data.status === 'error') {
+        bar.classList.remove('progress-bar-animated');
+        bar.classList.add('bg-danger');
+        bar.style.width = '100%';
+        _essentiaSetStatusText('❌ Error: ' + (data.error || 'unknown error'));
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-cloud-download"></i> Retry Download';
+      } else {
+        // still running — update progress and poll again
+        const pct = data.status === 'cloning_script'
+          ? CLONE_PCT
+          : Math.max(CLONE_PCT, Math.round(CLONE_PCT + (done / total) * DOWNLOAD_RANGE_PCT));
+        bar.style.width = pct + '%';
+        _essentiaSetStatusText(data.current_step || 'Downloading…');
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span> Downloading…';
+        _essentiaDownloadPollTimer = setTimeout(pollEssentiaDownloadStatus, 2000);
+      }
+    })
+    .catch(() => {
+      _essentiaDownloadPollTimer = setTimeout(pollEssentiaDownloadStatus, 3000);
+    });
+}
+
+function _essentiaSetStatusText(msg) {
+  const el = document.getElementById('essentia-download-status-text');
+  if (el) el.textContent = msg;
+}
+
 function toggleUpcomingSourceEnabled(idx) {
   const cb = document.getElementById(`srcEnabled_${idx}`);
   if (cb && upcomingSources[idx]) {
@@ -2075,6 +2175,8 @@ document.addEventListener('DOMContentLoaded', function() {
   getRetrySchedulerStatus();
   // Refresh status every 5 seconds
   setInterval(getRetrySchedulerStatus, 5000);
+  // Resume any in-progress Essentia download display
+  pollEssentiaDownloadStatus();
 });
 </script>
 {% endblock %}
