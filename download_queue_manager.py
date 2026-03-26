@@ -4381,7 +4381,7 @@ def _parse_folder_name_for_metadata(folder_path):
     return result
 
 
-
+def auto_discover_and_queue_files():
     """
     Scan /downloads folder for audio files and add them to download_queue with status 'discovered'.
     This makes manually added/downloaded files appear in the Download Monitor UI for user review.

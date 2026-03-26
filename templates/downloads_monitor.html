@@ -2555,6 +2555,19 @@ async function loadFolderGroups(options = {}) {
         .map(t => Number(t.id || 0))
         .filter(id => id > 0);
       const groupQueueIdsEnc = encodeInlineArg(groupQueueIds);
+      const _moveableStatuses = new Set(['matched', 'completed', 'pending_match']);
+      const moveableQueueIds = (group.tracks || [])
+        .filter(t => {
+          const id = Number(t.id || 0);
+          if (id <= 0) return false;
+          const s = t.status || '';
+          const hasFile = !!(t.file_path || t.matched_file_path || t.music_file_path || group.matched_folder_path);
+          const hasMbid = !!(t.release_mbid || groupMbid);
+          return _moveableStatuses.has(s)
+            || ((s === 'queued' || s === 'discovered') && hasFile && hasMbid);
+        })
+        .map(t => Number(t.id));
+      const moveableQueueIdsEnc = encodeInlineArg(moveableQueueIds);
       const mbidBadge = groupMbid
         ? `<span class="badge bg-dark text-info ms-2" title="MusicBrainz Release ID">MBID: ${escapeHtml(groupMbid)}</span>
            <button class="btn btn-sm btn-outline-info ms-1" onclick="openBetterMatchModal('${artistEnc}','${albumEnc}','${encodeInlineArg(groupMbid)}')" title="Search for a better MusicBrainz match">
@@ -2623,6 +2636,13 @@ async function loadFolderGroups(options = {}) {
                           onclick="openImportMissingTracksModalFromEncoded('${encodeInlineArg(groupMbid)}', '${groupQueueIdsEnc}', '${artistEnc}', '${albumEnc}')"
                           title="Show MusicBrainz tracks that are not currently in this queue group">
                     <i class="bi bi-list-check"></i> Import Missing Tracks
+                  </button>
+                ` : ''}
+                ${(isQueueItem && moveableQueueIds.length > 0) ? `
+                  <button class="btn btn-sm btn-outline-success me-2"
+                          onclick="moveAllInGroupFromEncoded('${moveableQueueIdsEnc}')"
+                          title="Move all ready tracks in this group to /music and retag from MusicBrainz">
+                    <i class="bi bi-box-arrow-right"></i> Move All
                   </button>
                 ` : ''}
                 ${(isQueueItem && groupQueueIds.length > 0) ? `
@@ -4313,6 +4333,63 @@ async function moveMatchedToMusic(queueId) {
     console.error('Error moving matched track to music:', error);
     alert('❌ Network error: ' + error.message);
   }
+}
+
+function moveAllInGroupFromEncoded(idsEnc) {
+  moveAllInGroup(decodeInlineArg(idsEnc) || []);
+}
+
+async function moveAllInGroup(queueIds) {
+  if (!queueIds || queueIds.length === 0) return;
+  if (!confirm(`Move all ${queueIds.length} track(s) to /music and rewrite tags from MusicBrainz metadata?`)) {
+    return;
+  }
+
+  let succeeded = 0;
+  let failed = 0;
+  const errors = [];
+
+  for (const queueId of queueIds) {
+    try {
+      const startData = await fetchJsonOrThrow(`/api/queue/move-to-music/${queueId}?async=1`, {
+        method: 'POST'
+      });
+
+      if (!startData.success || !startData.task_id) {
+        failed++;
+        errors.push(`Track ${queueId}: ${startData.error || 'Failed to start'}`);
+        continue;
+      }
+
+      const task = await _pollMoveToMusicTask(startData.task_id, queueId);
+      const result = task.result || {};
+
+      if (task.status === 'completed' && result.success) {
+        succeeded++;
+      } else if (task.status === 'timeout') {
+        // Still running — count as succeeded optimistically and note it.
+        succeeded++;
+        errors.push(`Track ${queueId}: still in progress (will complete in background)`);
+      } else {
+        failed++;
+        errors.push(`Track ${queueId}: ${result.error || task.error || 'Failed'}`);
+      }
+    } catch (err) {
+      failed++;
+      errors.push(`Track ${queueId}: ${err.message}`);
+    }
+  }
+
+  const parts = [`✅ ${succeeded} track(s) moved to Music`];
+  if (failed > 0) {
+    parts.push(`❌ ${failed} failed`);
+    errors.forEach(e => parts.push(`  • ${e}`));
+  } else if (errors.length > 0) {
+    errors.forEach(e => parts.push(`  ℹ ${e}`));
+  }
+  alert(parts.join('\n'));
+  await loadQueueStatus();
+  await loadFolderGroups({ forceRender: true });
 }
 
 async function sendQueriedTrack(queueId) {
