@@ -1305,7 +1305,7 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         is_pg = True
         cursor = conn.cursor()
 
-        logger.debug(f"[add_to_queue] Using {'PostgreSQL' if is_pg else 'SQLite'} backend")
+        logger.debug("[add_to_queue] Using PostgreSQL backend")
         
         # Validate inputs
         if not artist or not title:
@@ -2936,9 +2936,6 @@ def rename_album_files(artist, album, db_conn, music_dir=None):
     
     try:
         cursor = db_conn.cursor()
-        is_pg = bool(_is_postgres_connection(db_conn))
-        if not is_pg:
-            raise RuntimeError("rename_album_files requires PostgreSQL connection")
 
         placeholder = "%s"
         
@@ -3164,9 +3161,6 @@ def rename_track_file(track_id, db_conn, music_dir=None):
 
     try:
         cursor = db_conn.cursor()
-        is_pg = bool(_is_postgres_connection(db_conn))
-        if not is_pg:
-            raise RuntimeError("rename_track_file requires PostgreSQL connection")
         placeholder = "%s"
 
         cursor.execute(
@@ -3580,7 +3574,6 @@ def check_downloads_folder():
         
         completed_items = []
         conn = _get_postgres_conn_from_app_or_fallback()
-        is_pg = True
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         ph = "%s"
 
@@ -4028,7 +4021,6 @@ def reconcile_album_files_with_queue(artist, album, release_mbid=None, delete_un
             return result
 
         conn = _get_postgres_conn_from_app_or_fallback()
-        is_pg = True
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         placeholder = "%s"
 
@@ -4375,7 +4367,6 @@ def auto_discover_and_queue_files():
         stats['cleanup_removed'] = cleanup_stats['removed']
         
         conn = _get_postgres_conn_from_app_or_fallback()
-        is_pg = True
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
         def _row_get(row, key, index=None, default=None):
@@ -4545,7 +4536,7 @@ def auto_discover_and_queue_files():
 
         folder_precheck_done = set()
         folders_fully_queued = set()
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         def _queue_signature(artist_value, title_value):
             artist_norm = _normalize_match_text(artist_value or "")
@@ -5174,9 +5165,8 @@ def get_retry_queue(limit=50):
     try:
         conn = get_db()
         from app import _is_postgres_connection as app_is_postgres_connection
-        is_pg = bool(app_is_postgres_connection(conn))
-        placeholder = "%s" if is_pg else "?"
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) if is_pg else conn.cursor()
+        placeholder = "%s"
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         
         cursor.execute(f"""
             SELECT * FROM download_queue 
@@ -5320,7 +5310,7 @@ def cleanup_missing_files():
 
             # Soft-update stale missing-source items in batch (do not delete).
             if unmatched_ids:
-                placeholder = "%s" if is_pg else "?"
+                placeholder = "%s"
                 placeholders = ','.join([placeholder] * len(unmatched_ids))
 
                 cursor.execute(
@@ -5597,8 +5587,7 @@ def check_album_exists_in_library(album, artist):
         
         # Check if any tracks from this album/artist combo exist
         from app import _is_postgres_connection as app_is_postgres_connection
-        is_pg = bool(app_is_postgres_connection(conn))
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         cursor.execute(f"""
             SELECT COUNT(*) as count FROM tracks 
             WHERE LOWER(album) = LOWER({placeholder}) 
@@ -5903,8 +5892,7 @@ def check_album_complete(album, album_artist):
         cursor = conn.cursor()
         
         from app import _is_postgres_connection as app_is_postgres_connection
-        is_pg = bool(app_is_postgres_connection(conn))
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         # Get all queue items for this album
         cursor.execute(f"""
@@ -5999,8 +5987,7 @@ def _process_album_tracks_with_metadata(album, artist, tracks, matched_metadata=
 
             if result.get('success'):
                 from app import _is_postgres_connection as app_is_postgres_connection
-                is_pg = bool(app_is_postgres_connection(conn))
-                placeholder = "%s" if is_pg else "?"
+                placeholder = "%s"
                 cursor.execute(
                     f"""
                     UPDATE download_queue
@@ -6155,8 +6142,7 @@ def get_release_tracks_with_status(artist, album, release_group_id, current_fold
         cursor = conn.cursor()
         
         from app import _is_postgres_connection as app_is_postgres_connection
-        is_pg = bool(app_is_postgres_connection(conn))
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         cursor.execute(f"""
             SELECT id, title, file_path, status, track_number, artist, album_artist
@@ -6590,8 +6576,7 @@ def process_complete_albums():
                                 stats['duplicate_files_deleted'] += 1
 
                         from app import _is_postgres_connection as app_is_postgres_connection
-                        is_pg = bool(app_is_postgres_connection(conn))
-                        placeholder = "%s" if is_pg else "?"
+                        placeholder = "%s"
                         cursor.execute(
                             f"""
                             DELETE FROM download_queue
@@ -6638,8 +6623,7 @@ def process_complete_albums():
                     conn = get_db()
                     cursor = conn.cursor()
                     from app import _is_postgres_connection as app_is_postgres_connection
-                    is_pg = bool(app_is_postgres_connection(conn))
-                    placeholder = "%s" if is_pg else "?"
+                    placeholder = "%s"
                     _ensure_matching_columns(cursor)
                     candidates_json = json.dumps(scored_candidates[:5]) if scored_candidates else "[]"
                     best_score = scored_candidates[0].get('confidence') if scored_candidates else 0
@@ -7196,8 +7180,7 @@ def get_album_files_with_status(album, album_artist, downloads_dir=None):
         cursor = conn.cursor()
         
         from app import _is_postgres_connection as app_is_postgres_connection
-        is_pg = bool(app_is_postgres_connection(conn))
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         # Get all queue items for this album
         cursor.execute(f"""
