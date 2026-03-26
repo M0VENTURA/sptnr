@@ -3599,6 +3599,7 @@ def popularity_scan(
             return False
 
         if not tracks:
+            log_unified("Popularity Scan - No tracks found. All tracks may already have popularity data (run in Forced mode to rescan).")
             log_info("No tracks found for popularity scan. Exiting.")
             return
 
