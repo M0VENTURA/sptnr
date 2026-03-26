@@ -15,6 +15,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
+from api_clients import session as _shared_session
 from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
 from database_abstraction import is_postgres_connection
 
@@ -280,7 +281,6 @@ def match_folder_group_with_musicbrainz(folder_path, artist, album, mb_client=No
     Returns:
         Dict with MusicBrainz/Discogs candidates and metadata
     """
-    import requests
     import time
     
     try:
@@ -352,7 +352,7 @@ def match_folder_group_with_musicbrainz(folder_path, artist, album, mb_client=No
         
         logger.debug(f"MusicBrainz request: {base_url}release/ params={params}")
         
-        response = requests.get(
+        response = _shared_session.get(
             f"{base_url}release/",
             params=params,
             headers=headers,

@@ -4309,7 +4309,55 @@ def _extract_track_disc_from_filename(filename):
     return None, None
 
 
-def auto_discover_and_queue_files():
+def _parse_folder_name_for_metadata(folder_path):
+    """
+    Parse a folder name to extract artist, album, and year when file tags are
+    absent.
+
+    Supports common folder-name conventions:
+      "Artist - Album (Year)"  →  artist="Artist", album="Album", year="Year"
+      "Artist - Album"         →  artist="Artist", album="Album"
+      "Album (Year)"           →  album="Album", year="Year"
+
+    Only the artist is genuinely optional — the album always defaults to the
+    cleaned folder name so callers always get a non-empty album value.
+
+    Returns a dict with string keys ``'artist'``, ``'album'``, ``'year'``.
+    ``'artist'`` is omitted when no separator is found; ``'year'`` is omitted
+    when no four-digit year is found in parentheses or brackets.
+    """
+    folder_name = os.path.basename(folder_path)
+    if not folder_name:
+        return {}
+
+    # Extract year from "(YYYY)" or "[YYYY]" at the end
+    year_match = re.search(r'[\(\[]((?:19|20)\d{2})[\)\]]\s*$', folder_name)
+    year = year_match.group(1) if year_match else None
+
+    # Strip trailing year bracket so it doesn't pollute the album name
+    clean = re.sub(r'\s*[\(\[]((?:19|20)\d{2})[\)\]]\s*$', '', folder_name).strip()
+
+    result = {}
+    if year:
+        result['year'] = year
+
+    # Try "Artist - Album" split (handle em-dash and en-dash too)
+    sep_match = re.search(r'\s+[-\u2013\u2014]\s+', clean)
+    if sep_match:
+        artist_part = clean[:sep_match.start()].strip()
+        album_part = clean[sep_match.end():].strip()
+        if artist_part and album_part:
+            result['artist'] = artist_part
+            result['album'] = album_part
+            return result
+
+    # Fallback: treat the entire clean name as the album
+    if clean:
+        result['album'] = clean
+    return result
+
+
+
     """
     Scan /downloads folder for audio files and add them to download_queue with status 'discovered'.
     This makes manually added/downloaded files appear in the Download Monitor UI for user review.
@@ -4635,6 +4683,21 @@ def auto_discover_and_queue_files():
                 duration_ms = metadata.get('duration_ms')
                 duration = int(duration_ms / 1000) if duration_ms and duration_ms > 0 else None
 
+                # When file tags are absent or generic, try to fill in artist/album/year
+                # from the parent folder name (e.g. "Grain Of Pain - Behind us all (2026)").
+                # This ensures that all tracks inside the same folder are queued under a
+                # consistent album identity even when their embedded tags are sparse.
+                _folder_meta = None
+                if artist == 'Unknown Artist' or album == 'Unknown Album':
+                    _folder_meta = _parse_folder_name_for_metadata(folder_path)
+                if _folder_meta:
+                    if artist == 'Unknown Artist' and _folder_meta.get('artist'):
+                        artist = _folder_meta['artist']
+                    if album == 'Unknown Album' and _folder_meta.get('album'):
+                        album = _folder_meta['album']
+                    if not year and _folder_meta.get('year'):
+                        year = _folder_meta['year']
+
                 # Fallback track/disc extraction from filename prefixes when tags are missing.
                 file_track_num, file_disc_num = _extract_track_disc_from_filename(filename)
                 if not track_number and file_track_num is not None:
@@ -4654,6 +4717,8 @@ def auto_discover_and_queue_files():
                 # Log metadata extraction status
                 if metadata and not had_metadata_error:
                     logger.debug(f"✅ Metadata read: {artist} - {album} - {title}")
+                elif _folder_meta:
+                    logger.info(f"⚠️  No file tags; derived from folder name: {artist} - {album} - {title}")
                 else:
                     logger.info(f"⚠️  No metadata found (using filename): {filename} → {artist} - {title}")
                 
@@ -5728,12 +5793,19 @@ def _extract_lyricist_and_writers(recording_data):
 
 
 def _fetch_musicbrainz_album_candidates(artist, album, limit=5):
-    """Fetch album candidates from MusicBrainz release groups."""
+    """Fetch album candidates from MusicBrainz release groups.
+
+    Enforces the MusicBrainz 1 request-per-second rate limit between every API
+    call.  The function can make up to ``1 + limit * 2`` requests in sequence,
+    so without throttling it will reliably trigger 429 responses and slow down
+    the entire matching pipeline.
+    """
     headers = {
         "User-Agent": MUSICBRAINZ_USER_AGENT
     }
     query = f'releasegroup:"{album}" AND artist:"{artist}"'
 
+    time.sleep(1.0)  # Respect MusicBrainz 1 req/s policy before initial search
     search_resp = session.get(
         "https://musicbrainz.org/ws/2/release-group/",
         params={"query": query, "fmt": "json", "limit": limit},
@@ -5755,6 +5827,7 @@ def _fetch_musicbrainz_album_candidates(artist, album, limit=5):
         artist_credit = " ".join([(ac.get("name") or "") for ac in (rg.get("artist-credit") or [])]).strip() or artist
 
         release_tracks = []
+        time.sleep(1.0)  # Respect MusicBrainz 1 req/s policy before release-group lookup
         release_resp = session.get(
             f"https://musicbrainz.org/ws/2/release-group/{rg_id}/releases",
             params={"fmt": "json", "limit": 1},
@@ -5766,6 +5839,7 @@ def _fetch_musicbrainz_album_candidates(artist, album, limit=5):
             if releases:
                 rel_id = releases[0].get("id")
                 if rel_id:
+                    time.sleep(1.0)  # Respect MusicBrainz 1 req/s policy before release detail
                     track_resp = session.get(
                         f"https://musicbrainz.org/ws/2/release/{rel_id}",
                         params={"fmt": "json", "inc": "recordings+artist-credits+work-level-rels+work-rels+artist-rels"},
