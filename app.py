@@ -5749,6 +5749,7 @@ def artist_detail(name):
             FROM tracks
             WHERE artist = %s
               AND COALESCE(NULLIF(album_artist, ''), artist) != %s
+              AND NULLIF(album, '') IS NOT NULL
             GROUP BY album, COALESCE(NULLIF(album_artist, ''), artist)
             ORDER BY (MIN(year) IS NULL), MIN(year) DESC NULLS LAST, album
         """, (name, name))
@@ -5771,6 +5772,7 @@ def artist_detail(name):
                 MAX(is_compilation) as is_compilation
             FROM tracks
             WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+              AND NULLIF(album, '') IS NOT NULL
             GROUP BY album
             ORDER BY (MIN(year) IS NULL), MIN(year) DESC NULLS LAST, album
         """, (name,))
