@@ -169,6 +169,11 @@ def _ensure_columns_in_table(columns_to_add):
         else:
             logger.warning(f"Skipping download_queue column migration: PostgreSQL unavailable - {e}")
         return False
+    except RuntimeError as e:
+        if "PostgreSQL recent connection failures are in backoff" in str(e):
+            logger.debug(f"Skipping download_queue column migration during PostgreSQL backoff: {e}")
+            return False
+        raise
     except Exception as e:
         logger.error(f"Error ensuring download_queue columns: {e}", exc_info=True)
         return False
