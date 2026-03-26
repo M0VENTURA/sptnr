@@ -25,8 +25,8 @@
     {% if is_missing %}
       <span>{{ album.title }}</span>
     {% else %}
-      <a href="{{ url_for('album_detail', artist=artist_name, album=album.album) }}" class="text-decoration-none">
-        {{ album.album }}
+      <a href="{{ url_for('album_detail', artist=artist_name, album=(album.album or album.title)) }}" class="text-decoration-none">
+        {{ album.album or album.title }}
       </a>
     {% endif %}
   </td>
@@ -82,11 +82,11 @@
         <button class="btn btn-outline-info" onclick='toggleTracklist({{ artist_name|tojson }}, {{ (album.album or album.title)|tojson }})' title="Show tracklist" id="toggle-btn-{{ safe_artist }}-{{ safe_album }}">
           <i class="bi bi-list-ul"></i>
         </button>
-        <a class="btn btn-outline-secondary" href="{{ url_for('album_detail', artist=artist_name, album=album.album) }}" title="View album">
+        <a class="btn btn-outline-secondary" href="{{ url_for('album_detail', artist=artist_name, album=(album.album or album.title)) }}" title="View album">
           <i class="bi bi-arrow-right"></i>
         </a>
         {% if not is_missing and album.get('musicbrainz_album_mbid') %}
-        <a class="btn btn-outline-warning album-search-missing-btn" style="display:none;" href="{{ url_for('album_detail', artist=artist_name, album=album.album) }}#missing-tracks" title="Search for missing tracks on album page">
+        <a class="btn btn-outline-warning album-search-missing-btn" style="display:none;" href="{{ url_for('album_detail', artist=artist_name, album=(album.album or album.title)) }}#missing-tracks" title="Search for missing tracks on album page">
           <i class="bi bi-search"></i>
         </a>
         {% endif %}
