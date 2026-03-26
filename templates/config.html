@@ -41,6 +41,7 @@
         <a href="#downloads" class="btn btn-sm btn-outline-primary">Downloads</a>
         <a href="#sources" class="btn btn-sm btn-outline-primary">Download Sources</a>
         <a href="#watcher" class="btn btn-sm btn-outline-primary">Automation</a>
+        <a href="#essentia-mood-scan" class="btn btn-sm btn-outline-primary">Essentia</a>
         <a href="#api-integrations" class="btn btn-sm btn-outline-primary">API Keys</a>
         <a href="#database" class="btn btn-sm btn-outline-primary">Database</a>
         <a href="#search-filters" class="btn btn-sm btn-outline-primary">Search Filters</a>
@@ -486,6 +487,46 @@
             <input class="form-check-input" type="checkbox" id="queue_cleanup_scheduler_enabled" {% if config.get('features', {}).get('download_queue_cleanup_scheduler', {}).get('enabled', True) %}checked{% endif %}>
             <label class="form-check-label" for="queue_cleanup_scheduler_enabled"><strong>Enable Auto Queue Cleanup</strong></label>
             <small class="d-block text-muted">Starts automatically with the app and follows the configured interval</small>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Essentia Mood Scan Section -->
+  <div class="card shadow-sm mb-3" id="essentia-mood-scan">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-cpu"></i> Essentia Mood Scan</h5>
+      <small class="text-muted">Configure local ML-based mood (and optional genre) tagging via <a href="https://github.com/WB2024/Essentia-to-Metadata" target="_blank" rel="noopener">Essentia-to-Metadata</a></small>
+    </div>
+    <div class="card-body">
+      <p class="text-muted small mb-3">The Essentia scan runs entirely on-device — no internet required. It processes each audio file through TensorFlow models and writes a <code>MOOD</code> tag back to the file and database. The official Docker image bundles the script and all models; leave the paths below blank to use the bundled defaults.</p>
+      <div class="row g-3">
+        <div class="col-12 col-md-6">
+          <label class="form-label">Script Path <span class="text-muted fw-normal">(tag_music.py)</span></label>
+          <input type="text" class="form-control" id="essentia_script_path" placeholder="/opt/Essentia-to-Metadata/tag_music.py" value="{{ config.get('essentia', {}).get('script_path', '') }}">
+          <div class="form-text">Absolute path to <code>tag_music.py</code>. Leave blank to use the Docker default.</div>
+        </div>
+        <div class="col-12 col-md-6">
+          <label class="form-label">Models Directory</label>
+          <input type="text" class="form-control" id="essentia_models_dir" placeholder="/opt/essentia_models" value="{{ config.get('essentia', {}).get('models_dir', '') }}">
+          <div class="form-text">Directory containing the Essentia <code>.pb</code> / <code>.json</code> model files. Leave blank for Docker default.</div>
+        </div>
+        <div class="col-12 col-md-6">
+          <label class="form-label">Mood Threshold</label>
+          <input type="number" class="form-control" id="essentia_mood_threshold" placeholder="0.005" value="{{ config.get('essentia', {}).get('mood_threshold', 0.005) }}" min="0.001" max="0.5" step="0.001">
+          <div class="form-text">Minimum activation probability for a mood to be written (0.001 – 0.5). Lower = more tags, potentially noisier. Default: 0.005.</div>
+        </div>
+        <div class="col-12 col-md-6">
+          <label class="form-label">Per-File Timeout (seconds)</label>
+          <input type="number" class="form-control" id="essentia_per_file_timeout" placeholder="300" value="{{ config.get('essentia', {}).get('per_file_timeout', 300) }}" min="30" max="3600">
+          <div class="form-text">Maximum time to wait for Essentia to process one file before skipping it (30 – 3600 s). Increase for slow hardware or large FLAC files. Default: 300.</div>
+        </div>
+        <div class="col-12">
+          <div class="form-check form-switch mb-2">
+            <input class="form-check-input" type="checkbox" id="essentia_tag_genres" {% if config.get('essentia', {}).get('tag_genres', False) %}checked{% endif %}>
+            <label class="form-check-label" for="essentia_tag_genres"><strong>Tag Genres</strong></label>
+            <small class="d-block text-muted">Also write genre tags using Essentia genre models. Requires the genre <code>.pb</code> / <code>.json</code> model files to be present in the models directory. Off by default (mood-only).</small>
           </div>
         </div>
       </div>
@@ -1294,6 +1335,13 @@ function buildConfigObject() {
     }).filter(Boolean),
     upcoming_releases: {
       sources: getUpcomingSourcesForSave()
+    },
+    essentia: {
+      script_path: getValue('essentia_script_path', ''),
+      models_dir: getValue('essentia_models_dir', ''),
+      mood_threshold: parseFloat(getValue('essentia_mood_threshold', '0.005')) || 0.005,
+      per_file_timeout: parseInt(getValue('essentia_per_file_timeout', '300')) || 300,
+      tag_genres: getChecked('essentia_tag_genres', false)
     }
   };
 }

@@ -2150,8 +2150,21 @@ def _ensure_album_art_pg_schema(conn, cursor) -> None:
             _col_default = (_id_info.get('column_default') if hasattr(_id_info, 'get') else _id_info[0])
             _is_nullable = (_id_info.get('is_nullable') if hasattr(_id_info, 'get') else _id_info[1])
             if not _col_default and _is_nullable == 'NO':
-                cursor.execute("ALTER TABLE album_art ALTER COLUMN id DROP NOT NULL")
-                log_debug("[ALBUM_ART] Dropped NOT NULL constraint from legacy id column")
+                # PostgreSQL does not allow DROP NOT NULL on a PRIMARY KEY column.
+                # Instead, create a sequence and set it as the column default so that
+                # INSERTs that omit 'id' receive an auto-incremented value.
+                cursor.execute("CREATE SEQUENCE IF NOT EXISTS album_art_id_seq")
+                cursor.execute("""
+                    SELECT setval(
+                        'album_art_id_seq',
+                        COALESCE((SELECT MAX(id) FROM album_art WHERE id IS NOT NULL), 0) + 1,
+                        false
+                    )
+                """)
+                cursor.execute(
+                    "ALTER TABLE album_art ALTER COLUMN id SET DEFAULT nextval('album_art_id_seq')"
+                )
+                log_debug("[ALBUM_ART] Added auto-increment sequence for legacy id column")
         # Remove duplicate rows (keep the most recently inserted ctid) before
         # adding a unique index, so the CREATE INDEX does not fail on existing data.
         cursor.execute("""

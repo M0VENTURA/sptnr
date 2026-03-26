@@ -173,6 +173,7 @@ def run_essentia_mood_scan(
     per_file_timeout: int = 300,
     force: bool = False,
     progress_file: str = "",
+    tag_genres: bool = False,
 ) -> Dict[str, Any]:
     """Run Essentia-based mood detection on all tracks with a local file path.
 
@@ -195,6 +196,9 @@ def run_essentia_mood_scan(
         When ``True`` re-analyse every track even if it already has a mood.
     progress_file:
         Path to a JSON progress file (shared with the Flask UI).
+    tag_genres:
+        When ``True`` the ``--no-genres`` flag is omitted so the external
+        script also writes genre tags.  Defaults to ``False`` (mood-only).
     """
     # ------------------------------------------------------------------
     # Validate script_path early so we surface a clear error.
@@ -251,11 +255,12 @@ def run_essentia_mood_scan(
         python_exec, script_path,
         "--auto",
         "--single-file",
-        "--no-genres",
         "--overwrite",
         "--quiet",
         "--mood-threshold", str(mood_threshold),
     ]
+    if not tag_genres:
+        base_cmd.append("--no-genres")
     if models_dir:
         base_cmd += ["--model-dir", os.path.expanduser(models_dir)]
 
