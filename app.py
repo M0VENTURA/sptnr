@@ -14572,7 +14572,12 @@ def scan_navidrome():
         try:
             db_dir = os.path.dirname(DB_PATH)
             nav_progress_file = os.path.join(db_dir, "navidrome_scan_progress.json")
-            _write_progress_file(nav_progress_file, "navidrome_scan", True, {"status": "starting"})
+            # For resume modes, preserve current_artist so get_last_scanned_artist()
+            # can read it directly from the file instead of falling back to the DB.
+            if mode in ('resume', 'resume_force'):
+                _write_progress_with_current_artist(nav_progress_file, "navidrome_scan", True, {"status": "starting"})
+            else:
+                _write_progress_file(nav_progress_file, "navidrome_scan", True, {"status": "starting"})
             
             def run_navidrome_import_bg():
                 global scan_process_navidrome
@@ -14782,6 +14787,20 @@ def scan_combined():
                         
                         logging.info(f"[{idx}/{total}] Processing artist: {artist_name}")
                         
+                        # Update combined progress immediately so the dashboard shows the
+                        # current artist before the (potentially slow) Navidrome import runs.
+                        # This also ensures the combined_scan progress file stays current
+                        # throughout the navidrome step (scan_artist_to_db is told to write
+                        # here instead of navidrome_scan_progress.json).
+                        _write_progress_file(combined_progress_file, "combined_scan", True, {
+                            "status": "running",
+                            "current_artist": artist_name,
+                            "processed_artists": idx,
+                            "total_artists": total,
+                            "percent_complete": int((idx / total) * 100),
+                            "last_updated": datetime.now().isoformat(),
+                        })
+
                         # Step 1: Navidrome import for this artist
                         # Note: filter_missing is always False because we process each artist explicitly
                         # The combined scan handles all artists in sequence, unlike bulk scans
@@ -14794,7 +14813,9 @@ def scan_combined():
                                 force=force_rescan,
                                 filter_missing=False,  # Combined scan processes all artists explicitly
                                 processed_artists=idx, 
-                                total_artists=total
+                                total_artists=total,
+                                progress_file=combined_progress_file,
+                                progress_scan_type="combined_scan",
                             )
                         except Exception as e:
                             logging.error(f"Error in Navidrome import for {artist_name}: {e}")
@@ -14819,16 +14840,6 @@ def scan_combined():
                         except Exception as e:
                             logging.error(f"Error in popularity scan for {artist_name}: {e}")
                             # Continue with next artist even if popularity scan fails
-                        
-                        # Update progress
-                        progress_data = {
-                            "status": "running",
-                            "current_artist": artist_name,
-                            "processed_artists": idx,
-                            "total_artists": total,
-                            "percent_complete": int((idx / total) * 100)
-                        }
-                        _write_progress_file(combined_progress_file, "combined_scan", True, progress_data)
                         
                         # Update checkpoint with the last scanned artist
                         try:
@@ -17700,6 +17711,10 @@ def _ensure_album_art_pg_schema(conn, cursor) -> None:
     global _pg_album_art_schema_ensured
     if _pg_album_art_schema_ensured:
         return
+
+    # Step 1: Ensure table exists and fix the id column default if needed.
+    # Committed independently so the fix is durable even if the unique-index
+    # creation below fails (e.g. due to duplicate rows not yet cleaned up).
     try:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS album_art (
@@ -17741,8 +17756,22 @@ def _ensure_album_art_pg_schema(conn, cursor) -> None:
                     "ALTER TABLE album_art ALTER COLUMN id SET DEFAULT nextval('album_art_id_seq')"
                 )
                 logging.debug("[ALBUM_ART] Added auto-increment sequence for legacy id column")
+        conn.commit()
+    except Exception as _id_fix_err:
+        logging.debug(f"[ALBUM_ART] album_art id-column fix failed: {_id_fix_err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        # Even if the id-column fix failed we still try to create the unique index
+        # below so that ON CONFLICT works.  The id issue will be retried next call.
+
+    # Step 2: Remove duplicates and create unique index.
+    # Run in a separate try/except so a failure here does not roll back the
+    # id-column fix committed above.
+    try:
         # Remove duplicate rows (keep the most recently inserted ctid) before
-        # creating the unique index so it does not fail on existing duplicates.
+        # adding a unique index, so the CREATE INDEX does not fail on existing data.
         cursor.execute("""
             DELETE FROM album_art a
             USING album_art b
@@ -17757,7 +17786,7 @@ def _ensure_album_art_pg_schema(conn, cursor) -> None:
         conn.commit()
         _pg_album_art_schema_ensured = True
     except Exception as _schema_err:
-        logging.debug(f"[ALBUM_ART] album_art schema ensure failed: {_schema_err}")
+        logging.debug(f"[ALBUM_ART] album_art unique-index ensure failed: {_schema_err}")
         try:
             conn.rollback()
         except Exception:

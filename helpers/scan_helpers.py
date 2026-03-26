@@ -232,25 +232,35 @@ def _extract_writer_from_file_tags(file_path: str) -> str:
 
     return "[]"
 
-def save_navidrome_scan_progress(current_artist, processed_artists, total_artists):
-    """Save Navidrome scan progress to JSON file (using artist list for progress tracking)"""
+def save_navidrome_scan_progress(current_artist, processed_artists, total_artists,
+                                 progress_file: str = None, scan_type: str = "navidrome_scan"):
+    """Save Navidrome scan progress to JSON file (using artist list for progress tracking).
+
+    Args:
+        progress_file: Override the target file (default: NAVIDROME_PROGRESS_FILE env var).
+                       Pass the caller's own progress file when invoked from a combined scan
+                       so that navidrome_scan_progress.json is not written to.
+        scan_type: Override the scan_type written into the progress file.
+    """
     try:
-        progress_file = os.environ.get("NAVIDROME_PROGRESS_FILE", "/database/navidrome_scan_progress.json")
+        target_file = progress_file or os.environ.get(
+            "NAVIDROME_PROGRESS_FILE", "/database/navidrome_scan_progress.json"
+        )
         progress = {
             "current_artist": current_artist,
             "processed_artists": processed_artists,
             "total_artists": total_artists,
             "is_running": True,
-            "scan_type": "navidrome_scan",
+            "scan_type": scan_type,
             "percent_complete": int((processed_artists / total_artists * 100)) if total_artists > 0 else 0,
             "last_updated": datetime.now().isoformat(),
         }
-        with open(progress_file, 'w') as f:
+        with open(target_file, 'w') as f:
             json.dump(progress, f, indent=2)
     except Exception as e:
         logging.error(f"Failed to save Navidrome scan progress: {e}")
 
-def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, force: bool = False, filter_missing: bool = False, processed_artists: int = 0, total_artists: int = 0, album_filter: str = None):
+def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, force: bool = False, filter_missing: bool = False, processed_artists: int = 0, total_artists: int = 0, album_filter: str = None, progress_file: str = None, progress_scan_type: str = None):
     """
     Scan a single artist from Navidrome and persist tracks to DB.
 
@@ -263,6 +273,10 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
         processed_artists: Current artist index (1-based) for progress tracking
         total_artists: Total number of artists for progress tracking
         album_filter: Only scan this specific album (if provided)
+        progress_file: Override the progress file written by save_navidrome_scan_progress.
+                       Pass the caller's own progress file (e.g. combined_scan_progress.json)
+                       so that navidrome_scan_progress.json is not written during a combined scan.
+        progress_scan_type: Override the scan_type written into the progress file.
     """
     # Local import to avoid circular dependency
     from start import fetch_artist_albums, fetch_album_tracks, save_to_db
@@ -336,7 +350,11 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
         logging.info(f"🎤 [Navidrome] Scanning artist: {artist_name} ({len(albums)} albums, force={force}, filter_missing={filter_missing}, album_filter={album_filter or 'None'})")
         # Save artist-level progress
         if total_artists > 0:
-            save_navidrome_scan_progress(artist_name, processed_artists, total_artists)
+            save_navidrome_scan_progress(
+                artist_name, processed_artists, total_artists,
+                progress_file=progress_file,
+                scan_type=progress_scan_type or "navidrome_scan",
+            )
 
         total_albums = len(albums)
         for alb_idx, alb in enumerate(albums, 1):
