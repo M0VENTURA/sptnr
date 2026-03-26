@@ -41,7 +41,7 @@ class CoverDetector:
         self.mb_client = musicbrainz_client
         self.db_conn = db_connection
         self.is_pg = self._is_postgres(db_connection) if db_connection else False
-        self.placeholder = "%s" if self.is_pg else "?"
+        self.placeholder = "%s"
         self._band_members_cache = {}  # Cache to avoid repeated API calls
 
     def _configure_musicbrainzngs(self):
@@ -783,7 +783,7 @@ class CoverDetector:
                 )
                 result = cursor.fetchone()
                 if result:
-                    current_genres = (result['genres'] if self.is_pg else result[0]) or ""
+                    current_genres = result['genres'] or ""
                     genres_list = [g.strip() for g in current_genres.split(",")] if current_genres else []
                     if "Cover" not in genres_list:
                         genres_list.append("Cover")
@@ -793,7 +793,7 @@ class CoverDetector:
                         (new_genres, track_id)
                     )
 
-                is_cover_value = True if self.is_pg else 1
+                is_cover_value = True
                 cursor.execute(
                     f"UPDATE tracks SET is_cover = {self.placeholder}, is_cover_reason = {self.placeholder}, original_cover_artist = {self.placeholder} WHERE id = {self.placeholder}",
                     (is_cover_value, f"Writer-based detection: original by {original_artist}", original_artist, track_id)

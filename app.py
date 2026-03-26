@@ -23170,7 +23170,9 @@ def _perform_queue_move_to_music(queue_id):
                 "error": "Queue item can only be manually moved when its file is under the downloads directory",
             }, 400
 
-
+        conn2 = get_db()
+        placeholder_conn2 = "%s"
+        cursor2 = conn2.cursor()
         cursor2.execute(f"SELECT * FROM download_queue WHERE id = {placeholder_conn2}", (queue_id,))
         queue_item = cursor2.fetchone()
         if queue_item and not isinstance(queue_item, dict):
