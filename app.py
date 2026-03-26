@@ -10957,21 +10957,54 @@ def album_edit(artist, album):
                         cover_art_mime = None
                         if cover_art_url:
                             try:
-                                import requests as _requests
-                                _resp = _requests.get(cover_art_url, timeout=10)
-                                if _resp.status_code == 200 and _resp.content:
-                                    cover_art_bytes = _resp.content
-                                    cover_art_mime = _resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
-                                    # Also persist to album_art table and save the URL on tracks
-                                    try:
-                                        from popularity import download_and_save_album_art as _save_art
-                                        _save_art(album_artist, album_title, cover_art_url, source="manual")
-                                    except Exception as _art_db_err:
-                                        logging.debug(f"Could not save cover art to album_art table: {_art_db_err}")
+                                from urllib.parse import urlparse as _urlparse, urlunparse as _urlunparse
+                                _parsed = _urlparse(cover_art_url)
+                                _allowed_hosts = {
+                                    "coverartarchive.org",
+                                    "musicbrainz.org",
+                                    "discogs.com",
+                                    "img.discogs.com",
+                                    "i.discogs.com",
+                                    "images.discogs.com",
+                                    "archive.org",
+                                    "ia800.us.archive.org",
+                                }
+                                _hostname = (_parsed.hostname or "").lower().lstrip("www.")
+                                _is_trusted = (
+                                    _parsed.scheme in ("http", "https")
+                                    and any(
+                                        _hostname == h or _hostname.endswith("." + h)
+                                        for h in _allowed_hosts
+                                    )
+                                )
+                                if not _is_trusted:
+                                    logging.warning(f"Rejecting cover art URL from untrusted host: {_parsed.hostname}")
+                                    cover_art_url = None
                                 else:
-                                    logging.warning(f"Failed to download cover art from {cover_art_url}: HTTP {_resp.status_code}")
+                                    # Reconstruct the URL from validated parsed components to avoid tainted-URL SSRF
+                                    _safe_url = _urlunparse((
+                                        _parsed.scheme,
+                                        _parsed.netloc,
+                                        _parsed.path,
+                                        _parsed.params,
+                                        _parsed.query,
+                                        "",
+                                    ))
+                                    import requests as _requests
+                                    _resp = _requests.get(_safe_url, timeout=10)
+                                    if _resp.status_code == 200 and _resp.content:
+                                        cover_art_bytes = _resp.content
+                                        cover_art_mime = _resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
+                                        # Also persist to album_art table
+                                        try:
+                                            from popularity import download_and_save_album_art as _save_art
+                                            _save_art(album_artist, album_title, _safe_url, source="manual")
+                                        except Exception as _art_db_err:
+                                            logging.debug(f"Could not save cover art to album_art table: {_art_db_err}")
+                                    else:
+                                        logging.warning(f"Failed to download cover art from {_safe_url}: HTTP {_resp.status_code}")
                             except Exception as _download_err:
-                                logging.warning(f"Could not download cover art from {cover_art_url}: {_download_err}")
+                                logging.warning(f"Could not download cover art: {_download_err}")
 
                         def _resolve_music_file_path(path_value):
                             if not path_value:

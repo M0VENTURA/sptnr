@@ -495,7 +495,7 @@ def _write_id3_tags(file_path: str, tags: Dict[str, Any]) -> bool:
             elif field == "cover_art_data":
                 # value should be raw image bytes; cover_art_mime is read from the same tags dict
                 if value is not None and isinstance(value, (bytes, bytearray)) and len(value) > 0:
-                    mime = tags.get("cover_art_mime", "image/jpeg") or "image/jpeg"
+                    mime = tags.get("cover_art_mime", "image/jpeg")
                     audio.tags.delall("APIC")
                     audio.tags.add(APIC(
                         encoding=3,
@@ -550,8 +550,8 @@ def _write_flac_tags(file_path: str, tags: Dict[str, Any]) -> bool:
             # Handle cover art separately (not a Vorbis comment field)
             if field == "cover_art_data":
                 if value is not None and isinstance(value, (bytes, bytearray)) and len(value) > 0:
-                    mime = tags.get("cover_art_mime", "image/jpeg") or "image/jpeg"
-                    pic = FLACPicture()  # type: ignore[name-defined]
+                    mime = tags.get("cover_art_mime", "image/jpeg")
+                    pic = FLACPicture()
                     pic.type = 3  # 3 = Cover (front)
                     pic.mime = mime
                     pic.desc = "Cover"
