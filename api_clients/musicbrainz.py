@@ -1562,14 +1562,7 @@ def lookup_and_save_artist_mbid(artist: str, db_connection) -> str:
         # Save MBID to database for all tracks by this artist
         cursor = db_connection.cursor()
         
-        # Detect database type
-        is_pg = False
-        try:
-            import psycopg2
-            is_pg = isinstance(getattr(db_connection, "_conn", db_connection), psycopg2.extensions.connection)
-        except (ImportError, AttributeError):
-            is_pg = False
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         cursor.execute(f"""
             UPDATE tracks 

@@ -92,8 +92,7 @@ def _normalize_existing_artist_rows(conn, canonical_artist_name: str, aliases: l
         return 0
 
     cursor = conn.cursor()
-    is_pg = _is_postgres_connection(conn)
-    placeholder = "%s" if is_pg else "?"
+    placeholder = "%s"
     updates = 0
 
     alias_candidates = set(a for a in (aliases or []) if a)
@@ -280,8 +279,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
         try:
             conn = get_db_connection()
             cursor = conn.cursor()
-            is_pg = _is_postgres_connection(conn)
-            placeholder = "%s" if is_pg else "?"
+            placeholder = "%s"
 
             # Critical fields that should be imported from Navidrome
             critical_fields = ['duration', 'track_number', 'year', 'file_path']
@@ -520,8 +518,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     conn = get_db_connection()
                     try:
                         cursor = conn.cursor()
-                        is_pg = _is_postgres_connection(conn)
-                        placeholder = "%s" if is_pg else "?"
+                        placeholder = "%s"
                         placeholders = ", ".join([placeholder] * len(stale_ids))
                         cursor.execute(f"DELETE FROM tracks WHERE id IN ({placeholders})", list(stale_ids))
                         conn.commit()

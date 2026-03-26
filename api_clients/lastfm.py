@@ -243,8 +243,7 @@ class LastFmClient:
             cursor = conn.cursor()
             
             from app import _is_postgres_connection as app_is_postgres_connection
-            is_pg = bool(app_is_postgres_connection(conn))
-            placeholder = "%s" if is_pg else "?"
+            placeholder = "%s"
             
             # Query for album matching both artist and album name (case-insensitive)
             cursor.execute(

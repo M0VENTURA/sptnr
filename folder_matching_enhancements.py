@@ -49,7 +49,7 @@ def _safe_int(value, default=None):
         return default
 
 
-def _get_table_columns(cursor, table_name: str, is_pg: bool) -> set:
+def _get_table_columns(cursor, table_name: str) -> set:
     cursor.execute(
         "SELECT column_name FROM information_schema.columns "
         "WHERE table_name = %s AND table_schema = current_schema()",
@@ -58,23 +58,20 @@ def _get_table_columns(cursor, table_name: str, is_pg: bool) -> set:
     return {str(_row_get(row, 'column_name', 0, '')) for row in cursor.fetchall() if _row_get(row, 'column_name', 0, '')}
 
 
-def _ensure_release_track_cache_columns(cursor, is_pg: bool) -> None:
+def _ensure_release_track_cache_columns(cursor) -> None:
     required_columns = {
         'disc_number': 'INTEGER',
         'recording_title': 'TEXT',
         'recording_mbid': 'TEXT',
     }
-    existing_columns = _get_table_columns(cursor, 'musicbrainz_release_tracks', is_pg)
+    existing_columns = _get_table_columns(cursor, 'musicbrainz_release_tracks')
     for column_name, column_type in required_columns.items():
         if column_name in existing_columns:
             continue
         cursor.execute(f"ALTER TABLE musicbrainz_release_tracks ADD COLUMN {column_name} {column_type}")
 
 
-def _ensure_musicbrainz_release_conflict_target(cursor, is_pg: bool) -> None:
-    if not is_pg:
-        return
-
+def _ensure_musicbrainz_release_conflict_target(cursor) -> None:
     # Serialize this schema fix across workers to avoid DDL races on restart.
     cursor.execute("SELECT pg_advisory_xact_lock(hashtext('uq_musicbrainz_releases_release_id'))")
 
@@ -127,9 +124,9 @@ def _get_cached_musicbrainz_release_metadata(release_id: str) -> Optional[Dict[s
         conn = get_db_connection()
         cursor = conn.cursor()
         is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
-        _ensure_release_track_cache_columns(cursor, is_pg)
+        _ensure_release_track_cache_columns(cursor)
 
         cursor.execute(
             f"""
@@ -220,46 +217,30 @@ def _cache_musicbrainz_release_metadata(release_id: str, metadata: Dict[str, Any
         conn = get_db_connection()
         cursor = conn.cursor()
         is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
-        _ensure_release_track_cache_columns(cursor, is_pg)
-        _ensure_musicbrainz_release_conflict_target(cursor, is_pg)
+        _ensure_release_track_cache_columns(cursor)
+        _ensure_musicbrainz_release_conflict_target(cursor)
 
         release_title = metadata.get('release_title') or 'Unknown Album'
         release_artist = metadata.get('artist') or ''
         release_year = _safe_int(metadata.get('release_year'), None)
         total_tracks = len(tracks)
 
-        if is_pg:
-            cursor.execute(
-                f"""
-                INSERT INTO musicbrainz_releases
-                (release_id, release_title, artist, release_year, total_tracks, status, updated_at)
-                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'cached', CURRENT_TIMESTAMP)
-                ON CONFLICT(release_id) DO UPDATE SET
-                    release_title = EXCLUDED.release_title,
-                    artist = EXCLUDED.artist,
-                    release_year = COALESCE(EXCLUDED.release_year, musicbrainz_releases.release_year),
-                    total_tracks = EXCLUDED.total_tracks,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (release_id, release_title, release_artist, release_year, total_tracks),
-            )
-        else:
-            cursor.execute(
-                f"""
-                INSERT INTO musicbrainz_releases
-                (release_id, release_title, artist, release_year, total_tracks, status, updated_at)
-                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'cached', CURRENT_TIMESTAMP)
-                ON CONFLICT(release_id) DO UPDATE SET
-                    release_title = excluded.release_title,
-                    artist = excluded.artist,
-                    release_year = COALESCE(excluded.release_year, musicbrainz_releases.release_year),
-                    total_tracks = excluded.total_tracks,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (release_id, release_title, release_artist, release_year, total_tracks),
-            )
+        cursor.execute(
+            f"""
+            INSERT INTO musicbrainz_releases
+            (release_id, release_title, artist, release_year, total_tracks, status, updated_at)
+            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'cached', CURRENT_TIMESTAMP)
+            ON CONFLICT(release_id) DO UPDATE SET
+                release_title = EXCLUDED.release_title,
+                artist = EXCLUDED.artist,
+                release_year = COALESCE(EXCLUDED.release_year, musicbrainz_releases.release_year),
+                total_tracks = EXCLUDED.total_tracks,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (release_id, release_title, release_artist, release_year, total_tracks),
+        )
 
         cursor.execute(
             f"DELETE FROM musicbrainz_release_tracks WHERE release_id = {placeholder} AND queue_id IS NULL",

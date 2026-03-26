@@ -1351,7 +1351,7 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         # is not queued twice even when the album field differs between requests.
         # A secondary album-specific check is run first for exact matches (avoids false
         # positives when the same song genuinely appears on multiple albums).
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         if album:
             # 1. Exact match: same artist + album + title + source
@@ -5431,7 +5431,7 @@ def check_and_remove_failed_downloads():
         
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s" if _is_postgres_connection(conn) else "?"
+        placeholder = "%s"
         
         for download in downloads:
             try:
@@ -5551,8 +5551,7 @@ def cleanup_imported(days=7):
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()
         

@@ -321,7 +321,7 @@ def run_essentia_mood_scan(
     # ------------------------------------------------------------------
     conn = get_db_connection()
     cursor = conn.cursor()
-    placeholder = "%s" if _is_postgres_connection(conn) else "?"
+    placeholder = "%s"
 
     conditions: List[str] = [
         f"COALESCE(file_path, '') NOT LIKE {placeholder}",

@@ -3746,11 +3746,8 @@ def _cleanup_request_db_connections(exception=None):
 
 
 def _is_postgres_connection(conn):
-    """Return True when the active DB connection is PostgreSQL."""
-    if not _ensure_psycopg2_loaded() or psycopg2 is None:
-        return False
-    underlying = getattr(conn, "_conn", conn)
-    return isinstance(underlying, psycopg2.extensions.connection)  # type: ignore[name-defined]
+    """Return True — all connections are PostgreSQL."""
+    return True
 
 
 def get_placeholder(conn):
@@ -3768,28 +3765,10 @@ def get_placeholder(conn):
 
 
 # Debug: Log database configuration on startup
-pg_configured = bool(PG_HOST and PG_USER and PG_DATABASE)
-if STARTUP_DIAGNOSTICS:
-    _db_lines = [f"{'='*60}", "Database Configuration:"]
-    if pg_configured:
-        _db_lines += [
-            "  Backend: PostgreSQL (configured)",
-            f"  Host: {PG_HOST}",
-            f"  Database: {PG_DATABASE}",
-            f"  User: {PG_USER}",
-            f"  Port: {PG_PORT}",
-        ]
-        try:
-            test_conn = get_db()
-            test_conn.close()
-            _db_lines.append("  Connection Status: ✓ Connected")
-        except Exception as e:
-            _db_lines.append(f"  Connection Status: ✗ Error - {str(e)[:60]}")
-    _db_lines.append(f"{'='*60}")
-    logging.debug("\n".join(_db_lines))
+pg_configured = True  # PostgreSQL is the only supported backend
 
 
-def _table_exists(cursor, table_name, is_postgres=False):
+def _table_exists(cursor, table_name):
     """Check whether a table exists in the current database."""
     cursor.execute(
         """
@@ -3805,30 +3784,29 @@ def _table_exists(cursor, table_name, is_postgres=False):
         return bool(row.get('exists'))
     return bool(row[0]) if row else False
 
-def _get_table_columns(cursor, table_name, is_postgres=False):
-    """Return a set of column names for a table across SQLite/Postgres."""
-    if is_postgres:
-        cursor.execute(
-            """
-            SELECT column_name
-            FROM information_schema.columns
-            WHERE table_schema = 'public' AND table_name = %s
-            """,
-            (table_name,)
-        )
-        rows = cursor.fetchall() or []
-        cols = set()
-        for row in rows:
-            if hasattr(row, 'keys'):
-                cols.add(row.get('column_name'))
-            elif row and len(row) > 0:
-                cols.add(row[0])
-        return {c for c in cols if c}
+def _get_table_columns(cursor, table_name):
+    """Return a set of column names for a table in PostgreSQL."""
+    cursor.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = %s
+        """,
+        (table_name,)
+    )
+    rows = cursor.fetchall() or []
+    cols = set()
+    for row in rows:
+        if hasattr(row, 'keys'):
+            cols.add(row.get('column_name'))
+        elif row and len(row) > 0:
+            cols.add(row[0])
+    return {c for c in cols if c}
 
 
 def _get_postgres_column_types(conn, table_name, column_names):
     """Return a dict of PostgreSQL column_name -> data_type for the requested columns."""
-    if not _is_postgres_connection(conn) or not column_names:
+    if not column_names:
         return {}
 
     cursor = conn.cursor()
@@ -7409,7 +7387,7 @@ def api_cached_missing_releases():
         placeholder = "%s"
         
         # Check if missing_releases table exists
-        if not _table_exists(cursor, 'missing_releases', is_postgres=True):
+        if not _table_exists(cursor, 'missing_releases'):
             conn.close()
             return jsonify({
                 "artist": artist,
@@ -8398,7 +8376,7 @@ def api_album_update_ids():
         placeholder = "%s"
 
         # Use canonical MusicBrainz album MBID column.
-        track_columns = _get_table_columns(cursor, "tracks", is_postgres=True) or set()
+        track_columns = _get_table_columns(cursor, "tracks") or set()
 
         mb_album_column = "musicbrainz_album_mbid" if "musicbrainz_album_mbid" in track_columns else None
 
@@ -11953,33 +11931,6 @@ def scan_popularity_route():
             if scan_already_running and not force_start:
                 return jsonify({"scan_running": True, "message": "A popularity scan is already running."}), 409
 
-        # Keep legacy sequencing for SQLite to avoid lock contention.
-        # PostgreSQL supports concurrent scans safely, so skip this blocker there.
-        if mode != 'singles' and not pg_configured:
-            nav_running = False
-            if scan_process_navidrome is not None:
-                if isinstance(scan_process_navidrome, dict):
-                    nav_thread = scan_process_navidrome.get('thread')
-                    nav_running = nav_thread is not None and nav_thread.is_alive()
-                elif hasattr(scan_process_navidrome, 'is_alive'):
-                    nav_running = scan_process_navidrome.is_alive()
-                elif hasattr(scan_process_navidrome, 'poll'):
-                    nav_running = scan_process_navidrome.poll() is None
-
-            if not nav_running:
-                nav_progress_file = os.path.join(os.path.dirname(DB_PATH), "navidrome_scan_progress.json")
-                try:
-                    with open(nav_progress_file, "r", encoding="utf-8") as f:
-                        nav_state = json.load(f)
-                        nav_running = bool(nav_state.get("is_running"))
-                except FileNotFoundError:
-                    nav_running = False
-                except Exception:
-                    nav_running = False
-
-            if nav_running:
-                flash("Please wait for Navidrome scan to finish before starting popularity scan", "warning")
-                return redirect(url_for("dashboard"))        
         try:
             db_dir = os.path.dirname(DB_PATH)
             if restart_requested:
@@ -12084,32 +12035,6 @@ def scan_singles():
     global scan_process_singles
     
     with scan_lock:
-        # Keep legacy sequencing for SQLite only. PostgreSQL can run this concurrently.
-        nav_running = False
-        if not pg_configured:
-            if scan_process_navidrome is not None:
-                if isinstance(scan_process_navidrome, dict):
-                    nav_thread = scan_process_navidrome.get('thread')
-                    nav_running = nav_thread is not None and nav_thread.is_alive()
-                elif hasattr(scan_process_navidrome, 'is_alive'):
-                    nav_running = scan_process_navidrome.is_alive()
-                elif hasattr(scan_process_navidrome, 'poll'):
-                    nav_running = scan_process_navidrome.poll() is None
-
-            if not nav_running:
-                nav_progress_file = os.path.join(os.path.dirname(DB_PATH), "navidrome_scan_progress.json")
-                try:
-                    with open(nav_progress_file, "r", encoding="utf-8") as f:
-                        nav_state = json.load(f)
-                        nav_running = bool(nav_state.get("is_running"))
-                except FileNotFoundError:
-                    nav_running = False
-                except Exception:
-                    nav_running = False
-
-            if nav_running:
-                flash("Please wait for Navidrome scan to finish before starting singles detection", "warning")
-                return redirect(url_for("dashboard"))
         if scan_process_singles and scan_process_singles.poll() is None:
             flash("Single detection scan is already running", "warning")
             return redirect(url_for("dashboard"))
@@ -15648,7 +15573,7 @@ def _initiate_slskd_download_bg(tracking_id, query):
                 try:
                     conn2 = get_db()
                     cursor2 = conn2.cursor()
-                    placeholder = "%s" if _is_postgres_connection(conn2) else "?"
+                    placeholder = "%s"
 
                     # Sort by match score (descending)
                     all_files.sort(key=lambda x: x['match_score'], reverse=True)
@@ -15679,7 +15604,7 @@ def _initiate_slskd_download_bg(tracking_id, query):
                     try:
                         conn2 = get_db()
                         cursor2 = conn2.cursor()
-                        placeholder = "%s" if _is_postgres_connection(conn2) else "?"
+                        placeholder = "%s"
                         cursor2.execute(f"""
                             UPDATE managed_downloads 
                             SET status = 'error', error_message = {placeholder}, updated_at = CURRENT_TIMESTAMP
@@ -15694,7 +15619,7 @@ def _initiate_slskd_download_bg(tracking_id, query):
                 try:
                     conn2 = get_db()
                     cursor2 = conn2.cursor()
-                    placeholder = "%s" if _is_postgres_connection(conn2) else "?"
+                    placeholder = "%s"
                     cursor2.execute(f"""
                         UPDATE managed_downloads 
                         SET status = 'error', error_message = 'No matching files found', updated_at = CURRENT_TIMESTAMP
@@ -15830,7 +15755,7 @@ def _initiate_slskd_download(tracking_id, query, cursor, conn):
                 try:
                     conn2 = get_db()
                     cursor2 = conn2.cursor()
-                    placeholder = "%s" if _is_postgres_connection(conn2) else "?"
+                    placeholder = "%s"
                     
                     logging.info(f"[SLSKD_MONITOR] Downloading best match with score {best_match_score}: {best_file['filename'][:80]}")
                     
@@ -15863,7 +15788,7 @@ def _initiate_slskd_download(tracking_id, query, cursor, conn):
                     try:
                         conn2 = get_db()
                         cursor2 = conn2.cursor()
-                        placeholder = "%s" if _is_postgres_connection(conn2) else "?"
+                        placeholder = "%s"
                         cursor2.execute(f"""
                             UPDATE managed_downloads 
                             SET status = 'error', error_message = {placeholder}, updated_at = CURRENT_TIMESTAMP
@@ -15878,7 +15803,7 @@ def _initiate_slskd_download(tracking_id, query, cursor, conn):
                 try:
                     conn2 = get_db()
                     cursor2 = conn2.cursor()
-                    placeholder = "%s" if _is_postgres_connection(conn2) else "?"
+                    placeholder = "%s"
                     match_score_msg = f"match score {best_match_score}" if best_file else "no responses with files"
                     cursor2.execute(f"""
                         UPDATE managed_downloads 
@@ -16009,7 +15934,7 @@ def _initiate_qbit_download_bg(tracking_id, query):
                 if best_result:
                     conn2 = get_db()
                     cursor2 = conn2.cursor()
-                    placeholder = "%s" if _is_postgres_connection(conn2) else "?"
+                    placeholder = "%s"
                     
                     try:
                         # Add magnet link if available
@@ -16057,7 +15982,7 @@ def _initiate_qbit_download_bg(tracking_id, query):
                 try:
                     conn2 = get_db()
                     cursor2 = conn2.cursor()
-                    placeholder = "%s" if _is_postgres_connection(conn2) else "?"
+                    placeholder = "%s"
                     cursor2.execute(f"""
                         UPDATE managed_downloads 
                         SET status = 'error', error_message = {placeholder}, updated_at = CURRENT_TIMESTAMP
@@ -16186,7 +16111,7 @@ def _initiate_qbit_download(tracking_id, query, cursor, conn):
                 if best_result:
                     conn2 = get_db()
                     cursor2 = conn2.cursor()
-                    placeholder = "%s" if _is_postgres_connection(conn2) else "?"
+                    placeholder = "%s"
                     
                     try:
                         # Add magnet link if available
@@ -16234,7 +16159,7 @@ def _initiate_qbit_download(tracking_id, query, cursor, conn):
                 try:
                     conn2 = get_db()
                     cursor2 = conn2.cursor()
-                    placeholder = "%s" if _is_postgres_connection(conn2) else "?"
+                    placeholder = "%s"
                     cursor2.execute(f"""
                         UPDATE managed_downloads 
                         SET status = 'error', error_message = {placeholder}, updated_at = CURRENT_TIMESTAMP
@@ -17178,7 +17103,7 @@ def api_slskd_download_file():
                 
                 conn2 = get_db()
                 cursor2 = conn2.cursor()
-                placeholder = "%s" if _is_postgres_connection(conn2) else "?"
+                placeholder = "%s"
                 
                 if success:
                     cursor2.execute(f"""
@@ -17203,7 +17128,7 @@ def api_slskd_download_file():
                 try:
                     conn2 = get_db()
                     cursor2 = conn2.cursor()
-                    placeholder = "%s" if _is_postgres_connection(conn2) else "?"
+                    placeholder = "%s"
                     cursor2.execute(f"""
                         UPDATE managed_downloads 
                         SET status = 'error', error_message = {placeholder}, updated_at = CURRENT_TIMESTAMP
@@ -19111,7 +19036,7 @@ def api_downloads_move_individual_track(track_index):
                 placeholder = "%s"
 
                 # Only attempt tracking when folder tracking tables exist.
-                if _table_exists(cursor, 'folder_album_matches', is_postgres=True) and _table_exists(cursor, 'folder_track_matches', is_postgres=True):
+                if _table_exists(cursor, 'folder_album_matches') and _table_exists(cursor, 'folder_track_matches'):
                     abs_folder_path = os.path.abspath(folder_path)
                     release_id = release_metadata.get('id')
                     release_source = release_metadata.get('source', 'musicbrainz')
@@ -19830,9 +19755,9 @@ def api_downloads_clear_queue():
         track_count = 0
         queue_count = 0
 
-        has_folder_albums = _table_exists(cursor, 'folder_album_matches', is_postgres=True)
-        has_folder_tracks = _table_exists(cursor, 'folder_track_matches', is_postgres=True)
-        has_download_queue = _table_exists(cursor, 'download_queue', is_postgres=True)
+        has_folder_albums = _table_exists(cursor, 'folder_album_matches')
+        has_folder_tracks = _table_exists(cursor, 'folder_track_matches')
+        has_download_queue = _table_exists(cursor, 'download_queue')
 
         # Count before deleting (only for tables that exist).
         if has_folder_albums:
@@ -20341,7 +20266,7 @@ def api_downloads_folder_status():
         conn = get_db()
         cursor = conn.cursor()
         # Gracefully handle environments where folder-tracking migration was not applied yet.
-        if not _table_exists(cursor, 'folder_album_matches', is_postgres=True):
+        if not _table_exists(cursor, 'folder_album_matches'):
             conn.close()
             return jsonify({
                 "success": True,
@@ -20350,7 +20275,7 @@ def api_downloads_folder_status():
                 "message": "folder_album_matches table not found"
             })
 
-        if not _table_exists(cursor, 'folder_track_matches', is_postgres=True):
+        if not _table_exists(cursor, 'folder_track_matches'):
             conn.close()
             return jsonify({
                 "success": True,
@@ -20457,7 +20382,7 @@ def api_downloads_folder_duplicates():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        if not _table_exists(cursor, 'folder_album_matches', is_postgres=True):
+        if not _table_exists(cursor, 'folder_album_matches'):
             conn.close()
             return jsonify({
                 "success": True,
@@ -22047,10 +21972,10 @@ def api_queue_purge_all():
         track_count = 0
         events_count = 0
 
-        has_download_queue = _table_exists(cursor, 'download_queue', is_postgres=True)
-        has_folder_albums = _table_exists(cursor, 'folder_album_matches', is_postgres=True)
-        has_folder_tracks = _table_exists(cursor, 'folder_track_matches', is_postgres=True)
-        has_queue_events = _table_exists(cursor, 'queue_events', is_postgres=True)
+        has_download_queue = _table_exists(cursor, 'download_queue')
+        has_folder_albums = _table_exists(cursor, 'folder_album_matches')
+        has_folder_tracks = _table_exists(cursor, 'folder_track_matches')
+        has_queue_events = _table_exists(cursor, 'queue_events')
 
         if has_download_queue:
             cursor.execute("SELECT COUNT(*) FROM download_queue")
@@ -22951,7 +22876,7 @@ def _delete_queue_entry(queue_id: int) -> bool:
     try:
         conn_del = get_db()
         cursor_del = conn_del.cursor()
-        ph = "%s" if _is_postgres_connection(conn_del) else "?"
+        ph = "%s"
         cursor_del.execute(f"DELETE FROM download_queue WHERE id = {ph}", (queue_id,))
         conn_del.commit()
         conn_del.close()
@@ -27296,7 +27221,7 @@ def api_album_apply_mbid():
         placeholder = "%s"
 
         # Detect compatible MBID column for mixed schema deployments.
-        track_columns = _get_table_columns(cursor, "tracks", is_postgres=True) or set()
+        track_columns = _get_table_columns(cursor, "tracks") or set()
         mb_album_column = None
         if "musicbrainz_album_mbid" in track_columns:
             mb_album_column = "musicbrainz_album_mbid"
@@ -29681,7 +29606,7 @@ def api_listenbrainz_create_playlist():
             artist_name = rec.get("artist_name", "")
             track_name = rec.get("recording_name") or rec.get("track_name", "")
             
-            placeholder = "%s" if _is_postgres_connection(c) else "?"
+            placeholder = "%s"
             track_id = None
             if mbid:
                 # Search by MBID in database
@@ -29869,7 +29794,7 @@ def api_upcoming_releases():
             mbid_releases = [r for r in releases if r.get("release_group_mbid")]
             if mbid_releases:
                 conn_mbid = get_db()
-                ph = "%s" if _is_postgres_connection(conn_mbid) else "?"
+                ph = "%s"
                 mbids = list({r["release_group_mbid"] for r in mbid_releases})
                 placeholders = ", ".join([ph] * len(mbids))
                 cursor_mbid = conn_mbid.cursor()

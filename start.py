@@ -387,11 +387,10 @@ def set_track_rating_for_all(track_id, stars):
             is_pg = bool(app_is_postgres_connection(conn))
         except Exception:
             conn = get_db_connection()
-            is_pg = False
+            is_pg = True
         
         cursor = conn.cursor()
         cursor.execute("SELECT id FROM tracks")
-        existing_track_ids = {row[0] for row in cursor.fetchall()}
         conn.close()
     except Exception as e:
         logging.debug(f"Prefetch existing track IDs failed: {e}")
@@ -424,7 +423,7 @@ def set_track_rating_for_all(track_id, stars):
                 is_pg = bool(app_is_postgres_connection(conn))
             except Exception:
                 conn = get_db_connection()
-                is_pg = False
+                is_pg = True
             
             cursor = conn.cursor()
             placeholder = "%s" if is_pg else "?"
