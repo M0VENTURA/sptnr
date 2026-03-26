@@ -57,6 +57,24 @@ _GENERIC_ARTIST_NAMES = {
     'ost',
 }
 
+# Compiled regexes for stripping common album edition/subtitle suffixes used in
+# _normalize_album_for_dedup().  They allow duplicate detection to treat names
+# like "Album (Original Soundtrack)" and "Album - Original Soundtrack" as the
+# same album.
+_ALBUM_BRACKET_SUFFIX_RE = re.compile(
+    r'\s*[\(\[][^\)\]]*[\)\]]\s*$',
+)
+_ALBUM_SUBTITLE_KEYWORDS_RE = re.compile(
+    r'[\s\-_:]+(?:'
+    r'original\s+(?:motion\s+picture\s+)?soundtrack|ost'
+    r'|deluxe(?:\s+edition)?|special\s+edition|expanded\s+edition'
+    r'|anniversary\s+edition|complete\s+edition|extended\s+edition'
+    r'|limited\s+edition|bonus\s+(?:disc|tracks?)'
+    r'|remaster(?:ed)?(?:\s+edition)?'
+    r')$',
+    re.IGNORECASE,
+)
+
 # Global state for tracking scan progress (used by /api/downloads/scan-progress)
 _scan_progress = {
     'scanning': False,
@@ -5646,34 +5664,60 @@ def cleanup_imported(days=7):
 
 
 def check_album_exists_in_library(album, artist):
-    """
-    Check if an album already exists in the tracks database
-    
+    """Check if an album already exists in the tracks database.
+
+    First attempts an exact (case-insensitive) SQL match.  If that finds
+    nothing, falls back to a normalised comparison via
+    :func:`_normalize_album_for_dedup` so that albums whose names differ
+    only in edition suffixes or punctuation (e.g. ``"Album (OST)"`` vs
+    ``"Album - Original Soundtrack"``) are still detected as duplicates.
+
     Args:
         album: Album name
         artist: Artist or album artist name
-    
+
     Returns:
         bool: True if album exists in library, False otherwise
     """
     try:
         conn = get_db()
         cursor = conn.cursor()
-        
-        # Check if any tracks from this album/artist combo exist
-        from app import _is_postgres_connection as app_is_postgres_connection
-        placeholder = "%s"
-        cursor.execute(f"""
-            SELECT COUNT(*) as count FROM tracks 
-            WHERE LOWER(album) = LOWER({placeholder}) 
-            AND (LOWER(artist) = LOWER({placeholder}) OR LOWER(album_artist) = LOWER({placeholder}))
-        """, (album, artist, artist))
-        
+
+        # Fast path – exact case-insensitive match.
+        cursor.execute(
+            """
+            SELECT COUNT(*) as count FROM tracks
+            WHERE LOWER(album) = LOWER(%s)
+            AND (LOWER(artist) = LOWER(%s) OR LOWER(album_artist) = LOWER(%s))
+            """,
+            (album, artist, artist),
+        )
         result = cursor.fetchone()
+        if result and result['count'] > 0:
+            conn.close()
+            return True
+
+        # Fuzzy pass – normalise both sides to catch subtitle / edition
+        # variants (e.g. "Album (Original Soundtrack)" vs
+        # "Album - Original Soundtrack").
+        norm_input = _normalize_album_for_dedup(album)
+        if norm_input:
+            cursor.execute(
+                """
+                SELECT DISTINCT album FROM tracks
+                WHERE LOWER(artist) = LOWER(%s) OR LOWER(album_artist) = LOWER(%s)
+                LIMIT 500
+                """,
+                (artist, artist),
+            )
+            for row in cursor.fetchall():
+                if _normalize_album_for_dedup(row['album']) == norm_input:
+                    conn.close()
+                    return True
+
         conn.close()
-        
-        return result['count'] > 0 if result else False
-        
+        return False
+
     except Exception as e:
         logger.error(f"Error checking if album exists: {e}")
         return False
@@ -5709,6 +5753,37 @@ def _normalize_match_text(value):
 def _string_similarity(a, b):
     """Return normalized string similarity score (0-1)."""
     return SequenceMatcher(None, _normalize_match_text(a), _normalize_match_text(b)).ratio()
+
+
+def _normalize_album_for_dedup(title: str) -> str:
+    """Strip common edition/subtitle suffixes and normalize separators.
+
+    Used by :func:`check_album_exists_in_library` to detect albums whose
+    names differ only in punctuation convention or appended descriptors.
+
+    Examples::
+
+        "Expedition 33 (Original Soundtrack)"  →  "expedition 33"
+        "Expedition 33 - Original Soundtrack"  →  "expedition 33"
+        "Abbey Road (Remastered)"               →  "abbey road"
+        "Dark Side of the Moon [Deluxe]"        →  "dark side of the moon"
+    """
+    if not title:
+        return ""
+    t = title.strip()
+    # Iteratively strip trailing parenthetical / bracket groups (max 10
+    # iterations to guard against pathologically nested input).
+    prev = None
+    iterations = 0
+    while t != prev and iterations < 10:
+        prev = t
+        t = _ALBUM_BRACKET_SUFFIX_RE.sub("", t).strip()
+        iterations += 1
+    # Strip known subtitle keywords after a separator.
+    t = _ALBUM_SUBTITLE_KEYWORDS_RE.sub("", t).strip()
+    # Collapse any remaining separator characters to a single space.
+    t = re.sub(r'[\s\-_:]+', ' ', t).strip().lower()
+    return t
 
 
 def _extract_lyricist_and_writers(recording_data):
