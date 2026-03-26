@@ -1322,10 +1322,30 @@ function startSelectedScan(restart = false, forceStart = false) {
         updateStartupLaunchFeature(true).catch(() => {});
     }
 
-    // Use fetch for all scan types so we can intercept 409 "already running"
-    // responses and show a confirmation dialog instead of silently blocking.
-    fetch(url.toString(), { method: 'POST' })
+    // Disable start button and show spinner while request is in-flight.
+    var startBtn = document.getElementById('startScanBtn');
+    if (startBtn) {
+        startBtn.disabled = true;
+        startBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Starting…';
+    }
+
+    // Use redirect:'manual' so the browser does NOT follow the server's 302 redirect
+    // inside fetch().  If we let fetch follow the redirect it silently consumes the
+    // Flask flash message, leaving the user with no confirmation that the scan started.
+    // With 'manual' fetch returns an opaqueredirect response for 3xx; we then navigate
+    // the browser directly so the fresh page-load picks up the flash message.
+    fetch(url.toString(), { method: 'POST', redirect: 'manual' })
         .then(function(response) {
+            if (startBtn) {
+                startBtn.disabled = false;
+                startBtn.innerHTML = '<i class="bi bi-play-fill"></i> Start Scan';
+            }
+            // opaqueredirect = server sent a 3xx (success path).  Navigate the browser
+            // directly so the new page-load renders the flash message.
+            if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) {
+                window.location.href = '/dashboard';
+                return;
+            }
             if (response.status === 409) {
                 return response.json()
                     .then(function(data) {
@@ -1340,10 +1360,14 @@ function startSelectedScan(restart = false, forceStart = false) {
                         }
                     });
             }
-            // On success redirect to dashboard to show flash messages / updated state
+            // Any other 2xx success – navigate to refresh the dashboard.
             window.location.href = '/dashboard';
         })
         .catch(function(err) {
+            if (startBtn) {
+                startBtn.disabled = false;
+                startBtn.innerHTML = '<i class="bi bi-play-fill"></i> Start Scan';
+            }
             console.error('Error starting scan:', err);
             alert('Could not start scan. Please check the server logs.');
         });
@@ -1430,4 +1454,4 @@ function dashboardOpenMbSearch() {
 {% include '_musicbrainz_search_modal.html' %}
 {% include '_musicbrainz_search_functions.html' %}
 
-{% endblock %}
+{% endblock %}

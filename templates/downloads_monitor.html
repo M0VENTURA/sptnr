@@ -2737,7 +2737,14 @@ async function loadFolderGroups(options = {}) {
                   const inferredTitleEnc = encodeInlineArg(track.title || '');
                   const showRetry = queueStatusRow === 'failed';
                   const canCopyFromLocal = queueStatusRow === 'copy_recommended' && queueId > 0 && !!(track.source_music_path);
-                  const canMoveToMusic = (queueStatusRow === 'matched' || queueStatusRow === 'completed' || queueStatusRow === 'pending_match' || (queueStatusRow === 'in_collection' && isDownloadsBacked)) && queueId > 0;
+                  const hasFilePath = !!(track.file_path || track.matched_file_path || track.music_file_path || group.matched_folder_path);
+                  const hasReleaseMbid = !!(track.release_mbid || group.release_id);
+                  const canMoveStatuses = ['matched', 'completed', 'pending_match'];
+                  const canMoveToMusic = (
+                    canMoveStatuses.includes(queueStatusRow)
+                    || (queueStatusRow === 'in_collection' && isDownloadsBacked)
+                    || ((queueStatusRow === 'queued' || queueStatusRow === 'discovered') && hasFilePath && hasReleaseMbid)
+                  ) && queueId > 0;
                   const canSendQueried = queueStatusRow === 'queried' && queueId > 0;
                   const canChangeMatch = queueId > 0;
                   const canResetMatch = ['matched', 'completed', 'possible_duplicate', 'unmatched'].includes(queueStatusRow) && queueId > 0;
@@ -2787,13 +2794,27 @@ async function loadFolderGroups(options = {}) {
                   </div>`;
                 } else {
                   const folderPathEnc2 = encodeInlineArg(group.folder_path);
-                  moveButtonHtml = matchedSelection
-                    ? `<button class="btn btn-sm btn-outline-info"
+                  if (matchedSelection) {
+                    moveButtonHtml = `<button class="btn btn-sm btn-outline-info"
                         title="Set match for this track"
                         onclick="openTrackMatchOverrideFromEncoded('${folderPathEnc2}', ${trackIdx})">
                         <i class="bi bi-plus-circle"></i> Set Match
-                      </button>`
-                    : `<small class="text-muted">Waiting for match</small>`;
+                      </button>`;
+                  } else {
+                    const trackFilePathEnc = encodeInlineArg(displayPath || '');
+                    moveButtonHtml = `<div class="d-flex flex-column gap-1 align-items-center">
+                      <button class="btn btn-sm btn-outline-info"
+                        title="Search for a MusicBrainz release to match this file"
+                        onclick="matchFolderGroupWithMusicBrainzFromEncoded(event, '${folderPathEnc}', '${artistEnc}', '${albumEnc}', '${tracksEnc}')">
+                        <i class="bi bi-search"></i> Match
+                      </button>
+                      ${displayPath ? `<button class="btn btn-sm btn-outline-danger"
+                        title="Delete folder and remove from tracking"
+                        onclick="deleteFolderAndQueueItemsFromEncoded('${folderPathEnc2}')">
+                        <i class="bi bi-trash"></i>
+                      </button>` : ''}
+                    </div>`;
+                  }
                 }
                 
                 html += `
