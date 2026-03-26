@@ -112,6 +112,7 @@ def _ensure_postgres_columns(conn):
         "copied_individually": "INTEGER DEFAULT 0",
         "copied_individually_at": "TEXT",
         "cover_art_url": "TEXT",
+        "queue_folder": "TEXT",
     }
 
     added = []

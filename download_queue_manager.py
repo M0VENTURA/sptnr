@@ -1443,7 +1443,22 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                 release_year = int(year) if str(year).isdigit() else None
             except (ValueError, TypeError):
                 release_year = None
-        
+
+        # Build the organised album folder path for this queue item.
+        # The folder is used by the queue processor to move freshly-downloaded
+        # files into a predictable location (YYYY - Album Artist - Album Name).
+        _q_item_stub = {
+            'release_year': release_year,
+            'year': year,
+            'album_artist': album_artist or artist,
+            'artist': artist,
+            'album': album,
+        }
+        try:
+            queue_folder = build_queue_album_folder(_q_item_stub)
+        except Exception:
+            queue_folder = None
+
         committed = False
         try:
             if is_pg:
@@ -1454,12 +1469,12 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                      track_number, album_artist, year, release_id, release_source,
                          duration, disc_number, release_mbid, recording_mbid, isrc, composer, genres, release_year, matched_file_path,
                      in_collection, collection_track_id, collection_matched_at,
-                     cover_art_url,
+                     cover_art_url, queue_folder,
                      created_at, updated_at)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, %s, %s, %s, %s,
                             %s, %s, %s, %s, %s, %s, %s, %s,
                             %s, %s, %s,
-                            %s, %s,
+                            %s, %s, %s,
                             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     RETURNING id
                     """,
@@ -1468,7 +1483,7 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                          duration, disc_number, release_mbid, recording_mbid, isrc, composer, genres, release_year, matched_file_path,
                      1 if in_collection else 0, collection_track_id,
                      datetime.now().isoformat() if in_collection else None,
-                     cover_art_url),
+                     cover_art_url, queue_folder),
                 )
                 inserted = cursor.fetchone()
                 conn.commit()
@@ -1485,12 +1500,12 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                      track_number, album_artist, year, release_id, release_source,
                          duration, disc_number, release_mbid, recording_mbid, isrc, composer, genres, release_year, matched_file_path,
                      in_collection, collection_track_id, collection_matched_at,
-                     cover_art_url,
+                     cover_art_url, queue_folder,
                      created_at, updated_at)
                     VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, NULL, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder},
                             {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder},
                             {placeholder}, {placeholder}, {placeholder},
-                            {placeholder}, {placeholder},
+                            {placeholder}, {placeholder}, {placeholder},
                             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """,
                     (artist, title, album, search_query, source, initial_status, priority, import_group, import_type,
@@ -1498,7 +1513,7 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                          duration, disc_number, release_mbid, recording_mbid, isrc, composer, genres, release_year, matched_file_path,
                      1 if in_collection else 0, collection_track_id,
                      datetime.now().isoformat() if in_collection else None,
-                     cover_art_url),
+                     cover_art_url, queue_folder),
                     context="add_to_queue insert",
                     max_retries=8,
                     initial_delay=0.2,
@@ -2249,7 +2264,8 @@ def _is_musicbrainz_backed(queue_item):
     return str(queue_item.get('release_source') or '').strip().lower() == 'musicbrainz'
 
 
-def _is_full_album_ready_for_move(queue_item, cursor=None, placeholder=None):
+def _is_full_album_ready_for_move(queue_item, cursor=None, placeholder=None,
+                                   folder_audio_count=None):
     """Return True only when every sibling queue item for the same MusicBrainz
     release is in a terminal state (completed / imported / in_collection).
 
@@ -2259,6 +2275,12 @@ def _is_full_album_ready_for_move(queue_item, cursor=None, placeholder=None):
 
     Falls back to ``True`` (allow single-track move) when the item has no
     ``release_mbid`` / ``release_id`` to group by.
+
+    Args:
+        folder_audio_count: Optional number of audio files found in the same
+            folder as the matched file.  When provided and greater than the
+            number of queue items for this release, the album is considered
+            incomplete — some folder tracks may not have been queued yet.
     """
     release_mbid = str(
         queue_item.get('release_mbid') or queue_item.get('release_id') or ''
@@ -2292,7 +2314,40 @@ def _is_full_album_ready_for_move(queue_item, cursor=None, placeholder=None):
         if row is None:
             return True
         pending = row['c'] if hasattr(row, 'get') and row.get('c') is not None else row[0]
-        return int(pending or 0) == 0
+        if int(pending or 0) > 0:
+            return False
+
+        # When the matched file is in a folder that contains more audio files
+        # than there are queue items for this release, some sibling tracks have
+        # not been queued yet — do not auto-move until the folder is fully
+        # accounted for in the queue.
+        if folder_audio_count is not None and folder_audio_count > 1:
+            cursor.execute(
+                f"""
+                SELECT COUNT(*) AS c
+                FROM download_queue
+                WHERE (release_mbid = {ph} OR release_id = {ph})
+                  AND status NOT IN ('removed', 'cancelled', 'deleted')
+                """,
+                (release_mbid, release_mbid),
+            )
+            total_row = cursor.fetchone()
+            if total_row is not None:
+                total_queued = (
+                    total_row['c']
+                    if hasattr(total_row, 'get') and total_row.get('c') is not None
+                    else total_row[0]
+                )
+                if int(total_queued or 0) < folder_audio_count:
+                    logger.info(
+                        f"[ALBUM_READY] Release {release_mbid}: folder has "
+                        f"{folder_audio_count} audio file(s) but only "
+                        f"{total_queued} queue item(s) — holding until all "
+                        f"folder tracks are queued"
+                    )
+                    return False
+
+        return True
     except Exception as e:
         logger.warning(
             f"[ALBUM_READY] Could not check album completeness for {release_mbid}: {e}"
@@ -2313,6 +2368,49 @@ def _build_release_import_group(artist, album):
     safe_album = _sanitize_path_component((album or 'Unknown Album').strip())
     group = f"discovered_{safe_artist}_{safe_album}"
     return group.replace(' ', '_')[:100]
+
+
+def build_queue_album_folder(queue_item, downloads_dir=None):
+    """Return the target subdirectory path for a queue item's album download.
+
+    The folder is placed directly inside *downloads_dir* (defaults to the
+    configured downloads directory) and named:
+
+        ``YYYY - Album Artist - Album Name``
+
+    with graceful fallbacks when any field is absent.  The resulting path
+    component is sanitized so it is safe to use as a directory name on any
+    operating system.
+
+    Args:
+        queue_item: dict-like queue row (must have at least 'album').
+        downloads_dir: base directory.  Defaults to the configured downloads
+            folder when not supplied.
+
+    Returns:
+        Absolute path string for the target album folder.
+    """
+    if downloads_dir is None:
+        downloads_dir = get_downloads_dir()
+
+    year = (
+        str(queue_item.get('release_year') or queue_item.get('year') or '').strip()
+    )
+    album_artist = _normalize_album_artist_for_path(
+        queue_item.get('album_artist') or queue_item.get('artist') or 'Unknown Artist'
+    )
+    album = (queue_item.get('album') or 'Unknown Album').strip()
+
+    safe_year = _sanitize_path_component(year)
+    safe_artist = _sanitize_path_component(album_artist)
+    safe_album = _sanitize_path_component(album)
+
+    if safe_year:
+        folder_name = f"{safe_year} - {safe_artist} - {safe_album}"
+    else:
+        folder_name = f"{safe_artist} - {safe_album}"
+
+    return os.path.join(downloads_dir, folder_name)
 
 
 def verify_downloaded_file_metadata(file_path, queue_item,
@@ -3798,6 +3896,15 @@ def check_downloads_folder():
                     f"(match_meta_state={match_meta_state})"
                 )
 
+                # ── Folder-level context ─────────────────────────────────────
+                # Count audio files in the same directory as the matched file.
+                # Used to (a) pass to _is_full_album_ready_for_move so it does
+                # not auto-move when the folder has more tracks than the queue,
+                # and (b) add any unqueued siblings as 'discovered' entries.
+                match_dir = os.path.dirname(match_path)
+                folder_all_audio = _folder_files_map.get(match_dir, [])
+                folder_audio_count = len(folder_all_audio)
+
                 # First mark as completed so the item has file_path set
                 updated_item = update_queue_item(
                     queue_item['id'],
@@ -3826,7 +3933,10 @@ def check_downloads_folder():
                             'album': queue_item['album'],
                             'moved': False
                         })
-                    elif not _is_full_album_ready_for_move(queue_item, cursor=cursor, placeholder=ph):
+                    elif not _is_full_album_ready_for_move(
+                        queue_item, cursor=cursor, placeholder=ph,
+                        folder_audio_count=folder_audio_count
+                    ):
                         logger.info(
                             f"[MOVE] Queue {queue_item['id']}: album not fully matched yet — "
                             f"leaving as completed until all sibling tracks are ready"
@@ -3966,6 +4076,132 @@ def check_downloads_folder():
                             })
                 else:
                     logger.debug(f"Could not update queue item {queue_item['id']} - item may have been processed already")
+
+                # ── Sibling discovery ────────────────────────────────────────
+                # When the matched file lives in a folder that contains OTHER
+                # audio files not yet represented in the queue, add those
+                # siblings as 'discovered' entries.  This prevents an entire
+                # album download from being silently reduced to a single-track
+                # match when the user only queued one song from the set.
+                if match_path and folder_audio_count > 1:
+                    _queued_paths = {
+                        (qi.get('file_path') or '').strip() for qi in queue_items
+                    }
+                    _queued_fns = {
+                        (qi.get('found_filename') or '').strip() for qi in queue_items
+                    }
+                    unqueued_siblings = [
+                        fi for fi in folder_all_audio
+                        if fi['full_path'] != match_path
+                        and fi['full_path'] not in _queued_paths
+                        and fi['filename'] not in _queued_fns
+                    ]
+                    if unqueued_siblings:
+                        logger.info(
+                            f"[FOLDER_CHECK] Queue {queue_item['id']}: matched file is in a "
+                            f"{folder_audio_count}-track folder; "
+                            f"{len(unqueued_siblings)} sibling(s) not yet in queue — "
+                            f"adding as discovered entries"
+                        )
+                        for sib in unqueued_siblings:
+                            try:
+                                sib_meta = {}
+                                try:
+                                    sib_meta = read_mp3_metadata(sib['full_path']) or {}
+                                except Exception:
+                                    pass
+                                sib_artist = (
+                                    sib_meta.get('artist')
+                                    or queue_item.get('artist')
+                                    or 'Unknown Artist'
+                                )
+                                sib_album = (
+                                    sib_meta.get('album')
+                                    or queue_item.get('album')
+                                    or 'Unknown Album'
+                                )
+                                sib_title = (
+                                    sib_meta.get('title')
+                                    or _strip_track_number_prefix(
+                                        os.path.splitext(sib['filename'])[0]
+                                    )
+                                )
+                                sib_album_artist = (
+                                    sib_meta.get('album_artist')
+                                    or sib_artist
+                                )
+                                sib_track_num = sib_meta.get('track_number')
+                                sib_disc_num = sib_meta.get('disc_number')
+                                sib_year = (
+                                    sib_meta.get('date') or sib_meta.get('year')
+                                )
+                                sib_duration_ms = sib_meta.get('duration_ms')
+                                sib_duration = (
+                                    int(sib_duration_ms / 1000)
+                                    if sib_duration_ms and sib_duration_ms > 0
+                                    else None
+                                )
+                                import_grp = _build_release_import_group(
+                                    sib_album_artist, sib_album
+                                )
+                                # Skip if already in queue (check full path, basename, and rel-path)
+                                cursor.execute(
+                                    f"""
+                                    SELECT id FROM download_queue
+                                    WHERE file_path = {ph}
+                                       OR found_filename = {ph}
+                                       OR found_filename = {ph}
+                                    LIMIT 1
+                                    """,
+                                    (
+                                        sib['full_path'],   # exact absolute path match
+                                        sib['filename'],    # basename stored as found_filename
+                                        sib['rel_path'],    # relative path stored as found_filename
+                                    ),
+                                )
+                                if cursor.fetchone():
+                                    continue
+                                cursor.execute(
+                                    f"""
+                                    INSERT INTO download_queue
+                                    (artist, title, album, album_artist,
+                                     track_number, disc_number, year, duration,
+                                     found_filename, file_path, status, source,
+                                     import_group, import_type,
+                                     created_at, updated_at)
+                                    VALUES
+                                    ({ph}, {ph}, {ph}, {ph},
+                                     {ph}, {ph}, {ph}, {ph},
+                                     {ph}, {ph},
+                                     'discovered', 'discovered',
+                                     {ph}, 'album',
+                                     CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                                    """,
+                                    (
+                                        sib_artist, sib_title, sib_album,
+                                        sib_album_artist,
+                                        sib_track_num, sib_disc_num,
+                                        sib_year, sib_duration,
+                                        sib['filename'], sib['full_path'],
+                                        import_grp,
+                                    ),
+                                )
+                                conn.commit()
+                                logger.info(
+                                    f"[FOLDER_CHECK] Added sibling "
+                                    f"'{sib['filename']}' as discovered entry "
+                                    f"(album: {sib_album})"
+                                )
+                            except Exception as sib_err:
+                                try:
+                                    conn.rollback()
+                                except Exception:
+                                    pass
+                                logger.warning(
+                                    f"[FOLDER_CHECK] Could not add sibling "
+                                    f"'{sib['filename']}': {sib_err}"
+                                )
+
             else:
                 # If no file remains in /downloads, reconcile against /music in case a
                 # separate mover/importer already transferred the completed download.

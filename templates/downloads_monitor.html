@@ -1070,7 +1070,7 @@ async function applyMusicBrainzMatch(artist, album, releaseGroupId) {
   }
 }
 
-function searchOtherSources(artist, titleOrAlbum, isQueueItem = false) {
+function searchOtherSources(artist, titleOrAlbum, isQueueItem = false, queueId = null) {
   // For queue items (searching for a single song), search: artist - title (track title only, no album)
   // For other sources (searching for an album), search: artist album
   // Note: Queue search uses "artist - title" format to match queue_processor.py format
@@ -1086,7 +1086,7 @@ function searchOtherSources(artist, titleOrAlbum, isQueueItem = false) {
   // Queue-item manual search now uses an in-page Soulseek modal.
   if (isQueueItem) {
     const defaultQuery = decodeURIComponent(query);
-    openSoulseekManualSearchModal(defaultQuery);
+    openSoulseekManualSearchModal(defaultQuery, queueId);
     return;
   }
 
@@ -1094,10 +1094,11 @@ function searchOtherSources(artist, titleOrAlbum, isQueueItem = false) {
   window.open(`/downloads/search/musicbrainz?q=${query}`, '_blank');
 }
 
-function searchOtherSourcesFromEncoded(artistEnc, titleOrAlbumEnc, isQueueItem = false) {
+function searchOtherSourcesFromEncoded(artistEnc, titleOrAlbumEnc, isQueueItem = false, queueIdRaw = null) {
   const artist = decodeInlineArg(artistEnc, '');
   const titleOrAlbum = decodeInlineArg(titleOrAlbumEnc, '');
-  return searchOtherSources(artist, titleOrAlbum, isQueueItem === true || isQueueItem === 'true');
+  const queueId = queueIdRaw ? parseInt(queueIdRaw, 10) || null : null;
+  return searchOtherSources(artist, titleOrAlbum, isQueueItem === true || isQueueItem === 'true', queueId);
 }
 
 function ensureSoulseekManualSearchModal() {
@@ -1148,7 +1149,7 @@ function ensureSoulseekManualSearchModal() {
   return modalEl;
 }
 
-function openSoulseekManualSearchModal(defaultQuery = '') {
+function openSoulseekManualSearchModal(defaultQuery = '', queueId = null) {
   const modalEl = ensureSoulseekManualSearchModal();
   const queryInput = document.getElementById('soulseekManualQuery');
   const statusEl = document.getElementById('soulseekManualStatus');
@@ -1169,8 +1170,12 @@ function openSoulseekManualSearchModal(defaultQuery = '') {
       activeSearchId: null,
       pollTimer: null,
       pollingStopped: false,
+      queueId: null,
     };
   }
+  // Store which queue item this search is for so the "Select" button can call
+  // the queue-aware download endpoint.
+  window.soulseekManualSearchState.queueId = queueId ? parseInt(queueId, 10) || null : null;
 
   const modal = new bootstrap.Modal(modalEl);
   modal.show();
@@ -1349,11 +1354,20 @@ async function downloadSoulseekManualResult(usernameEnc, filenameEnc, size, butt
     btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
   }
 
+  // If this search was opened for a specific queue item, use the queue-aware
+  // endpoint so the download is linked to the queue row and the file is
+  // moved into the organised album folder automatically.
+  const queueId = window.soulseekManualSearchState?.queueId || null;
+  const endpoint = queueId ? '/api/slskd/queue-download' : '/api/slskd/download';
+  const body = queueId
+    ? { queue_id: queueId, username, filename, size: Number(size || 0) }
+    : { username, filename, size: Number(size || 0) };
+
   try {
-    const data = await fetchJsonOrThrow('/api/slskd/download', {
+    const data = await fetchJsonOrThrow(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, filename, size: Number(size || 0) }),
+      body: JSON.stringify(body),
     });
 
     if (!data.success) {
@@ -2775,7 +2789,7 @@ async function loadFolderGroups(options = {}) {
                     ${canSendQueried ? `<button class="btn btn-sm btn-outline-primary" onclick="sendQueriedTrack(${queueId})" title="Send queried track to queue for Soulseek search"><i class="bi bi-send"></i></button>` : ''}
                     ${canChangeMatch ? `<button class="btn btn-sm btn-outline-info" onclick="openQueueItemMatchModal(${queueId}, '${inferredArtistEnc}', '${inferredAlbumEnc}', '${currentMbidEnc}', '${inferredTitleEnc}')" title="Change or set MusicBrainz match for this queue item"><i class="bi bi-arrow-left-right"></i></button>` : ''}
                     ${canResetMatch ? `<button class="btn btn-sm btn-outline-warning" onclick="resetQueueMatch(${queueId})" title="Reset current match and mark as unmatched"><i class="bi bi-x-circle"></i></button>` : ''}
-                    <button class="btn btn-sm btn-outline-info" onclick="searchOtherSourcesFromEncoded('${artistEnc}','${titleEnc}', true)" title="Search manually in Soulseek">
+                    <button class="btn btn-sm btn-outline-info" onclick="searchOtherSourcesFromEncoded('${artistEnc}','${titleEnc}', true, ${queueId})" title="Search manually in Soulseek">
                       <i class="bi bi-search"></i>
                     </button>
                     ${showRetry ? `<button class="btn btn-sm btn-outline-warning" onclick="retryQueueItem(${queueId})" title="Retry queue item"><i class="bi bi-arrow-counterclockwise"></i></button>` : ''}
