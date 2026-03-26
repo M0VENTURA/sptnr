@@ -14,6 +14,7 @@ Requirements:
 """
 
 import os
+import re
 import shutil
 import logging
 import io
@@ -290,6 +291,30 @@ def fetch_musicbrainz_release_metadata(release_id):
         return None
 
 
+def _normalise_year_tag(raw_year) -> str:
+    """Return the 4-digit year extracted from *raw_year*, or the raw string unchanged.
+
+    MusicBrainz sometimes returns full ISO dates ("2007-11-23").  Writing the
+    full date to TDRC/``date`` causes music players like Navidrome to treat
+    tracks from the same album as belonging to different releases when one
+    track has the full date and another has only the year.
+    """
+    if not raw_year:
+        return ''
+    s = str(raw_year).strip()
+    m = re.search(r'((?:19|20)\d{2})', s)
+    return m.group(1) if m else s
+
+
+def _get_mbid_from_metadata(metadata: dict, *keys: str) -> str:
+    """Return the first non-empty string found in *metadata* under any of *keys*."""
+    for key in keys:
+        val = (metadata.get(key) or '').strip()
+        if val:
+            return val
+    return ''
+
+
 def update_file_metadata_with_albumart(file_path, metadata, cover_art_data=None, clear_existing_tags=True):
     """
     Update file metadata tags using mutagen, including album art and composer/writer/lyricist credits.
@@ -341,14 +366,27 @@ def update_file_metadata_with_albumart(file_path, metadata, cover_art_data=None,
                 audio.tags['TALB'] = TALB(encoding=3, text=[metadata['album']])
             
             if metadata.get('year'):
-                audio.tags['TDRC'] = TDRC(encoding=3, text=[str(metadata['year'])])
+                audio.tags['TDRC'] = TDRC(encoding=3, text=[_normalise_year_tag(metadata['year'])])
             
             if metadata.get('track_number'):
                 audio.tags['TRCK'] = TRCK(encoding=3, text=[str(metadata['track_number'])])
             
             if metadata.get('disc_number'):
                 audio.tags['TPOS'] = TPOS(encoding=3, text=[str(metadata['disc_number'])])
-            
+
+            # MusicBrainz IDs — Navidrome uses MUSICBRAINZ ALBUM ID as the
+            # primary album-grouping key.  Without it every track falls back to
+            # album+albumartist+year, and any year/name discrepancy splits the
+            # album into phantom duplicates.
+            _release_mbid = _get_mbid_from_metadata(metadata, 'release_mbid', 'musicbrainz_albumid')
+            if _release_mbid:
+                audio.tags.setall('TXXX:MUSICBRAINZ ALBUM ID', [])
+                audio.tags.add(TXXX(encoding=3, desc='MUSICBRAINZ ALBUM ID', text=[_release_mbid]))
+            _recording_mbid = _get_mbid_from_metadata(metadata, 'recording_mbid', 'musicbrainz_trackid')
+            if _recording_mbid:
+                audio.tags.setall('TXXX:MUSICBRAINZ TRACK ID', [])
+                audio.tags.add(TXXX(encoding=3, desc='MUSICBRAINZ TRACK ID', text=[_recording_mbid]))
+
             # Add composer/writer/lyricist credits as TXXX frames
             composers = metadata.get('composers', [])
             writers = metadata.get('writers', [])
@@ -412,14 +450,23 @@ def update_file_metadata_with_albumart(file_path, metadata, cover_art_data=None,
                 audio['album'] = [metadata['album']]
             
             if metadata.get('year'):
-                audio['date'] = [str(metadata['year'])]
+                audio['date'] = [_normalise_year_tag(metadata['year'])]
             
             if metadata.get('track_number'):
                 audio['tracknumber'] = [str(metadata['track_number'])]
             
             if metadata.get('disc_number'):
                 audio['discnumber'] = [str(metadata['disc_number'])]
-            
+
+            # MusicBrainz IDs as Vorbis comments — same purpose as the TXXX
+            # frames written for MP3: gives Navidrome a stable per-album key.
+            _release_mbid = _get_mbid_from_metadata(metadata, 'release_mbid', 'musicbrainz_albumid')
+            if _release_mbid:
+                audio['musicbrainz_albumid'] = [_release_mbid]
+            _recording_mbid = _get_mbid_from_metadata(metadata, 'recording_mbid', 'musicbrainz_trackid')
+            if _recording_mbid:
+                audio['musicbrainz_trackid'] = [_recording_mbid]
+
             # Add composer/writer/lyricist credits as Vorbis comments
             composers = metadata.get('composers', [])
             writers = metadata.get('writers', [])
@@ -829,7 +876,10 @@ def process_completed_queue_item(queue_item):
             'album_artist': queue_item.get('album_artist') or queue_item.get('artist'),
             'album': queue_item.get('album'),
             'year': queue_item.get('year'),
-            'title': queue_item.get('title')
+            'title': queue_item.get('title'),
+            'disc_number': queue_item.get('disc_number'),
+            'release_mbid': queue_item.get('release_mbid') or queue_item.get('release_id'),
+            'recording_mbid': queue_item.get('recording_mbid'),
         }
         
         logger.info(f"Queue {queue_id}: Processing with metadata from {queue_item.get('release_source')}")

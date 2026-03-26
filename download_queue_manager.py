@@ -2650,6 +2650,10 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
             'track_number': queue_item_dict.get('track_number'),
             # Default: suppress disc tag until MusicBrainz confirms multi-disc
             'disc_number': None,
+            # MusicBrainz IDs written as TXXX/Vorbis tags so Navidrome can
+            # group tracks by release MBID rather than album name + year.
+            'release_mbid': queue_item_dict.get('release_mbid') or queue_item_dict.get('release_id'),
+            'recording_mbid': queue_item_dict.get('recording_mbid'),
         }
 
         cover_art_data = None
@@ -3858,6 +3862,8 @@ def check_downloads_folder():
                                 'year': queue_item.get('year'),
                                 'track_number': queue_item.get('track_number'),
                                 'disc_number': queue_item.get('disc_number'),
+                                'release_mbid': queue_item.get('release_mbid') or queue_item.get('release_id'),
+                                'recording_mbid': queue_item.get('recording_mbid'),
                             }
                             update_file_metadata_with_albumart(
                                 match_path, stored_metadata, clear_existing_tags=should_clear_tags
@@ -4916,6 +4922,9 @@ def _parse_folder_name_for_metadata(folder_path):
                                         'album': item_for_move.get('album'),
                                         'year': item_for_move.get('year'),
                                         'track_number': item_for_move.get('track_number'),
+                                        'disc_number': item_for_move.get('disc_number'),
+                                        'release_mbid': item_for_move.get('release_mbid') or item_for_move.get('release_id'),
+                                        'recording_mbid': item_for_move.get('recording_mbid'),
                                     }
                                     update_file_metadata_with_albumart(full_path, stored_metadata)
                                     logger.info(
