@@ -12207,11 +12207,34 @@ def scan_mood():
 
 @app.route("/scan/essentia-mood", methods=["POST"])
 def scan_essentia_mood():
-    """Run Essentia local-ML mood enrichment scan."""
+    """Run Essentia local-ML mood/genre enrichment scan.
+
+    Query parameters
+    ----------------
+    mode       – ``force`` to re-scan tracks that already have tags; default ``all``
+    artist     – restrict scan to this artist (optional)
+    album      – restrict scan to this album (requires artist)
+    track_id   – restrict scan to a single track by ID (optional)
+    """
     global scan_process_essentia_mood
 
     mode = request.args.get('mode', 'all')
     force_scan = (mode == 'force')
+
+    # Scoped-scan filters (from form or query string)
+    artist_filter = (request.form.get('artist') or request.args.get('artist') or '').strip()
+    album_filter = (request.form.get('album') or request.args.get('album') or '').strip()
+    track_id_filter = (request.form.get('track_id') or request.args.get('track_id') or '').strip()
+
+    # Determine redirect target after launch
+    if track_id_filter:
+        redirect_target = url_for("track_detail", track_id=track_id_filter)
+    elif artist_filter and album_filter:
+        redirect_target = url_for("album_detail", artist=artist_filter, album=album_filter)
+    elif artist_filter:
+        redirect_target = url_for("artist_detail", name=artist_filter)
+    else:
+        redirect_target = url_for("dashboard")
 
     with scan_lock:
         if scan_process_essentia_mood is not None:
@@ -12219,15 +12242,21 @@ def scan_essentia_mood():
                 thread = scan_process_essentia_mood.get('thread')
                 if thread and thread.is_alive():
                     flash("Essentia mood scan is already running", "warning")
-                    return redirect(url_for("dashboard"))
+                    return redirect(redirect_target)
             elif hasattr(scan_process_essentia_mood, 'is_alive') and scan_process_essentia_mood.is_alive():
                 flash("Essentia mood scan is already running", "warning")
-                return redirect(url_for("dashboard"))
+                return redirect(redirect_target)
 
         try:
             db_dir = os.path.dirname(DB_PATH)
             essentia_progress_file = os.path.join(db_dir, "essentia_mood_scan_progress.json")
             _write_progress_file(essentia_progress_file, "essentia_mood_scan", True, {"status": "starting"})
+
+            # Capture filter values for the closure
+            _artist_filter = artist_filter
+            _album_filter = album_filter
+            _track_id_filter = track_id_filter
+            _force_scan = force_scan
 
             def run_essentia_mood_scan_bg():
                 try:
@@ -12241,15 +12270,26 @@ def scan_essentia_mood():
                     mood_threshold = float(essentia_cfg.get("mood_threshold", 0.005))
                     per_file_timeout = int(essentia_cfg.get("per_file_timeout", 300))
                     tag_genres = bool(essentia_cfg.get("tag_genres", False))
+                    num_genres = int(essentia_cfg.get("num_genres", 3))
+                    genre_threshold = float(essentia_cfg.get("genre_threshold", 15.0))
+                    genre_format = essentia_cfg.get("genre_format", "parent_child")
+                    tag_moods = bool(essentia_cfg.get("tag_moods", True))
 
                     result = run_essentia_mood_scan(
                         script_path=script_path,
                         models_dir=models_dir,
                         mood_threshold=mood_threshold,
                         per_file_timeout=per_file_timeout,
-                        force=force_scan,
+                        force=_force_scan,
                         progress_file=essentia_progress_file,
                         tag_genres=tag_genres,
+                        num_genres=num_genres,
+                        genre_threshold=genre_threshold,
+                        genre_format=genre_format,
+                        tag_moods=tag_moods,
+                        artist_filter=_artist_filter,
+                        album_filter=_album_filter,
+                        track_id_filter=_track_id_filter,
                     )
                     if result.get("stopped"):
                         _write_progress_with_current_artist(
@@ -12310,12 +12350,22 @@ def scan_essentia_mood():
             scan_thread.start()
             scan_process_essentia_mood = {'thread': scan_thread, 'type': 'essentia_mood'}
 
-            flash(f"✅ Essentia mood scan started ({'Forced' if force_scan else 'Incremental'} mode)", "success")
+            scope_label = ""
+            if _track_id_filter:
+                scope_label = f" (track {_track_id_filter})"
+            elif _artist_filter and _album_filter:
+                scope_label = f" ({_artist_filter} – {_album_filter})"
+            elif _artist_filter:
+                scope_label = f" ({_artist_filter})"
+            flash(
+                f"✅ Essentia scan started ({'Forced' if _force_scan else 'Incremental'} mode{scope_label})",
+                "success",
+            )
         except Exception as e:
             logging.error(f"Error starting Essentia mood scan: {e}", exc_info=True)
             flash(f"❌ Error starting Essentia mood scan: {str(e)}", "danger")
 
-    return redirect(url_for("dashboard"))
+    return redirect(redirect_target)
 
 
 @app.route("/scan/mp3-import", methods=["POST"])
