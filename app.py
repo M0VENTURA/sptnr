@@ -223,7 +223,7 @@ def log_genre_update(artist_name=None, album_name=None, track_id=None, genres_be
 
         conn.commit()
     except Exception as e:
-        print(f"[ERROR] Failed to log genre update: {e}")
+        logging.error(f"[ERROR] Failed to log genre update: {e}")
     finally:
         try:
             if conn:
@@ -248,9 +248,9 @@ import importlib.util
 spec = importlib.util.find_spec("start")
 if STARTUP_DIAGNOSTICS:
     if spec and spec.origin:
-        print(f"[DIAGNOSTIC] start.py will be imported from: {spec.origin}")
+        logging.debug(f"[DIAGNOSTIC] start.py will be imported from: {spec.origin}")
     else:
-        print("[DIAGNOSTIC] start.py module not found in import path!")
+        logging.debug("[DIAGNOSTIC] start.py module not found in import path!")
 import secrets
 import subprocess
 import threading
@@ -395,18 +395,21 @@ def inject_flash_result_helpers():
 
 # Debug: Log static folder configuration on startup
 if STARTUP_DIAGNOSTICS:
-    print(f"\n{'='*60}")
-    print(f"Flask Static Configuration:")
-    print(f"  App Root: {app_root}")
-    print(f"  Static Folder: {static_folder}")
-    print(f"  Static Folder Exists: {os.path.isdir(static_folder)}")
+    lines = [
+        f"\n{'='*60}",
+        "Flask Static Configuration:",
+        f"  App Root: {app_root}",
+        f"  Static Folder: {static_folder}",
+        f"  Static Folder Exists: {os.path.isdir(static_folder)}",
+    ]
     if os.path.isdir(static_folder):
         try:
             static_files = os.listdir(static_folder)
-            print(f"  Files in static folder: {static_files[:5]}...")  # Show first 5 files
+            lines.append(f"  Files in static folder: {static_files[:5]}...")
         except Exception as e:
-            print(f"  Error listing files: {e}")
-    print(f"{'='*60}\n")
+            lines.append(f"  Error listing files: {e}")
+    lines.append(f"{'='*60}")
+    logging.debug("\n".join(lines))
 
 # Add Jinja2 filter to split genres on both backslash and comma
 @app.template_filter('split_genres')
@@ -1332,7 +1335,7 @@ def _ensure_log_file(path: str):
                 pass
     except Exception as e:
         # Don't block app start; just log to stderr
-        print(f"Warning: could not ensure log file {path}: {e}")
+        logging.warning(f"Warning: could not ensure log file {path}: {e}")
 
 _ensure_log_file(LOG_PATH)
 _ensure_log_file(os.path.join(os.path.dirname(CONFIG_PATH), "webui.log"))
@@ -3767,22 +3770,23 @@ def get_placeholder(conn):
 # Debug: Log database configuration on startup
 pg_configured = bool(PG_HOST and PG_USER and PG_DATABASE)
 if STARTUP_DIAGNOSTICS:
-    print(f"{'='*60}")
-    print(f"Database Configuration:")
+    _db_lines = [f"{'='*60}", "Database Configuration:"]
     if pg_configured:
-        print(f"  Backend: PostgreSQL (configured)")
-        print(f"  Host: {PG_HOST}")
-        print(f"  Database: {PG_DATABASE}")
-        print(f"  User: {PG_USER}")
-        print(f"  Port: {PG_PORT}")
-        # Try to verify connection
+        _db_lines += [
+            "  Backend: PostgreSQL (configured)",
+            f"  Host: {PG_HOST}",
+            f"  Database: {PG_DATABASE}",
+            f"  User: {PG_USER}",
+            f"  Port: {PG_PORT}",
+        ]
         try:
             test_conn = get_db()
             test_conn.close()
-            print(f"  Connection Status: ✓ Connected")
+            _db_lines.append("  Connection Status: ✓ Connected")
         except Exception as e:
-            print(f"  Connection Status: ✗ Error - {str(e)[:60]}")
-    print(f"{'='*60}\n")
+            _db_lines.append(f"  Connection Status: ✗ Error - {str(e)[:60]}")
+    _db_lines.append(f"{'='*60}")
+    logging.debug("\n".join(_db_lines))
 
 
 def _table_exists(cursor, table_name, is_postgres=False):
@@ -13308,13 +13312,6 @@ def config_save_json():
         features['retry_scheduler'] = _as_dict(features.get('retry_scheduler'))
         features['download_queue_cleanup_scheduler'] = _as_dict(features.get('download_queue_cleanup_scheduler'))
 
-        api_integrations = _as_dict(data.get('api_integrations', {}))
-        listenbrainz_cfg = _as_dict(api_integrations.get('listenbrainz', {}))
-        # Backward compatibility: map listenbrainz.api_key -> listenbrainz.token.
-        if listenbrainz_cfg.get('api_key') and not listenbrainz_cfg.get('token'):
-            listenbrainz_cfg['token'] = listenbrainz_cfg.get('api_key')
-        api_integrations['listenbrainz'] = listenbrainz_cfg
-
         config_dict = {
             'navidrome_users': navidrome_users,
             'qbittorrent': _as_dict(data.get('qbittorrent', {})),
@@ -13322,8 +13319,6 @@ def config_save_json():
             'authentik': _as_dict(data.get('authentik', {})),
             'bookmarks': _as_dict(data.get('bookmarks', {})),
             'downloads': _as_dict(data.get('downloads', {})),
-            'api_integrations': api_integrations,
-            'database': _as_dict(data.get('database', {})),
             'logging': _as_dict(data.get('logging', {})),
             'web_api_key': data.get('web_api_key', ''),
             'enable_web_api_key': data.get('enable_web_api_key', True),
@@ -13341,7 +13336,7 @@ def config_save_json():
                 'pass': navidrome_users[0].get('pass', ''),
             }
         
-        # Read existing config to preserve features and weights if not provided in request
+        # Read existing config to preserve sections that are no longer submitted by the UI
         existing_config, _ = _read_yaml(CONFIG_PATH)
         if existing_config:
             # Only preserve features/weights/single_detection if not explicitly provided in the request
@@ -13355,32 +13350,17 @@ def config_save_json():
                 config_dict['strip_parentheses_filters'] = existing_config['strip_parentheses_filters']
             if 'upcoming_releases' not in data and 'upcoming_releases' in existing_config:
                 config_dict['upcoming_releases'] = existing_config['upcoming_releases']
-            if 'database' not in data and 'database' in existing_config:
-                config_dict['database'] = existing_config['database']
             if 'logging' not in data and 'logging' in existing_config:
                 config_dict['logging'] = existing_config['logging']
 
-            if isinstance(existing_config.get('api_integrations'), dict):
-                existing_api = existing_config.get('api_integrations') or {}
-                incoming_api = config_dict.get('api_integrations') or {}
+            # api_integrations and database are no longer managed via this endpoint
+            # (api_integrations is per-user; database is PostgreSQL-only with no UI).
+            # Always restore them from disk to prevent data loss.
+            if 'api_integrations' in existing_config:
+                config_dict['api_integrations'] = existing_config['api_integrations']
+            if 'database' in existing_config:
+                config_dict['database'] = existing_config['database']
 
-                # Preserve ListenBrainz token/username when omitted by compact UI payload.
-                existing_lb = existing_api.get('listenbrainz') if isinstance(existing_api.get('listenbrainz'), dict) else {}
-                incoming_lb = incoming_api.get('listenbrainz') if isinstance(incoming_api.get('listenbrainz'), dict) else {}
-                if existing_lb:
-                    for key in ('token', 'api_key', 'username'):
-                        if incoming_lb.get(key) in (None, '') and existing_lb.get(key) not in (None, ''):
-                            incoming_lb[key] = existing_lb.get(key)
-                    incoming_api['listenbrainz'] = incoming_lb
-
-                # Preserve Last.fm username when omitted.
-                existing_lastfm = existing_api.get('lastfm') if isinstance(existing_api.get('lastfm'), dict) else {}
-                incoming_lastfm = incoming_api.get('lastfm') if isinstance(incoming_api.get('lastfm'), dict) else {}
-                if existing_lastfm.get('username') not in (None, '') and incoming_lastfm.get('username') in (None, ''):
-                    incoming_lastfm['username'] = existing_lastfm.get('username')
-                    incoming_api['lastfm'] = incoming_lastfm
-
-                config_dict['api_integrations'] = incoming_api
             # Also preserve legacy navidrome config if it exists (for backward compatibility)
             if 'navidrome' in existing_config and not config_dict.get('navidrome_users'):
                 config_dict['navidrome'] = existing_config['navidrome']
@@ -18765,7 +18745,7 @@ def api_downloads_discover():
                       f"{stats['already_in_library']} in library"
         })
     except Exception as e:
-        print(f"[ERROR] Error discovering files: {e}")
+        logging.error(f"[ERROR] Error discovering files: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({
@@ -19359,7 +19339,7 @@ def api_downloads_process_albums():
                       f"{stats.get('duplicates_found', 0)} duplicates found"
         })
     except Exception as e:
-        print(f"[ERROR] Error processing albums: {e}")
+        logging.error(f"[ERROR] Error processing albums: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({
@@ -30500,39 +30480,36 @@ if __name__ == "__main__":
         
         # Only show auto-start status if perpetual mode is enabled
         if features.get('perpetual'):
-            print("Background scanner auto-start: ENABLED")
-            print("Starting Navidrome sync and popularity scan in background...")
+            logging.info("Background scanner auto-start: ENABLED")
+            logging.info("Starting Navidrome sync and popularity scan in background...")
             
             # Start the beets auto-import and scanner in background thread
             def start_scanner():
                 import time as time_module
                 time_module.sleep(2)  # Give Flask time to start
                 try:
-                    logger = logging.getLogger('sptnr')
-                    logger.info("Auto-starting scanner with perpetual mode...")
+                    _log = logging.getLogger('sptnr')
+                    _log.info("Auto-starting scanner with perpetual mode...")
                     
                     # Run the standard scanner
-                    print("Step 1: Running Navidrome sync and popularity scan...")
-                    logger.info("Step 1: Running Navidrome sync and popularity scan...")
+                    _log.info("Step 1: Running Navidrome sync and popularity scan...")
                     from start import run_scan
                     run_scan(scan_type='full')
                 except Exception as e:
                     import traceback
-                    print(f"Error in background scanner: {e}")
-                    print(traceback.format_exc())
-                    logger = logging.getLogger('sptnr')
-                    logger.error(f"Error in background scanner: {e}")
-                    logger.error(traceback.format_exc())
+                    _log = logging.getLogger('sptnr')
+                    _log.error(f"Error in background scanner: {e}")
+                    _log.error(traceback.format_exc())
             
             scanner_thread = threading.Thread(target=start_scanner, daemon=True)
             scanner_thread.start()
         else:
             # Perpetual mode disabled - scans will be triggered manually
-            print("Background scanner auto-start: DISABLED (trigger scans manually via web UI)")
+            logging.info("Background scanner auto-start: DISABLED (trigger scans manually via web UI)")
     except Exception as e:
         import traceback
-        print(f"Error checking auto-start configuration: {e}")
-        print(traceback.format_exc())
+        logging.error(f"Error checking auto-start configuration: {e}")
+        logging.error(traceback.format_exc())
     
     # Start Download Retry Manager (for persistent downloads)
     try:
@@ -30576,7 +30553,7 @@ if __name__ == "__main__":
                 with retry_scheduler_lock:
                     retry_scheduler["running"] = False
         
-        print("Starting Download Retry Manager...")
+        logging.info("Starting Download Retry Manager...")
         retry_scheduler["stop_event"] = threading.Event()
         retry_thread = threading.Thread(target=start_retry_manager, daemon=True)
         retry_thread.start()

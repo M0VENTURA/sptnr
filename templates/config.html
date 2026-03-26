@@ -43,7 +43,6 @@
         <a href="#watcher" class="btn btn-sm btn-outline-primary">Automation</a>
         <a href="#essentia-mood-scan" class="btn btn-sm btn-outline-primary">Essentia</a>
         <a href="#single-detection-zscore" class="btn btn-sm btn-outline-primary">Z-Score</a>
-        <a href="#database" class="btn btn-sm btn-outline-primary">Database</a>
         <a href="#search-filters" class="btn btn-sm btn-outline-primary">Search Filters</a>
       </div>
     </div>
@@ -608,84 +607,6 @@
     </div>
   </div>
 
-  <!-- Database Section -->
-  <div class="card shadow-sm mb-3" id="database">
-    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
-      <h5 class="mb-0"><i class="bi bi-database"></i> Database</h5>
-    </div>
-    <div class="card-body">
-      <div class="row g-3">
-        <div class="col-12">
-          <label class="form-label">Database Path</label>
-          <input type="text" class="form-control" id="db_path" placeholder="/database/popularr.db" value="{{ config.get('database', {}).get('path', '') }}">
-        </div>
-      </div>
-      
-      <!-- Database Cleanup Section -->
-      <hr class="my-4">
-      <h5 class="mb-3"><i class="bi bi-trash"></i> Clean Up Duplicate Albums</h5>
-      <div class="row g-3">
-        <div class="col-12">
-          <p class="text-muted">
-            Remove duplicate albums that may have been created when Navidrome rescanned the library with different track IDs.
-            This tool identifies tracks with the same artist, album, and title, keeping only the track with the best metadata.
-          </p>
-          <div class="d-flex gap-2">
-            <button type="button" class="btn btn-outline-primary" id="cleanupDryRunBtn" onclick="cleanupDuplicates(true)">
-              <i class="bi bi-eye"></i> Preview Cleanup
-            </button>
-            <button type="button" class="btn btn-danger" id="cleanupApplyBtn" onclick="cleanupDuplicates(false)">
-              <i class="bi bi-trash"></i> Apply Cleanup
-            </button>
-          </div>
-          <div id="cleanupMsg" class="mt-2"></div>
-        </div>
-      </div>
-      
-      <!-- Postgres Migration Section -->
-      <hr class="my-4">
-      <h5 class="mb-3"><i class="bi bi-arrow-right-circle"></i> Migrate to PostgreSQL</h5>
-      <div class="row g-3">
-        <div class="col-12 col-md-6">
-          <label class="form-label">Postgres Host</label>
-          <input type="text" class="form-control" id="pg_host" placeholder="localhost" value="{{ config.get('PG_HOST', '') }}">
-        </div>
-        <div class="col-12 col-md-6">
-          <label class="form-label">Postgres Port</label>
-          <input type="text" class="form-control" id="pg_port" placeholder="5432" value="{{ config.get('PG_PORT', '5432') }}">
-        </div>
-        <div class="col-12 col-md-4">
-          <label class="form-label">Postgres User</label>
-          <input type="text" class="form-control" id="pg_user" placeholder="postgres" value="{{ config.get('PG_USER', '') }}">
-        </div>
-        <div class="col-12 col-md-4">
-          <label class="form-label">Postgres Password</label>
-          <input type="password" class="form-control" id="pg_password" placeholder="••••••••" value="{{ config.get('PG_PASSWORD', '') }}">
-        </div>
-        <div class="col-12 col-md-4">
-          <label class="form-label">Postgres Database</label>
-          <input type="text" class="form-control" id="pg_database" placeholder="popularr" value="{{ config.get('PG_DATABASE', '') }}">
-        </div>
-        <div class="col-12">
-          <div class="form-check mt-1">
-            <input class="form-check-input" type="checkbox" id="pg_backup_sqlite" checked>
-            <label class="form-check-label" for="pg_backup_sqlite">
-              Backup local SQLite database before migration
-            </label>
-          </div>
-          <div class="form-text">Recommended. A timestamped backup file is created before any data is copied.</div>
-        </div>
-        <div class="col-12">
-          <button type="button" class="btn btn-warning btn-lg mt-2" id="migratePostgresBtn" onclick="migrateToPostgres()">
-            <i class="bi bi-arrow-right-circle"></i> Migrate to PostgreSQL
-          </button>
-          <div class="form-text text-danger mt-2">This will copy all data from SQLite to PostgreSQL and update your configuration. This may take several minutes for large databases.</div>
-          <div id="pgMigrateMsg" class="mt-2"></div>
-        </div>
-      </div>
-    </div>
-  </div>
-
   <!-- Search Strip Keywords Section -->
   <div class="card shadow-sm mb-3" id="search-filters">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
@@ -718,7 +639,7 @@
       <div class="row g-3 mb-3">
         <div class="col-12">
           <label class="form-label"><strong>Strip Keywords</strong></label>
-          <div class="border rounded p-3" style="background-color: #f8f9fa;">
+          <div class="border rounded p-3" style="background-color: var(--bs-body-bg);"">
             <div id="stripKeywordsList" class="d-flex flex-wrap gap-2 mb-3">
               <!-- Keywords will be populated by JavaScript -->
             </div>
@@ -1132,11 +1053,8 @@ function buildConfigObject() {
       zscore_high_threshold: parseFloat(getValue('zscore_high_threshold', '1.0')) || 1.0,
       standout_gap_z: parseFloat(getValue('standout_gap_z', '0.75')) || 0.75
     },
-    // api_integrations is preserved from the server-side config — not edited here.
+    // api_integrations and database are preserved from the server-side config — not edited here.
     // See config_save_json endpoint which merges in the existing stored values.
-    database: {
-      path: getValue('db_path', '')
-    },
     strip_parentheses_filters: Array.from(
       document.querySelectorAll('#stripKeywordsList .badge')
     ).map(badge => {
