@@ -18,7 +18,7 @@ required_columns = {}
 
 
 def _ensure_table(cursor, table_name: str, ddl: str) -> None:
-    if _table_exists(cursor, table_name, is_pg=True):
+    if _table_exists(cursor, table_name):
         return
     cursor.execute(ddl)
     logging.info("Created missing PostgreSQL table: %s", table_name)

@@ -69,11 +69,7 @@ def _db_target_description() -> str:
     return "PostgreSQL (not configured)"
 
 
-def _placeholder(is_pg: bool) -> str:
-    return "%s"
-
-
-def _table_exists(cursor, table_name: str, is_pg: bool) -> bool:
+def _table_exists(cursor, table_name: str) -> bool:
     cursor.execute(
         """
         SELECT EXISTS (
@@ -109,8 +105,7 @@ def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: in
     for attempt in range(max_retries):
         try:
             conn = get_db_connection()
-            is_pg = _is_postgres_connection(conn)
-            placeholder = _placeholder(is_pg)
+            placeholder = "%s"
             cursor = conn.cursor()
             
             # Create table if it doesn't exist
@@ -177,14 +172,9 @@ def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: in
             # Self-heal: add source column if missing from older schema (e.g. from
             # the original add_scan_history.sql migration that lacked this column).
             try:
-                if is_pg:
-                    cursor.execute(
-                        "ALTER TABLE scan_history ADD COLUMN IF NOT EXISTS source TEXT DEFAULT ''"
-                    )
-                else:
-                    cursor.execute(
-                        "ALTER TABLE scan_history ADD COLUMN source TEXT DEFAULT ''"
-                    )
+                cursor.execute(
+                    "ALTER TABLE scan_history ADD COLUMN IF NOT EXISTS source TEXT DEFAULT ''"
+                )
             except Exception:
                 pass  # Column already exists
 
@@ -204,12 +194,6 @@ def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: in
             return  # Success, exit function
             
         except Exception as e:
-            if "database is locked" in str(e).lower() and attempt < max_retries - 1:
-                # Transient lock, retry with exponential backoff
-                wait_time = retry_delay * (2 ** attempt)  # 0.5s, 1s, 2s
-                logging.warning(f"Database locked when logging {scan_type} scan, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries}): {e}")
-                time.sleep(wait_time)
-                continue
             logging.error(f"Error logging album scan for '{artist}' - '{album}': {e}")
             logging.error(f"DB target={_db_target_description()}")
             return
@@ -230,12 +214,11 @@ def was_album_scanned(artist: str, album: str, scan_type: str, days_threshold: i
     """
     try:
         conn = get_db_connection()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = _placeholder(is_pg)
+        placeholder = "%s"
         cursor = conn.cursor()
         
         # Check if scan_history table exists
-        if not _table_exists(cursor, "scan_history", is_pg):
+        if not _table_exists(cursor, "scan_history"):
             # Table doesn't exist yet, assume not scanned
             conn.close()
             return False
@@ -287,12 +270,11 @@ def get_recent_album_scans(limit: int = 10):
     """
     try:
         conn = get_db_connection()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = _placeholder(is_pg)
+        placeholder = "%s"
         cursor = conn.cursor()
 
         # Check if scan_history table exists
-        if not _table_exists(cursor, "scan_history", is_pg):
+        if not _table_exists(cursor, "scan_history"):
             conn.close()
             return []
 

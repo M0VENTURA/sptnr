@@ -136,7 +136,7 @@ def _row_first_value(row, default=None):
         return default
 
 
-def _table_exists(cursor, table_name, is_pg=True):
+def _table_exists(cursor, table_name):
     """Check whether a table exists in the current PostgreSQL schema."""
     cursor.execute(
         "SELECT COUNT(*) AS count FROM information_schema.tables "
@@ -146,7 +146,7 @@ def _table_exists(cursor, table_name, is_pg=True):
     return (_row_first_value(cursor.fetchone(), 0) or 0) > 0
 
 
-def _get_table_columns(cursor, table_name, is_pg=True):
+def _get_table_columns(cursor, table_name):
     """Return a set of column names for a PostgreSQL table."""
     cursor.execute(
         "SELECT column_name FROM information_schema.columns "

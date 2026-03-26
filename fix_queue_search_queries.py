@@ -10,13 +10,12 @@ import sys
 def fix_queue_search_queries():
     """Update search_query for all queued items to use 'artist - title' format"""
     try:
-        # Import app's database connection (supports PostgreSQL and SQLite)
+        # Import app's database connection (supports PostgreSQL)
         from app import get_db, _is_postgres_connection
         
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         # Get all queue items
         cursor.execute("""

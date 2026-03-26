@@ -276,8 +276,7 @@ def update_track_tags(track_id: str, tag_updates: Dict[str, Any]) -> bool:
         # Build UPDATE statement with DB-aware placeholders
         from database_abstraction import is_postgres_connection
         conn = get_db_connection()
-        is_pg = is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         set_clause = ", ".join([f"{field} = {placeholder}" for field in validated.keys()])
         query = f"UPDATE tracks SET {set_clause} WHERE id = {placeholder}"
@@ -604,8 +603,7 @@ def sync_track_tags_to_file(track_id: str) -> bool:
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         # Get file path and all tags in one query
         cursor.execute(f"""

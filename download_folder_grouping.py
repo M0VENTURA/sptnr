@@ -592,13 +592,10 @@ def organize_folder_to_music(folder_path, tracks, release_metadata, music_dir="/
         
         # Track folder match in database if connection provided
         folder_match_id = None
-        is_pg = False
         placeholder = "%s"
         if db_conn:
             try:
                 cursor = db_conn.cursor()
-                is_pg = is_postgres_connection(db_conn)
-                placeholder = "%s"
                 
                 # Get absolute folder path for tracking
                 from pathlib import Path
@@ -631,24 +628,15 @@ def organize_folder_to_music(folder_path, tracks, release_metadata, music_dir="/
                     """, (mb_release_id, mb_source, artist, album, release_date, total_tracks, folder_match_id))
                 else:
                     # Create new folder match record
-                    if is_pg:
-                        cursor.execute(f"""
-                            INSERT INTO folder_album_matches 
-                            (folder_path, mb_release_id, mb_source, artist, album, release_date, 
-                             total_expected_tracks, matched_tracks_count, status)
-                            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 0, 'organizing')
-                            RETURNING id
-                        """, (abs_folder_path, mb_release_id, mb_source, artist, album, release_date, total_tracks))
-                        inserted = cursor.fetchone()
-                        folder_match_id = inserted.get('id') if hasattr(inserted, 'keys') else inserted[0]
-                    else:
-                        cursor.execute(f"""
-                            INSERT INTO folder_album_matches 
-                            (folder_path, mb_release_id, mb_source, artist, album, release_date, 
-                             total_expected_tracks, matched_tracks_count, status)
-                            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 0, 'organizing')
-                        """, (abs_folder_path, mb_release_id, mb_source, artist, album, release_date, total_tracks))
-                        folder_match_id = cursor.lastrowid
+                    cursor.execute(f"""
+                        INSERT INTO folder_album_matches 
+                        (folder_path, mb_release_id, mb_source, artist, album, release_date, 
+                         total_expected_tracks, matched_tracks_count, status)
+                        VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 0, 'organizing')
+                        RETURNING id
+                    """, (abs_folder_path, mb_release_id, mb_source, artist, album, release_date, total_tracks))
+                    inserted = cursor.fetchone()
+                    folder_match_id = inserted.get('id') if hasattr(inserted, 'keys') else inserted[0]
                 
                 db_conn.commit()
                 logger.info(f"Tracked folder match in database: ID {folder_match_id}")

@@ -644,8 +644,7 @@ def detect_greatest_hits_album(album: str, artist: str, conn: object, album_trac
             if album_tracks:
                 try:
                     # Get artist's median popularity for comparison
-                    is_pg = is_postgres_connection(conn)
-                    placeholder = "%s" if is_pg else "?"
+                    placeholder = "%s"
                     cursor = conn.cursor()
                     cursor.execute(f"""
                         SELECT AVG(popularity_score) as avg_pop, COUNT(*) as track_count
@@ -699,8 +698,7 @@ def detect_and_queue_missing_tracks(artist: str, album: str, album_tracks: list,
         if not release_group_mbid:
             # Try to get from database
             if conn:
-                is_pg = is_postgres_connection(conn)
-                placeholder = "%s" if is_pg else "?"
+                placeholder = "%s"
                 cursor = conn.cursor()
                 cursor.execute(f"""
                     SELECT musicbrainz_album_mbid FROM tracks
@@ -872,8 +870,7 @@ def should_skip_spotify_lookup(track_id: str, conn: object) -> bool:
         True if lookup should be skipped (use cached data), False otherwise
     """
     try:
-        is_pg = is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         cursor = conn.cursor()
         cursor.execute(f"""
             SELECT last_spotify_lookup, popularity_score
@@ -1724,8 +1721,7 @@ def calculate_album_stats(conn, artist: str, album: str) -> tuple:
     Returns:
         Tuple of (mean, stddev, median, count)
     """
-    is_pg = is_postgres_connection(conn)
-    placeholder = "%s" if is_pg else "?"
+    placeholder = "%s"
     cursor = conn.cursor()
     cursor.execute(f"""
         SELECT popularity_score
@@ -1751,8 +1747,7 @@ def calculate_artist_stats(conn, artist: str) -> tuple:
     Returns:
         Tuple of (mean, stddev, count)
     """
-    is_pg = is_postgres_connection(conn)
-    placeholder = "%s" if is_pg else "?"
+    placeholder = "%s"
     cursor = conn.cursor()
     cursor.execute(f"""
         SELECT popularity_score
@@ -2539,8 +2534,7 @@ def detect_single_for_track(
     if album and popularity and popularity > 0:
         try:
             conn = get_db_connection()
-            is_pg = is_postgres_connection(conn)
-            placeholder = "%s" if is_pg else "?"
+            placeholder = "%s"
             cursor = conn.cursor()
 
             # STAGE 1: Album-level filter (must be album standout)
@@ -3041,12 +3035,11 @@ def get_artist_lastfm_context(artist_name: str, conn: object, artist_mbid: str =
         cursor = conn.cursor()
 
         # Determine database type for proper placeholder syntax
-        is_pg = is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         # Get all tracks by artist with Last.fm listener data
         # Exclude live/remix/alternate versions to avoid skewing stats
-        is_single_false_expr = "is_single = FALSE" if is_pg else "is_single = 0"
+        is_single_false_expr = "is_single = FALSE"
         cursor.execute(f"""
             SELECT id, title, album, lastfm_track_playcount
             FROM tracks
@@ -3369,8 +3362,7 @@ def popularity_scan(
         if force or clear_single_detection_sources:
             conn_for_cache = get_db_connection()
             cursor_for_cache = conn_for_cache.cursor()
-            cache_is_pg = is_postgres_connection(conn_for_cache)
-            cache_placeholder = "%s" if cache_is_pg else "?"
+            cache_placeholder = "%s"
 
             if force:
                 # Clear entire single detection cache on --force
@@ -3423,8 +3415,7 @@ def popularity_scan(
         cursor = conn.cursor()
 
         # Determine database type for proper placeholder syntax
-        is_pg = is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         # Load strict matching configuration from config.yaml
         # Initialize config to empty dict to ensure it's always defined
@@ -4383,7 +4374,7 @@ def popularity_scan(
 
                 # PostgreSQL safeguard: if a previous album hit SQL error state,
                 # clear the failed transaction so this album can still run fully.
-                if is_pg and hasattr(conn, "get_transaction_status"):
+                if hasattr(conn, "get_transaction_status"):
                     try:
                         from psycopg2 import extensions as _pg_ext
                         tx_status = conn.get_transaction_status()
@@ -4445,8 +4436,6 @@ def popularity_scan(
                                     id_placeholders = ", ".join([placeholder] * len(track_ids_in_album))
                                     is_single_high_expr = (
                                         "CASE WHEN is_single AND single_confidence = 'high' THEN 1 ELSE 0 END"
-                                        if is_pg else
-                                        "CASE WHEN COALESCE(is_single, 0) = 1 AND single_confidence = 'high' THEN 1 ELSE 0 END"
                                     )
                                     cursor.execute(
                                         f"""
@@ -5891,7 +5880,7 @@ def popularity_scan(
                         from popularity_helpers import get_top_standout_tracks_with_gap
                         MIN_SPREAD = 10.0  # Prevent flat-album noise amplification
                         log_info(f'Analyzing standout/star ratings for artist: {artist}')
-                        is_single_false_expr = "is_single = FALSE" if is_pg else "is_single = 0"
+                        is_single_false_expr = "is_single = FALSE"
                         cursor.execute(f"""
                             SELECT id, title, album, popularity_score, lastfm_track_playcount FROM tracks
                             WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND {is_single_false_expr} AND album NOT IN (
@@ -6659,26 +6648,14 @@ def popularity_scan(
                 # Auto-detect Greatest Hits: if every track on the album is now marked as a single,
                 # treat the album as a greatest hits collection for scan behavior.
                 try:
-                    # Use conditional query for PostgreSQL vs SQLite
-                    is_pg = is_postgres_connection(cursor.connection)
-                    if is_pg:
-                        query = f"""
-                        SELECT COUNT(*) AS total_tracks,
-                               SUM(CASE WHEN is_single THEN 1 ELSE 0 END) AS single_tracks
-                        FROM tracks
-                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
-                          AND album = {placeholder}
-                        """
-                        cursor.execute(query, (artist, album))
-                    else:
-                        query = f"""
-                        SELECT COUNT(*) AS total_tracks,
-                               SUM(CASE WHEN COALESCE(is_single, 0) = 1 THEN 1 ELSE 0 END) AS single_tracks
-                        FROM tracks
-                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
-                          AND album = {placeholder}
-                        """
-                        cursor.execute(query, (artist, album))
+                    query = f"""
+                    SELECT COUNT(*) AS total_tracks,
+                           SUM(CASE WHEN is_single THEN 1 ELSE 0 END) AS single_tracks
+                    FROM tracks
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                      AND album = {placeholder}
+                    """
+                    cursor.execute(query, (artist, album))
                     gh_row = cursor.fetchone()
                     total_tracks = row_get(gh_row, "total_tracks", 0) if gh_row else 0
                     single_tracks = row_get(gh_row, "single_tracks", 0) if gh_row else 0
@@ -7636,8 +7613,7 @@ def detect_covers_for_artist(artist_name: str, conn: object) -> int:
     """
     try:
         cursor = conn.cursor()
-        is_pg = is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         # 1. Get all tracks for this artist with composers
         cursor.execute(f"""
@@ -7798,8 +7774,7 @@ def refresh_all_playlists_from_db():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        is_pg = is_postgres_connection(conn)
-        sql_placeholder = "%s" if is_pg else "?"
+        sql_placeholder = "%s"
         cursor.execute("SELECT DISTINCT COALESCE(NULLIF(album_artist, ''), artist) AS artist_name FROM tracks")
         artists = [row['artist_name'] for row in cursor.fetchall()]
 

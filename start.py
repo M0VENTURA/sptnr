@@ -339,7 +339,7 @@ def set_track_rating_for_all(track_id, stars):
         conn = get_db_connection()
         cursor = conn.cursor()
         is_pg = bool(_is_postgres_connection(conn))
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         cursor.execute(f"SELECT id, artist, album, title, stars FROM tracks WHERE artist = {placeholder}", (name,))
         rows = cursor.fetchall()
         conn.close()
@@ -387,7 +387,7 @@ def set_track_rating_for_all(track_id, stars):
             is_pg = bool(app_is_postgres_connection(conn))
         except Exception:
             conn = get_db_connection()
-            is_pg = False
+            is_pg = True
         
         cursor = conn.cursor()
         cursor.execute("SELECT id FROM tracks")
@@ -424,10 +424,10 @@ def set_track_rating_for_all(track_id, stars):
                 is_pg = bool(app_is_postgres_connection(conn))
             except Exception:
                 conn = get_db_connection()
-                is_pg = False
+                is_pg = True
             
             cursor = conn.cursor()
-            placeholder = "%s" if is_pg else "?"
+            placeholder = "%s"
             cursor.execute(f"SELECT album, id FROM tracks WHERE artist = {placeholder}", (name,))
             for alb_name, tid in cursor.fetchall():
                 if alb_name not in existing_album_tracks:
@@ -941,7 +941,7 @@ def run_scan(scan_type='full', verbose=False, force=False, dry_run=False):
                 conn = get_db_connection()
                 cursor = conn.cursor()
                 is_pg = bool(_is_postgres_connection(conn))
-                placeholder = "%s" if is_pg else "?"
+                placeholder = "%s"
                 cursor.execute(f"DELETE FROM tracks WHERE artist = {placeholder}", (name,))
                 cursor.execute(f"DELETE FROM artist_stats WHERE artist_name = {placeholder}", (name,))
                 conn.commit()

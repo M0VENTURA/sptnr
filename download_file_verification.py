@@ -124,7 +124,7 @@ def _ensure_columns_in_table(columns_to_add):
         import psycopg2.extensions as _pg_ext
         # cursor_factory= keyword is required; passing the type positionally is
         # mis-interpreted by psycopg2 as a cursor name (str), raising TypeError.
-        cursor = conn.cursor(cursor_factory=_pg_ext.cursor) if _is_postgres_connection(conn) else conn.cursor()
+        cursor = conn.cursor(cursor_factory=_pg_ext.cursor)
 
         # Check if download_queue table exists
         cursor.execute(
@@ -169,6 +169,11 @@ def _ensure_columns_in_table(columns_to_add):
         else:
             logger.warning(f"Skipping download_queue column migration: PostgreSQL unavailable - {e}")
         return False
+    except RuntimeError as e:
+        if "PostgreSQL recent connection failures are in backoff" in str(e):
+            logger.debug(f"Skipping download_queue column migration during PostgreSQL backoff: {e}")
+            return False
+        raise
     except Exception as e:
         logger.error(f"Error ensuring download_queue columns: {e}", exc_info=True)
         return False
@@ -293,7 +298,7 @@ def verify_file_in_music(queue_id, target_path):
         # Update queue item with verification timestamp
         conn = _get_db_connection()
         cursor = _cursor(conn)
-        placeholder = _placeholder(conn)
+        placeholder = "%s"
 
         update_sql = f"""
             UPDATE download_queue
@@ -335,7 +340,7 @@ def mark_queue_item_moved(queue_id, target_path):
     try:
         conn = _get_db_connection()
         cursor = _cursor(conn)
-        placeholder = _placeholder(conn)
+        placeholder = "%s"
 
         moved_at = datetime.now().isoformat()
 
@@ -370,7 +375,7 @@ def requeue_missing_file(queue_id):
     try:
         conn = _get_db_connection()
         cursor = _cursor(conn)
-        placeholder = _placeholder(conn)
+        placeholder = "%s"
 
         # Get the queue item first
         select_sql = f"SELECT * FROM download_queue WHERE id = {placeholder}"
@@ -422,7 +427,7 @@ def _reset_matched_item_to_queued(queue_id):
     try:
         conn = _get_db_connection()
         cursor = _cursor(conn)
-        placeholder = _placeholder(conn)
+        placeholder = "%s"
 
         cursor.execute(
             f"""
@@ -471,8 +476,7 @@ def check_missing_moved_files(minutes_old=30):
     try:
         conn = _get_db_connection()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         cutoff_time = (datetime.now() - timedelta(minutes=minutes_old)).isoformat()
 
