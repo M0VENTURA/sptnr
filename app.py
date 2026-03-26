@@ -15300,6 +15300,131 @@ def slskd_download():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/slskd/queue-download", methods=["POST"])
+def slskd_queue_download():
+    """Initiate a Soulseek download that is linked to a specific download-queue item.
+
+    When the user selects a result from the manual Soulseek search modal next to a
+    queue row, this endpoint:
+
+    1. Enqueues the file in slskd.
+    2. Updates the queue item to status ``downloading`` with ``found_filename`` set.
+    3. Ensures the queue item has a ``queue_folder`` (creates it on disk) so the
+       queue processor can relocate the file there once slskd finishes.
+
+    Request JSON::
+
+        {
+          "queue_id": 883,
+          "username": "some_user",
+          "filename": "path/to/file.flac",
+          "size": 12345678
+        }
+    """
+    cfg = get_config()
+    slskd_config = cfg.get("slskd", {})
+
+    if not slskd_config.get("enabled"):
+        return jsonify({"error": "slskd integration not enabled"}), 400
+
+    payload = request.json or {}
+    queue_id = payload.get("queue_id")
+    username = (payload.get("username") or "").strip()
+    filename = (payload.get("filename") or "").strip()
+    size = int(payload.get("size") or 0)
+
+    if not queue_id:
+        return jsonify({"error": "queue_id is required"}), 400
+    if not username or not filename:
+        return jsonify({"error": "username and filename are required"}), 400
+
+    conn = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = "%s"
+
+        cursor.execute(
+            f"SELECT * FROM download_queue WHERE id = {placeholder}",
+            (queue_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({"error": f"Queue item {queue_id} not found"}), 404
+
+        item = dict(row) if hasattr(row, 'keys') else {
+            desc[0]: row[i] for i, desc in enumerate(cursor.description)
+        }
+
+        # Compute / refresh the queue_folder for this item.
+        try:
+            from download_queue_manager import build_queue_album_folder
+            queue_folder = (item.get("queue_folder") or "").strip() or build_queue_album_folder(item)
+        except Exception:
+            queue_folder = None
+
+        # Create the folder on disk now so files can be moved into it immediately.
+        if queue_folder:
+            try:
+                os.makedirs(queue_folder, exist_ok=True)
+            except Exception as mkdir_err:
+                logging.warning(f"[QUEUE_FOLDER] Could not create folder '{queue_folder}': {mkdir_err}")
+
+        web_url = slskd_config.get("web_url", "http://localhost:5030")
+        api_key = slskd_config.get("api_key", "")
+        client = SlskdClient(web_url, api_key, enabled=True)
+        success = client.download_file(username, filename, size)
+
+        if not success:
+            return jsonify({"error": "slskd failed to enqueue the download"}), 500
+
+        # Mark the queue item as downloading with the selected filename.
+        update_fields = {
+            "status": "downloading",
+            "found_filename": filename,
+        }
+        if queue_folder:
+            update_fields["queue_folder"] = queue_folder
+
+        cursor.execute(
+            f"""
+            UPDATE download_queue
+            SET status = {placeholder},
+                found_filename = {placeholder},
+                queue_folder = {placeholder},
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = {placeholder}
+            """,
+            ("downloading", filename, queue_folder, queue_id),
+        )
+        conn.commit()
+
+        logging.info(
+            f"[QUEUE_FOLDER] Queue {queue_id}: manual download started "
+            f"(file={filename!r}, folder={queue_folder!r})"
+        )
+        return jsonify({
+            "success": True,
+            "message": f"Download queued for {os.path.basename(filename)}",
+            "queue_folder": queue_folder,
+        })
+
+    except Exception as e:
+        logging.error(f"[SLSKD_QUEUE_DOWNLOAD] Error: {e}")
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 @app.route("/api/slskd/cancel", methods=["POST"])
 def slskd_cancel():
     """Cancel a Soulseek download"""

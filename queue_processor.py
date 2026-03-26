@@ -1940,6 +1940,119 @@ def _cleanup_sibling_downloads(queue_item, keep_path):
         )
 
 
+def _relocate_file_to_queue_folder(item, local_path, conn=None):
+    """Move a freshly-downloaded file into the queue item's organised album folder.
+
+    When slskd finishes a download the file lands wherever the remote peer placed
+    it (e.g. ``/downloads/Music/New Music Friday UK/Skindred - Can I Get A.flac``).
+    This function reads the ``queue_folder`` stored on the queue row, creates the
+    target directory when needed, and moves the file there so all tracks for the
+    same album are co-located in a predictable path.
+
+    The queue row's ``file_path`` and ``found_filename`` are updated to the new
+    location so subsequent matching and move-to-music logic always find the file.
+
+    Args:
+        item:       Queue row dict (must have at least ``id``).
+        local_path: Absolute path to the just-downloaded file.
+        conn:       Optional open DB connection; a new one is opened when None.
+
+    Returns:
+        The final absolute file path (may be the same as ``local_path`` if the
+        file was already in the right place or if relocation failed).
+    """
+    import shutil as _shutil
+
+    queue_id = item.get("id")
+    queue_folder = (item.get("queue_folder") or "").strip()
+
+    if not queue_folder:
+        # Fall back to computing the folder from queue metadata if the column
+        # was not set when the item was first added (e.g. legacy rows).
+        try:
+            from download_queue_manager import build_queue_album_folder
+            queue_folder = build_queue_album_folder(item, downloads_dir=DOWNLOADS_DIR)
+        except Exception as build_err:
+            logger.debug(
+                f"[QUEUE_FOLDER] Queue {queue_id}: could not build queue folder: {build_err}"
+            )
+            return local_path
+
+    if not local_path or not os.path.isfile(local_path):
+        return local_path
+
+    target_dir = os.path.abspath(queue_folder)
+    current_dir = os.path.abspath(os.path.dirname(local_path))
+
+    if current_dir == target_dir:
+        # File is already in the right place.
+        return local_path
+
+    try:
+        os.makedirs(target_dir, exist_ok=True)
+        filename = os.path.basename(local_path)
+        target_path = os.path.join(target_dir, filename)
+
+        # Avoid overwriting an existing file with a different name.
+        if os.path.exists(target_path) and os.path.abspath(target_path) != os.path.abspath(local_path):
+            base, ext = os.path.splitext(filename)
+            counter = 1
+            while os.path.exists(target_path):
+                target_path = os.path.join(target_dir, f"{base}_{counter}{ext}")
+                counter += 1
+
+        _shutil.move(local_path, target_path)
+        logger.info(
+            f"[QUEUE_FOLDER] Queue {queue_id}: moved '{filename}' → '{target_dir}'"
+        )
+
+        # Update the queue row to reflect the new path.
+        own_conn = conn is None
+        _conn = conn
+        try:
+            if own_conn:
+                from db import get_db
+                _conn = get_db()
+            _cur = _conn.cursor()
+            ph = _get_placeholder(_conn)
+            _cur.execute(
+                f"""
+                UPDATE download_queue
+                SET file_path = {ph},
+                    found_filename = {ph},
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = {ph}
+                """,
+                (target_path, os.path.basename(target_path), queue_id),
+            )
+            _conn.commit()
+        except Exception as db_err:
+            logger.warning(
+                f"[QUEUE_FOLDER] Queue {queue_id}: could not update DB after relocation: {db_err}"
+            )
+            try:
+                if own_conn and _conn:
+                    _conn.rollback()
+            except Exception:
+                pass
+        finally:
+            if own_conn and _conn:
+                try:
+                    _conn.close()
+                except Exception:
+                    pass
+
+        return target_path
+
+    except Exception as move_err:
+        logger.warning(
+            f"[QUEUE_FOLDER] Queue {queue_id}: could not relocate '{local_path}' → "
+            f"'{target_dir}': {move_err}"
+        )
+        return local_path
+
+
+
 def _safe_delete_download_candidate(file_path, reason, queue_id=None):
     """Delete a candidate file only when it is within DOWNLOADS_DIR."""
     if not file_path:
@@ -2325,7 +2438,37 @@ def search_and_download(queue_id, queue_item, client):
             f"{best_result['username']} (score={best_score:.2f})..."
         )
         update_queue_status(queue_id, 'downloading', found_filename=best_result['filename'])
-        
+
+        # Ensure the queue item has an organised album folder and create it on
+        # disk now so the relocation step in check_completed_downloads can move
+        # the file there as soon as slskd finishes.
+        try:
+            from download_queue_manager import build_queue_album_folder
+            _queue_folder = (queue_item.get("queue_folder") or "").strip()
+            if not _queue_folder:
+                _queue_folder = build_queue_album_folder(queue_item, downloads_dir=DOWNLOADS_DIR)
+            if _queue_folder:
+                os.makedirs(_queue_folder, exist_ok=True)
+                # Persist to DB if not already set
+                if not (queue_item.get("queue_folder") or "").strip():
+                    try:
+                        _qf_conn = get_db()
+                        _qf_cur = _qf_conn.cursor()
+                        _qf_cur.execute(
+                            "UPDATE download_queue SET queue_folder = %s WHERE id = %s",
+                            (_queue_folder, queue_id),
+                        )
+                        _qf_conn.commit()
+                        _qf_conn.close()
+                        queue_item = dict(queue_item)
+                        queue_item["queue_folder"] = _queue_folder
+                    except Exception as _qf_db_err:
+                        logger.debug(
+                            f"Queue {queue_id}: could not persist queue_folder: {_qf_db_err}"
+                        )
+        except Exception as _qf_err:
+            logger.debug(f"Queue {queue_id}: could not set up queue folder: {_qf_err}")
+
         success = client.download_file(best_result['username'], best_result['filename'], best_result['size'])
         
         if success:
@@ -2541,6 +2684,22 @@ def check_completed_downloads():
                 abs_path = None
 
             if abs_path:
+                # ── Relocate to organised album folder ───────────────────────
+                # Before any matching logic runs, move the file (if needed)
+                # into the queue item's dedicated album subfolder so all tracks
+                # for the same release end up in one predictable directory.
+                try:
+                    relocated = _relocate_file_to_queue_folder(item, abs_path, conn=conn)
+                    if relocated != abs_path:
+                        # Update our local variables so the rest of the loop
+                        # uses the new path (both full and basename lookups).
+                        abs_path = relocated
+                        abs_path_full = relocated if abs_path_full else None
+                except Exception as _reloc_err:
+                    logger.debug(
+                        f"Queue {item_id}: relocation to queue folder skipped: {_reloc_err}"
+                    )
+
                 candidate_rel = os.path.relpath(abs_path, DOWNLOADS_DIR)
                 # Guard: if slskd's download root differs from DOWNLOADS_DIR the
                 # relative path would escape with "..".  Skip and let the
