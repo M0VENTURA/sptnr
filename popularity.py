@@ -2123,6 +2123,10 @@ def _ensure_album_art_pg_schema(conn, cursor) -> None:
     global _album_art_pg_schema_ensured
     if _album_art_pg_schema_ensured:
         return
+    # Step 1: Ensure table exists and fix the id column default if needed.
+    # This sub-step is committed independently so the fix is durable even if
+    # the subsequent unique-index creation fails (e.g. due to duplicate rows
+    # that haven't been cleaned up yet).
     try:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS album_art (
@@ -2136,8 +2140,9 @@ def _ensure_album_art_pg_schema(conn, cursor) -> None:
         """)
         # Fix: if a legacy 'id' column exists with NOT NULL but no default,
         # the INSERT (which never supplies an id) will always fail with a NOT NULL
-        # violation, aborting the shared scan transaction.  Drop the constraint so
-        # the column accepts NULL when not provided by callers.
+        # violation, aborting the shared scan transaction.  Create a sequence and
+        # set it as the column default so INSERTs that omit 'id' get an
+        # auto-incremented value.
         cursor.execute("""
             SELECT column_default, is_nullable
             FROM information_schema.columns
@@ -2164,7 +2169,21 @@ def _ensure_album_art_pg_schema(conn, cursor) -> None:
                 cursor.execute(
                     "ALTER TABLE album_art ALTER COLUMN id SET DEFAULT nextval('album_art_id_seq')"
                 )
+                conn.commit()
                 log_debug("[ALBUM_ART] Added auto-increment sequence for legacy id column")
+    except Exception as _id_fix_err:
+        log_debug(f"[ALBUM_ART] album_art id-column fix failed: {_id_fix_err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        # Even if the id-column fix failed we still try to create the unique index
+        # below so that ON CONFLICT works.  The id issue will be retried next call.
+
+    # Step 2: Remove duplicates and create unique index.
+    # Run in a separate try/except so a failure here does not roll back the
+    # id-column fix committed above.
+    try:
         # Remove duplicate rows (keep the most recently inserted ctid) before
         # adding a unique index, so the CREATE INDEX does not fail on existing data.
         cursor.execute("""
@@ -2181,7 +2200,7 @@ def _ensure_album_art_pg_schema(conn, cursor) -> None:
         conn.commit()
         _album_art_pg_schema_ensured = True
     except Exception as _schema_err:
-        log_debug(f"[ALBUM_ART] album_art schema ensure failed: {_schema_err}")
+        log_debug(f"[ALBUM_ART] album_art unique-index ensure failed: {_schema_err}")
         try:
             conn.rollback()
         except Exception:
