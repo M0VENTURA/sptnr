@@ -34,7 +34,7 @@ Z_SCORE_TO_POPULARITY_SCALE = 16.7
 _TRACKS_COLUMN_CACHE: Dict[str, set[str]] = {}
 
 
-def _get_tracks_table_columns(cursor, is_pg: bool) -> set[str]:
+def _get_tracks_table_columns(cursor) -> set[str]:
     """Return cached set of columns currently present on the tracks table."""
     cache_key = "postgres"
     cached = _TRACKS_COLUMN_CACHE.get(cache_key)
@@ -247,8 +247,7 @@ def get_spotify_artist_id(artist_name: str) -> str | None:
     # First, try to get from database cache
     try:
         conn = get_db_connection()
-        is_pg = bool(_is_postgres_connection(conn))
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         cursor = conn.cursor()
         cursor.execute(
             f"SELECT spotify_artist_id FROM tracks WHERE artist = {placeholder} AND spotify_artist_id IS NOT NULL LIMIT 1",
@@ -582,8 +581,7 @@ def apply_mean_popularity_adjustment(
     
     with get_db_connection_context(conn) as db_conn:
         try:
-            is_pg = bool(_is_postgres_connection(db_conn))
-            placeholder = "%s" if is_pg else "?"
+            placeholder = "%s"
             cursor = db_conn.cursor()
             
             # Fetch artist statistics (median, MAD)
@@ -688,8 +686,7 @@ def apply_album_deviation_adjustment(
     
     with get_db_connection_context(conn) as db_conn:
         try:
-            is_pg = bool(_is_postgres_connection(db_conn))
-            placeholder = "%s" if is_pg else "?"
+            placeholder = "%s"
             cursor = db_conn.cursor()
             
             # Fetch all track popularities in this album
@@ -848,22 +845,21 @@ def save_to_db(track_data):
     """
     conn = get_db_connection()
     cursor = conn.cursor()
-    is_pg = bool(_is_postgres_connection(cursor.connection if hasattr(cursor, 'connection') else conn))
-    placeholder = "%s" if is_pg else "?"
+    placeholder = "%s"
     
     # Log the genres being saved for debugging
     if track_data.get('genres'):
         logging.debug(f"[GENRE] Saving track '{track_data.get('title')}' with genres: '{track_data.get('genres')}'")
     
-    # Convert any list values to comma-separated strings for SQLite compatibility.
-    # For PostgreSQL, also convert Python booleans to integers for non-BOOLEAN columns
+    # Convert any list values to comma-separated strings for storage.
+    # Also convert Python booleans to integers for non-BOOLEAN columns
     # to avoid "column is of type bigint but expression is of type boolean" errors.
     sanitized_data = {}
     for key, value in track_data.items():
         if isinstance(value, list):
             # Convert list to comma-separated string
             sanitized_data[key] = ', '.join(str(v) for v in value) if value else ''
-        elif is_pg and isinstance(value, bool) and key not in _PG_BOOLEAN_COLUMNS:
+        elif isinstance(value, bool) and key not in _PG_BOOLEAN_COLUMNS:
             # PostgreSQL INTEGER/BIGINT columns reject Python bool; convert to int
             sanitized_data[key] = int(value)
         else:
@@ -873,7 +869,7 @@ def save_to_db(track_data):
     # This prevents optional/newer fields (for example release_year on older DBs)
     # from aborting the entire track save and poisoning the transaction.
     try:
-        existing_track_columns = _get_tracks_table_columns(cursor, is_pg)
+        existing_track_columns = _get_tracks_table_columns(cursor)
         dropped_keys = [key for key in list(sanitized_data.keys()) if key not in existing_track_columns]
         for key in dropped_keys:
             sanitized_data.pop(key, None)
@@ -1166,8 +1162,7 @@ def load_artist_map():
 def get_album_last_scanned_from_db(artist_name: str, album_name: str) -> str | None:
     try:
         conn = get_db_connection()
-        is_pg = bool(_is_postgres_connection(conn))
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         cursor = conn.cursor()
         cursor.execute(
             f"SELECT MAX(last_scanned) AS max_last_scanned FROM tracks WHERE artist = {placeholder} AND album = {placeholder}",
@@ -1184,8 +1179,7 @@ def get_album_last_scanned_from_db(artist_name: str, album_name: str) -> str | N
 def get_album_track_count_in_db(artist_name: str, album_name: str) -> int:
     try:
         conn = get_db_connection()
-        is_pg = bool(_is_postgres_connection(conn))
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         cursor = conn.cursor()
         cursor.execute(
             f"SELECT COUNT(*) AS track_count FROM tracks WHERE artist = {placeholder} AND album = {placeholder}",
@@ -1212,8 +1206,7 @@ def update_artist_id_for_artist(artist_name: str, artist_id: str) -> int:
     """
     try:
         conn = get_db_connection()
-        is_pg = bool(_is_postgres_connection(conn))
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         cursor = conn.cursor()
         cursor.execute(
             f"UPDATE tracks SET spotify_artist_id = {placeholder} WHERE artist = {placeholder} AND spotify_artist_id IS NULL",
@@ -1243,8 +1236,7 @@ def update_discogs_artist_id_for_artist(artist_name: str, discogs_artist_id: str
     """
     try:
         conn = get_db_connection()
-        is_pg = bool(_is_postgres_connection(conn))
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         cursor = conn.cursor()
         cursor.execute(
             f"UPDATE tracks SET discogs_artist_id = {placeholder} WHERE artist = {placeholder} AND discogs_artist_id IS NULL",
@@ -1346,8 +1338,7 @@ def detect_via_iterative_zscore(
     
     with get_db_connection_context(conn) as db_conn:
         try:
-            is_pg = bool(_is_postgres_connection(db_conn))
-            placeholder = "%s" if is_pg else "?"
+            placeholder = "%s"
             cursor = db_conn.cursor()
             cursor.execute(f"""
                 SELECT id, title, popularity_score
@@ -1360,10 +1351,7 @@ def detect_via_iterative_zscore(
             if not album_tracks or len(album_tracks) < 2:
                 return False
             
-            if is_pg:
-                album_data = [(row['id'], row['title'], row['popularity_score']) for row in album_tracks]
-            else:
-                album_data = [(row[0], row[1], row[2]) for row in album_tracks]
+            album_data = [(row['id'], row['title'], row['popularity_score']) for row in album_tracks]
             identified_standouts = set()
             
             iteration = 0
@@ -1417,14 +1405,13 @@ def detect_via_iterative_zscore(
 def _check_artist_zscore(cursor, artist: str, track_id: int, conn=None) -> float:
     """Get z-score for a track within its artist catalog. Returns -999 on failure."""
     try:
-        is_pg = bool(_is_postgres_connection(cursor.connection if hasattr(cursor, 'connection') else conn))
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         cursor.execute(f"SELECT popularity_score FROM tracks WHERE id = {placeholder}", (track_id,))
         row = cursor.fetchone()
         if not row:
             return -999
         
-        track_score = row['popularity_score'] if is_pg else row[0]
+        track_score = row['popularity_score']
         if not track_score:
             return -999
         
@@ -1437,8 +1424,8 @@ def _check_artist_zscore(cursor, artist: str, track_id: int, conn=None) -> float
         if not stats_row:
             return -999
         
-        artist_mean = stats_row['mean_popularity'] if is_pg else stats_row[0]
-        artist_stdev_val = stats_row['popularity_stddev'] if is_pg else stats_row[1]
+        artist_mean = stats_row['mean_popularity']
+        artist_stdev_val = stats_row['popularity_stddev']
         if not artist_mean or artist_mean <= 0:
             return -999
         artist_stdev = artist_stdev_val if artist_stdev_val else 1

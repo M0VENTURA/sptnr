@@ -473,6 +473,9 @@ var SCAN_TYPE_DISPLAY_NAMES = {
     'missing_releases_scan': 'Missing Releases Scan'
 };
 
+// Track which scans are currently running (script-level so startSelectedScan can read it).
+var runningScans = new Set();
+
 document.addEventListener('DOMContentLoaded', function() {
     var initialRecentScans = JSON.parse('{{ recent_scans|default([])|tojson|safe }}');
     var recentScansBody = document.getElementById('recent-scans-body');
@@ -752,9 +755,6 @@ document.addEventListener('DOMContentLoaded', function() {
             })
             .catch(error => logApiError('/api/scan-status', 'Error fetching scan status', error));
     }
-    
-    // Track which scans are currently running
-    var runningScans = new Set();
     
     // Poll scan progress and update unified progress bar
     function updateIndividualScanProgress() {

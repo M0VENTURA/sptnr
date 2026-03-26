@@ -58,15 +58,11 @@ class DownloadRetryManager:
         """Open PostgreSQL connection."""
         try:
             conn = get_db_connection()
-            return conn, bool(_is_postgres_connection(conn))
+            return conn
         except Exception:
             if is_postgres_configured():
                 raise
             raise RuntimeError("PostgreSQL is required for DownloadRetryManager")
-
-    @staticmethod
-    def _placeholder(is_pg: bool) -> str:
-        return "%s" if is_pg else "?"
 
     @staticmethod
     def _row_get(row, key, index=0, default=None):
@@ -106,9 +102,9 @@ class DownloadRetryManager:
         }
         
         try:
-            conn, is_pg = self._open_db()
+            conn = self._open_db()
             cursor = conn.cursor()
-            placeholder = self._placeholder(is_pg)
+            placeholder = "%s"
 
             cursor.execute("""
                 SELECT * FROM managed_downloads
@@ -159,7 +155,7 @@ class DownloadRetryManager:
                         
                         # Update session if applicable
                         if session_id:
-                            self._update_session_progress(cursor, session_id, 'complete', is_pg=is_pg)
+                            self._update_session_progress(cursor, session_id, 'complete')
                         
                         stats["completed"] += 1
                         continue
@@ -308,7 +304,7 @@ class DownloadRetryManager:
         
         return True
     
-    def _update_session_progress(self, cursor, session_id: int, status: str, is_pg: bool = False):
+    def _update_session_progress(self, cursor, session_id: int, status: str):
         """
         Update playlist session progress.
         
@@ -317,7 +313,7 @@ class DownloadRetryManager:
             session_id: Playlist session ID
             status: 'complete', 'failed', or 'skip'
         """
-        placeholder = self._placeholder(is_pg)
+        placeholder = "%s"
 
         if status == 'complete':
             cursor.execute("""
@@ -350,9 +346,9 @@ class DownloadRetryManager:
             days: Delete downloads older than this many days with status='error'
         """
         try:
-            conn, is_pg = self._open_db()
+            conn = self._open_db()
             cursor = conn.cursor()
-            placeholder = self._placeholder(is_pg)
+            placeholder = "%s"
 
             cutoff_date = datetime.now() - timedelta(days=days)
             cursor.execute(
