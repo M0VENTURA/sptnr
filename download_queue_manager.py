@@ -4367,6 +4367,7 @@ def auto_discover_and_queue_files():
         stats['cleanup_removed'] = cleanup_stats['removed']
         
         conn = _get_postgres_conn_from_app_or_fallback()
+        is_pg = True
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
         def _row_get(row, key, index=None, default=None):
