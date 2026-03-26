@@ -2106,6 +2106,11 @@ def fetch_album_art_url_from_musicbrainz(artist: str, album: str) -> str | None:
 
 _album_art_pg_schema_ensured = False
 
+# Stable advisory lock key for serialising album_art schema migrations across
+# concurrent workers.  The value must be unique within the PostgreSQL instance
+# but is otherwise arbitrary — a CRC-32 of the string "album_art_schema_init".
+_ALBUM_ART_SCHEMA_ADVISORY_LOCK_KEY = 1986627450
+
 
 def _ensure_album_art_pg_schema(conn, cursor) -> None:
     """Ensure album_art table exists with correct binary schema and a UNIQUE constraint
@@ -2114,10 +2119,29 @@ def _ensure_album_art_pg_schema(conn, cursor) -> None:
     The table may have been created without the UNIQUE constraint in older deployments,
     which causes every ON CONFLICT upsert to fail with
     "there is no unique or exclusion constraint matching the ON CONFLICT specification".
+
+    A PostgreSQL session-level advisory lock is used to serialise concurrent workers
+    that all attempt this migration at startup, preventing duplicate-key and deadlock
+    errors on pg_class when multiple processes race to CREATE SEQUENCE / CREATE INDEX.
     """
     global _album_art_pg_schema_ensured
     if _album_art_pg_schema_ensured:
         return
+
+    # Acquire a session-level advisory lock so that only one connection runs the
+    # migration at a time.  The lock is released explicitly after the migration
+    # completes (or fails) so other waiters can proceed without doing redundant work.
+    lock_acquired = False
+    try:
+        cursor.execute("SELECT pg_advisory_lock(%s)", (_ALBUM_ART_SCHEMA_ADVISORY_LOCK_KEY,))
+        lock_acquired = True
+    except Exception as _lock_err:
+        log_debug(f"[ALBUM_ART] Could not acquire advisory lock: {_lock_err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
     # Step 1: Ensure table exists and fix the id column default if needed.
     # This sub-step is committed independently so the fix is durable even if
     # the subsequent unique-index creation fails (e.g. due to duplicate rows
@@ -2153,7 +2177,15 @@ def _ensure_album_art_pg_schema(conn, cursor) -> None:
                 # PostgreSQL does not allow DROP NOT NULL on a PRIMARY KEY column.
                 # Instead, create a sequence and set it as the column default so that
                 # INSERTs that omit 'id' receive an auto-incremented value.
-                cursor.execute("CREATE SEQUENCE IF NOT EXISTS album_art_id_seq")
+                # Wrapped in a DO block so concurrent callers that race past the
+                # advisory lock handle the duplicate_object error gracefully.
+                cursor.execute("""
+                    DO $$
+                    BEGIN
+                        CREATE SEQUENCE album_art_id_seq;
+                    EXCEPTION WHEN duplicate_object THEN NULL;
+                    END $$
+                """)
                 cursor.execute("""
                     SELECT setval(
                         'album_art_id_seq',
@@ -2200,6 +2232,13 @@ def _ensure_album_art_pg_schema(conn, cursor) -> None:
             conn.rollback()
         except Exception:
             pass
+    finally:
+        if lock_acquired:
+            try:
+                cursor.execute("SELECT pg_advisory_unlock(%s)", (_ALBUM_ART_SCHEMA_ADVISORY_LOCK_KEY,))
+                conn.commit()
+            except Exception:
+                pass
 
 
 def download_and_save_album_art(artist: str, album: str, art_url: str, conn=None, cursor=None, source: str = "unknown") -> bool:

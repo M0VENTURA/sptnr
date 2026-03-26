@@ -923,6 +923,7 @@
             {% for entry in appears_on_albums %}
               <tr>
                 <td class="text-center" style="width: 100px; padding: 0.5rem;">
+                  {% if entry.album and entry.album_artist %}
                   <a href="{{ url_for('album_detail', artist=entry.album_artist, album=entry.album) }}">
                     <img src="{{ url_for('api_album_art', artist=entry.album_artist, album=entry.album) }}"
                          alt="{{ entry.album }}"
@@ -930,15 +931,29 @@
                          style="width: 80px; height: 80px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;"
                          onerror="this.src='/api/album-art-placeholder'">
                   </a>
+                  {% else %}
+                  <img src="/api/album-art-placeholder"
+                       alt="{{ entry.album }}"
+                       class="img-thumbnail"
+                       style="width: 80px; height: 80px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;">
+                  {% endif %}
                 </td>
                 <td>
                   <div class="d-flex flex-column justify-content-center" style="min-height: 80px;">
+                    {% if entry.album and entry.album_artist %}
                     <a href="{{ url_for('album_detail', artist=entry.album_artist, album=entry.album) }}" class="text-decoration-none fw-semibold">
                       {{ entry.album }}
                     </a>
+                    {% else %}
+                    <span class="fw-semibold">{{ entry.album or '—' }}</span>
+                    {% endif %}
+                    {% if entry.album_artist %}
                     <a href="{{ url_for('artist_detail', name=entry.album_artist) }}" class="text-decoration-none small text-muted mt-1">
                       {{ entry.album_artist }}
                     </a>
+                    {% else %}
+                    <span class="small text-muted mt-1">—</span>
+                    {% endif %}
                   </div>
                 </td>
                 <td class="text-center">{{ entry.album_year or '—' }}</td>
