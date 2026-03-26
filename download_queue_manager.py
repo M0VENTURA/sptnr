@@ -3718,6 +3718,12 @@ def check_downloads_folder():
                 )
                 return None
 
+        # Build a directory → audio-files lookup so each confirmed match can
+        # quickly identify sibling files that live in the same folder.
+        _folder_files_map: dict = {}
+        for _fi in downloads_files:
+            _folder_files_map.setdefault(os.path.dirname(_fi['full_path']), []).append(_fi)
+
         # Try to match files to queue items
         for queue_item in queue_items:
             import shutil
