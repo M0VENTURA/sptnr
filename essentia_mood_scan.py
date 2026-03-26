@@ -2,16 +2,23 @@
 
 This module runs the ``tag_music.py`` script from
 https://github.com/WB2024/Essentia-to-Metadata as a subprocess for each
-track that has a resolvable ``file_path``, then reads the MOOD tag the
-external tool wrote back from the audio file and persists it in the sptnr
-database.
+track that has a resolvable ``file_path``, then reads the MOOD (and
+optionally GENRE) tag the external tool wrote back from the audio file and
+persists it in the sptnr database.
 
 Configuration (config.yaml, ``essentia`` section):
-    script_path  – absolute path to ``tag_music.py``   (required; skip scan if blank)
-    models_dir   – directory containing the Essentia ``.pb`` / ``.json`` models
-                   (optional; the external script defaults to ``~/essentia_models``)
-    mood_threshold – activation threshold forwarded to the external script
-                   (default: 0.005, which is Essentia's own default)
+    script_path     – absolute path to ``tag_music.py``  (required; skip scan if blank)
+    models_dir      – directory containing the Essentia ``.pb`` / ``.json`` models
+                      (optional; the external script defaults to ``~/essentia_models``)
+    mood_threshold  – minimum activation probability for a mood tag (raw value 0.001–0.5;
+                      default: 0.005 = 0.5%).  Converted to percent when passed to CLI.
+    per_file_timeout – seconds to wait per file before skipping (default: 300)
+    tag_genres      – also write genre tags (default: False)
+    num_genres      – number of genre tags to write per track (default: 3)
+    genre_threshold – genre confidence threshold in percent (default: 15.0)
+    genre_format    – genre tag format: parent_child | child_parent | child_only | raw
+                      (default: parent_child)
+    tag_moods       – write mood tags (default: True).  Set False for genres-only.
 """
 
 import json
@@ -84,8 +91,8 @@ def _write_progress(progress_file: str, payload: Dict[str, Any]) -> None:
 def _read_essentia_mood_from_file(file_path: str) -> Optional[str]:
     """Read the MOOD tag that Essentia-to-Metadata wrote to *file_path*.
 
-    Returns the first (highest-confidence) mood label as a plain string, or
-    ``None`` if nothing was found.
+    Returns all mood labels as a semicolon-separated string (the script may
+    write up to three moods), or ``None`` if nothing was found.
     """
     try:
         import mutagen  # noqa: F401 – presence check
@@ -157,9 +164,8 @@ def _read_essentia_mood_from_file(file_path: str) -> Optional[str]:
 
     if not mood:
         return None
-    # The tag may contain multiple moods separated by "; " — take the first.
-    primary = mood.split(";")[0].strip()
-    return primary if primary else None
+    # Return the full semicolon-separated mood string (may contain multiple moods).
+    return mood.strip() if mood.strip() else None
 
 
 # ---------------------------------------------------------------------------
@@ -174,8 +180,15 @@ def run_essentia_mood_scan(
     force: bool = False,
     progress_file: str = "",
     tag_genres: bool = False,
+    num_genres: int = 3,
+    genre_threshold: float = 15.0,
+    genre_format: str = "parent_child",
+    tag_moods: bool = True,
+    artist_filter: str = "",
+    album_filter: str = "",
+    track_id_filter: str = "",
 ) -> Dict[str, Any]:
-    """Run Essentia-based mood detection on all tracks with a local file path.
+    """Run Essentia-based mood/genre detection on tracks with a local file path.
 
     Parameters
     ----------
@@ -186,19 +199,40 @@ def run_essentia_mood_scan(
         Optional override for the Essentia models directory.  When empty the
         external script uses its own default (``~/essentia_models``).
     mood_threshold:
-        Minimum activation probability forwarded to the external script via
-        ``--mood-threshold``.
+        Minimum activation probability (raw, 0.001–0.5) for a mood tag.
+        Converted to percentage before being forwarded via ``--mood-threshold``.
     per_file_timeout:
         Maximum seconds to wait for the external script to finish processing a
         single file.  Defaults to 300 s (5 min); increase for large files or
         slow hardware.
     force:
-        When ``True`` re-analyse every track even if it already has a mood.
+        When ``True`` re-analyse every track even if it already has a mood/genre.
     progress_file:
         Path to a JSON progress file (shared with the Flask UI).
     tag_genres:
         When ``True`` the ``--no-genres`` flag is omitted so the external
         script also writes genre tags.  Defaults to ``False`` (mood-only).
+    num_genres:
+        Number of genre tags to write per track (passed via ``--genres``).
+        Only used when *tag_genres* is ``True``.
+    genre_threshold:
+        Genre confidence threshold in percent (passed via ``--genre-threshold``).
+        Only used when *tag_genres* is ``True``.
+    genre_format:
+        Genre tag format style forwarded via ``--genre-format``.
+        Choices: ``parent_child``, ``child_parent``, ``child_only``, ``raw``.
+        Only used when *tag_genres* is ``True``.
+    tag_moods:
+        When ``False`` the ``--no-moods`` flag is added so the external script
+        skips mood analysis (genres-only run).  Defaults to ``True``.
+    artist_filter:
+        If non-empty, restrict the scan to tracks whose album_artist or artist
+        matches this value (case-insensitive).
+    album_filter:
+        If non-empty, restrict the scan to tracks on this album (combined with
+        *artist_filter* when both are provided).
+    track_id_filter:
+        If non-empty, restrict the scan to the single track with this ID.
     """
     # ------------------------------------------------------------------
     # Validate script_path early so we surface a clear error.
@@ -241,6 +275,8 @@ def run_essentia_mood_scan(
 
     # ------------------------------------------------------------------
     # Build the base subprocess command.
+    # mood_threshold is stored as a raw probability (e.g. 0.005 = 0.5 %).
+    # tag_music.py --mood-threshold expects a *percentage* value (e.g. 0.5).
     # ------------------------------------------------------------------
     models_dir = (models_dir or "").strip()
     if not models_dir:
@@ -250,6 +286,8 @@ def run_essentia_mood_scan(
     if not models_dir and os.path.isdir(_BUNDLED_MODELS_DIR):
         models_dir = _BUNDLED_MODELS_DIR
 
+    mood_threshold_pct = round(float(mood_threshold) * 100.0, 4)
+
     python_exec = sys.executable
     base_cmd: List[str] = [
         python_exec, script_path,
@@ -257,10 +295,24 @@ def run_essentia_mood_scan(
         "--single-file",
         "--overwrite",
         "--quiet",
-        "--mood-threshold", str(mood_threshold),
     ]
+    if tag_moods:
+        base_cmd += ["--mood-threshold", str(mood_threshold_pct)]
+    else:
+        base_cmd.append("--no-moods")
+
     if not tag_genres:
         base_cmd.append("--no-genres")
+    else:
+        valid_formats = {"parent_child", "child_parent", "child_only", "raw"}
+        fmt = (genre_format or "parent_child").strip()
+        if fmt not in valid_formats:
+            fmt = "parent_child"
+        base_cmd += [
+            "--genres", str(max(1, int(num_genres))),
+            "--genre-threshold", str(float(genre_threshold)),
+            "--genre-format", fmt,
+        ]
     if models_dir:
         base_cmd += ["--model-dir", os.path.expanduser(models_dir)]
 
@@ -280,7 +332,35 @@ def run_essentia_mood_scan(
     params: List[Any] = ["__queued_for_download__%", "queue_%"]
 
     if not force:
-        conditions.append("(mood IS NULL OR mood = '')")
+        if tag_moods and not tag_genres:
+            conditions.append("(mood IS NULL OR mood = '')")
+        elif tag_genres and not tag_moods:
+            conditions.append("(genres IS NULL OR genres = '')")
+        # When both are enabled, scan tracks missing EITHER tag (OR is intentional:
+        # we want to add the missing tag even when the other is already present).
+        elif tag_genres and tag_moods:
+            conditions.append(
+                "(mood IS NULL OR mood = '' OR genres IS NULL OR genres = '')"
+            )
+
+    # Scoped filters
+    artist_filter = (artist_filter or "").strip()
+    album_filter = (album_filter or "").strip()
+    track_id_filter = (track_id_filter or "").strip()
+
+    if track_id_filter:
+        conditions.append(f"CAST(id AS TEXT) = {placeholder}")
+        params.append(track_id_filter)
+    else:
+        if artist_filter:
+            conditions.append(
+                f"(LOWER(COALESCE(album_artist, '')) = LOWER({placeholder})"
+                f" OR LOWER(COALESCE(artist, '')) = LOWER({placeholder}))"
+            )
+            params += [artist_filter, artist_filter]
+        if album_filter:
+            conditions.append(f"LOWER(COALESCE(album, '')) = LOWER({placeholder})")
+            params.append(album_filter)
 
     where_sql = " AND ".join(conditions)
     cursor.execute(
@@ -423,8 +503,33 @@ def run_essentia_mood_scan(
 
         # ------------------------------------------------------------------
         # Read back the mood the external tool just wrote.
+        # When tag_moods=False the mood model was disabled; skip mood read.
         # ------------------------------------------------------------------
-        mood = _read_essentia_mood_from_file(file_path)
+        mood = _read_essentia_mood_from_file(file_path) if tag_moods else None
+
+        # When genres were written directly by Essentia, count the file as
+        # updated even if no mood is available (or moods were disabled).
+        # The script already exited successfully (returncode 0 checked above),
+        # so we can assume genre tags were written.
+        # We do NOT call sync_track_tags_to_file in this case because it would
+        # overwrite the Essentia genre tags with the (un-updated) DB genres.
+        if tag_genres and not mood:
+            # Genres written to file by Essentia; nothing further to persist in DB.
+            updated_tracks += 1
+            synced_files += 1
+            _write_progress(progress_file, {
+                "is_running": True,
+                "scan_type": "essentia_mood_scan",
+                "status": "running",
+                "processed_artists": processed_artists,
+                "total_artists": total_artists,
+                "scanned_tracks": scanned_tracks,
+                "updated_tracks": updated_tracks,
+                "synced_files": synced_files,
+                "current_artist": current_artist,
+            })
+            continue
+
         if not mood:
             _write_progress(progress_file, {
                 "is_running": True,
@@ -440,7 +545,7 @@ def run_essentia_mood_scan(
             continue
 
         # ------------------------------------------------------------------
-        # Persist in DB.
+        # Persist mood in DB.
         # ------------------------------------------------------------------
         cursor.execute(
             f"""
@@ -457,7 +562,11 @@ def run_essentia_mood_scan(
         if cursor.rowcount and cursor.rowcount > 0:
             updated_tracks += 1
             conn.commit()
-            if sync_track_tags_to_file(track_id):
+            if tag_genres:
+                # Essentia wrote genre tags directly; don't sync DB genres
+                # back to the file (that would overwrite Essentia's tags).
+                synced_files += 1
+            elif sync_track_tags_to_file(track_id):
                 synced_files += 1
 
         _write_progress(progress_file, {

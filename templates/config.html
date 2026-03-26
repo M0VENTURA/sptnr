@@ -496,11 +496,11 @@
   <!-- Essentia Mood Scan Section -->
   <div class="card shadow-sm mb-3" id="essentia-mood-scan">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
-      <h5 class="mb-0"><i class="bi bi-cpu"></i> Essentia Mood Scan</h5>
-      <small class="text-muted">Configure local ML-based mood (and optional genre) tagging via <a href="https://github.com/WB2024/Essentia-to-Metadata" target="_blank" rel="noopener">Essentia-to-Metadata</a></small>
+      <h5 class="mb-0"><i class="bi bi-cpu"></i> Essentia Mood &amp; Genre Scan</h5>
+      <small class="text-muted">Configure local ML-based mood and genre tagging via <a href="https://github.com/WB2024/Essentia-to-Metadata" target="_blank" rel="noopener">Essentia-to-Metadata</a></small>
     </div>
     <div class="card-body">
-      <p class="text-muted small mb-3">The Essentia scan runs entirely on-device — no internet required. It processes each audio file through TensorFlow models and writes a <code>MOOD</code> tag back to the file and database. The official Docker image bundles the script and all models; leave the paths below blank to use the bundled defaults.</p>
+      <p class="text-muted small mb-3">The Essentia scan runs entirely on-device — no internet required. It processes each audio file through TensorFlow models and writes <code>MOOD</code> and/or <code>GENRE</code> tags back to the file and database. The official Docker image bundles the script and all models; leave the paths below blank to use the bundled defaults.</p>
       <div class="row g-3">
         <div class="col-12 col-md-6">
           <label class="form-label">Script Path <span class="text-muted fw-normal">(tag_music.py)</span></label>
@@ -513,9 +513,9 @@
           <div class="form-text">Directory containing the Essentia <code>.pb</code> / <code>.json</code> model files. Leave blank for Docker default.</div>
         </div>
         <div class="col-12 col-md-6">
-          <label class="form-label">Mood Threshold</label>
+          <label class="form-label">Mood Threshold <span class="text-muted fw-normal">(raw probability)</span></label>
           <input type="number" class="form-control" id="essentia_mood_threshold" placeholder="0.005" value="{{ config.get('essentia', {}).get('mood_threshold', 0.005) }}" min="0.001" max="0.5" step="0.001">
-          <div class="form-text">Minimum activation probability for a mood to be written (0.001 – 0.5). Lower = more tags, potentially noisier. Default: 0.005.</div>
+          <div class="form-text">Minimum activation probability for a mood tag (0.001 – 0.5). 0.005 = 0.5% — good starting point. Lower = more tags, potentially noisier.</div>
         </div>
         <div class="col-12 col-md-6">
           <label class="form-label">Per-File Timeout (seconds)</label>
@@ -524,9 +524,41 @@
         </div>
         <div class="col-12">
           <div class="form-check form-switch mb-2">
-            <input class="form-check-input" type="checkbox" id="essentia_tag_genres" {% if config.get('essentia', {}).get('tag_genres', False) %}checked{% endif %}>
+            <input class="form-check-input" type="checkbox" id="essentia_tag_moods" {% if config.get('essentia', {}).get('tag_moods', True) %}checked{% endif %}>
+            <label class="form-check-label" for="essentia_tag_moods"><strong>Tag Moods</strong></label>
+            <small class="d-block text-muted">Write mood tags using the MTG-Jamendo mood model. On by default. Disable for a genres-only run.</small>
+          </div>
+        </div>
+        <div class="col-12">
+          <div class="form-check form-switch mb-2">
+            <input class="form-check-input" type="checkbox" id="essentia_tag_genres" {% if config.get('essentia', {}).get('tag_genres', False) %}checked{% endif %} onchange="toggleEssentiaGenreSettings()">
             <label class="form-check-label" for="essentia_tag_genres"><strong>Tag Genres</strong></label>
-            <small class="d-block text-muted">Also write genre tags using Essentia genre models. Requires the genre <code>.pb</code> / <code>.json</code> model files to be present in the models directory. Off by default (mood-only).</small>
+            <small class="d-block text-muted">Also write genre tags using the Discogs-400 genre model. Requires genre model files in the models directory. Off by default (mood-only).</small>
+          </div>
+        </div>
+        <div id="essentia-genre-settings" class="{{ '' if config.get('essentia', {}).get('tag_genres', False) else 'd-none' }} col-12">
+          <div class="row g-3">
+            <div class="col-12 col-md-4">
+              <label class="form-label">Number of Genres</label>
+              <input type="number" class="form-control" id="essentia_num_genres" placeholder="3" value="{{ config.get('essentia', {}).get('num_genres', 3) }}" min="1" max="10">
+              <div class="form-text">How many genre tags to write per track (1–10). Default: 3.</div>
+            </div>
+            <div class="col-12 col-md-4">
+              <label class="form-label">Genre Threshold (%)</label>
+              <input type="number" class="form-control" id="essentia_genre_threshold" placeholder="15" value="{{ config.get('essentia', {}).get('genre_threshold', 15.0) }}" min="1" max="50" step="0.5">
+              <div class="form-text">Minimum genre confidence in percent (1–50%). 15% = balanced. Default: 15.</div>
+            </div>
+            <div class="col-12 col-md-4">
+              <label class="form-label">Genre Format</label>
+              <select class="form-select" id="essentia_genre_format">
+                {% set gfmt = config.get('essentia', {}).get('genre_format', 'parent_child') %}
+                <option value="parent_child" {% if gfmt == 'parent_child' %}selected{% endif %}>Rock - Alternative Rock (parent_child)</option>
+                <option value="child_parent" {% if gfmt == 'child_parent' %}selected{% endif %}>Alternative Rock - Rock (child_parent)</option>
+                <option value="child_only"   {% if gfmt == 'child_only'   %}selected{% endif %}>Alternative Rock (child_only)</option>
+                <option value="raw"          {% if gfmt == 'raw'          %}selected{% endif %}>Rock---Alternative Rock (raw)</option>
+              </select>
+              <div class="form-text">How genre tags are formatted when written to files.</div>
+            </div>
           </div>
         </div>
       </div>
@@ -1341,7 +1373,11 @@ function buildConfigObject() {
       models_dir: getValue('essentia_models_dir', ''),
       mood_threshold: parseFloat(getValue('essentia_mood_threshold', '0.005')) || 0.005,
       per_file_timeout: parseInt(getValue('essentia_per_file_timeout', '300')) || 300,
-      tag_genres: getChecked('essentia_tag_genres', false)
+      tag_moods: getChecked('essentia_tag_moods', true),
+      tag_genres: getChecked('essentia_tag_genres', false),
+      num_genres: parseInt(getValue('essentia_num_genres', '3')) || 3,
+      genre_threshold: parseFloat(getValue('essentia_genre_threshold', '15')) || 15.0,
+      genre_format: getValue('essentia_genre_format', 'parent_child')
     }
   };
 }
@@ -2099,6 +2135,12 @@ function buildUpcomingSourceRow(src, idx) {
     </div>
   </div>
 </div>`;
+}
+
+function toggleEssentiaGenreSettings() {
+  const cb = document.getElementById('essentia_tag_genres');
+  const panel = document.getElementById('essentia-genre-settings');
+  if (panel) panel.classList.toggle('d-none', !cb || !cb.checked);
 }
 
 function toggleUpcomingSourceEnabled(idx) {

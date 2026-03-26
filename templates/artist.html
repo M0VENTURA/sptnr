@@ -88,6 +88,12 @@
           <i class="bi bi-play-circle"></i> <span class="d-none d-sm-inline">Scan Artist</span>
         </button>
       </form>
+      <form action="{{ url_for('scan_essentia_mood') }}" method="post" class="d-flex align-items-center gap-2">
+        <input type="hidden" name="artist" value="{{ artist_name }}">
+        <button type="submit" class="btn btn-outline-primary" title="Run Essentia ML mood/genre scan for this artist">
+          <i class="bi bi-cpu"></i> <span class="d-none d-sm-inline">Essentia Scan</span>
+        </button>
+      </form>
     </div>
   </div>
   {% endif %}
