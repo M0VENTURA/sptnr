@@ -12240,6 +12240,7 @@ def scan_essentia_mood():
                     models_dir = essentia_cfg.get("models_dir", "")
                     mood_threshold = float(essentia_cfg.get("mood_threshold", 0.005))
                     per_file_timeout = int(essentia_cfg.get("per_file_timeout", 300))
+                    tag_genres = bool(essentia_cfg.get("tag_genres", False))
 
                     result = run_essentia_mood_scan(
                         script_path=script_path,
@@ -12248,6 +12249,7 @@ def scan_essentia_mood():
                         per_file_timeout=per_file_timeout,
                         force=force_scan,
                         progress_file=essentia_progress_file,
+                        tag_genres=tag_genres,
                     )
                     if result.get("stopped"):
                         _write_progress_with_current_artist(
@@ -17769,8 +17771,21 @@ def _ensure_album_art_pg_schema(conn, cursor) -> None:
             _col_default = (_id_info.get('column_default') if hasattr(_id_info, 'get') else _id_info[0])
             _is_nullable = (_id_info.get('is_nullable') if hasattr(_id_info, 'get') else _id_info[1])
             if not _col_default and _is_nullable == 'NO':
-                cursor.execute("ALTER TABLE album_art ALTER COLUMN id DROP NOT NULL")
-                logging.debug("[ALBUM_ART] Dropped NOT NULL constraint from legacy id column")
+                # PostgreSQL does not allow DROP NOT NULL on a PRIMARY KEY column.
+                # Instead, create a sequence and set it as the column default so that
+                # INSERTs that omit 'id' receive an auto-incremented value.
+                cursor.execute("CREATE SEQUENCE IF NOT EXISTS album_art_id_seq")
+                cursor.execute("""
+                    SELECT setval(
+                        'album_art_id_seq',
+                        COALESCE((SELECT MAX(id) FROM album_art WHERE id IS NOT NULL), 0) + 1,
+                        false
+                    )
+                """)
+                cursor.execute(
+                    "ALTER TABLE album_art ALTER COLUMN id SET DEFAULT nextval('album_art_id_seq')"
+                )
+                logging.debug("[ALBUM_ART] Added auto-increment sequence for legacy id column")
         # Remove duplicate rows (keep the most recently inserted ctid) before
         # creating the unique index so it does not fail on existing duplicates.
         cursor.execute("""
