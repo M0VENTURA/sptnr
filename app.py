@@ -14557,17 +14557,20 @@ def scan_navidrome():
     # Get scan mode from query parameters (default: "all")
     mode = request.args.get('mode', 'all')  # all, force, missing, resume, resume_force
     restart_requested = str(request.args.get('restart', '0')).strip().lower() in ('1', 'true', 'yes', 'on')
-    
+    force_start = str(request.args.get('force_start', '0')).strip().lower() in ('1', 'true', 'yes', 'on')
+
     with scan_lock:
         if scan_process_navidrome is not None:
+            scan_already_running = False
             if isinstance(scan_process_navidrome, dict):
                 thread = scan_process_navidrome.get('thread')
                 if thread and thread.is_alive():
-                    flash("Navidrome sync scan is already running", "warning")
-                    return redirect(url_for("dashboard"))
+                    scan_already_running = True
             elif hasattr(scan_process_navidrome, 'is_alive') and scan_process_navidrome.is_alive():
-                flash("Navidrome sync scan is already running", "warning")
-                return redirect(url_for("dashboard"))
+                scan_already_running = True
+
+            if scan_already_running and not force_start:
+                return jsonify({"scan_running": True, "message": "A Navidrome scan is already running. Do you want to start a new scan anyway?"}), 409
         
         try:
             db_dir = os.path.dirname(DB_PATH)
@@ -14700,17 +14703,20 @@ def scan_combined():
     # Get scan mode from query parameters (default: "all")
     mode = request.args.get('mode', 'all')  # all, force, resume, resume_force
     restart_requested = str(request.args.get('restart', '0')).strip().lower() in ('1', 'true', 'yes', 'on')
-    
+    force_start = str(request.args.get('force_start', '0')).strip().lower() in ('1', 'true', 'yes', 'on')
+
     with scan_lock:
         if scan_process_combined is not None:
+            scan_already_running = False
             if isinstance(scan_process_combined, dict):
                 thread = scan_process_combined.get('thread')
                 if thread and thread.is_alive():
-                    flash("Combined scan is already running", "warning")
-                    return redirect(url_for("dashboard"))
+                    scan_already_running = True
             elif hasattr(scan_process_combined, 'is_alive') and scan_process_combined.is_alive():
-                flash("Combined scan is already running", "warning")
-                return redirect(url_for("dashboard"))
+                scan_already_running = True
+
+            if scan_already_running and not force_start:
+                return jsonify({"scan_running": True, "message": "A combined scan is already running. Do you want to start a new scan anyway?"}), 409
         
         try:
             db_dir = os.path.dirname(DB_PATH)
