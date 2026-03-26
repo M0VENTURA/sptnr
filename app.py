@@ -12238,6 +12238,7 @@ def scan_essentia_mood():
                             },
                         )
                         logging.info("Essentia mood scan stopped by user request")
+                        log_unified("Essentia Scan - Stopped by user request")
                     elif result.get("error"):
                         _write_progress_with_current_artist(
                             essentia_progress_file,
@@ -12246,6 +12247,7 @@ def scan_essentia_mood():
                             {"status": "error", "error": result["error"], "exit_code": 1},
                         )
                         logging.error("Essentia mood scan error: %s", result["error"])
+                        log_unified(f"Essentia Scan - Error: {result['error']}", level=logging.ERROR)
                     else:
                         _write_progress_with_current_artist(
                             essentia_progress_file,
@@ -12270,6 +12272,7 @@ def scan_essentia_mood():
                         )
                 except Exception as e:
                     logging.error(f"Error in Essentia mood scan: {e}", exc_info=True)
+                    log_unified(f"Essentia Scan - Error: {e}", level=logging.ERROR)
                     _write_progress_with_current_artist(
                         essentia_progress_file,
                         "essentia_mood_scan",

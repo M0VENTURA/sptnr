@@ -6546,113 +6546,126 @@ def popularity_scan(
                     else:
                         track_artist = artist
                     log_debug(f"Calling detect_single_for_track with artist='{track_artist}', album='{album}', track_count={album_track_count}")
-                    detection_result = detect_single_for_track(
-                        title=title,
-                        artist=track_artist,
-                        album_track_count=album_track_count,
-                        spotify_results_cache=spotify_results_cache,
-                        verbose=verbose,  # Pass function parameter, not module constant
-                        discogs_token=discogs_token,  # Pass already-loaded token
-                        # Advanced detection parameters
-                        track_id=track_id,
-                        album=album,
-                        isrc=track_isrc,
-                        duration=track_duration,
-                        popularity=track_popularity,
-                        album_type=album_type,
-                        use_advanced_detection=True,
-                        zscore_threshold=0.20,
-                        # Conditional z-score detection parameters
-                        album_is_underperforming=album_is_underperforming,
-                        artist_median_popularity=artist_median,
-                        lastfm_client=single_detection_lastfm_client,
-                        existing_conn=conn,
-                        persist_result=False,
-                    )
-
-                    single_sources = detection_result["sources"]
-                    single_confidence = detection_result["confidence"]
-                    is_single = detection_result["is_single"]
-
-                    if is_single:
-                        log_info(f"✅ SINGLE DETECTED: '{title}' - confidence: {single_confidence}, sources: {single_sources}")
-                    else:
-                        log_info(f"❌ Not a single: '{title}' - confidence: {single_confidence}, sources: {single_sources}")
-                    log_debug(f"Single detection result - is_single: {is_single}, confidence: {single_confidence}, sources: {single_sources}")
-
-                    single_detection_timestamp_updates.append((datetime.now().isoformat(), track_id))
-
-                    # Preserve user-set singles: if track was user-marked and detection found nothing, keep it marked
-                    if track_id in user_set_singles and not is_single:
-                        is_single = True
-                        single_confidence = "user"  # Mark as user-set
-                        # Keep sources empty to indicate user-set
-                        log_info(f"Preserving user-set single flag for: {title}")
-                        log_debug(f"User-set single preserved - track_id: {track_id}, auto_detection: False")
-
-                    # Adaptive greatest-hits promotion during this same single scan:
-                    # once every processed track is being detected as single, continue scanning all remaining tracks.
-                    gh_tracks_processed += 1
-                    if is_single:
-                        gh_tracks_detected_single += 1
-                    if (
-                        not force_full_single_detection
-                        and gh_tracks_processed >= 3
-                        and gh_tracks_detected_single == gh_tracks_processed
-                    ):
-                        force_full_single_detection = True
-                        if (album_type or "").strip().lower() == "regular":
-                            album_type = "greatest_hits"
-                        log_info(
-                            f'Greatest hits adaptive mode enabled during single scan: "{artist} - {album}" '
-                            f'({gh_tracks_detected_single}/{gh_tracks_processed} processed tracks detected as single)'
+                    try:
+                        detection_result = detect_single_for_track(
+                            title=title,
+                            artist=track_artist,
+                            album_track_count=album_track_count,
+                            spotify_results_cache=spotify_results_cache,
+                            verbose=verbose,  # Pass function parameter, not module constant
+                            discogs_token=discogs_token,  # Pass already-loaded token
+                            # Advanced detection parameters
+                            track_id=track_id,
+                            album=album,
+                            isrc=track_isrc,
+                            duration=track_duration,
+                            popularity=track_popularity,
+                            album_type=album_type,
+                            use_advanced_detection=True,
+                            zscore_threshold=0.20,
+                            # Conditional z-score detection parameters
+                            album_is_underperforming=album_is_underperforming,
+                            artist_median_popularity=artist_median,
+                            lastfm_client=single_detection_lastfm_client,
+                            existing_conn=conn,
+                            persist_result=False,
                         )
-                        log_debug("Adaptive greatest hits mode now bypasses negative z-score skip for remaining tracks")
 
-                    # Queue single detection results for batch update
-                    if is_single or single_sources:
-                        # Deduplicate single_sources to prevent duplicate entries in JSON
-                        # Preserves order while removing duplicates
-                        unique_sources = []
-                        seen = set()
-                        for source in single_sources:
-                            if source not in seen:
-                                unique_sources.append(source)
-                                seen.add(source)
+                        single_sources = detection_result["sources"]
+                        single_confidence = detection_result["confidence"]
+                        is_single = detection_result["is_single"]
 
-                        # Automatically set stars to 5 for detected singles
-                        stars_for_single = 5 if is_single else None
-                        singles_updates.append((
-                            bool(is_single),
-                            single_confidence,
-                            json.dumps(unique_sources),  # Use deduplicated sources
-                            stars_for_single,
-                            track_id
-                        ))
                         if is_single:
-                            singles_detected += 1
-                            if unique_sources:
-                                source_str = ", ".join(unique_sources)
-                                log_info(f"Single detected: {title} ({single_confidence} confidence, sources: {source_str})")
-                            else:
-                                log_info(f"Single detected: {title} (user-set)")
-                            log_debug(f"Single detection confirmed - track_id: {track_id}, confidence: {single_confidence}, sources: {unique_sources}")
+                            log_info(f"✅ SINGLE DETECTED: '{title}' - confidence: {single_confidence}, sources: {single_sources}")
+                        else:
+                            log_info(f"❌ Not a single: '{title}' - confidence: {single_confidence}, sources: {single_sources}")
+                        log_debug(f"Single detection result - is_single: {is_single}, confidence: {single_confidence}, sources: {single_sources}")
 
-                    # Track progress in singles detection
-                    singles_processed += 1
-                    # Efficient milestone checking using pre-calculated values
-                    if singles_processed == singles_milestone_25 and 25 not in singles_milestones_logged:
-                        log_unified(f"Single Detection - 25% completed - {singles_processed}/{album_track_count} tracks")
-                        log_debug(f"Progress milestone - 25% completed for singles detection in album {album}")
-                        singles_milestones_logged.add(25)
-                    elif singles_processed == singles_milestone_50 and 50 not in singles_milestones_logged:
-                        log_unified(f"Single Detection - 50% completed - {singles_processed}/{album_track_count} tracks")
-                        log_debug(f"Progress milestone - 50% completed for singles detection in album {album}")
-                        singles_milestones_logged.add(50)
-                    elif singles_processed == singles_milestone_75 and 75 not in singles_milestones_logged:
-                        log_unified(f"Single Detection - 75% completed - {singles_processed}/{album_track_count} tracks")
-                        log_debug(f"Progress milestone - 75% completed for singles detection in album {album}")
-                        singles_milestones_logged.add(75)
+                        single_detection_timestamp_updates.append((datetime.now().isoformat(), track_id))
+
+                        # Preserve user-set singles: if track was user-marked and detection found nothing, keep it marked
+                        if track_id in user_set_singles and not is_single:
+                            is_single = True
+                            single_confidence = "user"  # Mark as user-set
+                            # Keep sources empty to indicate user-set
+                            log_info(f"Preserving user-set single flag for: {title}")
+                            log_debug(f"User-set single preserved - track_id: {track_id}, auto_detection: False")
+
+                        # Adaptive greatest-hits promotion during this same single scan:
+                        # once every processed track is being detected as single, continue scanning all remaining tracks.
+                        gh_tracks_processed += 1
+                        if is_single:
+                            gh_tracks_detected_single += 1
+                        if (
+                            not force_full_single_detection
+                            and gh_tracks_processed >= 3
+                            and gh_tracks_detected_single == gh_tracks_processed
+                        ):
+                            force_full_single_detection = True
+                            if (album_type or "").strip().lower() == "regular":
+                                album_type = "greatest_hits"
+                            log_info(
+                                f'Greatest hits adaptive mode enabled during single scan: "{artist} - {album}" '
+                                f'({gh_tracks_detected_single}/{gh_tracks_processed} processed tracks detected as single)'
+                            )
+                            log_debug("Adaptive greatest hits mode now bypasses negative z-score skip for remaining tracks")
+
+                        # Queue single detection results for batch update
+                        if is_single or single_sources:
+                            # Deduplicate single_sources to prevent duplicate entries in JSON
+                            # Preserves order while removing duplicates
+                            unique_sources = []
+                            seen = set()
+                            for source in single_sources:
+                                if source not in seen:
+                                    unique_sources.append(source)
+                                    seen.add(source)
+
+                            # Automatically set stars to 5 for detected singles
+                            stars_for_single = 5 if is_single else None
+                            singles_updates.append((
+                                bool(is_single),
+                                single_confidence,
+                                json.dumps(unique_sources),  # Use deduplicated sources
+                                stars_for_single,
+                                track_id
+                            ))
+                            if is_single:
+                                singles_detected += 1
+                                if unique_sources:
+                                    source_str = ", ".join(unique_sources)
+                                    log_info(f"Single detected: {title} ({single_confidence} confidence, sources: {source_str})")
+                                else:
+                                    log_info(f"Single detected: {title} (user-set)")
+                                log_debug(f"Single detection confirmed - track_id: {track_id}, confidence: {single_confidence}, sources: {unique_sources}")
+
+                    except Exception as _single_detect_exc:
+                        log_unified(
+                            f"Single Detection - Error processing '{title}' — skipping track "
+                            f"({type(_single_detect_exc).__name__}: {_single_detect_exc})",
+                            level=logging.WARNING,
+                        )
+                        log_debug(
+                            f"Single detection exception for track_id={track_id} title='{title}': {_single_detect_exc}",
+                            exc_info=True,
+                        )
+
+                    finally:
+                        # Track progress in singles detection – always fires, even on error.
+                        singles_processed += 1
+                        # Efficient milestone checking using pre-calculated values
+                        if singles_processed == singles_milestone_25 and 25 not in singles_milestones_logged:
+                            log_unified(f"Single Detection - 25% completed - {singles_processed}/{album_track_count} tracks")
+                            log_debug(f"Progress milestone - 25% completed for singles detection in album {album}")
+                            singles_milestones_logged.add(25)
+                        elif singles_processed == singles_milestone_50 and 50 not in singles_milestones_logged:
+                            log_unified(f"Single Detection - 50% completed - {singles_processed}/{album_track_count} tracks")
+                            log_debug(f"Progress milestone - 50% completed for singles detection in album {album}")
+                            singles_milestones_logged.add(50)
+                        elif singles_processed == singles_milestone_75 and 75 not in singles_milestones_logged:
+                            log_unified(f"Single Detection - 75% completed - {singles_processed}/{album_track_count} tracks")
+                            log_debug(f"Progress milestone - 75% completed for singles detection in album {album}")
+                            singles_milestones_logged.add(75)
 
                 # Batch update all singles detection results for this album in one commit
                 if singles_updates:
