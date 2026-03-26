@@ -595,7 +595,7 @@
         </div>
         <div class="col-12 col-sm-6 col-lg-4">
           <label class="form-label form-label-sm">Popularity-Only 5★ Threshold</label>
-          <input type="number" step="0.1" min="1.0" max="5.0" class="form-control form-control-sm" id="zscore_popularity_threshold" placeholder="2.0" value="{{ config.get('single_detection', {}).get('zscore_popularity_threshold', 2.0) }}" disabled title="Hard-coded at 2.0 — informational only">
+          <p class="form-control-plaintext form-control-sm text-muted">2.0 <small>(hard-coded)</small></p>
           <small class="form-text text-muted">Z-score above which a track gets 5★ purely from popularity, with no source evidence. Hard-coded at <strong>2.0</strong>.</small>
         </div>
         <div class="col-12 col-sm-6 col-lg-4">
@@ -1053,8 +1053,10 @@ function buildConfigObject() {
       zscore_high_threshold: parseFloat(getValue('zscore_high_threshold', '1.0')) || 1.0,
       standout_gap_z: parseFloat(getValue('standout_gap_z', '0.75')) || 0.75
     },
-    // api_integrations and database are preserved from the server-side config — not edited here.
-    // See config_save_json endpoint which merges in the existing stored values.
+    // api_integrations and database are no longer managed via this UI:
+    // api_integrations is per-user (configured under each user account);
+    // database is PostgreSQL-only with no UI controls.
+    // Both sections are restored verbatim from disk by config_save_json.
     strip_parentheses_filters: Array.from(
       document.querySelectorAll('#stripKeywordsList .badge')
     ).map(badge => {
