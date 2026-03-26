@@ -251,6 +251,7 @@
                         </div>
 
                         <input type="hidden" id="album_mbid" name="album_mbid" value="">
+                        <input type="hidden" id="cover_art_url" name="cover_art_url" value="">
                     </div>
                 </div>
             </div>
@@ -2011,6 +2012,9 @@
         }
         if (mbid) {
             document.getElementById('album_mbid').value = mbid;
+        }
+        if (coverArtUrl) {
+            document.getElementById('cover_art_url').value = coverArtUrl;
         }
         
         // Handle genres - support both backslash (Navidrome) and comma separators

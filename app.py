@@ -333,6 +333,38 @@ _FLASH_RESULT_STORE_LOCK = threading.Lock()
 _FLASH_RESULT_STORE_MAX_ITEMS = 128
 _FLASH_RESULT_STORE_TTL_SECONDS = 900
 
+_flash_results_db_schema_ensured = False
+_flash_results_db_schema_lock = threading.Lock()
+
+
+def _ensure_flash_results_db_schema(conn, cursor) -> None:
+    """Create the flash_results table if it doesn't exist (runs at most once per process)."""
+    global _flash_results_db_schema_ensured
+    if _flash_results_db_schema_ensured:
+        return
+    with _flash_results_db_schema_lock:
+        if _flash_results_db_schema_ensured:
+            return
+        try:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS flash_results (
+                    result_id TEXT PRIMARY KEY,
+                    created_at DOUBLE PRECISION NOT NULL,
+                    payload TEXT NOT NULL
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS flash_results_created_at_idx ON flash_results (created_at)
+            """)
+            conn.commit()
+            _flash_results_db_schema_ensured = True
+        except Exception as _e:
+            logging.debug(f"Could not ensure flash_results schema: {_e}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
 
 def _prune_flash_result_store() -> None:
     cutoff = time.time() - _FLASH_RESULT_STORE_TTL_SECONDS
@@ -348,17 +380,33 @@ def _prune_flash_result_store() -> None:
 
 
 def _store_flash_result_payload(payload: dict) -> str:
+    import json as _json
     result_id = secrets.token_urlsafe(12)
+    now = time.time()
     with _FLASH_RESULT_STORE_LOCK:
         _prune_flash_result_store()
         _FLASH_RESULT_STORE[result_id] = {
-            "created_at": time.time(),
+            "created_at": now,
             "payload": payload,
         }
+    # Also persist to database so the result survives across workers and restarts
+    try:
+        _db_conn = get_db()
+        _cursor = _db_conn.cursor()
+        _ensure_flash_results_db_schema(_db_conn, _cursor)
+        _cursor.execute(
+            "INSERT INTO flash_results (result_id, created_at, payload) VALUES (%s, %s, %s)"
+            " ON CONFLICT (result_id) DO NOTHING",
+            (result_id, now, _json.dumps(payload)),
+        )
+        _db_conn.commit()
+    except Exception as _db_err:
+        logging.debug(f"Could not persist flash result to database: {_db_err}")
     return result_id
 
 
 def resolve_flash_message(message):
+    import json as _json
     if isinstance(message, dict) and message.get("kind") == "result_ref":
         result_id = message.get("id")
         if not result_id:
@@ -367,6 +415,26 @@ def resolve_flash_message(message):
             stored = _FLASH_RESULT_STORE.get(result_id)
         if stored:
             return stored.get("payload")
+        # Fall back to database lookup (handles multi-worker and restart scenarios)
+        try:
+            _db_conn = get_db()
+            _cursor = _db_conn.cursor()
+            _ensure_flash_results_db_schema(_db_conn, _cursor)
+            cutoff = time.time() - _FLASH_RESULT_STORE_TTL_SECONDS
+            _cursor.execute(
+                "SELECT payload FROM flash_results WHERE result_id = %s AND created_at >= %s",
+                (result_id, cutoff),
+            )
+            row = _cursor.fetchone()
+            if row:
+                raw = row['payload'] if hasattr(row, '__getitem__') and not isinstance(row, (list, tuple)) else row[0]
+                payload = _json.loads(raw) if isinstance(raw, str) else raw
+                # Warm the in-memory cache so subsequent calls in the same process are fast
+                with _FLASH_RESULT_STORE_LOCK:
+                    _FLASH_RESULT_STORE[result_id] = {"created_at": time.time(), "payload": payload}
+                return payload
+        except Exception as _db_err:
+            logging.debug(f"Could not retrieve flash result from database: {_db_err}")
         return {
             "kind": "result",
             "title": "Result details expired",
@@ -10775,6 +10843,7 @@ def album_edit(artist, album):
     
     album_mbid = request.form.get("album_mbid", "").strip() or None
     album_genres = request.form.get("album_genres", "").strip()
+    cover_art_url = request.form.get("cover_art_url", "").strip() or None
     
     # Debug logging for character encoding issues (use debug level to avoid log noise)
     logging.debug(f"Album edit - URL artist: {repr(artist)}, form album_artist: {repr(album_artist)}")
@@ -10835,6 +10904,11 @@ def album_edit(artist, album):
             update_fields.append(f"genres = {placeholder}")
             update_values.append(album_genres)
         
+        # Update cover art URL
+        if cover_art_url:
+            update_fields.append(f"cover_art_url = {placeholder}")
+            update_values.append(cover_art_url)
+        
         # Add WHERE clause values
         update_values.extend([artist, album])
         
@@ -10842,7 +10916,7 @@ def album_edit(artist, album):
         if update_fields:
             # Validate that update_fields only contains safe column assignments
             # All field assignments should be in the format "column_name = <placeholder>"
-            allowed_columns = {'album', 'artist', 'album_artist', 'year', 'spotify_album_type', 'musicbrainz_album_mbid', 'genres', 'composer', 'comment'}
+            allowed_columns = {'album', 'artist', 'album_artist', 'year', 'spotify_album_type', 'musicbrainz_album_mbid', 'genres', 'composer', 'comment', 'cover_art_url'}
             for field in update_fields:
                 column_name = field.split('=')[0].strip()
                 if column_name not in allowed_columns:
@@ -10877,6 +10951,60 @@ def album_edit(artist, album):
                 if tracks:
                     try:
                         from helpers.tag_manager import write_tags_to_file
+
+                        # Download cover art once for all tracks (if a URL was provided)
+                        cover_art_bytes = None
+                        cover_art_mime = None
+                        if cover_art_url:
+                            try:
+                                from urllib.parse import urlparse as _urlparse, urlunparse as _urlunparse
+                                _parsed = _urlparse(cover_art_url)
+                                _allowed_hosts = {
+                                    "coverartarchive.org",
+                                    "musicbrainz.org",
+                                    "discogs.com",
+                                    "img.discogs.com",
+                                    "i.discogs.com",
+                                    "images.discogs.com",
+                                    "archive.org",
+                                    "ia800.us.archive.org",
+                                }
+                                _hostname = (_parsed.hostname or "").lower().lstrip("www.")
+                                _is_trusted = (
+                                    _parsed.scheme in ("http", "https")
+                                    and any(
+                                        _hostname == h or _hostname.endswith("." + h)
+                                        for h in _allowed_hosts
+                                    )
+                                )
+                                if not _is_trusted:
+                                    logging.warning(f"Rejecting cover art URL from untrusted host: {_parsed.hostname}")
+                                    cover_art_url = None
+                                else:
+                                    # Reconstruct the URL from validated parsed components to avoid tainted-URL SSRF
+                                    _safe_url = _urlunparse((
+                                        _parsed.scheme,
+                                        _parsed.netloc,
+                                        _parsed.path,
+                                        _parsed.params,
+                                        _parsed.query,
+                                        "",
+                                    ))
+                                    import requests as _requests
+                                    _resp = _requests.get(_safe_url, timeout=10)
+                                    if _resp.status_code == 200 and _resp.content:
+                                        cover_art_bytes = _resp.content
+                                        cover_art_mime = _resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
+                                        # Also persist to album_art table
+                                        try:
+                                            from popularity import download_and_save_album_art as _save_art
+                                            _save_art(album_artist, album_title, _safe_url, source="manual")
+                                        except Exception as _art_db_err:
+                                            logging.debug(f"Could not save cover art to album_art table: {_art_db_err}")
+                                    else:
+                                        logging.warning(f"Failed to download cover art from {_safe_url}: HTTP {_resp.status_code}")
+                            except Exception as _download_err:
+                                logging.warning(f"Could not download cover art: {_download_err}")
 
                         def _resolve_music_file_path(path_value):
                             if not path_value:
@@ -10940,6 +11068,11 @@ def album_edit(artist, album):
                                 if names_changed:
                                     tags_to_write["album"] = album_title
                                     tags_to_write["album_artist"] = album_artist
+                                if album_mbid:
+                                    tags_to_write["musicbrainz_album_mbid"] = album_mbid
+                                if cover_art_bytes:
+                                    tags_to_write["cover_art_data"] = cover_art_bytes
+                                    tags_to_write["cover_art_mime"] = cover_art_mime
 
                                 if tags_to_write:
                                     if write_tags_to_file(str(resolved_file_path), tags_to_write):
@@ -10981,6 +11114,10 @@ def album_edit(artist, album):
                     {"label": "DB tracks updated", "value": rows_updated},
                     {"label": "Files written", "value": f"{files_updated}/{files_with_path}" if files_with_path else files_updated},
                 ]
+                if cover_art_bytes:
+                    result_stats.append({"label": "Cover art embedded", "value": "Yes"})
+                elif cover_art_url:
+                    result_stats.append({"label": "Cover art", "value": "Download failed"})
                 if tracks_without_path:
                     result_stats.append({"label": "No file path", "value": len(tracks_without_path)})
                 if files_missing:
@@ -10989,7 +11126,8 @@ def album_edit(artist, album):
                     result_stats.append({"label": "Write failures", "value": files_failed})
 
                 if files_with_path:
-                    result_summary = f"Updated {rows_updated} tracks in the database and wrote tags to {files_updated} of {files_with_path} track files."
+                    cover_art_note = " Cover art embedded." if cover_art_bytes else (" Cover art download failed." if cover_art_url else "")
+                    result_summary = f"Updated {rows_updated} tracks in the database and wrote tags to {files_updated} of {files_with_path} track files.{cover_art_note}"
                 elif tag_writer_unavailable:
                     result_summary = f"Updated {rows_updated} tracks in the database, but file tag writing is unavailable."
                 else:

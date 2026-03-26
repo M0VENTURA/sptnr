@@ -25,7 +25,7 @@ except ImportError:
     _MUTAGEN_AVAILABLE = False
 
 try:
-    from mutagen.flac import FLAC
+    from mutagen.flac import FLAC, Picture as FLACPicture
     _FLAC_AVAILABLE = True
 except ImportError:
     _FLAC_AVAILABLE = False
@@ -492,6 +492,20 @@ def _write_id3_tags(file_path: str, tags: Dict[str, Any]) -> bool:
                 audio.tags.delall(frame_key)
                 if value is not None and str(value).strip():
                     audio.tags.add(TXXX(encoding=3, desc="MUSICBRAINZ ALBUM ID", text=[str(value)]))
+            elif field == "cover_art_data":
+                # value should be raw image bytes; cover_art_mime is read from the same tags dict
+                if value is not None and isinstance(value, (bytes, bytearray)) and len(value) > 0:
+                    mime = tags.get("cover_art_mime", "image/jpeg")
+                    audio.tags.delall("APIC")
+                    audio.tags.add(APIC(
+                        encoding=3,
+                        mime=mime,
+                        type=3,  # 3 = Cover (front)
+                        desc="Cover",
+                        data=bytes(value),
+                    ))
+            elif field == "cover_art_mime":
+                pass  # handled alongside cover_art_data above
             else:
                 logger.debug(f"Skipping unmapped field for ID3: {field}")
 
@@ -533,6 +547,21 @@ def _write_flac_tags(file_path: str, tags: Dict[str, Any]) -> bool:
         }
 
         for field, value in tags.items():
+            # Handle cover art separately (not a Vorbis comment field)
+            if field == "cover_art_data":
+                if value is not None and isinstance(value, (bytes, bytearray)) and len(value) > 0:
+                    mime = tags.get("cover_art_mime", "image/jpeg")
+                    pic = FLACPicture()
+                    pic.type = 3  # 3 = Cover (front)
+                    pic.mime = mime
+                    pic.desc = "Cover"
+                    pic.data = bytes(value)
+                    audio.clear_pictures()
+                    audio.add_picture(pic)
+                continue
+            if field == "cover_art_mime":
+                continue  # handled alongside cover_art_data above
+
             target_field = flac_field_map.get(field)
             if not target_field:
                 logger.debug(f"Skipping unmapped field for FLAC: {field}")
