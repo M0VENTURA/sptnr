@@ -281,6 +281,11 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
     # Local import to avoid circular dependency
     from start import fetch_artist_albums, fetch_album_tracks, save_to_db
     
+    if not artist_id:
+        logging.warning(f"[NAVIDROME_SCAN] scan_artist_to_db called with no artist_id for '{artist_name}' — skipping")
+        return
+
+    log_debug(f"[NAVIDROME_SCAN] scan_artist_to_db: artist='{artist_name}' id={artist_id} (force={force}, filter_missing={filter_missing}, {processed_artists}/{total_artists})")
     try:
         canonical_artist_name = _clean_artist_name_for_storage(artist_name) or artist_name
 
@@ -337,8 +342,10 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
             conn.close()
         except Exception as e:
             logging.debug(f"Prefetch existing tracks for artist '{artist_name}' failed: {e}")
+            log_debug(f"[NAVIDROME_SCAN] Prefetch failed for '{artist_name}': {e}", exc_info=True)
 
         albums = fetch_artist_albums(artist_id)
+        log_debug(f"[NAVIDROME_SCAN] fetch_artist_albums('{artist_name}') returned {len(albums)} albums")
         
         # If filter_missing is enabled and this artist has no missing fields, skip it
         if filter_missing and len(albums_needing_reimport) == 0 and len(existing_track_ids) > 0:
@@ -572,6 +579,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 logging.debug(f"Empty-folder cleanup skipped for artist '{artist_name}': {e}")
     except Exception as e:
         logging.error(f"scan_artist_to_db failed for {artist_name}: {e}")
+        log_debug(f"[NAVIDROME_SCAN] scan_artist_to_db raised exception for '{artist_name}': {e}", exc_info=True)
         raise
 
 

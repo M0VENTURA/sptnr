@@ -14591,6 +14591,7 @@ def scan_navidrome():
                     os.environ["SPTNR_SKIP_SINGLES"] = "1"
 
                     logging.info(f"Starting Navidrome import-only scan (mode={mode})")
+                    log_debug(f"[NAVIDROME_SCAN] Background thread started (mode={mode}, restart_requested={restart_requested}, force_start={force_start})")
                     checkpoint_path = os.path.join(os.path.dirname(DB_PATH), "navidrome_scan_checkpoint.json")
 
                     if restart_requested and os.path.exists(checkpoint_path):
@@ -14600,9 +14601,14 @@ def scan_navidrome():
                         except Exception as checkpoint_err:
                             logging.warning(f"Restart requested but failed to clear checkpoint: {checkpoint_err}")
                     
+                    log_debug("[NAVIDROME_SCAN] Calling build_artist_index()")
                     artist_map = build_artist_index()
                     artists = list(artist_map.items())
                     total = len(artists)
+                    log_debug(f"[NAVIDROME_SCAN] build_artist_index() returned {total} artists")
+                    
+                    if total == 0:
+                        logging.warning("[NAVIDROME_SCAN] No artists returned by build_artist_index() — scan will not process any artists")
                     
                     # Check if we have a checkpoint from a previous scan or if resume mode is active
                     start_idx = 0
@@ -14614,12 +14620,15 @@ def scan_navidrome():
                         last_scanned_artist = get_last_scanned_artist(scan_type="navidrome", db_path=DB_PATH)
                         if last_scanned_artist:
                             logging.info(f"Resume mode: Found last scanned artist '{last_scanned_artist}'")
+                        else:
+                            log_debug("[NAVIDROME_SCAN] Resume mode active but no last scanned artist found; starting from beginning")
                     # Otherwise check checkpoint file
                     elif (not restart_requested) and os.path.exists(checkpoint_path):
                         try:
                             with open(checkpoint_path, 'r') as f:
                                 checkpoint = json.load(f)
                                 last_scanned_artist = checkpoint.get("last_scanned_artist")
+                            log_debug(f"[NAVIDROME_SCAN] Checkpoint found: last_scanned_artist='{last_scanned_artist}'")
                         except Exception as e:
                             logging.warning(f"Error reading checkpoint: {e}, starting from beginning")
                     
@@ -14630,10 +14639,13 @@ def scan_navidrome():
                                 start_idx = idx  # Start from this artist (rescan it completely)
                                 logging.info(f"Resuming Navidrome scan from artist index {start_idx} ('{last_scanned_artist}')")
                                 break
+                        else:
+                            log_debug(f"[NAVIDROME_SCAN] Last scanned artist '{last_scanned_artist}' not found in artist list; starting from beginning")
                     
                     # Determine force and filter logic based on mode
                     force_rescan = (mode == 'force' or mode == 'resume_force')
                     filter_missing = (mode == 'missing')
+                    log_debug(f"[NAVIDROME_SCAN] Starting artist loop from index {start_idx}/{total} (force_rescan={force_rescan}, filter_missing={filter_missing})")
                     
                     # Scan artists starting from checkpoint or beginning
                     for idx, (artist_name, info) in enumerate(artists[start_idx:], start=start_idx):
@@ -14642,9 +14654,11 @@ def scan_navidrome():
                             stop_requested = scan_process_navidrome is None or _is_stop_requested_from_progress(nav_progress_file)
                             if stop_requested:
                                 logging.info("Navidrome scan stop signal received, exiting gracefully")
+                                log_debug(f"[NAVIDROME_SCAN] Stop signal at artist index {idx} ('{artist_name}')")
                                 _write_progress_with_current_artist(nav_progress_file, "navidrome_scan", False, {"status": "stopped", "exit_code": 0})
                                 return
                         
+                        log_debug(f"[NAVIDROME_SCAN] scan_artist_to_db: idx={idx}/{total} artist='{artist_name}' id={info.get('id')}")
                         scan_artist_to_db(
                             artist_name, 
                             info.get("id"), 
@@ -14668,12 +14682,14 @@ def scan_navidrome():
                     
                     _write_progress_with_current_artist(nav_progress_file, "navidrome_scan", False, {"status": "complete", "exit_code": 0})
                     logging.info("Navidrome import-only scan completed")
+                    log_debug(f"[NAVIDROME_SCAN] Scan complete: processed {total} artists")
                     _mark_navidrome_first_full_import_complete(scan_source="manual")
                     _sync_new_navidrome_album_artists_fast(trigger_source="manual_post_import")
                     _maybe_start_post_navidrome_mp3_import(trigger_source="manual_post_import")
                     _log_scan_session_complete("navidrome", total)
                 except Exception as e:
                     logging.error(f"Error in Navidrome import-only scan: {e}", exc_info=True)
+                    log_debug(f"[NAVIDROME_SCAN] Unhandled exception in background thread: {e}", exc_info=True)
                     _write_progress_with_current_artist(nav_progress_file, "navidrome_scan", False, {"status": "error", "error": str(e), "exit_code": 1})
                 finally:
                     # Clear skip flag so popularity/singles scans run normally elsewhere
@@ -17746,6 +17762,9 @@ def _ensure_album_art_pg_schema(conn, cursor) -> None:
     # Step 1: Ensure table exists and fix the id column default if needed.
     # Committed independently so the fix is durable even if the unique-index
     # creation below fails (e.g. due to duplicate rows not yet cleaned up).
+    # _id_fix_needed tracks whether the id column requires a fix; only when it is
+    # False (no fix needed / fix succeeded) can Step 2 mark the schema as fully ensured.
+    _id_fix_needed = False
     try:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS album_art (
@@ -17782,11 +17801,13 @@ def _ensure_album_art_pg_schema(conn, cursor) -> None:
                 # GENERATED ALWAYS AS IDENTITY blocks plain INSERTs without
                 # OVERRIDING SYSTEM VALUE.  Change to BY DEFAULT so that
                 # omitting the column still gets an auto-generated value.
+                _id_fix_needed = True
                 try:
                     cursor.execute(
                         "ALTER TABLE album_art ALTER COLUMN id SET GENERATED BY DEFAULT"
                     )
                     conn.commit()
+                    _id_fix_needed = False
                     logging.debug("[ALBUM_ART] Changed id from GENERATED ALWAYS to GENERATED BY DEFAULT")
                 except Exception as _identity_err:
                     logging.warning(f"[ALBUM_ART] Could not change identity generation to BY DEFAULT: {_identity_err}")
@@ -17800,6 +17821,7 @@ def _ensure_album_art_pg_schema(conn, cursor) -> None:
                 # INSERTs that omit 'id' receive an auto-incremented value.
                 # Wrapped in a DO block so concurrent callers that race past the
                 # advisory lock handle the duplicate_object error gracefully.
+                _id_fix_needed = True
                 try:
                     cursor.execute("""
                         DO $$
@@ -17819,6 +17841,7 @@ def _ensure_album_art_pg_schema(conn, cursor) -> None:
                         "ALTER TABLE album_art ALTER COLUMN id SET DEFAULT nextval('album_art_id_seq')"
                     )
                     conn.commit()
+                    _id_fix_needed = False
                     logging.debug("[ALBUM_ART] Added auto-increment sequence for legacy id column")
                 except Exception as _seq_err:
                     logging.warning(f"[ALBUM_ART] Sequence approach failed for legacy id column: {_seq_err}")
@@ -17832,6 +17855,7 @@ def _ensure_album_art_pg_schema(conn, cursor) -> None:
                             "ALTER TABLE album_art ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY"
                         )
                         conn.commit()
+                        _id_fix_needed = False
                         logging.debug("[ALBUM_ART] Set id column as GENERATED BY DEFAULT AS IDENTITY (fallback)")
                     except Exception as _identity_fb_err:
                         logging.warning(f"[ALBUM_ART] All id-fix approaches failed: {_identity_fb_err}")
@@ -17849,10 +17873,13 @@ def _ensure_album_art_pg_schema(conn, cursor) -> None:
             pass
         # Even if the id-column fix failed we still try to create the unique index
         # below so that ON CONFLICT works.  The id issue will be retried next call.
+        _id_fix_needed = True
 
     # Step 2: Remove duplicates and create unique index.
     # Run in a separate try/except so a failure here does not roll back the
     # id-column fix committed above.
+    # Only mark the schema as fully ensured when no id-fix was pending (or it succeeded),
+    # so that future calls retry the fix if it failed in Step 1.
     try:
         # Remove duplicate rows (keep the most recently inserted ctid) before
         # adding a unique index, so the CREATE INDEX does not fail on existing data.
@@ -17868,7 +17895,8 @@ def _ensure_album_art_pg_schema(conn, cursor) -> None:
             ON album_art (artist_name, album_name)
         """)
         conn.commit()
-        _pg_album_art_schema_ensured = True
+        if not _id_fix_needed:
+            _pg_album_art_schema_ensured = True
     except Exception as _schema_err:
         logging.debug(f"[ALBUM_ART] album_art unique-index ensure failed: {_schema_err}")
         try:
