@@ -115,18 +115,20 @@ def handle_unmatched_file(file_path, file_metadata):
 
 def search_and_update_musicbrainz(queue_id, artist, title, album):
     """
-    Search MusicBrainz for album match.
-    If found, auto-fill remaining tracks as 'queried'.
-    
+    Search MusicBrainz for a release match and enrich the queue item's metadata.
+
+    Updates the queue row with release_mbid, release_id, release_year,
+    album_artist, and cover_art_url.  Does NOT auto-queue other tracks from
+    the album — that would add unwanted entries for single-track downloads.
+
     Args:
         queue_id: Queue item ID to update
         artist: Artist name
-        title: Track title  
+        title: Track title
         album: Album name
     """
     try:
         from download_folder_grouping import match_folder_group_with_musicbrainz
-        from folder_matching_enhancements import get_musicbrainz_release_tracks
     except ImportError:
         logger.error("MusicBrainz matching helpers not available")
         return
@@ -290,62 +292,11 @@ def search_and_update_musicbrainz(queue_id, artist, title, album):
             (release_mbid, release_mbid, release_year, release_artist, cover_art_url, queue_id),
         )
         conn.commit()
-
-        # Fetch full tracklist and add missing album tracks as queried.
-        tracks = get_musicbrainz_release_tracks(release_mbid)
-        if not tracks:
-            logger.warning(f"No tracks found for release {release_mbid}")
-            conn.close()
-            return
-
-        from download_queue_manager import add_to_queue
-
-        added_count = 0
-        for track in tracks:
-            track_title = (track.get('title') or '').strip()
-            if not track_title:
-                continue
-
-            # Skip the original unmatched track to avoid duplicate queue rows.
-            if track_title.lower() == (title or '').lower():
-                continue
-
-            track_artist = (track.get('artist') or artist or '').strip() or artist
-
-            cursor.execute(
-                f"""
-                SELECT id FROM download_queue
-                WHERE LOWER(artist) = LOWER({ph}) AND LOWER(COALESCE(album, '')) = LOWER(COALESCE({ph}, '')) AND LOWER(title) = LOWER({ph})
-                LIMIT 1
-                """,
-                (track_artist, album, track_title),
-            )
-            if cursor.fetchone():
-                continue
-
-            add_to_queue(
-                artist=track_artist,
-                title=track_title,
-                album=album,
-                status='queried',
-                track_number=track.get('number') or track.get('track_number'),
-                disc_number=track.get('disc_number'),
-                album_artist=release_artist,
-                year=release_year,
-                release_id=release_mbid,
-                release_source='musicbrainz',
-                release_mbid=release_mbid,
-                recording_mbid=track.get('recording_mbid') or track.get('recording_id'),
-                duration=track.get('duration'),
-                isrc=track.get('isrc'),
-                composer=track.get('composer'),
-                genres=track.get('genres'),
-                cover_art_url=cover_art_url,
-            )
-            added_count += 1
-
         conn.close()
-        logger.info(f"Added {added_count} queried tracks for album: {album}")
+        logger.info(
+            f"[MB_ENRICH] Queue {queue_id}: updated release metadata "
+            f"(MBID={release_mbid}, artist={release_artist}, year={release_year})"
+        )
         
     except Exception as e:
         logger.error(f"MusicBrainz auto-search failed for queue_id={queue_id}: {e}")

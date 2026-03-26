@@ -2214,6 +2214,7 @@ async function loadFolderGroups(options = {}) {
       'matched', 'completed', 'duplicate', 'possible_duplicate',
       'unmatched', 'queried', 'in_collection',
       'discovered', 'pending_match',
+      'copy_recommended',
       'failed'
     ];
     const queueItemsToShow = queue.filter(item => queueStatusesToShowInline.includes(item.status));
@@ -2416,8 +2417,23 @@ async function loadFolderGroups(options = {}) {
       }
     });
 
-    // Only display queue items — real folder groups are reflected via the matched_folder_path above.
-    groups = queueGroups;
+    // Build a set of folder_paths already represented by a queue item so we
+    // don't show the same release twice (once as a queue card and once as a
+    // raw folder card).
+    const matchedFolderPaths = new Set(
+      queueGroups.map(qg => qg.matched_folder_path).filter(Boolean)
+    );
+
+    // Physical /downloads folders that have NO queue entry yet — show these so
+    // the user can sort / organise them even before they are in the queue.
+    const unmatchedFolderGroups = (folderData.folder_groups || []).filter(fg => {
+      const fp = fg.folder_path || fg.name || '';
+      return fp && !matchedFolderPaths.has(fp);
+    });
+
+    // Queue items first (active/in-progress work), then unmatched /downloads
+    // folders so the user can still sort files that arrived outside the queue.
+    groups = [...queueGroups, ...unmatchedFolderGroups];
 
     console.log('[loadFolderGroups] API Response:', {
       success: folderData.success,

@@ -176,7 +176,15 @@ def detect_interrupted_scan(scan_type: str = "navidrome") -> Optional[Dict]:
     if not is_running:
         log_debug(f"Progress file exists but scan was not running")
         return None
-    
+
+    # A progress file with status='starting' and no current_artist is a fresh
+    # scan that was just initiated (not an interrupted one).  Resuming it would
+    # restart from the beginning anyway, and doing so unconditionally on every
+    # boot would cause duplicate concurrent scans.
+    if progress.get('status') == 'starting' and not progress.get('current_artist'):
+        log_debug(f"Progress file shows scan in 'starting' state with no current artist; skipping auto-resume")
+        return None
+
     # Check if progress is recent (within 24 hours)
     # This prevents resuming very old interrupted scans
     try:
@@ -188,7 +196,7 @@ def detect_interrupted_scan(scan_type: str = "navidrome") -> Optional[Dict]:
                 return None
     except Exception as e:
         log_debug(f"Failed to check progress age: {e}")
-    
+
     log_info(f"Detected interrupted {scan_type} scan at {progress.get('percent_complete', 0)}%")
     log_info(f"Last scanned: {progress.get('current_artist', 'unknown')}")
     
@@ -252,7 +260,7 @@ def get_last_scanned_artist_from_db(db_path: str = "/database/sptnr.db") -> Opti
         
         row = cursor.fetchone()
         if row:
-            artist = row[0]
+            artist = row['artist'] if isinstance(row, dict) else row[0]
             log_debug(f"Found incomplete scan for artist: {artist}")
             conn.close()
             return artist
@@ -272,8 +280,9 @@ def get_last_scanned_artist_from_db(db_path: str = "/database/sptnr.db") -> Opti
         conn.close()
         
         if row:
-            artist = row[0]
-            log_debug(f"Last scanned artist from DB (fallback): {artist} at {row[1]}")
+            artist = row['artist'] if isinstance(row, dict) else row[0]
+            latest = row['latest'] if isinstance(row, dict) else row[1]
+            log_debug(f"Last scanned artist from DB (fallback): {artist} at {latest}")
             return artist
         
     except Exception as e:

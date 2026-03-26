@@ -42,8 +42,7 @@
         <a href="#sources" class="btn btn-sm btn-outline-primary">Download Sources</a>
         <a href="#watcher" class="btn btn-sm btn-outline-primary">Automation</a>
         <a href="#essentia-mood-scan" class="btn btn-sm btn-outline-primary">Essentia</a>
-        <a href="#api-integrations" class="btn btn-sm btn-outline-primary">API Keys</a>
-        <a href="#database" class="btn btn-sm btn-outline-primary">Database</a>
+        <a href="#single-detection-zscore" class="btn btn-sm btn-outline-primary">Z-Score</a>
         <a href="#search-filters" class="btn btn-sm btn-outline-primary">Search Filters</a>
       </div>
     </div>
@@ -565,314 +564,44 @@
     </div>
   </div>
 
-  <!-- API Integrations Section -->
-  <div class="card shadow-sm mb-3" id="api-integrations">
+  <!-- Single Detection Z-Score Thresholds Section -->
+  <div class="card shadow-sm mb-3" id="single-detection-zscore">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
-      <h5 class="mb-0"><i class="bi bi-link-45deg"></i> API Keys</h5>
-      <small class="text-muted">Configure optional music metadata and streaming services</small>
+      <h5 class="mb-0"><i class="bi bi-sliders"></i> Single Detection Z-Score Thresholds</h5>
+      <small class="text-muted">How z-score evidence gates map to the 5★ confidence requirement</small>
     </div>
     <div class="card-body">
-      <div class="alert alert-info mb-4">
-        <i class="bi bi-info-circle"></i>
-        <strong>Getting Started:</strong> Only Navidrome is required. The APIs below are optional but recommended for enhanced scoring and recommendations.
-        <a href="/help/MULTI_USER_CONFIG_GUIDE" class="alert-link ms-2">View API Setup Guide</a>
-      </div>
-      <div class="row g-3">
-        <!-- Spotify -->
-        <div class="col-12 border-bottom pb-3">
-          <div class="d-flex justify-content-between align-items-start">
-            <div class="flex-grow-1">
-              <h6 class="mb-1"><i class="bi bi-spotify"></i> Spotify (Optional)</h6>
-              <small class="text-muted d-block mb-2">Track popularity and stream counts for scoring algorithms. Also enables Spotify playlist import and recommendations.</small>
-              <small class="form-text text-muted"><strong>Setup:</strong> Create an app at <a href="https://developer.spotify.com/dashboard" target="_blank">Spotify Developer Dashboard</a></small>
-            </div>
-            <div class="form-check form-switch">
-              <input class="form-check-input" type="checkbox" id="spotify_enabled" {% if config.get('api_integrations', {}).get('spotify', {}).get('enabled') %}checked{% endif %}>
-            </div>
+      <div class="alert alert-secondary mb-3 py-2">
+        <div class="row text-center gx-0">
+          <div class="col-12 col-md-4 border-end-md mb-2 mb-md-0">
+            <span class="fw-semibold text-warning">z = 0 → 1</span><br>
+            <small class="text-muted">Needs <strong>high confidence</strong><br>2 medium sources <em>or</em> 1 Discogs source</small>
           </div>
-          <div class="row g-2 mt-2">
-            <div class="col-12">
-              <label class="form-label form-label-sm">Client ID</label>
-              <input type="text" class="form-control form-control-sm" id="spotify_client_id" placeholder="your_spotify_client_id" value="{{ config.get('api_integrations', {}).get('spotify', {}).get('client_id', '') }}">
-            </div>
-            <div class="col-12">
-              <label class="form-label form-label-sm">Client Secret</label>
-              <input type="password" class="form-control form-control-sm" id="spotify_client_secret" placeholder="••••••••" value="{{ config.get('api_integrations', {}).get('spotify', {}).get('client_secret', '') }}">
-            </div>
-            <div class="col-12">
-              <label class="form-label form-label-sm">User ID (Optional)</label>
-              <input type="text" class="form-control form-control-sm" id="spotify_user_id" placeholder="spotify" value="{{ config.get('api_integrations', {}).get('spotify', {}).get('user_id', '') }}">
-              <small class="form-text text-muted">Your Spotify username to fetch public playlists from</small>
-            </div>
+          <div class="col-12 col-md-4 border-end-md mb-2 mb-md-0">
+            <span class="fw-semibold text-info">z = 1 → 2</span><br>
+            <small class="text-muted">Needs <strong>medium confidence</strong><br>1 medium source <em>or</em> 1 Discogs source</small>
           </div>
-        </div>
-
-        <!-- Last.fm -->
-        <div class="col-12 border-bottom pb-3">
-          <div class="d-flex justify-content-between align-items-start">
-            <div class="flex-grow-1">
-              <h6 class="mb-1"><i class="bi bi-music-note"></i> Last.fm (Optional)</h6>
-              <small class="text-muted d-block mb-2">User listening history and scrobbles for personalized recommendations. Essential for Last.fm-based playlists.</small>
-              <small class="form-text text-muted"><strong>Setup:</strong> Get API key from <a href="https://www.last.fm/api/account/create" target="_blank">Last.fm API</a></small>
-            </div>
-            <div class="form-check form-switch">
-              <input class="form-check-input" type="checkbox" id="lastfm_enabled" {% if config.get('api_integrations', {}).get('lastfm', {}).get('enabled') %}checked{% endif %}>
-            </div>
-          </div>
-          <div class="row g-2 mt-2">
-            <div class="col-12">
-              <label class="form-label form-label-sm">API Key</label>
-              <input type="text" class="form-control form-control-sm" id="lastfm_api_key" placeholder="your_lastfm_api_key" value="{{ config.get('api_integrations', {}).get('lastfm', {}).get('api_key', '') }}">
-            </div>
-          </div>
-        </div>
-
-        <!-- ListenBrainz -->
-        <div class="col-12 border-bottom pb-3">
-          <div class="d-flex justify-content-between align-items-start">
-            <div class="flex-grow-1">
-              <h6 class="mb-1"><i class="bi bi-headphones"></i> ListenBrainz (Optional)</h6>
-              <small class="text-muted d-block mb-2">Open music listening history and recommendations. Used for ListenBrainz-based playlists and genre detection.</small>
-              <small class="form-text text-muted"><strong>Setup:</strong> Get API key from <a href="https://listenbrainz.org/profile/api" target="_blank">ListenBrainz API</a></small>
-            </div>
-            <div class="form-check form-switch">
-              <input class="form-check-input" type="checkbox" id="listenbrainz_enabled" {% if config.get('api_integrations', {}).get('listenbrainz', {}).get('enabled') %}checked{% endif %}>
-            </div>
-          </div>
-          <div class="row g-2 mt-2">
-            <div class="col-12">
-              <label class="form-label form-label-sm">User Token (Optional)</label>
-              <input type="text" class="form-control form-control-sm" id="listenbrainz_token" placeholder="your_listenbrainz_user_token" value="{{ config.get('api_integrations', {}).get('listenbrainz', {}).get('token', config.get('api_integrations', {}).get('listenbrainz', {}).get('api_key', '')) }}">
-              <small class="text-muted">Token is optional for public popularity APIs, but required for personalized actions.</small>
-            </div>
-          </div>
-        </div>
-
-        <!-- Discogs -->
-        <div class="col-12 border-bottom pb-3">
-          <div class="d-flex justify-content-between align-items-start">
-            <div class="flex-grow-1">
-              <h6 class="mb-1"><i class="bi bi-record-circle"></i> Discogs (Optional)</h6>
-              <small class="text-muted d-block mb-2">Large release database and catalog information. Support for classic, rare, and regional releases.</small>
-              <small class="form-text text-muted"><strong>Setup:</strong> Create account at <a href="https://www.discogs.com" target="_blank">Discogs.com</a> and generate personal token</small>
-            </div>
-            <div class="form-check form-switch">
-              <input class="form-check-input" type="checkbox" id="discogs_enabled" {% if config.get('api_integrations', {}).get('discogs', {}).get('enabled') %}checked{% endif %}>
-            </div>
-          </div>
-          <div class="row g-2 mt-2">
-            <div class="col-12">
-              <label class="form-label form-label-sm">Personal Token</label>
-              <input type="password" class="form-control form-control-sm" id="discogs_token" placeholder="••••••••" value="{{ config.get('api_integrations', {}).get('discogs', {}).get('token', '') }}">
-            </div>
-          </div>
-        </div>
-
-        <!-- MusicBrainz -->
-        <div class="col-12 border-bottom pb-3">
-          <div class="d-flex justify-content-between align-items-start">
-            <div class="flex-grow-1">
-              <h6 class="mb-1"><i class="bi bi-music-note-list"></i> MusicBrainz (Built-In)</h6>
-              <small class="text-muted d-block mb-2">Primary music metadata database. Included by default, no configuration needed.</small>
-            </div>
-          </div>
-        </div>
-
-        <!-- The AudioDB -->
-        <div class="col-12 border-bottom pb-3">
-          <div class="d-flex justify-content-between align-items-start">
-            <div class="flex-grow-1">
-              <h6 class="mb-1"><i class="bi bi-images"></i> The AudioDB (Optional)</h6>
-              <small class="text-muted d-block mb-2">Artist artwork and metadata. Used for fetching artist fanart during popularity scans with fallback to MusicBrainz.</small>
-              <small class="form-text text-muted"><strong>Setup:</strong> Free API key available at <a href="https://www.theaudiodb.com/free_music_api" target="_blank">The AudioDB Free API</a> (30 requests/min limit)</small>
-            </div>
-            <div class="form-check form-switch">
-              <input class="form-check-input" type="checkbox" id="audiodb_enabled" {% if config.get('api_integrations', {}).get('audiodb', {}).get('enabled') %}checked{% endif %}>
-            </div>
-          </div>
-          <div class="row g-2 mt-2">
-            <div class="col-12">
-              <label class="form-label form-label-sm">API Key</label>
-              <input type="text" class="form-control form-control-sm" id="audiodb_api_key" placeholder="195003" value="{{ config.get('api_integrations', {}).get('audiodb', {}).get('api_key', '195003') }}">
-              <small class="form-text text-muted">Default free API key included. Use your own key for priority access.</small>
-            </div>
-          </div>
-        </div>
-
-        <!-- Source Confidence Settings -->
-        <div class="col-12">
-          <div class="d-flex justify-content-between align-items-start">
-            <div class="flex-grow-1">
-              <h6 class="mb-1"><i class="bi bi-sliders"></i> Single Detection Confidence Z-Score Thresholds</h6>
-              <small class="text-muted d-block mb-2">Control z-score thresholds for confidence levels and individual source confidence weights.</small>
-            </div>
-          </div>
-          <div class="row g-3 mt-2">
-            <!-- Z-Score Thresholds -->
-            <div class="col-12">
-              <h6 class="text-secondary mb-3">Z-Score Confidence Thresholds</h6>
-            </div>
-            <div class="col-12 col-sm-6 col-lg-4">
-              <label class="form-label form-label-sm">Medium Confidence Z-Score</label>
-              <input type="number" step="0.1" class="form-control form-control-sm" id="zscore_medium_threshold" placeholder="0.6" value="{{ config.get('single_detection', {}).get('zscore_medium_threshold', 0.6) }}">
-              <small class="form-text text-muted">Z-score threshold for medium confidence detection (default: 0.6)</small>
-            </div>
-            <div class="col-12 col-sm-6 col-lg-4">
-              <label class="form-label form-label-sm">High Confidence Z-Score</label>
-              <input type="number" step="0.1" class="form-control form-control-sm" id="zscore_high_threshold" placeholder="1.0" value="{{ config.get('single_detection', {}).get('zscore_high_threshold', 1.0) }}">
-              <small class="form-text text-muted">Z-score threshold for high confidence detection (default: 1.0)</small>
-            </div>
-            <div class="col-12 col-sm-6 col-lg-4">
-              <label class="form-label form-label-sm">Top Standout Gap Z-Score (5★ Gate)</label>
-              <input type="number" step="0.1" class="form-control form-control-sm" id="standout_gap_z" placeholder="0.75" value="{{ config.get('single_detection', {}).get('standout_gap_z', 0.75) }}">
-              <small class="form-text text-muted">Minimum z-normalized gap to the next track required for standout-driven 5★ (default: 0.75)</small>
-            </div>
-            <!-- Source Confidence Settings -->
-            <div class="col-12">
-              <h6 class="text-secondary mb-3 mt-2">Source Confidence Levels</h6>
-            </div>
-            <div class="col-12 col-sm-6 col-lg-4">
-              <label class="form-label form-label-sm">Discogs Confidence</label>
-              <select class="form-select form-select-sm" id="source_discogs_confidence">
-                <option value="high" {% if config.get('features', {}).get('source_discogs_confidence', 'high') == 'high' %}selected{% endif %}>High</option>
-                <option value="medium" {% if config.get('features', {}).get('source_discogs_confidence', 'high') == 'medium' %}selected{% endif %}>Medium</option>
-                <option value="low" {% if config.get('features', {}).get('source_discogs_confidence', 'high') == 'low' %}selected{% endif %}>Low</option>
-              </select>
-              <small class="form-text text-muted">Best for comprehensive release database</small>
-            </div>
-            <div class="col-12 col-sm-6 col-lg-4">
-              <label class="form-label form-label-sm">Spotify Confidence</label>
-              <select class="form-select form-select-sm" id="source_spotify_confidence">
-                <option value="high" {% if config.get('features', {}).get('source_spotify_confidence', 'medium') == 'high' %}selected{% endif %}>High</option>
-                <option value="medium" {% if config.get('features', {}).get('source_spotify_confidence', 'medium') == 'medium' %}selected{% endif %}>Medium</option>
-                <option value="low" {% if config.get('features', {}).get('source_spotify_confidence', 'medium') == 'low' %}selected{% endif %}>Low</option>
-              </select>
-              <small class="form-text text-muted">Reliable streaming platform data</small>
-            </div>
-            <div class="col-12 col-sm-6 col-lg-4">
-              <label class="form-label form-label-sm">MusicBrainz Confidence</label>
-              <select class="form-select form-select-sm" id="source_musicbrainz_confidence">
-                <option value="high" {% if config.get('features', {}).get('source_musicbrainz_confidence', 'medium') == 'high' %}selected{% endif %}>High</option>
-                <option value="medium" {% if config.get('features', {}).get('source_musicbrainz_confidence', 'medium') == 'medium' %}selected{% endif %}>Medium</option>
-                <option value="low" {% if config.get('features', {}).get('source_musicbrainz_confidence', 'medium') == 'low' %}selected{% endif %}>Low</option>
-              </select>
-              <small class="form-text text-muted">Community-driven metadata</small>
-            </div>
-            <div class="col-12 col-sm-6 col-lg-4">
-              <label class="form-label form-label-sm">MusicBrainz Compilation Confidence</label>
-              <select class="form-select form-select-sm" id="source_musicbrainz_compilation_confidence">
-                <option value="high" {% if config.get('features', {}).get('source_musicbrainz_compilation_confidence', 'medium') == 'high' %}selected{% endif %}>High</option>
-                <option value="medium" {% if config.get('features', {}).get('source_musicbrainz_compilation_confidence', 'medium') == 'medium' %}selected{% endif %}>Medium</option>
-                <option value="low" {% if config.get('features', {}).get('source_musicbrainz_compilation_confidence', 'medium') == 'low' %}selected{% endif %}>Low</option>
-              </select>
-              <small class="form-text text-muted">Track appears on Various Artists/compilation albums</small>
-            </div>
-            <div class="col-12 col-sm-6 col-lg-4">
-              <label class="form-label form-label-sm">Discogs Video Confidence</label>
-              <select class="form-select form-select-sm" id="source_discogs_video_confidence">
-                <option value="high" {% if config.get('features', {}).get('source_discogs_video_confidence', 'medium') == 'high' %}selected{% endif %}>High</option>
-                <option value="medium" {% if config.get('features', {}).get('source_discogs_video_confidence', 'medium') == 'medium' %}selected{% endif %}>Medium</option>
-                <option value="low" {% if config.get('features', {}).get('source_discogs_video_confidence', 'medium') == 'low' %}selected{% endif %}>Low</option>
-              </select>
-              <small class="form-text text-muted">Official music video indicator</small>
-            </div>
-            <div class="col-12 col-sm-6 col-lg-4">
-              <label class="form-label form-label-sm">Last.fm Confidence</label>
-              <select class="form-select form-select-sm" id="source_lastfm_confidence">
-                <option value="high" {% if config.get('features', {}).get('source_lastfm_confidence', 'medium') == 'high' %}selected{% endif %}>High</option>
-                <option value="medium" {% if config.get('features', {}).get('source_lastfm_confidence', 'medium') == 'medium' %}selected{% endif %}>Medium</option>
-                <option value="low" {% if config.get('features', {}).get('source_lastfm_confidence', 'medium') == 'low' %}selected{% endif %}>Low</option>
-              </select>
-              <small class="form-text text-muted">User listening history</small>
-            </div>
-            <div class="col-12 col-sm-6 col-lg-4">
-              <label class="form-label form-label-sm">Radio Edit Confidence</label>
-              <select class="form-select form-select-sm" id="source_radio_edit_confidence">
-                <option value="high" {% if config.get('features', {}).get('source_radio_edit_confidence', 'medium') == 'high' %}selected{% endif %}>High</option>
-                <option value="medium" {% if config.get('features', {}).get('source_radio_edit_confidence', 'medium') == 'medium' %}selected{% endif %}>Medium</option>
-                <option value="low" {% if config.get('features', {}).get('source_radio_edit_confidence', 'medium') == 'low' %}selected{% endif %}>Low</option>
-              </select>
-              <small class="form-text text-muted">Spotify radio edit indicator</small>
-            </div>
+          <div class="col-12 col-md-4">
+            <span class="fw-semibold text-success">z &gt; 2</span><br>
+            <small class="text-muted"><strong>Popularity-only 5★</strong><br>No source evidence required</small>
           </div>
         </div>
       </div>
-    </div>
-  </div>
-
-  <!-- Database Section -->
-  <div class="card shadow-sm mb-3" id="database">
-    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
-      <h5 class="mb-0"><i class="bi bi-database"></i> Database</h5>
-    </div>
-    <div class="card-body">
       <div class="row g-3">
-        <div class="col-12">
-          <label class="form-label">Database Path</label>
-          <input type="text" class="form-control" id="db_path" placeholder="/database/popularr.db" value="{{ config.get('database', {}).get('path', '') }}">
+        <div class="col-12 col-sm-6 col-lg-4">
+          <label class="form-label form-label-sm">High↔Medium Confidence Boundary</label>
+          <input type="number" step="0.1" min="0.1" max="3.0" class="form-control form-control-sm" id="zscore_high_threshold" placeholder="1.0" value="{{ config.get('single_detection', {}).get('zscore_high_threshold', 1.0) }}">
+          <small class="form-text text-muted">Z-score boundary between the high-confidence zone (below) and medium-confidence zone (above). Default: <strong>1.0</strong></small>
         </div>
-      </div>
-      
-      <!-- Database Cleanup Section -->
-      <hr class="my-4">
-      <h5 class="mb-3"><i class="bi bi-trash"></i> Clean Up Duplicate Albums</h5>
-      <div class="row g-3">
-        <div class="col-12">
-          <p class="text-muted">
-            Remove duplicate albums that may have been created when Navidrome rescanned the library with different track IDs.
-            This tool identifies tracks with the same artist, album, and title, keeping only the track with the best metadata.
-          </p>
-          <div class="d-flex gap-2">
-            <button type="button" class="btn btn-outline-primary" id="cleanupDryRunBtn" onclick="cleanupDuplicates(true)">
-              <i class="bi bi-eye"></i> Preview Cleanup
-            </button>
-            <button type="button" class="btn btn-danger" id="cleanupApplyBtn" onclick="cleanupDuplicates(false)">
-              <i class="bi bi-trash"></i> Apply Cleanup
-            </button>
-          </div>
-          <div id="cleanupMsg" class="mt-2"></div>
+        <div class="col-12 col-sm-6 col-lg-4">
+          <label class="form-label form-label-sm">Popularity-Only 5★ Threshold</label>
+          <p class="form-control-plaintext form-control-sm text-muted">2.0 <small>(hard-coded)</small></p>
+          <small class="form-text text-muted">Z-score above which a track gets 5★ purely from popularity, with no source evidence. Hard-coded at <strong>2.0</strong>.</small>
         </div>
-      </div>
-      
-      <!-- Postgres Migration Section -->
-      <hr class="my-4">
-      <h5 class="mb-3"><i class="bi bi-arrow-right-circle"></i> Migrate to PostgreSQL</h5>
-      <div class="row g-3">
-        <div class="col-12 col-md-6">
-          <label class="form-label">Postgres Host</label>
-          <input type="text" class="form-control" id="pg_host" placeholder="localhost" value="{{ config.get('PG_HOST', '') }}">
-        </div>
-        <div class="col-12 col-md-6">
-          <label class="form-label">Postgres Port</label>
-          <input type="text" class="form-control" id="pg_port" placeholder="5432" value="{{ config.get('PG_PORT', '5432') }}">
-        </div>
-        <div class="col-12 col-md-4">
-          <label class="form-label">Postgres User</label>
-          <input type="text" class="form-control" id="pg_user" placeholder="postgres" value="{{ config.get('PG_USER', '') }}">
-        </div>
-        <div class="col-12 col-md-4">
-          <label class="form-label">Postgres Password</label>
-          <input type="password" class="form-control" id="pg_password" placeholder="••••••••" value="{{ config.get('PG_PASSWORD', '') }}">
-        </div>
-        <div class="col-12 col-md-4">
-          <label class="form-label">Postgres Database</label>
-          <input type="text" class="form-control" id="pg_database" placeholder="popularr" value="{{ config.get('PG_DATABASE', '') }}">
-        </div>
-        <div class="col-12">
-          <div class="form-check mt-1">
-            <input class="form-check-input" type="checkbox" id="pg_backup_sqlite" checked>
-            <label class="form-check-label" for="pg_backup_sqlite">
-              Backup local SQLite database before migration
-            </label>
-          </div>
-          <div class="form-text">Recommended. A timestamped backup file is created before any data is copied.</div>
-        </div>
-        <div class="col-12">
-          <button type="button" class="btn btn-warning btn-lg mt-2" id="migratePostgresBtn" onclick="migrateToPostgres()">
-            <i class="bi bi-arrow-right-circle"></i> Migrate to PostgreSQL
-          </button>
-          <div class="form-text text-danger mt-2">This will copy all data from SQLite to PostgreSQL and update your configuration. This may take several minutes for large databases.</div>
-          <div id="pgMigrateMsg" class="mt-2"></div>
+        <div class="col-12 col-sm-6 col-lg-4">
+          <label class="form-label form-label-sm">Top Standout Gap Z-Score (5★ Gate)</label>
+          <input type="number" step="0.1" class="form-control form-control-sm" id="standout_gap_z" placeholder="0.75" value="{{ config.get('single_detection', {}).get('standout_gap_z', 0.75) }}">
+          <small class="form-text text-muted">Minimum z-normalised gap to the next track required for standout-driven 5★. Default: <strong>0.75</strong></small>
         </div>
       </div>
     </div>
@@ -910,7 +639,7 @@
       <div class="row g-3 mb-3">
         <div class="col-12">
           <label class="form-label"><strong>Strip Keywords</strong></label>
-          <div class="border rounded p-3" style="background-color: #f8f9fa;">
+          <div class="border rounded p-3" style="background-color: var(--bs-body-bg);"">
             <div id="stripKeywordsList" class="d-flex flex-wrap gap-2 mb-3">
               <!-- Keywords will be populated by JavaScript -->
             </div>
@@ -1317,48 +1046,17 @@ function buildConfigObject() {
         daily_musicbrainz_release_lookback_days: parseInt(getValue('daily_musicbrainz_release_lookback_days', '42')) || 42,
         daily_musicbrainz_release_lookahead_days: parseInt(getValue('daily_musicbrainz_release_lookahead_days', '28')) || 28,
         daily_musicbrainz_release_max_artists: parseInt(getValue('daily_musicbrainz_release_max_artists', '500')) || 500,
-        daily_musicbrainz_release_per_artist_limit: parseInt(getValue('daily_musicbrainz_release_per_artist_limit', '100')) || 100,
-        source_discogs_confidence: getValue('source_discogs_confidence', 'high'),
-        source_spotify_confidence: getValue('source_spotify_confidence', 'medium'),
-        source_musicbrainz_confidence: getValue('source_musicbrainz_confidence', 'medium'),
-        source_musicbrainz_compilation_confidence: getValue('source_musicbrainz_compilation_confidence', 'medium'),
-        source_discogs_video_confidence: getValue('source_discogs_video_confidence', 'medium'),
-        source_lastfm_confidence: getValue('source_lastfm_confidence', 'medium'),
-        source_radio_edit_confidence: getValue('source_radio_edit_confidence', 'medium')
+        daily_musicbrainz_release_per_artist_limit: parseInt(getValue('daily_musicbrainz_release_per_artist_limit', '100')) || 100
       }
     ),
     single_detection: {
-      zscore_medium_threshold: parseFloat(getValue('zscore_medium_threshold', '0.6')) || 0.6,
       zscore_high_threshold: parseFloat(getValue('zscore_high_threshold', '1.0')) || 1.0,
       standout_gap_z: parseFloat(getValue('standout_gap_z', '0.75')) || 0.75
     },
-    api_integrations: {
-      spotify: {
-        enabled: getChecked('spotify_enabled', false),
-        client_id: getValue('spotify_client_id', ''),
-        client_secret: getValue('spotify_client_secret', ''),
-        user_id: getValue('spotify_user_id', '')
-      },
-      lastfm: {
-        enabled: getChecked('lastfm_enabled', false),
-        api_key: getValue('lastfm_api_key', '')
-      },
-      listenbrainz: {
-        enabled: getChecked('listenbrainz_enabled', false),
-        token: getValue('listenbrainz_token', '')
-      },
-      discogs: {
-        enabled: getChecked('discogs_enabled', false),
-        token: getValue('discogs_token', '')
-      },
-      audiodb: {
-        enabled: getChecked('audiodb_enabled', false),
-        api_key: getValue('audiodb_api_key', '195003')
-      }
-    },
-    database: {
-      path: getValue('db_path', '')
-    },
+    // api_integrations and database are no longer managed via this UI:
+    // api_integrations is per-user (configured under each user account);
+    // database is PostgreSQL-only with no UI controls.
+    // Both sections are restored verbatim from disk by config_save_json.
     strip_parentheses_filters: Array.from(
       document.querySelectorAll('#stripKeywordsList .badge')
     ).map(badge => {
