@@ -77,6 +77,22 @@ else:
 NAV_BASE_URL = _nav.get("base_url")
 USERNAME = _nav.get("user")
 PASSWORD = _nav.get("pass")
+_MUSIC_FOLDER = _nav.get("music_folder", "/music")
+
+
+def _resolve_nav_path(path: str) -> str:
+    """Resolve a Navidrome track path to an absolute file-system path.
+
+    Navidrome's Subsonic API returns ``path`` values that are relative to the
+    configured music root (e.g. ``Artist/Album/01 - Title.flac``).  Store them
+    as absolute paths so that file-system operations in the rest of the
+    application (Essentia scan, writer-tag reading, …) work without needing to
+    know the music root themselves.
+    """
+    if not path or os.path.isabs(path):
+        return path
+    return os.path.join(_MUSIC_FOLDER, path)
+
 
 # --- log_unified fallback ---
 def log_unified(msg: str) -> None:
@@ -530,7 +546,7 @@ def set_track_rating_for_all(track_id, stars):
                 # Fallback: Try to read writer info from ID3 tags if Navidrome didn't provide it
                 writer_json = extracted.get("writer", "[]")
                 if not writer_json or writer_json == "[]":
-                    file_path = t.get("path", "")
+                    file_path = _resolve_nav_path(t.get("path", ""))
                     if file_path and os.path.exists(file_path):
                         try:
                             from mutagen.mp3 import MP3
@@ -618,7 +634,7 @@ def set_track_rating_for_all(track_id, stars):
                     "spotify_release_date": "",
                     "spotify_album_art_url": "",
                     "lastfm_track_playcount": 0,
-                    "file_path": t.get("path", ""),
+                    "file_path": _resolve_nav_path(t.get("path", "")),
                     "last_scanned": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
                     "spotify_album_type": "",
                     "spotify_total_tracks": 0,
