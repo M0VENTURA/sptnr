@@ -9,12 +9,20 @@ then attributes the original artist and updates track metadata accordingly.
 import logging
 import json
 import re
+import time
 from typing import Optional, Dict, List, Tuple
 from pathlib import Path
 
-from api_clients.musicbrainz import _VERSION as MUSICBRAINZ_VERSION
+from api_clients.musicbrainz import _escape_lucene_special_chars as _esc
 
 logger = logging.getLogger(__name__)
+
+# Optional rate limiter – mirrors the pattern used in api_clients/musicbrainz.py
+try:
+    from helpers.api_rate_limiter import get_rate_limiter as _get_rate_limiter
+    _rate_limiter = _get_rate_limiter()
+except Exception:
+    _rate_limiter = None
 
 
 class CoverDetector:
@@ -44,15 +52,46 @@ class CoverDetector:
         self.placeholder = "%s"
         self._band_members_cache = {}  # Cache to avoid repeated API calls
 
-    def _configure_musicbrainzngs(self):
-        """Ensure musicbrainzngs identifies itself with the app user agent."""
+    def _mb_api_get(self, path: str, params: dict) -> dict:
+        """Make a rate-limited GET request to the MusicBrainz JSON API.
+
+        Uses the shared ``self.mb_client`` session (which already has retry
+        logic for 429/503) so we respect the app-wide rate-limiter.
+
+        Args:
+            path: Path relative to ``https://musicbrainz.org/ws/2/`` (no
+                  leading slash), e.g. ``"recording/abc-123"`` or
+                  ``"recording"`` (for search/browse).
+            params: Query parameters dict.  ``fmt=json`` is added automatically.
+
+        Returns:
+            Parsed JSON dict, or empty dict on error.
+        """
+        if not self.mb_client:
+            return {}
+        params = dict(params)
+        params.setdefault("fmt", "json")
+        # Respect rate limiter if available
+        if _rate_limiter:
+            try:
+                _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
+                _rate_limiter.record_musicbrainz_request()
+            except Exception:
+                time.sleep(1.0)
+        else:
+            time.sleep(1.0)
         try:
-            import musicbrainzngs as mb
-            mb.set_useragent("sptnr", MUSICBRAINZ_VERSION, "https://github.com/M0VENTURA/sptnr")
-            return mb
+            url = f"{self.mb_client.base_url}{path}"
+            r = self.mb_client.session.get(url, params=params,
+                                            headers=self.mb_client.headers,
+                                            timeout=(5, 15))
+            if not r.ok:
+                logger.debug(f"[CoverDetector] MusicBrainz {r.status_code} for {url} params={params}")
+                return {}
+            return r.json() or {}
         except Exception as e:
-            logger.debug(f"Failed to configure musicbrainzngs user agent: {e}")
-            return None
+            logger.debug(f"[CoverDetector] API error for {path}: {e}")
+            return {}
     
     def detect_covers_for_album(self, album: str, artist: str, tracks: List[Dict]) -> List[Dict]:
         """
@@ -215,60 +254,50 @@ class CoverDetector:
                     normalized.append(name)
         return normalized
     def _fetch_writers_from_musicbrainz(self, mbid: str) -> List[str]:
-        """
-        Fetch writer/composer credits from MusicBrainz recording.
-        
+        """Fetch writer/composer credits for a recording from MusicBrainz.
+
+        Uses the direct JSON API via :meth:`_mb_api_get` instead of the
+        ``musicbrainzngs`` library so that it works without any extra
+        dependency.
+
+        Strategy:
+        1. Look up the recording with ``inc=work-rels`` to get linked works.
+        2. For each work, look it up with ``inc=artist-rels`` to get
+           composer/writer/lyricist relationships.
+
         Args:
-            mbid: MusicBrainz Recording ID
-            
+            mbid: MusicBrainz Recording ID.
+
         Returns:
-            List of writer names
+            List of writer names.
         """
         try:
-            mb = self._configure_musicbrainzngs()
-            if mb is None:
-                return []
-            
-            result = mb.get_recording_by_id(
-                mbid,
-                includes=['artist-rels', 'work-rels']
-            )
-            
-            writers = []
-            recording = result.get('recording', {})
-            
-            # Check work relationships for composer/lyricist
-            work_rels = recording.get('work-relation-list', [])
-            for rel in work_rels:
-                work = rel.get('work', {})
-                # Get artist relationships from the work
-                artist_rels = work.get('artist-relation-list', [])
-                for artist_rel in artist_rels:
-                    rel_type = artist_rel.get('type', '')
-                    if rel_type in ['composer', 'lyricist', 'writer']:
-                        artist_name = artist_rel.get('artist', {}).get('name')
-                        if artist_name and artist_name not in writers:
-                            writers.append(artist_name)
+            # Step 1: recording lookup → work relationships
+            rec_data = self._mb_api_get(f"recording/{mbid}", {"inc": "work-rels"})
+            recording = rec_data.get("recording") or {}
 
-                # Some recording lookups return only work IDs without embedded artist
-                # relations, so resolve work details explicitly as a fallback.
-                if not artist_rels:
-                    work_id = work.get('id')
-                    if work_id:
-                        try:
-                            work_details = mb.get_work_by_id(work_id, includes=['artist-rels'])
-                            work_data = work_details.get('work', {})
-                            for work_rel in work_data.get('artist-relation-list', []) or []:
-                                rel_type = str(work_rel.get('type', '')).lower()
-                                if rel_type in ['composer', 'lyricist', 'writer']:
-                                    artist_name = (work_rel.get('artist') or {}).get('name')
-                                    if artist_name and artist_name not in writers:
-                                        writers.append(artist_name)
-                        except Exception:
-                            pass
-            
+            writers: List[str] = []
+            for rel in recording.get("relations", []) or []:
+                if rel.get("target-type") != "work":
+                    continue
+                work_id = (rel.get("work") or {}).get("id")
+                if not work_id:
+                    continue
+
+                # Step 2: work lookup → artist relationships
+                work_data = self._mb_api_get(f"work/{work_id}", {"inc": "artist-rels"})
+                work = work_data.get("work") or {}
+                for work_rel in work.get("relations", []) or []:
+                    if work_rel.get("target-type") != "artist":
+                        continue
+                    rel_type = str(work_rel.get("type", "")).lower()
+                    if rel_type in ("composer", "writer", "lyricist"):
+                        name = (work_rel.get("artist") or {}).get("name")
+                        if name and name not in writers:
+                            writers.append(name)
+
             return writers
-            
+
         except Exception as e:
             logger.debug(f"Failed to fetch writers from MusicBrainz for {mbid}: {e}")
             return []
@@ -417,344 +446,155 @@ class CoverDetector:
         album_artist: Optional[str] = None,
         recording_mbid: Optional[str] = None
     ) -> Optional[Dict]:
-        """Find earliest likely original recording for a title/writers pair.
+        """Find the earliest likely original recording for a title/writers pair.
 
-        Tries each writer in sequence for the MusicBrainz works search so that
-        a single call covers all credited co-writers (e.g. all four members of
-        Black Sabbath for "War Pigs") without making redundant API round-trips.
+        Uses the MusicBrainz JSON API directly (no ``musicbrainzngs``
+        dependency) via :meth:`_mb_api_get`.
+
+        Approach
+        --------
+        1. If we have the scanned recording's MBID, look it up with
+           ``inc=work-rels`` to get the canonical work IDs it belongs to.
+        2. Otherwise search the *work* endpoint by title + each writer.
+        3. For each matched work, browse all recordings
+           (``GET /ws/2/recording?work=<id>&inc=artist-credits+releases``)
+           in one request — much cheaper than the old per-recording lookup.
+        4. Among the returned recordings, find the earliest one performed by
+           an artist other than the album artist.
         """
         try:
-            mb = self._configure_musicbrainzngs()
-            if mb is None:
-                return None
-
-            target_work_ids = set()
-            if recording_mbid:
-                try:
-                    target_result = mb.get_recording_by_id(recording_mbid, includes=['work-rels'])
-                    target_recording = target_result.get('recording', {})
-                    for rel in target_recording.get('work-relation-list', []) or []:
-                        work_id = (rel.get('work') or {}).get('id')
-                        if work_id:
-                            target_work_ids.add(work_id)
-                except Exception:
-                    pass
-
-            # First query works by title+writer. This mirrors the MusicBrainz web
-            # Works view and gives us canonical writer-linked work IDs.
-            # Try each writer in sequence; stop as soon as works are found so we
-            # avoid redundant API calls for co-written songs.
-            matched_work_ids = set()
-
             def _canonical_title(value: str) -> str:
-                # Remove common version suffixes like "(demo)", "[live]", "- remaster" so
-                # original recordings still match album track variants.
+                """Strip version suffixes then normalise."""
                 text = str(value or "").strip()
                 text = re.sub(r"\[[^\]]*\]", " ", text)
                 text = re.sub(r"\([^)]*\)", " ", text)
                 text = re.sub(r"\s+-\s+.*$", " ", text)
                 return self._normalize_name(text)
 
-            def _strip_suffixes_for_search(value: str) -> str:
-                # Strip version-suffix tokens (live, remaster, demo, etc.) from a title
-                # while keeping the original text intact for use as a MusicBrainz search
-                # query. Unlike _canonical_title this does NOT apply _normalize_name, so
-                # words like "the"/"and" and punctuation are preserved — omitting them
-                # from a search query degrades MB result quality.
-                # Note: patterns here use \s* to consume surrounding whitespace on removal,
-                # whereas _canonical_title replaces with " " to preserve word boundaries
-                # before normalization. Both are intentional.
-                text = str(value or "").strip()
-                text = re.sub(r"\s*\[[^\]]*\]", "", text)   # remove [live], [remaster], etc.
-                text = re.sub(r"\s*\([^)]*\)", "", text)     # remove (live), (Remaster), etc.
-                text = re.sub(r"\s+-\s+.*$", "", text)       # remove " - Remaster" etc.
-                return text.strip() or str(value or "").strip()
-
-            # Use the un-normalized (suffix-stripped) title for the MB search query.
-            # The fully normalized _canonical_title is reserved for comparisons only.
-            search_title = _strip_suffixes_for_search(title)
-            if not target_work_ids:
-                for writer in writers:
-                    if matched_work_ids:
-                        break  # Works already found via an earlier writer; no need to continue.
-                    try:
-                        work_result = mb.search_works(work=search_title, artist=writer, limit=25)
-                    except Exception:
-                        work_result = {}
-
-                    for work in work_result.get('work-list', []) or []:
-                        work_id = work.get('id')
-                        if not work_id:
-                            continue
-                        work_title = work.get('title', '')
-                        # Compare work title against the canonical (suffix-stripped) track title so
-                        # that "(live)" / "(demo)" / "- Remaster" variants still match the base work.
-                        if work_title and self._normalize_name(work_title) != _canonical_title(title):
-                            # Keep this strict to avoid attaching unrelated writer works.
-                            continue
-                        matched_work_ids.add(work_id)
-
-            recordings_by_id: Dict[str, Dict] = {}
-
-            # Use works-based recording expansion only — the correct MusicBrainz approach
-            # for cover detection is: find the work → get its recordings → identify the
-            # earliest recording by a different artist.  A raw search_recordings() call
-            # adds noise (unrelated covers, tribute versions) and can obscure the original.
-            work_ids_for_expansion = set(target_work_ids) | set(matched_work_ids)
-
-            for work_id in list(work_ids_for_expansion)[:10]:
-                try:
-                    work_details = mb.get_work_by_id(work_id, includes=['recording-rels'])
-                    work_data = work_details.get('work', {})
-                    for rel in work_data.get('recording-relation-list', []) or []:
-                        rec = rel.get('recording') or {}
-                        rec_id = rec.get('id')
-                        if rec_id and rec_id not in recordings_by_id:
-                            recordings_by_id[rec_id] = {
-                                'id': rec_id,
-                                'title': rec.get('title', ''),
-                            }
-                except Exception:
-                    continue
-
-            recordings = list(recordings_by_id.values())
-            if not recordings:
-                return None
-
             def _titles_match(left: str, right: str) -> bool:
-                left_raw = self._normalize_name(left)
-                right_raw = self._normalize_name(right)
-                left_can = _canonical_title(left)
-                right_can = _canonical_title(right)
-
-                if not left_raw or not right_raw:
+                l_can = _canonical_title(left)
+                r_can = _canonical_title(right)
+                if not l_can or not r_can:
                     return False
-
-                # Exact raw match first, then canonicalized match.
-                if left_raw == right_raw or (left_can and left_can == right_can):
+                if l_can == r_can:
                     return True
+                # Allow prefix match for minor suffix variants
+                return l_can.startswith(r_can) or r_can.startswith(l_can)
 
-                # Allow minor suffix/prefix variants once canonicalized.
-                if left_can and right_can:
-                    return left_can.startswith(right_can) or right_can.startswith(left_can)
-
-                return False
-
-            def _extract_credit_artist_name(artist_credit: List[Dict]) -> str:
-                # MusicBrainz may return a mixed list of dict/joinphrase tokens.
+            def _extract_credit_artist(artist_credit: List) -> str:
                 for entry in artist_credit or []:
                     if isinstance(entry, dict):
-                        artist_name = (entry.get('artist') or {}).get('name')
-                        if artist_name:
-                            return artist_name
+                        name = (entry.get("artist") or {}).get("name") or entry.get("name")
+                        if name:
+                            return name
                 return ""
 
-            title_norm = self._normalize_name(title)
-            earliest = None
-            earliest_year = 9999
-            earliest_unknown_year = None
-            fallback_earliest = None
-            fallback_earliest_year = 9999
-            fallback_unknown_year = None
+            def _strip_suffixes_for_search(value: str) -> str:
+                """Remove version suffixes for the MB search query."""
+                text = str(value or "").strip()
+                text = re.sub(r"\s*\[[^\]]*\]", "", text)
+                text = re.sub(r"\s*\([^)]*\)", "", text)
+                text = re.sub(r"\s+-\s+.*$", "", text)
+                return text.strip() or str(value or "").strip()
 
-            def _looks_non_original_release(release_title: str) -> bool:
-                text = self._normalize_name(release_title or "")
-                if not text:
-                    return False
-                blocked_markers = (
-                    'live', 'karaoke', 'tribute', 'remix', 'instrumental',
-                    'greatest hits', 'best of', 'compilation'
-                )
-                return any(marker in text for marker in blocked_markers)
+            # ── Step 1: work IDs from scanned recording MBID ─────────────────
+            target_work_ids: set = set()
+            if recording_mbid:
+                rec_data = self._mb_api_get(f"recording/{recording_mbid}", {"inc": "work-rels"})
+                for rel in (rec_data.get("recording") or {}).get("relations", []) or []:
+                    if rel.get("target-type") == "work":
+                        wid = (rel.get("work") or {}).get("id")
+                        if wid:
+                            target_work_ids.add(wid)
 
-            def _extract_year(full_recording: Dict, release: Optional[Dict] = None) -> Optional[int]:
-                """Extract a usable year from release dates or first-release-date."""
-                candidate_dates = []
-                if release:
-                    candidate_dates.append(str(release.get('date', '') or ''))
-                candidate_dates.append(str(full_recording.get('first-release-date', '') or ''))
-                for candidate in candidate_dates:
-                    if len(candidate) >= 4 and candidate[:4].isdigit():
-                        try:
-                            return int(candidate[:4])
-                        except (ValueError, TypeError):
-                            continue
+            # ── Step 2: work search by title + writer ─────────────────────────
+            matched_work_ids: set = set()
+            if not target_work_ids:
+                search_title = _strip_suffixes_for_search(title)
+                for writer in writers:
+                    if matched_work_ids:
+                        break
+                    esc_title = _esc(search_title)
+                    esc_writer = _esc(writer)
+                    work_data = self._mb_api_get(
+                        "work",
+                        {"query": f'work:"{esc_title}" AND artist:"{esc_writer}"',
+                         "limit": 10},
+                    )
+                    for work in work_data.get("works", []) or []:
+                        wid = work.get("id")
+                        work_title = work.get("title", "")
+                        # Both sides use _canonical_title so version suffixes
+                        # on the work title (e.g. "Heroes (Single Edit)") still
+                        # match the plain track title.
+                        if wid and _canonical_title(work_title) == _canonical_title(title):
+                            matched_work_ids.add(wid)
+
+            work_ids = target_work_ids | matched_work_ids
+            if not work_ids:
                 return None
 
-            for recording in recordings:
-                recording_id = recording.get('id')
-                if not recording_id:
-                    continue
+            # ── Step 3: browse recordings for each work ───────────────────────
+            # Single browse request per work returns all recordings with
+            # artist-credits and release dates — no per-recording lookup needed.
+            earliest: Optional[Dict] = None
+            earliest_year = 9999
+            earliest_unknown: Optional[Dict] = None
 
-                try:
-                    details = mb.get_recording_by_id(
-                        recording_id,
-                        includes=['artist-credits', 'releases', 'work-rels', 'artist-rels']
-                    )
-                except Exception:
-                    continue
-
-                full_recording = details.get('recording', {})
-                recording_title = full_recording.get('title') or recording.get('title') or ''
-
-                writer_names = []
-
-                for rel in full_recording.get('artist-relation-list', []) or []:
-                    rel_type = str(rel.get('type', '')).lower()
-                    if rel_type in ('composer', 'writer', 'lyricist'):
-                        artist_name = (rel.get('artist') or {}).get('name')
-                        if artist_name:
-                            writer_names.append(artist_name)
-
-                recording_work_ids = set()
-
-                # Resolve work-level writers via explicit work lookup.
-                for rel in full_recording.get('work-relation-list', []) or []:
-                    work_id = (rel.get('work') or {}).get('id')
-                    if not work_id:
-                        continue
-                    recording_work_ids.add(work_id)
-                    try:
-                        work_details = mb.get_work_by_id(work_id, includes=['artist-rels'])
-                        work_data = work_details.get('work', {})
-                        for work_rel in work_data.get('artist-relation-list', []) or []:
-                            rel_type = str(work_rel.get('type', '')).lower()
-                            if rel_type in ('composer', 'writer', 'lyricist'):
-                                artist_name = (work_rel.get('artist') or {}).get('name')
-                                if artist_name:
-                                    writer_names.append(artist_name)
-                    except Exception:
-                        pass
-
-                writer_names = self._normalize_writer_credits(writer_names)
-                writer_match = any(
-                    self._names_match(w, candidate)
-                    for w in writers
-                    for candidate in writer_names
+            for work_id in list(work_ids)[:5]:
+                browse_data = self._mb_api_get(
+                    "recording",
+                    {"work": work_id,
+                     "inc": "artist-credits+releases",
+                     "limit": 100},
                 )
-
-                # Highest-confidence path: same underlying work as the scanned track MBID.
-                same_work_match = bool(target_work_ids and (recording_work_ids & target_work_ids))
-                matched_work_match = bool(matched_work_ids and (recording_work_ids & matched_work_ids))
-
-                # For common titles, require either title affinity or work linkage.
-                title_matches = (not title_norm) or _titles_match(title, recording_title)
-                if not title_matches and not same_work_match and not matched_work_match:
-                    continue
-
-                # If the scanned track has known work IDs, prefer same-work recordings,
-                # but do NOT hard-skip recordings with both title and writer matches.
-                # (Cake's cover of "I Will Survive" may link to a different work node
-                #  than Gloria Gaynor's original, but title+writer still confirm it.)
-                if target_work_ids and not same_work_match:
-                    if not (title_matches and writer_match):
+                for rec in browse_data.get("recordings", []) or []:
+                    rec_title = rec.get("title", "")
+                    if not _titles_match(title, rec_title):
                         continue
 
-                # If we have writer-matched work IDs, reject recordings linked to different works.
-                if matched_work_ids and not matched_work_match and not writer_match:
-                    continue
+                    artist_credit = rec.get("artist-credit", []) or []
+                    rec_artist = _extract_credit_artist(artist_credit)
+                    if not rec_artist:
+                        continue
 
-                # Strong signal: recording links to a work returned by title+writer search.
-                if not writer_match and matched_work_match:
-                    writer_match = True
+                    # Skip if this is the album artist performing the song
+                    if album_artist and self._names_match(rec_artist, album_artist):
+                        continue
 
-                artist_credit = full_recording.get('artist-credit', []) or recording.get('artist-credit', [])
-                if not artist_credit:
-                    continue
-                recording_artist = _extract_credit_artist_name(artist_credit)
-                if not recording_artist:
-                    continue
+                    # Find earliest year across all releases for this recording
+                    year: Optional[int] = None
+                    for rel in rec.get("releases", []) or []:
+                        date_str = str(rel.get("date", "") or "")
+                        if len(date_str) >= 4 and date_str[:4].isdigit():
+                            y = int(date_str[:4])
+                            if year is None or y < year:
+                                year = y
+                    # Fall back to first-release-date on the recording itself
+                    if year is None:
+                        frd = str(rec.get("first-release-date", "") or "")
+                        if len(frd) >= 4 and frd[:4].isdigit():
+                            year = int(frd[:4])
 
-                artist_is_different = True
-                if album_artist:
-                    artist_is_different = not self._names_match(recording_artist, album_artist)
-
-                if not writer_match and not artist_is_different and not same_work_match:
-                    continue
-
-                releases = full_recording.get('release-list', []) or recording.get('release-list', [])
-                if not releases:
-                    release_year = _extract_year(full_recording)
-                    if writer_match:
-                        if release_year is not None:
-                            if release_year < earliest_year:
-                                earliest_year = release_year
-                                earliest = {
-                                    'artist': recording_artist,
-                                    'year': release_year,
-                                    'confidence': 'high' if writer_names else 'medium'
-                                }
-                        elif earliest_unknown_year is None:
-                            earliest_unknown_year = {
-                                'artist': recording_artist,
-                                'year': None,
-                                'confidence': 'medium'
-                            }
-                    elif artist_is_different:
-                        if release_year is not None:
-                            if release_year < fallback_earliest_year:
-                                fallback_earliest_year = release_year
-                                fallback_earliest = {
-                                    'artist': recording_artist,
-                                    'year': release_year,
-                                    'confidence': 'low'
-                                }
-                        elif fallback_unknown_year is None:
-                            fallback_unknown_year = {
-                                'artist': recording_artist,
-                                'year': None,
-                                'confidence': 'low'
-                            }
-                    continue
-
-                for release in releases:
-                    year = _extract_year(full_recording, release)
-                    release_title = str(release.get('title', '') or '')
-                    is_official = str(release.get('status', '') or '').lower() == 'official'
-                    is_likely_non_original = _looks_non_original_release(release_title)
-
-                    if same_work_match or writer_match:
-                        # Prefer official and non-compilation/live releases for original attribution.
-                        confidence = 'high' if (same_work_match or writer_names) else 'medium'
-                        if is_likely_non_original:
-                            confidence = 'medium' if confidence == 'high' else confidence
-
-                        if year is not None and year < earliest_year:
+                    if year is not None:
+                        if year < earliest_year:
                             earliest_year = year
                             earliest = {
-                                'artist': recording_artist,
-                                'year': year,
-                                'confidence': confidence,
-                                'official': is_official,
+                                "artist": rec_artist,
+                                "year": year,
+                                "confidence": "high" if target_work_ids else "medium",
                             }
-                        elif year is None and earliest_unknown_year is None:
-                            earliest_unknown_year = {
-                                'artist': recording_artist,
-                                'year': None,
-                                'confidence': 'medium',
-                                'official': is_official,
-                            }
-                    elif artist_is_different:
-                        if year is not None and year < fallback_earliest_year:
-                            fallback_earliest_year = year
-                            fallback_earliest = {
-                                'artist': recording_artist,
-                                'year': year,
-                                'confidence': 'low',
-                                'official': is_official,
-                            }
-                        elif year is None and fallback_unknown_year is None:
-                            fallback_unknown_year = {
-                                'artist': recording_artist,
-                                'year': None,
-                                'confidence': 'low',
-                                'official': is_official,
-                            }
+                    elif earliest_unknown is None:
+                        earliest_unknown = {
+                            "artist": rec_artist,
+                            "year": None,
+                            "confidence": "medium",
+                        }
 
-            return earliest or earliest_unknown_year or fallback_earliest or fallback_unknown_year
+            return earliest or earliest_unknown
 
         except Exception as e:
-            logger.debug(f"Failed to find original recording for '{title}' by writer(s) {writers}: {e}")
+            logger.debug(f"Failed to find original recording for '{title}' by {writers}: {e}")
             return None
 
     def update_cover_metadata(self, track_id: str, title: str, original_artist: str,
@@ -783,7 +623,12 @@ class CoverDetector:
                 )
                 result = cursor.fetchone()
                 if result:
-                    current_genres = result['genres'] or ""
+                    # Support both dict-style (psycopg2 RealDictCursor) and
+                    # index-style (sqlite3.Row) cursor results.
+                    if hasattr(result, 'keys'):
+                        current_genres = result['genres'] or ""
+                    else:
+                        current_genres = result[0] or ""
                     genres_list = [g.strip() for g in current_genres.split(",")] if current_genres else []
                     if "Cover" not in genres_list:
                         genres_list.append("Cover")

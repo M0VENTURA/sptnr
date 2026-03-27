@@ -43,6 +43,9 @@
             <span class="badge bg-info" id="duplicate-artists-badge" style="display: none;">0 duplicate artists</span>
             <span class="badge bg-danger">{{ duplicate_count }} duplicate rows</span>
             <span class="badge bg-warning text-dark">{{ missing_count }} missing metadata</span>
+            {% if disc_inconsistent_count %}
+            <span class="badge bg-orange text-dark" style="background-color:#fd7e14!important;">{{ disc_inconsistent_count }} disc # inconsistency</span>
+            {% endif %}
             <span class="badge bg-secondary" id="missing-tracks-badge" style="display: none;">checking MB tracks…</span>
         </div>
     </div>
@@ -214,6 +217,56 @@
             </div>
         </div>
     </div>
+
+    <!-- Disc Number Inconsistency Section -->
+    {% if disc_inconsistent_albums %}
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5 class="mb-0">
+                <i class="bi bi-disc"></i> Disc Number Inconsistency
+                <small class="text-muted ms-2 fw-normal">Some tracks have a disc number set while others don't — this causes Navidrome to show multiple albums</small>
+            </h5>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover mb-0 artist-corrections-table">
+                    <thead>
+                        <tr>
+                            <th>Album</th>
+                            <th class="text-center">Total Tracks</th>
+                            <th class="text-center">Tracks <em>with</em> disc #</th>
+                            <th class="text-center">Tracks <em>without</em> disc #</th>
+                            <th class="text-center">Disc value</th>
+                            <th class="text-center">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in disc_inconsistent_albums %}
+                        <tr id="disc-row-{{ loop.index }}">
+                            <td>
+                                <a href="{{ url_for('album_detail', artist=artist_name, album=row.album) }}">{{ row.album }}</a>
+                            </td>
+                            <td class="text-center">{{ row.track_count }}</td>
+                            <td class="text-center">
+                                <span class="badge bg-warning text-dark">{{ row.tracks_with_disc }}</span>
+                            </td>
+                            <td class="text-center">{{ row.tracks_without_disc }}</td>
+                            <td class="text-center text-muted small">{{ row.disc_value or '—' }}</td>
+                            <td class="text-center">
+                                <button class="btn btn-sm btn-outline-warning"
+                                        onclick="clearDiscNumber('{{ artist_name | e }}', '{{ row.album | e }}', {{ loop.index }})"
+                                        title="Remove disc number from {{ row.tracks_with_disc }} track(s) so all tracks are consistent">
+                                    <i class="bi bi-x-circle"></i> Clear disc #
+                                </button>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    {% endif %}
 
     <!-- Track Title Mismatches Section (loaded async) -->
     {% if mb_albums %}
@@ -851,6 +904,34 @@ async function deleteDuplicateTrack(trackId, isRecommendedDelete) {
 
 function escapeHtml(str) {
     return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+async function clearDiscNumber(artist, album, rowIndex) {
+    if (!confirm(`Remove disc number from tracks in "${album}" that have it set?\n\nThis will clear the disc number tag in both the database and the audio files so all tracks are consistent, which prevents Navidrome showing this as multiple albums.`)) {
+        return;
+    }
+    const btn = document.querySelector(`#disc-row-${rowIndex} button`);
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span> Clearing…';
+    }
+    try {
+        const response = await fetch('/api/artist/corrections/clear-disc-number', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ artist, album })
+        });
+        const result = await response.json();
+        if (!response.ok || !result.success) throw new Error(result.error || 'Failed to clear disc number');
+        alert(`✓ Done — disc number cleared from ${result.cleared} track(s) in "${album}" (${result.files_updated} file(s) updated).`);
+        location.reload();
+    } catch (error) {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-x-circle"></i> Clear disc #';
+        }
+        alert(`Could not clear disc number for "${album}": ${error.message}`);
+    }
 }
 </script>
 {% endblock %}
