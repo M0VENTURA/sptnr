@@ -4110,14 +4110,14 @@ def popularity_scan(
                                     bio = excluded.bio,
                                     image_url = excluded.image_url
                             """, (artist, artist, artist_bio or "", artist_image or ""))
-                        conn.commit()
+                            conn.commit()
 
-                        if artist_bio:
-                            log_info(f"Saved artist bio for {artist} (MusicBrainz unavailable) ({len(artist_bio)} chars)")
-                        if artist_image:
-                            log_info(f"Saved artist image URL for {artist} (MusicBrainz unavailable): {artist_image[:60]}...")
-                    else:
-                        log_debug(f"No artist bio/image found for {artist} without MusicBrainz")
+                            if artist_bio:
+                                log_info(f"Saved artist bio for {artist} (MusicBrainz unavailable) ({len(artist_bio)} chars)")
+                            if artist_image:
+                                log_info(f"Saved artist image URL for {artist} (MusicBrainz unavailable): {artist_image[:60]}...")
+                        else:
+                            log_debug(f"No artist bio/image found for {artist} without MusicBrainz")
                 except Exception as e:
                     log_debug(f"MusicBrainz-unavailable artist metadata save failed for {artist}: {e}")
 
