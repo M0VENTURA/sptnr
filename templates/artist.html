@@ -2009,6 +2009,7 @@ function checkMissingReleases(artistName) {
   const categoryToSection = {
     album: 'albums',
     live_album: 'live-albums',
+    remix_album: 'remix-albums',
     ep: 'eps',
     single: 'singles',
     compilation: 'compilations'
@@ -2018,6 +2019,7 @@ function checkMissingReleases(artistName) {
     const categoryRaw = String(item.category || item.primary_type || 'album').toLowerCase();
     if (categoryRaw.includes('compilation')) return 'compilation';
     if (categoryRaw.includes('live')) return 'live_album';
+    if (categoryRaw.includes('remix')) return 'remix_album';
     if (categoryRaw.includes('ep')) return 'ep';
     if (categoryRaw.includes('single')) return 'single';
     return 'album';
@@ -2142,7 +2144,7 @@ function checkMissingReleases(artistName) {
         addedCount += 1;
       });
 
-      ['albums', 'eps', 'singles', 'compilations'].forEach(sectionKey => {
+      ['albums', 'live-albums', 'remix-albums', 'eps', 'singles', 'compilations'].forEach(sectionKey => {
         const tbody = document.querySelector(`#${sectionKey}-section .${sectionKey}-tbody`);
         if (tbody) sortTbodyByYear(tbody);
       });
