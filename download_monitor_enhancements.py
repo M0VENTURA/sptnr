@@ -360,12 +360,15 @@ def move_to_music_collection(queue_id):
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) if is_pg else conn.cursor()
         ph = _placeholder(conn)
         
-        # Get queue item
+        # Get queue item then release the connection immediately so it is not
+        # held open during slow external operations (file transfer, API calls).
         cursor.execute(f"SELECT * FROM download_queue WHERE id = {ph}", (queue_id,))
         queue_item = cursor.fetchone()
         if queue_item and not hasattr(queue_item, 'get'):
             queue_item = {col[0]: queue_item[idx] for idx, col in enumerate(cursor.description or [])}
-        
+        conn.close()
+        conn = None
+
         if not queue_item:
             return {'error': 'Queue item not found'}
         
@@ -438,26 +441,30 @@ def move_to_music_collection(queue_id):
             return None
 
         # Build destination path using album structure.
-        # Prefer release-level artist from MusicBrainz metadata (important for compilations).
+        # album_artist is pre-fetched at match time and stored in the DB.
+        # Only fall back to a live MusicBrainz lookup for legacy queue entries
+        # that pre-date the pre-fetch logic (i.e. album_artist is blank).
         album = queue_item.get('album') or 'Unknown Album'
         release_artist = None
-        release_mbid = queue_item.get('release_mbid') or queue_item.get('release_id')
-        if release_mbid:
-            try:
-                from folder_matching_enhancements import get_musicbrainz_release_metadata
+        stored_album_artist = (queue_item.get('album_artist') or '').strip()
+        if not stored_album_artist:
+            release_mbid = queue_item.get('release_mbid') or queue_item.get('release_id')
+            if release_mbid:
+                try:
+                    from folder_matching_enhancements import get_musicbrainz_release_metadata
 
-                release_meta = get_musicbrainz_release_metadata(release_mbid) or {}
-                release_artist = (release_meta.get('artist') or '').strip() or None
+                    release_meta = get_musicbrainz_release_metadata(release_mbid) or {}
+                    release_artist = (release_meta.get('artist') or '').strip() or None
 
-                if release_artist:
-                    queue_item['album_artist'] = release_artist
-                    logger.info(
-                        f"[MOVE] Queue {queue_id}: album artist from release metadata: {release_artist}"
+                    if release_artist:
+                        queue_item['album_artist'] = release_artist
+                        logger.info(
+                            f"[MOVE] Queue {queue_id}: album artist from release metadata (fallback): {release_artist}"
+                        )
+                except Exception as rel_err:
+                    logger.debug(
+                        f"[MOVE] Queue {queue_id}: could not load release artist for {release_mbid}: {rel_err}"
                     )
-            except Exception as rel_err:
-                logger.debug(
-                    f"[MOVE] Queue {queue_id}: could not load release artist for {release_mbid}: {rel_err}"
-                )
 
         album_artist = _normalize_album_artist_for_path(
             release_artist or queue_item.get('album_artist') or queue_item['artist']
@@ -492,17 +499,24 @@ def move_to_music_collection(queue_id):
         # Clear and rewrite tags
         update_music_tags(dest_path, queue_item)
         
-        # Mark as completed
-        cursor.execute(f"""
-            UPDATE download_queue
-            SET status = 'completed',
-                file_path = {ph},
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = {ph}
-        """, (dest_path, queue_id))
-        
-        conn.commit()
-        conn.close()
+        # Mark as completed — open a fresh connection now that all external
+        # work is done so the DB is held as briefly as possible.
+        write_conn = None
+        try:
+            write_conn = get_db()
+            write_cursor = write_conn.cursor()
+            write_ph = _placeholder(write_conn)
+            write_cursor.execute(f"""
+                UPDATE download_queue
+                SET status = 'completed',
+                    file_path = {write_ph},
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = {write_ph}
+            """, (dest_path, queue_id))
+            write_conn.commit()
+        finally:
+            if write_conn is not None:
+                write_conn.close()
         
         logger.info(f"Moved to music and tagged: {dest_path}")
         return {'success': True, 'path': dest_path}
