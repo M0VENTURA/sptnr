@@ -24725,6 +24725,106 @@ def api_queue_apply_mbid_match(queue_id):
         conn.close()
         conn = None
 
+        # Pre-fetch MusicBrainz release metadata in the background so that
+        # the move operation has everything it needs (album_artist, album,
+        # release_year, track artist, song title) stored locally and can
+        # proceed without any external API calls.
+        def _prefetch_mb_metadata_single(mbid, q_id, rec_mbid, track_num, disc_num):
+            try:
+                import re as _re
+                from folder_matching_enhancements import get_musicbrainz_release_metadata
+
+                release_meta = get_musicbrainz_release_metadata(mbid) or {}
+                if not release_meta:
+                    return
+
+                release_artist = (release_meta.get('artist') or '').strip() or None
+                release_title = (release_meta.get('release_title') or '').strip() or None
+                raw_year = release_meta.get('release_year')
+                year_val = None
+                if raw_year not in (None, ''):
+                    m = _re.search(r'(19|20)\d{2}', str(raw_year))
+                    if m:
+                        try:
+                            year_val = int(m.group(0))
+                        except Exception:
+                            pass
+
+                # Locate the specific track by recording MBID, then by position.
+                matched_track = None
+                tracks = release_meta.get('tracks') or []
+                if rec_mbid:
+                    matched_track = next(
+                        (t for t in tracks if (t.get('recording_mbid') or t.get('id')) == rec_mbid),
+                        None,
+                    )
+                if matched_track is None and track_num is not None:
+                    try:
+                        tn = int(track_num)
+                        dn = int(disc_num) if disc_num is not None else 1
+                        matched_track = next(
+                            (
+                                t for t in tracks
+                                if int(t.get('track_number') or 0) == tn
+                                and int(t.get('disc_number') or 1) == dn
+                            ),
+                            None,
+                        )
+                    except Exception:
+                        pass
+
+                track_artist = None
+                track_title = None
+                if matched_track:
+                    track_artist = (matched_track.get('artist') or '').strip() or None
+                    track_title = (
+                        matched_track.get('title') or matched_track.get('recording_title') or ''
+                    ).strip() or None
+
+                updates = {}
+                if release_artist:
+                    updates['album_artist'] = release_artist
+                if release_title:
+                    updates['album'] = release_title
+                if year_val is not None:
+                    updates['release_year'] = year_val
+                if track_artist:
+                    updates['artist'] = track_artist
+                if track_title:
+                    updates['title'] = track_title
+
+                if not updates:
+                    return
+
+                ph = '%s'
+                pconn = get_db()
+                try:
+                    pc = pconn.cursor()
+                    set_clause = ', '.join(f'{col} = {ph}' for col in updates)
+                    params = list(updates.values()) + [q_id]
+                    pc.execute(
+                        f'UPDATE download_queue SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE id = {ph}',
+                        params,
+                    )
+                    pconn.commit()
+                finally:
+                    pconn.close()
+
+                logging.info(
+                    f'[QUEUE_MATCH] Pre-fetched MB metadata for queue {q_id}: {sorted(updates.keys())}'
+                )
+            except Exception as prefetch_err:
+                logging.warning(
+                    f'[QUEUE_MATCH] Pre-fetch MB metadata failed for queue {q_id}: {prefetch_err}'
+                )
+
+        threading.Thread(
+            target=_prefetch_mb_metadata_single,
+            args=(new_mbid, queue_id, target_recording_mbid, target_track_number, target_disc_number),
+            daemon=True,
+            name=f'queue-match-prefetch-{queue_id}',
+        ).start()
+
         local_file_updated = False
         local_file_path = None
         local_file_warning = None
@@ -24884,6 +24984,119 @@ def api_queue_apply_mbid_match_batch():
         conn.commit()
         conn.close()
         conn = None
+
+        # Pre-fetch MusicBrainz release metadata in the background so that every
+        # matched queue item has album_artist, album, release_year, and (where the
+        # recording MBID is already known) track artist and title stored locally.
+        def _prefetch_mb_metadata_batch(mbid, q_ids, fallback_artist, fallback_album):
+            try:
+                import re as _re
+                from folder_matching_enhancements import get_musicbrainz_release_metadata
+
+                release_meta = get_musicbrainz_release_metadata(mbid) or {}
+                if not release_meta:
+                    return
+
+                release_artist = (release_meta.get('artist') or '').strip() or None
+                release_title = (release_meta.get('release_title') or '').strip() or None
+                raw_year = release_meta.get('release_year')
+                year_val = None
+                if raw_year not in (None, ''):
+                    m = _re.search(r'(19|20)\d{2}', str(raw_year))
+                    if m:
+                        try:
+                            year_val = int(m.group(0))
+                        except Exception:
+                            pass
+
+                tracks = release_meta.get('tracks') or []
+                tracks_by_rec_mbid = {
+                    (t.get('recording_mbid') or t.get('id')): t
+                    for t in tracks
+                    if (t.get('recording_mbid') or t.get('id'))
+                }
+
+                release_updates = {}
+                if release_artist:
+                    release_updates['album_artist'] = release_artist
+                if release_title:
+                    release_updates['album'] = release_title
+                if year_val is not None:
+                    release_updates['release_year'] = year_val
+
+                ph = '%s'
+                pconn = get_db()
+                try:
+                    pc = pconn.cursor()
+
+                    # Bulk-update release-level fields for all queue items.
+                    if release_updates:
+                        ids_ph = ', '.join([ph] * len(q_ids))
+                        set_clause = ', '.join(f'{col} = {ph}' for col in release_updates)
+                        params = list(release_updates.values()) + list(q_ids)
+                        pc.execute(
+                            f'UPDATE download_queue SET {set_clause}, updated_at = CURRENT_TIMESTAMP'
+                            f' WHERE id IN ({ids_ph})',
+                            params,
+                        )
+
+                    # Per-item track-level updates where recording_mbid is already known.
+                    if tracks_by_rec_mbid:
+                        ids_ph = ', '.join([ph] * len(q_ids))
+                        pc.execute(
+                            f'SELECT id, recording_mbid FROM download_queue WHERE id IN ({ids_ph})',
+                            list(q_ids),
+                        )
+                        rows = pc.fetchall()
+                        for row in rows:
+                            if hasattr(row, 'get'):
+                                item_id = row.get('id')
+                                rec_mbid = (row.get('recording_mbid') or '').strip()
+                            else:
+                                item_id = row[0]
+                                rec_mbid = (row[1] or '').strip()
+
+                            if not rec_mbid or rec_mbid not in tracks_by_rec_mbid:
+                                continue
+                            track = tracks_by_rec_mbid[rec_mbid]
+                            track_updates = {}
+                            ta = (track.get('artist') or '').strip()
+                            tt = (
+                                track.get('title') or track.get('recording_title') or ''
+                            ).strip()
+                            if ta:
+                                track_updates['artist'] = ta
+                            if tt:
+                                track_updates['title'] = tt
+                            if not track_updates:
+                                continue
+                            set_clause_t = ', '.join(f'{col} = {ph}' for col in track_updates)
+                            params_t = list(track_updates.values()) + [item_id]
+                            pc.execute(
+                                f'UPDATE download_queue SET {set_clause_t},'
+                                f' updated_at = CURRENT_TIMESTAMP WHERE id = {ph}',
+                                params_t,
+                            )
+
+                    pconn.commit()
+                finally:
+                    pconn.close()
+
+                logging.info(
+                    f'[QUEUE_MATCH_BATCH] Pre-fetched MB metadata for MBID {mbid}:'
+                    f' {len(q_ids)} item(s), release fields={sorted(release_updates.keys())}'
+                )
+            except Exception as prefetch_err:
+                logging.warning(
+                    f'[QUEUE_MATCH_BATCH] Pre-fetch MB metadata failed for MBID {mbid}: {prefetch_err}'
+                )
+
+        threading.Thread(
+            target=_prefetch_mb_metadata_batch,
+            args=(new_mbid, list(queue_ids), target_artist, target_album),
+            daemon=True,
+            name=f'queue-match-batch-prefetch-{new_mbid[:8]}',
+        ).start()
 
         if expand_tracks:
             # Optional expansion path retained for explicit callers only.
