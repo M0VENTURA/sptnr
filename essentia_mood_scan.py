@@ -512,13 +512,17 @@ def run_essentia_mood_scan(
             )
             if result.returncode != 0:
                 stderr_text = (result.stderr or "").strip()
+                stdout_text = (result.stdout or "").strip()
                 # MusicExtractorSVM prints an INFO-level message and exits with
                 # code 1 when no SVM classifier models are configured.  This is
                 # benign: MusicExtractor itself still ran and may have written
-                # tags to the file.  Treat it as a soft warning so we don't
-                # skip the file and lose any tags that were successfully written.
+                # tags to the file.  The message may appear on stdout or stderr
+                # depending on the Essentia version/configuration.  Treat it as
+                # a soft warning so we don't skip the file and lose any tags
+                # that were successfully written.
                 _no_models_phrase = "no classifier models were configured by default"
-                if result.returncode == 1 and _no_models_phrase in stderr_text.lower():
+                _combined_output = (stderr_text + "\n" + stdout_text).lower()
+                if result.returncode == 1 and _no_models_phrase in _combined_output:
                     logger.debug(
                         "Essentia: no SVM classifier models configured for %s "
                         "(exit code 1 ignored — continuing to read tags)",
@@ -529,7 +533,7 @@ def run_essentia_mood_scan(
                     logger.warning(
                         "Essentia script returned exit code %d for %s: %s",
                         result.returncode, file_path,
-                        stderr_text[:300],
+                        (stderr_text or stdout_text)[:300],
                     )
                     log_unified(
                         f"Essentia Scan - Error processing {os.path.basename(file_path)}"
