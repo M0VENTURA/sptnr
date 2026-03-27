@@ -524,10 +524,10 @@ class CoverDetector:
                     for work in work_data.get("works", []) or []:
                         wid = work.get("id")
                         work_title = work.get("title", "")
-                        # Both sides use _canonical_title so version suffixes
-                        # on the work title (e.g. "Heroes (Single Edit)") still
-                        # match the plain track title.
-                        if wid and _canonical_title(work_title) == _canonical_title(title):
+                        # Use _titles_match so version suffixes on the work
+                        # title (e.g. "Heroes (Single Edit)") still match the
+                        # plain track title.
+                        if wid and _titles_match(work_title, title):
                             matched_work_ids.add(wid)
 
             work_ids = target_work_ids | matched_work_ids
@@ -623,10 +623,10 @@ class CoverDetector:
                 )
                 result = cursor.fetchone()
                 if result:
-                    # Support both dict-style (psycopg2 RealDictCursor) and
-                    # index-style (sqlite3.Row) cursor results.
-                    if hasattr(result, 'keys'):
-                        current_genres = result['genres'] or ""
+                    # psycopg2 RealDictCursor returns a dict; sqlite3.Row
+                    # supports index access only.
+                    if isinstance(result, dict):
+                        current_genres = result.get("genres") or ""
                     else:
                         current_genres = result[0] or ""
                     genres_list = [g.strip() for g in current_genres.split(",")] if current_genres else []
