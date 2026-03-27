@@ -441,6 +441,18 @@ def run_essentia_mood_scan(
             _row_get(row, "album_artist", 4) or _row_get(row, "artist", 3) or "Unknown"
         ).strip()
 
+        # Resolve relative paths stored by the Navidrome importer.
+        # Navidrome's Subsonic API returns paths relative to the music root
+        # (e.g. "Artist/Album/01 - Title.flac").  os.path.isfile() requires an
+        # absolute path, so resolve against the configured music folder.
+        if file_path and not os.path.isabs(file_path):
+            _music_root = (
+                os.environ.get("MUSIC_FOLDER")
+                or os.environ.get("MUSIC_ROOT")
+                or "/music"
+            )
+            file_path = os.path.join(_music_root, file_path)
+
         if artist_key != current_artist:
             current_artist = artist_key
             processed_artists = min(processed_artists + 1, total_artists)

@@ -913,6 +913,7 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                 'copied_individually_at': "TEXT",
                 'cover_art_url': "TEXT",
                 'source_music_path': "TEXT",
+                'queue_folder': "TEXT",
             }
 
             for col, col_type in required_cols.items():
