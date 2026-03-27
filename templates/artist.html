@@ -1997,7 +1997,15 @@ function importMissingRelease(artistName, releaseId, releaseTitle) {
   });
 }
 
-function checkMissingReleases(artistName) {
+/**
+ * Check MusicBrainz for missing releases and inject them inline into the
+ * appropriate album sections.
+ *
+ * @param {string} artistName - Artist to check.
+ * @param {boolean} [silent=false] - When true, suppress success/error alert
+ *   popups (used for background auto-refresh on page load).
+ */
+function checkMissingReleases(artistName, silent = false) {
   const triggerBtn = window.event?.target?.closest('button');
   const originalBtnHtml = triggerBtn ? triggerBtn.innerHTML : null;
   if (triggerBtn) {
@@ -2156,12 +2164,16 @@ function checkMissingReleases(artistName) {
       });
 
       initializeMissingToggle();
-      alert(addedCount > 0
-        ? `✅ Added ${addedCount} missing release(s) inline from MusicBrainz`
-        : '✅ No new missing releases found.');
+      if (!silent) {
+        alert(addedCount > 0
+          ? `✅ Added ${addedCount} missing release(s) inline from MusicBrainz`
+          : '✅ No new missing releases found.');
+      }
     })
     .catch(err => {
-      alert('❌ Error checking missing releases: ' + err.message);
+      if (!silent) {
+        alert('❌ Error checking missing releases: ' + err.message);
+      }
     })
     .finally(() => {
       if (triggerBtn) {
@@ -4305,6 +4317,9 @@ async function loadArtistCoveredBy(artistName) {
       loadSimilarArtists(artistName);
       loadArtistFavouriteState(artistName);
       loadArtistCoveredBy(artistName);
+      // Auto-refresh missing releases in the background so the sections are
+      // always up-to-date without requiring a manual button click.
+      checkMissingReleases(artistName, true);
     }
   });
 

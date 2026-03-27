@@ -39,6 +39,12 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _BUNDLED_SCRIPT_PATH = "/opt/Essentia-to-Metadata/tag_music.py"
 _BUNDLED_MODELS_DIR = "/opt/essentia_models"
+# Phrase emitted by MusicExtractorSVM when no SVM classifier models are
+# configured.  Essentia exits with code 1 in this case even though
+# MusicExtractor itself ran successfully and may have written tags.
+# This constant centralises the detection string so it stays in sync if the
+# Essentia message wording ever changes.
+_ESSENTIA_NO_MODELS_PHRASE = "no classifier models were configured by default"
 
 
 # ---------------------------------------------------------------------------
@@ -511,28 +517,46 @@ def run_essentia_mood_scan(
                 env=_subprocess_env,
             )
             if result.returncode != 0:
-                logger.warning(
-                    "Essentia script returned exit code %d for %s: %s",
-                    result.returncode, file_path,
-                    (result.stderr or "").strip()[:300],
-                )
-                log_unified(
-                    f"Essentia Scan - Error processing {os.path.basename(file_path)}"
-                    f" (exit code {result.returncode})",
-                    level=logging.WARNING,
-                )
-                _write_progress(progress_file, {
-                    "is_running": True,
-                    "scan_type": "essentia_mood_scan",
-                    "status": "running",
-                    "processed_artists": processed_artists,
-                    "total_artists": total_artists,
-                    "scanned_tracks": scanned_tracks,
-                    "updated_tracks": updated_tracks,
-                    "synced_files": synced_files,
-                    "current_artist": current_artist,
-                })
-                continue
+                stderr_text = (result.stderr or "").strip()
+                stdout_text = (result.stdout or "").strip()
+                # MusicExtractorSVM prints an INFO-level message and exits with
+                # code 1 when no SVM classifier models are configured.  This is
+                # benign: MusicExtractor itself still ran and may have written
+                # tags to the file.  The message may appear on stdout or stderr
+                # depending on the Essentia version/configuration.  Treat it as
+                # a soft warning so we don't skip the file and lose any tags
+                # that were successfully written.
+                _combined_output = (stderr_text + "\n" + stdout_text).lower()
+                if result.returncode == 1 and _ESSENTIA_NO_MODELS_PHRASE in _combined_output:
+                    logger.debug(
+                        "Essentia: no SVM classifier models configured for %s "
+                        "(exit code 1 ignored — continuing to read tags)",
+                        file_path,
+                    )
+                    # Fall through so mood/genre tags are still read below.
+                else:
+                    logger.warning(
+                        "Essentia script returned exit code %d for %s: %s",
+                        result.returncode, file_path,
+                        (stderr_text or stdout_text)[:300],
+                    )
+                    log_unified(
+                        f"Essentia Scan - Error processing {os.path.basename(file_path)}"
+                        f" (exit code {result.returncode})",
+                        level=logging.WARNING,
+                    )
+                    _write_progress(progress_file, {
+                        "is_running": True,
+                        "scan_type": "essentia_mood_scan",
+                        "status": "running",
+                        "processed_artists": processed_artists,
+                        "total_artists": total_artists,
+                        "scanned_tracks": scanned_tracks,
+                        "updated_tracks": updated_tracks,
+                        "synced_files": synced_files,
+                        "current_artist": current_artist,
+                    })
+                    continue
         except subprocess.TimeoutExpired:
             logger.warning("Essentia script timed out for %s", file_path)
             log_unified(
