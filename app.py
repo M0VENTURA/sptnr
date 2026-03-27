@@ -13572,7 +13572,8 @@ def config_save_json():
             'weights': _as_dict(data.get('weights', {})),
             'single_detection': _as_dict(data.get('single_detection', {})),
             'strip_parentheses_filters': data.get('strip_parentheses_filters', []),
-            'upcoming_releases': _as_dict(data.get('upcoming_releases', {}))
+            'upcoming_releases': _as_dict(data.get('upcoming_releases', {})),
+            'essentia': _as_dict(data.get('essentia', {}))
         }
         # Always set main navidrome section to first user for compatibility
         if navidrome_users and len(navidrome_users) > 0:
@@ -13598,6 +13599,8 @@ def config_save_json():
                 config_dict['upcoming_releases'] = existing_config['upcoming_releases']
             if 'logging' not in data and 'logging' in existing_config:
                 config_dict['logging'] = existing_config['logging']
+            if 'essentia' not in data and 'essentia' in existing_config:
+                config_dict['essentia'] = existing_config['essentia']
 
             # api_integrations and database are no longer managed via this endpoint
             # (api_integrations is per-user; database is PostgreSQL-only with no UI).
