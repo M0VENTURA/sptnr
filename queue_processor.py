@@ -328,17 +328,29 @@ def _extract_tag_value(tags, keys):
     return ''
 
 
-def _is_musicbrainz_backed(queue_item):
-    """Return True when a queue item was explicitly tied to a MusicBrainz release
-    via the MusicBrainz search modal.
+_MBID_RE = re.compile(
+    r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+)
 
-    Requires ``release_source='musicbrainz'`` to be set — a field that is only
-    written by the MB modal search routes (``api_queue_apply_mbid_match``,
-    ``api_queue_add_batch`` with MB data, etc.).  Items that merely contain a
-    UUID-shaped ``release_id`` from a non-MB source are intentionally excluded
-    so that fuzzy-matched or auto-discovered items do not bypass manual approval.
+
+def _is_musicbrainz_backed(queue_item):
+    """Return True when a queue item is tied to a MusicBrainz release.
+
+    Accepts items where:
+    - ``release_source='musicbrainz'`` is explicitly set (added via the MB
+      search modal or API), OR
+    - ``release_mbid`` contains a valid MusicBrainz UUID — meaning the track
+      has been positively matched to a known MB release and should be
+      auto-moved without requiring manual approval.
+
+    Note: ``release_id`` from non-MB sources (Discogs, etc.) is *not*
+    sufficient on its own; only the dedicated ``release_mbid`` column is
+    trusted as an unambiguous MB identifier.
     """
-    return str(queue_item.get('release_source') or '').strip().lower() == 'musicbrainz'
+    if str(queue_item.get('release_source') or '').strip().lower() == 'musicbrainz':
+        return True
+    release_mbid = str(queue_item.get('release_mbid') or '').strip()
+    return bool(_MBID_RE.match(release_mbid))
 
 
 def _get_duration_match_tolerance(queue_item):
@@ -3032,6 +3044,12 @@ def check_completed_downloads():
                                         'year': item.get('year'),
                                         'track_number': item.get('track_number'),
                                         'disc_number': item.get('disc_number'),
+                                        'release_mbid': item.get('release_mbid') or (
+                                            item.get('release_id')
+                                            if _MBID_RE.match(str(item.get('release_id') or ''))
+                                            else None
+                                        ),
+                                        'recording_mbid': item.get('recording_mbid'),
                                     }
                                     update_file_metadata_with_albumart(
                                         file_path, stored_metadata, clear_existing_tags=should_clear_tags
