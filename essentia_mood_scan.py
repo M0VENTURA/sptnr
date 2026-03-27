@@ -39,6 +39,12 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _BUNDLED_SCRIPT_PATH = "/opt/Essentia-to-Metadata/tag_music.py"
 _BUNDLED_MODELS_DIR = "/opt/essentia_models"
+# Phrase emitted by MusicExtractorSVM when no SVM classifier models are
+# configured.  Essentia exits with code 1 in this case even though
+# MusicExtractor itself ran successfully and may have written tags.
+# This constant centralises the detection string so it stays in sync if the
+# Essentia message wording ever changes.
+_ESSENTIA_NO_MODELS_PHRASE = "no classifier models were configured by default"
 
 
 # ---------------------------------------------------------------------------
@@ -520,9 +526,8 @@ def run_essentia_mood_scan(
                 # depending on the Essentia version/configuration.  Treat it as
                 # a soft warning so we don't skip the file and lose any tags
                 # that were successfully written.
-                _no_models_phrase = "no classifier models were configured by default"
                 _combined_output = (stderr_text + "\n" + stdout_text).lower()
-                if result.returncode == 1 and _no_models_phrase in _combined_output:
+                if result.returncode == 1 and _ESSENTIA_NO_MODELS_PHRASE in _combined_output:
                     logger.debug(
                         "Essentia: no SVM classifier models configured for %s "
                         "(exit code 1 ignored — continuing to read tags)",
