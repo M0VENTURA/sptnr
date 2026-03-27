@@ -4432,6 +4432,10 @@ def popularity_scan(
                         category = "Album"
                         if "compilation" in secondary:
                             category = "Compilation"
+                        elif "live" in secondary:
+                            category = "Live Album"
+                        elif "remix" in secondary:
+                            category = "Remix"
                         elif primary_type == "ep":
                             category = "EP"
                         elif primary_type == "single" or "single" in secondary:
