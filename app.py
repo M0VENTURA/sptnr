@@ -6659,13 +6659,6 @@ def api_artist_missing_releases():
     except:
         pass
 
-    if not artist_mbid:
-        try:
-            from api_clients.musicbrainz import lookup_and_save_artist_mbid
-            artist_mbid = lookup_and_save_artist_mbid(artist, conn) or None
-        except Exception as e:
-            logging.debug(f"[MISSING_RELEASES] Could not resolve artist MBID for {artist}: {e}")
-    
     cursor.execute(f"""
         SELECT DISTINCT album
         FROM tracks
@@ -6673,9 +6666,23 @@ def api_artist_missing_releases():
     """, (artist,))
     existing_albums = [row['album'] for row in cursor.fetchall()]
 
+    # Only fetch from MusicBrainz when we have a stored MBID for this artist.
+    # A text-based name search is unreliable (strips special chars, matches wrong
+    # artists) so we refuse to fall back to it here.  MBIDs are populated by the
+    # popularity scan and the "Scan All Missing Releases" background job.
+    if not artist_mbid:
+        conn.close()
+        return jsonify({
+            "artist": artist,
+            "missing": [],
+            "total_musicbrainz": 0,
+            "existing_albums": existing_albums,
+            "info": "No MusicBrainz artist ID stored for this artist. Run a popularity scan first to resolve the MBID.",
+        })
+
     existing_norm = {_normalize_release_title(a) for a in existing_albums if a}
 
-    # Use artist MBID for accurate lookup when available
+    # Use artist MBID for accurate lookup
     mb_releases = _fetch_musicbrainz_releases(artist, artist_mbid=artist_mbid)
     missing = []
     seen_missing_keys = set()
@@ -12295,6 +12302,11 @@ def scan_essentia_mood():
     artist_filter = (request.form.get('artist') or request.args.get('artist') or '').strip()
     album_filter = (request.form.get('album') or request.args.get('album') or '').strip()
     track_id_filter = (request.form.get('track_id') or request.args.get('track_id') or '').strip()
+
+    # When scanning a specific artist, album, or track the user is explicitly
+    # targeting those items, so force a rescan even if they already have tags.
+    if artist_filter or album_filter or track_id_filter:
+        force_scan = True
 
     # Determine redirect target after launch
     if track_id_filter:

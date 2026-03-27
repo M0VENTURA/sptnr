@@ -4245,7 +4245,7 @@ async function _pollMoveToMusicTask(taskId, queueId, timeoutMs = 180000) {
   const pollIntervalMs = 1000;
 
   while (Date.now() - start < timeoutMs) {
-    const task = await fetchJsonOrThrow(`/api/queue/move-to-music/status/${taskId}?queue_id=${encodeURIComponent(queueId)}`);
+    const task = await fetchJsonOrThrow(`/api/queue/move-to-music/status/${taskId}?queue_id=${encodeURIComponent(queueId)}`, {}, 60000);
     if (task.status === 'completed' || task.status === 'failed') {
       return task;
     }
@@ -4320,7 +4320,7 @@ async function moveMatchedToMusic(queueId) {
   try {
     const startData = await fetchJsonOrThrow(`/api/queue/move-to-music/${queueId}?async=1`, {
       method: 'POST'
-    });
+    }, 90000); // 90s — allow time when server is under I/O load
 
     if (!startData.success || !startData.task_id) {
       alert('❌ Error: ' + (startData.error || 'Failed to start move task'));
@@ -4367,7 +4367,7 @@ async function moveAllInGroup(queueIds) {
     try {
       const startData = await fetchJsonOrThrow(`/api/queue/move-to-music/${queueId}?async=1`, {
         method: 'POST'
-      });
+      }, 90000); // 90s — allow time when server is under I/O load
 
       if (!startData.success || !startData.task_id) {
         failed++;
