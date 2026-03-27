@@ -10,6 +10,11 @@ import os
 import time
 from helpers.db_utils import get_db_connection, _is_postgres_connection, is_postgres_configured
 
+# Module-level flag: True once we have confirmed (or added) the source column so we
+# don't query information_schema on every call.  Reset to False if the process
+# reconnects to a fresh database.
+_scan_history_source_column_ensured = False
+
 
 def _get_db_path():
     """
@@ -169,14 +174,30 @@ def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: in
                 ON scan_history(artist, album)
             """)
 
-            # Self-heal: add source column if missing from older schema (e.g. from
-            # the original add_scan_history.sql migration that lacked this column).
-            try:
+            # Self-heal: add source column if missing from older schema.
+            # Use a module-level flag so information_schema is only queried once
+            # per process lifetime — avoids AccessExclusiveLock deadlocks when
+            # many workers call log_album_scan concurrently on PostgreSQL.
+            global _scan_history_source_column_ensured
+            if not _scan_history_source_column_ensured:
                 cursor.execute(
-                    "ALTER TABLE scan_history ADD COLUMN IF NOT EXISTS source TEXT DEFAULT ''"
+                    """
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = current_schema()
+                      AND table_name = 'scan_history'
+                      AND column_name = 'source'
+                    """
                 )
-            except Exception:
-                pass  # Column already exists
+                if cursor.fetchone():
+                    _scan_history_source_column_ensured = True
+                else:
+                    try:
+                        cursor.execute(
+                            "ALTER TABLE scan_history ADD COLUMN IF NOT EXISTS source TEXT DEFAULT ''"
+                        )
+                        _scan_history_source_column_ensured = True
+                    except Exception:
+                        pass  # Added concurrently by another worker
 
             # Insert scan record with explicit timestamp so legacy schemas lacking
             # scan_timestamp defaults still produce valid dashboard times.
@@ -279,13 +300,29 @@ def get_recent_album_scans(limit: int = 10):
             return []
 
         # Self-heal: add source column if missing from older schema.
-        try:
+        # Use the module-level flag so information_schema is only queried once
+        # per process (same logic as log_album_scan).
+        global _scan_history_source_column_ensured
+        if not _scan_history_source_column_ensured:
             cursor.execute(
-                "ALTER TABLE scan_history ADD COLUMN IF NOT EXISTS source TEXT DEFAULT ''"
+                """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = 'scan_history'
+                  AND column_name = 'source'
+                """
             )
-            conn.commit()
-        except Exception:
-            pass  # Column already exists
+            if cursor.fetchone():
+                _scan_history_source_column_ensured = True
+            else:
+                try:
+                    cursor.execute(
+                        "ALTER TABLE scan_history ADD COLUMN IF NOT EXISTS source TEXT DEFAULT ''"
+                    )
+                    conn.commit()
+                    _scan_history_source_column_ensured = True
+                except Exception:
+                    pass  # Added concurrently by another worker
 
         # PostgreSQL puts NULLs FIRST on DESC by default; old rows
         # inserted before the explicit-timestamp fix (a5abcbb Mar 16)

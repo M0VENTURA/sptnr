@@ -3908,13 +3908,27 @@ def popularity_scan(
                     else:
                         log_debug(f'No country information found for artist: {artist}')
 
-                    # Fetch and save artist bio/image from AudioDB during scan
-                    if HAVE_AUDIODB:
+                    # Fetch and save artist bio/image from AudioDB during scan.
+                    # Skip the network round-trip when both fields are already stored.
+                    _existing_artist_bio = ""
+                    _existing_artist_image = ""
+                    try:
+                        cursor.execute(
+                            f"SELECT bio, image_url FROM artists WHERE id = {placeholder}",
+                            (artist,)
+                        )
+                        _ea = cursor.fetchone()
+                        _existing_artist_bio = row_get(_ea, 'bio', '') if _ea else ''
+                        _existing_artist_image = row_get(_ea, 'image_url', '') if _ea else ''
+                    except Exception:
+                        pass
+
+                    if HAVE_AUDIODB and not (_existing_artist_bio and _existing_artist_image):
                         try:
                             log_debug(f'Fetching artist bio and image from AudioDB for: {artist}')
 
-                            # Fetch artist biography
-                            artist_bio = _run_with_timeout(
+                            # Fetch artist biography only when missing
+                            artist_bio = _existing_artist_bio or _run_with_timeout(
                                 get_artist_biography,
                                 8,  # 8 second timeout for bio lookup
                                 f"Artist bio lookup timed out after 8s",
@@ -3922,8 +3936,8 @@ def popularity_scan(
                                 enabled=True
                             )
 
-                            # Fetch artist image/fanart
-                            artist_image = _run_with_timeout(
+                            # Fetch artist image/fanart only when missing
+                            artist_image = _existing_artist_image or _run_with_timeout(
                                 get_artist_fanart,
                                 8,  # 8 second timeout for image lookup
                                 f"Artist image lookup timed out after 8s",
@@ -4025,60 +4039,77 @@ def popularity_scan(
             # Country lookup depends on MusicBrainz, but biography and image should not.
             if not HAVE_MUSICBRAINZ:
                 try:
-                    log_debug(f"MusicBrainz unavailable; fetching artist bio/image without country lookup for: {artist}")
+                    # Check what (if anything) is already stored so we don't re-fetch.
+                    _fb_bio = ""
+                    _fb_image = ""
+                    try:
+                        cursor.execute(
+                            f"SELECT bio, image_url FROM artists WHERE id = {placeholder}",
+                            (artist,)
+                        )
+                        _fb_ea = cursor.fetchone()
+                        _fb_bio = row_get(_fb_ea, 'bio', '') if _fb_ea else ''
+                        _fb_image = row_get(_fb_ea, 'image_url', '') if _fb_ea else ''
+                    except Exception:
+                        pass
 
-                    artist_bio = ""
-                    artist_image = ""
+                    if _fb_bio and _fb_image:
+                        log_debug(f"Artist bio and image already in DB for {artist} (MusicBrainz unavailable path), skipping fetch")
+                    else:
+                        log_debug(f"MusicBrainz unavailable; fetching artist bio/image without country lookup for: {artist}")
 
-                    if HAVE_AUDIODB:
-                        try:
-                            artist_bio = _run_with_timeout(
-                                get_artist_biography,
-                                8,
-                                f"Artist bio lookup timed out after 8s",
-                                artist,
-                                enabled=True
-                            ) or ""
+                        artist_bio = _fb_bio
+                        artist_image = _fb_image
 
-                            artist_image = _run_with_timeout(
-                                get_artist_fanart,
-                                8,
-                                f"Artist image lookup timed out after 8s",
-                                artist,
-                                enabled=True
-                            ) or ""
-                        except Exception as e:
-                            log_debug(f"AudioDB bio/image lookup failed for {artist} (MusicBrainz unavailable): {e}")
+                        if HAVE_AUDIODB and not (artist_bio and artist_image):
+                            try:
+                                artist_bio = artist_bio or _run_with_timeout(
+                                    get_artist_biography,
+                                    8,
+                                    f"Artist bio lookup timed out after 8s",
+                                    artist,
+                                    enabled=True
+                                ) or ""
 
-                    # If AudioDB has no metadata (or is unavailable), prefer Discogs bio by saved ID, then Last.fm.
-                    if not artist_bio and not artist_image:
-                        try:
-                            artist_bio = _get_discogs_bio_from_saved_artist_id() or ""
-                            if not artist_bio:
-                                lastfm_config = get_lastfm_config(config)
-                                if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
-                                    from api_clients.lastfm import LastFmClient
-                                    lastfm_client = LastFmClient(lastfm_config.get("api_key"))
-                                    artist_info = _run_with_timeout(
-                                        lastfm_client.get_artist_info,
-                                        8,
-                                        "Last.fm artist info lookup timed out after 8s",
-                                        artist
-                                    )
+                                artist_image = artist_image or _run_with_timeout(
+                                    get_artist_fanart,
+                                    8,
+                                    f"Artist image lookup timed out after 8s",
+                                    artist,
+                                    enabled=True
+                                ) or ""
+                            except Exception as e:
+                                log_debug(f"AudioDB bio/image lookup failed for {artist} (MusicBrainz unavailable): {e}")
 
-                                    artist_bio = artist_info.get("bio", "") or artist_info.get("bio_text", "") or ""
-                                    artist_image = artist_info.get("image", "") or ""
-                        except Exception as e:
-                            log_debug(f"Discogs/Last.fm bio/image fallback failed for {artist} (MusicBrainz unavailable): {e}")
+                        # If AudioDB has no metadata (or is unavailable), prefer Discogs bio by saved ID, then Last.fm.
+                        if not artist_bio and not artist_image:
+                            try:
+                                artist_bio = _get_discogs_bio_from_saved_artist_id() or ""
+                                if not artist_bio:
+                                    lastfm_config = get_lastfm_config(config)
+                                    if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
+                                        from api_clients.lastfm import LastFmClient
+                                        lastfm_client = LastFmClient(lastfm_config.get("api_key"))
+                                        artist_info = _run_with_timeout(
+                                            lastfm_client.get_artist_info,
+                                            8,
+                                            "Last.fm artist info lookup timed out after 8s",
+                                            artist
+                                        )
 
-                    if artist_bio or artist_image:
-                        cursor.execute(f"""
-                            INSERT INTO artists (id, name, bio, image_url)
-                            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder})
-                            ON CONFLICT(id) DO UPDATE SET
-                                bio = excluded.bio,
-                                image_url = excluded.image_url
-                        """, (artist, artist, artist_bio or "", artist_image or ""))
+                                        artist_bio = artist_info.get("bio", "") or artist_info.get("bio_text", "") or ""
+                                        artist_image = artist_info.get("image", "") or ""
+                            except Exception as e:
+                                log_debug(f"Discogs/Last.fm bio/image fallback failed for {artist} (MusicBrainz unavailable): {e}")
+
+                        if artist_bio or artist_image:
+                            cursor.execute(f"""
+                                INSERT INTO artists (id, name, bio, image_url)
+                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder})
+                                ON CONFLICT(id) DO UPDATE SET
+                                    bio = excluded.bio,
+                                    image_url = excluded.image_url
+                            """, (artist, artist, artist_bio or "", artist_image or ""))
                         conn.commit()
 
                         if artist_bio:
@@ -4891,9 +4922,22 @@ def popularity_scan(
                     # Reuse the already-loaded/validated token and avoid shadowing it.
                     album_art_discogs_token = discogs_token
 
-                    # Try to fetch and save album art using fallback chain
-                    # (MusicBrainz -> AudioDB -> Discogs)
-                    if fetch_and_save_album_art_with_fallback(artist, album, conn, cursor, album_art_discogs_token):
+                    # Only fetch artwork if it isn't already stored in the database.
+                    # This avoids a network round-trip and a write on every scan run.
+                    _has_existing_art = False
+                    try:
+                        _ensure_album_art_pg_schema(conn, cursor)
+                        cursor.execute(
+                            "SELECT 1 FROM album_art WHERE artist_name = %s AND album_name = %s",
+                            (artist, album)
+                        )
+                        _has_existing_art = cursor.fetchone() is not None
+                    except Exception:
+                        pass
+
+                    if _has_existing_art:
+                        log_debug(f'[ALBUM_ART] Album art already in DB for {artist} - {album}, skipping fetch')
+                    elif fetch_and_save_album_art_with_fallback(artist, album, conn, cursor, album_art_discogs_token):
                         log_info(f'[ALBUM_ART] Album art successfully downloaded and saved for {artist} - {album}')
                     else:
                         log_debug(f'[ALBUM_ART] Failed to obtain album art from any source for {artist} - {album}')
