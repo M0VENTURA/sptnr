@@ -493,12 +493,22 @@ def run_essentia_mood_scan(
         # Run Essentia on this file.
         # ------------------------------------------------------------------
         cmd = base_cmd + [file_path]
+        # Suppress TensorFlow CUDA GPU initialisation on CPU-only hosts.
+        # Without these, TF (used by the Essentia models) tries to dlopen
+        # libcudart.so.11.0, fails, and may exit with code 1 even though the
+        # actual inference is CPU-only.  Setting CUDA_VISIBLE_DEVICES to an
+        # empty string hides all GPUs from TF; TF_CPP_MIN_LOG_LEVEL=3
+        # suppresses the C++ "Could not load dynamic library" messages.
+        _subprocess_env = os.environ.copy()
+        _subprocess_env.setdefault("CUDA_VISIBLE_DEVICES", "")
+        _subprocess_env.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
         try:
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 timeout=per_file_timeout,
+                env=_subprocess_env,
             )
             if result.returncode != 0:
                 logger.warning(
