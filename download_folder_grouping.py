@@ -15,7 +15,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from api_clients import session as _shared_session
+from api_clients import session as _shared_session, timeout_safe_session as _mb_search_session
 from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
 from database_abstraction import is_postgres_connection
 
@@ -352,11 +352,17 @@ def match_folder_group_with_musicbrainz(folder_path, artist, album, mb_client=No
         
         logger.debug(f"MusicBrainz request: {base_url}release/ params={params}")
         
-        response = _shared_session.get(
+        # Use timeout_safe_session (defined in api_clients/__init__.py as
+        # retries=1, backoff=0.5) with short per-request timeouts so the total
+        # response time stays well within the 30 s client-side fetchJsonOrThrow
+        # budget:
+        #   best case : 1 s sleep + 12 s (4 connect + 8 read)         = ~13 s
+        #   worst case: 1 s sleep + 12 s + 1 s retry delay + 12 s     = ~26 s
+        response = _mb_search_session.get(
             f"{base_url}release/",
             params=params,
             headers=headers,
-            timeout=(5, 10)
+            timeout=(4, 8)
         )
         
         response.raise_for_status()

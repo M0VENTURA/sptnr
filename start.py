@@ -77,7 +77,13 @@ else:
 NAV_BASE_URL = _nav.get("base_url")
 USERNAME = _nav.get("user")
 PASSWORD = _nav.get("pass")
-_MUSIC_FOLDER = _nav.get("music_folder", "/music")
+# Resolve music folder: env vars take precedence over config file, matching the
+# same priority order used by scan_helpers.py and essentia_mood_scan.py.
+_MUSIC_FOLDER = (
+    os.environ.get("MUSIC_FOLDER")
+    or os.environ.get("MUSIC_ROOT")
+    or _nav.get("music_folder", "/music")
+)
 
 
 def _resolve_nav_path(path: str) -> str:
