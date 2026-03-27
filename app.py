@@ -6320,8 +6320,11 @@ def _derive_release_bucket(primary_type: str, category: str, title: str = "") ->
     primary = (primary_type or "").strip().lower()
     title_lower = (title or "").lower()
 
-    # Category is computed from MB primary+secondary types during scan and can correct stale primary_type rows.
-    if category_bucket in ("compilation", "live_album", "remix_album", "ep", "single", "album"):
+    # Specific non-album categories are authoritative when present.
+    # "album" is intentionally excluded so that title/primary-type heuristics
+    # can still promote a generically-stored "Album" entry (e.g. a live concert
+    # whose secondary type was missing at scan time) into the right bucket.
+    if category_bucket in ("compilation", "live_album", "remix_album", "ep", "single"):
         return category_bucket
 
     if "compilation" in primary:
@@ -6334,7 +6337,7 @@ def _derive_release_bucket(primary_type: str, category: str, title: str = "") ->
         return "ep"
     if primary == "single":
         return "single"
-    if primary == "album" or not primary:
+    if primary == "album" or not primary or category_bucket == "album":
         return "album"
     return "unknown"
 

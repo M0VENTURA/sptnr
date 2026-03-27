@@ -2022,6 +2022,12 @@ function checkMissingReleases(artistName) {
     if (categoryRaw.includes('remix')) return 'remix_album';
     if (categoryRaw.includes('ep')) return 'ep';
     if (categoryRaw.includes('single')) return 'single';
+    // Fallback: inspect the title for live/unplugged/remix keywords even when
+    // the stored category is the generic "album" value (e.g. secondary type
+    // missing from MusicBrainz at scan time).
+    const titleLower = String(item.title || '').toLowerCase();
+    if (titleLower.includes('live') || titleLower.includes('unplugged')) return 'live_album';
+    if (titleLower.includes('remix')) return 'remix_album';
     return 'album';
   };
 
@@ -2041,8 +2047,8 @@ function checkMissingReleases(artistName) {
     });
 
     rowPairs.sort((a, b) => {
-      const yearA = parseInt(a.row.getAttribute('data-year') || '9999', 10);
-      const yearB = parseInt(b.row.getAttribute('data-year') || '9999', 10);
+      const yearA = parseInt(a.row.getAttribute('data-year') || '0', 10);
+      const yearB = parseInt(b.row.getAttribute('data-year') || '0', 10);
       return yearB - yearA;
     });
 
@@ -2085,7 +2091,7 @@ function checkMissingReleases(artistName) {
 
         const row = document.createElement('tr');
         row.className = 'album-row';
-        row.setAttribute('data-year', year === '????' ? '9999' : year);
+        row.setAttribute('data-year', year === '????' ? '0' : year);
         row.setAttribute('data-status', 'missing');
         row.setAttribute('data-source', 'live-missing');
         row.setAttribute('data-album', item.title || '');

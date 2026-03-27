@@ -1,7 +1,7 @@
 {% macro render_album_row(album, artist_name, is_missing=False) %}
 {% set safe_artist = artist_name|regex_replace(' +', '_') %}
 {% set safe_album = (album.album or album.title)|regex_replace(' +', '_') %}
-<tr class="album-row" data-year="{{ album.get('album_year') or album.get('first_release_date', '')[:4] or 9999 }}" data-status="{% if album.get('is_downloading') %}downloading{% elif is_missing %}missing{% else %}discovered{% endif %}" data-album="{{ album.album or album.title }}" {% if not is_missing and album.get('musicbrainz_album_mbid') %}data-mb-mbid="{{ album.get('musicbrainz_album_mbid') }}" data-artist="{{ artist_name|e }}" data-album-name="{{ (album.album or album.title)|e }}"{% endif %}>
+<tr class="album-row" data-year="{{ album.get('album_year') or album.get('first_release_date', '')[:4] or 0 }}" data-status="{% if album.get('is_downloading') %}downloading{% elif is_missing %}missing{% else %}discovered{% endif %}" data-album="{{ album.album or album.title }}" {% if not is_missing and album.get('musicbrainz_album_mbid') %}data-mb-mbid="{{ album.get('musicbrainz_album_mbid') }}" data-artist="{{ artist_name|e }}" data-album-name="{{ (album.album or album.title)|e }}"{% endif %}>
   <!-- Album Art -->
   <td class="text-center" style="width: 100px; padding: 0.5rem;">
     {% if is_missing %}
