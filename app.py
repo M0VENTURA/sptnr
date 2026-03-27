@@ -1428,7 +1428,7 @@ scan_process_combined = None  # Combined scan process (Navidrome + Popularity + 
 scan_process_missing_releases = None  # Missing releases scan process
 scan_process_mp3_import = None  # MP3 metadata import scan process
 scan_lock = threading.Lock()
-_QUEUE_NORMALIZE_COOLDOWN_SECONDS = int(os.environ.get("QUEUE_NORMALIZE_COOLDOWN_SECONDS", "20"))
+_QUEUE_NORMALIZE_COOLDOWN_SECONDS = int(os.environ.get("QUEUE_NORMALIZE_COOLDOWN_SECONDS", "300"))
 _queue_normalize_last_run_ts = 0.0
 _queue_normalize_gate_lock = threading.Lock()
 # Maximum number of MusicBrainz release groups to fetch per search request.
@@ -20121,6 +20121,11 @@ def api_downloads_get_queue():
                     return artist_dir == expected_artist and (album_dir == expected_album or album_dir.endswith(f" - {expected_album}"))
 
                 normalized_count = 0
+                # Collect IDs that need correction, separated by target status to
+                # allow batch UPDATEs instead of a per-row N+1 pattern.
+                unmatched_ids = []        # rows becoming 'unmatched'
+                non_collection_ids = {}  # {original_status: [ids]} for rows keeping their status
+
                 for row in flagged_rows:
                     row_id = _row_get(row, 'id', 0)
                     row_status = _row_get(row, 'status', 1)
@@ -20137,30 +20142,43 @@ def api_downloads_get_queue():
                         continue
 
                     # Invalid in_collection rows should return to unmatched so users can rematch.
-                    normalized_path = file_path or music_file_path
-                    corrected_status = row_status
                     if row_status == 'in_collection':
-                        corrected_status = 'unmatched'
+                        unmatched_ids.append(row_id)
+                    else:
+                        non_collection_ids.setdefault(row_status, []).append(row_id)
 
+                # Batch UPDATE rows that become 'unmatched'
+                if unmatched_ids:
                     cursor.execute(
                         f"""
                         UPDATE download_queue
-                        SET status = {placeholder},
-                            file_path = COALESCE(file_path, {placeholder}),
+                        SET status = 'unmatched',
                             in_collection = 0,
                             collection_track_id = NULL,
                             collection_matched_at = NULL,
-                            failure_reason = CASE
-                                WHEN {placeholder} = 'unmatched'
-                                THEN 'Queue normalization: item marked in_collection but file is not in /music'
-                                ELSE failure_reason
-                            END,
+                            failure_reason = 'Queue normalization: item marked in_collection but file is not in /music',
                             updated_at = CURRENT_TIMESTAMP
-                        WHERE id = {placeholder}
+                        WHERE id = ANY({placeholder})
                         """,
-                        (corrected_status, normalized_path, corrected_status, row_id),
+                        (unmatched_ids,),
                     )
-                    normalized_count += 1
+                    normalized_count += cursor.rowcount or 0
+
+                # Batch UPDATE rows that keep their original status (just clear in_collection flag)
+                for orig_status, ids in non_collection_ids.items():
+                    if ids:
+                        cursor.execute(
+                            f"""
+                            UPDATE download_queue
+                            SET in_collection = 0,
+                                collection_track_id = NULL,
+                                collection_matched_at = NULL,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ANY({placeholder})
+                            """,
+                            (ids,),
+                        )
+                        normalized_count += cursor.rowcount or 0
 
                 # Safety net: downgrade invalid completed rows missing file_path so the
                 # UI no longer shows them as move-ready when no source file is known.
@@ -20227,6 +20245,9 @@ def api_downloads_get_queue():
                         """
                     )
                     matched_with_path = cursor.fetchall() or []
+                    # Collect IDs of rows whose matched file no longer exists on disk,
+                    # then batch-UPDATE them instead of issuing one UPDATE per row.
+                    stale_matched_ids = []
                     for mrow in matched_with_path:
                         mrow_id = _row_get(mrow, 'id', 0)
                         mrow_file_path = _row_get(mrow, 'file_path', 1) or ''
@@ -20243,25 +20264,29 @@ def api_downloads_get_queue():
                             if _existing_match_path(path_value)
                         ]
                         if not existing_match_paths:
-                            cursor.execute(
-                                f"""
-                                UPDATE download_queue
-                                SET status = 'unmatched',
-                                    file_path = NULL,
-                                    matched_file_path = NULL,
-                                    music_file_path = NULL,
-                                    found_filename = NULL,
-                                    failure_reason = 'Auto-corrected: matched file no longer exists on disk',
-                                    updated_at = CURRENT_TIMESTAMP
-                                WHERE id = {placeholder}
-                                """,
-                                (mrow_id,),
-                            )
-                            normalized_count += 1
-                            logging.info(
-                                f"[QUEUE_NORMALIZE] Reset matched item {mrow_id} to unmatched "
-                                f"— no valid matched file remains on disk"
-                            )
+                            stale_matched_ids.append(mrow_id)
+
+                    if stale_matched_ids:
+                        cursor.execute(
+                            f"""
+                            UPDATE download_queue
+                            SET status = 'unmatched',
+                                file_path = NULL,
+                                matched_file_path = NULL,
+                                music_file_path = NULL,
+                                found_filename = NULL,
+                                failure_reason = 'Auto-corrected: matched file no longer exists on disk',
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ANY({placeholder})
+                            """,
+                            (stale_matched_ids,),
+                        )
+                        batch_count = cursor.rowcount or 0
+                        normalized_count += batch_count
+                        logging.info(
+                            f"[QUEUE_NORMALIZE] Reset {batch_count} matched item(s) to unmatched "
+                            f"— no valid matched file remains on disk"
+                        )
                 except Exception as matched_norm_err:
                     logging.debug(f"[QUEUE_NORMALIZE] Skipped matched-file normalization: {matched_norm_err}")
 
@@ -20270,38 +20295,40 @@ def api_downloads_get_queue():
                 # file path had ever been linked. Those rows should stay operationally
                 # queued (or unmatched for local-file workflows), not look like a
                 # confirmed file match.
+                # Uses two batch UPDATEs (local vs non-local source) instead of a
+                # per-row N+1 loop to reduce WAL write pressure.
                 try:
                     cursor.execute(
-                        """
-                        SELECT id, source
-                        FROM download_queue
+                        f"""
+                        UPDATE download_queue
+                        SET status = 'unmatched',
+                            failure_reason = 'Auto-corrected: release match had no linked file path',
+                            updated_at = CURRENT_TIMESTAMP
                         WHERE status = 'matched'
                           AND TRIM(COALESCE(file_path, '')) = ''
                           AND TRIM(COALESCE(matched_file_path, '')) = ''
                           AND TRIM(COALESCE(music_file_path, '')) = ''
                           AND TRIM(COALESCE(found_filename, '')) = ''
+                          AND LOWER(COALESCE(source, '')) = 'local'
                         """
                     )
-                    metadata_only_matches = cursor.fetchall() or []
-                    for mrow in metadata_only_matches:
-                        mrow_id = _row_get(mrow, 'id', 0)
-                        mrow_source = (_row_get(mrow, 'source', 1) or '').strip().lower()
-                        restored_status = 'unmatched' if mrow_source == 'local' else 'queued'
-                        cursor.execute(
-                            f"""
-                            UPDATE download_queue
-                            SET status = {placeholder},
-                                failure_reason = 'Auto-corrected: release match had no linked file path',
-                                updated_at = CURRENT_TIMESTAMP
-                            WHERE id = {placeholder}
-                            """,
-                            (restored_status, mrow_id),
-                        )
-                        normalized_count += 1
-                        logging.info(
-                            f"[QUEUE_NORMALIZE] Reset metadata-only matched item {mrow_id} "
-                            f"to {restored_status} — release matched but no file path was linked"
-                        )
+                    normalized_count += cursor.rowcount or 0
+
+                    cursor.execute(
+                        f"""
+                        UPDATE download_queue
+                        SET status = 'queued',
+                            failure_reason = 'Auto-corrected: release match had no linked file path',
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE status = 'matched'
+                          AND TRIM(COALESCE(file_path, '')) = ''
+                          AND TRIM(COALESCE(matched_file_path, '')) = ''
+                          AND TRIM(COALESCE(music_file_path, '')) = ''
+                          AND TRIM(COALESCE(found_filename, '')) = ''
+                          AND LOWER(COALESCE(source, '')) != 'local'
+                        """
+                    )
+                    normalized_count += cursor.rowcount or 0
                 except Exception as metadata_only_match_err:
                     logging.debug(
                         f"[QUEUE_NORMALIZE] Skipped metadata-only matched normalization: {metadata_only_match_err}"

@@ -137,7 +137,7 @@ _downloads_check_cache = {
     'timestamp': 0.0,
     'result': []
 }
-_DOWNLOADS_CHECK_MIN_INTERVAL_SECONDS = 20
+_DOWNLOADS_CHECK_MIN_INTERVAL_SECONDS = 60
 
 # Minimum title similarity required when one title is a leading substring of
 # another (e.g. "World So Cold" vs "World So Cold Intro").  The general
@@ -1059,6 +1059,30 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                     logger.info("Active queue dedupe index already exists (concurrent startup race avoided)")
                 else:
                     logger.warning(f"Could not create active queue dedupe index: {e}")
+
+            # Add supporting indexes for common status-based queries used by the
+            # download queue page.  These dramatically reduce sequential scans on
+            # large download_queue tables, lowering checkpoint write pressure.
+            for idx_name, idx_ddl in (
+                (
+                    "idx_download_queue_status",
+                    "CREATE INDEX IF NOT EXISTS idx_download_queue_status ON download_queue (status)",
+                ),
+                (
+                    "idx_download_queue_status_created",
+                    "CREATE INDEX IF NOT EXISTS idx_download_queue_status_created ON download_queue (status, created_at DESC)",
+                ),
+            ):
+                try:
+                    cursor.execute(idx_ddl)
+                    conn.commit()
+                except Exception as idx_err:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    logger.warning(f"Could not create download_queue index {idx_name}: {idx_err}")
+
         except Exception as e:
             logger.warning(f"Schema check failed: {e}")
             try:

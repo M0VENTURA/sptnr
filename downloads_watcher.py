@@ -288,6 +288,10 @@ def get_download_queue(status=None, limit=50, offset=0):
         limit = max(int(limit), 0)
         offset = max(int(offset), 0)
 
+        # Compute status counts (and total_count) efficiently.
+        # When filtering by a specific status a simple COUNT(*) is cleaner than
+        # a redundant GROUP BY.  When listing all statuses the GROUP BY is used
+        # so total_count can be derived without an extra query.
         if status:
             cursor.execute("""
                 SELECT COUNT(*) AS total
@@ -295,32 +299,20 @@ def get_download_queue(status=None, limit=50, offset=0):
                 WHERE status = %s
             """, (status,))
             total_count = int((cursor.fetchone() or {}).get('total', 0))
-
-            cursor.execute("""
-                SELECT status, COUNT(*) AS count
-                FROM download_queue
-                WHERE status = %s
-                GROUP BY status
-            """, (status,))
+            status_counts = {status: total_count}
         else:
             cursor.execute("""
-                SELECT COUNT(*) AS total
-                FROM download_queue
-            """)
-            total_count = int((cursor.fetchone() or {}).get('total', 0))
-
-            cursor.execute("""
                 SELECT status, COUNT(*) AS count
                 FROM download_queue
                 GROUP BY status
             """)
+            status_counts = {
+                row['status']: int(row['count'])
+                for row in cursor.fetchall()
+                if row and row.get('status')
+            }
+            total_count = sum(status_counts.values())
 
-        status_counts = {
-            row['status']: int(row['count'])
-            for row in cursor.fetchall()
-            if row and row.get('status')
-        }
-        
         if status:
             cursor.execute("""
                 SELECT * FROM download_queue 
