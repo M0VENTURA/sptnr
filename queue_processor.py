@@ -942,6 +942,14 @@ def _filename_matches_queue_item(filename, queue_item):
 
     Returns True if the filename strongly suggests it belongs to the queue item,
     using artist+title substring checks with a sequence-similarity safety net.
+
+    The ``filename`` argument may be:
+    - a bare basename  (e.g. "03 Creep.flac")
+    - a relative local path  (e.g. "PeerUser/Music/Radiohead/03 Creep.flac")
+    - the full remote Soulseek path stored in found_filename
+
+    All three forms are handled: the path components are searched for the
+    artist name and only the basename is checked for the track title.
     """
     try:
         filename_test = filename.lower().replace('\\', '/')
@@ -951,8 +959,14 @@ def _filename_matches_queue_item(filename, queue_item):
         # "This Is The Sound/02. Skindred - You Got This.flac" because the title
         # only appears in the directory component, not in the actual filename.
         basename_test = os.path.basename(filename_test)
+        # Also compute a stripped basename (no track-number prefix, no extension)
+        # for looser title matching so "03 Creep.flac" matches queue title "Creep".
+        basename_no_ext = os.path.splitext(basename_test)[0]
+        basename_stripped = _normalize_match_text(basename_no_ext)
+
         artist = (queue_item.get('artist') or '').lower().strip()
         title = (queue_item.get('title') or '').lower().strip()
+        title_norm = _normalize_match_text(title)
 
         if not artist or not title:
             return False
@@ -960,7 +974,15 @@ def _filename_matches_queue_item(filename, queue_item):
         if not _title_variants_are_compatible(title, basename_test):
             return False
 
-        artist_in_path = artist in filename_test
+        # Check whether the artist name appears anywhere in the full path.
+        # Normalise both sides so "AC/DC" matches "ac dc" etc.
+        artist_norm = _normalize_match_text(artist)
+        filename_norm = _normalize_match_text(filename_test)
+        artist_in_path = (
+            artist in filename_test
+            or (artist_norm and artist_norm in filename_norm)
+        )
+
         # Require the title to appear as a complete phrase in the basename — it
         # must not be immediately followed by more alphabetic words that would
         # make it a different (longer) title.  For example, a queue item titled
@@ -969,13 +991,25 @@ def _filename_matches_queue_item(filename, queue_item):
         # Both basename_test and title are already lowercased above, so [a-z]
         # correctly covers all letter characters.
         title_in_basename = bool(re.search(re.escape(title) + r'(?!\s*[a-z])', basename_test))
-        if artist_in_path and title_in_basename:
+
+        # Additionally accept a normalised-token match (handles track-number
+        # prefixes and punctuation differences), e.g.:
+        #   basename_stripped = "03 creep"  →  normalised = "03 creep"
+        #   title_norm        = "creep"
+        # title_norm is a substring of basename_stripped after normalisation.
+        title_norm_in_stripped = bool(
+            title_norm
+            and basename_stripped
+            and title_norm in basename_stripped
+        )
+
+        if artist_in_path and (title_in_basename or title_norm_in_stripped):
             return True
 
         # Guard: if the title only appears in the directory portion of the path
         # (not in the basename at all), skip the fallback — the folder match is
         # an album-name coincidence, not evidence the file contains this track.
-        if title not in basename_test:
+        if title not in basename_test and not title_norm_in_stripped:
             return False
 
         # Similarity fallback.  The title appears in the basename as a substring
@@ -987,8 +1021,9 @@ def _filename_matches_queue_item(filename, queue_item):
         album = (queue_item.get('album') or '').lower().strip()
         combined_target = f"{artist} {title} {album}".strip()
         score = SequenceMatcher(None, combined_target, filename_test).ratio()
-        threshold = 0.60 if title_in_basename else 0.85
-        if score >= threshold and (artist_in_path or title_in_basename):
+        title_matched = title_in_basename or title_norm_in_stripped
+        threshold = 0.60 if title_matched else 0.85
+        if score >= threshold and (artist_in_path or title_matched):
             return True
 
         return False
@@ -1264,8 +1299,12 @@ def cleanup_stuck_searching_items():
         cursor = conn.cursor()
         placeholder = _get_placeholder(conn)
         
-        # Items stuck in 'searching' for more than 90 seconds are likely hung
-        stuck_threshold = (datetime.now() - timedelta(seconds=90)).isoformat()
+        # A Soulseek search can legitimately take 2+ minutes (album-first pass,
+        # per-track pass, unquoted fallback, full-strip fallback — each up to
+        # 45 s of polling).  Use a 5-minute threshold to avoid killing in-flight
+        # searches while still rescuing items that are genuinely stuck (e.g. after
+        # a container crash that left rows in 'searching' with no active processor).
+        stuck_threshold = (datetime.now() - timedelta(seconds=300)).isoformat()
         
         cursor.execute("""
             SELECT id, artist, title, updated_at FROM download_queue
@@ -1346,29 +1385,61 @@ def claim_queued_items(limit=10):
         conn = get_db()
         cursor = conn.cursor()
         placeholder = _get_placeholder(conn)
+        is_pg = (placeholder == '%s')
         now = datetime.now().isoformat()
 
-        cursor.execute(
-            """
-            WITH candidates AS (
-                SELECT id
-                FROM download_queue
-                WHERE status = 'queued'
-                  AND (next_retry_at IS NULL OR next_retry_at <= %s)
-                ORDER BY priority ASC, retry_count ASC, next_retry_at ASC NULLS FIRST, created_at ASC
-                FOR UPDATE SKIP LOCKED
-                LIMIT %s
+        if is_pg:
+            # PostgreSQL: atomic CTE claim with SKIP LOCKED to handle concurrent workers.
+            cursor.execute(
+                """
+                WITH candidates AS (
+                    SELECT id
+                    FROM download_queue
+                    WHERE status = 'queued'
+                      AND (next_retry_at IS NULL OR next_retry_at <= %s)
+                    ORDER BY priority ASC, retry_count ASC, next_retry_at ASC NULLS FIRST, created_at ASC
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT %s
+                )
+                UPDATE download_queue dq
+                SET status = 'searching',
+                    updated_at = CURRENT_TIMESTAMP
+                FROM candidates c
+                WHERE dq.id = c.id
+                RETURNING dq.*
+                """,
+                (now, int(limit)),
             )
-            UPDATE download_queue dq
-            SET status = 'searching',
-                updated_at = CURRENT_TIMESTAMP
-            FROM candidates c
-            WHERE dq.id = c.id
-            RETURNING dq.*
-            """,
-            (now, int(limit)),
-        )
-        rows = cursor.fetchall() or []
+            rows = cursor.fetchall() or []
+        else:
+            # SQLite fallback: two-step SELECT + UPDATE (no concurrent workers on SQLite).
+            cursor.execute(
+                """
+                SELECT id FROM download_queue
+                WHERE status = 'queued'
+                  AND (next_retry_at IS NULL OR next_retry_at <= ?)
+                ORDER BY priority ASC, retry_count ASC, next_retry_at ASC, created_at ASC
+                LIMIT ?
+                """,
+                (now, int(limit)),
+            )
+            ids = [r[0] for r in cursor.fetchall()]
+            rows = []
+            if ids:
+                placeholders = ','.join(['?' for _ in ids])
+                cursor.execute(
+                    f"""
+                    UPDATE download_queue
+                    SET status = 'searching', updated_at = CURRENT_TIMESTAMP
+                    WHERE id IN ({placeholders})
+                    """,
+                    ids,
+                )
+                cursor.execute(
+                    f"SELECT * FROM download_queue WHERE id IN ({placeholders})", ids
+                )
+                rows = cursor.fetchall() or []
+
         items = [dict(row) for row in rows]
 
         conn.commit()
@@ -2618,11 +2689,28 @@ def check_completed_downloads():
                 for transfer in slskd_client.get_completed_transfers():
                     local = transfer.get("localFilePath", "")
                     remote = transfer.get("filename", "")
-                    if local and os.path.isfile(local):
-                        remote_norm = _normalize_transfer_key(remote)
-                        if remote_norm:
+                    remote_norm = _normalize_transfer_key(remote)
+
+                    # Always index by the remote (Soulseek) filename so the queue
+                    # item's stored found_filename can be matched regardless of
+                    # whether localFilePath is accessible from this container.
+                    if remote_norm:
+                        # If localFilePath exists on disk, use it as the value so
+                        # subsequent steps can read/relocate the actual file.
+                        # If not (slskd runs in a different container with a
+                        # different mount path), fall back to trying to locate the
+                        # file via the downloads-directory walk below.
+                        if local and os.path.isfile(local):
                             slskd_completed[remote_norm] = local
                             slskd_completed[os.path.basename(remote_norm)] = local
+                        else:
+                            # Register a sentinel (empty string) so we know this
+                            # remote filename was completed; the filesystem walk
+                            # will supply the actual local path.
+                            slskd_completed.setdefault(remote_norm, "")
+                            slskd_completed.setdefault(os.path.basename(remote_norm), "")
+
+                    if local and os.path.isfile(local):
                         slskd_completed[os.path.basename(local).lower()] = local
                 logger.debug(f"slskd API: {len(slskd_completed)} completed transfer paths")
 
@@ -2709,6 +2797,11 @@ def check_completed_downloads():
             return False
 
         newly_completed = []
+        # Track absolute paths that have been matched and (possibly) relocated in
+        # this cycle so subsequent items in the same loop do not double-claim the
+        # same file now that we call _relocate_file_to_queue_folder inside the loop.
+        _cycle_matched_abs_paths: set = set()
+
         for item in reconcilable_items:
             match_found = None
             match_meta_state = None
@@ -2717,16 +2810,35 @@ def check_completed_downloads():
             found_fn = item.get("found_filename") or ""
             item_id = item["id"]
 
+            # Normalised remote path and its basename, computed once and reused
+            # in steps 1 and 2 so we don't repeat the same string work per file.
+            found_norm_full = _normalize_transfer_key(found_fn)   # full remote path
+            found_basename = os.path.basename(found_norm_full)     # filename only
+
             # 1. Exact match via slskd localFilePath (most reliable)
             if found_fn:
-                found_norm = _normalize_transfer_key(found_fn)
                 # Distinguish full-path vs basename-only hits so we can apply
                 # different trust levels below.
-                abs_path_full = slskd_completed.get(found_norm)
-                abs_path = abs_path_full or slskd_completed.get(os.path.basename(found_norm))
+                abs_path_full = slskd_completed.get(found_norm_full) or None
+                # Non-empty sentinel ("") means the transfer was completed but
+                # localFilePath is not accessible; skip to filesystem walk.
+                if abs_path_full == "":
+                    abs_path_full = None
+                abs_path_basename = slskd_completed.get(found_basename) or None
+                if abs_path_basename == "":
+                    abs_path_basename = None
+                abs_path = abs_path_full or abs_path_basename
             else:
                 abs_path_full = None
+                abs_path_basename = None
                 abs_path = None
+
+            if abs_path:
+                # Guard against double-matching a file that was already
+                # matched and relocated for a previous item in this cycle.
+                if os.path.abspath(abs_path) in _cycle_matched_abs_paths:
+                    abs_path = None
+                    abs_path_full = None
 
             if abs_path:
                 # ── Relocate to organised album folder ───────────────────────
@@ -2765,21 +2877,20 @@ def check_completed_downloads():
                     # filename (e.g. just a track number like "01.mp3").
                     match_found = candidate_rel
                     match_meta_state = 'slskd_localpath'
+                    _cycle_matched_abs_paths.add(os.path.abspath(abs_path))
                     logger.debug(
                         f"Queue {item_id}: matched via slskd localFilePath (full path): {abs_path}"
                     )
                 else:
                     # Basename-only match: weaker signal — multiple downloads can
                     # share the same basename, so verify with metadata/filename to
-                    # avoid false positives.
-                    is_match, match_source = _file_matches_queue_item(abs_path, item, candidate_rel)
-                    if is_match:
-                        match_found = candidate_rel
-                        match_meta_state = match_source
-                        logger.debug(
-                            f"Queue {item_id}: matched via slskd localFilePath (basename): {abs_path}"
-                        )
-                    else:
+                    # avoid false positives.  For Soulseek items with a stored
+                    # found_filename the basename match alone is fairly reliable
+                    # because slskd maps one remote file to one local file; only
+                    # reject on a definitive metadata hard-mismatch, not on
+                    # "no metadata" (None).
+                    meta_state = _metadata_matches_queue_item(abs_path, item)
+                    if meta_state is False:
                         logger.info(
                             f"Queue {item_id}: rejecting slskd-completed file due to queue mismatch: {candidate_rel}"
                         )
@@ -2790,18 +2901,60 @@ def check_completed_downloads():
                                     reason="soulseek download unmatched against queue",
                                     queue_id=item_id,
                                 )
+                    else:
+                        # Metadata confirmed or absent — accept the file.
+                        match_found = candidate_rel
+                        match_meta_state = 'metadata' if meta_state is True else 'found_filename'
+                        _cycle_matched_abs_paths.add(os.path.abspath(abs_path))
+                        logger.debug(
+                            f"Queue {item_id}: matched via slskd localFilePath (basename, meta={meta_state}): {abs_path}"
+                        )
 
-            # 2. Exact filename match against filesystem files
+            # 2. Exact / path-suffix filename match against filesystem files
+            #
+            # slskd typically stores downloads as:
+            #   <DOWNLOADS_DIR>/<username>/<remote_path>
+            # so the filesystem relative path is "<username>/<remote_path>" while
+            # found_filename holds only "<remote_path>".  In addition to the exact
+            # full-path comparison we therefore also check whether rel_norm ends
+            # with ("/" + found_norm), which handles the username-prefix layout.
+            # A pure basename (filename-only) match is a weaker fallback signal.
             if match_found is None and found_fn:
+                found_norm = found_fn.replace('\\', '/').strip().lower()
+                found_norm_suffix = '/' + found_norm  # for endswith check
+
                 for rel_file in fs_files:
-                    rel_norm = rel_file.replace('\\', '/')
-                    found_norm = found_fn.replace('\\', '/')
-                    if rel_norm == found_norm or os.path.basename(rel_norm) == os.path.basename(found_norm):
-                        file_path = os.path.join(DOWNLOADS_DIR, rel_file)
-                        is_match, match_source = _file_matches_queue_item(file_path, item, rel_file)
-                        if not is_match:
+                    rel_norm = rel_file.replace('\\', '/').strip().lower()
+                    rel_basename = os.path.basename(rel_norm)
+                    file_path = os.path.join(DOWNLOADS_DIR, rel_file)
+                    abs_file_path = os.path.abspath(file_path)
+
+                    # Skip files already claimed by a previous item in this cycle.
+                    if abs_file_path in _cycle_matched_abs_paths:
+                        continue
+
+                    # Determine the strength of the path match so we can apply
+                    # calibrated trust levels below.
+                    full_path_match = (rel_norm == found_norm)
+                    suffix_path_match = (not full_path_match and rel_norm.endswith(found_norm_suffix))
+                    basename_only_match = (
+                        not full_path_match
+                        and not suffix_path_match
+                        and rel_basename == found_basename
+                    )
+
+                    if not (full_path_match or suffix_path_match or basename_only_match):
+                        continue
+
+                    if full_path_match or suffix_path_match:
+                        # Strong path match: the file IS the one requested by
+                        # this queue item.  Only reject on definitive metadata
+                        # hard-mismatch; absent/inconclusive metadata is fine.
+                        meta_state = _metadata_matches_queue_item(file_path, item)
+                        if meta_state is False:
                             logger.info(
-                                f"Queue {item_id}: rejecting exact filename match due to queue mismatch: {rel_file}"
+                                f"Queue {item_id}: rejecting path-matched file due to "
+                                f"metadata hard-mismatch: {rel_file}"
                             )
                             if item_source == 'soulseek':
                                 if not _matches_any_queue_item(file_path, rel_file, exclude_queue_id=item_id):
@@ -2811,18 +2964,78 @@ def check_completed_downloads():
                                         queue_id=item_id,
                                     )
                             continue
+                        # Relocate to queue folder before confirming
+                        try:
+                            relocated_path = _relocate_file_to_queue_folder(
+                                item, file_path, conn=conn
+                            )
+                            if relocated_path != file_path:
+                                rel_file = os.path.relpath(relocated_path, DOWNLOADS_DIR)
+                                abs_file_path = os.path.abspath(relocated_path)
+                        except Exception:
+                            pass
+                        match_found = rel_file
+                        match_meta_state = 'metadata' if meta_state is True else 'found_filename'
+                        _cycle_matched_abs_paths.add(abs_file_path)
+                        logger.debug(
+                            f"Queue {item_id}: matched via {'full' if full_path_match else 'suffix'} "
+                            f"path (meta={meta_state}): {rel_file}"
+                        )
+                        break
+                    else:
+                        # Basename-only match: weakest signal — run full
+                        # metadata+filename verification.
+                        is_match, match_source = _file_matches_queue_item(file_path, item, rel_file)
+                        if not is_match:
+                            logger.info(
+                                f"Queue {item_id}: rejecting basename-only match due to queue mismatch: {rel_file}"
+                            )
+                            if item_source == 'soulseek':
+                                if not _matches_any_queue_item(file_path, rel_file, exclude_queue_id=item_id):
+                                    _safe_delete_download_candidate(
+                                        file_path,
+                                        reason="soulseek filename mismatch against queue",
+                                        queue_id=item_id,
+                                    )
+                            continue
+                        # Relocate to queue folder before confirming
+                        try:
+                            relocated_path = _relocate_file_to_queue_folder(
+                                item, file_path, conn=conn
+                            )
+                            if relocated_path != file_path:
+                                rel_file = os.path.relpath(relocated_path, DOWNLOADS_DIR)
+                                abs_file_path = os.path.abspath(relocated_path)
+                        except Exception:
+                            pass
                         match_found = rel_file
                         match_meta_state = match_source
+                        _cycle_matched_abs_paths.add(abs_file_path)
+                        logger.debug(f"Queue {item_id}: matched via basename: {rel_file}")
                         break
 
             # 3. Fuzzy match against filesystem files
             if match_found is None:
                 for filename in fs_files:
                     file_path = os.path.join(DOWNLOADS_DIR, filename)
+                    abs_file_path = os.path.abspath(file_path)
+                    # Skip files already matched in this cycle.
+                    if abs_file_path in _cycle_matched_abs_paths:
+                        continue
                     is_match, match_source = _file_matches_queue_item(file_path, item, filename)
                     if is_match:
+                        try:
+                            relocated_path = _relocate_file_to_queue_folder(
+                                item, file_path, conn=conn
+                            )
+                            if relocated_path != file_path:
+                                filename = os.path.relpath(relocated_path, DOWNLOADS_DIR)
+                                abs_file_path = os.path.abspath(relocated_path)
+                        except Exception:
+                            pass
                         match_found = filename
                         match_meta_state = match_source
+                        _cycle_matched_abs_paths.add(abs_file_path)
                         logger.debug(f"Queue {item_id}: fuzzy match found: {filename}")
                         break
 
@@ -3020,9 +3233,14 @@ def check_completed_downloads():
                             try:
                                 meta_check = verify_downloaded_file_metadata(file_path, item)
                                 if not meta_check['ok']:
-                                    if match_meta_state == 'filename':
+                                    # filename-only and found_filename matches both warrant
+                                    # a conservative tag-merge (not clear) approach because
+                                    # the file identity was inferred from path/name rather
+                                    # than confirmed by embedded metadata.
+                                    if match_meta_state in ('filename', 'found_filename'):
                                         logger.warning(
-                                            f"[AUTO_MOVE] Queue {item_id}: filename-only match but "
+                                            f"[AUTO_MOVE] Queue {item_id}: "
+                                            f"{match_meta_state}-match but "
                                             f"existing tags conflict with queue item — "
                                             f"{meta_check['reason']} "
                                             f"(detail={meta_check['detail']}) — "
@@ -3422,7 +3640,8 @@ def process_queue(client):
 
         items = claim_queued_items(limit=10)
         processed = 0
-        for item in items:
+
+        for idx, item in enumerate(items):
             try:
                 source = (item.get('source') or 'soulseek').strip().lower()
                 if source == 'qbittorrent':
@@ -3430,7 +3649,21 @@ def process_queue(client):
                         processed += 1
                 else:
                     if not client:
-                        logger.error("SlskdClient not available, skipping Soulseek queue item")
+                        # slskd client is unavailable.  Mark this item and every
+                        # remaining item in the batch (items[idx:]) back to queued
+                        # with a short retry delay so they are not stuck in the
+                        # 'searching' state until cleanup_stuck_searching_items
+                        # rescues them 5 minutes later.
+                        logger.error(
+                            "SlskdClient not available — returning all unclaimed batch items to queued state"
+                        )
+                        for remaining in items[idx:]:
+                            mark_failed(
+                                remaining['id'],
+                                "SlskdClient unavailable",
+                                schedule_retry=True,
+                                retry_delay_minutes=5,
+                            )
                         break
                     if search_and_download(item['id'], item, client):
                         processed += 1
