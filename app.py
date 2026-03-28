@@ -259,7 +259,7 @@ import logging
 import re
 import uuid
 from api_clients.slskd import SlskdClient
-from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
+from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT, _escape_lucene_special_chars as _escape_mb_phrase
 from helpers.metadata_reader import get_track_metadata_from_db, find_track_file, read_mp3_metadata
 import io
 from helpers.helpers import create_retry_session, clean_discogs_biography
@@ -4275,6 +4275,7 @@ def artists():
     duplicate_counts_by_artist = {}
     missing_counts_by_artist = {}
     duplicate_artist_counts_by_artist = {}  # Track artists with same MBID but different names
+    disc_inconsistent_counts_by_artist = {}  # Albums where some tracks have disc_number and others don't
     try:
         # Query 1: Find duplicate tracks
         cursor.execute("""
@@ -4391,6 +4392,47 @@ def artists():
             mbid = row_dict.get("musicbrainz_artist_id", "")
             if artist_name and mbid in mbid_to_artists_map:
                 duplicate_artist_counts_by_artist[artist_name] = mbid_to_artists_map[mbid]
+
+        # Query 4: Albums where some tracks have disc_number and others don't
+        # (within what should be a single-disc album).  This inconsistency
+        # causes Navidrome to show the album as multiple separate albums.
+        cursor.execute("""
+            SELECT
+                COALESCE(NULLIF(album_artist, ''), artist) AS display_name,
+                COUNT(DISTINCT album) AS album_count
+            FROM (
+                SELECT
+                    album_artist,
+                    artist,
+                    album,
+                    SUM(CASE WHEN disc_number IS NOT NULL
+                                  AND TRIM(CAST(disc_number AS TEXT)) != ''
+                                  AND CAST(disc_number AS TEXT) != '0'
+                             THEN 1 ELSE 0 END) AS tracks_with_disc,
+                    SUM(CASE WHEN disc_number IS NULL
+                                  OR TRIM(CAST(disc_number AS TEXT)) = ''
+                                  OR CAST(disc_number AS TEXT) = '0'
+                             THEN 1 ELSE 0 END) AS tracks_without_disc,
+                    COUNT(DISTINCT CASE WHEN disc_number IS NOT NULL
+                                             AND TRIM(CAST(disc_number AS TEXT)) != ''
+                                             AND CAST(disc_number AS TEXT) != '0'
+                                        THEN CAST(disc_number AS TEXT) END) AS distinct_disc_nums
+                FROM tracks
+                WHERE album_artist IS NOT NULL
+                  AND TRIM(album_artist) != ''
+                  AND album IS NOT NULL
+                  AND TRIM(album) != ''
+                GROUP BY COALESCE(NULLIF(album_artist, ''), artist), album
+            ) sub
+            WHERE tracks_with_disc > 0
+              AND tracks_without_disc > 0
+              AND distinct_disc_nums <= 1
+            GROUP BY display_name
+        """)
+        for row in cursor.fetchall():
+            row_dict = dict(row)
+            disc_inconsistent_counts_by_artist[row_dict.get("display_name", "")] = int(row_dict.get("album_count") or 0)
+
     except Exception as correction_err:
         logging.debug(f"Could not compute artist correction indicators: {correction_err}")
 
@@ -4399,10 +4441,16 @@ def artists():
         duplicate_count = duplicate_counts_by_artist.get(display_name, 0)
         missing_count = missing_counts_by_artist.get(display_name, 0)
         duplicate_artist_count = duplicate_artist_counts_by_artist.get(display_name, 0)
+        disc_inconsistent_count = disc_inconsistent_counts_by_artist.get(display_name, 0)
         artist_row["duplicate_track_count"] = duplicate_count
         artist_row["missing_track_count"] = missing_count
         artist_row["duplicate_artist_count"] = duplicate_artist_count
-        artist_row["needs_correction"] = (duplicate_count + missing_count + (1 if duplicate_artist_count > 0 else 0)) > 0
+        artist_row["disc_inconsistent_count"] = disc_inconsistent_count
+        artist_row["needs_correction"] = (
+            duplicate_count + missing_count
+            + (1 if duplicate_artist_count > 0 else 0)
+            + disc_inconsistent_count
+        ) > 0
     
     conn.close()
     
@@ -4679,6 +4727,53 @@ def artist_corrections(name):
                 })
         except Exception as mb_err:
             logging.debug(f"[CORRECTIONS] Could not fetch MB albums: {mb_err}")
+
+        # Fetch albums with disc number inconsistency: some tracks have
+        # disc_number set, others don't — on a single-disc album this
+        # causes Navidrome to display the album as multiple entries.
+        disc_inconsistent_albums = []
+        try:
+            cursor.execute(f"""
+                SELECT
+                    album,
+                    COUNT(*) AS track_count,
+                    SUM(CASE WHEN disc_number IS NOT NULL
+                                  AND TRIM(CAST(disc_number AS TEXT)) != ''
+                                  AND CAST(disc_number AS TEXT) != '0'
+                             THEN 1 ELSE 0 END) AS tracks_with_disc,
+                    SUM(CASE WHEN disc_number IS NULL
+                                  OR TRIM(CAST(disc_number AS TEXT)) = ''
+                                  OR CAST(disc_number AS TEXT) = '0'
+                             THEN 1 ELSE 0 END) AS tracks_without_disc,
+                    MAX(CASE WHEN disc_number IS NOT NULL
+                                  AND TRIM(CAST(disc_number AS TEXT)) != ''
+                                  AND CAST(disc_number AS TEXT) != '0'
+                             THEN CAST(disc_number AS TEXT) END) AS disc_value
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                  AND album IS NOT NULL AND TRIM(album) != ''
+                GROUP BY album
+                HAVING SUM(CASE WHEN disc_number IS NOT NULL
+                                     AND TRIM(CAST(disc_number AS TEXT)) != ''
+                                     AND CAST(disc_number AS TEXT) != '0'
+                                THEN 1 ELSE 0 END) > 0
+                   AND SUM(CASE WHEN disc_number IS NULL
+                                     OR TRIM(CAST(disc_number AS TEXT)) = ''
+                                     OR CAST(disc_number AS TEXT) = '0'
+                                THEN 1 ELSE 0 END) > 0
+                ORDER BY album
+            """, (artist_name,))
+            for row in cursor.fetchall():
+                rd = dict(row) if hasattr(row, "keys") else {}
+                disc_inconsistent_albums.append({
+                    "album": rd.get("album"),
+                    "track_count": int(rd.get("track_count") or 0),
+                    "tracks_with_disc": int(rd.get("tracks_with_disc") or 0),
+                    "tracks_without_disc": int(rd.get("tracks_without_disc") or 0),
+                    "disc_value": rd.get("disc_value"),
+                })
+        except Exception as disc_err:
+            logging.debug(f"[CORRECTIONS] Could not fetch disc inconsistency albums: {disc_err}")
     finally:
         conn.close()
 
@@ -4688,8 +4783,10 @@ def artist_corrections(name):
         duplicates=duplicate_groups,
         missing_tracks=missing_tracks,
         mb_albums=mb_albums,
+        disc_inconsistent_albums=disc_inconsistent_albums,
         duplicate_count=sum(max(int(d.get("duplicate_count") or 0) - 1, 0) for d in duplicate_groups),
         missing_count=len(missing_tracks),
+        disc_inconsistent_count=len(disc_inconsistent_albums),
     )
 
 
@@ -4763,6 +4860,91 @@ def api_artist_corrections_delete_track():
         })
     except Exception as e:
         logging.error(f"[CORRECTIONS] Failed to delete track: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/artist/corrections/clear-disc-number", methods=["POST"])
+def api_artist_corrections_clear_disc_number():
+    """Clear disc_number for all tracks in a given album that have it set.
+
+    This fixes the Navidrome "multiple albums" problem caused by a mix of
+    tracks with disc_number and tracks without it on a single-disc album.
+    """
+    try:
+        payload = request.get_json(silent=True) or {}
+        artist_name = str(payload.get("artist") or "").strip()
+        album_name = str(payload.get("album") or "").strip()
+
+        if not artist_name or not album_name:
+            return jsonify({"success": False, "error": "artist and album are required"}), 400
+
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = "%s"
+
+        # Count and collect affected track IDs before clearing
+        cursor.execute(
+            f"""
+            SELECT id, file_path
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+              AND album = {placeholder}
+              AND disc_number IS NOT NULL
+              AND TRIM(CAST(disc_number AS TEXT)) != ''
+              AND CAST(disc_number AS TEXT) != '0'
+            """,
+            (artist_name, album_name),
+        )
+        affected_rows = [dict(r) if hasattr(r, "keys") else {"id": r[0], "file_path": r[1]}
+                         for r in cursor.fetchall()]
+
+        if not affected_rows:
+            conn.close()
+            return jsonify({"success": True, "cleared": 0,
+                            "message": "No tracks with disc_number found for this album"})
+
+        cursor.execute(
+            f"""
+            UPDATE tracks
+            SET disc_number = NULL
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+              AND album = {placeholder}
+              AND disc_number IS NOT NULL
+              AND TRIM(CAST(disc_number AS TEXT)) != ''
+              AND CAST(disc_number AS TEXT) != '0'
+            """,
+            (artist_name, album_name),
+        )
+        conn.commit()
+        cleared_count = cursor.rowcount if cursor.rowcount and cursor.rowcount >= 0 else len(affected_rows)
+        conn.close()
+
+        # Also clear the tag from the actual audio files
+        files_updated = 0
+        for row in affected_rows:
+            file_path = row.get("file_path")
+            if not file_path or not os.path.exists(str(file_path)):
+                continue
+            try:
+                from helpers.tag_manager import update_file_tags
+                update_file_tags(str(file_path), {"disc_number": None})
+                files_updated += 1
+            except Exception as tag_err:
+                logging.debug(f"[CORRECTIONS] Could not clear disc_number tag on {file_path}: {tag_err}")
+
+        logging.info(
+            f"[CORRECTIONS] Cleared disc_number for {cleared_count} track(s) in "
+            f"'{artist_name} — {album_name}' (files updated: {files_updated})"
+        )
+
+        return jsonify({
+            "success": True,
+            "cleared": cleared_count,
+            "files_updated": files_updated,
+            "message": f"Cleared disc number from {cleared_count} track(s)",
+        })
+    except Exception as e:
+        logging.error(f"[CORRECTIONS] Failed to clear disc numbers: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 
@@ -28656,7 +28838,7 @@ def api_track_musicbrainz_lookup():
             return jsonify({"error": "Missing title or artist"}), 400
         
         # Search MusicBrainz for recordings with retry
-        query = f'recording:"{title}" AND artist:"{artist}"'
+        query = f'recording:"{_escape_mb_phrase(title)}" AND artist:"{_escape_mb_phrase(artist)}"'
         headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
         
         max_retries = 2
@@ -28664,7 +28846,7 @@ def api_track_musicbrainz_lookup():
             try:
                 resp = requests.get(
                     "https://musicbrainz.org/ws/2/recording",
-                    params={"query": query, "fmt": "json", "limit": 10, "inc": "releases+artist-credits+work-level-rels+work-rels"},
+                    params={"query": query, "fmt": "json", "limit": 10},
                     headers=headers,
                     timeout=5
                 )
@@ -30800,24 +30982,30 @@ def api_search_musicbrainz_release():
         #   release:"<title>"    – matches the release (album) title
         # ------------------------------------------------------------------
         if track:
-            query_parts = [f'recording:"{track}"']
+            # Escape special characters so that titles/artists containing
+            # '"', '\', '(', ')', '+', etc. don't produce a malformed Lucene
+            # phrase query (which would cause MusicBrainz to return HTTP 400).
+            query_parts = [f'recording:"{_escape_mb_phrase(track)}"']
             if artist:
-                query_parts.append(f'artist:"{artist}"')
+                query_parts.append(f'artist:"{_escape_mb_phrase(artist)}"')
             if album:
-                query_parts.append(f'release:"{album}"')
+                query_parts.append(f'release:"{_escape_mb_phrase(album)}"')
             recording_query = " AND ".join(query_parts)
 
             logging.info(
                 f"[MB_SEARCH] Track search: {recording_query}"
             )
             time.sleep(1)
+            # NOTE: The MusicBrainz search endpoint does not support the
+            # inc= parameter (only lookup/browse requests do).  Omitting it
+            # avoids a 400 Bad Request; artist-credit and release data are
+            # included in recording search results by default.
             rec_response = requests.get(
                 "https://musicbrainz.org/ws/2/recording",
                 params={
                     "query": recording_query,
                     "fmt": "json",
                     "limit": 10,
-                    "inc": "releases+artist-credits",
                 },
                 headers=headers,
                 timeout=15,
