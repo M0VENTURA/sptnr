@@ -2081,7 +2081,7 @@ function buildQueueTrackStatusDetail(track, group) {
     matched: filePath
       ? 'File match confirmed and ready to move to music.'
       : 'Release match selected, but no file is linked yet.',
-    completed: 'Processing completed successfully.',
+    completed: 'Download complete; pending move to music library.',
     duplicate: 'Likely duplicate of existing queue or library content.',
     possible_duplicate: 'Potential duplicate detected; review before moving.',
     unmatched: 'No confident metadata match yet.',
@@ -2132,12 +2132,15 @@ function classifyTrackPath(pathValue, fieldName) {
     return { kind: 'remote', label: 'Remote path' };
   }
 
-  if (normalized.startsWith('/music/') || normalized.includes('/music/')) {
-    return { kind: 'local', label: 'Local music path' };
-  }
-
+  // Check downloads path BEFORE music path so that paths like
+  // /downloads/Music/... are not misclassified as "Local music path"
+  // due to the /music/ substring appearing inside the downloads directory name.
   if (normalized.startsWith('/downloads/') || normalized.includes('/downloads/')) {
     return { kind: 'local', label: 'Local downloads path' };
+  }
+
+  if (normalized.startsWith('/music/') || normalized.includes('/music/')) {
+    return { kind: 'local', label: 'Local music path' };
   }
 
   if (/^[a-z]:\//i.test(normalized)) {
