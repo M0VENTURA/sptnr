@@ -19689,6 +19689,10 @@ def api_downloads_get_queue():
                         mrow_matched_file_path = _row_get(mrow, 'matched_file_path', 2) or ''
                         mrow_music_file_path = _row_get(mrow, 'music_file_path', 3) or ''
                         mrow_found_filename = _row_get(mrow, 'found_filename', 4) or ''
+                        # Fast path: if file_path points to a file that no longer exists,
+                        # skip the slower _existing_match_path fallback resolution.
+                        if mrow_file_path and not os.path.isfile(mrow_file_path):
+                            mrow_file_path = ''
                         existing_match_paths = [
                             path_value for path_value in (
                                 mrow_file_path,

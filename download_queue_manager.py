@@ -1372,11 +1372,47 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         auto_delete_at = None
         initial_status = status if status else 'queued'
         
-        # Collection matching: location/path-based only.
-        # Do not mark as in_collection using metadata-only DB lookups because that
-        # can produce ambiguous matches without a concrete file path.
+        # Collection check: see if this track already exists in the library.
+        # Placeholder rows inserted by _add_queue_item_to_tracks_table for items
+        # currently in the queue must be excluded to avoid false positives — e.g.
+        # "World So Cold" being queued must not cause "World So Cold Intro" to be
+        # marked as in_collection via its placeholder row.
         in_collection = False
         collection_track_id = None
+        if artist and title:
+            try:
+                if is_pg:
+                    cursor.execute(
+                        """
+                        SELECT id FROM tracks
+                        WHERE LOWER(artist) = LOWER(%s)
+                          AND LOWER(title) = LOWER(%s)
+                          AND file_path IS NOT NULL
+                          AND file_path NOT LIKE '__queued_for_download__%%'
+                        LIMIT 1
+                        """,
+                        (artist, title),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        SELECT id FROM tracks
+                        WHERE LOWER(artist) = LOWER(?)
+                          AND LOWER(title) = LOWER(?)
+                          AND file_path IS NOT NULL
+                          AND file_path NOT LIKE '__queued_for_download__%'
+                        LIMIT 1
+                        """,
+                        (artist, title),
+                    )
+                lib_row = cursor.fetchone()
+                if lib_row:
+                    track_id_val = lib_row.get('id') if hasattr(lib_row, 'get') else lib_row[0]
+                    if track_id_val is not None:
+                        in_collection = True
+                        collection_track_id = str(track_id_val)
+            except Exception as _lib_check_err:
+                logger.debug(f"[add_to_queue] Library existence check skipped: {_lib_check_err}")
 
 
         
@@ -4308,23 +4344,40 @@ def auto_discover_and_queue_files():
             return [dict(zip(col_names, r)) for r in rows]
 
         def _find_library_track_id(artist_value, album_value, title_value, album_artist_value=None):
-            # psycopg2 treats bare '%' in a query string as a parameter
-            # placeholder; use '%%' so it becomes a literal '%' after
-            # parameter substitution.  SQLite does not apply this escaping.
-            like_pct = '%%' if is_pg else '%'
-            cursor.execute(
-                f"""
-                SELECT id, file_path, album, album_artist
-                FROM tracks
-                WHERE LOWER(artist) = LOWER({placeholder})
-                  AND LOWER(album) = LOWER({placeholder})
-                  AND LOWER(title) = LOWER({placeholder})
-                  AND (file_path IS NULL OR file_path NOT LIKE E'\\_\\_queued\\_for\\_download\\_\\_{like_pct}' ESCAPE '\\')
-                ORDER BY id DESC
-                LIMIT 10
-                """,
-                (artist_value, album_value, title_value),
-            )
+            # Exclude placeholder rows written by _add_queue_item_to_tracks_table
+            # for items currently in the download queue.  Without this guard a
+            # queued "World So Cold" placeholder can surface as a library match
+            # for "World So Cold Intro", producing a false in_collection result.
+            # psycopg2 requires '%%' for a literal '%'; SQLite uses '?' params so
+            # bare '%' is fine there.
+            if is_pg:
+                cursor.execute(
+                    f"""
+                    SELECT id, file_path, album, album_artist
+                    FROM tracks
+                    WHERE LOWER(artist) = LOWER({placeholder})
+                      AND LOWER(album) = LOWER({placeholder})
+                      AND LOWER(title) = LOWER({placeholder})
+                      AND (file_path IS NULL OR file_path NOT LIKE '__queued_for_download__%%')
+                    ORDER BY id DESC
+                    LIMIT 10
+                    """,
+                    (artist_value, album_value, title_value),
+                )
+            else:
+                cursor.execute(
+                    f"""
+                    SELECT id, file_path, album, album_artist
+                    FROM tracks
+                    WHERE LOWER(artist) = LOWER({placeholder})
+                      AND LOWER(album) = LOWER({placeholder})
+                      AND LOWER(title) = LOWER({placeholder})
+                      AND (file_path IS NULL OR file_path NOT LIKE '__queued_for_download__%')
+                    ORDER BY id DESC
+                    LIMIT 10
+                    """,
+                    (artist_value, album_value, title_value),
+                )
             valid_row = _pick_valid_collection_track_row(
                 cursor.fetchall(),
                 artist_value,

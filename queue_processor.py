@@ -72,7 +72,7 @@ _CONFIRMED_MATCH_DURATION_TOLERANCE_SECONDS = 10
 # vs "World So Cold Intro").  See _metadata_matches_queue_item for details.
 _PREFIX_TITLE_MIN = 0.9
 _TITLE_VARIANT_TOKENS = {
-    "acoustic", "demo", "edit", "instrumental", "intro", "live",
+    "demo", "edit", "intro", "live",
     "mix", "radio", "remaster", "remastered", "remix", "version",
 }
 
