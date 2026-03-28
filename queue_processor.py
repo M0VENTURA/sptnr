@@ -166,6 +166,17 @@ _DEFAULT_DOWNLOAD_QUALITY_FILTER = {
 _ALBUM_SEARCH_CACHE_TTL_SECONDS = 600
 _album_search_cache = {}
 
+# Pre-matched results from album-level batch scanning. When an album search is
+# executed for the first item in a group, all sibling items are immediately
+# scored against the same responses so they can skip both the album search and
+# the per-track fallback when their turn comes.
+_ALBUM_PRE_MATCH_TTL_SECONDS = 600
+_album_pre_matched_results = {}  # {queue_id: {'result': {...}, 'score': float, 'timestamp': float}}
+
+# Minimum candidate score required to accept a Soulseek album-search result.
+# Used both for the current item and for sibling pre-matches.
+_ALBUM_MATCH_MIN_SCORE = 0.45
+
 
 def _strip_track_number_prefix(title):
     """
@@ -805,6 +816,62 @@ def _get_album_queue_titles(queue_item):
             pass
 
     return titles
+
+
+def _get_sibling_queue_items_for_album(queue_item):
+    """Return full queue item dicts for all queued/searching sibling tracks sharing the same album.
+
+    Used to batch-match sibling items against album search responses so they can
+    reuse those results when their turn comes, avoiding redundant individual searches.
+    """
+    import_group = (queue_item.get('import_group') or '').strip()
+    album = (queue_item.get('album') or '').strip()
+    album_artist = (
+        queue_item.get('album_artist')
+        or queue_item.get('artist')
+        or ''
+    ).strip()
+
+    if not import_group and (not album or not album_artist):
+        return []
+
+    conn = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = _get_placeholder(conn)
+
+        if import_group:
+            cursor.execute(
+                f"""
+                SELECT * FROM download_queue
+                WHERE import_group = {placeholder}
+                  AND status IN ('queued', 'searching', 'downloading')
+                """,
+                (import_group,),
+            )
+        else:
+            cursor.execute(
+                f"""
+                SELECT * FROM download_queue
+                WHERE LOWER(COALESCE(album, '')) = LOWER({placeholder})
+                  AND LOWER(COALESCE(album_artist, artist, '')) = LOWER({placeholder})
+                  AND status IN ('queued', 'searching', 'downloading')
+                """,
+                (album, album_artist),
+            )
+
+        rows = cursor.fetchall() or []
+        return [dict(row) for row in rows]
+    except Exception as e:
+        logger.debug(f"Could not fetch sibling queue items for album batch-match: {e}")
+        return []
+    finally:
+        try:
+            if conn is not None:
+                conn.close()
+        except Exception:
+            pass
 
 
 def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
@@ -2440,40 +2507,91 @@ def search_and_download(queue_id, queue_item, client):
         best_score = 0.0
         poll_start_time = datetime.now()
 
-        # Pass 1: album-level search first (when album metadata exists), then
-        # choose a file that matches this queued track. This reduces repeated
-        # per-track queries for album imports.
-        album_query = _get_album_search_query(queue_item)
-        album_titles = _get_album_queue_titles(queue_item)
-        if album_query and album_titles:
-            cache_key = f"album::{_normalize_match_text(album_query)}"
-            cached = _album_search_cache.get(cache_key)
-            album_responses = None
+        # Check whether this item was already pre-matched by a sibling's album
+        # search.  Pre-matches are stored when the first item in an album group
+        # performs an album-level search and the responses are scored against all
+        # queued sibling tracks immediately.
+        _pre_match = _album_pre_matched_results.get(queue_id)
+        if _pre_match and (time.time() - _pre_match.get('timestamp', 0)) <= _ALBUM_PRE_MATCH_TTL_SECONDS:
+            best_result = _pre_match.get('result')
+            best_score = _pre_match.get('score', 0.0)
+            logger.info(
+                f"Queue {queue_id}: Using pre-matched result from album batch search "
+                f"(score={best_score:.2f})"
+            )
 
-            if cached and (time.time() - cached.get('timestamp', 0)) <= _ALBUM_SEARCH_CACHE_TTL_SECONDS:
-                album_responses = cached.get('responses') or []
-            else:
-                try:
-                    logger.info(f"Queue {queue_id}: Album-first search '{album_query}'")
-                    album_search_id = client.start_search(album_query)
-                    if album_search_id:
-                        album_responses = _poll_search_responses(client, album_search_id, max_poll_attempts=30)
-                        _album_search_cache[cache_key] = {
-                            'timestamp': time.time(),
-                            'responses': album_responses or [],
-                        }
-                except Exception as album_search_err:
-                    logger.debug(f"Queue {queue_id}: album-first search failed: {album_search_err}")
+        if not best_result:
+            # Pass 1: album-level search first (when album metadata exists), then
+            # choose a file that matches this queued track and batch-pre-match all
+            # sibling items so they skip a redundant album search of their own.
+            # This gate uses only album_query (not album_titles) so that the album
+            # search fires on retries even when all sibling tracks are already done.
+            album_query = _get_album_search_query(queue_item)
+            if album_query:
+                cache_key = f"album::{_normalize_match_text(album_query)}"
+                cached = _album_search_cache.get(cache_key)
+                album_responses = None
 
-            if album_responses:
-                best_album_result, best_album_score = _pick_best_candidate_from_responses(album_responses, queue_item)
-                if best_album_result and best_album_score >= 0.45:
-                    best_result = best_album_result
-                    best_score = best_album_score
-                    logger.info(
-                        f"Queue {queue_id}: Album-first match selected "
-                        f"(score={best_album_score:.2f})"
-                    )
+                if cached and (time.time() - cached.get('timestamp', 0)) <= _ALBUM_SEARCH_CACHE_TTL_SECONDS:
+                    album_responses = cached.get('responses') or []
+                else:
+                    try:
+                        logger.info(f"Queue {queue_id}: Album-first search '{album_query}'")
+                        album_search_id = client.start_search(album_query)
+                        if album_search_id:
+                            album_responses = _poll_search_responses(client, album_search_id, max_poll_attempts=30)
+                            _album_search_cache[cache_key] = {
+                                'timestamp': time.time(),
+                                'responses': album_responses or [],
+                            }
+                    except Exception as album_search_err:
+                        logger.debug(f"Queue {queue_id}: album-first search failed: {album_search_err}")
+
+                if album_responses:
+                    # Batch-match every item in the album against the album
+                    # search results, including the current item.  All matched
+                    # siblings are stored in _album_pre_matched_results so they
+                    # skip the album search and the per-track fallback when their
+                    # turn comes in the queue.
+                    sibling_items = _get_sibling_queue_items_for_album(queue_item)
+                    # Build a unified lookup that always includes the current item
+                    # so it gets the same batch-match treatment as its siblings.
+                    all_items_to_match = {item.get('id'): item for item in sibling_items if item.get('id') is not None}
+                    all_items_to_match[queue_id] = queue_item
+
+                    now_ts = time.time()
+                    for item_id, item_to_match in all_items_to_match.items():
+                        existing = _album_pre_matched_results.get(item_id)
+                        if existing and (now_ts - existing.get('timestamp', 0)) <= _ALBUM_PRE_MATCH_TTL_SECONDS:
+                            # Still valid — keep the existing result to avoid
+                            # overwriting with a potentially lower-quality match.
+                            continue
+                        match_result, match_score = _pick_best_candidate_from_responses(
+                            album_responses, item_to_match
+                        )
+                        if match_result and match_score >= _ALBUM_MATCH_MIN_SCORE:
+                            _album_pre_matched_results[item_id] = {
+                                'timestamp': now_ts,
+                                'result': match_result,
+                                'score': match_score,
+                            }
+                            if item_id != queue_id:
+                                logger.debug(
+                                    f"Queue {queue_id}: Pre-matched sibling {item_id} "
+                                    f"from album search (score={match_score:.2f})"
+                                )
+
+                    current_pre_match = _album_pre_matched_results.get(queue_id)
+                    if (
+                        current_pre_match
+                        and (time.time() - current_pre_match.get('timestamp', 0)) <= _ALBUM_PRE_MATCH_TTL_SECONDS
+                    ):
+                        best_result = current_pre_match['result']
+                        best_score = current_pre_match['score']
+                        logger.info(
+                            f"Queue {queue_id}: Album-first match selected "
+                            f"(score={best_score:.2f})"
+                        )
 
         # Pass 2: fallback to per-track search when album pass was inconclusive.
         if not best_result:
