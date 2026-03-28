@@ -4070,9 +4070,11 @@ def _get_genre_mood_analytics(top_n: int = 50):
                         genre_counter[genre] += 1
 
             if mood_raw:
-                mood = str(mood_raw).strip()
-                if mood:
-                    mood_counter[mood] += 1
+                tokens = re.split(r"[;]+", str(mood_raw))
+                for token in tokens:
+                    mood = token.strip()
+                    if mood:
+                        mood_counter[mood] += 1
 
         genres = [{"name": name, "count": count} for name, count in genre_counter.most_common(top_n)]
         moods = [{"name": name, "count": count} for name, count in mood_counter.most_common(top_n)]
@@ -29465,14 +29467,18 @@ def playlists_create(playlist_type):
 
             # Get top moods from mood scan data
             cursor.execute("""
-                SELECT mood, COUNT(*)
-                FROM tracks
+                SELECT mood FROM tracks
                 WHERE mood IS NOT NULL AND mood != ''
-                GROUP BY mood
-                ORDER BY COUNT(*) DESC
-                LIMIT 20
             """)
-            top_moods = [{'name': row[0], 'count': row[1]} for row in cursor.fetchall()]
+            mood_counts = {}
+            for row in cursor.fetchall():
+                mood_str = row[0]
+                if mood_str:
+                    moods_list = [m.strip() for m in mood_str.split(';') if m.strip()]
+                    for mood in moods_list:
+                        mood_counts[mood] = mood_counts.get(mood, 0) + 1
+            sorted_moods = sorted(mood_counts.items(), key=lambda x: x[1], reverse=True)[:20]
+            top_moods = [{'name': mood, 'count': count} for mood, count in sorted_moods]
             
             conn.close()
         except Exception as e:
