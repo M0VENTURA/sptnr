@@ -395,11 +395,11 @@
                 </div>
     {% endif %}
     
-    <!-- Genres & Tags Card -->
+    <!-- Genres & Moods Card -->
     <div class="card mb-4" id="album-genres-section">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
-                            <i class="bi bi-tags-fill"></i> Genres & Tags
+                            <i class="bi bi-tags-fill"></i> Genres &amp; Moods
                         </h5>
                     </div>
                     <div class="card-body">
@@ -426,78 +426,61 @@
 
                         <hr class="my-3">
 
+                        <!-- Found Genres from Sources (merged, sorted by popularity) -->
+                        <h6 class="text-muted mb-1">Found Genres &amp; Tags</h6>
+                        <p class="text-muted small mb-2">From scan data (Spotify, Last.fm, ListenBrainz, Discogs, MusicBrainz). Click to select, then apply to all album tracks.</p>
+                        {% if merged_genres %}
+                          <div class="d-flex flex-wrap gap-2 mb-3" id="albumSourceGenresContainer">
+                            {% for g in merged_genres %}
+                              <button type="button"
+                                class="btn btn-sm btn-outline-secondary album-source-genre-btn"
+                                data-genre="{{ g.name }}"
+                                onclick="toggleAlbumSourceGenre(this)"
+                                title="{{ g.name }} — {{ g.count }} occurrence(s)">
+                                {{ g.name }}<span class="ms-1 text-muted small">({{ g.count }})</span>
+                              </button>
+                            {% endfor %}
+                          </div>
+                          <button class="btn btn-sm btn-success mb-3" id="applyAlbumSourceGenresBtn" style="display:none;"
+                            onclick="applySelectedSourceGenresToAlbum()">
+                            <i class="bi bi-check-circle"></i> Apply Selected to Album
+                          </button>
+                        {% else %}
+                          <div class="alert alert-info mb-3">
+                            <i class="bi bi-info-circle"></i> No genre source data yet.
+                            <br><small>Run the popularity scan to populate genres from Spotify, Last.fm, etc.</small>
+                          </div>
+                        {% endif %}
+
+                        {% if mood_sources %}
+                        <h6 class="text-muted mb-1">Found Moods</h6>
+                        <p class="text-muted small mb-2">Moods detected from audio analysis. Click to select, then apply.</p>
+                        <div class="d-flex flex-wrap gap-2 mb-3" id="albumSourceMoodsContainer">
+                          {% for m in mood_sources %}
+                            <button type="button"
+                              class="btn btn-sm btn-outline-info album-source-genre-btn"
+                              data-genre="{{ m.name }}"
+                              onclick="toggleAlbumSourceGenre(this)"
+                              title="{{ m.name }} — {{ m.count }} track(s)">
+                              {{ m.name }}<span class="ms-1 text-muted small">({{ m.count }})</span>
+                            </button>
+                          {% endfor %}
+                        </div>
+                        {% endif %}
+
+                        <hr class="my-3">
+
                         <!-- Genre Recommendations -->
-                        <h6 class="text-muted mb-2">Get Suggestions</h6>
+                        <h6 class="text-muted mb-2">Get Online Suggestions</h6>
                         <button type="button" class="btn btn-sm btn-outline-primary w-100 mb-2" onclick="fetchGenreRecommendations()" id="fetchGenresBtn">
                             <i class="bi bi-cloud-download"></i> Recommendations
                         </button>
                         <div class="mb-3" id="recommendedGenresSection" style="display: none;">
                             <h6 class="mb-2 mt-2"><i class="bi bi-stars"></i> Suggested Genres</h6>
-                            <p class="text-muted small mb-2">From Spotify, MusicBrainz & Discogs</p>
+                            <p class="text-muted small mb-2">From Spotify, MusicBrainz &amp; Discogs</p>
                             <div class="d-flex flex-wrap gap-2" id="recommendedGenres">
                                 <span class="text-muted small">Loading...</span>
                             </div>
-                        </div>
-
-                        <hr class="my-3">
-
-                        <!-- Genre Source Display -->
-                        <h6 class="text-muted mb-2">Source Tags</h6>
-                        <div id="albumGenreSourcesContainer">
-                          {% set sources = [
-                            ('spotify_genres', 'Spotify', 'success'),
-                            ('lastfm_tags', 'Last.fm', 'primary'),
-                            ('listenbrainz_genres', 'ListenBrainz', 'info'),
-                            ('discogs_genres', 'Discogs', 'warning'),
-                            ('musicbrainz_genres', 'MusicBrainz', 'secondary')
-                          ] %}
-                          {% set ns = namespace(has_any=False) %}
-                          {% for key, label, color in sources %}
-                            {% if genre_sources and genre_sources.get(key) %}{% set ns.has_any = True %}{% endif %}
-                          {% endfor %}
-                          {% if ns.has_any %}
-                            {% set ns2 = namespace(first=True) %}
-                            <ul class="nav nav-tabs" role="tablist">
-                              {% for key, label, color in sources %}
-                                {% if genre_sources and genre_sources.get(key) %}
-                                  <li class="nav-item" role="presentation">
-                                    <button class="nav-link {{ 'active' if ns2.first else '' }}"
-                                            id="albumGenreTab{{ key }}-tab" data-bs-toggle="tab"
-                                            data-bs-target="#albumGenreTab{{ key }}-content"
-                                            type="button" role="tab">
-                                      <i class="bi bi-tag"></i> {{ label }}
-                                      <span class="badge bg-secondary ms-2">{{ genre_sources[key]|length }}</span>
-                                    </button>
-                                  </li>
-                                  {% set ns2.first = False %}
-                                {% endif %}
-                              {% endfor %}
-                            </ul>
-                            {% set ns3 = namespace(first=True) %}
-                            <div class="tab-content mt-3">
-                              {% for key, label, color in sources %}
-                                {% if genre_sources and genre_sources.get(key) %}
-                                  <div class="tab-pane fade {{ 'active show' if ns3.first else '' }}"
-                                       id="albumGenreTab{{ key }}-content" role="tabpanel">
-                                    <p class="text-muted small mb-3">Top genres collected during scan</p>
-                                    <div class="d-flex flex-wrap gap-2">
-                                      {% for genre in genre_sources[key] %}
-                                        <span class="badge bg-{{ color }} me-2 mb-2">
-                                          {{ genre.name }}{% if genre.count %} <small class="text-muted">({{ genre.count }})</small>{% endif %}
-                                        </span>
-                                      {% endfor %}
-                                    </div>
-                                  </div>
-                                  {% set ns3.first = False %}
-                                {% endif %}
-                              {% endfor %}
-                            </div>
-                          {% else %}
-                            <div class="alert alert-info mb-0">
-                              <i class="bi bi-info-circle"></i> No genre source data yet.
-                              <br><small>Run the popularity scan to populate genres from Spotify, Last.fm, etc.</small>
-                            </div>
-                          {% endif %}
                         </div>
 
                         <input type="hidden" id="album_genres" name="album_genres" value="{{ album_genres|join(', ') if album_genres else '' }}">
@@ -1760,6 +1743,64 @@
 
     // Genre recommendation functions
     let selectedGenres = new Set();
+
+    // Source genre/mood selection for album page
+    let _albumSourceSelectedGenres = new Set();
+
+    function toggleAlbumSourceGenre(btn) {
+      const genre = btn.dataset.genre;
+      if (!genre) return;
+      if (_albumSourceSelectedGenres.has(genre)) {
+        _albumSourceSelectedGenres.delete(genre);
+        btn.classList.remove('btn-primary');
+        if (btn.classList.contains('btn-outline-info') || btn.classList.contains('album-source-mood-btn')) {
+          btn.classList.add('btn-outline-info');
+        } else {
+          btn.classList.add('btn-outline-secondary');
+        }
+      } else {
+        _albumSourceSelectedGenres.add(genre);
+        btn.classList.remove('btn-outline-secondary', 'btn-outline-info');
+        btn.classList.add('btn-primary');
+      }
+      const applyBtn = document.getElementById('applyAlbumSourceGenresBtn');
+      if (applyBtn) applyBtn.style.display = _albumSourceSelectedGenres.size > 0 ? 'inline-block' : 'none';
+    }
+
+    function applySelectedSourceGenresToAlbum() {
+      if (_albumSourceSelectedGenres.size === 0) {
+        alert('Please select at least one genre or mood to apply');
+        return;
+      }
+      const artistName = "{{ artist_name|escapejs }}";
+      const albumName = "{{ album_name|escapejs }}";
+      const genresArray = Array.from(_albumSourceSelectedGenres);
+      if (!confirm(`Apply [${genresArray.join(', ')}] to all tracks of "${albumName}"?`)) return;
+      const btn = document.getElementById('applyAlbumSourceGenresBtn');
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Applying...';
+      fetch('/api/album/genres', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ artist: artistName, album: albumName, genres: genresArray, action: 'add' })
+      })
+        .then(r => r.json())
+        .then(data => {
+          if (data.success) {
+            alert('✅ Genres applied to album successfully');
+            location.reload();
+          } else {
+            alert('❌ Error: ' + (data.error || 'Failed to apply'));
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-check-circle"></i> Apply Selected to Album';
+          }
+        })
+        .catch(err => {
+          alert('❌ Network error: ' + err.message);
+          btn.disabled = false;
+          btn.innerHTML = '<i class="bi bi-check-circle"></i> Apply Selected to Album';
+        });
+    }
 
     function fetchGenreRecommendations() {
         const artistName = "{{ artist_name|escapejs }}";

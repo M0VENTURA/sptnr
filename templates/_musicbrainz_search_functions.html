@@ -130,7 +130,7 @@ async function searchMusicBrainzRelease(event, artist, album, track) {
     // For artist-only browsing (similar artists buttons), stay artist-scoped in MusicBrainz only.
     if (data.success && data.results && data.results.length >= (isArtistOnlySearch ? 1 : 3)) {
       statusEl.style.display = 'none';
-      displayMusicBrainzResults(data.results);
+      displayMusicBrainzResults(sortMusicBrainzResults(data.results));
       return;
     }
 
@@ -145,7 +145,7 @@ async function searchMusicBrainzRelease(event, artist, album, track) {
     if (track) {
       statusEl.style.display = 'none';
       if (data.success && data.results && data.results.length > 0) {
-        displayMusicBrainzResults(data.results);
+        displayMusicBrainzResults(sortMusicBrainzResults(data.results));
       } else {
         errorEl.textContent = data.message || 'No results found on MusicBrainz for this track';
         errorEl.style.display = 'block';
@@ -174,12 +174,22 @@ async function searchMusicBrainzRelease(event, artist, album, track) {
       return;
     }
 
-    displayMusicBrainzResults(allResults);
+    displayMusicBrainzResults(sortMusicBrainzResults(allResults));
   } catch (error) {
     statusEl.style.display = 'none';
     errorEl.textContent = 'Error searching: ' + error.message;
     errorEl.style.display = 'block';
   }
+}
+
+// ===== Sort Results by Date (newest first) =====
+
+function sortMusicBrainzResults(results) {
+  return results.slice().sort((a, b) => {
+    const yearA = parseInt((a.date || a.year || '').toString().substring(0, 4)) || 0;
+    const yearB = parseInt((b.date || b.year || '').toString().substring(0, 4)) || 0;
+    return yearB - yearA;
+  });
 }
 
 // ===== Display Results Function =====
@@ -322,7 +332,21 @@ function displayMusicBrainzResults(results) {
         return;
       }
       
-      downloadMusicBrainzRelease(releaseData.artist, releaseData.album, releaseData.tracks, releaseData.year, releaseData.release_id, releaseData.source);
+      const btn = this;
+      const origHTML = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Queuing...';
+      downloadMusicBrainzRelease(releaseData.artist, releaseData.album, releaseData.tracks, releaseData.year, releaseData.release_id, releaseData.source)
+        .then(queued => {
+          if (!queued) {
+            btn.disabled = false;
+            btn.innerHTML = origHTML;
+          }
+        })
+        .catch(() => {
+          btn.disabled = false;
+          btn.innerHTML = origHTML;
+        });
     });
   });
 
@@ -337,6 +361,10 @@ function displayMusicBrainzResults(results) {
         return;
       }
 
+      const btn = this;
+      const origHTML = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
       const queued = await downloadMusicBrainzRelease(
         releaseData.artist,
         releaseData.album,
@@ -348,6 +376,9 @@ function displayMusicBrainzResults(results) {
       );
       if (queued) {
         markMBTrackQueued(container, dataKey, trackIndex);
+      } else {
+        btn.disabled = false;
+        btn.innerHTML = origHTML;
       }
     });
   });
@@ -365,6 +396,10 @@ function displayMusicBrainzResults(results) {
         return;
       }
 
+      const btn = this;
+      const origHTML = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Queuing...';
       const queued = await downloadMusicBrainzRelease(
         releaseData.artist,
         releaseData.album,
@@ -376,6 +411,9 @@ function displayMusicBrainzResults(results) {
       );
       if (queued) {
         selectedIndices.forEach(index => markMBTrackQueued(container, dataKey, index));
+      } else {
+        btn.disabled = false;
+        btn.innerHTML = origHTML;
       }
     });
   });

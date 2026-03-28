@@ -257,11 +257,11 @@
                     </div>
                 </div>
 
-                <!-- Genres & Tags Section -->
+                <!-- Genres & Moods Section -->
                 <div class="card mb-4" id="track-genres-edit-section">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
-                            <i class="bi bi-tags-fill"></i> Genres & Tags
+                            <i class="bi bi-tags-fill"></i> Genres &amp; Moods
                         </h5>
                     </div>
                     <div class="card-body">
@@ -298,40 +298,43 @@
 
                         <hr class="my-3">
 
-                        <!-- Genre recommendations & source buttons -->
+                        <!-- Found Genres from Sources (merged, sorted by popularity) -->
                         <div>
-                            <h6 class="mb-2">Add From Sources</h6>
-                            <div class="d-flex flex-wrap gap-2 mb-3">
-                                {% if track.spotify_genres %}
-                                <button type="button" class="btn btn-sm btn-outline-success" onclick='addGenresFromSourceText({{ track.spotify_genres|tojson }}, "Spotify")'>
-                                    <i class="bi bi-plus-circle"></i> Spotify
-                                </button>
-                                {% endif %}
-                                {% if track.lastfm_tags %}
-                                <button type="button" class="btn btn-sm btn-outline-primary" onclick='addGenresFromSourceText({{ track.lastfm_tags|tojson }}, "Last.fm")'>
-                                    <i class="bi bi-plus-circle"></i> Last.fm
-                                </button>
-                                {% endif %}
-                                {% if track.listenbrainz_genres %}
-                                <button type="button" class="btn btn-sm btn-outline-info" onclick='addGenresFromSourceText({{ track.listenbrainz_genres|tojson }}, "ListenBrainz")'>
-                                    <i class="bi bi-plus-circle"></i> ListenBrainz
-                                </button>
-                                {% endif %}
-                                {% if track.discogs_genres %}
-                                <button type="button" class="btn btn-sm btn-outline-warning" onclick='addGenresFromSourceText({{ track.discogs_genres|tojson }}, "Discogs")'>
-                                    <i class="bi bi-plus-circle"></i> Discogs
-                                </button>
-                                {% endif %}
-                                {% if track.musicbrainz_genres %}
-                                <button type="button" class="btn btn-sm btn-outline-secondary" onclick='addGenresFromSourceText({{ track.musicbrainz_genres|tojson }}, "MusicBrainz")'>
-                                    <i class="bi bi-plus-circle"></i> MusicBrainz
-                                </button>
-                                {% endif %}
-                            </div>
-                            <button type="button" class="btn btn-sm btn-outline-light mb-3" onclick="addAllKnownSourceGenres()">
-                                <i class="bi bi-collection"></i> Apply All Source Genres
-                            </button>
+                            <h6 class="mb-1">Found Genres &amp; Tags</h6>
+                            <p class="text-muted small mb-2">From scan data. Click to select, then apply to this track.</p>
+                            {% if merged_genres %}
+                              <div class="d-flex flex-wrap gap-2 mb-3" id="trackSourceGenresContainer">
+                                {% for g in merged_genres %}
+                                  <button type="button"
+                                    class="btn btn-sm btn-outline-secondary track-source-genre-btn"
+                                    data-genre="{{ g.name }}"
+                                    onclick="toggleTrackSourceGenre(this)"
+                                    title="{{ g.name }} — {{ g.count }} occurrence(s)">
+                                    {{ g.name }}<span class="ms-1 text-muted small">({{ g.count }})</span>
+                                  </button>
+                                {% endfor %}
+                              </div>
+                              <button class="btn btn-sm btn-success mb-3" id="applyTrackSourceGenresBtn" style="display:none;"
+                                onclick="applySelectedSourceGenresToTrack()">
+                                <i class="bi bi-check-circle"></i> Apply Selected to Track
+                              </button>
+                            {% else %}
+                              <p class="text-muted small">No source genre data available yet.</p>
+                            {% endif %}
                         </div>
+
+                        {% if track.mood %}
+                        <hr class="my-3">
+                        <div>
+                            <h6 class="mb-1">Detected Mood</h6>
+                            <span class="btn btn-sm btn-outline-info track-source-genre-btn"
+                              data-genre="{{ track.mood }}"
+                              onclick="toggleTrackSourceGenre(this)"
+                              title="{{ track.mood }}{% if track.mood_confidence %} — confidence: {{ '%.0f'|format(track.mood_confidence * 100) }}%{% endif %}">
+                              {{ track.mood }}{% if track.mood_confidence %}<span class="ms-1 text-muted small">({{ '%.0f'|format(track.mood_confidence * 100) }}%)</span>{% endif %}
+                            </span>
+                        </div>
+                        {% endif %}
 
                         <hr class="my-3">
 
@@ -1320,6 +1323,68 @@ document.addEventListener('DOMContentLoaded', function() {
 
     renderMergeComparePane();
 });
+
+// Source genre/mood selection for track page
+let _trackSourceSelectedGenres = new Set();
+
+function toggleTrackSourceGenre(btn) {
+  const genre = btn.dataset.genre;
+  if (!genre) return;
+  if (_trackSourceSelectedGenres.has(genre)) {
+    _trackSourceSelectedGenres.delete(genre);
+    btn.classList.remove('btn-primary');
+    if (btn.classList.contains('btn-outline-info')) {
+      btn.classList.add('btn-outline-info');
+    } else {
+      btn.classList.add('btn-outline-secondary');
+    }
+  } else {
+    _trackSourceSelectedGenres.add(genre);
+    btn.classList.remove('btn-outline-secondary', 'btn-outline-info');
+    btn.classList.add('btn-primary');
+  }
+  const applyBtn = document.getElementById('applyTrackSourceGenresBtn');
+  if (applyBtn) applyBtn.style.display = _trackSourceSelectedGenres.size > 0 ? 'inline-block' : 'none';
+}
+
+function applySelectedSourceGenresToTrack() {
+  if (_trackSourceSelectedGenres.size === 0) {
+    alert('Please select at least one genre or mood to apply');
+    return;
+  }
+  // Add to the local genres input (same as addGenre)
+  _trackSourceSelectedGenres.forEach(g => {
+    addGenreToInput(g);
+  });
+  _trackSourceSelectedGenres.clear();
+  document.querySelectorAll('.track-source-genre-btn.btn-primary').forEach(btn => {
+    btn.classList.remove('btn-primary');
+    if (btn.style.borderColor === 'var(--bs-info)' || btn.dataset.isMood) {
+      btn.classList.add('btn-outline-info');
+    } else {
+      btn.classList.add('btn-outline-secondary');
+    }
+  });
+  const applyBtn = document.getElementById('applyTrackSourceGenresBtn');
+  if (applyBtn) applyBtn.style.display = 'none';
+}
+
+function addGenreToInput(genre) {
+  const container = document.getElementById('genresContainer');
+  const hiddenInput = document.getElementById('genres');
+  const currentGenres = hiddenInput.value ? hiddenInput.value.split(',').map(g => g.trim()).filter(Boolean) : [];
+  if (currentGenres.map(g => g.toLowerCase()).includes(genre.toLowerCase())) return;
+  currentGenres.push(genre);
+  hiddenInput.value = currentGenres.join(', ');
+  // Remove placeholder if present
+  const placeholder = container.querySelector('.text-muted.small');
+  if (placeholder) placeholder.remove();
+  const span = document.createElement('span');
+  span.className = 'badge bg-primary me-1 mb-1';
+  span.style.fontSize = '0.9rem';
+  span.innerHTML = `${genre} <button type="button" class="btn-close btn-close-white ms-1" style="font-size:0.6rem;" onclick="removeGenre('${genre.replace(/'/g, "\\'")}')" aria-label="Remove"></button>`;
+  container.appendChild(span);
+}
 
 function addGenre() {
     const input = document.getElementById('newGenreInput');

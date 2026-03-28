@@ -3290,7 +3290,42 @@ def _schedule_configured_startup_scan_launch():
 
             cfg = get_config() or {}
             features = cfg.get("features", {}) if isinstance(cfg, dict) else {}
-            if not bool(features.get("launch_on_startup", False)):
+            launch_on_startup = bool(features.get("launch_on_startup", False))
+
+            # Always check for interrupted scans and resume them, regardless of launch_on_startup.
+            # A scan that was actively running when the server went down should always be resumed.
+            try:
+                from scan_resume import detect_interrupted_scan
+                resume_scan_mapping = {
+                    "combined": ("scan_combined", "/scan/combined"),
+                    "popularity": ("scan_popularity_route", "/scan/popularity"),
+                    "navidrome": ("scan_navidrome", "/scan/navidrome"),
+                }
+                for interrupted_type, (handler_name, base_path) in resume_scan_mapping.items():
+                    progress = detect_interrupted_scan(interrupted_type)
+                    if not progress:
+                        continue
+
+                    if not _has_completed_first_navidrome_import(auto_repair=True):
+                        logging.info(f"[BOOT-RESUME] Cannot resume {interrupted_type} scan: first import not complete")
+                        break
+
+                    handler = globals().get(handler_name)
+                    if not callable(handler):
+                        logging.warning(f"[BOOT-RESUME] Handler '{handler_name}' not available for {interrupted_type}")
+                        continue
+
+                    log_unified(f"[BOOT-RESUME] Auto-resuming interrupted {interrupted_type} scan")
+                    request_path = f"{base_path}?mode=resume&restart=0"
+                    with app.test_request_context(request_path, method="POST"):
+                        handler()
+                    # Don't start a fresh launch_on_startup scan if we already resumed
+                    return
+            except Exception as resume_exc:
+                logging.warning(f"[BOOT-RESUME] Could not check for interrupted scans: {resume_exc}")
+
+            # No interrupted scans found. Check if we should start a fresh scheduled scan.
+            if not launch_on_startup:
                 return
 
             if not _has_completed_first_navidrome_import(auto_repair=True):
@@ -5551,10 +5586,10 @@ def artist_detail(name):
         """, (name,))
         artist_stats = cursor.fetchone()
         
-        # If artist ID not found in tracks, try to get it from album MusicBrainz IDs as fallback
+        # If artist ID not found in tracks, trigger a background lookup via MusicBrainz.
+        # This is done in a background thread to avoid blocking page render.
         if artist_stats and not dict(artist_stats).get('musicbrainz_artist_id'):
             try:
-                # Look for any album with a MusicBrainz release ID
                 cursor.execute("""
                     SELECT DISTINCT musicbrainz_album_mbid 
                     FROM tracks 
@@ -5566,43 +5601,40 @@ def artist_detail(name):
                 
                 if album_mbid_row:
                     album_mbid = album_mbid_row['musicbrainz_album_mbid']
-                    
-                    # Fetch the artist ID from this album's MusicBrainz release
-                    try:
-                        import requests
-                        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
-                        release_url = f"https://musicbrainz.org/ws/2/release/{album_mbid}"
-                        params = {"fmt": "json", "inc": "artist-credits"}
-                        resp = requests.get(release_url, params=params, headers=headers, timeout=5)
-                        
-                        if resp.status_code == 200:
-                            release_data = resp.json()
-                            artist_credits = release_data.get("artist-credit", [])
-                            if artist_credits:
-                                # Get the first artist credit
-                                first_artist = artist_credits[0]
-                                if isinstance(first_artist, dict):
-                                    artist_id = first_artist.get("artist", {}).get("id")
-                                    if artist_id:
-                                        logging.info(f"Found artist ID {artist_id} for {name} via album {album_mbid}")
-                                        # Update stats dict with the found artist ID
-                                        artist_stats = dict(artist_stats) if artist_stats else {}
-                                        artist_stats['musicbrainz_artist_id'] = artist_id
-                                        
-                                        # Save to database so it persists
-                                        try:
-                                            cursor.execute("""
-                                                UPDATE tracks
-                                                SET musicbrainz_artist_id = %s, lastfm_artist_mbid = %s
-                                                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-                                                AND (musicbrainz_artist_id IS NULL OR musicbrainz_artist_id = '')
-                                            """, (artist_id, artist_id, name))
-                                            conn.commit()
-                                            logging.debug(f"Saved artist ID {artist_id} to {name} tracks")
-                                        except Exception as e:
-                                            logging.debug(f"Failed to save artist ID to database: {e}")
-                    except Exception as e:
-                        logging.debug(f"Failed to get artist ID from album MBID: {e}")
+
+                    def _fetch_artist_id_bg(artist_name=name, mbid=album_mbid):
+                        """Fetch and save artist MusicBrainz ID in the background."""
+                        try:
+                            import requests as _req
+                            headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
+                            release_url = f"https://musicbrainz.org/ws/2/release/{mbid}"
+                            params = {"fmt": "json", "inc": "artist-credits"}
+                            resp = _req.get(release_url, params=params, headers=headers, timeout=5)
+                            if resp.status_code == 200:
+                                artist_credits = resp.json().get("artist-credit", [])
+                                if artist_credits:
+                                    first_artist = artist_credits[0]
+                                    if isinstance(first_artist, dict):
+                                        artist_id = first_artist.get("artist", {}).get("id")
+                                        if artist_id:
+                                            logging.info(f"[BG] Found artist ID {artist_id} for {artist_name}")
+                                            try:
+                                                bg_conn = get_db()
+                                                bg_cursor = bg_conn.cursor()
+                                                bg_cursor.execute("""
+                                                    UPDATE tracks
+                                                    SET musicbrainz_artist_id = %s, lastfm_artist_mbid = %s
+                                                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+                                                    AND (musicbrainz_artist_id IS NULL OR musicbrainz_artist_id = '')
+                                                """, (artist_id, artist_id, artist_name))
+                                                bg_conn.commit()
+                                                bg_conn.close()
+                                            except Exception as db_err:
+                                                logging.debug(f"[BG] Failed to save artist ID: {db_err}")
+                        except Exception as e:
+                            logging.debug(f"[BG] Artist ID lookup failed for {artist_name}: {e}")
+
+                    threading.Thread(target=_fetch_artist_id_bg, daemon=True, name="artist-id-lookup").start()
             except Exception as e:
                 logging.debug(f"Fallback artist ID lookup failed: {e}")
         
@@ -5759,7 +5791,7 @@ def artist_detail(name):
         tracks_genre_data = []
         try:
             cursor.execute(f"""
-                SELECT spotify_genres, lastfm_tags, listenbrainz_genres, discogs_genres, musicbrainz_genres
+                SELECT spotify_genres, lastfm_tags, listenbrainz_genres, discogs_genres, musicbrainz_genres, mood
                 FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
             """, (name,))
             tracks_genre_data = [dict(row) for row in cursor.fetchall()]
@@ -6043,10 +6075,34 @@ def artist_detail(name):
         
         # Compute genre sources for server-side rendering (from DB data populated during scans)
         genre_sources = {}
+        merged_genres = []
+        mood_sources = []
         try:
             genre_sources = get_artist_genres_summary(tracks_genre_data, limit=30)
+            # Merge all sources into a single sorted list for the combined display
+            from collections import defaultdict as _defdict
+            _merged_counts = _defdict(int)
+            for _tags in genre_sources.values():
+                for _tag in _tags:
+                    _n = _tag.get('name', '').strip() if isinstance(_tag, dict) else str(_tag).strip()
+                    _c = _tag.get('count', 1) if isinstance(_tag, dict) else 1
+                    if _n:
+                        _merged_counts[_n] += _c
+            merged_genres = [{"name": n, "count": c} for n, c in sorted(_merged_counts.items(), key=lambda x: -x[1])]
         except Exception as e:
             logging.debug(f"Error computing genre sources for artist page: {e}")
+
+        # Aggregate moods across all artist tracks
+        try:
+            from collections import Counter as _Counter
+            _mood_counts = _Counter()
+            for _row in tracks_genre_data:
+                _m = _row.get('mood')
+                if _m and str(_m).strip():
+                    _mood_counts[str(_m).strip().lower()] += 1
+            mood_sources = [{"name": m, "count": c} for m, c in _mood_counts.most_common(30)]
+        except Exception as e:
+            logging.debug(f"Error aggregating moods for artist page: {e}")
 
         # Preload similar artists from DB; page should not re-fetch on open.
         similar_artists_data = {
@@ -6124,6 +6180,8 @@ def artist_detail(name):
                              stats=artist_stats,
                              genres=genres,
                              genre_sources=genre_sources,
+                             merged_genres=merged_genres,
+                             mood_sources=mood_sources,
                              similar_artists_data=similar_artists_data,
                              artist_members=artist_members,
                              artist_country=artist_country,
@@ -10278,10 +10336,32 @@ def album_detail(artist, album):
         # Genres are only fetched from external sources (Spotify, Last.fm, etc.) during the
         # popularity/singles scan and saved to the database. Pre-rendering avoids AJAX on page open.
         genre_sources = {}
+        merged_genres = []
+        mood_sources = []
         try:
             genre_sources = get_album_genres_summary(tracks_with_genre_fit, limit=25)
+            from collections import defaultdict as _defdict
+            _merged_counts = _defdict(int)
+            for _tags in genre_sources.values():
+                for _tag in _tags:
+                    _n = _tag.get('name', '').strip() if isinstance(_tag, dict) else str(_tag).strip()
+                    _c = _tag.get('count', 1) if isinstance(_tag, dict) else 1
+                    if _n:
+                        _merged_counts[_n] += _c
+            merged_genres = [{"name": n, "count": c} for n, c in sorted(_merged_counts.items(), key=lambda x: -x[1])]
         except Exception as e:
             logging.debug(f"Error computing genre sources for album page: {e}")
+
+        try:
+            from collections import Counter as _Counter
+            _mood_counts = _Counter()
+            for _row in tracks_with_genre_fit:
+                _m = _row.get('mood') if isinstance(_row, dict) else None
+                if _m and str(_m).strip():
+                    _mood_counts[str(_m).strip().lower()] += 1
+            mood_sources = [{"name": m, "count": c} for m, c in _mood_counts.most_common(20)]
+        except Exception as e:
+            logging.debug(f"Error aggregating moods for album page: {e}")
         
         # Get qBittorrent and slskd config
         cfg = get_config()
@@ -10296,6 +10376,8 @@ def album_detail(artist, album):
                              album_data=album_data,
                              album_genres=sorted(list(album_genres)),
                              genre_sources=genre_sources,
+                             merged_genres=merged_genres,
+                             mood_sources=mood_sources,
                              is_album_favourite=is_album_favourite,
                              qbit_config=qbit_config,
                              slskd_config=slskd_config)
@@ -11409,6 +11491,23 @@ def track_detail(track_id):
         
         conn.close()
         
+        # Compute merged genre list for the track's source tags
+        merged_genres = []
+        try:
+            from genre_tag_aggregator import get_track_genres_and_tags
+            from collections import defaultdict as _defdict
+            _track_sources = get_track_genres_and_tags(track)
+            _merged_counts = _defdict(int)
+            for _tags in _track_sources.values():
+                for _tag in _tags:
+                    _n = _tag.get('name', '').strip() if isinstance(_tag, dict) else str(_tag).strip()
+                    _c = _tag.get('count', 1) if isinstance(_tag, dict) else 1
+                    if _n:
+                        _merged_counts[_n] += _c
+            merged_genres = [{"name": n, "count": c} for n, c in sorted(_merged_counts.items(), key=lambda x: -x[1])]
+        except Exception as e:
+            logging.debug(f"Error computing merged genres for track page: {e}")
+        
         # Load config for template
         try:
             cfg = get_config()
@@ -11421,6 +11520,7 @@ def track_detail(track_id):
         
         return render_template("track.html", track=track, recommended_genres=recommended_genres, track_id=track_id,
                      is_track_favourite=is_track_favourite,
+                     merged_genres=merged_genres,
                              qbit_config=qbit_config, slskd_config=slskd_config)
     
     except Exception as e:
