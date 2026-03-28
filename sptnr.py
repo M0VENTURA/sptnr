@@ -93,13 +93,173 @@ def search_spotify_track(title, artist, album=None):
             continue
     return []
 
-def select_best_spotify_match(results, track_title):
-    def clean(s): return re.sub(r"[^\w\s]", "", s.lower()).strip()
-    cleaned_title = clean(track_title)
-    exact = next((r for r in results if clean(r["name"]) == cleaned_title), None)
-    if exact: return exact
-    filtered = [r for r in results if not re.search(r"(unplugged|live|remix|edit|version)", r["name"].lower())]
-    return max(filtered, key=lambda r: r.get("popularity", 0)) if filtered else {"popularity": 0}
+_VERSION_IGNORE_TAGS_RE = re.compile(r"^(feat\.?|ft\.?|with|featuring)", re.IGNORECASE)
+_VERSION_KEYWORDS_RE = re.compile(
+    r"(live|remix|acoustic|unplugged|edit|version|demo|instrumental|"
+    r"radio\s*edit|extended|remaster(?:ed)?|cover|session)",
+    re.IGNORECASE,
+)
+# Matches a full parenthetical that contains a version keyword, e.g. "(Live at MSG)"
+_VERSION_TAG_RE = re.compile(
+    r"\((?:(?!feat\.?|ft\.?|with|featuring)[^)]*?)"
+    r"(?:live|remix|acoustic|unplugged|edit|version|demo|instrumental|"
+    r"radio\s*edit|extended|remaster(?:ed)?|cover|session)[^)]*\)",
+    re.IGNORECASE,
+)
+
+
+def _extract_version_tag(title):
+    """Extract the first parenthetical version tag from a title, lowercased and stripped.
+
+    Examples:
+        "Track Name (Live)"    -> "live"
+        "Track Name (Remix)"   -> "remix"
+        "Track Name"           -> None
+        "Track Name (feat. X)" -> None  (featuring tags are ignored)
+    """
+    for m in re.finditer(r"\(([^)]+)\)", title):
+        content = m.group(1).strip()
+        if _VERSION_IGNORE_TAGS_RE.match(content):
+            continue
+        if _VERSION_KEYWORDS_RE.search(content):
+            norm = re.sub(r"[^\w\s]", "", content.lower()).strip()
+            return norm
+    return None
+
+
+def _normalize_spotify_title(s):
+    """Normalize a Spotify track/release title for matching.
+
+    Steps:
+        1. Lowercase
+        2. Remove trailing '- single', '- ep', '- remastered…' etc.
+        3. Remove punctuation
+        4. Collapse whitespace
+    """
+    s = s.lower()
+    s = re.sub(r"\s*[-–]\s*(single|ep|remaster(?:ed)?(\s+\d{4})?)\s*$", "", s)
+    s = re.sub(r"[^\w\s]", "", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _is_explicitly_single(result):
+    """Return True if a Spotify track result is explicitly labelled as a single.
+
+    A release is explicitly a single if:
+        * album_type == 'single', OR
+        * the release title ends with '- Single' (case-insensitive).
+    """
+    album = result.get("album", {})
+    album_type = (album.get("album_type") or "").lower()
+    album_name = album.get("name") or ""
+    if album_type == "single":
+        return True
+    if re.search(r"-\s*single\s*$", album_name, re.IGNORECASE):
+        return True
+    return False
+
+
+def _duration_matches(result, track_duration_ms, tolerance_ms=2000):
+    """Return True if the Spotify result's duration is within *tolerance_ms* of the track.
+
+    If either duration is missing/zero the check is skipped (returns True).
+    """
+    if not track_duration_ms:
+        return True
+    sp_duration = result.get("duration_ms") or 0
+    if not sp_duration:
+        return True
+    return abs(sp_duration - track_duration_ms) <= tolerance_ms
+
+
+def select_best_spotify_match(results, track_title, track_duration_ms=None, verbose=False):
+    """Select the best Spotify track from *results* for the given *track_title*.
+
+    Matching rules (in priority order):
+    1.  Extract the version tag from *track_title* (e.g. '(Live)', '(Remix)').
+    2.  If the release is explicitly a single (album_type==single OR '- Single' suffix),
+        accept it regardless of version-tag differences — a single can be a live/remix.
+    3.  If version tags match (or both are None), accept the release if the title also
+        matches after normalization.
+    4.  Reject if version tags mismatch AND the release is NOT an explicit single.
+    5.  Apply duration check (±2 s) when duration data is available; skip if missing.
+    6.  Accept releases with album_type in {'single', 'ep', 'album', 'compilation'}
+        that pass title + version checks.
+    7.  Among all accepted candidates, return the one with the highest popularity.
+    8.  Fall back to an empty result dict if nothing passes.
+
+    All decisions are logged at DEBUG level when *verbose* is True.
+    """
+    if not results:
+        if verbose:
+            logging.debug(f"[Spotify] No results for '{track_title}'")
+        return {"popularity": 0}
+
+    track_tag = _extract_version_tag(track_title)
+    track_norm = _normalize_spotify_title(track_title)
+
+    _ACCEPTED_ALBUM_TYPES = {"single", "ep", "album", "compilation"}
+
+    accepted = []
+    for r in results:
+        sp_name = r.get("name") or ""
+        album = r.get("album", {})
+        album_type = (album.get("album_type") or "").lower()
+        sp_tag = _extract_version_tag(sp_name)
+        sp_norm = _normalize_spotify_title(sp_name)
+        explicitly_single = _is_explicitly_single(r)
+
+        # --- title matching ---
+        # Require exact equality after normalization. Both titles are already stripped
+        # of '- Single'/'- EP' suffixes and punctuation so a plain equality check is
+        # sufficient and avoids false-positive prefix matches (e.g. "Hello" ≠ "Hello World").
+        title_ok = (sp_norm == track_norm)
+
+        # --- version-tag matching ---
+        if explicitly_single:
+            # Explicit single: accept even if version tags differ
+            tag_ok = True
+        else:
+            tag_ok = (track_tag == sp_tag)
+
+        # --- album type filter ---
+        type_ok = album_type in _ACCEPTED_ALBUM_TYPES
+
+        # --- duration check ---
+        dur_ok = _duration_matches(r, track_duration_ms)
+
+        reason_parts = []
+        if not title_ok:
+            reason_parts.append(f"title mismatch ('{sp_norm}' vs '{track_norm}')")
+        if not tag_ok:
+            reason_parts.append(f"version tag mismatch (track='{track_tag}' spotify='{sp_tag}')")
+        if not type_ok:
+            reason_parts.append(f"album_type '{album_type}' not accepted")
+        if not dur_ok:
+            reason_parts.append(f"duration mismatch ({r.get('duration_ms')}ms vs {track_duration_ms}ms)")
+
+        if title_ok and tag_ok and type_ok and dur_ok:
+            if verbose:
+                logging.debug(
+                    f"[Spotify] ACCEPTED '{sp_name}' (album_type={album_type}, "
+                    f"tag='{sp_tag}', explicit_single={explicitly_single}, "
+                    f"pop={r.get('popularity', 0)})"
+                )
+            accepted.append(r)
+        else:
+            if verbose:
+                logging.debug(
+                    f"[Spotify] REJECTED '{sp_name}' — {'; '.join(reason_parts)}"
+                )
+
+    if accepted:
+        best = max(accepted, key=lambda r: r.get("popularity", 0))
+        return best
+
+    if verbose:
+        logging.debug(f"[Spotify] No Spotify singles matched for '{track_title}'")
+    return {"popularity": 0}
 
 
 def build_cache_entry(stars, score, artist=None):
@@ -292,6 +452,20 @@ def normalize_title(s):
     s = re.sub(r"[^\w\s]", "", s)      # remove punctuation
     return s.strip()
 
+
+def is_valid_version(title, allow_live_remix=True):
+    """Return True if *title* is acceptable for single detection.
+
+    When *allow_live_remix* is False (the strict mode used during single detection),
+    any title that contains a version tag such as '(Live)', '(Remix)',
+    '(Acoustic)', etc. is considered non-canonical and returns False.
+
+    When *allow_live_remix* is True, all titles are accepted regardless of
+    version tags.
+    """
+    if allow_live_remix:
+        return True
+    return _VERSION_TAG_RE.search(title) is None
 
 
 def is_lastfm_single(title, artist):
@@ -599,7 +773,8 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
 
             # Spotify lookup + select
             spotify_results     = search_spotify_track(title, artist_name, album_name)
-            selected            = select_best_spotify_match(spotify_results, title)
+            track_duration_ms   = track.get("duration_ms") or track.get("duration") or None
+            selected            = select_best_spotify_match(spotify_results, title, track_duration_ms=track_duration_ms, verbose=verbose)
             sp_score            = selected.get("popularity", 0)
             spotify_album       = selected.get("album", {}).get("name", "")
             spotify_artist      = selected.get("artists", [{}])[0].get("name", "")
@@ -609,7 +784,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             spotify_album_art_url = images[0].get("url", "") if images and isinstance(images[0], dict) else ""
             spotify_album_type  = (selected.get("album", {}).get("album_type", "") or "").lower()
             spotify_total_tracks= selected.get("album", {}).get("total_tracks", 0)
-            is_spotify_single   = (spotify_album_type == "single")
+            is_spotify_single   = _is_explicitly_single(selected)
 
             # Last.fm
             lf_data        = get_lastfm_track_info(artist_name, title)
@@ -712,11 +887,20 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
 
         for trk in album_tracks:
             title      = trk["title"]
+            # `canonical` = True when the local track title is a plain studio version
+            # (no live/remix/acoustic tags).  Non-canonical tracks are normally skipped
+            # to avoid flagging album-only live recordings as singles.
             canonical  = is_valid_version(title, allow_live_remix=False)
 
             # existing strong/medium signals
             spotify_source       = bool(trk.get("is_spotify_single"))
             short_release_source = (trk.get("spotify_total_tracks", 99) <= 2)
+
+            # Single-detection override (Rule 3): if Spotify explicitly labels the
+            # matched release as a single, a live/remix track version is still a
+            # legitimate single (e.g. "Song Name (Live) – Single"), so we allow it.
+            if not canonical and spotify_source:
+                canonical = True
 
             # multi-source aggregator (Discogs/MusicBrainz/YouTube/Last.fm + known_singles)
             agg = detect_single_status(
