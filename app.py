@@ -29664,6 +29664,184 @@ def api_playlist_load():
         logging.error(f"Error loading playlist: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 200
 
+# ---------------------------------------------------------------------------
+# PLAYLIST EXPORT TO EXTERNAL MEDIA
+# ---------------------------------------------------------------------------
+
+# In-memory job tracker for export operations
+_export_jobs: dict = {}
+
+
+def _do_export(job_id: str, tracks: list, playlist_name: str, external_path: str, music_root: str) -> None:
+    """Background worker: copy/convert playlist tracks to an external media folder."""
+    import re
+    import shutil
+    import subprocess as _sp
+
+    job = _export_jobs[job_id]
+    try:
+        safe_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', playlist_name).strip() or "playlist"
+        output_dir = os.path.join(external_path, safe_name)
+        os.makedirs(output_dir, exist_ok=True)
+        job["output_dir"] = output_dir
+
+        m3u_lines = ["#EXTM3U"]
+        total = len(tracks)
+
+        for i, track in enumerate(tracks):
+            job["done"] = i
+            job["progress"] = int(i / total * 100) if total else 100
+
+            src_path = (track.get("path") or "").strip()
+            if not src_path:
+                job["errors"].append(f"Track '{track.get('title', '?')}': no path returned by Navidrome")
+                continue
+
+            # Resolve to absolute path – Navidrome returns relative paths from its music root
+            if not os.path.isabs(src_path):
+                src_path = os.path.join(music_root, src_path)
+
+            if not os.path.exists(src_path):
+                job["errors"].append(f"File not found: {src_path}")
+                continue
+
+            ext = os.path.splitext(src_path)[1].lower()
+            src_basename = os.path.basename(src_path)
+            extinf = f"#EXTINF:-1,{track.get('artist', 'Unknown')} - {track.get('title', 'Unknown')}"
+
+            if ext == ".flac":
+                dst_name = os.path.splitext(src_basename)[0] + ".mp3"
+                dst_path = os.path.join(output_dir, dst_name)
+                try:
+                    _sp.run(
+                        ["ffmpeg", "-i", src_path, "-b:a", "320k", "-q:a", "0", "-v", "error", "-y", dst_path],
+                        capture_output=True,
+                        timeout=300,
+                        check=True,
+                    )
+                    m3u_lines.append(extinf)
+                    m3u_lines.append(dst_name)
+                except FileNotFoundError:
+                    job["errors"].append(f"ffmpeg not found – cannot convert {src_basename}")
+                    continue
+                except _sp.CalledProcessError as exc:
+                    job["errors"].append(f"ffmpeg failed for {src_basename}: {exc.stderr.decode(errors='replace')[:200]}")
+                    continue
+                except _sp.TimeoutExpired:
+                    job["errors"].append(f"ffmpeg timed out for {src_basename}")
+                    continue
+            else:
+                dst_path = os.path.join(output_dir, src_basename)
+                try:
+                    shutil.copy2(src_path, dst_path)
+                    m3u_lines.append(extinf)
+                    m3u_lines.append(src_basename)
+                except OSError as exc:
+                    job["errors"].append(f"Copy failed for {src_basename}: {exc}")
+                    continue
+
+        # Write M3U playlist file
+        m3u_path = os.path.join(output_dir, f"{safe_name}.m3u")
+        with open(m3u_path, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(m3u_lines) + "\n")
+
+        job["done"] = total
+        job["progress"] = 100
+        job["status"] = "done"
+    except Exception as exc:
+        logging.error(f"[ExportJob {job_id}] Unexpected error: {exc}", exc_info=True)
+        job["errors"].append(f"Unexpected error: {exc}")
+        job["status"] = "error"
+
+
+@app.route("/api/playlist/export-to-external", methods=["POST"])
+def api_playlist_export_to_external():
+    """Start an async job that copies/converts playlist tracks to an external media folder."""
+    import uuid
+    import threading
+    import requests as req
+
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        playlist_id = (data.get("playlist_id") or data.get("playlist_path") or "").strip()
+        playlist_name = (data.get("playlist_name") or "playlist").strip()
+
+        if not playlist_id:
+            return jsonify({"error": "Missing playlist_id"}), 400
+
+        cfg = get_config()
+
+        # Resolve Navidrome credentials (multi-user aware, same logic as api_playlist_list)
+        current_user = session.get("username")
+        navidrome_users = cfg.get("navidrome_users", [])
+        nav_cfg = None
+        if navidrome_users and current_user:
+            nav_cfg = next((u for u in navidrome_users if u.get("user") == current_user), None)
+        if not nav_cfg:
+            nav_cfg = cfg.get("navidrome", {})
+
+        base_url = nav_cfg.get("base_url", "http://localhost:4533")
+        nd_user = nav_cfg.get("user", "admin")
+        nd_pass = nav_cfg.get("pass", "")
+
+        # Fetch tracks from Navidrome
+        try:
+            resp = req.get(
+                f"{base_url}/rest/getPlaylist.view",
+                params={"u": nd_user, "p": nd_pass, "c": "popularr", "f": "json", "id": playlist_id},
+                timeout=10,
+            )
+            playlist_data = resp.json().get("subsonic-response", {}).get("playlist", {})
+            tracks = playlist_data.get("entry", [])
+            if not isinstance(tracks, list):
+                tracks = [tracks] if tracks else []
+        except Exception as exc:
+            logging.error(f"Navidrome fetch error in export: {exc}")
+            return jsonify({"error": f"Failed to fetch playlist from Navidrome: {exc}"}), 500
+
+        if not tracks:
+            return jsonify({"error": "Playlist is empty or could not be loaded"}), 400
+
+        # Determine output base path
+        external_path = (
+            cfg.get("downloads", {}).get("external_export_path", "").strip()
+            or "/downloads/External"
+        )
+        music_root = os.environ.get("MUSIC_ROOT", "/music")
+
+        # Launch background job
+        job_id = uuid.uuid4().hex[:8]
+        _export_jobs[job_id] = {
+            "status": "running",
+            "progress": 0,
+            "done": 0,
+            "total": len(tracks),
+            "errors": [],
+            "output_dir": "",
+        }
+        t = threading.Thread(
+            target=_do_export,
+            args=(job_id, tracks, playlist_name, external_path, music_root),
+            daemon=True,
+        )
+        t.start()
+
+        return jsonify({"job_id": job_id, "total": len(tracks)}), 200
+
+    except Exception as exc:
+        logging.error(f"Error starting playlist export: {exc}", exc_info=True)
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/playlist/export-progress/<job_id>", methods=["GET"])
+def api_playlist_export_progress(job_id):
+    """Return the current status of a playlist export job."""
+    job = _export_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify(job), 200
+
+
 @app.route("/api/playlist/search-songs", methods=["POST"])
 def api_playlist_search_songs():
     """Search for songs in library"""

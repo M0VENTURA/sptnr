@@ -190,10 +190,21 @@
           </div>
 
           <!-- Actions -->
-          <div class="mt-4 d-flex gap-2 justify-content-end">
+          <div class="mt-4 d-flex gap-2 justify-content-end flex-wrap">
             <button class="btn btn-success" onclick="downloadPlaylistMatches()" id="dlDownloadBtn">
               <i class="bi bi-download"></i> Download Missing Tracks
             </button>
+            <button class="btn btn-info" onclick="exportToExternal()" id="dlExportBtn">
+              <i class="bi bi-usb-drive-fill"></i> Copy to External
+            </button>
+          </div>
+
+          <!-- Export Progress -->
+          <div id="dlExportProgress" style="display: none;" class="mt-3">
+            <p id="dlExportProgressText" class="text-muted small mb-1">Preparing export…</p>
+            <div class="progress" style="height: 22px;">
+              <div id="dlExportProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-info" role="progressbar" style="width: 0%">0%</div>
+            </div>
           </div>
         </div>
 
@@ -389,10 +400,253 @@
   // Load recommended playlists on page load
   document.addEventListener('DOMContentLoaded', function() {
     loadRecommendedPlaylists();
+    loadPlaylistList();
   });
 
+  // =============================================================================
+  // PLAYLIST DOWNLOADER
+  // =============================================================================
+
+  let currentPlaylistData = null;
+  let selectedReplacements = {};
+
+  async function loadPlaylistList() {
+    try {
+      const response = await fetch('/api/playlist/list');
+      const data = await response.json();
+
+      const select = document.getElementById('playlistFileSelect');
+      select.innerHTML = '<option value="">Select a playlist...</option>';
+
+      if (!data || !data.playlists) {
+        select.innerHTML = '<option value="">Error: Invalid API response</option>';
+        return;
+      }
+
+      if (data.playlists.length > 0) {
+        data.playlists.forEach(playlist => {
+          const option = document.createElement('option');
+          option.value = playlist.path;
+          let typeLabel = '';
+          if (playlist.type === 'smart' || playlist.type === 'smart-local') typeLabel = ' (Smart)';
+          option.textContent = `${playlist.name || playlist.path}${typeLabel} [${playlist.songCount || 0}]`;
+          option.dataset.type = playlist.type;
+          option.dataset.songCount = playlist.songCount || 0;
+          option.dataset.owner = playlist.owner || '';
+          option.dataset.name = playlist.name || playlist.path;
+          select.appendChild(option);
+        });
+      } else {
+        select.innerHTML = '<option value="">No playlists found - check Navidrome configuration</option>';
+      }
+    } catch (error) {
+      console.error('Error loading playlists:', error);
+      document.getElementById('playlistFileSelect').innerHTML = '<option value="">Error loading playlists</option>';
+    }
+  }
+
+  async function loadPlaylistForDownload() {
+    const playlistPath = document.getElementById('playlistFileSelect').value;
+    if (!playlistPath) {
+      alert('Please select a playlist');
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/playlist/load', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ playlist_path: playlistPath })
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Failed to load playlist');
+
+      currentPlaylistData = data;
+      displayPlaylistDownloader(data);
+    } catch (error) {
+      console.error('Error:', error);
+      alert('Error: ' + error.message);
+    }
+  }
+
+  function displayPlaylistDownloader(data) {
+    const songs = data.songs || [];
+    const matched = data.matched_files || [];
+
+    document.getElementById('downloaderEmpty').style.display = 'none';
+    document.getElementById('downloaderResults').style.display = 'block';
+
+    document.getElementById('dlTotalCount').textContent = songs.length;
+    document.getElementById('dlMatchedCount').textContent = matched.length;
+    const coverage = songs.length > 0 ? Math.round((matched.length / songs.length) * 100) : 0;
+    document.getElementById('dlCoverage').textContent = coverage + '%';
+
+    // Original Songs (Left Column)
+    const originalHtml = songs.map((song, idx) => `
+      <div class="card mb-2">
+        <div class="card-body py-2">
+          <div class="d-flex justify-content-between align-items-start">
+            <div>
+              <strong class="d-block">${escapeHtml(song.title || 'Unknown')}</strong>
+              <small class="text-muted">${escapeHtml(song.artist || 'Unknown Artist')}</small>
+              ${song.album ? `<br><small class="text-secondary text-opacity-75">${escapeHtml(song.album)}</small>` : ''}
+            </div>
+            <span class="badge ${song.detected ? 'bg-success' : 'bg-warning'}">
+              ${song.detected ? '✓' : '✗'}
+            </span>
+          </div>
+        </div>
+      </div>
+    `).join('');
+    document.getElementById('dlOriginalSongs').innerHTML = originalHtml || '<p class="text-muted text-center py-5">No songs in playlist</p>';
+
+    // Detected Matches (Right Column)
+    const matchedHtml = matched.map((match, idx) => `
+      <div class="card mb-2 border-success">
+        <div class="card-body py-2">
+          <div class="d-flex justify-content-between align-items-start gap-2">
+            <div style="flex: 1;">
+              <strong class="d-block">${escapeHtml(match.title || 'Unknown')}</strong>
+              <small class="text-muted">${escapeHtml(match.artist || 'Unknown')}</small>
+              ${match.filename ? `<br><small class="text-secondary text-opacity-75">${escapeHtml(match.filename.split(/[\/\\]/).pop())}</small>` : ''}
+            </div>
+            <button class="btn btn-sm btn-outline-primary" onclick="replacePlaylistMatch(${idx})" title="Replace this match">
+              <i class="bi bi-arrow-repeat"></i> Replace
+            </button>
+          </div>
+        </div>
+      </div>
+    `).join('');
+    document.getElementById('dlDetectedMatches').innerHTML = matchedHtml || '<p class="text-muted text-center py-5">No matches detected yet</p>';
+
+    selectedReplacements = {};
+  }
+
+  function replacePlaylistMatch(matchIndex) {
+    showToast('Replace functionality coming soon', 'info');
+  }
+
+  async function downloadPlaylistMatches() {
+    if (!currentPlaylistData) return;
+    const btn = document.getElementById('dlDownloadBtn');
+    const originalText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Downloading...';
+
+    try {
+      const response = await fetch('/api/playlist/download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          playlist_path: currentPlaylistData.playlist_path,
+          replacements: selectedReplacements
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Download failed');
+
+      alert('✅ Download queued! ' + (data.queued || 0) + ' files enqueued');
+    } catch (error) {
+      console.error('Error:', error);
+      alert('❌ Error: ' + error.message);
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = originalText;
+    }
+  }
+
+  // =============================================================================
+  // EXPORT TO EXTERNAL MEDIA
+  // =============================================================================
+
+  const EXPORT_POLL_INTERVAL_MS = 2000;
+
+  async function exportToExternal() {
+    const selectEl = document.getElementById('playlistFileSelect');
+    const playlistId = selectEl.value;
+    const selected = selectEl.options[selectEl.selectedIndex];
+    const playlistName = (selected && selected.dataset.name) ? selected.dataset.name : 'playlist';
+
+    if (!playlistId) {
+      alert('Please select a playlist');
+      return;
+    }
+
+    const btn = document.getElementById('dlExportBtn');
+    const originalBtnHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Starting…';
+
+    try {
+      const resp = await fetch('/api/playlist/export-to-external', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ playlist_id: playlistId, playlist_name: playlistName })
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || 'Export request failed');
+      pollExportProgress(data.job_id, data.total, btn, originalBtnHtml);
+    } catch (e) {
+      console.error('Export error:', e);
+      btn.disabled = false;
+      btn.innerHTML = originalBtnHtml;
+      alert('Export error: ' + e.message);
+    }
+  }
+
+  function pollExportProgress(jobId, total, btn, originalBtnHtml) {
+    const progressWrap = document.getElementById('dlExportProgress');
+    const progressBar  = document.getElementById('dlExportProgressBar');
+    const progressText = document.getElementById('dlExportProgressText');
+
+    progressWrap.style.display = 'block';
+
+    const poll = async () => {
+      try {
+        const resp = await fetch(`/api/playlist/export-progress/${jobId}`);
+        const data = await resp.json();
+
+        const pct = data.progress || 0;
+        progressBar.style.width = pct + '%';
+        progressBar.textContent = pct + '%';
+        progressText.textContent = `Copying / converting: ${data.done || 0} / ${total} tracks…`;
+
+        if (data.status === 'done' || data.status === 'error') {
+          btn.disabled = false;
+          btn.innerHTML = originalBtnHtml;
+          progressWrap.style.display = 'none';
+
+          const errors = data.errors || [];
+          if (data.status === 'error' && !errors.length) {
+            showToast('Export failed unexpectedly.', 'danger');
+          } else if (errors.length > 0) {
+            const preview = errors.slice(0, 5).join('\n');
+            showToast(
+              `Export finished with ${errors.length} issue(s).<br>Output: <code>${escapeHtml(data.output_dir || '')}</code>`,
+              'warning'
+            );
+            console.warn('[Export] Issues:\n' + preview);
+          } else {
+            showToast(
+              `✅ Export complete!<br>Output: <code>${escapeHtml(data.output_dir || '')}</code>`,
+              'success'
+            );
+          }
+        } else {
+          setTimeout(poll, EXPORT_POLL_INTERVAL_MS);
+        }
+      } catch (e) {
+        console.error('Poll error:', e);
+        setTimeout(poll, EXPORT_POLL_INTERVAL_MS * 2);
+      }
+    };
+
+    poll();
+  }
+
   async function loadRecommendedPlaylists() {
-    const container = document.getElementById('recommendedPlaylistsContainer');
     const loading = document.getElementById('loadingRecommendedPlaylists');
     const error = document.getElementById('recommendedPlaylistsError');
 

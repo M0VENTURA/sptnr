@@ -1422,6 +1422,36 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                     existing_item['_queue_outcome'] = 'duplicate'
                 return existing_item
 
+        # 1b. MBID-based match: if release_mbid is provided and matches an active queue
+        # entry for the same title and source, treat it as a duplicate even when the
+        # album names differ (e.g. "Frozen (OST)" vs "Frozen (OST / Deluxe Edition)").
+        if release_mbid:
+            cursor.execute(
+                f"""
+                SELECT * FROM download_queue
+                WHERE release_mbid = {placeholder}
+                  AND LOWER(title) = LOWER({placeholder})
+                  AND source = {placeholder}
+                  AND status IN ({_ACTIVE_QUEUE_STATUS_SQL})
+                ORDER BY created_at ASC
+                LIMIT 1
+                """,
+                (release_mbid, title, source),
+            )
+            existing = cursor.fetchone()
+            if existing:
+                existing_id = existing[0] if isinstance(existing, tuple) else existing.get('id')
+                logger.info(
+                    f"Duplicate skipped (MBID match): {artist} - {title} already in queue "
+                    f"(ID {existing_id}, release_mbid={release_mbid})"
+                )
+                existing_item = _row_to_dict(existing, cursor)
+                conn.close()
+                if existing_item is not None:
+                    existing_item['already_queued'] = True
+                    existing_item['_queue_outcome'] = 'duplicate'
+                return existing_item
+
         # 2. Cross-album check: same artist + title + source regardless of album.
         # This prevents re-queuing when the album is missing in one of the requests.
         cursor.execute(
@@ -1446,7 +1476,7 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                 existing_item['already_queued'] = True
                 existing_item['_queue_outcome'] = 'duplicate'
             return existing_item
-        
+
         # No duplicate found, proceed with insertion
         is_duplicate = False
         duplicate_of_id = None
@@ -5317,7 +5347,34 @@ def auto_discover_and_queue_files():
                     LIMIT 1
                 """, (release_group,))
                 existing_group = cursor.fetchone()
-                
+
+                # Normalized album name fallback: handle album name variants such as
+                # "Frozen (Original Motion Picture Soundtrack)" matching against
+                # "Frozen (Original Motion Picture Soundtrack / Deluxe Edition)".
+                # Both normalize to the same base title via _normalize_album_for_dedup().
+                if not existing_group and album:
+                    norm_album = _normalize_album_for_dedup(album)
+                    if norm_album:
+                        eff_artist = (album_artist or artist or '').strip()
+                        cursor.execute(f"""
+                            SELECT id, status, album, import_group FROM download_queue
+                            WHERE LOWER(COALESCE(album_artist, artist, '')) = LOWER({placeholder})
+                              AND status IN ('queued', 'searching', 'downloading', 'matched')
+                              AND (file_path IS NULL OR file_path = '')
+                        """, (eff_artist,))
+                        for cand_row in cursor.fetchall():
+                            cand_album = _row_get(cand_row, 'album', None, None)
+                            if cand_album and _normalize_album_for_dedup(cand_album) == norm_album:
+                                existing_group = cand_row
+                                release_group = (
+                                    _row_get(cand_row, 'import_group', None, None) or release_group
+                                )
+                                logger.info(
+                                    f"[AUTO-DISCOVER] Normalized album match: '{album}' → '{cand_album}' "
+                                    f"(new file joins group {release_group})"
+                                )
+                                break
+
                 if existing_group:
                     # File belongs to an existing album group - just update that item with the file path
                     existing_id = _row_get(existing_group, 'id', 0, None)
