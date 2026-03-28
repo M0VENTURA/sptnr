@@ -2437,6 +2437,12 @@ def build_queue_album_folder(queue_item, downloads_dir=None):
     component is sanitized so it is safe to use as a directory name on any
     operating system.
 
+    For multi-disc albums (disc_number > 1), a ``CD{n}`` subdirectory is
+    appended so that tracks from different discs land in separate folders and
+    cannot collide on track number (e.g. disc 1 track 01 vs disc 2 track 01).
+    Disc 1 tracks (and single-disc releases) always use the base folder so that
+    existing items and single-disc queues are unaffected.
+
     Args:
         queue_item: dict-like queue row (must have at least 'album').
         downloads_dir: base directory.  Defaults to the configured downloads
@@ -2465,7 +2471,21 @@ def build_queue_album_folder(queue_item, downloads_dir=None):
     else:
         folder_name = f"{safe_artist} - {safe_album}"
 
-    return os.path.join(downloads_dir, folder_name)
+    base_folder = os.path.join(downloads_dir, folder_name)
+
+    # For multi-disc albums use a disc-specific subfolder to prevent track-number
+    # collisions between discs (e.g. disc 1 "01 - Song.flac" vs disc 2 "01 - Song.flac").
+    # Disc 1 and single-disc releases always use the plain base folder.
+    disc_number = queue_item.get('disc_number')
+    try:
+        disc_num = int(str(disc_number or '0').split('/')[0])
+    except (ValueError, TypeError):
+        disc_num = 0
+
+    if disc_num > 1:
+        return os.path.join(base_folder, f"CD{disc_num}")
+
+    return base_folder
 
 
 def verify_downloaded_file_metadata(file_path, queue_item,
