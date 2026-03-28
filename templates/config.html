@@ -255,6 +255,11 @@
           <div class="form-text">Path to watch for downloaded music files. qBittorrent and slskd should be configured to download to this location.</div>
         </div>
         <div class="col-12">
+          <label class="form-label">External Media Export Path</label>
+          <input type="text" class="form-control" id="external_export_path" placeholder="/downloads/External" value="{{ config.get('downloads', {}).get('external_export_path', '') }}">
+          <div class="form-text">Base folder used when exporting a playlist to an external media player via the <em>Browse Playlists</em> page. Each playlist is saved as <code>&lt;this path&gt;/&lt;playlist name&gt;/</code> with FLAC files automatically converted to 320kbps MP3.</div>
+        </div>
+        <div class="col-12">
           <label class="form-label">Queue File Name Format</label>
           <input type="text" class="form-control" id="downloads_file_name_format" placeholder="{album_artist}/{year} - {album}/{track_number}. {artist} - {title}" value="{{ config.get('downloads', {}).get('file_name_format', '{album_artist}/{year} - {album}/{track_number}. {artist} - {title}') }}">
           <div class="form-text">Used when organizing queue items into your music library under MUSIC_ROOT (for example /music). This format is a relative path. Available placeholders: {track_number}, {artist}, {album_artist}, {title}, {album}, {year}</div>
@@ -1009,6 +1014,7 @@ function buildConfigObject() {
     },
     downloads: {
       folder: getValue('downloads_folder', ''),
+      external_export_path: getValue('external_export_path', ''),
       file_name_format: getValue('downloads_file_name_format', '{album_artist}/{year} - {album}/{track_number}. {artist} - {title}'),
       quality_filter: (() => {
         const priorities = [];
