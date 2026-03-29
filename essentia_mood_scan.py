@@ -32,6 +32,12 @@ from helpers.db_utils import get_db_connection, _is_postgres_connection
 from helpers.logging_config import log_unified
 from helpers.tag_manager import sync_track_tags_to_file
 
+try:
+    from scan_history import log_album_scan as _log_album_scan
+except Exception:
+    def _log_album_scan(*a, **kw):  # type: ignore[misc]
+        pass
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -400,6 +406,8 @@ def run_essentia_mood_scan(
     updated_tracks = 0
     synced_files = 0
     current_artist: Optional[str] = None
+    current_album: Optional[str] = None
+    _album_scan_count: int = 0
     total_tracks = len(rows)
 
     log_unified(
@@ -459,15 +467,25 @@ def run_essentia_mood_scan(
             )
             file_path = os.path.join(_music_root, file_path)
 
-        if artist_key != current_artist:
-            current_artist = artist_key
-            processed_artists = min(processed_artists + 1, total_artists)
-            log_unified(
-                f"Essentia Scan - Scanning Artist {current_artist}"
-                f" ({processed_artists}/{total_artists})"
-            )
+        album_key = (_row_get(row, "album", 2) or "").strip()
+        if artist_key != current_artist or album_key != current_album:
+            if current_album is not None and _album_scan_count > 0:
+                _log_album_scan(
+                    current_artist or "Unknown", current_album,
+                    "essentia-mood", _album_scan_count, "completed",
+                )
+            _album_scan_count = 0
+            current_album = album_key
+            if artist_key != current_artist:
+                current_artist = artist_key
+                processed_artists = min(processed_artists + 1, total_artists)
+                log_unified(
+                    f"Essentia Scan - Scanning Artist {current_artist}"
+                    f" ({processed_artists}/{total_artists})"
+                )
 
         scanned_tracks += 1
+        _album_scan_count += 1
 
         # Milestone progress reporting (25 / 50 / 75 %)
         if scanned_tracks == _essentia_milestone_25 and 25 not in _essentia_milestones_logged:
@@ -673,6 +691,12 @@ def run_essentia_mood_scan(
             "synced_files": synced_files,
             "current_artist": current_artist,
         })
+
+    if current_album is not None and _album_scan_count > 0:
+        _log_album_scan(
+            current_artist or "Unknown", current_album,
+            "essentia-mood", _album_scan_count, "completed",
+        )
 
     conn.commit()
     conn.close()

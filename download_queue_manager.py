@@ -128,8 +128,7 @@ _format_filter_config_cache_key = None
 _format_filter_last_log_signature = None
 
 # Canonical active statuses for queue reads and processor selection.
-_ACTIVE_QUEUE_STATUSES = ('queued', 'searching', 'downloading', 'unmatched', 'queried', 'copy_recommended')
-_ACTIVE_QUEUE_STATUS_SQL = ", ".join(f"'{status}'" for status in _ACTIVE_QUEUE_STATUSES)
+from queue_status_constants import ACTIVE_QUEUE_STATUSES as _ACTIVE_QUEUE_STATUSES, ACTIVE_QUEUE_STATUS_SQL as _ACTIVE_QUEUE_STATUS_SQL
 
 # Throttle expensive downloads-folder checks triggered by frequent UI polling.
 _downloads_check_lock = threading.Lock()
@@ -914,6 +913,8 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                 'cover_art_url': "TEXT",
                 'source_music_path': "TEXT",
                 'queue_folder': "TEXT",
+                'match_confidence': "REAL",
+                'match_method': "TEXT",
             }
 
             for col, col_type in required_cols.items():
@@ -1847,9 +1848,10 @@ def update_queue_item(queue_id, **kwargs):
                         return None
             
             for key, value in kwargs.items():
-                if key in ['status', 'source_id', 'found_filename', 'file_path', 'failure_reason', 
+                if key in ['status', 'source_id', 'found_filename', 'file_path', 'failure_reason',
                            'retry_count', 'last_failure_time', 'imported_at', 'metadata', 'import_group', 'import_type',
-                           'copied_individually', 'copied_individually_at', 'duration']:
+                           'copied_individually', 'copied_individually_at', 'duration',
+                           'match_confidence', 'match_method']:
                     # Special handling for file_path to avoid UNIQUE constraint issues
                     if key == 'file_path' and value:
                         # Check if this file_path is already in use by another item

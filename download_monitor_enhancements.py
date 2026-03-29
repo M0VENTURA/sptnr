@@ -242,6 +242,10 @@ def search_and_update_musicbrainz(queue_id, artist, title, album):
                 logger.debug(
                     f"[MB_ENRICH] Queue {queue_id}: queue cover art reuse failed: {queue_art_err}"
                 )
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
 
         if not cover_art_url:
             try:
@@ -275,6 +279,10 @@ def search_and_update_musicbrainz(queue_id, artist, title, album):
                 logger.debug(
                     f"[MB_ENRICH] Queue {queue_id}: track cover art reuse failed: {track_art_err}"
                 )
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
 
         # Fetch current status and file_path before updating so we can decide
         # whether to promote the item to 'matched' after setting the MBID.

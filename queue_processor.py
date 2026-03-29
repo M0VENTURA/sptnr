@@ -62,6 +62,8 @@ signal.signal(signal.SIGTERM, _handle_sigterm)
 
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 
+from queue_status_constants import PROCESSING_STATUS_SQL
+
 # Similarity thresholds for Navidrome existence checks
 _NAV_TITLE_SIMILARITY_THRESHOLD = 0.85
 _NAV_ARTIST_SIMILARITY_THRESHOLD = 0.75
@@ -785,7 +787,7 @@ def _get_album_queue_titles(queue_item):
                 f"""
                 SELECT title FROM download_queue
                 WHERE import_group = {placeholder}
-                  AND status IN ('queued', 'searching', 'downloading')
+                  AND status IN ({PROCESSING_STATUS_SQL})
                 """,
                 (import_group,),
             )
@@ -795,7 +797,7 @@ def _get_album_queue_titles(queue_item):
                 SELECT title FROM download_queue
                 WHERE LOWER(COALESCE(album, '')) = LOWER({placeholder})
                   AND LOWER(COALESCE(album_artist, artist, '')) = LOWER({placeholder})
-                  AND status IN ('queued', 'searching', 'downloading')
+                  AND status IN ({PROCESSING_STATUS_SQL})
                 """,
                 (album, album_artist),
             )
@@ -846,7 +848,7 @@ def _get_sibling_queue_items_for_album(queue_item):
                 f"""
                 SELECT * FROM download_queue
                 WHERE import_group = {placeholder}
-                  AND status IN ('queued', 'searching', 'downloading')
+                  AND status IN ({PROCESSING_STATUS_SQL})
                 """,
                 (import_group,),
             )
@@ -856,7 +858,7 @@ def _get_sibling_queue_items_for_album(queue_item):
                 SELECT * FROM download_queue
                 WHERE LOWER(COALESCE(album, '')) = LOWER({placeholder})
                   AND LOWER(COALESCE(album_artist, artist, '')) = LOWER({placeholder})
-                  AND status IN ('queued', 'searching', 'downloading')
+                  AND status IN ({PROCESSING_STATUS_SQL})
                 """,
                 (album, album_artist),
             )

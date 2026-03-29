@@ -6502,12 +6502,13 @@ def artist_detail(name):
 
         album_download_counts = {}
         try:
+            from queue_status_constants import PROCESSING_STATUS_SQL
             cursor.execute(f"""
                 SELECT LOWER(COALESCE(album, '')) AS album_key,
                        COUNT(*) AS downloading_count
                 FROM download_queue
                 WHERE LOWER(COALESCE(artist, '')) = LOWER({placeholder})
-                  AND status IN ('queued', 'searching', 'downloading')
+                  AND status IN ({PROCESSING_STATUS_SQL})
                 GROUP BY LOWER(COALESCE(album, ''))
             """, (name,))
             for row in cursor.fetchall():
@@ -25332,6 +25333,8 @@ def api_queue_apply_mbid_match(queue_id):
                     ELSE recording_mbid
                 END,
                 release_year = COALESCE(release_year, {placeholder}),
+                match_confidence = 1.0,
+                match_method = 'manual_mbid',
                 status = CASE
                     WHEN TRIM(COALESCE(status, '')) = '' OR status = 'matched' THEN 'queued'
                     WHEN status = 'unmatched' AND TRIM(COALESCE(file_path, '')) != '' THEN 'matched'
