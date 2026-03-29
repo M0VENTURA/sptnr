@@ -30303,18 +30303,16 @@ def api_playlist_load():
         password = nav_cfg.get("pass", "")
         if not (base_url and user and password):
             return jsonify({"error": "Navidrome not configured for this user"}), 400
-        import requests as req
-
-        # Get playlist tracks
+        # Use the same Navidrome client path as /api/navidrome/playlist/<id>
+        # so browse details and downloader always see consistent track payloads.
         try:
-            playlist_response = req.get(
-                f"{base_url}/rest/getPlaylist.view",
-                params={"u": user, "p": password, "c": "popularr", "f": "json", "id": playlist_id},
-                timeout=10
-            )
-            playlist_response.raise_for_status()
-            playlist_data = playlist_response.json().get("subsonic-response", {}).get("playlist", {})
-            tracks = playlist_data.get("entry", [])
+            from api_clients.navidrome import NavidromeClient
+
+            client = NavidromeClient(base_url, user, password)
+            playlist_payload = client.fetch_playlist(playlist_id) or {}
+            tracks = playlist_payload.get("tracks")
+            if tracks is None:
+                tracks = playlist_payload.get("entry", [])
             if not isinstance(tracks, list):
                 tracks = [tracks] if tracks else []
         except Exception as e:
@@ -30337,11 +30335,16 @@ def api_playlist_load():
             logging.warning(f"Could not initialize DB lookup for playlist paths: {db_init_err}")
 
         for track in tracks:
+            nav_path = (
+                (track.get("path") or "").strip()
+                or (track.get("file") or "").strip()
+            )
             song = {
                 "id": track.get("id"),
                 "title": track.get("title", "Unknown"),
                 "artist": track.get("artist", "Unknown"),
                 "album": track.get("album", "Unknown"),
+                "path": nav_path,
                 "detected": True
             }
             songs.append(song)
@@ -30400,7 +30403,7 @@ def api_playlist_load():
                 "id": track.get("id"),
                 "title": song["title"],
                 "artist": song["artist"],
-                "filename": track.get("path", ""),
+                "filename": nav_path,
                 "file_path": db_file_path,
             })
 
