@@ -1483,6 +1483,105 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                     existing_item['_queue_outcome'] = 'duplicate'
                 return existing_item
 
+        # 1c. Cross-source MBID match overwrite: when a queue row already exists for
+        # this exact MusicBrainz track identity, update that row instead of creating
+        # a new queue item (prevents discovered+soulseek duplicates for manual matches).
+        if release_mbid:
+            mbid_existing = None
+
+            if recording_mbid:
+                cursor.execute(
+                    f"""
+                    SELECT * FROM download_queue
+                    WHERE COALESCE(NULLIF(release_mbid, ''), NULLIF(release_id, '')) = {placeholder}
+                      AND LOWER(COALESCE(recording_mbid, '')) = LOWER({placeholder})
+                      AND status IN ({_ACTIVE_QUEUE_STATUS_SQL})
+                    ORDER BY created_at ASC
+                    LIMIT 1
+                    """,
+                    (release_mbid, recording_mbid),
+                )
+                mbid_existing = cursor.fetchone()
+
+            if not mbid_existing and title and track_number not in (None, ''):
+                cursor.execute(
+                    f"""
+                    SELECT * FROM download_queue
+                    WHERE COALESCE(NULLIF(release_mbid, ''), NULLIF(release_id, '')) = {placeholder}
+                      AND LOWER(title) = LOWER({placeholder})
+                      AND COALESCE(NULLIF(track_number, ''), '') = COALESCE(NULLIF({placeholder}, ''), '')
+                      AND COALESCE(NULLIF(disc_number, ''), '1') = COALESCE(NULLIF({placeholder}, ''), '1')
+                      AND status IN ({_ACTIVE_QUEUE_STATUS_SQL})
+                    ORDER BY created_at ASC
+                    LIMIT 1
+                    """,
+                    (release_mbid, title, str(track_number), str(disc_number or 1)),
+                )
+                mbid_existing = cursor.fetchone()
+
+            if mbid_existing:
+                existing_item = _row_to_dict(mbid_existing, cursor)
+                existing_id = (
+                    existing_item.get('id') if isinstance(existing_item, dict)
+                    else (mbid_existing[0] if isinstance(mbid_existing, tuple) else None)
+                )
+                if existing_id:
+                    cursor.execute(
+                        f"""
+                        UPDATE download_queue
+                        SET release_mbid = COALESCE(NULLIF({placeholder}, ''), release_mbid),
+                            release_id = COALESCE(NULLIF({placeholder}, ''), release_id),
+                            release_source = COALESCE(NULLIF({placeholder}, ''), release_source),
+                            artist = COALESCE(NULLIF({placeholder}, ''), artist),
+                            album = COALESCE(NULLIF({placeholder}, ''), album),
+                            album_artist = COALESCE(NULLIF({placeholder}, ''), album_artist),
+                            title = COALESCE(NULLIF({placeholder}, ''), title),
+                            track_number = COALESCE(NULLIF({placeholder}, ''), track_number),
+                            disc_number = COALESCE(NULLIF({placeholder}, ''), disc_number),
+                            year = COALESCE(NULLIF({placeholder}, ''), year),
+                            import_group = COALESCE(NULLIF({placeholder}, ''), import_group),
+                            import_type = COALESCE(NULLIF({placeholder}, ''), import_type),
+                            recording_mbid = COALESCE(NULLIF({placeholder}, ''), recording_mbid),
+                            isrc = COALESCE(NULLIF({placeholder}, ''), isrc),
+                            composer = COALESCE(NULLIF({placeholder}, ''), composer),
+                            genres = COALESCE(NULLIF({placeholder}, ''), genres),
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = {placeholder}
+                        """,
+                        (
+                            release_mbid,
+                            release_id,
+                            release_source,
+                            artist,
+                            album,
+                            album_artist,
+                            title,
+                            str(track_number or ''),
+                            str(disc_number or ''),
+                            str(year or ''),
+                            import_group,
+                            import_type,
+                            recording_mbid,
+                            isrc,
+                            composer,
+                            genres,
+                            existing_id,
+                        ),
+                    )
+                    conn.commit()
+                    cursor.execute("SELECT * FROM download_queue WHERE id = %s", (existing_id,))
+                    updated_row = cursor.fetchone()
+                    conn.close()
+                    updated_item = _row_to_dict(updated_row, cursor)
+                    if updated_item is not None:
+                        updated_item['already_queued'] = True
+                        updated_item['_queue_outcome'] = 'updated_existing'
+                        logger.info(
+                            f"Duplicate merged (MBID overwrite): {artist} - {title} "
+                            f"updated existing queue row {existing_id}"
+                        )
+                    return updated_item
+
         # 2. Cross-album check: same artist + title + source regardless of album.
         # This prevents re-queuing when the album is missing in one of the requests.
         cursor.execute(

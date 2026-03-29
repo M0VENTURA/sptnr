@@ -2718,7 +2718,6 @@ def search_and_download(queue_id, queue_item, client):
             f"Queue {queue_id}: Downloading '{best_result['filename']}' from "
             f"{best_result['username']} (score={best_score:.2f})..."
         )
-        update_queue_status(queue_id, 'downloading', found_filename=best_result['filename'])
 
         # Ensure the queue item has an organised album folder and create it on
         # disk now so the relocation step in check_completed_downloads can move
@@ -2762,11 +2761,11 @@ def search_and_download(queue_id, queue_item, client):
             logger.debug(f"Queue {queue_id}: could not set up queue folder: {_qf_err}")
 
         success = client.download_file(best_result['username'], best_result['filename'], best_result['size'])
-        
+
         if success:
+            update_queue_status(queue_id, 'downloading', found_filename=best_result['filename'])
             logger.info(f"Queue {queue_id}: Download queued successfully in slskd")
             logger.info(f"Queue {queue_id}: File will appear in {DOWNLOADS_DIR} when download completes")
-            # Status already set to 'downloading' above
             return True
         else:
             logger.error(f"Queue {queue_id}: Failed to queue download in slskd")
@@ -2827,7 +2826,8 @@ def check_completed_downloads():
         # Build a lookup of slskd-completed files: filename → localFilePath
         # ------------------------------------------------------------------
         slskd_completed: dict[str, str] = {}
-        slskd_active: dict[str, dict] = {}
+        slskd_active_exact: dict[str, dict] = {}
+        slskd_active_by_basename: dict[str, list[dict]] = {}
         slskd_status_available = False
 
         def _normalize_transfer_key(value):
@@ -2841,8 +2841,20 @@ def check_completed_downloads():
             key = _normalize_transfer_key(found_filename)
             if not key:
                 return None
+
+            exact = slskd_active_exact.get(key)
+            if exact:
+                return exact
+
             basename = os.path.basename(key)
-            return slskd_active.get(key) or slskd_active.get(basename)
+            matches = slskd_active_by_basename.get(basename) or []
+            if len(matches) == 1:
+                return matches[0]
+            if len(matches) > 1:
+                logger.debug(
+                    f"Ambiguous slskd transfer basename for '{found_filename}': {len(matches)} candidates; skipping basename fallback"
+                )
+            return None
 
         def _is_stale_queue_item(item, stale_minutes=10):
             updated_at = item.get('updated_at')
@@ -2914,11 +2926,16 @@ def check_completed_downloads():
                     for transfer in active_list:
                         filename = transfer.get("filename", "")
                         norm = _normalize_transfer_key(filename)
-                        if norm:
-                            slskd_active[norm] = transfer
-                            slskd_active[os.path.basename(norm)] = transfer
+                        if not norm:
+                            continue
+                        slskd_active_exact[norm] = transfer
+                        basename = os.path.basename(norm)
+                        slskd_active_by_basename.setdefault(basename, []).append(transfer)
                     slskd_status_available = True
-                    logger.debug(f"slskd API: {len(active_list)} active transfer entries")
+                    logger.debug(
+                        f"slskd API: {len(active_list)} active transfer entries "
+                        f"({len(slskd_active_by_basename)} basename groups)"
+                    )
                 except Exception as status_err:
                     logger.warning(
                         f"Could not fetch active slskd transfers for reconciliation: {status_err}"

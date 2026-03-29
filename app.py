@@ -15980,15 +15980,74 @@ def slskd_queue_download():
                 pass
 
 
+def _normalize_slskd_filename(value):
+    return str(value or '').strip().replace('\\', '/').lower()
+
+
+def _resolve_slskd_transfer(client, username, transfer_id=None, filename=None, timeout=10):
+    """Resolve a slskd transfer deterministically and avoid basename-collision mistakes."""
+    username_norm = str(username or '').strip()
+    transfer_id_norm = str(transfer_id or '').strip()
+    target_name = _normalize_slskd_filename(filename)
+
+    try:
+        transfers = client.get_active_downloads(timeout=timeout) or []
+    except Exception as fetch_err:
+        return None, f"Could not query active transfers: {fetch_err}"
+
+    by_id = None
+    if transfer_id_norm:
+        for transfer in transfers:
+            tid = str(transfer.get('id') or '').strip()
+            tuser = str(transfer.get('username') or '').strip()
+            if tid == transfer_id_norm and (not username_norm or tuser == username_norm):
+                by_id = transfer
+                break
+        if by_id:
+            return by_id, None
+
+    if not target_name:
+        return None, "Could not resolve transfer: missing filename"
+
+    exact = []
+    basename_matches = []
+    target_base = os.path.basename(target_name)
+
+    for transfer in transfers:
+        tuser = str(transfer.get('username') or '').strip()
+        if username_norm and tuser != username_norm:
+            continue
+        transfer_name = _normalize_slskd_filename(transfer.get('filename'))
+        if not transfer_name:
+            continue
+        if transfer_name == target_name:
+            exact.append(transfer)
+            continue
+        if os.path.basename(transfer_name) == target_base:
+            basename_matches.append(transfer)
+
+    if len(exact) == 1:
+        return exact[0], None
+    if len(exact) > 1:
+        return None, "Ambiguous transfer match for exact filename"
+
+    if len(basename_matches) == 1:
+        return basename_matches[0], None
+    if len(basename_matches) > 1:
+        return None, "Ambiguous transfer match for basename; provide transfer_id"
+
+    return None, "Could not resolve transfer_id for this download"
+
+
 @app.route("/api/slskd/cancel", methods=["POST"])
 def slskd_cancel():
     """Cancel a Soulseek download"""
     cfg = get_config()
     slskd_config = cfg.get("slskd", {})
-    
+
     if not slskd_config.get("enabled"):
         return jsonify({"error": "slskd integration not enabled"}), 400
-    
+
     payload = request.json or {}
     queue_id = payload.get("queue_id")
     username = payload.get("username", "")
@@ -16017,34 +16076,30 @@ def slskd_cancel():
         return jsonify({"error": "Username required"}), 400
     if not transfer_id and not filename:
         return jsonify({"error": "Either transfer_id (or remoteToken) or filename is required"}), 400
-    
+
     web_url = slskd_config.get("web_url", "http://localhost:5030")
     api_key = slskd_config.get("api_key", "")
-    
+
     try:
         client = SlskdClient(web_url, api_key, enabled=True)
+        transfer, resolve_err = _resolve_slskd_transfer(
+            client,
+            username=username,
+            transfer_id=transfer_id,
+            filename=filename,
+            timeout=10,
+        )
 
-        if not transfer_id and filename:
-            try:
-                transfers = client.get_active_downloads(timeout=10)
-                target_name = str(filename).strip().replace('\\', '/').lower()
-                target_base = os.path.basename(target_name)
-                for transfer in transfers:
-                    transfer_user = str(transfer.get("username") or "")
-                    if transfer_user != username:
-                        continue
-                    transfer_name = str(transfer.get("filename") or "").strip().replace('\\', '/').lower()
-                    transfer_base = os.path.basename(transfer_name)
-                    if transfer_name == target_name or transfer_base == target_base:
-                        transfer_id = transfer.get("id")
-                        break
-            except Exception as resolve_err:
-                logging.debug(f"[SLSKD] Could not resolve transfer ID from filename: {resolve_err}")
+        if not transfer:
+            status_code = 409 if resolve_err and "Ambiguous" in resolve_err else 404
+            return jsonify({"error": resolve_err or "Could not resolve transfer_id for this download"}), status_code
 
-        if not transfer_id:
-            return jsonify({"error": "Could not resolve transfer_id for this download"}), 404
+        resolved_transfer_id = str(transfer.get("id") or "").strip()
+        resolved_username = str(transfer.get("username") or username).strip()
+        if not resolved_transfer_id or not resolved_username:
+            return jsonify({"error": "Resolved transfer is missing username/id"}), 404
 
-        success = client.cancel_download(username, str(transfer_id), remove=True)
+        success = client.cancel_download(resolved_username, resolved_transfer_id, remove=True, timeout=10)
 
         if success:
             if queue_id:
@@ -16059,9 +16114,9 @@ def slskd_cancel():
                     )
                 except Exception as queue_sync_err:
                     logging.debug(f"[SLSKD] queue cancel sync warning: {queue_sync_err}")
-            return jsonify({"success": True, "message": "Download cancelled successfully", "transfer_id": str(transfer_id)})
+            return jsonify({"success": True, "message": "Download cancelled successfully", "transfer_id": resolved_transfer_id})
         return jsonify({"error": "Failed to cancel download in slskd"}), 500
-            
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -16071,10 +16126,10 @@ def slskd_retry():
     """Retry a failed Soulseek download"""
     cfg = get_config()
     slskd_config = cfg.get("slskd", {})
-    
+
     if not slskd_config.get("enabled"):
         return jsonify({"error": "slskd integration not enabled"}), 400
-    
+
     payload = request.json or {}
     queue_id = payload.get("queue_id")
     username = payload.get("username", "")
@@ -16105,41 +16160,37 @@ def slskd_retry():
 
     if not username or not filename:
         return jsonify({"error": "Username and filename required"}), 400
-    
+
     web_url = slskd_config.get("web_url", "http://localhost:5030")
     api_key = slskd_config.get("api_key", "")
-    
+
     try:
         client = SlskdClient(web_url, api_key, enabled=True)
 
-        # First cancel the existing transfer (best-effort).
-        if not transfer_id and filename:
+        # First cancel any stale/failed transfer deterministically (best-effort).
+        transfer, resolve_err = _resolve_slskd_transfer(
+            client,
+            username=username,
+            transfer_id=transfer_id,
+            filename=filename,
+            timeout=10,
+        )
+        if transfer:
             try:
-                transfers = client.get_active_downloads(timeout=10)
-                target_name = str(filename).strip().replace('\\', '/').lower()
-                target_base = os.path.basename(target_name)
-                for transfer in transfers:
-                    transfer_user = str(transfer.get("username") or "")
-                    if transfer_user != username:
-                        continue
-                    transfer_name = str(transfer.get("filename") or "").strip().replace('\\', '/').lower()
-                    transfer_base = os.path.basename(transfer_name)
-                    if transfer_name == target_name or transfer_base == target_base:
-                        transfer_id = transfer.get("id")
-                        break
-            except Exception as resolve_err:
-                logging.debug(f"[SLSKD] Could not resolve transfer ID for retry: {resolve_err}")
-
-        if transfer_id:
-            try:
-                client.cancel_download(username, str(transfer_id), remove=True, timeout=10)
+                resolved_transfer_id = str(transfer.get("id") or "").strip()
+                resolved_username = str(transfer.get("username") or username).strip()
+                if resolved_transfer_id and resolved_username:
+                    client.cancel_download(resolved_username, resolved_transfer_id, remove=True, timeout=10)
+                    transfer_id = resolved_transfer_id
             except Exception as cancel_err:
                 logging.debug(f"[SLSKD] Retry cancel step warning: {cancel_err}")
+        elif resolve_err and "Ambiguous" in resolve_err:
+            return jsonify({"error": resolve_err}), 409
 
         # Then re-queue it and refresh tracked transfer identity.
-        enqueue_result = client.enqueue_download_with_tracking(username=username, filename=filename, size=int(size))
+        enqueue_result = client.enqueue_download_with_tracking(username=username, filename=filename, size=int(size), timeout=10)
         success = bool(enqueue_result.get('success'))
-        
+
         if success:
             new_transfer_id = (enqueue_result.get('transfer_id') or '').strip() or str(transfer_id or "")
             if queue_id:
@@ -16159,7 +16210,7 @@ def slskd_retry():
             return jsonify({"success": True, "message": f"Download retry queued for {filename}", "transfer_id": new_transfer_id})
         else:
             return jsonify({"error": "Failed to re-queue download"}), 500
-            
+
     except Exception as e:
         logging.error(f"[SLSKD] Retry download error: {str(e)}")
         return jsonify({"error": str(e)}), 500
@@ -25108,12 +25159,13 @@ def api_queue_import_missing_tracks():
                     "title": title,
                     "artist": track_artist,
                 })
-            elif queue_item and queue_item.get('_queue_outcome') == 'duplicate':
+            elif queue_item and queue_item.get('_queue_outcome') in {'duplicate', 'updated_existing'}:
                 skipped_count += 1
                 skipped_items.append({
                     "existing_queue_id": queue_item.get('id'),
                     "title": title,
                     "artist": track_artist,
+                    "overwritten": queue_item.get('_queue_outcome') == 'updated_existing',
                 })
             else:
                 failed_count += 1
