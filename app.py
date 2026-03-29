@@ -30255,6 +30255,19 @@ def api_playlist_load():
 
         songs = []
         matched_files = []
+
+        conn = None
+        cursor = None
+        placeholder = "%s"
+        is_pg = False
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            placeholder = get_placeholder(conn)
+            is_pg = _is_postgres_connection(conn)
+        except Exception as db_init_err:
+            logging.warning(f"Could not initialize DB lookup for playlist paths: {db_init_err}")
+
         for track in tracks:
             song = {
                 "id": track.get("id"),
@@ -30264,12 +30277,70 @@ def api_playlist_load():
                 "detected": True
             }
             songs.append(song)
+
+            db_file_path = ""
+            if cursor is not None:
+                try:
+                    mbid = (
+                        (track.get("musicBrainzId") or "").strip()
+                        or (track.get("musicbrainzId") or "").strip()
+                    )
+
+                    row = None
+                    if mbid:
+                        cursor.execute(
+                            f"SELECT file_path FROM tracks WHERE musicbrainz_id = {placeholder} LIMIT 1",
+                            (mbid,),
+                        )
+                        row = cursor.fetchone()
+
+                    if row is None:
+                        if is_pg:
+                            order_sql = f"CASE WHEN LOWER(album) = LOWER({placeholder}) THEN 0 ELSE 1 END, last_scanned DESC NULLS LAST"
+                        else:
+                            order_sql = f"CASE WHEN LOWER(album) = LOWER({placeholder}) THEN 0 ELSE 1 END, last_scanned DESC"
+
+                        cursor.execute(
+                            f"""
+                            SELECT file_path
+                            FROM tracks
+                            WHERE LOWER(title) = LOWER({placeholder})
+                              AND LOWER(artist) = LOWER({placeholder})
+                            ORDER BY {order_sql}
+                            LIMIT 1
+                            """,
+                            (song["title"], song["artist"], song["album"]),
+                        )
+                        row = cursor.fetchone()
+
+                    if row:
+                        if isinstance(row, dict):
+                            db_file_path = row.get("file_path") or ""
+                        elif isinstance(row, (list, tuple)):
+                            db_file_path = row[0] or ""
+                        elif hasattr(row, "keys"):
+                            db_file_path = row["file_path"] if "file_path" in row.keys() else ""
+                except Exception as track_lookup_err:
+                    logging.debug(
+                        "Playlist DB path lookup failed for %s - %s: %s",
+                        song.get("artist", "?"),
+                        song.get("title", "?"),
+                        track_lookup_err,
+                    )
+
             matched_files.append({
                 "id": track.get("id"),
                 "title": song["title"],
                 "artist": song["artist"],
-                "filename": track.get("path", "")
+                "filename": track.get("path", ""),
+                "file_path": db_file_path,
             })
+
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
         return jsonify({
             "playlist_id": playlist_id,

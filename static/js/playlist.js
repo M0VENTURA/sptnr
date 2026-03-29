@@ -92,9 +92,8 @@ function setupBrowsePageListeners() {
         if (!this.value) return;
         const selectedOption = this.options[this.selectedIndex];
         const playlistType = selectedOption?.dataset?.playlistType || 'regular';
-        const downloaderSelect = document.getElementById('playlistFileSelect');
-        if (downloaderSelect) downloaderSelect.value = this.value;
         loadNavidromePlaylistDetail(this.value, playlistType);
+        loadPlaylistForDownload(this.value);
       });
     }
   } catch (e) {
@@ -375,6 +374,7 @@ function refreshPlaylistDetails() {
   if (currentPlaylistId) {
     const type = currentPlaylistType || 'regular';
     loadNavidromePlaylistDetail(currentPlaylistId, type);
+    loadPlaylistForDownload(currentPlaylistId);
   }
 }
 
@@ -420,35 +420,30 @@ async function loadPlaylistList() {
   }
 }
 
-async function loadPlaylistForDownload() {
-  const playlistPath = document.getElementById('playlistFileSelect').value;
+async function loadPlaylistForDownload(playlistId = null) {
+  const browseSelect = document.getElementById('browsePlaylistSelect');
+  const playlistPath = String(playlistId || (browseSelect ? browseSelect.value : '') || '').trim();
   if (!playlistPath) {
     alert('Please select a playlist');
     return;
   }
 
   try {
-    const response = await fetch(`/api/navidrome/playlist/${encodeURIComponent(playlistPath)}`);
+    const response = await fetch('/api/playlist/load', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ playlist_id: playlistPath })
+    });
 
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Failed to load playlist');
 
-    const tracks = Array.isArray(data.tracks) ? data.tracks : [];
+    const songs = Array.isArray(data.songs) ? data.songs : [];
+    const matchedFiles = Array.isArray(data.matched_files) ? data.matched_files : [];
     const normalized = {
       playlist_path: playlistPath,
-      songs: tracks.map(track => ({
-        id: track.id,
-        title: track.title || 'Unknown',
-        artist: track.artist || 'Unknown',
-        album: track.album || 'Unknown',
-        detected: true
-      })),
-      matched_files: tracks.map(track => ({
-        id: track.id,
-        title: track.title || 'Unknown',
-        artist: track.artist || 'Unknown',
-        filename: track.path || ''
-      }))
+      songs,
+      matched_files: matchedFiles
     };
 
     currentPlaylistData = normalized;
@@ -461,7 +456,8 @@ async function loadPlaylistForDownload() {
 
 function displayPlaylistDownloader(data) {
   const songs = data.songs || [];
-  const matched = data.matched_files || [];
+  const allMatches = data.matched_files || [];
+  const matched = allMatches.filter(match => !!(match.file_path || match.filename));
   
   const downloaderEmpty = document.getElementById('downloaderEmpty');
   const downloaderResults = document.getElementById('downloaderResults');
@@ -494,23 +490,30 @@ function displayPlaylistDownloader(data) {
   `).join('');
   document.getElementById('dlOriginalSongs').innerHTML = originalHtml || '<p class="text-muted text-center py-5">No songs in playlist</p>';
 
-  const matchedHtml = matched.map((match, idx) => `
+  const matchedHtml = allMatches.map((match, idx) => {
+    const dbPath = match.file_path || '';
+    const navPath = match.filename || '';
+    const statusBadge = dbPath
+      ? '<span class="badge bg-success">DB Path</span>'
+      : '<span class="badge bg-warning text-dark">Not Found In DB</span>';
+
+    return `
     <div class="card mb-2 border-success">
       <div class="card-body py-2">
         <div class="d-flex justify-content-between align-items-start gap-2">
           <div style="flex: 1;">
             <strong class="d-block">${escapeHtml(match.title || 'Unknown')}</strong>
             <small class="text-muted">${escapeHtml(match.artist || 'Unknown')}</small>
-            ${match.filename ? `<br><small class="text-secondary text-opacity-75">${escapeHtml(match.filename.split(/[\/\\]/).pop())}</small>` : ''}
+            <div class="mt-1">${statusBadge}</div>
+            ${dbPath ? `<br><small class="text-secondary text-opacity-75">${escapeHtml(dbPath)}</small>` : ''}
+            ${!dbPath && navPath ? `<br><small class="text-muted">Navidrome: ${escapeHtml(navPath)}</small>` : ''}
           </div>
-          <button class="btn btn-sm btn-outline-primary" onclick="replacePlaylistMatch(${idx})" title="Replace this match">
-            <i class="bi bi-arrow-repeat"></i> Replace
-          </button>
         </div>
       </div>
     </div>
-  `).join('');
-  document.getElementById('dlDetectedMatches').innerHTML = matchedHtml || '<p class="text-muted text-center py-5">No matches detected</p>';
+  `;
+  }).join('');
+  document.getElementById('dlDetectedMatches').innerHTML = matchedHtml || '<p class="text-muted text-center py-5">No tracks available</p>';
 
   selectedReplacements = {};
 }
