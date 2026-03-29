@@ -452,12 +452,18 @@
           <tbody>
             {% if top_tracks and top_tracks|length > 0 %}
               {% for track in top_tracks %}
-                <tr>
+                {% set track_is_queued = track.file_path and '__queued_for_download__' in track.file_path %}
+                <tr{% if track_is_queued %} class="table-secondary opacity-75"{% endif %}>
                   <td class="text-center text-muted">{{ loop.index }}</td>
                   <td>
-                    <a href="{{ url_for('track_detail', artist=artist_name, album=track.album, track_id=track.id) }}" class="text-decoration-none">
-                      {{ track.title }}
-                    </a>
+                    {% if track_is_queued %}
+                      <span class="text-muted">{{ track.title }}</span>
+                      <span class="badge bg-warning text-dark ms-2" title="This track is currently in the download queue">In Queue</span>
+                    {% else %}
+                      <a href="{{ url_for('track_detail', artist=artist_name, album=track.album, track_id=track.id) }}" class="text-decoration-none">
+                        {{ track.title }}
+                      </a>
+                    {% endif %}
                     {% if track.is_single %}
                       <span class="badge bg-warning text-dark ms-2">Single</span>
                     {% endif %}
