@@ -289,6 +289,70 @@ class SlskdClient:
             logger.error(traceback.format_exc())
             return False
 
+    @staticmethod
+    def _extract_queue_position(entry: dict | None) -> Optional[int]:
+        """Extract queue position from transfer payloads across slskd versions."""
+        if not isinstance(entry, dict):
+            return None
+        raw = (
+            entry.get("queuePosition")
+            or entry.get("queue_position")
+            or entry.get("position")
+            or entry.get("queueIndex")
+            or entry.get("queueLength")
+        )
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except Exception:
+            return None
+
+    def enqueue_download_with_tracking(
+        self,
+        username: str,
+        filename: str,
+        size: int = 0,
+        timeout: Optional[int] = None,
+        lookup_attempts: int = 3,
+        lookup_delay_seconds: float = 0.35,
+    ) -> dict:
+        """Enqueue a download and best-effort resolve its transfer identity/state.
+
+        Returns a dict with:
+          - success: bool
+          - transfer_id: str
+          - username: str
+          - state: str
+          - queue_position: Optional[int]
+        """
+        success = self.download_file(username=username, filename=filename, size=size, timeout=timeout)
+        result = {
+            "success": bool(success),
+            "transfer_id": "",
+            "username": username,
+            "state": "Requested" if success else "",
+            "queue_position": None,
+        }
+        if not success:
+            return result
+
+        timeout = timeout or self.default_timeout
+        for attempt in range(max(1, int(lookup_attempts))):
+            transfer = self.find_download(username=username, filename=filename, timeout=timeout)
+            if transfer:
+                result["transfer_id"] = str(transfer.get("id") or "")
+                result["username"] = str(transfer.get("username") or username or "")
+                result["state"] = self._state_text(
+                    transfer.get("state") or transfer.get("transferState") or transfer.get("status") or "Requested"
+                )
+                result["queue_position"] = self._extract_queue_position(transfer)
+                break
+            if attempt < max(1, int(lookup_attempts)) - 1:
+                time.sleep(max(0.05, float(lookup_delay_seconds)))
+
+        return result
+
     def download_files(self, files: list[dict], timeout: Optional[int] = None) -> list[dict]:
         """
         Enqueue multiple files (potentially across users) for download.
@@ -570,6 +634,7 @@ class SlskdClient:
                     "progress": progress,
                     "state": self._state_text(user_entry.get("state") or user_entry.get("transferState") or user_entry.get("status")),
                     "averageSpeed": int(user_entry.get("averageSpeed", 0) or 0),
+                    "queuePosition": self._extract_queue_position(user_entry),
                     "localFilePath": (
                         user_entry.get("localFilePath")
                         or user_entry.get("localPath")
@@ -594,6 +659,7 @@ class SlskdClient:
                     "progress": progress,
                     "state": self._state_text(f.get("state") or f.get("transferState") or f.get("status")),
                     "averageSpeed": int(f.get("averageSpeed", 0) or 0),
+                    "queuePosition": self._extract_queue_position(f),
                     "localFilePath": (
                         f.get("localFilePath")
                         or f.get("localPath")
@@ -630,6 +696,26 @@ class SlskdClient:
             return downloads
         except Exception as e:
             logger.error(f"Slskd get active downloads failed: {e}")
+            return []
+
+    def get_events(self, timeout: Optional[int] = None) -> list[dict]:
+        """Fetch recent slskd events (optional event-driven sync surface)."""
+        if not self.enabled:
+            return []
+
+        timeout = timeout or self.default_timeout
+        try:
+            url = f"{self.base_url}/events"
+            resp = self.session.get(url, headers=self.headers, timeout=timeout)
+            if resp.status_code != 200:
+                logger.debug(f"Slskd events endpoint failed: {resp.status_code}")
+                return []
+            payload = resp.json() or []
+            if isinstance(payload, dict):
+                payload = payload.get("events") or payload.get("items") or []
+            return payload if isinstance(payload, list) else []
+        except Exception as e:
+            logger.debug(f"Slskd get events failed: {e}")
             return []
 
     def get_completed_transfers(self, timeout: Optional[int] = None) -> list[dict]:

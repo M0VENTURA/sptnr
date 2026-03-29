@@ -915,6 +915,11 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                 'queue_folder': "TEXT",
                 'match_confidence': "REAL",
                 'match_method': "TEXT",
+                'slskd_transfer_id': "TEXT",
+                'slskd_username': "TEXT",
+                'slskd_state': "TEXT",
+                'slskd_queue_position': "INTEGER",
+                'slskd_last_sync_at': "TEXT",
             }
 
             for col, col_type in required_cols.items():
@@ -1851,7 +1856,8 @@ def update_queue_item(queue_id, **kwargs):
                 if key in ['status', 'source_id', 'found_filename', 'file_path', 'failure_reason',
                            'retry_count', 'last_failure_time', 'imported_at', 'metadata', 'import_group', 'import_type',
                            'copied_individually', 'copied_individually_at', 'duration',
-                           'match_confidence', 'match_method']:
+                           'match_confidence', 'match_method',
+                           'slskd_transfer_id', 'slskd_username', 'slskd_state', 'slskd_queue_position', 'slskd_last_sync_at']:
                     # Special handling for file_path to avoid UNIQUE constraint issues
                     if key == 'file_path' and value:
                         # Check if this file_path is already in use by another item

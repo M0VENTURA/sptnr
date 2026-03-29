@@ -15886,10 +15886,15 @@ def slskd_queue_download():
         web_url = slskd_config.get("web_url", "http://localhost:5030")
         api_key = slskd_config.get("api_key", "")
         client = SlskdClient(web_url, api_key, enabled=True)
-        success = client.download_file(username, filename, size)
+        enqueue_result = client.enqueue_download_with_tracking(username=username, filename=filename, size=size)
 
-        if not success:
+        if not enqueue_result.get("success"):
             return jsonify({"error": "slskd failed to enqueue the download"}), 500
+
+        transfer_id = (enqueue_result.get("transfer_id") or "").strip() or None
+        transfer_username = (enqueue_result.get("username") or username).strip()
+        transfer_state = (enqueue_result.get("state") or "Requested").strip() or "Requested"
+        transfer_queue_position = enqueue_result.get("queue_position")
 
         # Mark the queue item as downloading with the selected filename.
         update_fields = {
@@ -15904,11 +15909,16 @@ def slskd_queue_download():
             UPDATE download_queue
             SET status = {placeholder},
                 found_filename = {placeholder},
+                slskd_transfer_id = {placeholder},
+                slskd_username = {placeholder},
+                slskd_state = {placeholder},
+                slskd_queue_position = {placeholder},
+                slskd_last_sync_at = {placeholder},
                 queue_folder = {placeholder},
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = {placeholder}
             """,
-            ("downloading", filename, queue_folder, queue_id),
+            ("downloading", filename, transfer_id, transfer_username, transfer_state, transfer_queue_position, datetime.now().isoformat(), queue_folder, queue_id),
         )
         conn.commit()
 
@@ -15920,6 +15930,10 @@ def slskd_queue_download():
             "success": True,
             "message": f"Download queued for {os.path.basename(filename)}",
             "queue_folder": queue_folder,
+            "transfer_id": transfer_id,
+            "transfer_username": transfer_username,
+            "transfer_state": transfer_state,
+            "transfer_queue_position": transfer_queue_position,
         })
 
     except Exception as e:
@@ -15948,9 +15962,28 @@ def slskd_cancel():
         return jsonify({"error": "slskd integration not enabled"}), 400
     
     payload = request.json or {}
+    queue_id = payload.get("queue_id")
     username = payload.get("username", "")
     filename = payload.get("filename", "")
     transfer_id = payload.get("transfer_id") or payload.get("remoteToken") or payload.get("id")
+
+    # If this is queue-linked, prefer persisted transfer identity for deterministic cancel.
+    if queue_id:
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("SELECT slskd_username, slskd_transfer_id, found_filename FROM download_queue WHERE id = %s", (queue_id,))
+            row = cursor.fetchone()
+            conn.close()
+            if row:
+                rowd = dict(row) if hasattr(row, 'keys') else {
+                    'slskd_username': row[0], 'slskd_transfer_id': row[1], 'found_filename': row[2]
+                }
+                username = (rowd.get('slskd_username') or username or "").strip()
+                transfer_id = rowd.get('slskd_transfer_id') or transfer_id
+                filename = rowd.get('found_filename') or filename
+        except Exception as queue_lookup_err:
+            logging.debug(f"[SLSKD] queue cancel lookup failed: {queue_lookup_err}")
 
     if not username:
         return jsonify({"error": "Username required"}), 400
@@ -15986,6 +16019,18 @@ def slskd_cancel():
         success = client.cancel_download(username, str(transfer_id), remove=True)
 
         if success:
+            if queue_id:
+                try:
+                    from download_queue_manager import update_queue_item
+                    update_queue_item(
+                        queue_id,
+                        slskd_transfer_id=None,
+                        slskd_state='Completed, Cancelled',
+                        slskd_queue_position=None,
+                        slskd_last_sync_at=datetime.now().isoformat(),
+                    )
+                except Exception as queue_sync_err:
+                    logging.debug(f"[SLSKD] queue cancel sync warning: {queue_sync_err}")
             return jsonify({"success": True, "message": "Download cancelled successfully", "transfer_id": str(transfer_id)})
         return jsonify({"error": "Failed to cancel download in slskd"}), 500
             
@@ -16003,10 +16048,32 @@ def slskd_retry():
         return jsonify({"error": "slskd integration not enabled"}), 400
     
     payload = request.json or {}
+    queue_id = payload.get("queue_id")
     username = payload.get("username", "")
     filename = payload.get("filename", "")
     size = payload.get("size", 0)
     transfer_id = payload.get("transfer_id") or payload.get("remoteToken") or payload.get("id")
+
+    # Queue-linked retries should use stored transfer identity/filename first.
+    if queue_id:
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT slskd_username, slskd_transfer_id, found_filename FROM download_queue WHERE id = %s",
+                (queue_id,),
+            )
+            row = cursor.fetchone()
+            conn.close()
+            if row:
+                rowd = dict(row) if hasattr(row, 'keys') else {
+                    'slskd_username': row[0], 'slskd_transfer_id': row[1], 'found_filename': row[2]
+                }
+                username = (rowd.get('slskd_username') or username or "").strip()
+                transfer_id = rowd.get('slskd_transfer_id') or transfer_id
+                filename = rowd.get('found_filename') or filename
+        except Exception as queue_lookup_err:
+            logging.debug(f"[SLSKD] queue retry lookup failed: {queue_lookup_err}")
 
     if not username or not filename:
         return jsonify({"error": "Username and filename required"}), 400
@@ -16041,11 +16108,27 @@ def slskd_retry():
             except Exception as cancel_err:
                 logging.debug(f"[SLSKD] Retry cancel step warning: {cancel_err}")
 
-        # Then re-queue it.
-        success = client.download_file(username, filename, int(size))
+        # Then re-queue it and refresh tracked transfer identity.
+        enqueue_result = client.enqueue_download_with_tracking(username=username, filename=filename, size=int(size))
+        success = bool(enqueue_result.get('success'))
         
         if success:
-            return jsonify({"success": True, "message": f"Download retry queued for {filename}", "transfer_id": str(transfer_id or "")})
+            new_transfer_id = (enqueue_result.get('transfer_id') or '').strip() or str(transfer_id or "")
+            if queue_id:
+                try:
+                    from download_queue_manager import update_queue_item
+                    update_queue_item(
+                        queue_id,
+                        status='downloading',
+                        slskd_transfer_id=(enqueue_result.get('transfer_id') or '').strip() or None,
+                        slskd_username=(enqueue_result.get('username') or username).strip() or None,
+                        slskd_state=(enqueue_result.get('state') or 'Requested').strip(),
+                        slskd_queue_position=enqueue_result.get('queue_position'),
+                        slskd_last_sync_at=datetime.now().isoformat(),
+                    )
+                except Exception as queue_sync_err:
+                    logging.debug(f"[SLSKD] queue retry sync warning: {queue_sync_err}")
+            return jsonify({"success": True, "message": f"Download retry queued for {filename}", "transfer_id": new_transfer_id})
         else:
             return jsonify({"error": "Failed to re-queue download"}), 500
             
@@ -25038,35 +25121,110 @@ def api_musicbrainz_search_releases():
     """
     try:
         from download_folder_grouping import match_folder_group_with_musicbrainz
-        
+        from difflib import SequenceMatcher
+
         artist = request.args.get('artist', '').strip()
         album = request.args.get('album', '').strip()
-        
-        if not artist or not album:
-            return jsonify({"error": "Artist and album are required"}), 400
-        
-        # Use MusicBrainz-only path for this modal to keep search latency low.
-        match_result = match_folder_group_with_musicbrainz('', artist, album, allow_discogs_fallback=False)
-        releases = match_result.get('candidates', []) if isinstance(match_result, dict) else []
-        
-        # Format for UI
+
+        if not artist:
+            return jsonify({"error": "Artist is required"}), 400
+
+        mode = (request.args.get('mode', 'album') or 'album').strip().lower()
+        try:
+            requested_limit = int(request.args.get('limit', 60) or 60)
+        except Exception:
+            requested_limit = 60
+        requested_limit = max(1, min(requested_limit, 100))
+
         formatted_releases = []
-        for rel in releases:
-            formatted_releases.append({
-                'id': rel.get('id'),
-                'title': rel.get('title'),
-                'artist': rel.get('artist', artist),
-                'year': rel.get('date', '')[:4] if rel.get('date') else None,
-                'country': rel.get('country'),
-                'tracks': rel.get('track_count', rel.get('track-count', 0)),
-                'format': rel.get('format'),
-                'barcode': rel.get('barcode')
-            })
-        
+
+        if mode == 'artist_all' or not album:
+            # Artist-wide search: return many releases so UI can render
+            # release-first accordion with expandable track lists.
+            query = f'artist:"{artist}"'
+            mb_response = requests.get(
+                "https://musicbrainz.org/ws/2/release/",
+                params={
+                    "query": query,
+                    "fmt": "json",
+                    "limit": requested_limit,
+                },
+                headers={
+                    "User-Agent": MUSICBRAINZ_USER_AGENT,
+                    "Accept": "application/json",
+                },
+                timeout=(5, 10),
+            )
+            mb_response.raise_for_status()
+            payload = mb_response.json() or {}
+            releases = payload.get('releases', []) if isinstance(payload, dict) else []
+
+            target_album = (album or '').strip().lower()
+            for rel in releases:
+                rel_title = (rel.get('title') or '').strip()
+                rel_artist = ''
+                credits = rel.get('artist-credit') or []
+                if credits:
+                    first_credit = credits[0] or {}
+                    if isinstance(first_credit, dict):
+                        rel_artist = (first_credit.get('name') or '').strip()
+
+                rel_date = (rel.get('date') or '').strip()
+                rel_year = rel_date[:4] if rel_date else None
+                track_count = rel.get('track-count') or 0
+
+                # Optional relevance signal when album text is provided.
+                similarity = 0.0
+                if target_album and rel_title:
+                    similarity = SequenceMatcher(None, target_album, rel_title.lower()).ratio()
+
+                formatted_releases.append({
+                    'id': rel.get('id'),
+                    'title': rel_title,
+                    'artist': rel_artist or artist,
+                    'year': rel_year,
+                    'date': rel_date,
+                    'country': rel.get('country'),
+                    'status': rel.get('status'),
+                    'disambiguation': rel.get('disambiguation') or '',
+                    'tracks': int(track_count or 0),
+                    'format': rel.get('packaging') or rel.get('text-representation', {}).get('script'),
+                    'barcode': rel.get('barcode'),
+                    'album_similarity': round(float(similarity), 4),
+                })
+
+            # Sort by best optional album similarity first, then newest date.
+            formatted_releases.sort(
+                key=lambda r: (
+                    float(r.get('album_similarity') or 0.0),
+                    str(r.get('date') or ''),
+                ),
+                reverse=True,
+            )
+        else:
+            # Legacy mode for narrow artist+album matching.
+            match_result = match_folder_group_with_musicbrainz('', artist, album, allow_discogs_fallback=False)
+            releases = match_result.get('candidates', []) if isinstance(match_result, dict) else []
+
+            for rel in releases:
+                formatted_releases.append({
+                    'id': rel.get('id'),
+                    'title': rel.get('title'),
+                    'artist': rel.get('artist', artist),
+                    'year': rel.get('date', '')[:4] if rel.get('date') else None,
+                    'date': rel.get('date', ''),
+                    'country': rel.get('country'),
+                    'tracks': rel.get('track_count', rel.get('track-count', 0)),
+                    'format': rel.get('format'),
+                    'barcode': rel.get('barcode'),
+                    'disambiguation': rel.get('disambiguation', ''),
+                })
+
         return jsonify({
             "success": True,
             "releases": formatted_releases,
-            "count": len(formatted_releases)
+            "count": len(formatted_releases),
+            "mode": mode,
         })
         
     except Exception as e:
@@ -27197,6 +27355,7 @@ def slskd_status():
                 "size": int(download.get("size", 0) or 0),
                 "averageSpeed": int(download.get("averageSpeed", 0) or 0),
                 "remoteToken": str(download.get("id", "") or ""),
+                "queuePosition": download.get("queuePosition"),
             })
 
         logging.info(f"slskd_status: Returning {len(active_downloads)} active downloads")
@@ -27204,6 +27363,26 @@ def slskd_status():
         
     except Exception as e:
         logging.error(f"Error fetching slskd status: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/slskd/events", methods=["GET"])
+def slskd_events():
+    """Get recent slskd events (optional event-driven queue status sync)."""
+    cfg = get_config()
+    slskd_config = cfg.get("slskd", {})
+
+    if not slskd_config.get("enabled"):
+        return jsonify({"error": "slskd integration not enabled"}), 400
+
+    web_url = slskd_config.get("web_url", "http://localhost:5030")
+    api_key = slskd_config.get("api_key", "")
+    try:
+        client = SlskdClient(web_url, api_key, enabled=True)
+        events = client.get_events(timeout=10)
+        return jsonify({"events": events})
+    except Exception as e:
+        logging.error(f"Error fetching slskd events: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 

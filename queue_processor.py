@@ -2814,6 +2814,23 @@ def check_completed_downloads():
         def _state_normalize(value):
             return str(value or "").strip().lower()
 
+        def _transfer_queue_position(transfer):
+            if not isinstance(transfer, dict):
+                return None
+            raw = (
+                transfer.get('queuePosition')
+                or transfer.get('queue_position')
+                or transfer.get('position')
+                or transfer.get('queueIndex')
+                or transfer.get('queueLength')
+            )
+            if raw is None:
+                return None
+            try:
+                return int(raw)
+            except Exception:
+                return None
+
         slskd_client = None
         try:
             slskd_client = get_slskd_client()
@@ -2862,6 +2879,54 @@ def check_completed_downloads():
                     logger.warning(
                         f"Could not fetch active slskd transfers for reconciliation: {status_err}"
                     )
+
+                # Optional event-driven enrichment for installations that want
+                # near-real-time transfer-state updates between poll cycles.
+                # Enable with SLSKD_EVENT_SYNC_ENABLED=true.
+                if os.environ.get('SLSKD_EVENT_SYNC_ENABLED', '').strip().lower() in {'1', 'true', 'yes', 'on'}:
+                    try:
+                        event_rows = slskd_client.get_events(timeout=10)
+                        for event in event_rows:
+                            if not isinstance(event, dict):
+                                continue
+                            payload = event.get('data') if isinstance(event.get('data'), dict) else event
+                            if not isinstance(payload, dict):
+                                continue
+                            filename = (
+                                payload.get('filename')
+                                or payload.get('fileName')
+                                or payload.get('path')
+                                or ''
+                            )
+                            if not filename:
+                                continue
+                            norm = _normalize_transfer_key(filename)
+                            if not norm:
+                                continue
+                            existing = slskd_active.get(norm) or slskd_active.get(os.path.basename(norm)) or {}
+                            merged = dict(existing)
+                            merged['filename'] = filename
+                            if payload.get('username'):
+                                merged['username'] = payload.get('username')
+                            if payload.get('id'):
+                                merged['id'] = payload.get('id')
+                            merged['state'] = (
+                                payload.get('state')
+                                or payload.get('transferState')
+                                or payload.get('status')
+                                or merged.get('state')
+                                or event.get('type')
+                                or ''
+                            )
+                            for qp_key in ('queuePosition', 'queue_position', 'position', 'queueIndex', 'queueLength'):
+                                if qp_key in payload and payload.get(qp_key) is not None:
+                                    merged['queuePosition'] = payload.get(qp_key)
+                                    break
+                            slskd_active[norm] = merged
+                            slskd_active[os.path.basename(norm)] = merged
+                        logger.debug(f"slskd events enrichment: processed {len(event_rows)} events")
+                    except Exception as event_err:
+                        logger.debug(f"Could not enrich transfer state from slskd events: {event_err}")
         except Exception as slskd_err:
             logger.debug(f"Could not query slskd completed transfers: {slskd_err}")
 
@@ -2941,6 +3006,40 @@ def check_completed_downloads():
 
             found_fn = item.get("found_filename") or ""
             item_id = item["id"]
+            transfer = None
+
+            # Keep queue rows in sync with slskd transfer identity/state so UI
+            # actions (cancel/retry) can target exact transfers deterministically.
+            if item_source == 'soulseek' and slskd_status_available:
+                transfer = _get_transfer_entry(found_fn)
+                if transfer:
+                    transfer_id = str(transfer.get('id') or '').strip() or None
+                    transfer_user = str(transfer.get('username') or '').strip() or None
+                    transfer_state = str(
+                        transfer.get('state')
+                        or transfer.get('transferState')
+                        or transfer.get('status')
+                        or ''
+                    ).strip() or None
+                    transfer_queue_position = _transfer_queue_position(transfer)
+                    _safe_update_queue_item(
+                        item_id,
+                        slskd_transfer_id=transfer_id,
+                        slskd_username=transfer_user,
+                        slskd_state=transfer_state,
+                        slskd_queue_position=transfer_queue_position,
+                        slskd_last_sync_at=datetime.now().isoformat(),
+                    )
+                else:
+                    if any(item.get(k) for k in ('slskd_transfer_id', 'slskd_username', 'slskd_state')) or item.get('slskd_queue_position') is not None:
+                        _safe_update_queue_item(
+                            item_id,
+                            slskd_transfer_id=None,
+                            slskd_username=None,
+                            slskd_state=None,
+                            slskd_queue_position=None,
+                            slskd_last_sync_at=datetime.now().isoformat(),
+                        )
 
             # Normalised remote path and its basename, computed once and reused
             # in steps 1 and 2 so we don't repeat the same string work per file.
@@ -3176,7 +3275,8 @@ def check_completed_downloads():
             if match_found is None:
                 if item_source == 'soulseek' and slskd_status_available:
                     found_fn = item.get("found_filename") or ""
-                    transfer = _get_transfer_entry(found_fn)
+                    if transfer is None:
+                        transfer = _get_transfer_entry(found_fn)
 
                     if transfer:
                         transfer_state = transfer.get("state", "")
@@ -3301,6 +3401,12 @@ def check_completed_downloads():
                         f"Queue {item_id}: matched file '{match_found}' by filename/path — marking as completed"
                     )
                 update_queue_status(item_id, 'completed', file_path=file_path, found_filename=match_found)
+                _safe_update_queue_item(
+                    item_id,
+                    slskd_state='Completed, Succeeded',
+                    slskd_queue_position=None,
+                    slskd_last_sync_at=datetime.now().isoformat(),
+                )
 
                 # Auto-move MBID-backed items immediately on completion — each
                 # track is transferred as soon as it finishes without waiting for

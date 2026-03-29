@@ -3252,15 +3252,15 @@ async function searchQueueMusicBrainzMatchShared({
   const artist = (artistInput.value || '').trim();
   const album = (albumInput.value || '').trim();
 
-  if (!artist || !album) {
-    alert('Artist and album are required');
+  if (!artist) {
+    alert('Artist is required');
     return;
   }
 
   results.innerHTML = '<div class="text-muted">Searching...</div>';
 
   try {
-    const url = `/api/musicbrainz/search/releases?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`;
+    const url = `/api/musicbrainz/search/releases?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}&mode=artist_all&limit=80`;
     const data = await fetchJsonOrThrow(url);
     const releases = data.releases || [];
 
@@ -3269,45 +3269,261 @@ async function searchQueueMusicBrainzMatchShared({
       return;
     }
 
-    const rows = releases.map(rel => {
+    const modeBadge = data.mode === 'artist_all'
+      ? '<span class="badge bg-info-subtle text-info-emphasis">Artist Catalog</span>'
+      : '<span class="badge bg-secondary">Album Search</span>';
+
+    const cards = releases.map((rel, index) => {
       const relArtist = rel.artist || artist;
-      const relTitle = rel.title || album;
+      const relTitle = rel.title || album || '(untitled release)';
       const relMbid = rel.id || '';
-      const relYear = rel.year || '';
+      const relYear = rel.year || (rel.date || '').slice(0, 4) || '';
       const relTracks = rel.tracks || 0;
+      const relDate = rel.date || '';
+      const relCountry = rel.country || '';
+      const relType = rel.type || '';
+      const relStatus = rel.status || '';
+      const relSimilarity = Number(rel.similarity || 0);
+      const trackContainerId = `queueMbTracks_${artistInputId}_${resultsContainerId}_${index}`;
+      const detailsId = `queueMbDetails_${artistInputId}_${resultsContainerId}_${index}`;
+      const source = rel.source || 'musicbrainz';
+
+      return `
+        <details
+          class="mb-2 border rounded p-2 bg-dark-subtle queue-mb-release-card"
+          id="${trackContainerId}_details"
+          data-year="${escapeHtml(String(relYear || '0'))}"
+          data-similarity="${escapeHtml(String(relSimilarity || 0))}"
+          data-country="${escapeHtml((relCountry || '').toLowerCase())}"
+          data-type="${escapeHtml((relType || '').toLowerCase())}"
+          data-title="${escapeHtml((relTitle || '').toLowerCase())}"
+        >
+          <summary class="d-flex flex-wrap justify-content-between align-items-center gap-2" style="cursor: pointer; list-style: none;">
+            <div>
+              <strong>${escapeHtml(relTitle)}</strong>
+              <div class="small text-muted">
+                ${escapeHtml(relArtist)}
+                ${relYear ? ` • ${escapeHtml(String(relYear))}` : ''}
+                ${relTracks ? ` • ${escapeHtml(String(relTracks))} tracks` : ''}
+                ${relCountry ? ` • ${escapeHtml(relCountry)}` : ''}
+                ${relType ? ` • ${escapeHtml(relType)}` : ''}
+                ${relStatus ? ` • ${escapeHtml(relStatus)}` : ''}
+                ${relSimilarity > 0 ? ` • ${escapeHtml(relSimilarity.toFixed(2))} match` : ''}
+              </div>
+            </div>
+            <div class="d-flex align-items-center gap-2">
+              ${selectButtonHtmlBuilder(relArtist, relTitle, relMbid)}
+            </div>
+          </summary>
+          <div class="mt-2">
+            <div class="small text-info mb-2">MBID: ${escapeHtml(relMbid || 'N/A')}</div>
+            ${relDate ? `<div class="small text-muted mb-2">Release date: ${escapeHtml(relDate)}</div>` : ''}
+            <button
+              type="button"
+              class="btn btn-sm btn-outline-info mb-2"
+              onclick="loadQueueMusicBrainzReleaseTracks('${encodeInlineArg(trackContainerId)}', '${encodeInlineArg(detailsId)}', this, '${encodeInlineArg(source)}', '${encodeInlineArg(relMbid)}')"
+            >
+              Show Works/Tracks
+            </button>
+            <div id="${detailsId}" class="small text-muted">Expand and load to inspect works/tracks for this release.</div>
+          </div>
+        </details>
+      `;
+    }).join('');
+
+    const typeValues = Array.from(new Set(
+      releases
+        .map(rel => String(rel.type || '').trim())
+        .filter(Boolean)
+    )).sort((a, b) => a.localeCompare(b));
+
+    const countryValues = Array.from(new Set(
+      releases
+        .map(rel => String(rel.country || '').trim())
+        .filter(Boolean)
+    )).sort((a, b) => a.localeCompare(b));
+
+    const typeOptions = typeValues
+      .map(typeVal => `<option value="${escapeHtml(typeVal.toLowerCase())}">${escapeHtml(typeVal)}</option>`)
+      .join('');
+
+    const countryOptions = countryValues
+      .map(countryVal => `<option value="${escapeHtml(countryVal.toLowerCase())}">${escapeHtml(countryVal)}</option>`)
+      .join('');
+
+    const sortId = `${resultsContainerId}_sort`;
+    const typeFilterId = `${resultsContainerId}_type`;
+    const countryFilterId = `${resultsContainerId}_country`;
+    const searchFilterId = `${resultsContainerId}_search`;
+    const cardsContainerId = `${resultsContainerId}_cards`;
+
+    results.innerHTML = `
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <div class="small text-muted">
+          Found ${escapeHtml(String(releases.length))} releases for ${escapeHtml(artist)}${album ? ` (ranked for "${escapeHtml(album)}")` : ''}
+        </div>
+        <div>${modeBadge}</div>
+      </div>
+      <div class="row g-2 mb-2">
+        <div class="col-md-3">
+          <select id="${sortId}" class="form-select form-select-sm" onchange="applyQueueMusicBrainzResultFilters('${encodeInlineArg(resultsContainerId)}')">
+            <option value="relevance">Sort: Relevance</option>
+            <option value="year_desc">Sort: Year (newest)</option>
+            <option value="year_asc">Sort: Year (oldest)</option>
+            <option value="title_asc">Sort: Title (A-Z)</option>
+          </select>
+        </div>
+        <div class="col-md-3">
+          <select id="${typeFilterId}" class="form-select form-select-sm" onchange="applyQueueMusicBrainzResultFilters('${encodeInlineArg(resultsContainerId)}')">
+            <option value="">Type: All</option>
+            ${typeOptions}
+          </select>
+        </div>
+        <div class="col-md-3">
+          <select id="${countryFilterId}" class="form-select form-select-sm" onchange="applyQueueMusicBrainzResultFilters('${encodeInlineArg(resultsContainerId)}')">
+            <option value="">Country: All</option>
+            ${countryOptions}
+          </select>
+        </div>
+        <div class="col-md-3">
+          <input id="${searchFilterId}" class="form-control form-control-sm" type="text" placeholder="Filter title..." oninput="applyQueueMusicBrainzResultFilters('${encodeInlineArg(resultsContainerId)}')" />
+        </div>
+      </div>
+      <div id="${cardsContainerId}">${cards}</div>
+    `;
+
+    applyQueueMusicBrainzResultFilters(resultsContainerId);
+  } catch (error) {
+    console.error(errorLogLabel || 'Error searching MusicBrainz match', error);
+    results.innerHTML = `<div class="alert alert-danger mb-0">${escapeHtml(error.message)}</div>`;
+  }
+}
+
+function applyQueueMusicBrainzResultFilters(resultsContainerIdEnc) {
+  const resultsContainerId = decodeInlineArg(resultsContainerIdEnc, resultsContainerIdEnc || '');
+  const cardsContainer = document.getElementById(`${resultsContainerId}_cards`);
+  if (!cardsContainer) {
+    return;
+  }
+
+  const sortEl = document.getElementById(`${resultsContainerId}_sort`);
+  const typeEl = document.getElementById(`${resultsContainerId}_type`);
+  const countryEl = document.getElementById(`${resultsContainerId}_country`);
+  const searchEl = document.getElementById(`${resultsContainerId}_search`);
+
+  const sortMode = String(sortEl?.value || 'relevance');
+  const typeFilter = String(typeEl?.value || '').trim().toLowerCase();
+  const countryFilter = String(countryEl?.value || '').trim().toLowerCase();
+  const searchFilter = String(searchEl?.value || '').trim().toLowerCase();
+
+  const cards = Array.from(cardsContainer.querySelectorAll('.queue-mb-release-card'));
+
+  cards.forEach(card => {
+    const cardType = String(card.getAttribute('data-type') || '');
+    const cardCountry = String(card.getAttribute('data-country') || '');
+    const cardTitle = String(card.getAttribute('data-title') || '');
+
+    const typeOk = !typeFilter || cardType === typeFilter;
+    const countryOk = !countryFilter || cardCountry === countryFilter;
+    const searchOk = !searchFilter || cardTitle.includes(searchFilter);
+
+    card.style.display = (typeOk && countryOk && searchOk) ? '' : 'none';
+  });
+
+  const sorted = [...cards].sort((a, b) => {
+    const yearA = Number(a.getAttribute('data-year') || 0);
+    const yearB = Number(b.getAttribute('data-year') || 0);
+    const similarityA = Number(a.getAttribute('data-similarity') || 0);
+    const similarityB = Number(b.getAttribute('data-similarity') || 0);
+    const titleA = String(a.getAttribute('data-title') || '');
+    const titleB = String(b.getAttribute('data-title') || '');
+
+    if (sortMode === 'year_desc') return yearB - yearA;
+    if (sortMode === 'year_asc') return yearA - yearB;
+    if (sortMode === 'title_asc') return titleA.localeCompare(titleB);
+    return similarityB - similarityA;
+  });
+
+  sorted.forEach(card => cardsContainer.appendChild(card));
+}
+
+async function loadQueueMusicBrainzReleaseTracks(trackContainerIdEnc, detailsIdEnc, buttonEl, sourceEnc, releaseIdEnc) {
+  const trackContainerId = decodeInlineArg(trackContainerIdEnc, '');
+  const detailsId = decodeInlineArg(detailsIdEnc, '');
+  const source = decodeInlineArg(sourceEnc, 'musicbrainz');
+  const releaseId = decodeInlineArg(releaseIdEnc, '');
+
+  const details = document.getElementById(detailsId);
+  if (!details || !releaseId) {
+    return;
+  }
+
+  if (details.dataset.loaded === '1') {
+    return;
+  }
+
+  const btn = buttonEl instanceof HTMLElement ? buttonEl : null;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Loading...';
+  }
+
+  details.innerHTML = '<div class="text-muted">Loading tracklist...</div>';
+
+  try {
+    const url = `/api/downloads/release/${encodeURIComponent(source)}/${encodeURIComponent(releaseId)}/tracks`;
+    const data = await fetchJsonOrThrow(url);
+    const tracks = Array.isArray(data.tracks) ? data.tracks : [];
+
+    if (!tracks.length) {
+      details.innerHTML = '<div class="text-warning">No tracks returned for this release.</div>';
+      return;
+    }
+
+    const rows = tracks.map((track, idx) => {
+      const trackNo = track.position || track.number || idx + 1;
+      const trackTitle = track.title || track.name || '(untitled track)';
+      const workTitle = track.work_title || track.work || '';
+      const duration = track.duration || track.length || '';
 
       return `
         <tr>
-          <td>${escapeHtml(relArtist)}</td>
-          <td>${escapeHtml(relTitle)}</td>
-          <td>${escapeHtml(relYear)}</td>
-          <td>${escapeHtml(relTracks)}</td>
-          <td><small class="text-info">${escapeHtml(relMbid)}</small></td>
-          <td>${selectButtonHtmlBuilder(relArtist, relTitle, relMbid)}</td>
+          <td>${escapeHtml(String(trackNo))}</td>
+          <td>${escapeHtml(trackTitle)}</td>
+          <td>${escapeHtml(workTitle)}</td>
+          <td>${escapeHtml(duration ? String(duration) : '')}</td>
         </tr>
       `;
     }).join('');
 
-    results.innerHTML = `
-      <div class="table-responsive">
+    details.innerHTML = `
+      <div class="table-responsive" id="${trackContainerId}_tracks">
         <table class="table table-sm table-dark table-striped mb-0">
           <thead>
             <tr>
-              <th>Artist</th>
-              <th>Album</th>
-              <th>Year</th>
-              <th>Tracks</th>
-              <th>MBID</th>
-              <th>Action</th>
+              <th>#</th>
+              <th>Track</th>
+              <th>Work</th>
+              <th>Duration</th>
             </tr>
           </thead>
           <tbody>${rows}</tbody>
         </table>
       </div>
     `;
+    details.dataset.loaded = '1';
+
+    if (btn) {
+      btn.textContent = `Loaded ${tracks.length} tracks`;
+      btn.classList.remove('btn-outline-info');
+      btn.classList.add('btn-outline-success');
+    }
   } catch (error) {
-    console.error(errorLogLabel || 'Error searching MusicBrainz match', error);
-    results.innerHTML = `<div class="alert alert-danger mb-0">${escapeHtml(error.message)}</div>`;
+    details.innerHTML = `<div class="text-danger">Failed to load release tracks: ${escapeHtml(error.message || String(error))}</div>`;
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Retry Load Tracks';
+    }
   }
 }
 
@@ -4595,81 +4811,17 @@ async function applyBetterMusicBrainzMbidDirect(oldArtistEnc, oldAlbumEnc) {
 }
 
 async function searchBetterMusicBrainzMatch(oldArtistEnc, oldAlbumEnc) {
-  const artistInput = document.getElementById('betterMatchArtist');
-  const albumInput = document.getElementById('betterMatchAlbum');
-  const results = document.getElementById('betterMatchResults');
+  const oldArtist = decodeInlineArg(oldArtistEnc, '');
+  const oldAlbum = decodeInlineArg(oldAlbumEnc, '');
 
-  if (!artistInput || !albumInput || !results) {
-    return;
-  }
-
-  const artist = (artistInput.value || '').trim();
-  const album = (albumInput.value || '').trim();
-
-  if (!artist || !album) {
-    alert('Artist and album are required');
-    return;
-  }
-
-  results.innerHTML = '<div class="text-muted">Searching...</div>';
-
-  try {
-    const url = `/api/musicbrainz/search/releases?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`;
-    const data = await fetchJsonOrThrow(url);
-    const releases = data.releases || [];
-
-    if (!releases.length) {
-      results.innerHTML = '<div class="alert alert-warning mb-0">No matches found.</div>';
-      return;
-    }
-
-    const oldArtist = decodeInlineArg(oldArtistEnc, '');
-    const oldAlbum = decodeInlineArg(oldAlbumEnc, '');
-
-    const rows = releases.map(rel => {
-      const relArtist = rel.artist || artist;
-      const relTitle = rel.title || album;
-      const relMbid = rel.id || '';
-      const relYear = rel.year || '';
-      const relTracks = rel.tracks || 0;
-
-      return `
-        <tr>
-          <td>${escapeHtml(relArtist)}</td>
-          <td>${escapeHtml(relTitle)}</td>
-          <td>${escapeHtml(relYear)}</td>
-          <td>${escapeHtml(relTracks)}</td>
-          <td><small class="text-info">${escapeHtml(relMbid)}</small></td>
-          <td>
-            <button class="btn btn-sm btn-success" onclick="applyBetterMusicBrainzMatch('${encodeInlineArg(oldArtist)}','${encodeInlineArg(oldAlbum)}','${encodeInlineArg(relArtist)}','${encodeInlineArg(relTitle)}','${encodeInlineArg(relMbid)}')">
-              Select
-            </button>
-          </td>
-        </tr>
-      `;
-    }).join('');
-
-    results.innerHTML = `
-      <div class="table-responsive">
-        <table class="table table-sm table-dark table-striped mb-0">
-          <thead>
-            <tr>
-              <th>Artist</th>
-              <th>Album</th>
-              <th>Year</th>
-              <th>Tracks</th>
-              <th>MBID</th>
-              <th>Action</th>
-            </tr>
-          </thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>
-    `;
-  } catch (error) {
-    console.error('Error searching better MusicBrainz match:', error);
-    results.innerHTML = `<div class="alert alert-danger mb-0">${escapeHtml(error.message)}</div>`;
-  }
+  await searchQueueMusicBrainzMatchShared({
+    artistInputId: 'betterMatchArtist',
+    albumInputId: 'betterMatchAlbum',
+    resultsContainerId: 'betterMatchResults',
+    selectButtonHtmlBuilder: (relArtist, relTitle, relMbid) =>
+      `<button class="btn btn-sm btn-success" onclick="applyBetterMusicBrainzMatch('${encodeInlineArg(oldArtist)}','${encodeInlineArg(oldAlbum)}','${encodeInlineArg(relArtist)}','${encodeInlineArg(relTitle)}','${encodeInlineArg(relMbid)}')">Select</button>`,
+    errorLogLabel: 'Error searching better MusicBrainz match',
+  });
 }
 
 async function applyBetterMusicBrainzMatch(oldArtistEnc, oldAlbumEnc, newArtistEnc, newAlbumEnc, mbidEnc) {
