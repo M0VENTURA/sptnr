@@ -147,12 +147,12 @@
     </div>
   </div>
 
-  <!-- Recommendation Generators -->
+  <!-- Playlist Creation Recommendations -->
   <div class="mb-4">
     <div class="card">
       <div class="card-header d-flex justify-content-between align-items-center">
         <h5 class="mb-0">
-          <i class="bi bi-lightbulb"></i> Recommendation Generators
+          <i class="bi bi-lightbulb"></i> Playlist Creation Recommendations
         </h5>
         <button class="btn btn-sm btn-outline-secondary" onclick="loadRecommendedPlaylists(true)" title="Refresh generators">
           <i class="bi bi-arrow-clockwise"></i>
@@ -160,7 +160,7 @@
       </div>
       <div class="card-body">
         <p class="text-muted mb-4">
-          Build playlists from the recommendation generators already available in sptnr. Each section below represents a different generator.
+          Build playlists from recommendation generators and save them as M3U files in <code>/music/playlists</code>.
         </p>
 
         <div id="loadingRecommendedPlaylists" class="text-center py-5">
@@ -591,54 +591,29 @@
 
   async function createPlaylistFromRecommendation(type, index, playlistName) {
     try {
-      // Show a loading toast or confirmation
       showToast('Creating playlist: ' + playlistName, 'info');
 
-      const recs = window.recommendedPlaylistsData || {};
-      let selectedPlaylist = null;
-
-      // Find the selected playlist
-      if (type === 'similar-artists' && recs.similar_artists && recs.similar_artists[index]) {
-        selectedPlaylist = recs.similar_artists[index];
-      } else if (type === 'top-genres' && recs.top_genres && recs.top_genres[index]) {
-        selectedPlaylist = recs.top_genres[index];
-      } else if (type === 'mood' && recs.mood_playlists && recs.mood_playlists[index]) {
-        selectedPlaylist = recs.mood_playlists[index];
-      } else if (type === 'discovery' && recs.discovery && recs.discovery[index]) {
-        selectedPlaylist = recs.discovery[index];
-      }
-
-      if (!selectedPlaylist) {
-        throw new Error('Playlist data not found');
-      }
-
-      const trackIds = Array.isArray(selectedPlaylist.track_ids) ? selectedPlaylist.track_ids : [];
-      const createResponse = await fetch('/api/playlist/create-custom', {
+      const createResponse = await fetch('/api/recommended-playlists/create', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          name: playlistName,
-          description: selectedPlaylist.description || `Generated ${type} playlist`,
-          is_public: true,
-          songs: trackIds.map(id => ({ id }))
+          type,
+          index,
+          name: playlistName
         })
       });
 
       const createData = await createResponse.json();
 
       if (!createResponse.ok || !createData.success) {
-        throw new Error(createData.error || 'Failed to create playlist in Navidrome');
+        throw new Error(createData.error || 'Failed to create recommendation playlist file');
       }
 
-      const ownerText = createData.target_user ? ` for ${createData.target_user}` : '';
-      showToast(`Playlist "${playlistName}" created successfully with ${selectedPlaylist.track_count || trackIds.length || 0} tracks${ownerText}!`, 'success');
-
-      // Refresh the playlist lists
-      setTimeout(() => {
-        location.reload();
-      }, 2000);
+      const trackCount = createData.track_count || 0;
+      const outputPath = createData.output_path || '/music/playlists';
+      showToast(`Playlist "${playlistName}" saved with ${trackCount} tracks at <code>${escapeHtml(outputPath)}</code>`, 'success');
 
     } catch (error) {
       console.error('Error creating playlist:', error);

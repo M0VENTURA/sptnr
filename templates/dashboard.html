@@ -1147,23 +1147,23 @@ async function loadUpcomingReleasesBanner() {
         
         let releases = data.releases.slice();
 
-        // Wider dashboard window: last 6 weeks + next 4 weeks.
+        // Dashboard window: last 2 weeks + upcoming month.
         const now = new Date();
-        const sixWeeksAgo = new Date(now);
-        sixWeeksAgo.setDate(now.getDate() - 42);
-        const fourWeeksAhead = new Date(now);
-        fourWeeksAhead.setDate(now.getDate() + 28);
+        const twoWeeksAgo = new Date(now);
+        twoWeeksAgo.setDate(now.getDate() - 14);
+        const oneMonthAhead = new Date(now);
+        oneMonthAhead.setMonth(oneMonthAhead.getMonth() + 1);
         
         releases = releases.filter(r => {
             if (!r.release_date || r.release_date === 'Unknown') return false;
             const d = new Date(r.release_date);
             if (Number.isNaN(d.getTime())) return false;
-            return d >= sixWeeksAgo && d <= fourWeeksAhead;
+            return d >= twoWeeksAgo && d <= oneMonthAhead;
         });
         
         if (releases.length === 0) {
             document.getElementById('upcomingBannerContent').innerHTML = `
-                <p class="text-muted text-center"><i class="bi bi-calendar-check"></i> No releases in the selected recent/upcoming window.</p>
+                <p class="text-muted text-center"><i class="bi bi-calendar-check"></i> No releases in the last 2 weeks or upcoming month.</p>
             `;
             return;
         }
@@ -1185,10 +1185,10 @@ async function loadUpcomingReleasesBanner() {
                 '<span class="badge bg-primary ms-2">Recent</span>';
 
             const collectionBadge = release.artist_in_collection
-                ? '<span class="badge bg-dark-subtle text-dark ms-2">Artist in Collection</span>'
+                ? '<span class="badge bg-success ms-2">Artist in Collection</span>'
                 : '';
             const recommendedBadge = release.artist_in_recommended
-                ? '<span class="badge bg-warning-subtle text-dark ms-2">Artist in Recommended</span>'
+                ? '<span class="badge bg-warning text-dark ms-2">Artist in Recommended</span>'
                 : '';
 
             const inCollection = !!release.album_in_collection;
@@ -1204,6 +1204,8 @@ async function loadUpcomingReleasesBanner() {
             const encodedArtist = encodeURIComponent(release.artist_name || '');
             const encodedAlbum = encodeURIComponent(release.album_name || '');
             const encodedDate = encodeURIComponent(release.release_date || '');
+            const searchArtistArg = JSON.stringify(String(release.artist_name || ''));
+            const searchAlbumArg = JSON.stringify(String(release.album_name || ''));
             
             html += `
                 <div class="list-group-item d-flex justify-content-between align-items-start py-2">
@@ -1214,6 +1216,11 @@ async function loadUpcomingReleasesBanner() {
                         <small class="text-muted">${escapeHtml(release.artist_name)} - ${escapeHtml(release.album_name)}</small>
                     </div>
                     <div class="d-flex align-items-center gap-2">
+                        <button class="btn btn-sm btn-outline-info"
+                            title="Search / Download"
+                            onclick='searchMusicBrainzRelease(event, ${searchArtistArg}, ${searchAlbumArg})'>
+                            <i class="bi bi-search"></i>
+                        </button>
                         <button class="btn btn-sm btn-outline-primary" ${disableAdd ? 'disabled' : ''}
                             title="${addTitle}"
                             onclick="addUpcomingReleaseToQueueDashboard('${encodedArtist}', '${encodedAlbum}', '${encodedDate}', this)">

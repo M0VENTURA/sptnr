@@ -4563,7 +4563,13 @@ def check_downloads_folder():
                 else:
                     # Debug: show what we're looking for
                     search_query = queue_item.get('search_query', f"{queue_item.get('artist', '')} {queue_item.get('title', '')}")
-                    logger.debug(f"No match found for queue item {queue_item['id']}: {search_query}")
+                    logger.debug(
+                        "[RECONCILE] No local file match for queue item %s (status=%s, source=%s): %s",
+                        queue_item.get('id'),
+                        queue_item.get('status'),
+                        queue_item.get('source'),
+                        search_query,
+                    )
 
         conn.close()
 

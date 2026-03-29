@@ -462,6 +462,39 @@ def get_queued_items(limit=10):
         placeholder = _get_placeholder(conn)
         
         now = datetime.now().isoformat()
+
+        # Surface items intentionally excluded from slskd processing so
+        # operators can distinguish "not dispatched" from API failures.
+        try:
+            cursor.execute(
+                """
+                SELECT COALESCE(LOWER(source), 'soulseek') AS source_key, COUNT(*) AS item_count
+                FROM download_queue
+                WHERE status = 'queued'
+                  AND (next_retry_at IS NULL OR next_retry_at <= {placeholder})
+                  AND COALESCE(LOWER(source), 'soulseek') IN ('qbittorrent', 'local', 'discovered')
+                GROUP BY COALESCE(LOWER(source), 'soulseek')
+                ORDER BY source_key
+                """.format(placeholder=placeholder),
+                (now,),
+            )
+            excluded_rows = cursor.fetchall() or []
+            if excluded_rows:
+                summary_parts = []
+                total_excluded = 0
+                for row in excluded_rows:
+                    source_key = row.get('source_key') if hasattr(row, 'get') else row[0]
+                    item_count = row.get('item_count') if hasattr(row, 'get') else row[1]
+                    item_count = int(item_count or 0)
+                    total_excluded += item_count
+                    summary_parts.append(f"{source_key}:{item_count}")
+                logger.info(
+                    "Queue selector skipped %s queued item(s) due to non-slskd source (%s)",
+                    total_excluded,
+                    ", ".join(summary_parts),
+                )
+        except Exception as source_diag_err:
+            logger.debug(f"Could not compute queue source skip diagnostics: {source_diag_err}")
         
         # Get queued items and items scheduled for retry
         cursor.execute("""
@@ -793,6 +826,12 @@ def search_and_download(queue_id, queue_item, client):
             logger.warning(f"Queue {queue_id}: Failed to start search")
             mark_failed(queue_id, "Failed to start Soulseek search", schedule_retry=True)
             return False
+        logger.info(
+            "Queue %s: slskd search submitted (search_id=%s) for query '%s'",
+            queue_id,
+            search_id,
+            search_query,
+        )
         
         # Poll for results (up to MAX_POLL_ATTEMPTS seconds with 1 second intervals)
         # Increased timeout to 45 seconds to handle slow Soulseek peer responses

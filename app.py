@@ -2311,6 +2311,155 @@ def _parse_musicbrainz_release_date(raw_date: str) -> str | None:
     return None
 
 
+def _upsert_future_missing_release_into_upcoming(cursor, artist_name: str, release_group: dict, source_label: str) -> bool:
+    """Upsert future-dated MusicBrainz missing releases into upcoming_releases.
+
+    Uses the release-group MBID as the canonical identity where available and
+    removes stale duplicates for that MBID before upserting the current row.
+    """
+    if not artist_name or not isinstance(release_group, dict):
+        return False
+
+    parsed_date = _parse_musicbrainz_release_date(release_group.get("first_release_date"))
+    if not parsed_date:
+        return False
+
+    try:
+        release_dt = datetime.strptime(parsed_date, "%Y-%m-%d").date()
+    except ValueError:
+        return False
+
+    # Upcoming view should only receive truly future releases from this path.
+    if release_dt <= datetime.now().date():
+        return False
+
+    album_name = (release_group.get("title") or "").strip()
+    if not album_name:
+        return False
+
+    release_group_mbid = (release_group.get("id") or "").strip() or None
+    release_year = int(parsed_date[:4]) if parsed_date[:4].isdigit() else None
+    placeholder = "%s"
+
+    # MBID-based duplicate cleanup: keep only the row that matches the current
+    # MB artist/album/date identity and remove stale duplicates.
+    if release_group_mbid:
+        cursor.execute(
+            f"""
+            SELECT id, artist_name, album_name, release_date
+            FROM upcoming_releases
+            WHERE release_group_mbid = {placeholder}
+            ORDER BY id ASC
+            """,
+            (release_group_mbid,),
+        )
+        existing_rows = cursor.fetchall() or []
+        keep_seen = False
+        duplicate_ids = []
+
+        for row in existing_rows:
+            row_id = _row_get(row, "id", 0)
+            row_artist = str(_row_get(row, "artist_name", 1, "") or "").strip().lower()
+            row_album = str(_row_get(row, "album_name", 2, "") or "").strip().lower()
+            row_date = str(_row_get(row, "release_date", 3, "") or "").strip()
+
+            is_current = (
+                row_artist == artist_name.strip().lower()
+                and row_album == album_name.strip().lower()
+                and row_date == parsed_date
+            )
+            if is_current and not keep_seen:
+                keep_seen = True
+                continue
+            if row_id is not None:
+                duplicate_ids.append(row_id)
+
+        for duplicate_id in duplicate_ids:
+            cursor.execute(
+                f"DELETE FROM upcoming_releases WHERE id = {placeholder}",
+                (duplicate_id,),
+            )
+
+    cursor.execute(
+        f"""
+        INSERT INTO upcoming_releases (
+            artist_name,
+            album_name,
+            release_date,
+            release_year,
+            source,
+            artist_in_collection,
+            album_in_collection,
+            is_new_release,
+            notes,
+            release_group_mbid,
+            mbid_match_status,
+            mbid_source,
+            mbid_confidence,
+            mbid_match_score,
+            mbid_last_checked_at,
+            mbid_manual_override,
+            updated_at
+        )
+        VALUES (
+            {placeholder}, {placeholder}, {placeholder}, {placeholder},
+            {placeholder}, {placeholder}, {placeholder}, {placeholder},
+            {placeholder}, {placeholder}, {placeholder}, {placeholder},
+            {placeholder}, {placeholder}, {placeholder}, {placeholder},
+            CURRENT_TIMESTAMP
+        )
+        ON CONFLICT (artist_name, album_name, release_date) DO UPDATE SET
+            source = EXCLUDED.source,
+            artist_in_collection = EXCLUDED.artist_in_collection,
+            release_year = EXCLUDED.release_year,
+            is_new_release = EXCLUDED.is_new_release,
+            notes = EXCLUDED.notes,
+            release_group_mbid = COALESCE(EXCLUDED.release_group_mbid, upcoming_releases.release_group_mbid),
+            mbid_match_status = CASE
+                WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_match_status
+                ELSE EXCLUDED.mbid_match_status
+            END,
+            mbid_source = CASE
+                WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_source
+                ELSE EXCLUDED.mbid_source
+            END,
+            mbid_confidence = CASE
+                WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_confidence
+                ELSE EXCLUDED.mbid_confidence
+            END,
+            mbid_match_score = CASE
+                WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_match_score
+                ELSE EXCLUDED.mbid_match_score
+            END,
+            mbid_last_checked_at = CASE
+                WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_last_checked_at
+                ELSE EXCLUDED.mbid_last_checked_at
+            END,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            artist_name,
+            album_name,
+            parsed_date,
+            release_year,
+            source_label,
+            True,
+            False,
+            True,
+            "Added from MusicBrainz missing-releases scan (future release)",
+            release_group_mbid,
+            "matched" if release_group_mbid else "unmatched",
+            "musicbrainz_missing_releases",
+            "high" if release_group_mbid else None,
+            1.0 if release_group_mbid else None,
+            datetime.now().isoformat(),
+            False,
+        ),
+    )
+
+    return True
+
+
 def _run_daily_musicbrainz_collection_release_refresh():
     """
     Refresh upcoming/recent releases from MusicBrainz for artists in the collection.
@@ -7279,6 +7428,14 @@ def api_artist_missing_releases():
     conn = get_db()
     cursor = conn.cursor()
     placeholder = "%s"
+    upcoming_sync_enabled = False
+    upcoming_sync_count = 0
+
+    try:
+        _ensure_upcoming_releases_schema(conn)
+        upcoming_sync_enabled = True
+    except Exception as upcoming_schema_err:
+        logging.warning(f"[UPCOMING_SYNC] Could not ensure upcoming_releases schema in artist missing-releases endpoint: {upcoming_schema_err}")
     
     # Use canonical artist identity for all comparisons (album_artist preferred)
     artist_compare_expr = "COALESCE(NULLIF(album_artist, ''), artist)"
@@ -7366,6 +7523,20 @@ def api_artist_missing_releases():
             "category": category,
         })
 
+        if upcoming_sync_enabled:
+            try:
+                if _upsert_future_missing_release_into_upcoming(
+                    cursor,
+                    artist,
+                    rg,
+                    "MusicBrainz Missing Releases",
+                ):
+                    upcoming_sync_count += 1
+            except Exception as upcoming_sync_err:
+                logging.warning(
+                    f"[UPCOMING_SYNC] Failed to sync future missing release for '{artist}' / '{rg.get('title', '')}': {upcoming_sync_err}"
+                )
+
     # Persist latest artist-level missing releases so they survive page reloads/restarts.
     try:
         cursor.execute(
@@ -7396,6 +7567,13 @@ def api_artist_missing_releases():
         logging.warning(f"[MISSING_RELEASES] Could not persist artist missing releases for {artist}: {persist_error}")
     finally:
         conn.close()
+
+    if upcoming_sync_count:
+        logging.info(
+            "[UPCOMING_SYNC] Added/updated %s future upcoming release(s) from artist missing scan for '%s'",
+            upcoming_sync_count,
+            artist,
+        )
 
     # Auto-queue new releases for favourited artists (current year, straight albums only)
     try:
@@ -7591,6 +7769,15 @@ def api_scan_all_missing_releases():
             conn = get_db()
             cursor = conn.cursor()
             placeholder = "%s"
+            upcoming_sync_enabled = False
+            future_upcoming_synced = 0
+
+            try:
+                _ensure_upcoming_releases_schema(conn)
+                upcoming_sync_enabled = True
+            except Exception as upcoming_schema_err:
+                logging.warning(f"[UPCOMING_SYNC] Could not ensure upcoming_releases schema in full missing scan: {upcoming_schema_err}")
+
             # Get canonical artist identities from album_artist when available.
             # This avoids scanning featured track artists that do not represent a real catalog owner.
             cursor.execute("""
@@ -7756,6 +7943,23 @@ def api_scan_all_missing_releases():
                             "cover_art_url": cover_art_url,
                             "category": category,
                         })
+
+                        if upcoming_sync_enabled:
+                            try:
+                                if _upsert_future_missing_release_into_upcoming(
+                                    cursor,
+                                    artist_name,
+                                    rg,
+                                    "MusicBrainz Missing Releases",
+                                ):
+                                    future_upcoming_synced += 1
+                            except Exception as upcoming_sync_err:
+                                logging.warning(
+                                    "[UPCOMING_SYNC] Failed to sync future missing release for '%s' / '%s': %s",
+                                    artist_name,
+                                    rg.get("title", ""),
+                                    upcoming_sync_err,
+                                )
                         
                         # Insert missing release into database with DB-aware upsert
                         try:
@@ -7823,6 +8027,11 @@ def api_scan_all_missing_releases():
             
             conn.close()
             logging.info(f"[MISSING_RELEASES] Scan complete. Found {total_missing} missing releases across {total_artists} artists")
+            if future_upcoming_synced:
+                logging.info(
+                    "[UPCOMING_SYNC] Added/updated %s future upcoming release(s) during full missing scan",
+                    future_upcoming_synced,
+                )
             
         except Exception as e:
             logging.error(f"[MISSING_RELEASES] Scan failed: {e}", exc_info=True)
@@ -22470,6 +22679,132 @@ def api_queue_check_collection_batch():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/queue/diagnostics/slskd-eligibility", methods=["GET"])
+def api_queue_slskd_eligibility_diagnostics():
+    """Return queue diagnostics showing which items are eligible for slskd dispatch."""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = "%s"
+        now_iso = datetime.now().isoformat()
+
+        excluded_sources = ('qbittorrent', 'local', 'discovered')
+
+        cursor.execute(
+            """
+            SELECT status, COALESCE(LOWER(source), 'soulseek') AS source_key, COUNT(*) AS row_count
+            FROM download_queue
+            GROUP BY status, COALESCE(LOWER(source), 'soulseek')
+            ORDER BY status ASC, source_key ASC
+            """
+        )
+        grouped_rows = cursor.fetchall() or []
+
+        cursor.execute(
+            f"""
+            SELECT COUNT(*) AS row_count
+            FROM download_queue
+            WHERE status = 'queued'
+              AND (next_retry_at IS NULL OR next_retry_at <= {placeholder})
+              AND COALESCE(LOWER(source), 'soulseek') NOT IN ('qbittorrent', 'local', 'discovered')
+            """,
+            (now_iso,),
+        )
+        eligible_row = cursor.fetchone()
+        eligible_count = int(_row_get(eligible_row, 'row_count', 0, 0) or 0)
+
+        cursor.execute(
+            f"""
+            SELECT COUNT(*) AS row_count
+            FROM download_queue
+            WHERE status = 'queued'
+              AND (next_retry_at IS NULL OR next_retry_at <= {placeholder})
+              AND COALESCE(LOWER(source), 'soulseek') IN ('qbittorrent', 'local', 'discovered')
+            """,
+            (now_iso,),
+        )
+        excluded_row = cursor.fetchone()
+        excluded_count = int(_row_get(excluded_row, 'row_count', 0, 0) or 0)
+
+        cursor.execute(
+            f"""
+            SELECT id, artist, title, album, status, COALESCE(LOWER(source), 'soulseek') AS source_key,
+                   next_retry_at, created_at, updated_at
+            FROM download_queue
+            WHERE status = 'queued'
+              AND (next_retry_at IS NULL OR next_retry_at <= {placeholder})
+              AND COALESCE(LOWER(source), 'soulseek') NOT IN ('qbittorrent', 'local', 'discovered')
+                        ORDER BY priority ASC, retry_count ASC, created_at ASC
+            LIMIT 25
+            """,
+            (now_iso,),
+        )
+        eligible_samples = []
+        for row in cursor.fetchall() or []:
+            eligible_samples.append({
+                "id": _row_get(row, 'id', 0),
+                "artist": _row_get(row, 'artist', 1),
+                "title": _row_get(row, 'title', 2),
+                "album": _row_get(row, 'album', 3),
+                "status": _row_get(row, 'status', 4),
+                "source": _row_get(row, 'source_key', 5),
+                "next_retry_at": _row_get(row, 'next_retry_at', 6),
+                "created_at": _row_get(row, 'created_at', 7),
+                "updated_at": _row_get(row, 'updated_at', 8),
+            })
+
+        cursor.execute(
+            f"""
+            SELECT id, artist, title, album, status, COALESCE(LOWER(source), 'soulseek') AS source_key,
+                   next_retry_at, created_at, updated_at
+            FROM download_queue
+            WHERE status = 'queued'
+              AND (next_retry_at IS NULL OR next_retry_at <= {placeholder})
+              AND COALESCE(LOWER(source), 'soulseek') IN ('qbittorrent', 'local', 'discovered')
+            ORDER BY created_at ASC
+            LIMIT 25
+            """,
+            (now_iso,),
+        )
+        excluded_samples = []
+        for row in cursor.fetchall() or []:
+            excluded_samples.append({
+                "id": _row_get(row, 'id', 0),
+                "artist": _row_get(row, 'artist', 1),
+                "title": _row_get(row, 'title', 2),
+                "album": _row_get(row, 'album', 3),
+                "status": _row_get(row, 'status', 4),
+                "source": _row_get(row, 'source_key', 5),
+                "next_retry_at": _row_get(row, 'next_retry_at', 6),
+                "created_at": _row_get(row, 'created_at', 7),
+                "updated_at": _row_get(row, 'updated_at', 8),
+            })
+
+        conn.close()
+
+        grouped = []
+        for row in grouped_rows:
+            grouped.append({
+                "status": _row_get(row, 'status', 0),
+                "source": _row_get(row, 'source_key', 1),
+                "count": int(_row_get(row, 'row_count', 2, 0) or 0),
+            })
+
+        return jsonify({
+            "success": True,
+            "as_of": now_iso,
+            "excluded_sources": list(excluded_sources),
+            "ready_for_slskd_count": eligible_count,
+            "ready_but_excluded_count": excluded_count,
+            "grouped_counts": grouped,
+            "ready_for_slskd_samples": eligible_samples,
+            "excluded_samples": excluded_samples,
+        })
+    except Exception as e:
+        logging.error(f"[QUEUE_DIAG] slskd eligibility diagnostics failed: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/queue/add", methods=["POST"])
 def api_queue_add():
     """Add song/album to download queue"""
@@ -27614,6 +27949,108 @@ def api_recommended_playlists():
         }), 500
 
 
+@app.route("/api/recommended-playlists/create", methods=["POST"])
+def api_recommended_playlists_create():
+    """Create a recommendation playlist as an M3U file in /music/playlists."""
+    try:
+        payload = request.get_json(force=True, silent=True) or {}
+        rec_type = str(payload.get("type") or "").strip().lower()
+        rec_index = payload.get("index")
+        requested_name = str(payload.get("name") or "").strip()
+
+        if rec_type not in {"similar-artists", "top-genres", "mood", "discovery"}:
+            return jsonify({"success": False, "error": "Invalid recommendation type"}), 400
+
+        if not isinstance(rec_index, int) or rec_index < 0:
+            return jsonify({"success": False, "error": "Invalid recommendation index"}), 400
+
+        # Re-use the same recommendation generation path as GET endpoint.
+        from playlist_recommendations import PlaylistRecommender
+        from api_clients.lastfm import LastFmClient
+        from api_clients.audiodb_and_listenbrainz import ListenBrainzUserClient
+
+        cfg = get_config()
+        app_user, user_cfg = _resolve_active_navidrome_user_config(cfg)
+        conn = get_db()
+
+        cached_recommendations = _load_cached_recommendation_candidates(conn, app_user)
+        if cached_recommendations:
+            recommendations = cached_recommendations
+        else:
+            lastfm_client = None
+            listenbrainz_client = None
+
+            lastfm_config = cfg.get("api_integrations", {}).get("lastfm", {})
+            if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
+                lastfm_client = LastFmClient(
+                    lastfm_config.get("api_key"),
+                    username=(user_cfg.get("lastfm_username") or "").strip(),
+                    db_connection=conn,
+                )
+
+            listenbrainz_config = cfg.get("api_integrations", {}).get("listenbrainz", {})
+            listenbrainz_token = (user_cfg.get("listenbrainz_user_token") or "").strip()
+            if listenbrainz_config.get("enabled") and listenbrainz_token:
+                listenbrainz_client = ListenBrainzUserClient(listenbrainz_token)
+
+            recommender = PlaylistRecommender(
+                lastfm_client=lastfm_client,
+                listenbrainz_client=listenbrainz_client,
+                db_connection=conn,
+            )
+            recommendations = recommender.get_recommendations()
+            recommendations = _store_recommendation_candidates(conn, app_user, recommendations)
+
+        category_map = {
+            "similar-artists": "similar_artists",
+            "top-genres": "top_genres",
+            "mood": "mood_playlists",
+            "discovery": "discovery",
+        }
+        selected_list = recommendations.get(category_map[rec_type], []) or []
+        if rec_index >= len(selected_list):
+            conn.close()
+            return jsonify({"success": False, "error": "Recommendation not found"}), 404
+
+        selected = selected_list[rec_index]
+        track_ids = selected.get("track_ids", []) or []
+        if not track_ids:
+            conn.close()
+            return jsonify({"success": False, "error": "Recommendation has no tracks"}), 400
+
+        placeholder = get_placeholder(conn)
+        placeholders = ",".join([placeholder] * len(track_ids))
+        cursor = conn.cursor()
+        cursor.execute(
+            f"SELECT file_path FROM tracks WHERE id IN ({placeholders}) AND file_path IS NOT NULL",
+            tuple(track_ids),
+        )
+        rows = cursor.fetchall() or []
+        file_paths = []
+        for row in rows:
+            file_path = row.get("file_path") if isinstance(row, dict) else row[0]
+            if file_path:
+                file_paths.append(file_path)
+
+        conn.close()
+
+        if not file_paths:
+            return jsonify({"success": False, "error": "No local file paths found for selected recommendation"}), 400
+
+        playlist_name = requested_name or selected.get("name") or f"recommended_{rec_type}_{rec_index + 1}"
+        output_path = _write_m3u_playlist(playlist_name, file_paths)
+
+        return jsonify({
+            "success": True,
+            "playlist_name": playlist_name,
+            "track_count": len(file_paths),
+            "output_path": output_path,
+        }), 201
+    except Exception as e:
+        logging.error(f"[RECOMMENDED_PLAYLISTS_CREATE] Error: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/listenbrainz/sync/now", methods=["POST"])
 def api_listenbrainz_sync_now():
     """Manually trigger ListenBrainz recommendations sync"""
@@ -32043,8 +32480,8 @@ def _playlist_output_name(listenbrainz_username, playlist_key):
 
 def _resolve_playlists_dir():
     from pathlib import Path
-    music_root = os.environ.get("MUSIC_ROOT") or os.environ.get("MUSIC_FOLDER") or "/Music"
-    return Path(music_root) / "Playlists"
+    playlists_root = os.environ.get("PLAYLISTS_OUTPUT_DIR", "/music/playlists")
+    return Path(playlists_root)
 
 
 def _write_m3u_playlist(playlist_name, file_paths):

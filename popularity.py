@@ -6750,8 +6750,8 @@ def popularity_scan(
                     conn.commit()
                     log_debug(f"Batch committed {len(single_detection_timestamp_updates)} single detection timestamp update(s) for album '{album}'")
 
-                # COVER DETECTION: Detect and mark cover songs based on writer/lyricist uniqueness
-                if HAVE_COVER_DETECTOR and not singles_only:
+                # COVER DETECTION: Detect and mark cover songs (MB relation first, writer fallback)
+                if HAVE_COVER_DETECTOR:
                     try:
                         log_info(f'Starting cover detection for album "{artist} - {album}"')
 
@@ -6791,9 +6791,7 @@ def popularity_scan(
                         covers_found_count = 0
                 else:
                     covers_found_count = 0
-                    if singles_only:
-                        log_debug(f'Skipping cover detection (singles_only mode active)')
-                    elif not HAVE_COVER_DETECTOR:
+                    if not HAVE_COVER_DETECTOR:
                         log_debug(f'Skipping cover detection (CoverDetector module unavailable)')
 
                 # Log summary of singles detection

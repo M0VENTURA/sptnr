@@ -516,12 +516,12 @@ def ensure_writer_column():
 def ensure_cover_columns():
     """Ensure cover-detection columns exist in the tracks table.
 
-    Adds: ``is_cover`` BOOLEAN, ``is_cover_reason`` TEXT, ``original_cover_artist`` TEXT.
+    Adds: ``is_cover`` BIGINT, ``is_cover_reason`` TEXT, ``original_cover_artist`` TEXT.
     """
     import logging
 
     columns_to_add = [
-        ("is_cover", "BOOLEAN DEFAULT FALSE"),
+        ("is_cover", "BIGINT DEFAULT 0"),
         ("is_cover_reason", "TEXT"),
         ("original_cover_artist", "TEXT"),
         ("cover_manual_override", "BOOLEAN DEFAULT FALSE"),

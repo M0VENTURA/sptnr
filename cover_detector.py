@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class CoverDetector:
-    """Detect and attribute cover songs using MusicBrainz writer/composer data."""
+    """Detect and attribute cover songs using MusicBrainz relations and writer/composer data."""
     
     @staticmethod
     def _is_postgres(conn):
@@ -44,6 +44,35 @@ class CoverDetector:
         self.placeholder = "%s" if self.is_pg else "?"
         self._band_members_cache = {}  # Cache to avoid repeated API calls
 
+    def _normalize_cover_flag_value(self, value: bool):
+        """Normalize cover flags based on DB column type (BOOLEAN vs BIGINT/INTEGER)."""
+        if not self.db_conn:
+            return int(bool(value))
+
+        try:
+            cursor = self.db_conn.cursor()
+            cursor.execute(
+                """
+                SELECT data_type
+                FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = 'tracks'
+                  AND column_name = 'is_cover'
+                LIMIT 1
+                """
+            )
+            row = cursor.fetchone()
+            if isinstance(row, dict):
+                dtype = (row.get("data_type") or "").lower()
+            elif row and len(row) > 0:
+                dtype = (row[0] or "").lower()
+            else:
+                dtype = ""
+            return bool(value) if dtype == "boolean" else int(bool(value))
+        except Exception:
+            # Be permissive if type introspection fails.
+            return int(bool(value))
+
     def _configure_musicbrainzngs(self):
         """Ensure musicbrainzngs identifies itself with the app user agent."""
         try:
@@ -56,7 +85,8 @@ class CoverDetector:
     
     def detect_covers_for_album(self, album: str, artist: str, tracks: List[Dict]) -> List[Dict]:
         """
-        Detect cover songs in an album by analyzing writer information.
+        Detect cover songs in an album using MusicBrainz relation signals first,
+        then writer-based heuristics as fallback.
         
         Logic:
         - For each track, check if the writer/composer is different from album artist
@@ -103,10 +133,54 @@ class CoverDetector:
             logger.info(f"  → To enable cover detection, ensure 'writer' field is populated from metadata sources during import")
             logger.info(f"  → Writer field should contain the original songwriter/composer name")
         
-        # Step 2: Identify tracks with writers different from album artist (likely covers)
-        # Any track whose writer/lyricist differs from the album artist is a candidate.
         cover_results = []
         seen_track_ids = set()  # Avoid processing same track twice
+
+        # Step 2: Primary detection via MusicBrainz "cover recording of" relation.
+        # This is the canonical signal shown in the MB UI and should take precedence.
+        for track in tracks:
+            track_id = track.get('id')
+            if not track_id or track_id in seen_track_ids:
+                continue
+
+            mbid = track.get('mbid')
+            if not mbid:
+                continue
+
+            relation_original = self._find_original_from_cover_relation(
+                recording_mbid=mbid,
+                title=track.get('title', ''),
+                album_artist=artist
+            )
+            if not relation_original:
+                continue
+
+            result = {
+                'track_id': track_id,
+                'title': track.get('title', ''),
+                'is_cover': True,
+                'original_artist': relation_original['artist'],
+                'original_year': relation_original.get('year'),
+                'writer': '',
+                'confidence': relation_original.get('confidence', 'high')
+            }
+            cover_results.append(result)
+            seen_track_ids.add(track_id)
+            logger.info(
+                f"✓ Cover confirmed (MusicBrainz relation): '{track.get('title', '')}' "
+                f"originally by '{relation_original['artist']}' ({relation_original.get('year', 'unknown year')})"
+            )
+
+            self.update_cover_metadata(
+                track_id=track_id,
+                title=track.get('title', ''),
+                original_artist=relation_original['artist'],
+                file_path=track.get('file_path'),
+                is_cover_reason="MusicBrainz cover relation"
+            )
+
+        # Step 3: Fallback detection from writer/lyricist mismatch + earliest recording lookup.
+        # Any track whose writer/lyricist differs from the album artist is a candidate.
         for track_id, info in track_writers.items():
             if track_id in seen_track_ids:
                 continue
@@ -147,7 +221,7 @@ class CoverDetector:
                     else:
                         logger.debug(f"No original recording found for '{info['title']}' by writer '{writer}'")
 
-        # Step 3: Heuristic fallback when writer metadata is missing or incomplete.
+        # Step 4: Heuristic fallback when relation/writer metadata is missing or incomplete.
         for track in tracks:
             track_id = track.get('id')
             if not track_id or track_id in seen_track_ids:
@@ -180,6 +254,142 @@ class CoverDetector:
         
         logger.info(f"Cover detection complete: found {len(cover_results)} covers in '{album}'")
         return cover_results
+
+    def _extract_cover_work_ids(self, recording: Dict) -> set:
+        """Extract work IDs linked by MB "cover" relations from a recording payload."""
+        work_ids = set()
+        for rel in recording.get('work-relation-list', []) or []:
+            rel_type = str(rel.get('type', '')).strip().lower()
+            rel_direction = str(rel.get('direction', '')).strip().lower()
+            if rel_type != 'cover':
+                continue
+            # "forward" means this recording is a cover of the linked work.
+            if rel_direction and rel_direction != 'forward':
+                continue
+            work_id = (rel.get('work') or {}).get('id')
+            if work_id:
+                work_ids.add(work_id)
+        return work_ids
+
+    def _find_original_from_cover_relation(self, recording_mbid: str, title: str, album_artist: Optional[str] = None) -> Optional[Dict]:
+        """Resolve likely original artist/year from MB cover relations on a recording."""
+        try:
+            mb = self._configure_musicbrainzngs()
+            if mb is None:
+                return None
+
+            seed_result = mb.get_recording_by_id(
+                recording_mbid,
+                includes=['work-rels', 'artist-credits', 'releases']
+            )
+            seed_recording = seed_result.get('recording', {})
+            cover_work_ids = self._extract_cover_work_ids(seed_recording)
+            if not cover_work_ids:
+                return None
+
+            search_title = title or seed_recording.get('title') or ''
+            if not search_title:
+                return None
+
+            result = mb.search_recordings(recording=search_title, limit=50)
+            recordings = result.get('recording-list', []) or []
+
+            def _extract_credit_artist_name(artist_credit: List[Dict]) -> str:
+                for entry in artist_credit or []:
+                    if isinstance(entry, dict):
+                        artist_name = (entry.get('artist') or {}).get('name')
+                        if artist_name:
+                            return artist_name
+                return ""
+
+            def _extract_year(full_recording: Dict, release: Optional[Dict] = None) -> Optional[int]:
+                candidate_dates = []
+                if release:
+                    candidate_dates.append(str(release.get('date', '') or ''))
+                candidate_dates.append(str(full_recording.get('first-release-date', '') or ''))
+                for candidate in candidate_dates:
+                    if len(candidate) >= 4 and candidate[:4].isdigit():
+                        try:
+                            return int(candidate[:4])
+                        except (ValueError, TypeError):
+                            continue
+                return None
+
+            earliest = None
+            earliest_year = 9999
+            earliest_unknown_year = None
+
+            for recording in recordings:
+                recording_id = recording.get('id')
+                if not recording_id or recording_id == recording_mbid:
+                    continue
+
+                try:
+                    details = mb.get_recording_by_id(
+                        recording_id,
+                        includes=['artist-credits', 'releases', 'work-rels']
+                    )
+                except Exception:
+                    continue
+
+                full_recording = details.get('recording', {})
+                recording_work_ids = self._extract_cover_work_ids(full_recording)
+                if not recording_work_ids:
+                    recording_work_ids = set(
+                        (rel.get('work') or {}).get('id')
+                        for rel in (full_recording.get('work-relation-list', []) or [])
+                        if (rel.get('work') or {}).get('id')
+                    )
+
+                if not (recording_work_ids & cover_work_ids):
+                    continue
+
+                artist_credit = full_recording.get('artist-credit', []) or recording.get('artist-credit', [])
+                recording_artist = _extract_credit_artist_name(artist_credit)
+                if not recording_artist:
+                    continue
+
+                if album_artist and self._names_match(recording_artist, album_artist):
+                    continue
+
+                releases = full_recording.get('release-list', []) or recording.get('release-list', [])
+                if not releases:
+                    release_year = _extract_year(full_recording)
+                    if release_year is not None and release_year < earliest_year:
+                        earliest_year = release_year
+                        earliest = {
+                            'artist': recording_artist,
+                            'year': release_year,
+                            'confidence': 'high'
+                        }
+                    elif release_year is None and earliest_unknown_year is None:
+                        earliest_unknown_year = {
+                            'artist': recording_artist,
+                            'year': None,
+                            'confidence': 'high'
+                        }
+                    continue
+
+                for release in releases:
+                    release_year = _extract_year(full_recording, release)
+                    if release_year is not None and release_year < earliest_year:
+                        earliest_year = release_year
+                        earliest = {
+                            'artist': recording_artist,
+                            'year': release_year,
+                            'confidence': 'high'
+                        }
+                    elif release_year is None and earliest_unknown_year is None:
+                        earliest_unknown_year = {
+                            'artist': recording_artist,
+                            'year': None,
+                            'confidence': 'high'
+                        }
+
+            return earliest or earliest_unknown_year
+        except Exception as e:
+            logger.debug(f"Failed MB cover-relation detection for recording '{recording_mbid}': {e}")
+            return None
     
     def _get_track_writers(self, track: Dict) -> List[str]:
         """
@@ -668,7 +878,7 @@ class CoverDetector:
                         (new_genres, track_id)
                     )
 
-                is_cover_value = True if self.is_pg else 1
+                is_cover_value = self._normalize_cover_flag_value(True)
                 reason = is_cover_reason or (
                     f"Writer-based detection: original by {original_artist}" if original_artist else "Writer-based detection"
                 )
@@ -686,6 +896,11 @@ class CoverDetector:
             return True
 
         except Exception as e:
+            if self.db_conn:
+                try:
+                    self.db_conn.rollback()
+                except Exception:
+                    pass
             logger.error(f"Failed to update cover metadata for track {track_id}: {e}")
             return False
     

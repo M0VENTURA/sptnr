@@ -526,13 +526,21 @@ async function refreshUpcomingReleases() {
           albumStatus = ' <span class="badge bg-warning text-dark ms-1">Downloading</span>';
         }
 
+        let artistStatus = '';
+        if (release.artist_in_collection) {
+          artistStatus += ' <span class="badge bg-success ms-1">Artist in Collection</span>';
+        }
+        if (release.artist_in_recommended) {
+          artistStatus += ' <span class="badge bg-warning text-dark ms-1">Artist in Recommended</span>';
+        }
+
         // Build JS-safe string literals for inline onclick arguments.
         const artistArg = JSON.stringify(String(release.artist_name || ''));
         const albumArg = JSON.stringify(String(release.album_name || ''));
         
         html += `
           <tr>
-            <td>${escapeHtml(release.artist_name)}</td>
+            <td>${escapeHtml(release.artist_name)}${artistStatus}</td>
             <td>${escapeHtml(release.album_name)}${albumStatus}</td>
             <td><small>${release.release_date || 'TBA'}</small></td>
             <td>
@@ -999,44 +1007,61 @@ async function downloadMusicBrainzRelease(artist, album, tracks, year, release_i
 
   const closeModal = options.closeModal !== false;
   const selectionLabel = options.selectionLabel || null;
+  let managedPathFailure = null;
 
   try {
     // For full release downloads with a known release_id, use the managed release flow.
     // This creates a monitoring folder under /downloads/Music and enqueues tracks first.
     if (release_id && tracks.length > 1) {
-      const startResp = await fetch(`/api/musicbrainz/release/${encodeURIComponent(release_id)}/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          release_title: album,
-          artist,
-          method: 'slskd'
-        })
-      });
+      try {
+        const startData = await fetchJsonOrThrow(
+          `/api/musicbrainz/release/${encodeURIComponent(release_id)}/start`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              release_title: album,
+              artist,
+              method: 'slskd'
+            })
+          },
+          60000
+        );
 
-      const startData = await startResp.json();
-      if (startData.success) {
-        const created = startData.queue_items_created || tracks.length;
-        alert(`Created monitoring release and queued ${created} tracks: ${artist} - ${album}`);
-        if (closeModal) {
-          const modalEl = document.getElementById('musicBrainzModal');
-          if (modalEl) {
-            const existingModal = bootstrap.Modal.getInstance(modalEl);
-            if (existingModal) existingModal.hide();
+        if (startData && startData.success) {
+          const created = startData.queue_items_created || tracks.length;
+          alert(`Created monitoring release and queued ${created} tracks: ${artist} - ${album}`);
+          if (closeModal) {
+            const modalEl = document.getElementById('musicBrainzModal');
+            if (modalEl && window.bootstrap && window.bootstrap.Modal) {
+              const existingModal = bootstrap.Modal.getInstance(modalEl);
+              if (existingModal) existingModal.hide();
+            }
           }
+
+          try {
+            const timestamp = Date.now();
+            localStorage.setItem('sptnr_queue_updated', timestamp.toString());
+          } catch (e) {
+            console.warn('Could not update localStorage:', e);
+          }
+          return true;
         }
 
-        try {
-          const timestamp = Date.now();
-          localStorage.setItem('sptnr_queue_updated', timestamp.toString());
-        } catch (e) {
-          console.warn('Could not update localStorage:', e);
-        }
-        return true;
+        managedPathFailure = (startData && startData.error)
+          ? String(startData.error)
+          : 'Managed release start did not return success';
+      } catch (managedErr) {
+        managedPathFailure = managedErr && managedErr.message
+          ? managedErr.message
+          : String(managedErr);
       }
 
-      alert('Error starting managed release download: ' + (startData.error || 'Unknown error'));
-      return false;
+      if (managedPathFailure) {
+        console.warn(
+          `[MB_DOWNLOAD] Managed release start failed for ${artist} - ${album} (${release_id}); falling back to batch queue add: ${managedPathFailure}`
+        );
+      }
     }
 
     let releaseYear = null;
@@ -1073,12 +1098,15 @@ async function downloadMusicBrainzRelease(artist, album, tracks, year, release_i
     const data = await response.json();
     if (data.success) {
       const label = selectionLabel ? ` ${selectionLabel}` : ' tracks';
-      alert(`Added ${tracks.length}${label} to queue: ${artist} - ${album}`);
+      const fallbackNote = managedPathFailure ? '\n(Managed release start failed; used direct queue add fallback.)' : '';
+      alert(`Added ${tracks.length}${label} to queue: ${artist} - ${album}${fallbackNote}`);
       if (closeModal) {
         const modalEl = document.getElementById('musicBrainzModal');
         if (modalEl) {
-          const existingModal = bootstrap.Modal.getInstance(modalEl);
-          if (existingModal) existingModal.hide();
+          if (window.bootstrap && window.bootstrap.Modal) {
+            const existingModal = bootstrap.Modal.getInstance(modalEl);
+            if (existingModal) existingModal.hide();
+          }
         }
       }
       
