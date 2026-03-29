@@ -35,6 +35,32 @@ class PlaylistRecommender:
         self.lastfm = lastfm_client
         self.listenbrainz = listenbrainz_client
         self.db = db_connection
+
+    @staticmethod
+    def _row_value(row: Any, key: str, index: int = 0, default: Any = None) -> Any:
+        """Read a value from either dict-style or tuple-style DB rows."""
+        if row is None:
+            return default
+        if isinstance(row, dict):
+            return row.get(key, default)
+        if hasattr(row, "keys"):
+            try:
+                return row[key]
+            except Exception:
+                pass
+        try:
+            return row[index]
+        except Exception:
+            return default
+
+    @classmethod
+    def _id_list(cls, rows: List[Any], key: str = "id") -> List[str]:
+        values: List[str] = []
+        for row in rows or []:
+            value = cls._row_value(row, key, 0)
+            if value is not None:
+                values.append(value)
+        return values
     
     def get_recommendations(self) -> Dict:
         """
@@ -150,12 +176,19 @@ class PlaylistRecommender:
                 "ambient": "🌙", "electronic": "🎛️", "house": "🎧", "techno": "🎧"
             }
             
-            for genre_name, count in genres:
+            for row in genres:
+                genre_name = self._row_value(row, "genre_display", 0, "")
+                count = self._row_value(row, "count", 1, 0)
+                try:
+                    count = int(count or 0)
+                except Exception:
+                    count = 0
+
                 if genre_name and count >= 5:
                     # Find icon that matches genre
                     icon = "🎵"
                     for key, val in genre_icons.items():
-                        if key.lower() in genre_name.lower():
+                        if key.lower() in str(genre_name).lower():
                             icon = val
                             break
                     
@@ -321,7 +354,7 @@ class PlaylistRecommender:
                 LIMIT 200
             """, [a.lower() for a in artists])
             
-            track_ids = [row[0] for row in cursor.fetchall()]
+            track_ids = self._id_list(cursor.fetchall())
             
             if callable(self.db):
                 conn.close()
@@ -346,7 +379,7 @@ class PlaylistRecommender:
                 LIMIT 200
             """, (genre,))
             
-            track_ids = [row[0] for row in cursor.fetchall()]
+            track_ids = self._id_list(cursor.fetchall())
             
             if callable(self.db):
                 conn.close()
@@ -371,7 +404,7 @@ class PlaylistRecommender:
                 LIMIT 500
             """, (min_rating, max_rating))
             
-            track_ids = [row[0] for row in cursor.fetchall()]
+            track_ids = self._id_list(cursor.fetchall())
             
             if callable(self.db):
                 conn.close()
@@ -396,7 +429,7 @@ class PlaylistRecommender:
                 LIMIT 500
             """)
             
-            track_ids = [row[0] for row in cursor.fetchall()]
+            track_ids = self._id_list(cursor.fetchall())
             
             if callable(self.db):
                 conn.close()
@@ -422,7 +455,7 @@ class PlaylistRecommender:
                 LIMIT 100
             """)
             
-            track_ids = [row[0] for row in cursor.fetchall()]
+            track_ids = self._id_list(cursor.fetchall())
             
             if callable(self.db):
                 conn.close()
