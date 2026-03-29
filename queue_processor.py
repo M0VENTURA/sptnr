@@ -13,8 +13,7 @@ import os
 import re
 import requests
 import secrets
-import signal
-import subprocess
+import sqlite3
 import sys
 import time
 import traceback
@@ -43,231 +42,70 @@ setup_logging("QueueProcessor")
 import logging
 logger = logging.getLogger(__name__)
 
-# ── Graceful shutdown flag ────────────────────────────────────────────────────
-# Set by the SIGTERM handler so the main loop exits cleanly after the current
-# iteration, allowing in-flight DB transactions to commit/close before the
-# process terminates.  Without this, Docker's graceful stop sends SIGTERM which
-# Python ignores by default → then SIGKILL → Postgres sees "unexpected EOF on
-# client connection while in transaction".
-_shutdown_requested = False
-
-
-def _handle_sigterm(signum, frame):
-    global _shutdown_requested
-    _shutdown_requested = True
-    logger.info("Queue processor received SIGTERM — will stop after current iteration")
-
-
-signal.signal(signal.SIGTERM, _handle_sigterm)
-
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
-
-from queue_status_constants import PROCESSING_STATUS_SQL
 
 # Similarity thresholds for Navidrome existence checks
 _NAV_TITLE_SIMILARITY_THRESHOLD = 0.85
 _NAV_ARTIST_SIMILARITY_THRESHOLD = 0.75
-# Similarity / tolerance thresholds for confirmed in-collection matching
-_ALBUM_SIMILARITY_THRESHOLD = 0.85
-_CONFIRMED_MATCH_DURATION_TOLERANCE_SECONDS = 10
-# Minimum title similarity for prefix-like title pairs (e.g. "World So Cold"
-# vs "World So Cold Intro").  See _metadata_matches_queue_item for details.
-_PREFIX_TITLE_MIN = 0.9
-_TITLE_VARIANT_TOKENS = {
-    "acoustic", "demo", "edit", "instrumental", "intro", "live",
-    "mix", "radio", "remaster", "remastered", "remix", "version",
-}
-# Pre-compiled whole-word patterns for each variant token – avoids re-compiling
-# inside loops in _is_remix_or_live_track().
-_TITLE_VARIANT_PATTERNS = {
-    token: re.compile(r'\b' + re.escape(token) + r'\b', re.IGNORECASE)
-    for token in _TITLE_VARIANT_TOKENS
-}
-
-# Minimum similarity score below which a file's artist/title tags are considered
-# a hard mismatch against the queue item.  Scores this low mean it's a completely
-# different song and filename matching should not be attempted as a fallback.
-_HARD_MISMATCH_FLOOR = 0.35
-
-# Maximum time (in minutes) a download is allowed to stay in each active slskd
-# transfer state before the queue processor cancels it and retries.
-# Keys match the slskd state strings used by SlskdClient constants.
-_SLSKD_ACTIVE_STATE_TIMEOUT_MINUTES = {
-    "Queued, Remotely": 120,   # Remote peer queued it but never started sending
-    "Requested": 30,            # No response from remote peer after 30 min
-    "Initializing": 30,         # Transfer started to initialise but never progressed
-    "InProgress": 240,          # Active download that has stalled for 4 hours
-    "Queued": 120,
-    "In Progress": 240,
-    "Downloading": 240,
-}
 
 
 def _is_postgres_connection(conn):
-    """Return True when the active DB connection is (or wraps) a psycopg2 connection."""
+    """Return True when the active DB connection is PostgreSQL."""
     try:
-        import psycopg2
-        underlying = getattr(conn, "_conn", conn)
-        return isinstance(underlying, psycopg2.extensions.connection)
+        from app import _is_postgres_connection as app_is_postgres_connection
+        return bool(app_is_postgres_connection(conn))
     except Exception:
-        return False
+        try:
+            import psycopg2
+            return isinstance(conn, psycopg2.extensions.connection)
+        except Exception:
+            return False
 
 
 def _get_placeholder(conn):
-    return "%s"
+    return "%s" if _is_postgres_connection(conn) else "?"
 
 
 def resolve_downloads_dir():
-    """Resolve downloads directory from config/env with safe fallback.
-    Config file takes priority over environment variable."""
+    """Resolve downloads directory from env/config with safe fallback."""
+    def _prefer_music_subfolder(path: str) -> str:
+        if not path:
+            return path
+        normalized = os.path.normpath(path)
+        if os.path.basename(normalized).lower() == "downloads":
+            music_subdir = os.path.join(normalized, "Music")
+            if os.path.isdir(music_subdir):
+                return music_subdir
+        return path
+
+    env_dir = os.environ.get("DOWNLOADS_DIR")
+    if env_dir:
+        return _prefer_music_subfolder(env_dir)
+
     config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
     try:
         if os.path.exists(config_path):
             with open(config_path, 'r', encoding='utf-8') as f:
                 cfg = yaml.safe_load(f) or {}
             configured = (cfg.get('downloads') or {}).get('folder')
-            if configured and configured.strip():
-                return os.path.normpath(configured.strip())
+            if configured:
+                return _prefer_music_subfolder(configured)
     except Exception as e:
         logger.warning(f"Could not read downloads folder from config: {e}")
-
-    env_dir = os.environ.get("DOWNLOADS_DIR")
-    if env_dir and env_dir.strip():
-        return os.path.normpath(env_dir.strip())
 
     return "/downloads/Music"
 
 
 DOWNLOADS_DIR = resolve_downloads_dir()
 
-# Soulseek queue downloads are intentionally restricted to these formats.
-_SLSKD_ALLOWED_EXTENSIONS = ('.mp3', '.flac')
-
-_GENERIC_ARTIST_NAMES = {
-    'various artists',
-    'various',
-    'va',
-    'unknown artist',
-    'unknown',
-    'soundtrack',
-    'ost',
-}
-
-_DEFAULT_DOWNLOAD_QUALITY_FILTER = {
-    'enabled': False,
-    'reject_others': True,
-    'bitrate_tolerance': 5,
-    'priorities': [
-        {'format': 'mp3', 'bitrate_kbps': 320},
-        {'format': 'flac', 'bitrate_kbps': None},
-    ],
-}
-
-# Cache album-search response snapshots briefly so sibling tracks in the same
-# queued release can reuse results instead of re-querying Soulseek each time.
-_ALBUM_SEARCH_CACHE_TTL_SECONDS = 600
-_album_search_cache = {}
-
-# Pre-matched results from album-level batch scanning. When an album search is
-# executed for the first item in a group, all sibling items are immediately
-# scored against the same responses so they can skip both the album search and
-# the per-track fallback when their turn comes.
-_ALBUM_PRE_MATCH_TTL_SECONDS = 600
-_album_pre_matched_results = {}  # {queue_id: {'result': {...}, 'score': float, 'timestamp': float}}
-
-# Minimum candidate score required to accept a Soulseek album-search result.
-# Used both for the current item and for sibling pre-matches.
-_ALBUM_MATCH_MIN_SCORE = 0.45
-
-
-def _strip_track_number_prefix(title):
-    """
-    Remove a leading track-number prefix and/or a trailing Soulseek unique-ID
-    suffix from a title string.  Mirrors the helper in download_queue_manager so
-    that Soulseek candidate filenames are normalised consistently before scoring.
-
-    Leading prefix examples:
-        "05 - CINEMA"          →  "CINEMA"
-        "1-15 - Worms ..."     →  "Worms ..."  (disc-track prefix)
-        "16. Artist - Title"   →  "Artist - Title"
-
-    Trailing Soulseek UID suffix examples:
-        "Song_639091010921933965"  →  "Song"   (12+ digit UID stripped)
-        "Song_123"                 →  unchanged (≤ 11 digits kept)
-    """
-    cleaned = re.sub(r'^\d+(?:\s*-\s*\d+)?\s*[-\.]\s*', '', title).strip()
-    cleaned = re.sub(r'_\d{12,}$', '', cleaned).strip()
-    return cleaned if cleaned else title
-
 
 def _normalize_match_text(value):
-    """Normalize text for conservative filename/metadata matching.
-
-    Leading track-number prefixes (e.g. ``07 ``, ``1-15 - ``) and trailing
-    Soulseek unique-ID suffixes (e.g. ``_639091010921933965``) are stripped
-    before the remaining non-alphanumeric characters are replaced with spaces.
-    This improves candidate scoring for Soulseek filenames that embed a track
-    number or a collision-avoidance suffix.
-    """
+    """Normalize text for conservative filename/metadata matching."""
     if not value:
         return ""
     value = str(value).lower()
-    value = _strip_track_number_prefix(value)
     value = re.sub(r"[^a-z0-9]+", " ", value)
     return " ".join(value.split())
-
-
-# Characters that Soulseek's search tokenizer handles poorly.  Apostrophes
-# (both straight U+0027 and curly/smart U+2018/U+2019) are the most common
-# culprit: "Steppin' On" returns zero results while "Steppin On" returns 26.
-# Other directional/typographic quote characters are included for completeness.
-# ASCII hyphens, slashes, parentheses, and brackets are intentionally kept
-# because they appear legitimately in artist names (e.g. "AC/DC") and titles.
-_SLSKD_PROBLEMATIC_PUNCT_RE = re.compile(
-    r"['"  # straight apostrophe + straight double-quote
-    r"\u2018\u2019\u201a\u201b"  # left/right single quotation marks, ‚ ‛
-    r"\u201c\u201d\u201e\u201f"  # left/right double quotation marks, „ ‟
-    r"\u0060\u00b4"              # grave accent, acute accent
-    r"]"
-)
-
-# Broader strip used for the zero-results fallback: removes every character
-# that is not a word character, a space, or an ASCII hyphen.
-_SLSKD_FALLBACK_PUNCT_RE = re.compile(r"[^\w\s\-]")
-
-
-def _sanitize_slskd_query(query: str) -> str:
-    """Strip characters that Soulseek's search tokenizer handles poorly.
-
-    Removes apostrophes and curly/typographic quote characters while keeping
-    hyphens, slashes, parentheses, and other characters that legitimately
-    appear in artist and track names.  Multiple spaces introduced by the
-    removal are collapsed.
-
-    Examples::
-
-        "Steppin' On"         → "Steppin On"
-        "Nothin' But a G Thang" → "Nothin But a G Thang"
-        "AC/DC"               → "AC/DC"        (unchanged)
-        "Don\u2019t Stop Me" → "Dont Stop Me"
-    """
-    if not query:
-        return query
-    cleaned = _SLSKD_PROBLEMATIC_PUNCT_RE.sub("", query)
-    return " ".join(cleaned.split())
-
-
-def _fallback_slskd_query(query: str) -> str:
-    """Aggressively strip all punctuation for a last-resort Soulseek retry.
-
-    Used when the primary sanitized query returns zero results.  Removes every
-    character that is not a word character (letter/digit/underscore), a space,
-    or an ASCII hyphen.
-    """
-    if not query:
-        return query
-    stripped = _SLSKD_FALLBACK_PUNCT_RE.sub(" ", query)
-    return " ".join(stripped.split())
 
 
 def _tokenize_meaningful(value):
@@ -275,47 +113,6 @@ def _tokenize_meaningful(value):
     stop_words = {"the", "and", "of", "a", "an", "to", "in", "on", "for", "with"}
     normalized = _normalize_match_text(value)
     return [t for t in normalized.split() if len(t) >= 3 and t not in stop_words]
-
-
-def _strip_title_variants(title):
-    """Strip trailing parenthetical variant labels from a title.
-
-    Examples::
-        "Hover (alternate version)"  → "Hover"
-        "Hover (Quiet Mix)"          → "Hover"
-        "World So Cold (Live)"       → "World So Cold"
-        "Nothing"                    → "Nothing"  (unchanged)
-    """
-    stripped = re.sub(r'\s*\([^)]*\)\s*$', '', (title or '').strip()).strip()
-    return stripped if stripped else (title or '').strip()
-
-
-def _extract_title_variant_tokens(value):
-    """Return known version/variant tokens from a title-like string."""
-    tokens = set(_normalize_match_text(value).split())
-    return tokens & _TITLE_VARIANT_TOKENS
-
-
-def _title_variants_are_compatible(expected_title, candidate_title):
-    """Require variant labels (mix/live/edit/etc.) to agree between titles."""
-    expected_variants = _extract_title_variant_tokens(expected_title)
-    candidate_variants = _extract_title_variant_tokens(candidate_title)
-
-    if expected_variants or candidate_variants:
-        if not expected_variants or not candidate_variants:
-            return False
-        if expected_variants.isdisjoint(candidate_variants):
-            # Variant labels differ but may just be labelling inconsistencies
-            # (e.g. MusicBrainz calls it "alternate version" while the peer's
-            # file is labelled "Quiet Mix").  Allow the match if both stripped
-            # base titles are a close enough match — same underlying song,
-            # different variant name.
-            base_a = _normalize_match_text(_strip_title_variants(expected_title))
-            base_b = _normalize_match_text(_strip_title_variants(candidate_title))
-            if base_a and base_b and SequenceMatcher(None, base_a, base_b).ratio() >= 0.85:
-                return True
-            return False
-    return True
 
 
 def _normalize_duration_seconds(value):
@@ -363,29 +160,15 @@ def _extract_tag_value(tags, keys):
     return ''
 
 
-_MBID_RE = re.compile(
-    r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
-)
-
-
 def _is_musicbrainz_backed(queue_item):
-    """Return True when a queue item is tied to a MusicBrainz release.
-
-    Accepts items where:
-    - ``release_source='musicbrainz'`` is explicitly set (added via the MB
-      search modal or API), OR
-    - ``release_mbid`` contains a valid MusicBrainz UUID — meaning the track
-      has been positively matched to a known MB release and should be
-      auto-moved without requiring manual approval.
-
-    Note: ``release_id`` from non-MB sources (Discogs, etc.) is *not*
-    sufficient on its own; only the dedicated ``release_mbid`` column is
-    trusted as an unambiguous MB identifier.
-    """
-    if str(queue_item.get('release_source') or '').strip().lower() == 'musicbrainz':
-        return True
-    release_mbid = str(queue_item.get('release_mbid') or '').strip()
-    return bool(_MBID_RE.match(release_mbid))
+    """Return True when queue item is tied to an expected MusicBrainz track/release."""
+    return bool(
+        queue_item.get('release_id')
+        or queue_item.get('release_mbid')
+        or queue_item.get('recording_mbid')
+        or queue_item.get('isrc')
+        or str(queue_item.get('release_source') or '').strip().lower() == 'musicbrainz'
+    )
 
 
 def _get_duration_match_tolerance(queue_item):
@@ -413,24 +196,11 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     Returns float score in [0, 1]. Higher is better.
     """
     filename_norm = _normalize_match_text(filename)
-    # Compute the basename early so it can be used for title-token matching.
-    # Title tokens must appear in the *filename* (not merely in a parent folder)
-    # to count as evidence.  Using the full path here causes false positives when
-    # an album folder is named after a track — e.g. searching for the song
-    # "Alisha Rules the World" must NOT match
-    # "Alisha's Attic/Alisha Rules The World/01-02 Intense.flac" just because the
-    # album folder shares the title.
-    # Normalize path separators first: Soulseek delivers Windows-style backslash
-    # paths even when running on Linux, so os.path.basename would otherwise
-    # return the whole path unchanged.
-    basename_norm = _normalize_match_text(os.path.basename(filename.replace('\\', '/')))
     artist_norm = _normalize_match_text(queue_item.get('artist'))
     title_norm = _normalize_match_text(queue_item.get('title'))
     album_norm = _normalize_match_text(queue_item.get('album'))
     title_tokens = _tokenize_meaningful(title_norm)
-    # Use basename tokens (not full-path tokens) so that a folder whose name
-    # coincidentally matches the requested title does not inflate the ratio.
-    filename_tokens = set(_tokenize_meaningful(basename_norm))
+    filename_tokens = set(_tokenize_meaningful(filename_norm))
 
     if not artist_norm or not title_norm or not filename_norm:
         return 0.0
@@ -438,8 +208,9 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     if title_tokens:
         shared_title_tokens = sum(1 for tok in title_tokens if tok in filename_tokens)
         title_token_ratio = shared_title_tokens / len(title_tokens)
-        requested_variants = set(title_tokens) & _TITLE_VARIANT_TOKENS
-        candidate_variants = filename_tokens & _TITLE_VARIANT_TOKENS
+        title_variant_tokens = {"acoustic", "demo", "edit", "instrumental", "intro", "live", "mix", "radio", "remaster", "remastered", "remix", "version"}
+        requested_variants = set(title_tokens) & title_variant_tokens
+        candidate_variants = filename_tokens & title_variant_tokens
 
         if requested_variants or candidate_variants:
             if not requested_variants or not candidate_variants:
@@ -466,16 +237,8 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     # Strongly prefer explicit artist/title phrases when present.
     if artist_norm in filename_norm:
         score += 0.18
-    # Award the title-in-path bonus only when the title appears in the actual
-    # filename component, not merely in a parent directory.  When the album
-    # folder is named after a track (e.g. folder "This Is The Sound" and the
-    # file being "02. Skindred - You Got This.flac"), title_norm matches the
-    # path but NOT the filename — so we should not reward it as a strong signal.
-    # (basename_norm was computed near the top of this function.)
-    if title_norm in filename_norm and title_norm in basename_norm:
+    if title_norm in filename_norm:
         score += 0.25
-    elif title_norm in basename_norm:
-        score += 0.20
 
     # Album disambiguation: prevent "Power"-style partial collisions.
     if album_norm:
@@ -484,14 +247,9 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
             shared_album_tokens = sum(1 for tok in album_tokens if tok in filename_norm)
             token_ratio = shared_album_tokens / len(album_tokens)
 
-            # When >=2 album tokens appear in the filename but fewer than 2
-            # match, reject the candidate — this blocks near-misses like
-            # "Sword of Power" matching a file tagged "Power of Metal".
-            # When *no* album tokens appear in the filename at all, the album
-            # information is simply absent (common for Soulseek filenames that
-            # only contain the track number and title), so we skip the
-            # disambiguation rather than returning 0.0.
-            if len(album_tokens) >= 2 and 0 < shared_album_tokens < 2:
+            # When we have >=2 meaningful album tokens, require at least 2 matches.
+            # This rejects near misses like "Sword of Power" for "Power of Metal".
+            if len(album_tokens) >= 2 and shared_album_tokens < 2:
                 return 0.0
 
             # Reward strong album evidence and penalize weak/partial album alignment.
@@ -521,407 +279,6 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     return max(0.0, min(1.0, score))
 
 
-def _extract_response_files(response):
-    """Return iterable of file entries from a Soulseek response row."""
-    if hasattr(response, 'files') and response.files:
-        return response.files
-    if isinstance(response, dict):
-        files = response.get('files')
-        if isinstance(files, list):
-            return files
-    return []
-
-
-def _candidate_filename(file_info):
-    if isinstance(file_info, dict):
-        return file_info.get('filename', '') or ''
-    return getattr(file_info, 'filename', '') or ''
-
-
-def _candidate_size(file_info):
-    if isinstance(file_info, dict):
-        return file_info.get('size', 0) or 0
-    return getattr(file_info, 'size', 0) or 0
-
-
-def _is_allowed_download_extension(filename):
-    return str(filename or '').lower().endswith(_SLSKD_ALLOWED_EXTENSIONS)
-
-
-def _load_download_quality_filter():
-    """Read downloads.quality_filter from config with safe defaults."""
-    cfg = dict(_DEFAULT_DOWNLOAD_QUALITY_FILTER)
-    try:
-        config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
-        if not os.path.exists(config_path):
-            config_path = "/config/config.yml"
-        if not os.path.exists(config_path):
-            return cfg
-
-        with open(config_path, 'r', encoding='utf-8') as f:
-            loaded = yaml.safe_load(f) or {}
-
-        qf = (loaded.get('downloads') or {}).get('quality_filter') or {}
-        cfg['enabled'] = bool(qf.get('enabled', cfg['enabled']))
-        cfg['reject_others'] = bool(qf.get('reject_others', cfg['reject_others']))
-        try:
-            cfg['bitrate_tolerance'] = int(qf.get('bitrate_tolerance', cfg['bitrate_tolerance']))
-        except Exception:
-            cfg['bitrate_tolerance'] = _DEFAULT_DOWNLOAD_QUALITY_FILTER['bitrate_tolerance']
-
-        priorities = qf.get('priorities')
-        if isinstance(priorities, list) and priorities:
-            cfg['priorities'] = priorities
-
-    except Exception as e:
-        logger.debug(f"[QUALITY-FILTER] Could not read quality filter config: {e}")
-
-    return cfg
-
-
-def _extract_candidate_bitrate_kbps(file_info):
-    """Extract bitrate for a Soulseek candidate when available."""
-    bitrate_raw = None
-    if isinstance(file_info, dict):
-        bitrate_raw = (
-            file_info.get('bitrate_kbps')
-            or file_info.get('bitrateKbps')
-            or file_info.get('bitrate')
-            or file_info.get('bitRate')
-        )
-    else:
-        bitrate_raw = (
-            getattr(file_info, 'bitrate_kbps', None)
-            or getattr(file_info, 'bitrateKbps', None)
-            or getattr(file_info, 'bitrate', None)
-            or getattr(file_info, 'bitRate', None)
-        )
-
-    try:
-        if bitrate_raw is None:
-            return None
-        bitrate = float(bitrate_raw)
-        if bitrate <= 0:
-            return None
-        # Some APIs report bps instead of kbps.
-        if bitrate > 10000:
-            bitrate = bitrate / 1000.0
-        return int(round(bitrate))
-    except Exception:
-        return None
-
-
-def _candidate_matches_quality_filter(file_info, filename, quality_filter):
-    """Return True when candidate file passes configured quality rules."""
-    if not quality_filter.get('enabled'):
-        return True
-
-    priorities = quality_filter.get('priorities') or []
-    if not priorities:
-        return True
-
-    ext = os.path.splitext(str(filename or '').lower())[1].lstrip('.')
-    if not ext:
-        return not quality_filter.get('reject_others', True)
-
-    bitrate_kbps = _extract_candidate_bitrate_kbps(file_info)
-    tolerance = int(quality_filter.get('bitrate_tolerance', 5) or 0)
-
-    format_rules = [p for p in priorities if str(p.get('format') or '').lower() == ext]
-    if not format_rules:
-        return not quality_filter.get('reject_others', True)
-
-    for rule in format_rules:
-        target_bitrate = rule.get('bitrate_kbps')
-        if target_bitrate in (None, ''):
-            return True
-        try:
-            target = int(target_bitrate)
-        except Exception:
-            continue
-
-        if bitrate_kbps is None:
-            continue
-
-        if abs(bitrate_kbps - target) <= tolerance:
-            return True
-
-    return not quality_filter.get('reject_others', True)
-
-
-def _pick_best_candidate_from_responses(responses, queue_item):
-    """Select the best allowed Soulseek candidate for a queue item."""
-    best_result = None
-    best_score = 0.0
-    quality_filter = _load_download_quality_filter()
-
-    for resp_idx, resp in enumerate(responses or []):
-        resp_files = _extract_response_files(resp)
-        if not resp_files:
-            logger.debug(
-                f"Queue {queue_item.get('id', 'unknown')}: Response {resp_idx} has no files"
-            )
-            continue
-
-        resp_username = getattr(resp, 'username', None)
-        if not resp_username and isinstance(resp, dict):
-            resp_username = resp.get('username')
-        resp_username = resp_username or 'unknown'
-
-        for file_info in resp_files:
-            filename = _candidate_filename(file_info)
-            if not _is_allowed_download_extension(filename):
-                continue
-            if not _candidate_matches_quality_filter(file_info, filename, quality_filter):
-                logger.debug(
-                    f"Queue {queue_item.get('id', 'unknown')}: skipped by quality filter: {filename}"
-                )
-                continue
-
-            size = _candidate_size(file_info)
-            candidate_length = _extract_candidate_length_seconds(file_info)
-            candidate_score = _score_soulseek_candidate(filename, queue_item, candidate_length)
-            if candidate_score > best_score:
-                best_score = candidate_score
-                best_result = {
-                    "username": resp_username,
-                    "filename": filename,
-                    "size": size,
-                    "length": candidate_length,
-                    "score": candidate_score,
-                }
-
-    return best_result, best_score
-
-
-def _poll_search_responses(client, search_id, max_poll_attempts=45):
-    """Poll Soulseek search and return all gathered responses."""
-    gathered = []
-    for _ in range(max_poll_attempts):
-        time.sleep(1)
-        try:
-            responses, _state, is_complete = client.get_search_results(search_id)
-            if responses:
-                gathered = responses
-            if is_complete:
-                break
-        except Exception as e:
-            logger.debug(f"Soulseek poll error for search_id={search_id}: {e}")
-    return gathered
-
-
-def _is_generic_artist_name(value):
-    artist = str(value or '').strip().lower()
-    return artist in _GENERIC_ARTIST_NAMES
-
-
-def _get_effective_track_search_query(queue_item):
-    """Build a Soulseek track query that avoids generic artist tokens.
-
-    Uses Soulseek phrase-quoting (``"artist" "title"``) so that both terms are
-    matched as exact phrases rather than individual tokens.  Apostrophes and
-    typographic-quote characters are sanitized before quoting so that the
-    resulting tokens align with what peers index.
-
-    Examples::
-
-        artist="Sexing the Cherry", title="Steppin' On"
-        → '"Sexing the Cherry" "Steppin On"'
-
-        artist="Various Artists", title="DJ Mix - Some Track"
-        → '"DJ Mix" "Some Track"'   (generic artist bypassed)
-    """
-    artist = str(queue_item.get('artist') or '').strip()
-    title = str(queue_item.get('title') or '').strip()
-
-    if not title:
-        return _sanitize_slskd_query(str(queue_item.get('search_query') or '').strip())
-
-    if _is_generic_artist_name(artist):
-        # Some discovered files or compilation rows can store titles like
-        # "Track Artist - Song Title" with artist left as "Various Artists".
-        # Split that when available and search by the extracted track artist.
-        if ' - ' in title:
-            left, right = [part.strip() for part in title.split(' - ', 1)]
-            if left and right and not _is_generic_artist_name(left):
-                return '"{}" "{}"'.format(
-                    _sanitize_slskd_query(left),
-                    _sanitize_slskd_query(right),
-                )
-        # No reliable per-track artist; title-only quoted search is safer.
-        return '"{}"'.format(_sanitize_slskd_query(title))
-
-    return '"{}" "{}"'.format(
-        _sanitize_slskd_query(artist),
-        _sanitize_slskd_query(title),
-    )
-
-
-def _get_album_search_query(queue_item):
-    """Build a Soulseek album-level query using phrase-quoting.
-
-    Returns ``"artist" "album"`` so that the album search benefits from the
-    same exact-phrase matching as per-track queries.
-    """
-    album = (queue_item.get('album') or '').strip()
-    if not album or album.lower() in ('unknown', 'unknown album'):
-        return None
-
-    album_artist = (
-        queue_item.get('album_artist')
-        or queue_item.get('artist')
-        or ''
-    ).strip()
-    track_artist = (queue_item.get('artist') or '').strip()
-
-    if _is_generic_artist_name(album_artist):
-        # For compilation albums, avoid the generic artist token entirely and
-        # run album-only search, then score each response against individual
-        # queued tracks.
-        return '"{}"'.format(_sanitize_slskd_query(album))
-    if album_artist:
-        return '"{}" "{}"'.format(
-            _sanitize_slskd_query(album_artist),
-            _sanitize_slskd_query(album),
-        )
-
-
-    def _get_track_artist_album_fallback_query(queue_item):
-        """Build fallback query with track artist + album for sparse catalogs.
-
-        This is used only after normal per-track searches return no results.
-        """
-        artist = (queue_item.get('artist') or '').strip()
-        album = (queue_item.get('album') or '').strip()
-
-        if not artist or not album:
-            return None
-        if _is_generic_artist_name(artist):
-            return None
-        if album.lower() in ('unknown', 'unknown album'):
-            return None
-
-        return '"{}" "{}"'.format(
-            _sanitize_slskd_query(artist),
-            _sanitize_slskd_query(album),
-        )
-    return '"{}"'.format(_sanitize_slskd_query(album))
-
-
-def _get_album_queue_titles(queue_item):
-    """Return normalized title set for currently queued tracks in this album/import group."""
-    import_group = (queue_item.get('import_group') or '').strip()
-    album = (queue_item.get('album') or '').strip()
-    album_artist = (
-        queue_item.get('album_artist')
-        or queue_item.get('artist')
-        or ''
-    ).strip()
-
-    if not import_group and (not album or not album_artist):
-        return set()
-
-    titles = set()
-    conn = None
-    try:
-        conn = get_db()
-        cursor = conn.cursor()
-        placeholder = _get_placeholder(conn)
-
-        if import_group:
-            cursor.execute(
-                f"""
-                SELECT title FROM download_queue
-                WHERE import_group = {placeholder}
-                  AND status IN ({PROCESSING_STATUS_SQL})
-                """,
-                (import_group,),
-            )
-        else:
-            cursor.execute(
-                f"""
-                SELECT title FROM download_queue
-                WHERE LOWER(COALESCE(album, '')) = LOWER({placeholder})
-                  AND LOWER(COALESCE(album_artist, artist, '')) = LOWER({placeholder})
-                  AND status IN ({PROCESSING_STATUS_SQL})
-                """,
-                (album, album_artist),
-            )
-
-        rows = cursor.fetchall() or []
-        for row in rows:
-            title = row.get('title') if hasattr(row, 'get') else (row[0] if row else None)
-            title_norm = _normalize_match_text(title)
-            if title_norm:
-                titles.add(title_norm)
-    except Exception as e:
-        logger.debug(f"Could not fetch queued album titles for album-first search: {e}")
-    finally:
-        try:
-            if conn is not None:
-                conn.close()
-        except Exception:
-            pass
-
-    return titles
-
-
-def _get_sibling_queue_items_for_album(queue_item):
-    """Return full queue item dicts for all queued/searching sibling tracks sharing the same album.
-
-    Used to batch-match sibling items against album search responses so they can
-    reuse those results when their turn comes, avoiding redundant individual searches.
-    """
-    import_group = (queue_item.get('import_group') or '').strip()
-    album = (queue_item.get('album') or '').strip()
-    album_artist = (
-        queue_item.get('album_artist')
-        or queue_item.get('artist')
-        or ''
-    ).strip()
-
-    if not import_group and (not album or not album_artist):
-        return []
-
-    conn = None
-    try:
-        conn = get_db()
-        cursor = conn.cursor()
-        placeholder = _get_placeholder(conn)
-
-        if import_group:
-            cursor.execute(
-                f"""
-                SELECT * FROM download_queue
-                WHERE import_group = {placeholder}
-                  AND status IN ({PROCESSING_STATUS_SQL})
-                """,
-                (import_group,),
-            )
-        else:
-            cursor.execute(
-                f"""
-                SELECT * FROM download_queue
-                WHERE LOWER(COALESCE(album, '')) = LOWER({placeholder})
-                  AND LOWER(COALESCE(album_artist, artist, '')) = LOWER({placeholder})
-                  AND status IN ({PROCESSING_STATUS_SQL})
-                """,
-                (album, album_artist),
-            )
-
-        rows = cursor.fetchall() or []
-        return [dict(row) for row in rows]
-    except Exception as e:
-        logger.debug(f"Could not fetch sibling queue items for album batch-match: {e}")
-        return []
-    finally:
-        try:
-            if conn is not None:
-                conn.close()
-        except Exception:
-            pass
-
-
 def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
     """
     Validate file tags against queue artist/title.
@@ -938,7 +295,6 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
 
     file_artist = (metadata.get('artist') or '').strip()
     file_title = (metadata.get('title') or '').strip()
-    file_disc_raw = None
     audio = None
 
     # read_mp3_metadata only handles MP3 ID3 tags. For FLAC, OGG, M4A and other
@@ -955,9 +311,6 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
                 file_title = file_title or _extract_tag_value(
                     tags, ('title', 'TITLE', 'TIT2', '\xa9nam')
                 )
-                file_disc_raw = _extract_tag_value(
-                    tags, ('discnumber', 'DISCNUMBER', 'TPOS', 'disk')
-                ) or None
         except Exception:
             pass
 
@@ -980,35 +333,9 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
         _normalize_match_text(queue_title),
     ).ratio()
 
-    # Hard mismatch: scores so low that this is clearly a different file.  Block
-    # all further matching (including the filename fallback in the caller) to avoid
-    # importing completely wrong tracks.
-    if artist_score < _HARD_MISMATCH_FLOOR or title_score < _HARD_MISMATCH_FLOOR:
-        return False
-
-    # Soft mismatch: scores are too low for a confident match but not definitively
-    # wrong.  This often happens when the downloaded file has extra information in
-    # its tags that the queue item does not — e.g. the file is tagged
-    # "Creep (Acoustic)" while the queue item has title "Creep", or the artist
-    # field carries featured-artist annotations.  Return None to allow the caller
-    # to fall back to filename matching rather than rejecting the file outright.
+    # Require both core fields to be reasonably close to avoid false-positive imports.
     if artist_score < 0.55 or title_score < 0.55:
-        return None
-
-    # Reject explicit variant mismatches like "Song" vs "Song (Dusk Mix)".
-    if not _title_variants_are_compatible(queue_title, file_title):
         return False
-
-    # Protect against "prefix" false-positives: when one title is merely a
-    # leading substring of the other (e.g. "World So Cold" vs "World So Cold
-    # Intro"), the similarity score is deceptively high (~0.81) even though
-    # these are distinct tracks.  Require a near-exact title match in that
-    # case to avoid incorrectly marking a queue item as matched/completed.
-    _title_a = _normalize_match_text(file_title)
-    _title_b = _normalize_match_text(queue_title)
-    if _title_a != _title_b and (_title_a.startswith(_title_b) or _title_b.startswith(_title_a)):
-        if title_score < _PREFIX_TITLE_MIN:
-            return False
 
     expected_duration = _normalize_duration_seconds(queue_item.get('duration'))
     file_duration = None
@@ -1019,133 +346,7 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
             return False
 
     combined = (artist_score + title_score) / 2
-
-    # Disc-number is secondary to artist+title: only use it to break a near-threshold
-    # tie when the combined score is not already a confident match.  When both the
-    # file tag and the queue item carry an explicit disc number and they disagree,
-    # raise the acceptance bar slightly so a borderline match is not promoted.
-    # A strong artist+title score (0.15 above threshold) still wins regardless.
-    if combined < threshold + 0.15 and file_disc_raw:
-        try:
-            file_disc_num = int(str(file_disc_raw).split('/')[0])
-        except (ValueError, TypeError):
-            file_disc_num = None
-
-        queue_disc_raw = queue_item.get('disc_number')
-        if queue_disc_raw:
-            try:
-                queue_disc_num = int(str(queue_disc_raw).split('/')[0])
-            except (ValueError, TypeError):
-                queue_disc_num = None
-
-            if (
-                file_disc_num is not None
-                and queue_disc_num is not None
-                and file_disc_num != queue_disc_num
-                and (file_disc_num > 1 or queue_disc_num > 1)
-            ):
-                # Bump the effective threshold so a weak match on the wrong disc
-                # is rejected, but a genuinely strong title+artist match still passes.
-                threshold = min(threshold + 0.10, 0.95)
-
     return combined >= threshold
-
-
-def _filename_matches_queue_item(filename, queue_item):
-    """
-    Conservative filename/path fallback when file metadata is unavailable.
-
-    Returns True if the filename strongly suggests it belongs to the queue item,
-    using artist+title substring checks with a sequence-similarity safety net.
-
-    The ``filename`` argument may be:
-    - a bare basename  (e.g. "03 Creep.flac")
-    - a relative local path  (e.g. "PeerUser/Music/Radiohead/03 Creep.flac")
-    - the full remote Soulseek path stored in found_filename
-
-    All three forms are handled: the path components are searched for the
-    artist name and only the basename is checked for the track title.
-    """
-    try:
-        filename_test = filename.lower().replace('\\', '/')
-        # Extract just the basename (without the directory path) for title matching.
-        # This prevents false positives when the album folder name equals the track
-        # title: e.g. queue item "This Is The Sound" must NOT match
-        # "This Is The Sound/02. Skindred - You Got This.flac" because the title
-        # only appears in the directory component, not in the actual filename.
-        basename_test = os.path.basename(filename_test)
-        # Also compute a stripped basename (no track-number prefix, no extension)
-        # for looser title matching so "03 Creep.flac" matches queue title "Creep".
-        basename_no_ext = os.path.splitext(basename_test)[0]
-        basename_stripped = _normalize_match_text(basename_no_ext)
-
-        artist = (queue_item.get('artist') or '').lower().strip()
-        title = (queue_item.get('title') or '').lower().strip()
-        title_norm = _normalize_match_text(title)
-
-        if not artist or not title:
-            return False
-
-        if not _title_variants_are_compatible(title, basename_test):
-            return False
-
-        # Check whether the artist name appears anywhere in the full path.
-        # Normalise both sides so "AC/DC" matches "ac dc" etc.
-        artist_norm = _normalize_match_text(artist)
-        filename_norm = _normalize_match_text(filename_test)
-        artist_in_path = (
-            artist in filename_test
-            or (artist_norm and artist_norm in filename_norm)
-        )
-
-        # Require the title to appear as a complete phrase in the basename — it
-        # must not be immediately followed by more alphabetic words that would
-        # make it a different (longer) title.  For example, a queue item titled
-        # "-1" must NOT match a file named "-1 intro.flac", but it SHOULD match
-        # "-1.flac" or "-1 (acoustic).flac" (parenthetical suffix, not a word).
-        # Both basename_test and title are already lowercased above, so [a-z]
-        # correctly covers all letter characters.
-        title_in_basename = bool(re.search(re.escape(title) + r'(?!\s*[a-z])', basename_test))
-
-        # Additionally accept a normalised-token match (handles track-number
-        # prefixes and punctuation differences), e.g.:
-        #   basename_stripped = "03 creep"  →  normalised = "03 creep"
-        #   title_norm        = "creep"
-        # title_norm is a substring of basename_stripped after normalisation.
-        title_norm_in_stripped = bool(
-            title_norm
-            and basename_stripped
-            and title_norm in basename_stripped
-        )
-
-        if artist_in_path and (title_in_basename or title_norm_in_stripped):
-            return True
-
-        # Guard: if the title only appears in the directory portion of the path
-        # (not in the basename at all), skip the fallback — the folder match is
-        # an album-name coincidence, not evidence the file contains this track.
-        if title not in basename_test and not title_norm_in_stripped:
-            return False
-
-        # Similarity fallback.  The title appears in the basename as a substring
-        # but not as a complete phrase (the whole-phrase guard above was False).
-        # Use a stricter threshold so that prefix-titled variants like
-        # "World So Cold Intro" do not match "World So Cold", while still
-        # allowing high-confidence hits such as "radiohead creep pablo honey.flac"
-        # matching the queue item for Radiohead – Creep.
-        album = (queue_item.get('album') or '').lower().strip()
-        combined_target = f"{artist} {title} {album}".strip()
-        score = SequenceMatcher(None, combined_target, filename_test).ratio()
-        title_matched = title_in_basename or title_norm_in_stripped
-        threshold = 0.60 if title_matched else 0.85
-        if score >= threshold and (artist_in_path or title_matched):
-            return True
-
-        return False
-
-    except Exception as e:
-        logger.error(f"Error in filename matching for {filename}: {e}")
-        return False
 
 
 def _file_matches_queue_item(file_path, queue_item, relative_name=None):
@@ -1158,22 +359,20 @@ def _file_matches_queue_item(file_path, queue_item, relative_name=None):
     if metadata_state is True:
         return True, 'metadata'
 
-    if _filename_matches_queue_item(candidate_name, queue_item):
+    if matches_queue_item(candidate_name, queue_item, file_path=file_path):
         return True, 'filename'
 
     return False, 'filename'
 
 def get_db():
-    """Get database connection and fail fast unless PostgreSQL is active."""
-    from helpers.db_utils import get_db_connection
-    conn = get_db_connection()
-    if not _is_postgres_connection(conn):
-        try:
-            conn.close()
-        except Exception:
-            pass
-        raise RuntimeError("queue_processor requires PostgreSQL. SQLite fallback is disabled.")
-    return conn
+    """Get database connection using app backend (PostgreSQL or SQLite)."""
+    try:
+        from app import get_db as app_get_db
+        return app_get_db()
+    except Exception:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        return conn
 
 def get_slskd_client():
     """Get configured SlskdClient instance"""
@@ -1211,215 +410,15 @@ def get_slskd_client():
         logger.error(f"Error getting SlskdClient: {e}")
         return None
 
-
-def _clear_stale_slskd_transfer_for_queue_item(queue_item, slskd_client=None, timeout=10):
-    """Remove the lingering slskd transfer entry for a Soulseek queue row.
-
-    This is required before retrying failed downloads because slskd can keep a
-    terminal errored/rejected/cancelled transfer in its queue, and then a fresh
-    enqueue attempt is rejected as already queued.
-    """
-    if not queue_item:
-        return False
-
-    if str(queue_item.get('source') or 'soulseek').strip().lower() != 'soulseek':
-        return False
-
-    found_filename = str(queue_item.get('found_filename') or queue_item.get('file_path') or '').strip()
-    if not found_filename:
-        return False
-
-    client = slskd_client or get_slskd_client()
-    if not client:
-        return False
-
-    try:
-        transfer = client.find_download(filename=found_filename, timeout=timeout)
-        if not transfer:
-            return False
-
-        transfer_id = str(transfer.get('id') or '')
-        transfer_username = str(transfer.get('username') or '')
-        transfer_state = str(transfer.get('state') or '')
-        if not transfer_id or not transfer_username:
-            return False
-
-        removed = client.cancel_download(transfer_username, transfer_id, remove=True, timeout=timeout)
-        if removed:
-            logger.info(
-                f"Queue {queue_item.get('id')}: removed stale slskd transfer {transfer_username}/{transfer_id} "
-                f"before retry (state={transfer_state!r}, file={found_filename!r})"
-            )
-        return removed
-    except Exception as clear_err:
-        logger.warning(
-            f"Queue {queue_item.get('id')}: could not clear stale slskd transfer for {found_filename!r}: {clear_err}"
-        )
-        return False
-
-
-def _load_qbittorrent_config():
-    """Load qBittorrent settings from config.yaml with safe defaults."""
-    config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
-    if not os.path.exists(config_path):
-        config_path = "/config/config.yml"
-
-    try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            cfg = yaml.safe_load(f) or {}
-        return cfg.get("qbittorrent", {}) or {}
-    except Exception as e:
-        logger.error(f"Could not load qBittorrent config: {e}")
-        return {}
-
-
-def _fallback_queue_item_to_soulseek(queue_id, reason, retry_delay_minutes=5):
-    """Switch a queue item to Soulseek and requeue it for a fallback attempt."""
-    conn = None
-    try:
-        conn = get_db()
-        cursor = conn.cursor()
-        placeholder = _get_placeholder(conn)
-        next_retry = (datetime.now() + timedelta(minutes=retry_delay_minutes)).isoformat()
-        cursor.execute(
-            f"""
-            UPDATE download_queue
-            SET source = 'soulseek',
-                status = 'queued',
-                failure_reason = {placeholder},
-                next_retry_at = {placeholder},
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = {placeholder}
-            """,
-            (reason, next_retry, queue_id),
-        )
-        conn.commit()
-        logger.warning(f"Queue {queue_id}: switched to Soulseek fallback ({reason})")
-        return True
-    except Exception as e:
-        logger.error(f"Queue {queue_id}: could not switch to Soulseek fallback: {e}")
-        return False
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-
-def search_and_download_qbittorrent(queue_id, queue_item):
-    """Search qBittorrent for queue item and enqueue top torrent; fallback to Soulseek when needed."""
-    try:
-        qbit_cfg = _load_qbittorrent_config()
-        if not qbit_cfg.get("enabled"):
-            _fallback_queue_item_to_soulseek(queue_id, "qBittorrent disabled")
-            return False
-
-        web_url = (qbit_cfg.get("web_url") or "http://localhost:8080").rstrip("/")
-        username = qbit_cfg.get("username") or ""
-        password = qbit_cfg.get("password") or ""
-        _raw_qbit_q = queue_item.get("search_query") or f"{queue_item.get('artist', '')} - {queue_item.get('title', '')}"
-        search_query = _sanitize_slskd_query(_raw_qbit_q)
-
-        update_queue_status(queue_id, "searching")
-
-        with requests.Session() as session:
-            if username and password:
-                try:
-                    session.post(
-                        f"{web_url}/api/v2/auth/login",
-                        data={"username": username, "password": password},
-                        timeout=8,
-                    )
-                except Exception as login_err:
-                    logger.debug(f"Queue {queue_id}: qBittorrent login warning: {login_err}")
-
-            start_resp = session.post(
-                f"{web_url}/api/v2/search/start",
-                data={"pattern": search_query, "plugins": "all", "category": "Music"},
-                timeout=12,
-            )
-            if start_resp.status_code not in (200, 201):
-                _fallback_queue_item_to_soulseek(queue_id, f"qBittorrent search start failed: {start_resp.status_code}")
-                return False
-
-            search_id = (start_resp.json() or {}).get("id")
-            if not search_id:
-                _fallback_queue_item_to_soulseek(queue_id, "qBittorrent returned no search id")
-                return False
-
-            best_result = None
-            for _ in range(40):
-                time.sleep(0.5)
-                status_resp = session.get(f"{web_url}/api/v2/search/status", params={"id": search_id}, timeout=8)
-                if status_resp.status_code != 200:
-                    continue
-
-                results_resp = session.get(
-                    f"{web_url}/api/v2/search/results",
-                    params={"id": search_id, "limit": 200},
-                    timeout=8,
-                )
-                if results_resp.status_code == 200:
-                    results = (results_resp.json() or {}).get("results", [])
-                    if results:
-                        best_result = max(results, key=lambda r: (r.get("nb_seeders", 0), r.get("size", 0)))
-
-                status_rows = status_resp.json() or []
-                if status_rows and status_rows[0].get("status") == "Stopped":
-                    break
-
-            try:
-                session.post(f"{web_url}/api/v2/search/stop", data={"id": search_id}, timeout=5)
-            except Exception:
-                pass
-
-            if not best_result:
-                _fallback_queue_item_to_soulseek(queue_id, "No qBittorrent results found", retry_delay_minutes=1)
-                return False
-
-            magnet = best_result.get("magnet_uri") or best_result.get("magnet")
-            torrent_url = best_result.get("torrent_url") or best_result.get("link")
-            if not (magnet or torrent_url):
-                _fallback_queue_item_to_soulseek(queue_id, "qBittorrent result missing magnet/url", retry_delay_minutes=1)
-                return False
-
-            add_resp = session.post(
-                f"{web_url}/api/v2/torrents/add",
-                data={
-                    "urls": magnet or torrent_url,
-                    "category": "Music",
-                    "tags": "Music",
-                },
-                timeout=12,
-            )
-            if add_resp.status_code in (200, 403):
-                update_queue_status(queue_id, "downloading", found_filename=best_result.get("fileName") or best_result.get("name") or "")
-                logger.info(f"Queue {queue_id}: qBittorrent download queued successfully")
-                return True
-
-            _fallback_queue_item_to_soulseek(queue_id, f"qBittorrent add failed: {add_resp.status_code}", retry_delay_minutes=1)
-            return False
-
-    except Exception as e:
-        logger.error(f"Queue {queue_id}: qBittorrent error: {e}")
-        _fallback_queue_item_to_soulseek(queue_id, f"qBittorrent error: {e}", retry_delay_minutes=1)
-        return False
-
 def cleanup_stuck_searching_items():
     """Detect and mark as failed any items stuck in 'searching' for too long"""
-    conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
         placeholder = _get_placeholder(conn)
         
-        # A Soulseek search can legitimately take 2+ minutes (album-first pass,
-        # per-track pass, unquoted fallback, full-strip fallback — each up to
-        # 45 s of polling).  Use a 5-minute threshold to avoid killing in-flight
-        # searches while still rescuing items that are genuinely stuck (e.g. after
-        # a container crash that left rows in 'searching' with no active processor).
-        stuck_threshold = (datetime.now() - timedelta(seconds=300)).isoformat()
+        # Items stuck in 'searching' for more than 90 seconds are likely hung
+        stuck_threshold = (datetime.now() - timedelta(seconds=90)).isoformat()
         
         cursor.execute("""
             SELECT id, artist, title, updated_at FROM download_queue
@@ -1447,22 +446,17 @@ def cleanup_stuck_searching_items():
         
         conn.close()
         return len(stuck_items)
+        
     except Exception as e:
         logger.error(f"Error cleaning up stuck searching items: {e}")
         return 0
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
 
 def get_queued_items(limit=10):
     """Get items ready to process (queued or scheduled for retry)"""
-    conn = None
     try:
         # First, clean up any items stuck in 'searching' state
         cleanup_stuck_searching_items()
+        
         conn = get_db()
         cursor = conn.cursor()
         placeholder = _get_placeholder(conn)
@@ -1474,174 +468,22 @@ def get_queued_items(limit=10):
             SELECT * FROM download_queue 
             WHERE status = 'queued'
             AND (next_retry_at IS NULL OR next_retry_at <= {placeholder})
+            AND COALESCE(LOWER(source), 'soulseek') NOT IN ('qbittorrent', 'local', 'discovered')
             ORDER BY priority ASC, retry_count ASC, next_retry_at ASC, created_at ASC
             LIMIT {placeholder}
         """.format(placeholder=placeholder), (now, limit))
         
         items = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        
         return items
+        
     except Exception as e:
         logger.error(f"Error getting queued items: {e}")
         return []
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-
-def claim_queued_items(limit=10):
-    """Claim queued rows for this worker with backend-safe SQL."""
-    conn = None
-    try:
-        cleanup_stuck_searching_items()
-
-        conn = get_db()
-        cursor = conn.cursor()
-        placeholder = _get_placeholder(conn)
-        is_pg = (placeholder == '%s')
-        now = datetime.now().isoformat()
-
-        if is_pg:
-            # PostgreSQL: atomic CTE claim with SKIP LOCKED to handle concurrent workers.
-            cursor.execute(
-                """
-                WITH candidates AS (
-                    SELECT id
-                    FROM download_queue
-                    WHERE status = 'queued'
-                      AND (next_retry_at IS NULL OR next_retry_at <= %s)
-                    ORDER BY priority ASC, retry_count ASC, next_retry_at ASC NULLS FIRST, created_at ASC
-                    FOR UPDATE SKIP LOCKED
-                    LIMIT %s
-                )
-                UPDATE download_queue dq
-                SET status = 'searching',
-                    updated_at = CURRENT_TIMESTAMP
-                FROM candidates c
-                WHERE dq.id = c.id
-                RETURNING dq.*
-                """,
-                (now, int(limit)),
-            )
-            rows = cursor.fetchall() or []
-        else:
-            # SQLite fallback: two-step SELECT + UPDATE (no concurrent workers on SQLite).
-            cursor.execute(
-                """
-                SELECT id FROM download_queue
-                WHERE status = 'queued'
-                  AND (next_retry_at IS NULL OR next_retry_at <= ?)
-                ORDER BY priority ASC, retry_count ASC, next_retry_at ASC, created_at ASC
-                LIMIT ?
-                """,
-                (now, int(limit)),
-            )
-            ids = [r[0] for r in cursor.fetchall()]
-            rows = []
-            if ids:
-                placeholders = ','.join(['?' for _ in ids])
-                cursor.execute(
-                    f"""
-                    UPDATE download_queue
-                    SET status = 'searching', updated_at = CURRENT_TIMESTAMP
-                    WHERE id IN ({placeholders})
-                    """,
-                    ids,
-                )
-                cursor.execute(
-                    f"SELECT * FROM download_queue WHERE id IN ({placeholders})", ids
-                )
-                rows = cursor.fetchall() or []
-
-        items = [dict(row) for row in rows]
-
-        conn.commit()
-        return items
-
-    except Exception as e:
-        logger.error(f"Error claiming queued items: {e}")
-        return []
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-
-def promote_stale_queried_items(min_age_seconds=120, limit=200):
-    """
-    Promote stale 'queried' items to 'queued' so they are processed automatically.
-
-    Historically queried items required manual approval via UI. In practice this
-    can leave tracks stuck indefinitely. We auto-promote only after a short age
-    threshold so freshly inserted rows are not immediately flipped in the same
-    write burst.
-
-    Returns:
-        int: number of rows promoted
-    """
-    conn = None
-    try:
-        conn = get_db()
-        cursor = conn.cursor()
-        placeholder = _get_placeholder(conn)
-
-        stale_before = (datetime.now() - timedelta(seconds=max(0, int(min_age_seconds)))).isoformat()
-
-        cursor.execute(
-            """
-            SELECT id
-            FROM download_queue
-            WHERE status = 'queried'
-              AND updated_at < {placeholder}
-            ORDER BY updated_at ASC
-            LIMIT {placeholder}
-            """.format(placeholder=placeholder),
-            (stale_before, int(limit)),
-        )
-        rows = cursor.fetchall() or []
-        if not rows:
-            return 0
-
-        row_ids = [r['id'] if hasattr(r, 'keys') else r[0] for r in rows]
-        if not row_ids:
-            return 0
-
-        cursor.execute(
-            """
-            UPDATE download_queue
-            SET status = 'queued',
-                updated_at = CURRENT_TIMESTAMP,
-                failure_reason = COALESCE(failure_reason, 'Auto-promoted from queried by queue processor')
-            WHERE id = ANY(%s)
-            """,
-            (row_ids,),
-        )
-        promoted = cursor.rowcount or 0
-
-        conn.commit()
-
-        if promoted > 0:
-            logger.info(f"Auto-promoted {promoted} stale queried item(s) to queued")
-
-        return int(promoted)
-
-    except Exception as e:
-        logger.error(f"Error promoting queried items: {e}")
-        return 0
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
 
 def update_queue_status(queue_id, status, **kwargs):
     """Update queue item status"""
-    conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
@@ -1652,10 +494,8 @@ def update_queue_status(queue_id, status, **kwargs):
         
         # Add any additional fields to update
         for key, value in kwargs.items():
-            if key in ['found_filename', 'file_path', 'failure_reason', 'retry_count',
-                       'last_failure_time', 'source_id', 'source', 'matched_file_path',
-                       'in_collection', 'collection_track_id', 'source_music_path',
-                       'imported_at']:
+            if key in ['found_filename', 'file_path', 'failure_reason', 'retry_count', 
+                       'last_failure_time', 'source_id']:
                 updates.append(f"{key} = {placeholder}")
                 params.append(value)
         
@@ -1665,21 +505,17 @@ def update_queue_status(queue_id, status, **kwargs):
         query = f"UPDATE download_queue SET {', '.join(updates)} WHERE id = {placeholder}"
         cursor.execute(query, params)
         conn.commit()
+        conn.close()
+        
         logger.info(f"Updated queue {queue_id} to status: {status}")
         return True
+        
     except Exception as e:
         logger.error(f"Error updating queue status: {e}")
         return False
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
 
 def increment_retry_count(queue_id, retry_delay_minutes=30):
     """Increment retry count and schedule next retry"""
-    conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
@@ -1692,6 +528,7 @@ def increment_retry_count(queue_id, retry_delay_minutes=30):
         
         row = cursor.fetchone()
         if not row:
+            conn.close()
             return False
         
         retry_count = (row['retry_count'] or 0) + 1
@@ -1705,88 +542,65 @@ def increment_retry_count(queue_id, retry_delay_minutes=30):
         """, (retry_count, next_retry.isoformat(), queue_id))
         
         conn.commit()
+        conn.close()
+        
         logger.info(f"Queue {queue_id}: retry count now {retry_count}, next retry at {next_retry}")
         return True
+        
     except Exception as e:
         logger.error(f"Error incrementing retry count: {e}")
         return False
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
 
 def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=30):
     """Mark queue item as failed, optionally scheduling retry"""
-    conn = None
     try:
-        conn = get_db()
+        # Try app's get_db first (PostgreSQL-aware)
+        is_pg = False
+        try:
+            from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
+            conn = app_get_db()
+            is_pg = bool(app_is_postgres_connection(conn))
+        except Exception:
+            conn = get_db()
         
         cursor = conn.cursor()
-        placeholder = "%s"
+        placeholder = "%s" if is_pg else "?"
         
-        # Get current retry_count and max_retries to enforce bounded retry behavior
-        cursor.execute(
-            f"""
-            SELECT id, source, found_filename, file_path, retry_count, max_retries
-            FROM download_queue
-            WHERE id = {placeholder}
-            """,
-            (queue_id,),
-        )
+        # Get current retry count
+        cursor.execute(f"SELECT retry_count FROM download_queue WHERE id = {placeholder}", (queue_id,))
         row = cursor.fetchone()
         
         if not row:
+            conn.close()
             return False
-
-        row_dict = dict(row) if hasattr(row, 'keys') else {
-            'id': row[0],
-            'source': row[1],
-            'found_filename': row[2],
-            'file_path': row[3],
-            'retry_count': row[4],
-            'max_retries': row[5],
-        }
-
+        
+        retry_count = (row['retry_count'] or 0) + 1
+        
+        # Always schedule retry if requested - no max retry limit for Soulseek searches
         if schedule_retry:
-            _clear_stale_slskd_transfer_for_queue_item(row_dict)
-        
-        retry_count = (row_dict.get('retry_count') or 0) + 1
-        max_retries = row_dict.get('max_retries')
-        
-        if schedule_retry and (not max_retries or retry_count < max_retries):
             next_retry = datetime.now() + timedelta(minutes=retry_delay_minutes)
             new_status = 'queued'
             logger.warning(f"Queue {queue_id}: Failed ({reason}), scheduling retry #{retry_count} at {next_retry}")
         else:
             next_retry = None
             new_status = 'failed'
-            if schedule_retry and max_retries:
-                logger.error(f"Queue {queue_id}: Failed permanently ({reason}) after max retries ({retry_count}/{max_retries})")
-            else:
-                logger.error(f"Queue {queue_id}: Failed permanently ({reason}) - retry not requested")
+            logger.error(f"Queue {queue_id}: Failed permanently ({reason}) - retry not requested")
         
         cursor.execute(f"""
             UPDATE download_queue 
             SET status = {placeholder}, retry_count = {placeholder}, failure_reason = {placeholder}, last_failure_time = CURRENT_TIMESTAMP,
-                next_retry_at = {placeholder}, found_filename = {placeholder}, file_path = {placeholder}, updated_at = CURRENT_TIMESTAMP
+                next_retry_at = {placeholder}, updated_at = CURRENT_TIMESTAMP
             WHERE id = {placeholder}
-        """, (new_status, retry_count, reason, next_retry.isoformat() if next_retry else None, None, None, queue_id))
+        """, (new_status, retry_count, reason, next_retry.isoformat() if next_retry else None, queue_id))
         
         conn.commit()
-
-        return new_status == 'queued'  # Return whether retry was scheduled
-
+        conn.close()
+        
+        return schedule_retry  # Return whether retry was scheduled
+        
     except Exception as e:
         logger.error(f"Error marking queue item as failed: {e}")
         return False
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
 
 def _get_navidrome_config():
     """Load Navidrome credentials from config file, supporting both navidrome_users list and legacy navidrome block."""
@@ -1831,52 +645,20 @@ def _build_subsonic_auth_params(username, password):
     }
 
 
-def _trigger_navidrome_scan():
-    """Fire a Navidrome library scan so newly moved files are indexed without waiting
-    for the next manually-scheduled import.
-
-    Safe to call repeatedly — Navidrome coalesces concurrent scan requests and the
-    call is fire-and-forget (we do not wait for it to complete).  Returns True when
-    the scan was accepted, False when Navidrome is not configured or the request
-    failed.
-    """
-    base_url, username, password = _get_navidrome_config()
-    if not base_url:
-        return False
-    try:
-        auth = _build_subsonic_auth_params(username, password)
-        resp = requests.get(
-            f"{base_url}/rest/startScan",
-            params=auth,
-            timeout=10,
-        )
-        resp.raise_for_status()
-        status = resp.json().get("subsonic-response", {}).get("status", "")
-        if status == "ok":
-            logger.info("[NAVIDROME] Triggered Navidrome library scan for newly added file")
-            return True
-        logger.debug(f"[NAVIDROME] startScan returned status={status!r}")
-        return False
-    except Exception as e:
-        logger.debug(f"[NAVIDROME] Could not trigger scan: {e}")
-        return False
-
-
 def check_track_exists_in_db(queue_item):
     """
     Check if a track matching the queue item already exists in the local tracks database.
 
     Returns:
-        tuple: (exists: bool, reason: str, matched_track: dict|None)
+        tuple: (exists: bool, reason: str)
     """
     artist = queue_item.get("artist", "")
     title = queue_item.get("title", "")
     album = queue_item.get("album")
 
     if not artist or not title:
-        return False, "", None
+        return False, ""
 
-    conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
@@ -1885,11 +667,10 @@ def check_track_exists_in_db(queue_item):
         if album:
             cursor.execute(
                 f"""
-                SELECT id, title, artist, album, duration, file_path FROM tracks
+                SELECT id FROM tracks
                 WHERE LOWER(artist) = LOWER({placeholder})
                   AND LOWER(title) = LOWER({placeholder})
                   AND LOWER(album) = LOWER({placeholder})
-                  AND (file_path IS NULL OR file_path NOT LIKE '__queued_for_download__%')
                 LIMIT 1
                 """,
                 (artist, title, album),
@@ -1897,45 +678,26 @@ def check_track_exists_in_db(queue_item):
         else:
             cursor.execute(
                 f"""
-                SELECT id, title, artist, album, duration, file_path FROM tracks
+                SELECT id FROM tracks
                 WHERE LOWER(artist) = LOWER({placeholder})
                   AND LOWER(title) = LOWER({placeholder})
-                  AND (file_path IS NULL OR file_path NOT LIKE '__queued_for_download__%')
                 LIMIT 1
                 """,
                 (artist, title),
             )
 
         row = cursor.fetchone()
+        conn.close()
+
         if row:
-            matched = dict(row) if hasattr(row, "keys") else {
-                "id": row[0], "title": row[1], "artist": row[2], "album": row[3],
-                "duration": row[4], "file_path": row[5]
-            }
-            db_file_path = matched.get("file_path") or ""
-            # If the tracks row has a file_path, verify it still exists on disk.
-            # Stale entries for deleted files must not block re-downloading.
-            if db_file_path and not db_file_path.startswith("__queued_for_download__"):
-                if not os.path.isfile(db_file_path):
-                    logger.debug(
-                        f"DB existence check: '{artist} - {title}' found in tracks table "
-                        f"but file no longer on disk ({db_file_path}); skipping"
-                    )
-                    return False, "", None
-            track_id = matched.get("id")
+            track_id = row["id"] if hasattr(row, "keys") else (row[0] if row else None)
             reason = f"Track '{artist} - {title}' already exists in local database (track ID {track_id})"
-            return True, reason, matched
+            return True, reason
 
     except Exception as e:
         logger.debug(f"DB existence check error for '{artist} - {title}': {e}")
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
 
-    return False, "", None
+    return False, ""
 
 
 def check_track_exists_in_navidrome(queue_item):
@@ -1943,18 +705,18 @@ def check_track_exists_in_navidrome(queue_item):
     Check if a track matching the queue item already exists in Navidrome via Subsonic search3 API.
 
     Returns:
-        tuple: (exists: bool, reason: str, matched_song: dict|None)
+        tuple: (exists: bool, reason: str)
     """
     artist = queue_item.get("artist", "")
     title = queue_item.get("title", "")
 
     if not artist or not title:
-        return False, "", None
+        return False, ""
 
     base_url, username, password = _get_navidrome_config()
     if not base_url:
         logger.debug("Navidrome not configured — skipping Navidrome existence check")
-        return False, "", None
+        return False, ""
 
     try:
         auth_params = _build_subsonic_auth_params(username, password)
@@ -1974,7 +736,7 @@ def check_track_exists_in_navidrome(queue_item):
         data = response.json()
         if data.get("subsonic-response", {}).get("status") != "ok":
             logger.debug(f"Navidrome search3 returned non-ok status for '{artist} - {title}'")
-            return False, "", None
+            return False, ""
 
         songs = data.get("subsonic-response", {}).get("searchResult3", {}).get("song", [])
         if not isinstance(songs, list):
@@ -1994,727 +756,111 @@ def check_track_exists_in_navidrome(queue_item):
                     f"(matched: '{song.get('artist')} - {song.get('title')}', "
                     f"id={song.get('id')})"
                 )
-                return True, reason, dict(song)
+                return True, reason
 
     except Exception as e:
         logger.debug(f"Navidrome existence check error for '{artist} - {title}': {e}")
 
-    return False, "", None
-
-
-def _is_confirmed_collection_match(queue_item, matched_data):
-    """
-    Returns True when the matched song/track data is a confirmed full match for the queue
-    item based on all available criteria: title, artist, album name, and song duration.
-
-    A confirmed match means the track in /music is definitively the same as the queued
-    item, allowing safe auto-cleanup of the queue entry and any /downloads file.
-    """
-    if not matched_data:
-        return False
-
-    def _sim(a, b):
-        if not a or not b:
-            return 0.0
-        return SequenceMatcher(None, str(a).lower().strip(), str(b).lower().strip()).ratio()
-
-    # Title must match strongly
-    if _sim(queue_item.get("title", ""), matched_data.get("title", "")) < _NAV_TITLE_SIMILARITY_THRESHOLD:
-        return False
-
-    # Artist must match strongly
-    if _sim(queue_item.get("artist", ""), matched_data.get("artist", "")) < _NAV_ARTIST_SIMILARITY_THRESHOLD:
-        return False
-
-    # Album name must match when both sides have it
-    q_album = (queue_item.get("album") or "").strip()
-    m_album = (matched_data.get("album") or "").strip()
-    if q_album and m_album:
-        if _sim(q_album, m_album) < _ALBUM_SIMILARITY_THRESHOLD:
-            return False
-    elif q_album or m_album:
-        # One side has album info and the other doesn't — cannot confirm
-        return False
-
-    # Duration must match within tolerance when both sides have it
-    q_dur = _normalize_duration_seconds(queue_item.get("duration"))
-    m_dur = _normalize_duration_seconds(matched_data.get("duration"))
-    if q_dur and m_dur:
-        if abs(q_dur - m_dur) > _CONFIRMED_MATCH_DURATION_TOLERANCE_SECONDS:
-            return False
-    elif q_dur or m_dur:
-        # One side has duration and the other doesn't — cannot confirm
-        return False
-
-    return True
-
-
-def _delete_confirmed_collection_item(queue_id, queue_item):
-    """
-    Auto-clean a confirmed in-collection queue item:
-      1. Mark the queue row as 'deleted' in the database.
-      2. Delete any associated file from /downloads.
-
-    This is called when a track in /music fully matches the queue item on all
-    four criteria (title, artist, album, duration), so keeping the entry would
-    only produce spurious 'already in queue' messages.
-    """
-    artist = queue_item.get("artist", "")
-    title = queue_item.get("title", "")
-
-    # 1. Mark as deleted in the database
-    try:
-        conn = get_db()
-        cursor = conn.cursor()
-        placeholder = _get_placeholder(conn)
-        cursor.execute(
-            f"UPDATE download_queue SET status = 'deleted', updated_at = CURRENT_TIMESTAMP WHERE id = {placeholder}",
-            (queue_id,),
-        )
-        conn.commit()
-        conn.close()
-        logger.info(
-            f"Queue {queue_id}: ✅ Auto-deleted confirmed in-collection entry for '{artist} - {title}'"
-        )
-    except Exception as e:
-        logger.error(f"Queue {queue_id}: Failed to mark as deleted: {e}")
-
-    # 2. Delete any associated file from /downloads
-    file_path = queue_item.get("file_path") or ""
-    if file_path:
-        abs_file = os.path.abspath(file_path)
-        abs_downloads = os.path.abspath(DOWNLOADS_DIR)
-        try:
-            within_downloads = Path(abs_file).resolve().is_relative_to(Path(abs_downloads))
-        except (AttributeError, ValueError):
-            # Fallback for Python < 3.9 where is_relative_to is unavailable
-            within_downloads = os.path.commonpath([abs_downloads, abs_file]) == abs_downloads
-        if within_downloads and os.path.isfile(abs_file):
-            try:
-                os.remove(abs_file)
-                logger.info(
-                    f"Queue {queue_id}: 🗑️  Deleted /downloads file for confirmed in-collection track: {abs_file}"
-                )
-            except Exception as e:
-                logger.warning(f"Queue {queue_id}: Could not delete /downloads file '{abs_file}': {e}")
-    else:
-        # Also try to find the file by found_filename in /downloads
-        found_fn = queue_item.get("found_filename") or ""
-        if found_fn:
-            candidate_path = os.path.join(DOWNLOADS_DIR, os.path.basename(found_fn))
-            abs_candidate = os.path.abspath(candidate_path)
-            abs_downloads = os.path.abspath(DOWNLOADS_DIR)
-            try:
-                within_downloads = Path(abs_candidate).resolve().is_relative_to(Path(abs_downloads))
-            except (AttributeError, ValueError):
-                within_downloads = os.path.commonpath([abs_downloads, abs_candidate]) == abs_downloads
-            if within_downloads and os.path.isfile(abs_candidate):
-                try:
-                    os.remove(abs_candidate)
-                    logger.info(
-                        f"Queue {queue_id}: 🗑️  Deleted /downloads file for confirmed in-collection track: {abs_candidate}"
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f"Queue {queue_id}: Could not delete /downloads file '{abs_candidate}': {e}"
-                    )
-
-
-def _cleanup_sibling_downloads(queue_item, keep_path):
-    """
-    Delete any audio files in DOWNLOADS_DIR that match the same artist+title as
-    *queue_item* but are NOT the file at *keep_path*.
-
-    This removes stale copies that accumulated during previous failed download
-    attempts (e.g. when a queue item retried several times and left orphaned files).
-
-    Only files whose names contain both the artist and title strings are removed to
-    avoid accidental deletion of unrelated files.
-    """
-    artist = (queue_item.get("artist") or "").lower().strip()
-    title = (queue_item.get("title") or "").lower().strip()
-    if not artist or not title:
-        return
-
-    abs_downloads = os.path.abspath(DOWNLOADS_DIR)
-    keep_abs = os.path.abspath(keep_path) if keep_path else None
-
-    if not os.path.isdir(abs_downloads):
-        return
-
-    removed = 0
-    try:
-        for root, _, files in os.walk(abs_downloads):
-            for fname in files:
-                if not fname.lower().endswith(('.mp3', '.flac', '.m4a', '.ogg', '.wav')):
-                    continue
-                full = os.path.abspath(os.path.join(root, fname))
-                if keep_abs and full == keep_abs:
-                    continue
-                fname_lower = fname.lower()
-                if artist in fname_lower and title in fname_lower:
-                    try:
-                        os.remove(full)
-                        removed += 1
-                        logger.info(
-                            f"[DEDUP] Removed sibling download for "
-                            f"'{queue_item.get('artist')} - {queue_item.get('title')}': {full}"
-                        )
-                    except Exception as rm_err:
-                        logger.warning(f"[DEDUP] Could not remove sibling file '{full}': {rm_err}")
-    except Exception as e:
-        logger.error(f"[DEDUP] Error during sibling download cleanup: {e}")
-
-    if removed:
-        logger.info(
-            f"[DEDUP] Cleaned {removed} sibling download(s) for "
-            f"'{queue_item.get('artist')} - {queue_item.get('title')}'"
-        )
-
-
-def _relocate_file_to_queue_folder(item, local_path, conn=None):
-    """Move a freshly-downloaded file into the queue item's organised album folder.
-
-    When slskd finishes a download the file lands wherever the remote peer placed
-    it (e.g. ``/downloads/Music/New Music Friday UK/Skindred - Can I Get A.flac``).
-    This function reads the ``queue_folder`` stored on the queue row, creates the
-    target directory when needed, and moves the file there so all tracks for the
-    same album are co-located in a predictable path.
-
-    The queue row's ``file_path`` and ``found_filename`` are updated to the new
-    location so subsequent matching and move-to-music logic always find the file.
-
-    Args:
-        item:       Queue row dict (must have at least ``id``).
-        local_path: Absolute path to the just-downloaded file.
-        conn:       Optional open DB connection; a new one is opened when None.
-
-    Returns:
-        The final absolute file path (may be the same as ``local_path`` if the
-        file was already in the right place or if relocation failed).
-    """
-    import shutil as _shutil
-
-    queue_id = item.get("id")
-    queue_folder = (item.get("queue_folder") or "").strip()
-
-    if not queue_folder:
-        # Fall back to computing the folder from queue metadata if the column
-        # was not set when the item was first added (e.g. legacy rows).
-        try:
-            from download_queue_manager import build_queue_album_folder
-            queue_folder = build_queue_album_folder(item, downloads_dir=DOWNLOADS_DIR)
-        except Exception as build_err:
-            logger.debug(
-                f"[QUEUE_FOLDER] Queue {queue_id}: could not build queue folder: {build_err}"
-            )
-            return local_path
-
-    if not local_path or not os.path.isfile(local_path):
-        return local_path
-
-    target_dir = os.path.abspath(queue_folder)
-    current_dir = os.path.abspath(os.path.dirname(local_path))
-
-    if current_dir == target_dir:
-        # File is already in the right place.
-        return local_path
-
-    try:
-        os.makedirs(target_dir, exist_ok=True)
-        filename = os.path.basename(local_path)
-        target_path = os.path.join(target_dir, filename)
-
-        # Avoid overwriting an existing file with a different name.
-        if os.path.exists(target_path) and os.path.abspath(target_path) != os.path.abspath(local_path):
-            base, ext = os.path.splitext(filename)
-            counter = 1
-            while os.path.exists(target_path):
-                target_path = os.path.join(target_dir, f"{base}_{counter}{ext}")
-                counter += 1
-
-        _shutil.move(local_path, target_path)
-        logger.info(
-            f"[QUEUE_FOLDER] Queue {queue_id}: moved '{filename}' → '{target_dir}'"
-        )
-
-        # Update the queue row to reflect the new path.
-        own_conn = conn is None
-        _conn = conn
-        try:
-            if own_conn:
-                from db import get_db
-                _conn = get_db()
-            _cur = _conn.cursor()
-            ph = _get_placeholder(_conn)
-            _cur.execute(
-                f"""
-                UPDATE download_queue
-                SET file_path = {ph},
-                    found_filename = {ph},
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = {ph}
-                """,
-                (target_path, os.path.basename(target_path), queue_id),
-            )
-            _conn.commit()
-        except Exception as db_err:
-            logger.warning(
-                f"[QUEUE_FOLDER] Queue {queue_id}: could not update DB after relocation: {db_err}"
-            )
-            try:
-                if own_conn and _conn:
-                    _conn.rollback()
-            except Exception:
-                pass
-        finally:
-            if own_conn and _conn:
-                try:
-                    _conn.close()
-                except Exception:
-                    pass
-
-        return target_path
-
-    except Exception as move_err:
-        logger.warning(
-            f"[QUEUE_FOLDER] Queue {queue_id}: could not relocate '{local_path}' → "
-            f"'{target_dir}': {move_err}"
-        )
-        return local_path
-
-
-
-def _safe_delete_download_candidate(file_path, reason, queue_id=None):
-    """Delete a candidate file only when it is within DOWNLOADS_DIR."""
-    if not file_path:
-        return False
-
-    try:
-        abs_file = os.path.abspath(file_path)
-        abs_downloads = os.path.abspath(DOWNLOADS_DIR)
-        within_downloads = os.path.commonpath([abs_downloads, abs_file]) == abs_downloads
-    except Exception:
-        return False
-
-    if not within_downloads or not os.path.isfile(abs_file):
-        return False
-
-    try:
-        os.remove(abs_file)
-        logger.warning(
-            f"Queue {queue_id or 'unknown'}: deleted unmatched Soulseek file {abs_file} "
-            f"(reason={reason})"
-        )
-        return True
-    except Exception as delete_err:
-        logger.warning(
-            f"Queue {queue_id or 'unknown'}: could not delete unmatched Soulseek file "
-            f"{abs_file}: {delete_err}"
-        )
-        return False
-
-
-def _is_remix_or_live_track(title, album):
-    """Return True when title or album suggests a remix, live, or alternate version.
-
-    Uses the existing _TITLE_VARIANT_TOKENS set (live, remix, mix, acoustic, demo,
-    etc.).  Checks for both parenthetical/bracketed forms "(Live)" and standalone
-    words in the title or album name.
-    """
-    def _has_variant(text):
-        if not text:
-            return False
-        t = text.lower()
-        for token, pattern in _TITLE_VARIANT_PATTERNS.items():
-            # Accept "(live)", "[remix]", " - live", "/live", " live " etc.
-            if f'({token})' in t or f'[{token}]' in t:
-                return True
-            # Whole-word match anywhere in the string
-            if pattern.search(text):
-                return True
-        return False
-
-    return _has_variant(title) or _has_variant(album)
-
-
-def _check_navidrome_different_album_match(queue_item):
-    """Check if this track exists in Navidrome on a *different* album.
-
-    Returns the source file path in /music when:
-      • title + artist similarity thresholds are met,
-      • song duration matches within tolerance,
-      • the album name does NOT match (same recording on a compilation, etc.),
-      • neither the queued track nor the matched Navidrome song is a remix/live.
-
-    Returns:
-        tuple: (found: bool, source_path: str | None, reason: str)
-    """
-    title = (queue_item.get('title') or '').strip()
-    artist = (queue_item.get('artist') or '').strip()
-    q_album = (queue_item.get('album') or '').strip()
-
-    if not title or not artist:
-        return False, None, ''
-
-    # Never recommend copy for remixes / live tracks – they legitimately differ.
-    if _is_remix_or_live_track(title, q_album):
-        return False, None, ''
-
-    base_url, username, password = _get_navidrome_config()
-    if not base_url:
-        return False, None, ''
-
-    try:
-        auth_params = _build_subsonic_auth_params(username, password)
-        search_params = dict(auth_params)
-        search_params['query'] = f'{artist} {title}'
-        search_params['songCount'] = 10
-        search_params['albumCount'] = 0
-        search_params['artistCount'] = 0
-
-        response = requests.get(
-            f'{base_url}/rest/search3.view',
-            params=search_params,
-            timeout=10,
-        )
-        response.raise_for_status()
-
-        data = response.json()
-        if data.get('subsonic-response', {}).get('status') != 'ok':
-            return False, None, ''
-
-        songs = data.get('subsonic-response', {}).get('searchResult3', {}).get('song', [])
-        if not isinstance(songs, list):
-            songs = [songs] if songs else []
-
-        def _sim(a, b):
-            if not a or not b:
-                return 0.0
-            return SequenceMatcher(None, a.lower().strip(), b.lower().strip()).ratio()
-
-        q_dur = _normalize_duration_seconds(queue_item.get('duration'))
-        music_root = os.path.abspath(os.environ.get('MUSIC_ROOT', '/music'))
-
-        for song in songs:
-            title_sim = _sim(song.get('title', ''), title)
-            artist_sim = _sim(song.get('artist', ''), artist)
-
-            if title_sim < _NAV_TITLE_SIMILARITY_THRESHOLD:
-                continue
-            if artist_sim < _NAV_ARTIST_SIMILARITY_THRESHOLD:
-                continue
-
-            # Duration must match within tolerance when both sides have it.
-            m_dur = _normalize_duration_seconds(song.get('duration'))
-            if q_dur and m_dur:
-                if abs(q_dur - m_dur) > _CONFIRMED_MATCH_DURATION_TOLERANCE_SECONDS:
-                    continue
-            elif q_dur or m_dur:
-                # One side has duration, the other doesn't – cannot confirm.
-                continue
-
-            # Album similarity check: skip if albums are the same.
-            m_album = (song.get('album') or '').strip()
-            if q_album and m_album:
-                if _sim(q_album, m_album) >= _ALBUM_SIMILARITY_THRESHOLD:
-                    # Albums match – this is a full in-collection hit, not a
-                    # different-album case; the regular in-collection path handles it.
-                    continue
-            else:
-                # One or both sides have no album info – cannot confirm albums differ.
-                continue
-
-            # Don't recommend copying a remix/live version from the library.
-            if _is_remix_or_live_track(song.get('title', ''), m_album):
-                continue
-
-            # Construct source path from Navidrome's path field.
-            nav_path = (song.get('path') or '').strip()
-            source_path = None
-            if nav_path:
-                if os.path.isabs(nav_path) and os.path.isfile(nav_path):
-                    source_path = nav_path
-                else:
-                    candidate = os.path.join(music_root, nav_path.lstrip('/'))
-                    candidate = os.path.abspath(candidate)
-                    if os.path.isfile(candidate):
-                        source_path = candidate
-
-            reason = (
-                f"Track '{artist} - {title}' found on a different album in Navidrome: "
-                f"'{song.get('artist')} - {song.get('title')}' (album: '{m_album}')"
-                + (f" | Local path: {source_path}" if source_path else '')
-            )
-            return True, source_path, reason
-
-    except Exception as e:
-        logger.debug(f"Different-album Navidrome check error for '{artist} - {title}': {e}")
-
-    return False, None, ''
-
-
-def _find_location_match_in_music(queue_item):
-    """Return /music path when queue source path maps to an existing library file."""
-    source_path = (queue_item.get('file_path') or '').strip()
-    if not source_path:
-        return None
-
-    try:
-        abs_source = os.path.abspath(source_path)
-        abs_downloads = os.path.abspath(DOWNLOADS_DIR)
-        rel = os.path.relpath(abs_source, abs_downloads)
-    except Exception:
-        return None
-
-    if not rel or rel.startswith('..'):
-        return None
-
-    music_root = os.path.abspath(os.environ.get('MUSIC_ROOT', '/music'))
-    candidate = os.path.abspath(os.path.join(music_root, rel))
-    if os.path.exists(candidate):
-        return candidate
-    return None
+    return False, ""
 
 
 def search_and_download(queue_id, queue_item, client):
     """Search Soulseek for queue item and download top result"""
     try:
-        search_query = _get_effective_track_search_query(queue_item)
-        if not search_query:
-            search_query = str(queue_item.get('search_query') or '').strip()
+        search_query = queue_item['search_query']
 
-        # Location-first collection check: only trust concrete path matches.
-        location_match = _find_location_match_in_music(queue_item)
-        if location_match:
-            logger.info(f"Queue {queue_id}: ⏭️  Skipping download — location match found in /music: {location_match}")
-            update_queue_status(
-                queue_id,
-                'in_collection',
-                in_collection=1,
-                matched_file_path=location_match,
-                failure_reason=f"Location match in /music: {location_match}"
-            )
+        # Pre-download existence checks: skip download if the track already exists
+        # in the local database or in Navidrome (catches items indexed there but not
+        # yet scanned into the local DB).
+        db_exists, db_reason = check_track_exists_in_db(queue_item)
+        if db_exists:
+            logger.info(f"Queue {queue_id}: ⏭️  Skipping download — {db_reason}")
+            update_queue_status(queue_id, 'in_collection', failure_reason=db_reason)
             return False
 
-        # By default we avoid metadata-only DB/Navidrome matching because it can
-        # produce ambiguous "Matched" rows with no usable file path details.
-        location_only_matching = os.environ.get('SPTNR_LOCATION_MATCH_ONLY', '1').strip() != '0'
-        if not location_only_matching:
-            db_exists, db_reason, db_matched = check_track_exists_in_db(queue_item)
-            if db_exists:
-                logger.info(f"Queue {queue_id}: ⏭️  Skipping download — {db_reason}")
-                if _is_confirmed_collection_match(queue_item, db_matched):
-                    logger.info(
-                        f"Queue {queue_id}: 🎯 Confirmed full match in local DB "
-                        f"(title+artist+album+duration) — auto-cleaning queue and /downloads"
-                    )
-                    _delete_confirmed_collection_item(queue_id, queue_item)
-                else:
-                    update_queue_status(queue_id, 'in_collection', failure_reason=db_reason)
-                return False
-
-            nav_exists, nav_reason, nav_matched = check_track_exists_in_navidrome(queue_item)
-            if nav_exists:
-                logger.info(f"Queue {queue_id}: ⏭️  Skipping download — {nav_reason}")
-                if _is_confirmed_collection_match(queue_item, nav_matched):
-                    logger.info(
-                        f"Queue {queue_id}: 🎯 Confirmed full match in Navidrome "
-                        f"(title+artist+album+duration) — auto-cleaning queue and /downloads"
-                    )
-                    _delete_confirmed_collection_item(queue_id, queue_item)
-                else:
-                    update_queue_status(queue_id, 'in_collection', failure_reason=nav_reason)
-                return False
-        else:
-            logger.debug(f"Queue {queue_id}: location-only matching enabled; skipping metadata DB/Navidrome checks")
-
-        # Always check whether this recording exists on a different album in Navidrome.
-        # This runs regardless of SPTNR_LOCATION_MATCH_ONLY because it handles a
-        # distinct case (copy/re-tag rather than skip), and can be disabled with
-        # SPTNR_DISABLE_DIFFERENT_ALBUM_COPY=1 if needed.
-        disable_diff_copy = os.environ.get('SPTNR_DISABLE_DIFFERENT_ALBUM_COPY', '0').strip() in ('1', 'true', 'yes', 'on')
-        if not disable_diff_copy:
-            diff_found, diff_source_path, diff_reason = _check_navidrome_different_album_match(queue_item)
-            if diff_found:
-                logger.info(
-                    f"Queue {queue_id}: 📋 Same recording found on a different album in Navidrome "
-                    f"— recommending copy instead of re-download: {diff_reason}"
-                )
-                update_queue_status(
-                    queue_id,
-                    'copy_recommended',
-                    source_music_path=diff_source_path or '',
-                    failure_reason=diff_reason,
-                )
-                return False
+        nav_exists, nav_reason = check_track_exists_in_navidrome(queue_item)
+        if nav_exists:
+            logger.info(f"Queue {queue_id}: ⏭️  Skipping download — {nav_reason}")
+            update_queue_status(queue_id, 'in_collection', failure_reason=nav_reason)
+            return False
 
         logger.info(f"Queue {queue_id}: Searching for '{search_query}'...")
         update_queue_status(queue_id, 'searching')
-
+        
+        # Start search
+        search_id = client.start_search(search_query)
+        if not search_id:
+            logger.warning(f"Queue {queue_id}: Failed to start search")
+            mark_failed(queue_id, "Failed to start Soulseek search", schedule_retry=True)
+            return False
+        
+        # Poll for results (up to MAX_POLL_ATTEMPTS seconds with 1 second intervals)
+        # Increased timeout to 45 seconds to handle slow Soulseek peer responses
+        MAX_POLL_ATTEMPTS = 45
         best_result = None
         best_score = 0.0
         poll_start_time = datetime.now()
-
-        # Check whether this item was already pre-matched by a sibling's album
-        # search.  Pre-matches are stored when the first item in an album group
-        # performs an album-level search and the responses are scored against all
-        # queued sibling tracks immediately.
-        _pre_match = _album_pre_matched_results.get(queue_id)
-        if _pre_match and (time.time() - _pre_match.get('timestamp', 0)) <= _ALBUM_PRE_MATCH_TTL_SECONDS:
-            best_result = _pre_match.get('result')
-            best_score = _pre_match.get('score', 0.0)
-            logger.info(
-                f"Queue {queue_id}: Using pre-matched result from album batch search "
-                f"(score={best_score:.2f})"
-            )
-
-        if not best_result:
-            # Pass 1: album-level search first (when album metadata exists), then
-            # choose a file that matches this queued track and batch-pre-match all
-            # sibling items so they skip a redundant album search of their own.
-            # This gate uses only album_query (not album_titles) so that the album
-            # search fires on retries even when all sibling tracks are already done.
-            album_query = _get_album_search_query(queue_item)
-            if album_query:
-                cache_key = f"album::{_normalize_match_text(album_query)}"
-                cached = _album_search_cache.get(cache_key)
-                album_responses = None
-
-                if cached and (time.time() - cached.get('timestamp', 0)) <= _ALBUM_SEARCH_CACHE_TTL_SECONDS:
-                    album_responses = cached.get('responses') or []
-                else:
-                    try:
-                        logger.info(f"Queue {queue_id}: Album-first search '{album_query}'")
-                        album_search_id = client.start_search(album_query)
-                        if album_search_id:
-                            album_responses = _poll_search_responses(client, album_search_id, max_poll_attempts=30)
-                            _album_search_cache[cache_key] = {
-                                'timestamp': time.time(),
-                                'responses': album_responses or [],
-                            }
-                    except Exception as album_search_err:
-                        logger.debug(f"Queue {queue_id}: album-first search failed: {album_search_err}")
-
-                if album_responses:
-                    # Batch-match every item in the album against the album
-                    # search results, including the current item.  All matched
-                    # siblings are stored in _album_pre_matched_results so they
-                    # skip the album search and the per-track fallback when their
-                    # turn comes in the queue.
-                    sibling_items = _get_sibling_queue_items_for_album(queue_item)
-                    # Build a unified lookup that always includes the current item
-                    # so it gets the same batch-match treatment as its siblings.
-                    all_items_to_match = {item.get('id'): item for item in sibling_items if item.get('id') is not None}
-                    all_items_to_match[queue_id] = queue_item
-
-                    now_ts = time.time()
-                    for item_id, item_to_match in all_items_to_match.items():
-                        existing = _album_pre_matched_results.get(item_id)
-                        if existing and (now_ts - existing.get('timestamp', 0)) <= _ALBUM_PRE_MATCH_TTL_SECONDS:
-                            # Still valid — keep the existing result to avoid
-                            # overwriting with a potentially lower-quality match.
-                            continue
-                        match_result, match_score = _pick_best_candidate_from_responses(
-                            album_responses, item_to_match
-                        )
-                        if match_result and match_score >= _ALBUM_MATCH_MIN_SCORE:
-                            _album_pre_matched_results[item_id] = {
-                                'timestamp': now_ts,
-                                'result': match_result,
-                                'score': match_score,
-                            }
-                            if item_id != queue_id:
-                                logger.debug(
-                                    f"Queue {queue_id}: Pre-matched sibling {item_id} "
-                                    f"from album search (score={match_score:.2f})"
-                                )
-
-                    current_pre_match = _album_pre_matched_results.get(queue_id)
-                    if (
-                        current_pre_match
-                        and (time.time() - current_pre_match.get('timestamp', 0)) <= _ALBUM_PRE_MATCH_TTL_SECONDS
-                    ):
-                        best_result = current_pre_match['result']
-                        best_score = current_pre_match['score']
-                        logger.info(
-                            f"Queue {queue_id}: Album-first match selected "
-                            f"(score={best_score:.2f})"
-                        )
-
-        # Pass 2: fallback to per-track search when album pass was inconclusive.
-        if not best_result:
-            search_id = client.start_search(search_query)
-            if not search_id:
-                logger.warning(f"Queue {queue_id}: Failed to start Soulseek search")
-                mark_failed(queue_id, "Failed to start Soulseek search", schedule_retry=True)
-                return False
-
-            # Increased timeout to 45 seconds to handle slow Soulseek peer responses
-            responses = _poll_search_responses(client, search_id, max_poll_attempts=45)
-            best_result, best_score = _pick_best_candidate_from_responses(responses, queue_item)
-
-        # Pass 2b: unquoted fallback — primary query uses phrase-quotes
-        # ("artist" "title") which some peers don't support.  Retry with the
-        # same sanitized text but without quotes so the tokenizer can still
-        # find files where the phrase-match logic fails.
-        if not best_result and search_query.startswith('"'):
-            unquoted_query = search_query.replace('"', '').strip()
-            unquoted_query = ' '.join(unquoted_query.split())
-            if unquoted_query and unquoted_query != search_query:
-                logger.info(
-                    f"Queue {queue_id}: Quoted query returned no results; "
-                    f"retrying unquoted: '{unquoted_query}'"
-                )
-                uq_id = client.start_search(unquoted_query)
-                if uq_id:
-                    uq_responses = _poll_search_responses(client, uq_id, max_poll_attempts=45)
-                    best_result, best_score = _pick_best_candidate_from_responses(uq_responses, queue_item)
-                    if best_result:
-                        logger.info(
-                            f"Queue {queue_id}: Unquoted query '{unquoted_query}' found a match "
-                            f"(score={best_score:.2f})"
-                        )
-
-        # Pass 2c: full-strip fallback — remove ALL remaining punctuation
-        # (en-dashes, brackets, accents, etc.) for a broadest possible retry.
-        if not best_result:
-            fallback_query = _fallback_slskd_query(search_query.replace('"', ''))
-            fallback_query = ' '.join(fallback_query.split())
-            if fallback_query and fallback_query not in (search_query, search_query.replace('"', '').strip()):
-                logger.info(
-                    f"Queue {queue_id}: Zero results; full-strip retry: '{fallback_query}'"
-                )
-                fallback_id = client.start_search(fallback_query)
-                if fallback_id:
-                    fallback_responses = _poll_search_responses(client, fallback_id, max_poll_attempts=45)
-                    best_result, best_score = _pick_best_candidate_from_responses(fallback_responses, queue_item)
-                    if best_result:
-                        logger.info(
-                            f"Queue {queue_id}: Full-strip query '{fallback_query}' found a match "
-                            f"(score={best_score:.2f})"
-                        )
-
-        # Pass 2d: artist+album fallback for hard-to-find compilation tracks.
-        if not best_result:
-            artist_album_query = _get_track_artist_album_fallback_query(queue_item)
-            if artist_album_query:
-                normalized_primary = ' '.join((search_query or '').replace('"', '').split()).strip()
-                normalized_artist_album = ' '.join(artist_album_query.replace('"', '').split()).strip()
-                if normalized_artist_album and normalized_artist_album != normalized_primary:
-                    logger.info(
-                        f"Queue {queue_id}: No safe result yet; artist+album fallback: '{artist_album_query}'"
-                    )
-                    aa_id = client.start_search(artist_album_query)
-                    if aa_id:
-                        aa_responses = _poll_search_responses(aa_id, max_poll_attempts=45)
-                        best_result, best_score = _pick_best_candidate_from_responses(aa_responses, queue_item)
-                        if best_result:
-                            logger.info(
-                                f"Queue {queue_id}: Artist+album fallback found a match "
-                                f"(score={best_score:.2f})"
+        
+        for poll_attempt in range(MAX_POLL_ATTEMPTS):
+            time.sleep(1)
+            
+            try:
+                responses, state, is_complete = client.get_search_results(search_id)
+                
+                logger.debug(f"Queue {queue_id}: Poll {poll_attempt+1}/{MAX_POLL_ATTEMPTS} - Got {len(responses)} responses, state={state}")
+                
+                if responses:
+                    # Score all available files and choose the strongest semantic match.
+                    for resp_idx, resp in enumerate(responses):
+                        if not (hasattr(resp, 'files') and resp.files and len(resp.files) > 0):
+                            logger.debug(
+                                f"Queue {queue_id}: Response {resp_idx} from "
+                                f"{getattr(resp, 'username', 'unknown')} has no files or empty files list"
                             )
+                            continue
 
+                        logger.debug(f"Queue {queue_id}: Response {resp_idx} from {resp.username} has {len(resp.files)} files")
+                        for file_info in resp.files:
+                            filename = (
+                                getattr(file_info, 'filename', file_info.get('filename', ''))
+                                if isinstance(file_info, dict)
+                                else getattr(file_info, 'filename', '')
+                            )
+                            size = (
+                                getattr(file_info, 'size', file_info.get('size', 0))
+                                if isinstance(file_info, dict)
+                                else getattr(file_info, 'size', 0)
+                            )
+                            candidate_length = _extract_candidate_length_seconds(file_info)
+
+                            candidate_score = _score_soulseek_candidate(filename, queue_item, candidate_length)
+                            if candidate_score > best_score:
+                                best_score = candidate_score
+                                best_result = {
+                                    "username": resp.username,
+                                    "filename": filename,
+                                    "size": size,
+                                    "length": candidate_length,
+                                    "score": candidate_score,
+                                }
+
+                    # If we already have a strong candidate, no need to keep polling.
+                    if best_result and best_score >= 0.72:
+                        logger.info(
+                            f"Queue {queue_id}: ✓ Found high-confidence match after {poll_attempt+1}s "
+                            f"(score={best_score:.2f})"
+                        )
+                        break
+                
+                # Exit early if search is complete and we have results
+                if is_complete and best_result:
+                    logger.info(f"Queue {queue_id}: Search complete with results, stopping polling")
+                    break
+                    
+            except Exception as e:
+                logger.warning(f"Queue {queue_id}: Error polling results (attempt {poll_attempt+1}): {e}")
+                logger.debug(traceback.format_exc())
+        
         if not best_result:
             elapsed = (datetime.now() - poll_start_time).total_seconds()
             logger.warning(f"Queue {queue_id}: ✗ No results found after {elapsed:.0f}s of polling")
@@ -2740,54 +886,14 @@ def search_and_download(queue_id, queue_item, client):
             f"Queue {queue_id}: Downloading '{best_result['filename']}' from "
             f"{best_result['username']} (score={best_score:.2f})..."
         )
-
-        # Ensure the queue item has an organised album folder and create it on
-        # disk now so the relocation step in check_completed_downloads can move
-        # the file there as soon as slskd finishes.
-        try:
-            from download_queue_manager import build_queue_album_folder
-            _queue_folder = (queue_item.get("queue_folder") or "").strip()
-            if not _queue_folder:
-                _queue_folder = build_queue_album_folder(queue_item, downloads_dir=DOWNLOADS_DIR)
-            if _queue_folder:
-                os.makedirs(_queue_folder, exist_ok=True)
-                # Persist to DB if not already set
-                if not (queue_item.get("queue_folder") or "").strip():
-                    _qf_conn = None
-                    try:
-                        _qf_conn = get_db()
-                        _qf_cur = _qf_conn.cursor()
-                        _qf_cur.execute(
-                            "UPDATE download_queue SET queue_folder = %s WHERE id = %s",
-                            (_queue_folder, queue_id),
-                        )
-                        _qf_conn.commit()
-                        queue_item = dict(queue_item)
-                        queue_item["queue_folder"] = _queue_folder
-                    except Exception as _qf_db_err:
-                        try:
-                            if _qf_conn is not None:
-                                _qf_conn.rollback()
-                        except Exception:
-                            pass
-                        logger.debug(
-                            f"Queue {queue_id}: could not persist queue_folder: {_qf_db_err}"
-                        )
-                    finally:
-                        try:
-                            if _qf_conn is not None:
-                                _qf_conn.close()
-                        except Exception:
-                            pass
-        except Exception as _qf_err:
-            logger.debug(f"Queue {queue_id}: could not set up queue folder: {_qf_err}")
-
+        update_queue_status(queue_id, 'downloading', found_filename=best_result['filename'])
+        
         success = client.download_file(best_result['username'], best_result['filename'], best_result['size'])
-
+        
         if success:
-            update_queue_status(queue_id, 'downloading', found_filename=best_result['filename'])
             logger.info(f"Queue {queue_id}: Download queued successfully in slskd")
             logger.info(f"Queue {queue_id}: File will appear in {DOWNLOADS_DIR} when download completes")
+            # Status already set to 'downloading' above
             return True
         else:
             logger.error(f"Queue {queue_id}: Failed to queue download in slskd")
@@ -2809,47 +915,15 @@ def check_completed_downloads():
     Fallback: Walk DOWNLOADS_DIR for audio files when slskd is unavailable or
               returns no localFilePath.
     """
-    conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
-
-        # Prepare optional helpers once so they are always defined for the full
-        # function scope, including exception paths.
-        dq_update_queue_item = None
-        move_single_track_to_music_dir = None
-        verify_downloaded_file_metadata = None
-        verify_file_in_music = None
-        mark_queue_item_moved = None
-
-        try:
-            from download_queue_manager import (
-                move_single_track_to_music_dir,
-                update_queue_item as dq_update_queue_item,
-                verify_downloaded_file_metadata,
-            )
-            from download_file_verification import verify_file_in_music, mark_queue_item_moved
-        except Exception as helper_import_err:
-            logger.debug(f"Could not import auto-move helpers; using fallback queue updates only: {helper_import_err}")
-
-        def _safe_update_queue_item(queue_id, **kwargs):
-            """Prefer download_queue_manager.update_queue_item; fallback to local status update."""
-            if dq_update_queue_item:
-                return dq_update_queue_item(queue_id, **kwargs)
-
-            # Fallback path only supports status/file_path updates.
-            status = kwargs.get('status')
-            file_path = kwargs.get('file_path')
-            if status is not None:
-                return update_queue_status(queue_id, status, file_path=file_path)
-            return None
 
         # ------------------------------------------------------------------
         # Build a lookup of slskd-completed files: filename → localFilePath
         # ------------------------------------------------------------------
         slskd_completed: dict[str, str] = {}
-        slskd_active_exact: dict[str, dict] = {}
-        slskd_active_by_basename: dict[str, list[dict]] = {}
+        slskd_active: dict[str, dict] = {}
         slskd_status_available = False
 
         def _normalize_transfer_key(value):
@@ -2863,20 +937,8 @@ def check_completed_downloads():
             key = _normalize_transfer_key(found_filename)
             if not key:
                 return None
-
-            exact = slskd_active_exact.get(key)
-            if exact:
-                return exact
-
             basename = os.path.basename(key)
-            matches = slskd_active_by_basename.get(basename) or []
-            if len(matches) == 1:
-                return matches[0]
-            if len(matches) > 1:
-                logger.debug(
-                    f"Ambiguous slskd transfer basename for '{found_filename}': {len(matches)} candidates; skipping basename fallback"
-                )
-            return None
+            return slskd_active.get(key) or slskd_active.get(basename)
 
         def _is_stale_queue_item(item, stale_minutes=10):
             updated_at = item.get('updated_at')
@@ -2889,55 +951,17 @@ def check_completed_downloads():
             except Exception:
                 return False
 
-        def _state_normalize(value):
-            return str(value or "").strip().lower()
-
-        def _transfer_queue_position(transfer):
-            if not isinstance(transfer, dict):
-                return None
-            raw = (
-                transfer.get('queuePosition')
-                or transfer.get('queue_position')
-                or transfer.get('position')
-                or transfer.get('queueIndex')
-                or transfer.get('queueLength')
-            )
-            if raw is None:
-                return None
-            try:
-                return int(raw)
-            except Exception:
-                return None
-
-        slskd_client = None
         try:
             slskd_client = get_slskd_client()
             if slskd_client:
                 for transfer in slskd_client.get_completed_transfers():
                     local = transfer.get("localFilePath", "")
                     remote = transfer.get("filename", "")
-                    remote_norm = _normalize_transfer_key(remote)
-
-                    # Always index by the remote (Soulseek) filename so the queue
-                    # item's stored found_filename can be matched regardless of
-                    # whether localFilePath is accessible from this container.
-                    if remote_norm:
-                        # If localFilePath exists on disk, use it as the value so
-                        # subsequent steps can read/relocate the actual file.
-                        # If not (slskd runs in a different container with a
-                        # different mount path), fall back to trying to locate the
-                        # file via the downloads-directory walk below.
-                        if local and os.path.isfile(local):
+                    if local and os.path.isfile(local):
+                        remote_norm = _normalize_transfer_key(remote)
+                        if remote_norm:
                             slskd_completed[remote_norm] = local
                             slskd_completed[os.path.basename(remote_norm)] = local
-                        else:
-                            # Register a sentinel (empty string) so we know this
-                            # remote filename was completed; the filesystem walk
-                            # will supply the actual local path.
-                            slskd_completed.setdefault(remote_norm, "")
-                            slskd_completed.setdefault(os.path.basename(remote_norm), "")
-
-                    if local and os.path.isfile(local):
                         slskd_completed[os.path.basename(local).lower()] = local
                 logger.debug(f"slskd API: {len(slskd_completed)} completed transfer paths")
 
@@ -2948,68 +972,15 @@ def check_completed_downloads():
                     for transfer in active_list:
                         filename = transfer.get("filename", "")
                         norm = _normalize_transfer_key(filename)
-                        if not norm:
-                            continue
-                        slskd_active_exact[norm] = transfer
-                        basename = os.path.basename(norm)
-                        slskd_active_by_basename.setdefault(basename, []).append(transfer)
+                        if norm:
+                            slskd_active[norm] = transfer
+                            slskd_active[os.path.basename(norm)] = transfer
                     slskd_status_available = True
-                    logger.debug(
-                        f"slskd API: {len(active_list)} active transfer entries "
-                        f"({len(slskd_active_by_basename)} basename groups)"
-                    )
+                    logger.debug(f"slskd API: {len(active_list)} active transfer entries")
                 except Exception as status_err:
                     logger.warning(
                         f"Could not fetch active slskd transfers for reconciliation: {status_err}"
                     )
-
-                # Optional event-driven enrichment for installations that want
-                # near-real-time transfer-state updates between poll cycles.
-                # Enable with SLSKD_EVENT_SYNC_ENABLED=true.
-                if os.environ.get('SLSKD_EVENT_SYNC_ENABLED', '').strip().lower() in {'1', 'true', 'yes', 'on'}:
-                    try:
-                        event_rows = slskd_client.get_events(timeout=10)
-                        for event in event_rows:
-                            if not isinstance(event, dict):
-                                continue
-                            payload = event.get('data') if isinstance(event.get('data'), dict) else event
-                            if not isinstance(payload, dict):
-                                continue
-                            filename = (
-                                payload.get('filename')
-                                or payload.get('fileName')
-                                or payload.get('path')
-                                or ''
-                            )
-                            if not filename:
-                                continue
-                            norm = _normalize_transfer_key(filename)
-                            if not norm:
-                                continue
-                            existing = slskd_active.get(norm) or slskd_active.get(os.path.basename(norm)) or {}
-                            merged = dict(existing)
-                            merged['filename'] = filename
-                            if payload.get('username'):
-                                merged['username'] = payload.get('username')
-                            if payload.get('id'):
-                                merged['id'] = payload.get('id')
-                            merged['state'] = (
-                                payload.get('state')
-                                or payload.get('transferState')
-                                or payload.get('status')
-                                or merged.get('state')
-                                or event.get('type')
-                                or ''
-                            )
-                            for qp_key in ('queuePosition', 'queue_position', 'position', 'queueIndex', 'queueLength'):
-                                if qp_key in payload and payload.get(qp_key) is not None:
-                                    merged['queuePosition'] = payload.get(qp_key)
-                                    break
-                            slskd_active[norm] = merged
-                            slskd_active[os.path.basename(norm)] = merged
-                        logger.debug(f"slskd events enrichment: processed {len(event_rows)} events")
-                    except Exception as event_err:
-                        logger.debug(f"Could not enrich transfer state from slskd events: {event_err}")
         except Exception as slskd_err:
             logger.debug(f"Could not query slskd completed transfers: {slskd_err}")
 
@@ -3021,7 +992,7 @@ def check_completed_downloads():
             try:
                 for root, _, root_files in os.walk(DOWNLOADS_DIR):
                     for f in root_files:
-                        if f.lower().endswith(('.mp3', '.flac')):
+                        if f.lower().endswith(('.mp3', '.flac', '.m4a')):
                             fs_files.append(os.path.relpath(os.path.join(root, f), DOWNLOADS_DIR))
                 if fs_files:
                     logger.debug(f"Filesystem walk: {len(fs_files)} audio files in {DOWNLOADS_DIR}")
@@ -3031,352 +1002,81 @@ def check_completed_downloads():
             logger.warning(f"Downloads directory does not exist: {DOWNLOADS_DIR}")
 
         # ------------------------------------------------------------------
-        # Fetch queue items that should be reconciled against slskd/filesystem.
-        # Include soulseek rows that slipped back to queued/searching but still
-        # carry found_filename, because slskd may already have completed them.
+        # Fetch all items currently in 'downloading' status
         # ------------------------------------------------------------------
         cursor.execute("""
             SELECT * FROM download_queue
             WHERE status = 'downloading'
-               OR (
-                    source = 'soulseek'
-                AND status IN ('queued', 'searching')
-                AND found_filename IS NOT NULL
-                AND TRIM(found_filename) <> ''
-               )
         """)
-        reconcilable_items = [dict(row) for row in cursor.fetchall()]
-        if reconcilable_items:
-            logger.debug(
-                f"Checking {len(reconcilable_items)} queue items for completion reconciliation"
-            )
-
-        # Build an active queue snapshot once so we can determine whether a
-        # rejected Soulseek file is unmatched against the entire queue, not
-        # just the current row being processed.
-        cursor.execute("""
-            SELECT * FROM download_queue
-            WHERE status IN ('queued', 'searching', 'downloading', 'matched', 'unmatched', 'completed')
-        """)
-        active_queue_items = [dict(row) for row in cursor.fetchall()]
-
-        def _matches_any_queue_item(file_path, relative_name=None, exclude_queue_id=None):
-            if not file_path or not os.path.isfile(file_path):
-                return False
-
-            for candidate_item in active_queue_items:
-                candidate_id = candidate_item.get('id')
-                if exclude_queue_id is not None and candidate_id == exclude_queue_id:
-                    continue
-                try:
-                    is_match, _ = _file_matches_queue_item(file_path, candidate_item, relative_name)
-                except Exception:
-                    continue
-                if is_match:
-                    return True
-            return False
+        downloading = [dict(row) for row in cursor.fetchall()]
+        if downloading:
+            logger.debug(f"Checking {len(downloading)} items in 'downloading' status")
 
         newly_completed = []
-        # Track absolute paths that have been matched and (possibly) relocated in
-        # this cycle so subsequent items in the same loop do not double-claim the
-        # same file now that we call _relocate_file_to_queue_folder inside the loop.
-        _cycle_matched_abs_paths: set = set()
-
-        for item in reconcilable_items:
+        for item in downloading:
             match_found = None
             match_meta_state = None
-            item_source = (item.get("source") or "soulseek").strip().lower()
 
             found_fn = item.get("found_filename") or ""
             item_id = item["id"]
-            transfer = None
-
-            # Keep queue rows in sync with slskd transfer identity/state so UI
-            # actions (cancel/retry) can target exact transfers deterministically.
-            if item_source == 'soulseek' and slskd_status_available:
-                transfer = _get_transfer_entry(found_fn)
-                if transfer:
-                    transfer_id = str(transfer.get('id') or '').strip() or None
-                    transfer_user = str(transfer.get('username') or '').strip() or None
-                    transfer_state = str(
-                        transfer.get('state')
-                        or transfer.get('transferState')
-                        or transfer.get('status')
-                        or ''
-                    ).strip() or None
-                    transfer_queue_position = _transfer_queue_position(transfer)
-                    _safe_update_queue_item(
-                        item_id,
-                        slskd_transfer_id=transfer_id,
-                        slskd_username=transfer_user,
-                        slskd_state=transfer_state,
-                        slskd_queue_position=transfer_queue_position,
-                        slskd_last_sync_at=datetime.now().isoformat(),
-                    )
-                else:
-                    if any(item.get(k) for k in ('slskd_transfer_id', 'slskd_username', 'slskd_state')) or item.get('slskd_queue_position') is not None:
-                        _safe_update_queue_item(
-                            item_id,
-                            slskd_transfer_id=None,
-                            slskd_username=None,
-                            slskd_state=None,
-                            slskd_queue_position=None,
-                            slskd_last_sync_at=datetime.now().isoformat(),
-                        )
-
-            # Normalised remote path and its basename, computed once and reused
-            # in steps 1 and 2 so we don't repeat the same string work per file.
-            found_norm_full = _normalize_transfer_key(found_fn)   # full remote path
-            found_basename = os.path.basename(found_norm_full)     # filename only
 
             # 1. Exact match via slskd localFilePath (most reliable)
             if found_fn:
-                # Distinguish full-path vs basename-only hits so we can apply
-                # different trust levels below.
-                abs_path_full = slskd_completed.get(found_norm_full) or None
-                # Non-empty sentinel ("") means the transfer was completed but
-                # localFilePath is not accessible; skip to filesystem walk.
-                if abs_path_full == "":
-                    abs_path_full = None
-                abs_path_basename = slskd_completed.get(found_basename) or None
-                if abs_path_basename == "":
-                    abs_path_basename = None
-                abs_path = abs_path_full or abs_path_basename
+                found_norm = _normalize_transfer_key(found_fn)
+                abs_path = slskd_completed.get(found_norm) or slskd_completed.get(os.path.basename(found_norm))
             else:
-                abs_path_full = None
-                abs_path_basename = None
                 abs_path = None
 
             if abs_path:
-                # Guard against double-matching a file that was already
-                # matched and relocated for a previous item in this cycle.
-                if os.path.abspath(abs_path) in _cycle_matched_abs_paths:
-                    abs_path = None
-                    abs_path_full = None
-
-            if abs_path:
-                # ── Relocate to organised album folder ───────────────────────
-                # Before any matching logic runs, move the file (if needed)
-                # into the queue item's dedicated album subfolder so all tracks
-                # for the same release end up in one predictable directory.
-                try:
-                    relocated = _relocate_file_to_queue_folder(item, abs_path, conn=conn)
-                    if relocated != abs_path:
-                        # Update our local variables so the rest of the loop
-                        # uses the new path (both full and basename lookups).
-                        abs_path = relocated
-                        abs_path_full = relocated if abs_path_full else None
-                except Exception as _reloc_err:
-                    logger.debug(
-                        f"Queue {item_id}: relocation to queue folder skipped: {_reloc_err}"
-                    )
-
                 candidate_rel = os.path.relpath(abs_path, DOWNLOADS_DIR)
-                # Guard: if slskd's download root differs from DOWNLOADS_DIR the
-                # relative path would escape with "..".  Skip and let the
-                # filesystem walk handle it.
-                if candidate_rel.startswith('..'):
-                    logger.warning(
-                        f"Queue {item_id}: slskd localFilePath is outside DOWNLOADS_DIR, "
-                        f"skipping: {abs_path}"
-                    )
-                elif abs_path is abs_path_full and abs_path_full:
-                    # Full remote-path match: abs_path came directly from the
-                    # full-path lookup, meaning the found_filename stored for this
-                    # queue item matches the filename in slskd's completed-transfer
-                    # record exactly.  slskd is telling us this specific file was
-                    # downloaded for this queue item — trust it unconditionally.
-                    # Metadata/filename matching can incorrectly reject valid files
-                    # when the downloaded track lacks embedded tags or has a minimal
-                    # filename (e.g. just a track number like "01.mp3").
+                is_match, match_source = _file_matches_queue_item(abs_path, item, candidate_rel)
+                if is_match:
                     match_found = candidate_rel
-                    match_meta_state = 'slskd_localpath'
-                    _cycle_matched_abs_paths.add(os.path.abspath(abs_path))
-                    logger.debug(
-                        f"Queue {item_id}: matched via slskd localFilePath (full path): {abs_path}"
-                    )
+                    match_meta_state = match_source
+                    logger.debug(f"Queue {item_id}: matched via slskd localFilePath: {abs_path}")
                 else:
-                    # Basename-only match: weaker signal — multiple downloads can
-                    # share the same basename, so verify with metadata/filename to
-                    # avoid false positives.  For Soulseek items with a stored
-                    # found_filename the basename match alone is fairly reliable
-                    # because slskd maps one remote file to one local file; only
-                    # reject on a definitive metadata hard-mismatch, not on
-                    # "no metadata" (None).
-                    meta_state = _metadata_matches_queue_item(abs_path, item)
-                    if meta_state is False:
-                        logger.info(
-                            f"Queue {item_id}: rejecting slskd-completed file due to queue mismatch: {candidate_rel}"
-                        )
-                        if item_source == 'soulseek':
-                            if not _matches_any_queue_item(abs_path, candidate_rel, exclude_queue_id=item_id):
-                                _safe_delete_download_candidate(
-                                    abs_path,
-                                    reason="soulseek download unmatched against queue",
-                                    queue_id=item_id,
-                                )
-                    else:
-                        # Metadata confirmed or absent — accept the file.
-                        match_found = candidate_rel
-                        match_meta_state = 'metadata' if meta_state is True else 'found_filename'
-                        _cycle_matched_abs_paths.add(os.path.abspath(abs_path))
-                        logger.debug(
-                            f"Queue {item_id}: matched via slskd localFilePath (basename, meta={meta_state}): {abs_path}"
-                        )
-
-            # 2. Exact / path-suffix filename match against filesystem files
-            #
-            # slskd typically stores downloads as:
-            #   <DOWNLOADS_DIR>/<username>/<remote_path>
-            # so the filesystem relative path is "<username>/<remote_path>" while
-            # found_filename holds only "<remote_path>".  In addition to the exact
-            # full-path comparison we therefore also check whether rel_norm ends
-            # with ("/" + found_norm), which handles the username-prefix layout.
-            # A pure basename (filename-only) match is a weaker fallback signal.
-            if match_found is None and found_fn:
-                found_norm = found_fn.replace('\\', '/').strip().lower()
-                found_norm_suffix = '/' + found_norm  # for endswith check
-
-                for rel_file in fs_files:
-                    rel_norm = rel_file.replace('\\', '/').strip().lower()
-                    rel_basename = os.path.basename(rel_norm)
-                    file_path = os.path.join(DOWNLOADS_DIR, rel_file)
-                    abs_file_path = os.path.abspath(file_path)
-
-                    # Skip files already claimed by a previous item in this cycle.
-                    if abs_file_path in _cycle_matched_abs_paths:
-                        continue
-
-                    # Determine the strength of the path match so we can apply
-                    # calibrated trust levels below.
-                    full_path_match = (rel_norm == found_norm)
-                    suffix_path_match = (not full_path_match and rel_norm.endswith(found_norm_suffix))
-                    basename_only_match = (
-                        not full_path_match
-                        and not suffix_path_match
-                        and rel_basename == found_basename
+                    logger.info(
+                        f"Queue {item_id}: rejecting slskd-completed file due to queue mismatch: {candidate_rel}"
                     )
 
-                    if not (full_path_match or suffix_path_match or basename_only_match):
-                        continue
-
-                    if full_path_match or suffix_path_match:
-                        # Strong path match: the file IS the one requested by
-                        # this queue item.  Only reject on definitive metadata
-                        # hard-mismatch; absent/inconclusive metadata is fine.
-                        meta_state = _metadata_matches_queue_item(file_path, item)
-                        if meta_state is False:
-                            logger.info(
-                                f"Queue {item_id}: rejecting path-matched file due to "
-                                f"metadata hard-mismatch: {rel_file}"
-                            )
-                            if item_source == 'soulseek':
-                                if not _matches_any_queue_item(file_path, rel_file, exclude_queue_id=item_id):
-                                    _safe_delete_download_candidate(
-                                        file_path,
-                                        reason="soulseek filename mismatch against queue",
-                                        queue_id=item_id,
-                                    )
-                            continue
-                        # Relocate to queue folder before confirming
-                        try:
-                            relocated_path = _relocate_file_to_queue_folder(
-                                item, file_path, conn=conn
-                            )
-                            if relocated_path != file_path:
-                                rel_file = os.path.relpath(relocated_path, DOWNLOADS_DIR)
-                                abs_file_path = os.path.abspath(relocated_path)
-                        except Exception:
-                            pass
-                        match_found = rel_file
-                        match_meta_state = 'metadata' if meta_state is True else 'found_filename'
-                        _cycle_matched_abs_paths.add(abs_file_path)
-                        logger.debug(
-                            f"Queue {item_id}: matched via {'full' if full_path_match else 'suffix'} "
-                            f"path (meta={meta_state}): {rel_file}"
-                        )
-                        break
-                    else:
-                        # Basename-only match: weakest signal — run full
-                        # metadata+filename verification.
+            # 2. Exact filename match against filesystem files
+            if match_found is None and found_fn:
+                for rel_file in fs_files:
+                    rel_norm = rel_file.replace('\\', '/')
+                    found_norm = found_fn.replace('\\', '/')
+                    if rel_norm == found_norm or os.path.basename(rel_norm) == os.path.basename(found_norm):
+                        file_path = os.path.join(DOWNLOADS_DIR, rel_file)
                         is_match, match_source = _file_matches_queue_item(file_path, item, rel_file)
                         if not is_match:
                             logger.info(
-                                f"Queue {item_id}: rejecting basename-only match due to queue mismatch: {rel_file}"
+                                f"Queue {item_id}: rejecting exact filename match due to queue mismatch: {rel_file}"
                             )
-                            if item_source == 'soulseek':
-                                if not _matches_any_queue_item(file_path, rel_file, exclude_queue_id=item_id):
-                                    _safe_delete_download_candidate(
-                                        file_path,
-                                        reason="soulseek filename mismatch against queue",
-                                        queue_id=item_id,
-                                    )
                             continue
-                        # Relocate to queue folder before confirming
-                        try:
-                            relocated_path = _relocate_file_to_queue_folder(
-                                item, file_path, conn=conn
-                            )
-                            if relocated_path != file_path:
-                                rel_file = os.path.relpath(relocated_path, DOWNLOADS_DIR)
-                                abs_file_path = os.path.abspath(relocated_path)
-                        except Exception:
-                            pass
                         match_found = rel_file
                         match_meta_state = match_source
-                        _cycle_matched_abs_paths.add(abs_file_path)
-                        logger.debug(f"Queue {item_id}: matched via basename: {rel_file}")
                         break
 
             # 3. Fuzzy match against filesystem files
             if match_found is None:
                 for filename in fs_files:
                     file_path = os.path.join(DOWNLOADS_DIR, filename)
-                    abs_file_path = os.path.abspath(file_path)
-                    # Skip files already matched in this cycle.
-                    if abs_file_path in _cycle_matched_abs_paths:
-                        continue
                     is_match, match_source = _file_matches_queue_item(file_path, item, filename)
                     if is_match:
-                        try:
-                            relocated_path = _relocate_file_to_queue_folder(
-                                item, file_path, conn=conn
-                            )
-                            if relocated_path != file_path:
-                                filename = os.path.relpath(relocated_path, DOWNLOADS_DIR)
-                                abs_file_path = os.path.abspath(relocated_path)
-                        except Exception:
-                            pass
                         match_found = filename
                         match_meta_state = match_source
-                        _cycle_matched_abs_paths.add(abs_file_path)
                         logger.debug(f"Queue {item_id}: fuzzy match found: {filename}")
                         break
 
             # 4. No file match found. Reconcile against live slskd transfers so
             # stale 'downloading' rows do not remain stuck forever.
             if match_found is None:
-                if item_source == 'soulseek' and slskd_status_available:
+                if slskd_status_available:
                     found_fn = item.get("found_filename") or ""
-                    if transfer is None:
-                        transfer = _get_transfer_entry(found_fn)
+                    transfer = _get_transfer_entry(found_fn)
 
                     if transfer:
                         transfer_state = transfer.get("state", "")
-                        transfer_state_norm = _state_normalize(transfer_state)
-                        failed_states_norm = {
-                            _state_normalize(s)
-                            for s in getattr(slskd_client, "FAILED_STATES", set())
-                        }
-                        is_failed_state = (
-                            transfer_state_norm in failed_states_norm
-                            or "failed" in transfer_state_norm
-                            or "error" in transfer_state_norm
-                            or "rejected" in transfer_state_norm
-                            or "cancel" in transfer_state_norm
-                            or "timeout" in transfer_state_norm
-                        )
-                        if is_failed_state:
+                        if transfer_state in getattr(slskd_client, "FAILED_STATES", set()):
                             logger.warning(
                                 f"Queue {item_id}: slskd reports terminal failed state {transfer_state!r}, scheduling retry"
                             )
@@ -3386,11 +1086,7 @@ def check_completed_downloads():
                                 schedule_retry=True,
                                 retry_delay_minutes=10,
                             )
-                        elif (
-                            transfer_state == getattr(slskd_client, "STATE_SUCCEEDED", None)
-                            or "succeed" in transfer_state_norm
-                            or transfer_state_norm in {"completed", "complete", "succeeded"}
-                        ):
+                        elif transfer_state == getattr(slskd_client, "STATE_SUCCEEDED", None):
                             # slskd reports success but no local file was found — the file
                             # likely disappeared before matching completed.  Re-queue so it
                             # can be downloaded again.
@@ -3403,37 +1099,9 @@ def check_completed_downloads():
                                 schedule_retry=True,
                                 retry_delay_minutes=10,
                             )
-                        else:
-                            # Active or unrecognised transfer state. Apply a per-state
-                            # timeout so that downloads stuck indefinitely — e.g. the
-                            # remote peer queued the file but never started sending it —
-                            # are eventually cancelled and retried from a different source.
-                            timeout_minutes = (
-                                _SLSKD_ACTIVE_STATE_TIMEOUT_MINUTES.get(transfer_state)
-                                or _SLSKD_ACTIVE_STATE_TIMEOUT_MINUTES.get(" ".join(str(transfer_state).split()))
-                            )
-                            if timeout_minutes and _is_stale_queue_item(item, stale_minutes=timeout_minutes):
-                                logger.warning(
-                                    f"Queue {item_id}: Download stuck in '{transfer_state}' state for "
-                                    f">{timeout_minutes}min, cancelling and retrying"
-                                )
-                                transfer_id = transfer.get("id", "")
-                                transfer_username = transfer.get("username", "")
-                                if transfer_id and transfer_username:
-                                    slskd_client.cancel_download(transfer_username, transfer_id, remove=True)
-                                mark_failed(
-                                    item_id,
-                                    f"slskd download timed out in '{transfer_state}' state",
-                                    schedule_retry=True,
-                                    retry_delay_minutes=10,
-                                )
-                            else:
-                                # Download may still be in progress or state is
-                                # unrecognised — skip and re-evaluate next cycle.
-                                continue
-                        # Always advance to the next item after handling a transfer
-                        # match — file matching above already failed so no further
-                        # processing is needed in this iteration.
+                        # Active/unknown transfer states are left untouched —
+                        # the download may still be in progress.  Skip to the
+                        # next item and let it be re-evaluated next cycle.
                         continue
 
                     # Transfer no longer exists in slskd. If the item has been
@@ -3449,7 +1117,7 @@ def check_completed_downloads():
                             retry_delay_minutes=10,
                         )
 
-                elif item_source == 'soulseek' and _is_stale_queue_item(item, stale_minutes=10):
+                elif _is_stale_queue_item(item, stale_minutes=10):
                     # slskd API was unavailable but the item has been stuck in
                     # 'downloading' for too long with no file present.  Re-queue
                     # so it can be retried once slskd becomes reachable again.
@@ -3461,15 +1129,6 @@ def check_completed_downloads():
                         "No file found and slskd unavailable while marked downloading",
                         schedule_retry=True,
                         retry_delay_minutes=15,
-                    )
-                    continue
-                elif item_source == 'qbittorrent' and _is_stale_queue_item(item, stale_minutes=20):
-                    # qBittorrent items that do not produce local files in a timely
-                    # way are switched to Soulseek for a deterministic fallback path.
-                    _fallback_queue_item_to_soulseek(
-                        item_id,
-                        "qBittorrent download stale with no local file",
-                        retry_delay_minutes=1,
                     )
                     continue
 
@@ -3484,590 +1143,120 @@ def check_completed_downloads():
                         f"Queue {item_id}: matched file '{match_found}' by filename/path — marking as completed"
                     )
                 update_queue_status(item_id, 'completed', file_path=file_path, found_filename=match_found)
-                _safe_update_queue_item(
-                    item_id,
-                    slskd_state='Completed, Succeeded',
-                    slskd_queue_position=None,
-                    slskd_last_sync_at=datetime.now().isoformat(),
-                )
 
-                # Auto-move MBID-backed items immediately on completion — each
-                # track is transferred as soon as it finishes without waiting for
-                # the rest of the album.  Non-MBID items stay as 'completed' for
-                # manual approval in the Downloads UI.
-                if not _is_musicbrainz_backed(item):
-                    logger.info(
-                        f"[AUTO_MOVE] Queue {item_id}: not from MusicBrainz search — "
-                        f"leaving as completed for manual approval"
-                    )
-                else:
-                    # Atomically claim this item for moving before starting any file
-                    # operations.  If the UI Move button (or another processor cycle)
-                    # already claimed it, we skip rather than double-moving the file.
-                    try:
-                        from download_queue_manager import _try_claim_for_move, _release_move_claim
-                        _claim_fn = _try_claim_for_move
-                        _release_fn = _release_move_claim
-                    except Exception:
-                        _claim_fn = None
-                        _release_fn = None
+                # Immediately move the file to /music
+                try:
+                    from download_queue_manager import move_single_track_to_music_dir, update_queue_item
+                    from download_file_verification import verify_file_in_music, mark_queue_item_moved
 
-                    if _claim_fn and not _claim_fn(item_id, 'completed'):
-                        logger.info(
-                            f"[AUTO_MOVE] Queue {item_id}: already claimed by another "
-                            f"process for moving — skipping auto-move"
-                        )
-                    else:
-                        # Immediately move the file to /music
+                    # Extract duration from the downloaded file and persist it when the
+                    # queue item has no duration yet (e.g. it was added without MusicBrainz
+                    # metadata). MutagenFile may be None when mutagen is not installed.
+                    if not item.get('duration') and MutagenFile is not None:
                         try:
-                            if not move_single_track_to_music_dir or not verify_downloaded_file_metadata:
-                                if _claim_fn:
-                                    _release_fn(item_id, restore_status='completed', file_path=file_path)
-                                raise RuntimeError("Auto-move helpers unavailable")
-
-                            # ── Step 1: Extract duration from file and persist it ──────────
-                            # We do this before verification so the queue item's duration
-                            # is populated for the metadata check below.
-                            if not item.get('duration') and MutagenFile is not None:
-                                try:
-                                    audio = MutagenFile(file_path)
-                                    if audio is not None and audio.info and hasattr(audio.info, 'length'):
-                                        file_duration = _normalize_duration_seconds(audio.info.length)
-                                        if file_duration:
-                                            _safe_update_queue_item(item_id, duration=file_duration)
-                                            # Refresh item dict so the verification step sees the
-                                            # newly-stored duration.
-                                            item = dict(item)
-                                            item['duration'] = file_duration
-                                            logger.debug(
-                                                f"Queue {item_id}: updated duration from file to {file_duration}s"
-                                            )
-                                except Exception as dur_err:
-                                    logger.debug(f"Queue {item_id}: could not extract duration from file: {dur_err}")
-
-                            # ── Step 2: Verify file metadata matches the queue item ────────
-                            # For filename-only matches, a tag mismatch blocks the metadata
-                            # clear (Step 3) — the existing tags are preserved and merged
-                            # rather than replaced.  For all other match types it remains a
-                            # warning so the file is not stranded in /downloads.
-                            meta_mismatch_for_filename_match = False
-                            try:
-                                meta_check = verify_downloaded_file_metadata(file_path, item)
-                                if not meta_check['ok']:
-                                    # filename-only and found_filename matches both warrant
-                                    # a conservative tag-merge (not clear) approach because
-                                    # the file identity was inferred from path/name rather
-                                    # than confirmed by embedded metadata.
-                                    if match_meta_state in ('filename', 'found_filename'):
-                                        logger.warning(
-                                            f"[AUTO_MOVE] Queue {item_id}: "
-                                            f"{match_meta_state}-match but "
-                                            f"existing tags conflict with queue item — "
-                                            f"{meta_check['reason']} "
-                                            f"(detail={meta_check['detail']}) — "
-                                            f"will merge stored metadata without clearing existing tags"
-                                        )
-                                        meta_mismatch_for_filename_match = True
-                                    else:
-                                        logger.warning(
-                                            f"[AUTO_MOVE] Queue {item_id}: metadata verification "
-                                            f"WARNING — {meta_check['reason']} "
-                                            f"(detail={meta_check['detail']}) — proceeding with move"
-                                        )
-                                else:
+                            audio = MutagenFile(file_path)
+                            if audio is not None and audio.info and hasattr(audio.info, 'length'):
+                                file_duration = _normalize_duration_seconds(audio.info.length)
+                                if file_duration:
+                                    update_queue_item(item_id, duration=file_duration)
                                     logger.debug(
-                                        f"[AUTO_MOVE] Queue {item_id}: metadata OK "
-                                        f"(detail={meta_check['detail']})"
+                                        f"Queue {item_id}: updated duration from file to {file_duration}s"
                                     )
-                            except Exception as verify_err:
-                                logger.debug(f"[AUTO_MOVE] Queue {item_id}: metadata check skipped: {verify_err}")
+                        except Exception as dur_err:
+                            logger.debug(f"Queue {item_id}: could not extract duration from file: {dur_err}")
 
-                            # ── Step 3: Write stored MusicBrainz metadata to file tags ────
-                            # Apply the metadata captured at queue-creation time (track
-                            # number, artist, album, year, etc.) to the file before it is
-                            # moved.  move_single_track_to_music_dir will further enrich
-                            # the tags (cover art, per-track artist from MB release) on top
-                            # of this baseline, but we guarantee the stored metadata is
-                            # written even if the live MB fetch below fails.
-                            # For filename-only matches whose tags contradicted the queue
-                            # item, merge rather than clear to avoid overwriting the
-                            # original tag data with potentially wrong information.
-                            should_clear_tags = not meta_mismatch_for_filename_match
-                            try:
-                                from post_download_processor import update_file_metadata_with_albumart
-                                stored_metadata = {
-                                    'title': item.get('title'),
-                                    'artist': item.get('artist'),
-                                    'album_artist': item.get('album_artist') or item.get('artist'),
-                                    'album': item.get('album'),
-                                    'year': item.get('year'),
-                                    'track_number': item.get('track_number'),
-                                    'disc_number': item.get('disc_number'),
-                                    'release_mbid': item.get('release_mbid') or (
-                                        item.get('release_id')
-                                        if _MBID_RE.match(str(item.get('release_id') or ''))
-                                        else None
-                                    ),
-                                    'recording_mbid': item.get('recording_mbid'),
-                                }
-                                update_file_metadata_with_albumart(
-                                    file_path, stored_metadata, clear_existing_tags=should_clear_tags
-                                )
-                                logger.info(
-                                    f"[AUTO_MOVE] Queue {item_id}: applied stored MusicBrainz metadata to file "
-                                    f"(clear_existing_tags={should_clear_tags})"
-                                )
-                            except Exception as meta_err:
-                                logger.warning(
-                                    f"[AUTO_MOVE] Queue {item_id}: could not apply stored metadata before move: {meta_err}"
-                                )
+                    item_for_move = dict(item)
+                    item_for_move['file_path'] = file_path
+                    move_result = move_single_track_to_music_dir(item_for_move)
+                    if move_result['success']:
+                        target_path = move_result['target_path']
+                        verify_result = verify_file_in_music(item_id, target_path)
+                        if verify_result['success']:
+                            mark_queue_item_moved(item_id, target_path)
+                            update_queue_item(
+                                item_id,
+                                status='imported',
+                                file_path=target_path,
+                                copied_individually=1,
+                                copied_individually_at=datetime.now().isoformat()
+                            )
+                            logger.info(f"[AUTO_MOVE] Queue {item_id}: verified and imported to {target_path}")
+                        else:
+                            logger.warning(
+                                f"[AUTO_MOVE] Queue {item_id}: verification FAILED "
+                                f"({verify_result.get('error')}), marking back to 'completed'"
+                            )
+                            update_queue_item(item_id, status='completed', file_path=file_path)
+                    else:
+                        logger.warning(
+                            f"[AUTO_MOVE] Queue {item_id}: could not move "
+                            f"({move_result.get('error')}), keeping as 'completed'"
+                        )
+                except Exception as move_err:
+                    logger.warning(f"[AUTO_MOVE] Queue {item_id}: move error: {move_err}")
 
-                            # ── Step 4: Move file to /music, enrich tags via live MB API ──
-                            item_for_move = dict(item)
-                            item_for_move['file_path'] = file_path
-                            move_result = move_single_track_to_music_dir(item_for_move)
-                            if move_result['success']:
-                                target_path = move_result['target_path']
-
-                                # ── Step 5: Verify the file arrived at the destination ────
-                                verify_result = verify_file_in_music(item_id, target_path)
-                                if verify_result['success']:
-                                    mark_queue_item_moved(item_id, target_path)
-                                    _safe_update_queue_item(
-                                        item_id,
-                                        status='imported',
-                                        file_path=target_path,
-                                        imported_at=datetime.now().isoformat(),
-                                        copied_individually=1,
-                                        copied_individually_at=datetime.now().isoformat()
-                                    )
-                                    logger.info(f"[AUTO_MOVE] Queue {item_id}: verified and imported to {target_path}")
-
-                                    # ── Step 6: Remove siblings and trigger Navidrome ─────
-                                    # _cleanup_sibling_downloads removes other downloads of
-                                    # the same track that accumulated across retries.
-                                    _cleanup_sibling_downloads(item, keep_path=None)
-                                    _trigger_navidrome_scan()
-                                elif target_path and os.path.isfile(target_path):
-                                    # Verification can fail transiently (timing/permissions);
-                                    # if the file exists in /music, treat move as successful.
-                                    logger.warning(
-                                        f"[AUTO_MOVE] Queue {item_id}: verification API failed but file exists at "
-                                        f"{target_path} — promoting to imported"
-                                    )
-                                    mark_queue_item_moved(item_id, target_path)
-                                    _safe_update_queue_item(
-                                        item_id,
-                                        status='imported',
-                                        file_path=target_path,
-                                        imported_at=datetime.now().isoformat(),
-                                        copied_individually=1,
-                                        copied_individually_at=datetime.now().isoformat()
-                                    )
-                                    _cleanup_sibling_downloads(item, keep_path=None)
-                                    _trigger_navidrome_scan()
-                                else:
-                                    logger.warning(
-                                        f"[AUTO_MOVE] Queue {item_id}: file verification failed after move to {target_path}, updating path"
-                                    )
-                                    _safe_update_queue_item(item_id, status='completed', file_path=target_path)
-                            else:
-                                logger.warning(
-                                    f"[AUTO_MOVE] Queue {item_id}: move to music dir failed, releasing claim"
-                                )
-                                if _claim_fn:
-                                    _release_fn(item_id, restore_status='completed', file_path=file_path)
-                        except Exception as e:
-                            logger.error(f"[AUTO_MOVE] Queue {item_id}: error during auto-move: {e}")
-                            if _claim_fn:
-                                _release_fn(item_id, restore_status='completed', file_path=file_path)
-                            else:
-                                _safe_update_queue_item(item_id, status='completed', file_path=file_path)
+                newly_completed.append(item)
 
         conn.close()
-    except Exception as e:
-        logger.error(f"Error in check_completed_downloads: {e}")
-        try:
-            if conn is not None:
-                conn.rollback()
-        except Exception:
-            pass
-    finally:
-        if conn is not None:
+
+        for item in newly_completed:
             try:
-                conn.close()
-            except Exception:
-                pass
-
-
-def process_matched_items(limit=5):
-    """
-    Automatically move queue items in 'matched' status to the music directory.
-
-    'matched' items have a confirmed file-to-MusicBrainz mapping (set either by
-    the user via the Downloads UI or by the auto-discovery workflow) but have not
-    yet been moved to /music.  Without this function they remain stuck in
-    'matched' status indefinitely unless the user manually presses the Move
-    button.
-
-    Returns:
-        int: number of items successfully moved and marked as 'imported'.
-    """
-    conn = None
-    try:
-        conn = get_db()
-        cursor = conn.cursor()
-        placeholder = _get_placeholder(conn)
-
-        cursor.execute(
-            f"""
-            SELECT *
-            FROM download_queue
-            WHERE status = 'matched'
-              AND (
-                TRIM(COALESCE(matched_file_path, '')) != ''
-                OR TRIM(COALESCE(file_path, '')) != ''
-              )
-            ORDER BY updated_at ASC
-            LIMIT {placeholder}
-            """,
-            (limit,),
-        )
-        rows = cursor.fetchall() or []
-        items = [dict(row) for row in rows]
-    except Exception as e:
-        logger.error(f"[MATCHED_MOVE] Error fetching matched items: {e}")
-        return 0
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-    if not items:
-        return 0
-
-    try:
-        from download_queue_manager import _try_claim_for_move, _release_move_claim
-        _claim_fn = _try_claim_for_move
-        _release_fn = _release_move_claim
-    except Exception:
-        _claim_fn = None
-        _release_fn = None
-
-    processed = 0
-    for item in items:
-        item_id = item.get('id')
-        if not item_id:
-            continue
-
-        # Atomically claim the item so the UI Move button and this loop cannot
-        # both move the same file simultaneously.
-        if _claim_fn and not _claim_fn(item_id, 'matched'):
-            logger.debug(
-                f"[MATCHED_MOVE] Queue {item_id}: already claimed by another process — skipping"
-            )
-            continue
-
-        try:
-            from download_monitor_enhancements import move_to_music_collection
-            result = move_to_music_collection(item_id)
-
-            if 'error' in result:
-                logger.warning(
-                    f"[MATCHED_MOVE] Queue {item_id}: move failed — {result['error']}"
+                from download_queue_manager import auto_move_completed_album
+                result = auto_move_completed_album(
+                    release_id=item.get('release_id'),
+                    artist=item.get('artist'),
+                    album=item.get('album')
                 )
-                if _release_fn:
-                    _release_fn(item_id, restore_status='matched')
-            else:
-                # move_to_music_collection sets status='completed' internally;
-                # promote immediately to 'imported' to be consistent with the
-                # auto-move flow in check_completed_downloads().
-                try:
-                    from download_queue_manager import update_queue_item as dq_update
-                    dq_update(
-                        item_id,
-                        status='imported',
-                        imported_at=datetime.now().isoformat(),
-                        copied_individually=1,
-                        copied_individually_at=datetime.now().isoformat(),
-                    )
-                except Exception:
-                    update_queue_status(item_id, 'imported', imported_at=datetime.now().isoformat())
-
-                logger.info(
-                    f"[MATCHED_MOVE] Queue {item_id}: moved to music and marked as imported: "
-                    f"{result.get('path')}"
-                )
-                _trigger_navidrome_scan()
-                processed += 1
-
-        except Exception as move_err:
-            logger.error(f"[MATCHED_MOVE] Queue {item_id}: error during move: {move_err}")
-            if _release_fn:
-                _release_fn(item_id, restore_status='matched')
-
-    return processed
-
-
-def process_completed_mbid_items(limit=10):
-    """Auto-move queue items that are in 'completed' status and are MBID-backed.
-
-    Songs are transferred individually as soon as they complete — no need to
-    wait for the whole album.  This handles items that landed in 'completed'
-    status without being moved (e.g. because the processor restarted, or the
-    auto-move helpers were temporarily unavailable).
-
-    Returns:
-        int: number of items successfully moved and marked as 'imported'.
-    """
-    conn = None
-    try:
-        conn = get_db()
-        cursor = conn.cursor()
-        placeholder = _get_placeholder(conn)
-
-        cursor.execute(
-            f"""
-            SELECT *
-            FROM download_queue
-            WHERE status = 'completed'
-              AND (
-                TRIM(COALESCE(file_path, '')) != ''
-                OR TRIM(COALESCE(found_filename, '')) != ''
-              )
-              AND (
-                (release_mbid IS NOT NULL AND TRIM(release_mbid) != '')
-                OR LOWER(TRIM(COALESCE(release_source, ''))) = 'musicbrainz'
-              )
-            ORDER BY updated_at ASC
-            LIMIT {placeholder}
-            """,
-            (limit,),
-        )
-        rows = cursor.fetchall() or []
-        items = [dict(row) for row in rows]
-        conn.close()
-        conn = None
-    except Exception as e:
-        logger.error(f"[COMPLETED_MOVE] Error fetching completed MBID items: {e}")
-        try:
-            if conn is not None:
-                conn.rollback()
-        except Exception:
-            pass
-        return 0
-
-    if not items:
-        return 0
-
-    # Import auto-move helpers once up front.
-    try:
-        from download_queue_manager import (
-            move_single_track_to_music_dir,
-            update_queue_item as dq_update_queue_item,
-            _try_claim_for_move,
-            _release_move_claim,
-            verify_downloaded_file_metadata,
-        )
-        from download_file_verification import verify_file_in_music, mark_queue_item_moved
-    except Exception as import_err:
-        logger.debug(f"[COMPLETED_MOVE] Auto-move helpers unavailable: {import_err}")
-        return 0
-
-    processed = 0
-    for item in items:
-        item_id = item.get('id')
-        if not item_id:
-            continue
-
-        if not _is_musicbrainz_backed(item):
-            continue
-
-        # Resolve the absolute file path.
-        file_path = (item.get('file_path') or '').strip()
-        if not file_path and item.get('found_filename'):
-            file_path = os.path.join(DOWNLOADS_DIR, item['found_filename'])
-
-        if not file_path or not os.path.isfile(file_path):
-            logger.debug(
-                f"[COMPLETED_MOVE] Queue {item_id}: file not found at '{file_path}' — skipping"
-            )
-            continue
-
-        # Atomically claim this item so parallel moves cannot double-move the file.
-        if not _try_claim_for_move(item_id, 'completed'):
-            logger.debug(
-                f"[COMPLETED_MOVE] Queue {item_id}: already claimed by another process — skipping"
-            )
-            continue
-
-        try:
-            # Step 1: Extract duration from file and persist if missing.
-            if not item.get('duration') and MutagenFile is not None:
-                try:
-                    audio = MutagenFile(file_path)
-                    if audio is not None and audio.info and hasattr(audio.info, 'length'):
-                        file_duration = _normalize_duration_seconds(audio.info.length)
-                        if file_duration:
-                            dq_update_queue_item(item_id, duration=file_duration)
-                            item = dict(item)
-                            item['duration'] = file_duration
-                except Exception:
-                    pass
-
-            # Step 2: Write stored MusicBrainz metadata to the file before moving.
-            try:
-                from post_download_processor import update_file_metadata_with_albumart
-                stored_metadata = {
-                    'title': item.get('title'),
-                    'artist': item.get('artist'),
-                    'album_artist': item.get('album_artist') or item.get('artist'),
-                    'album': item.get('album'),
-                    'year': item.get('year'),
-                    'track_number': item.get('track_number'),
-                    'disc_number': item.get('disc_number'),
-                    'release_mbid': item.get('release_mbid') or (
-                        item.get('release_id')
-                        if _MBID_RE.match(str(item.get('release_id') or ''))
-                        else None
-                    ),
-                    'recording_mbid': item.get('recording_mbid'),
-                }
-                update_file_metadata_with_albumart(
-                    file_path, stored_metadata, clear_existing_tags=True
-                )
-                logger.info(
-                    f"[COMPLETED_MOVE] Queue {item_id}: applied stored MusicBrainz metadata to file"
-                )
-            except Exception as meta_err:
-                logger.warning(
-                    f"[COMPLETED_MOVE] Queue {item_id}: could not apply stored metadata: {meta_err}"
-                )
-
-            # Step 3: Move file to /music library.
-            item_for_move = dict(item)
-            item_for_move['file_path'] = file_path
-            move_result = move_single_track_to_music_dir(item_for_move)
-            if move_result['success']:
-                target_path = move_result['target_path']
-
-                # Step 4: Verify the file arrived at the destination.
-                verify_result = verify_file_in_music(item_id, target_path)
-                if verify_result['success']:
-                    mark_queue_item_moved(item_id, target_path)
-                    dq_update_queue_item(
-                        item_id,
-                        status='imported',
-                        file_path=target_path,
-                        imported_at=datetime.now().isoformat(),
-                        copied_individually=1,
-                        copied_individually_at=datetime.now().isoformat(),
-                    )
+                if result.get('album_complete'):
                     logger.info(
-                        f"[COMPLETED_MOVE] Queue {item_id}: verified and imported to {target_path}"
+                        f"[AUTO_MOVE] Album complete after download: "
+                        f"{item.get('artist')} – {item.get('album')} | "
+                        f"moved={result['moved']}, already_copied={result['already_copied']}"
                     )
-                    _cleanup_sibling_downloads(item, keep_path=None)
-                    _trigger_navidrome_scan()
-                    processed += 1
-                elif target_path and os.path.isfile(target_path):
-                    logger.warning(
-                        f"[COMPLETED_MOVE] Queue {item_id}: verification API failed but file exists at "
-                        f"{target_path} — promoting to imported"
-                    )
-                    mark_queue_item_moved(item_id, target_path)
-                    dq_update_queue_item(
-                        item_id,
-                        status='imported',
-                        file_path=target_path,
-                        imported_at=datetime.now().isoformat(),
-                        copied_individually=1,
-                        copied_individually_at=datetime.now().isoformat(),
-                    )
-                    _cleanup_sibling_downloads(item, keep_path=None)
-                    _trigger_navidrome_scan()
-                    processed += 1
-                else:
-                    logger.warning(
-                        f"[COMPLETED_MOVE] Queue {item_id}: file verification failed after move to {target_path}"
-                    )
-                    dq_update_queue_item(item_id, status='completed', file_path=target_path)
-            else:
-                logger.warning(
-                    f"[COMPLETED_MOVE] Queue {item_id}: move to music dir failed — "
-                    f"{move_result.get('error')}"
-                )
-                _release_move_claim(item_id, restore_status='completed', file_path=file_path)
+            except Exception as auto_err:
+                logger.warning(f"[AUTO_MOVE] Error triggering auto-move for queue {item['id']}: {auto_err}")
 
-        except Exception as e:
-            logger.error(f"[COMPLETED_MOVE] Queue {item_id}: error during auto-move: {e}")
-            _release_move_claim(item_id, restore_status='completed', file_path=file_path)
+    except Exception as e:
+        logger.error(f"Error checking completed downloads: {e}")
 
-    return processed
-
+def matches_queue_item(filename, queue_item, file_path=None):
+    """Conservative filename/path fallback matcher when metadata is unavailable."""
+    try:
+        candidate_duration = _extract_audio_file_duration_seconds(file_path) if file_path else None
+        score = _score_soulseek_candidate(filename, queue_item, candidate_duration=candidate_duration)
+        return score >= 0.60
+        
+    except Exception as e:
+        logger.error(f"Error matching filename: {e}")
+        return False
 
 def process_queue(client):
-    """Process queued download items"""
+    """Process one batch of queued items"""
     try:
-        promote_stale_queried_items(min_age_seconds=120, limit=200)
-
-        items = claim_queued_items(limit=10)
+        items = get_queued_items(limit=5)
+        
+        if not items:
+            logger.debug("No queued items to process")
+        else:
+            logger.info(f"Processing {len(items)} queue items...")
+        
         processed = 0
-
-        for idx, item in enumerate(items):
+        for item in items:
+            if not client:
+                logger.error("SlskdClient not available, skipping")
+                break
+            
             try:
-                source = (item.get('source') or 'soulseek').strip().lower()
-                if source == 'qbittorrent':
-                    if search_and_download_qbittorrent(item['id'], item):
-                        processed += 1
-                else:
-                    if not client:
-                        # slskd client is unavailable.  Mark this item and every
-                        # remaining item in the batch (items[idx:]) back to queued
-                        # with a short retry delay so they are not stuck in the
-                        # 'searching' state until cleanup_stuck_searching_items
-                        # rescues them 5 minutes later.
-                        logger.error(
-                            "SlskdClient not available — returning all unclaimed batch items to queued state"
-                        )
-                        for remaining in items[idx:]:
-                            mark_failed(
-                                remaining['id'],
-                                "SlskdClient unavailable",
-                                schedule_retry=True,
-                                retry_delay_minutes=5,
-                            )
-                        break
-                    if search_and_download(item['id'], item, client):
-                        processed += 1
+                if search_and_download(item['id'], item, client):
+                    processed += 1
             except Exception as e:
                 logger.error(f"Error processing queue {item['id']}: {e}")
                 mark_failed(item['id'], f"Processing error: {str(e)}", schedule_retry=True)
-
+        
         # Always check for completed downloads, even if no new items were processed
         # This ensures downloads that complete between processing cycles are detected
         check_completed_downloads()
-
-        # Process matched items (files confirmed by user or auto-discovery but not
-        # yet moved to /music).  Without this, 'matched' items remain stuck forever
-        # unless the user manually clicks Move in the Downloads UI.
-        try:
-            matched_processed = process_matched_items(limit=5)
-            if matched_processed > 0:
-                logger.info(f"[MATCHED_MOVE] Processed {matched_processed} matched item(s)")
-        except Exception as e:
-            logger.error(f"[MATCHED_MOVE] Error processing matched items: {e}")
-
-        # Sweep any MBID-backed 'completed' items that were not moved during
-        # check_completed_downloads (e.g. after a processor restart).
-        try:
-            completed_moved = process_completed_mbid_items(limit=10)
-            if completed_moved > 0:
-                logger.info(f"[COMPLETED_MOVE] Auto-moved {completed_moved} completed MBID item(s)")
-        except Exception as e:
-            logger.error(f"[COMPLETED_MOVE] Error processing completed MBID items: {e}")
-
+        
         # Process completed downloads with MusicBrainz/Discogs metadata
         try:
             from post_download_processor import process_pending_completed_items
@@ -4076,9 +1265,9 @@ def process_queue(client):
                 logger.info(f"Post-download processing: {post_stats['processed']} items organized")
         except Exception as e:
             logger.error(f"Error in post-download processing: {e}")
-
+        
         return processed
-
+        
     except Exception as e:
         logger.error(f"Error in process_queue: {e}")
         return 0
@@ -4087,7 +1276,7 @@ def process_queue(client):
 def _load_auto_discovery_settings():
     """Load persistent auto-discovery settings from config/env with safe defaults."""
     enabled = True
-    interval_seconds = 600
+    interval_seconds = 60
 
     # Optional env overrides for quick control.
     env_enabled = os.environ.get("DOWNLOADS_AUTO_DISCOVER_ENABLED")
@@ -4119,8 +1308,8 @@ def _load_auto_discovery_settings():
     except Exception as e:
         logger.warning(f"Could not read auto-discovery settings: {e}")
 
-    if interval_seconds < 120:
-        interval_seconds = 120
+    if interval_seconds < 15:
+        interval_seconds = 15
 
     return enabled, interval_seconds
 
@@ -4130,12 +1319,6 @@ def maybe_auto_discover_files(now_ts, last_run_ts):
     enabled, interval_seconds = _load_auto_discovery_settings()
     if not enabled:
         return last_run_ts
-
-    # Avoid a heavy discovery run immediately on process startup unless explicitly requested.
-    run_on_start = str(os.environ.get("DOWNLOADS_AUTO_DISCOVER_RUN_ON_START", "0")).strip().lower() in {"1", "true", "yes", "on"}
-    if last_run_ts is None and not run_on_start:
-        logger.info("[AUTO-DISCOVER] Startup run skipped; first run in %ss", interval_seconds)
-        return now_ts
 
     if last_run_ts is not None and (now_ts - last_run_ts) < interval_seconds:
         return last_run_ts
@@ -4249,152 +1432,24 @@ def maybe_check_missing_moved_files(now_ts, last_run_ts, interval_seconds=300):
 
     return now_ts
 
-def maybe_clear_slskd_completed_downloads(now_ts, last_run_ts, interval_seconds=1800):
-    """
-    Periodically remove all completed and failed download entries from slskd's
-    transfer list.
-
-    Stale entries — especially failed ones — accumulate over time and can
-    interfere with re-downloading the same file from the same peer (slskd may
-    refuse or deduplicate the new request against an existing failed entry).
-    Clearing them every 30 minutes (default) keeps slskd's queue clean and
-    ensures retried downloads start with a fresh slate.
-
-    The first run is intentionally skipped on process startup (when last_run_ts
-    is None) so that check_completed_downloads() has a chance to process any
-    transfers that completed before the processor started, before those entries
-    are removed from slskd's transfer list.
-
-    Args:
-        now_ts: Current time.time() value.
-        last_run_ts: Timestamp of the last cleanup run (None = never run).
-        interval_seconds: Minimum seconds between runs (default 1800 = 30 min).
-
-    Returns:
-        Updated last-run timestamp.
-    """
-    if last_run_ts is None:
-        # Skip the very first run so that check_completed_downloads() can read
-        # any already-completed transfers from slskd before they are cleared.
-        logger.debug(
-            "[SLSKD_CLEANUP] Startup run skipped; first cleanup in %s seconds", interval_seconds
-        )
-        return now_ts
-
-    if (now_ts - last_run_ts) < interval_seconds:
-        return last_run_ts
-
-    try:
-        slskd_client = get_slskd_client()
-        if slskd_client:
-            cleared = slskd_client.clear_completed_downloads()
-            if cleared:
-                logger.info("[SLSKD_CLEANUP] Cleared completed/failed download entries from slskd")
-            else:
-                logger.debug("[SLSKD_CLEANUP] clear_completed_downloads returned False (no entries or API unavailable)")
-    except Exception as e:
-        logger.error(f"[SLSKD_CLEANUP] Error clearing slskd completed downloads: {e}")
-
-    return now_ts
-
-
-def maybe_trigger_navidrome_scan_for_new_imports(now_ts, last_run_ts, interval_seconds=300):
-    """Periodically check whether new tracks were recently imported and, when so,
-    trigger a Navidrome library scan so they appear in Navidrome without requiring
-    a manual full-import.
-
-    The check is intentionally lightweight — it queries only the count of queue
-    items that transitioned to 'imported' within the last *interval_seconds* window
-    and only calls Navidrome's ``startScan`` when at least one such item is found.
-
-    This complements the immediate trigger fired in ``check_completed_downloads()``
-    and acts as a safety net for cases where that call was missed (e.g. the service
-    restarted between move and scan).
-
-    Args:
-        now_ts: Current time.time() value.
-        last_run_ts: Timestamp of the last check (None = never run).
-        interval_seconds: Minimum seconds between checks (default 300 = 5 min).
-
-    Returns:
-        Updated last-run timestamp.
-    """
-    if last_run_ts is not None and (now_ts - last_run_ts) < interval_seconds:
-        return last_run_ts
-
-    try:
-        conn = get_db()
-        cursor = conn.cursor()
-        placeholder = _get_placeholder(conn)
-        # Look for items imported within twice the check interval to avoid missing
-        # items that fell just outside the previous window.
-        lookback_seconds = interval_seconds * 2
-        cutoff = (datetime.now() - timedelta(seconds=lookback_seconds)).isoformat()
-        cursor.execute(
-            f"""
-            SELECT COUNT(*) FROM download_queue
-            WHERE status = 'imported'
-              AND updated_at >= {placeholder}
-            """,
-            (cutoff,),
-        )
-        row = cursor.fetchone()
-        conn.close()
-        count = row[0] if row else 0
-        if count > 0:
-            logger.debug(f"[NAVIDROME] {count} item(s) recently imported — triggering Navidrome scan")
-            _trigger_navidrome_scan()
-        else:
-            logger.debug("[NAVIDROME] No recent imports; skipping Navidrome scan trigger")
-    except Exception as e:
-        logger.debug(f"[NAVIDROME] Error checking for recent imports: {e}")
-
-    return now_ts
-
-
 def run_processor(interval=30):
     """Run queue processor loop"""
     logger.info("=== Queue Processor Started ===")
     logger.info(f"Processing interval: {interval}s")
-
-    # Self-heal queue schema even when process startup bypasses entrypoint.sh.
-    try:
-        migration_script = os.path.join(os.path.dirname(__file__), "migrations", "startup_queue_columns_fast.py")
-        if os.path.exists(migration_script):
-            proc = subprocess.run(
-                [sys.executable, migration_script],
-                capture_output=True,
-                text=True,
-                timeout=20,
-                check=False,
-            )
-            if proc.stdout:
-                logger.info(f"[STARTUP_MIGRATION] {proc.stdout.strip()}")
-            if proc.stderr:
-                logger.debug(f"[STARTUP_MIGRATION] stderr: {proc.stderr.strip()}")
-            if proc.returncode != 0:
-                raise RuntimeError(
-                    f"startup_queue_columns_fast.py failed with exit code {proc.returncode}"
-                )
-        else:
-            logger.debug("[STARTUP_MIGRATION] startup_queue_columns_fast.py not found, skipping")
-    except Exception as migration_err:
-        logger.warning(f"[STARTUP_MIGRATION] Could not run startup queue migration: {migration_err}")
     
     client = get_slskd_client()
     if not client:
-        logger.warning("Soulseek (slskd) is not configured or not enabled — queue processor will run without Soulseek support")
+        logger.error("Cannot initialize SlskdClient - exiting")
+        sys.exit(1)
     
     loop_count = 0
     last_auto_discover_ts = None
     last_mb_check_ts = None
     last_mb_finalize_ts = None
     last_verify_ts = None
-    last_slskd_cleanup_ts = None
-    last_navidrome_scan_ts = None
-
+    
     try:
-        while not _shutdown_requested:
+        while True:
             try:
                 loop_count += 1
                 logger.debug(f"--- Loop {loop_count} ---")
@@ -4404,32 +1459,22 @@ def run_processor(interval=30):
                 last_mb_check_ts = maybe_check_musicbrainz_files(now_ts, last_mb_check_ts)
                 last_mb_finalize_ts = maybe_finalize_musicbrainz_releases(now_ts, last_mb_finalize_ts)
                 last_verify_ts = maybe_check_missing_moved_files(now_ts, last_verify_ts)
-                last_slskd_cleanup_ts = maybe_clear_slskd_completed_downloads(now_ts, last_slskd_cleanup_ts)
-                last_navidrome_scan_ts = maybe_trigger_navidrome_scan_for_new_imports(now_ts, last_navidrome_scan_ts)
-
+                
                 processed = process_queue(client)
-
+                
                 if processed > 0:
                     logger.info(f"Processed {processed} queue items")
-
-                if _shutdown_requested:
-                    break
-
-                # Interruptible sleep: wake early if SIGTERM was received
-                for _ in range(interval):
-                    if _shutdown_requested:
-                        break
-                    time.sleep(1)
-
+                
+                time.sleep(interval)
+                
             except KeyboardInterrupt:
                 logger.info("Queue processor stopped by user")
                 break
             except Exception as e:
                 logger.error(f"Error in processor loop: {e}")
                 logger.error(traceback.format_exc())
-                if not _shutdown_requested:
-                    time.sleep(interval)
-
+                time.sleep(interval)
+                
     except KeyboardInterrupt:
         logger.info("Queue processor interrupted")
     finally:
