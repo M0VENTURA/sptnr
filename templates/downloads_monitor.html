@@ -5556,12 +5556,18 @@ async function importSelectedMissingTracks() {
       })
     });
 
-    alert(
-      `✅ Missing-track import complete\n\n` +
+    const overwrittenItems = (data.skipped_items || []).filter(i => i.overwritten);
+    const overwrittenCount = overwrittenItems.length;
+    const alreadyQueuedCount = (data.skipped_count || 0) - overwrittenCount;
+    let importMsg = `✅ Missing-track import complete\n\n` +
       `Added: ${data.added_count || 0}\n` +
-      `Skipped (already queued): ${data.skipped_count || 0}\n` +
-      `Failed: ${data.failed_count || 0}`
-    );
+      `Skipped (already queued): ${alreadyQueuedCount}\n`;
+    if (overwrittenCount > 0) {
+      const titles = overwrittenItems.map(i => `  • ${i.title} — ${i.artist}`).join('\n');
+      importMsg += `Overwritten (MBID match updated): ${overwrittenCount}\n${titles}\n`;
+    }
+    importMsg += `Failed: ${data.failed_count || 0}`;
+    alert(importMsg);
 
     const modalEl = document.getElementById('importMissingTracksModal');
     if (modalEl) {
