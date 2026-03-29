@@ -6,6 +6,7 @@ Handles parsing JSON tag data from database and aggregating across multiple sour
 
 import json
 import logging
+import re
 from collections import Counter, defaultdict
 from typing import Dict, List, Tuple
 
@@ -96,8 +97,57 @@ def get_track_genres_and_tags(track_dict: dict) -> Dict[str, list]:
     
     if track_dict.get("musicbrainz_genres"):
         sources["musicbrainz_genres"] = parse_json_tags(track_dict["musicbrainz_genres"])
+
+    # Mood tags are stored in a dedicated column and can be JSON arrays,
+    # semicolon-separated strings, or comma-separated strings.
+    if track_dict.get("mood"):
+        mood_tags = parse_mood_values(track_dict.get("mood"))
+        if mood_tags:
+            sources["mood"] = [{"name": mood, "count": 1} for mood in mood_tags]
     
     return sources
+
+
+def parse_mood_values(mood_value) -> list:
+    """Normalize a track mood field into a list of mood labels."""
+    if mood_value is None:
+        return []
+
+    moods = []
+
+    # Accept values stored as JSON arrays or simple delimiters.
+    if isinstance(mood_value, list):
+        raw_items = mood_value
+    else:
+        text = str(mood_value).strip()
+        if not text:
+            return []
+
+        raw_items = None
+        if text.startswith("["):
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, list):
+                    raw_items = parsed
+            except (json.JSONDecodeError, TypeError):
+                raw_items = None
+
+        if raw_items is None:
+            text = text.replace("\\", ",")
+            raw_items = re.split(r"[;,]", text)
+
+    seen = set()
+    for item in raw_items:
+        mood = str(item).strip()
+        if not mood:
+            continue
+        key = mood.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        moods.append(mood)
+
+    return moods
 
 
 def aggregate_tags_with_counts(track_list: list) -> Dict[str, Counter]:

@@ -18050,6 +18050,367 @@ def api_retry_matching(release_id):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/queue/search-for-release-match", methods=["POST"])
+def api_search_for_release_match():
+    """Search queue for items matching a MusicBrainz release.
+    
+    Returns potential queue items that could be linked to the release.
+    Allows manual matching of unmatched MusicBrainz releases.
+    
+    Request JSON:
+        release_id: str - MusicBrainz release ID
+        artist: str - Release artist name
+        title: str - Release title
+        year: int (optional) - Release year
+        
+    Returns:
+        matching_queue_items: List of queue items that might match
+        search_criteria: What was searched for
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+        
+        request_data = request.get_json(silent=True) or {}
+        release_id = (request_data.get('release_id') or '').strip()
+        artist = (request_data.get('artist') or '').strip()
+        title = (request_data.get('title') or '').strip()
+        year = request_data.get('year')
+        
+        if not any([release_id, artist, title]):
+            return jsonify({"error": "Must provide release_id, artist, or title"}), 400
+        
+        # Search queue items that could match this release
+        matching_items = []
+        
+        # Build search query - look for queue items with similar artist/album
+        conditions = []
+        params = []
+        
+        if artist:
+            conditions.append(f"(artist ILIKE {placeholder} OR album_artist ILIKE {placeholder})")
+            params.extend([f"%{artist}%", f"%{artist}%"])
+        
+        if title:
+            conditions.append(f"album ILIKE {placeholder}")
+            params.append(f"%{title}%")
+        
+        if year:
+            conditions.append(f"year = {placeholder}")
+            params.append(str(year))
+        
+        if conditions:
+            where_clause = " AND ".join(conditions) if len(conditions) > 1 else conditions[0]
+            query = f"""
+                SELECT id, artist, album_artist, album, title, year, track_number, 
+                       found_filename, file_path, status, release_id
+                FROM download_queue
+                WHERE ({where_clause})
+                  AND status IN ('queued', 'completed', 'found')
+                ORDER BY artist, album, track_number
+                LIMIT 50
+            """
+            cursor.execute(query, params)
+            
+            for row in cursor.fetchall():
+                matching_items.append({
+                    'id': row['id'] if isinstance(row, dict) else row[0],
+                    'artist': row['artist'] if isinstance(row, dict) else row[1],
+                    'album_artist': row['album_artist'] if isinstance(row, dict) else row[2],
+                    'album': row['album'] if isinstance(row, dict) else row[3],
+                    'title': row['title'] if isinstance(row, dict) else row[4],
+                    'year': row['year'] if isinstance(row, dict) else row[5],
+                    'track_number': row['track_number'] if isinstance(row, dict) else row[6],
+                    'filename': row['found_filename'] if isinstance(row, dict) else row[7],
+                    'file_path': row['file_path'] if isinstance(row, dict) else row[8],
+                    'status': row['status'] if isinstance(row, dict) else row[9],
+                    'already_linked': bool(row['release_id'] if isinstance(row, dict) else row[10])
+                })
+        
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "matching_count": len(matching_items),
+            "matching_queue_items": matching_items,
+            "search_criteria": {
+                "release_id": release_id,
+                "artist": artist,
+                "title": title,
+                "year": year
+            }
+        })
+    
+    except Exception as e:
+        logging.error(f"[SEARCH_RELEASE_MATCH] Error: {e}")
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/queue/link-to-release", methods=["POST"])
+def api_link_queue_to_release():
+    """Manually link queue items to a MusicBrainz release.
+    
+    This allows matching unmatched releases to actual downloaded files.
+    
+    Request JSON:
+        release_id: str - MusicBrainz release ID to link to
+        queue_ids: list[int] - Queue item IDs to link
+        
+    Returns:
+        linked_count: Number of items linked
+        release_info: Updated release information
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+        
+        request_data = request.get_json(silent=True) or {}
+        release_id = (request_data.get('release_id') or '').strip()
+        queue_ids = request_data.get('queue_ids', [])
+        
+        if not release_id or not queue_ids:
+            return jsonify({"error": "release_id and queue_ids required"}), 400
+        
+        if not isinstance(queue_ids, list):
+            queue_ids = [queue_ids]
+        
+        # Get release info first
+        cursor.execute(f"""
+            SELECT id, release_title, artist, release_year, total_tracks
+            FROM musicbrainz_releases
+            WHERE release_id = {placeholder}
+        """, (release_id,))
+        
+        release_row = cursor.fetchone()
+        if not release_row:
+            conn.close()
+            return jsonify({"error": f"Release {release_id} not found"}), 404
+        
+        release_title = _row_get(release_row, 'release_title', 1)
+        release_artist = _row_get(release_row, 'artist', 2)
+        
+        # Link queue items to this release
+        linked_count = 0
+        for queue_id in queue_ids:
+            try:
+                cursor.execute(f"""
+                    UPDATE download_queue
+                    SET release_id = {placeholder}, 
+                        album = {placeholder},
+                        album_artist = {placeholder},
+                        year = {placeholder},
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = {placeholder}
+                """, (release_id, release_title, release_artist, 
+                      _row_get(release_row, 'release_year', 3), queue_id))
+                
+                if cursor.rowcount > 0:
+                    linked_count += 1
+                    logging.info(f"[LINK_RELEASE] Linked queue {queue_id} to release {release_id}")
+            except Exception as link_err:
+                logging.warning(f"[LINK_RELEASE] Failed to link queue {queue_id}: {link_err}")
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "linked_count": linked_count,
+            "release_info": {
+                "release_id": release_id,
+                "title": release_title,
+                "artist": release_artist
+            },
+            "message": f"Linked {linked_count} queue item(s) to {release_title}"
+        })
+    
+    except Exception as e:
+        logging.error(f"[LINK_RELEASE] Error: {e}")
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/musicbrainz/release/<release_id>/apply-queue-match", methods=["POST"])
+def api_release_apply_queue_match(release_id):
+    """Link queue items to an unmatched MusicBrainz release (inverse of queue apply-match).
+    
+    This allows matching unmatched releases to actual downloaded files, using the same
+    interface pattern as queue items matching to releases.
+    
+    Request JSON:
+        queue_ids: list[int] - Queue item IDs to link to this release
+        
+    Returns:
+        success: bool
+        linked_count: Number of items linked
+        release_info: Updated release information
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+        
+        request_data = request.get_json(silent=True) or {}
+        queue_ids = request_data.get('queue_ids', [])
+        
+        if not queue_ids:
+            return jsonify({"error": "queue_ids required"}), 400
+        
+        if not isinstance(queue_ids, list):
+            queue_ids = [queue_ids]
+        
+        # Get release info
+        cursor.execute(f"""
+            SELECT id, release_title, artist, release_year, total_tracks
+            FROM musicbrainz_releases
+            WHERE release_id = {placeholder}
+        """, (release_id,))
+        
+        release_row = cursor.fetchone()
+        if not release_row:
+            conn.close()
+            return jsonify({"error": f"Release {release_id} not found"}), 404
+        
+        release_title = _row_get(release_row, 'release_title', 1)
+        release_artist = _row_get(release_row, 'artist', 2)
+        release_year = _row_get(release_row, 'release_year', 3)
+        
+        # Link queue items to this release using the same pattern as apply-mbid-match
+        linked_count = 0
+        for queue_id in queue_ids:
+            try:
+                cursor.execute(f"""
+                    UPDATE download_queue
+                    SET release_id = {placeholder},
+                        release_mbid = {placeholder},
+                        album = {placeholder},
+                        album_artist = {placeholder},
+                        year = {placeholder},
+                        match_confidence = 1.0,
+                        match_method = 'manual_release_link',
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = {placeholder}
+                """, (release_id, release_id, release_title, release_artist, release_year, queue_id))
+                
+                if cursor.rowcount > 0:
+                    linked_count += 1
+                    logging.info(f"[RELEASE_MATCH] Linked queue {queue_id} to release {release_id}")
+            except Exception as link_err:
+                logging.warning(f"[RELEASE_MATCH] Failed to link queue {queue_id}: {link_err}")
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "linked_count": linked_count,
+            "release_info": {
+                "release_id": release_id,
+                "title": release_title,
+                "artist": release_artist
+            },
+            "message": f"Linked {linked_count} queue item(s) to {release_title}"
+        })
+    
+    except Exception as e:
+        logging.error(f"[RELEASE_MATCH] Error: {e}")
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/musicbrainz/release/<release_id>/search-queue-matches", methods=["GET"])
+def api_release_search_queue_matches(release_id):
+    """Search for queue items that could match an unmatched release.
+    
+    Returns potential matches based on artist/album/year similarity.
+    Allows user to manually select which downloaded files belong to this release.
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+        
+        # Get release info
+        cursor.execute(f"""
+            SELECT release_title, artist, release_year
+            FROM musicbrainz_releases
+            WHERE release_id = {placeholder}
+        """, (release_id,))
+        
+        release_row = cursor.fetchone()
+        if not release_row:
+            conn.close()
+            return jsonify({"error": "Release not found"}), 404
+        
+        release_title = _row_get(release_row, 'release_title', 0)
+        release_artist = _row_get(release_row, 'artist', 1)
+        release_year = _row_get(release_row, 'release_year', 2)
+        
+        # Search queue for matching items (artist or album match)
+        matching_items = []
+        
+        conditions = []
+        params = []
+        
+        if release_artist:
+            conditions.append(f"(artist ILIKE {placeholder} OR album_artist ILIKE {placeholder})")
+            params.extend([f"%{release_artist}%", f"%{release_artist}%"])
+        
+        if release_title:
+            conditions.append(f"album ILIKE {placeholder}")
+            params.append(f"%{release_title}%")
+        
+        if conditions:
+            where_clause = " AND ".join(conditions)
+            query = f"""
+                SELECT id, artist, album_artist, album, title, year, track_number,
+                       found_filename, file_path, status, release_id
+                FROM download_queue
+                WHERE ({where_clause})
+                  AND status IN ('queued', 'completed', 'found')
+                ORDER BY artist, album, track_number
+                LIMIT 50
+            """
+            cursor.execute(query, params)
+            
+            for row in cursor.fetchall():
+                matching_items.append({
+                    'id': row['id'] if isinstance(row, dict) else row[0],
+                    'artist': row['artist'] if isinstance(row, dict) else row[1],
+                    'album_artist': row['album_artist'] if isinstance(row, dict) else row[2],
+                    'album': row['album'] if isinstance(row, dict) else row[3],
+                    'title': row['title'] if isinstance(row, dict) else row[4],
+                    'year': row['year'] if isinstance(row, dict) else row[5],
+                    'track_number': row['track_number'] if isinstance(row, dict) else row[6],
+                    'filename': row['found_filename'] if isinstance(row, dict) else row[7],
+                    'file_path': row['file_path'] if isinstance(row, dict) else row[8],
+                    'status': row['status'] if isinstance(row, dict) else row[9],
+                    'already_linked': bool(row['release_id'] if isinstance(row, dict) else row[10])
+                })
+        
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "matching_count": len(matching_items),
+            "matching_queue_items": matching_items,
+            "release_info": {
+                "release_id": release_id,
+                "title": release_title,
+                "artist": release_artist,
+                "year": release_year
+            }
+        })
+    
+    except Exception as e:
+        logging.error(f"[RELEASE_SEARCH_QUEUE] Error: {e}")
+        return jsonify({"error": str(e)}), 400
+
+
 @app.route("/api/downloads/folder/<path:folder_path>/cancel", methods=["POST"])
 def api_cancel_folder(folder_path):
     """Cancel all downloads for a folder"""
@@ -23010,6 +23371,215 @@ def api_queue_cleanup_copied_sources():
 
     except Exception as e:
         logging.error(f"Error cleaning copied source files: {e}")
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/queue/cleanup-orphaned", methods=["POST"])
+def api_queue_cleanup_orphaned():
+    """Scan downloads for orphaned files and optionally clean them up.
+    
+    Orphaned files are those that exist in downloads but whose queue entry
+    has been marked as imported to the music library.
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = "%s"
+
+        downloads_root = os.path.abspath(_resolve_downloads_monitor_dir(get_config()))
+        music_root = os.path.abspath(os.environ.get("MUSIC_ROOT", "/music"))
+        
+        request_data = request.get_json(silent=True) or {}
+        perform_cleanup = bool(request_data.get('cleanup', False))
+        filter_artist = (request_data.get('artist', '') or '').strip() if request_data.get('artist') else None
+        
+        # Find all imported items that still have files in downloads
+        cursor.execute(f"""
+            SELECT id, file_path, found_filename, artist, title
+            FROM download_queue
+            WHERE status IN ('imported', 'completed') AND (file_path IS NOT NULL OR found_filename IS NOT NULL)
+        """)
+        
+        items = cursor.fetchall()
+        orphaned_files = []
+        
+        for row in items:
+            queue_id = row['id'] if isinstance(row, dict) else row[0]
+            file_path = row['file_path'] if isinstance(row, dict) else row[1]
+            found_filename = row['found_filename'] if isinstance(row, dict) else row[2]
+            artist = row['artist'] if isinstance(row, dict) else row[3]
+            title = row['title'] if isinstance(row, dict) else row[4]
+            
+            # Filter by artist if requested
+            if filter_artist and artist and filter_artist.lower() not in artist.lower():
+                continue
+            
+            # Check if file exists in downloads
+            actual_file = None
+            if file_path and os.path.exists(file_path):
+                try:
+                    abs_path = os.path.abspath(file_path)
+                    if os.path.commonpath([abs_path, downloads_root]) == downloads_root:
+                        actual_file = file_path
+                except Exception:
+                    pass
+            
+            # Fallback: search by filename in downloads
+            if not actual_file and found_filename:
+                for root, _dirs, files in os.walk(downloads_root):
+                    if found_filename in files:
+                        candidate = os.path.join(root, found_filename)
+                        try:
+                            abs_path = os.path.abspath(candidate)
+                            if os.path.commonpath([abs_path, downloads_root]) == downloads_root:
+                                actual_file = candidate
+                                break
+                        except Exception:
+                            pass
+            
+            # If we found an orphaned file, track it
+            if actual_file:
+                # Verify it's not the original entry path (some may have been moved correctly)
+                orphaned_files.append({
+                    'queue_id': queue_id,
+                    'file_path': actual_file,
+                    'artist': artist,
+                    'title': title,
+                    'size_kb': os.path.getsize(actual_file) / 1024 if os.path.isfile(actual_file) else 0
+                })
+        
+        # Optionally perform cleanup
+        deleted_files = []
+        if perform_cleanup and orphaned_files:
+            for orphan in orphaned_files:
+                try:
+                    os.remove(orphan['file_path'])
+                    if not os.path.exists(orphan['file_path']):
+                        deleted_files.append(orphan['file_path'])
+                        logging.info(f"[CLEANUP_ORPHANED] Deleted: {orphan['file_path']}")
+                except Exception as e:
+                    logging.warning(f"[CLEANUP_ORPHANED] Failed to delete {orphan['file_path']}: {e}")
+        
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "orphaned_count": len(orphaned_files),
+            "deleted_count": len(deleted_files),
+            "orphaned_files": orphaned_files,
+            "deleted_files": deleted_files,
+            "message": f"Found {len(orphaned_files)} orphaned file(s) in downloads" + (
+                f"; deleted {len(deleted_files)}" if perform_cleanup else ""
+            )
+        })
+    
+    except Exception as e:
+        logging.error(f"Error scanning for orphaned files: {e}")
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/queue/verify-and-prune", methods=["POST"])
+def api_queue_verify_and_prune():
+    """Verify all queue items reference existing files. 
+    
+    Removes queue entries for files that no longer exist in the filesystem.
+    Useful when files have been manually deleted or moved outside the app.
+    
+    Request JSON:
+        dry_run: bool - if true, only report what would be deleted (default: true)
+        filter_artist: str - only check items for this artist (optional)
+    
+    Returns:
+        JSON with checked_count, missing_count, pruned_count, missing_items
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        is_pg = _is_postgres_connection(conn)
+        placeholder = "%s" if is_pg else "?"
+
+        request_data = request.get_json(silent=True) or {}
+        dry_run = bool(request_data.get('dry_run', True))
+        filter_artist = (request_data.get('filter_artist', '') or '').strip() if request_data.get('filter_artist') else None
+
+        # Get all queue items
+        cursor.execute("""
+            SELECT id, file_path, found_filename, artist, title, status
+            FROM download_queue
+            WHERE status IN ('queued', 'downloading', 'completed', 'imported')
+        """)
+        
+        items = cursor.fetchall()
+        checked_count = 0
+        missing_items = []
+        pruned_count = 0
+
+        for row in items:
+            queue_id = row['id'] if isinstance(row, dict) else row[0]
+            file_path = row['file_path'] if isinstance(row, dict) else row[1]
+            found_filename = row['found_filename'] if isinstance(row, dict) else row[2]
+            artist = row['artist'] if isinstance(row, dict) else row[3]
+            title = row['title'] if isinstance(row, dict) else row[4]
+            status = row['status'] if isinstance(row, dict) else row[5]
+
+            # Filter by artist if requested
+            if filter_artist and artist and filter_artist.lower() not in artist.lower():
+                continue
+
+            checked_count += 1
+            file_exists = False
+
+            # Check direct path first
+            if file_path and os.path.exists(file_path):
+                file_exists = True
+            
+            # Check by filename as fallback
+            if not file_exists and found_filename:
+                downloads_root = os.path.abspath(_resolve_downloads_monitor_dir(get_config()))
+                if os.path.isdir(downloads_root):
+                    for root, _dirs, files in os.walk(downloads_root):
+                        if found_filename in files:
+                            file_exists = True
+                            break
+
+            # If file doesn't exist, mark it for removal
+            if not file_exists:
+                missing_items.append({
+                    'id': queue_id,
+                    'artist': artist,
+                    'title': title,
+                    'status': status,
+                    'file_path': file_path,
+                })
+                
+                if not dry_run:
+                    # Remove the queue entry
+                    cursor.execute(
+                        f"DELETE FROM download_queue WHERE id = {placeholder}",
+                        (queue_id,)
+                    )
+                    pruned_count += 1
+                    logging.info(f"[VERIFY_PRUNE] Deleted queue entry {queue_id}: {artist} - {title}")
+
+        if not dry_run:
+            conn.commit()
+        
+        conn.close()
+
+        return jsonify({
+            "success": True,
+            "dry_run": dry_run,
+            "checked_count": checked_count,
+            "missing_count": len(missing_items),
+            "pruned_count": pruned_count,
+            "missing_items": missing_items,
+            "message": f"Verified {checked_count} queue item(s); found {len(missing_items)} missing file(s)" + (
+                f"; pruned {pruned_count}" if not dry_run else " (dry run)"
+            )
+        })
+
+    except Exception as e:
+        logging.error(f"Error verifying and pruning queue: {e}")
         return jsonify({"error": str(e)}), 400
 
 
@@ -30730,7 +31300,20 @@ def api_playlist_load():
                             db_file_path = _row_get(row, "file_path", 0) or ""
                             match_method = "title_artist"
                     
-                    # Strategy 4: Fallback to title-only match (loose)
+                    # Strategy 4: Navidrome ID match (if available)
+                    if not db_file_path:
+                        nav_id = (track.get("id") or "").strip()
+                        if nav_id:
+                            cursor.execute(
+                                f"SELECT file_path FROM tracks WHERE navidrome_id = {placeholder} LIMIT 1",
+                                (nav_id,)
+                            )
+                            row = cursor.fetchone()
+                            if row:
+                                db_file_path = _row_get(row, "file_path", 0) or ""
+                                match_method = "navidrome_id"
+                    
+                    # Strategy 5: Fallback to title-only match (loose)
                     if not db_file_path and title:
                         cursor.execute(
                             f"""
@@ -30752,14 +31335,23 @@ def api_playlist_load():
                         f"Playlist DB path lookup failed for {artist} - {title}: {track_err}"
                     )
                     match_method = "error"
+            
+            # Log unmatched tracks for debugging
+            if not db_file_path:
+                logging.debug(
+                    f"[PLAYLIST] Could not find DB path for: {artist} - {title} ({album}) "
+                    f"- Navidrome ID: {track.get('id', 'none')}"
+                )
 
             matched_files.append({
                 "id": track.get("id"),
                 "title": title,
                 "artist": artist,
                 "album": album,
-                "filename": nav_path,
-                "file_path": db_file_path,
+                "navidrome_path": nav_path,
+                "file_path": db_file_path if db_file_path else nav_path,  # Fallback to Navidrome path for UI display
+                "database_path": db_file_path,  # Explicit field showing what was found in DB
+                "is_matched": bool(db_file_path),  # Explicit match flag
                 "match_method": match_method
             })
 
@@ -30776,7 +31368,7 @@ def api_playlist_load():
             "songs": songs,
             "matched_files": matched_files,
             "total": len(songs),
-            "matched": len([m for m in matched_files if m.get("file_path")])
+            "matched": len([m for m in matched_files if m.get("database_path")])
         }), 200
         
     except Exception as e:
