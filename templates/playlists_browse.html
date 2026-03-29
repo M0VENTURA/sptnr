@@ -414,16 +414,14 @@
 
   function loadCurrentPlaylistInDownloader() {
     const downloaderSelect = document.getElementById('playlistFileSelect');
-    const smartSelect = document.getElementById('smartPlaylistSelect');
-    const regularSelect = document.getElementById('regularPlaylistSelect');
+    const combinedSelect = document.getElementById('browsePlaylistSelect');
 
-    const playlistId = (smartSelect && smartSelect.value)
-      || (regularSelect && regularSelect.value)
+    const playlistId = (combinedSelect && combinedSelect.value)
       || (downloaderSelect && downloaderSelect.value)
       || '';
 
     if (!playlistId) {
-      alert('Please select a smart or regular playlist first.');
+      alert('Please select a playlist first.');
       return;
     }
 
