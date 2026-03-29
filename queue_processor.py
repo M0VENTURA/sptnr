@@ -277,6 +277,19 @@ def _tokenize_meaningful(value):
     return [t for t in normalized.split() if len(t) >= 3 and t not in stop_words]
 
 
+def _strip_title_variants(title):
+    """Strip trailing parenthetical variant labels from a title.
+
+    Examples::
+        "Hover (alternate version)"  → "Hover"
+        "Hover (Quiet Mix)"          → "Hover"
+        "World So Cold (Live)"       → "World So Cold"
+        "Nothing"                    → "Nothing"  (unchanged)
+    """
+    stripped = re.sub(r'\s*\([^)]*\)\s*$', '', (title or '').strip()).strip()
+    return stripped if stripped else (title or '').strip()
+
+
 def _extract_title_variant_tokens(value):
     """Return known version/variant tokens from a title-like string."""
     tokens = set(_normalize_match_text(value).split())
@@ -292,6 +305,15 @@ def _title_variants_are_compatible(expected_title, candidate_title):
         if not expected_variants or not candidate_variants:
             return False
         if expected_variants.isdisjoint(candidate_variants):
+            # Variant labels differ but may just be labelling inconsistencies
+            # (e.g. MusicBrainz calls it "alternate version" while the peer's
+            # file is labelled "Quiet Mix").  Allow the match if both stripped
+            # base titles are a close enough match — same underlying song,
+            # different variant name.
+            base_a = _normalize_match_text(_strip_title_variants(expected_title))
+            base_b = _normalize_match_text(_strip_title_variants(candidate_title))
+            if base_a and base_b and SequenceMatcher(None, base_a, base_b).ratio() >= 0.85:
+                return True
             return False
     return True
 
