@@ -403,211 +403,28 @@
   // Load recommended playlists on page load
   document.addEventListener('DOMContentLoaded', function() {
     loadRecommendedPlaylists();
-    loadPlaylistList();
   });
 
-  // =============================================================================
-  // PLAYLIST DOWNLOADER
-  // =============================================================================
-
-  let currentPlaylistData = null;
-  let selectedReplacements = {};
-
-  async function loadPlaylistList() {
-    try {
-      const response = await fetch('/api/navidrome/playlists');
-      const data = await response.json();
-
-      const select = document.getElementById('playlistFileSelect');
-      select.innerHTML = '<option value="">Select a playlist...</option>';
-
-      if (!data || data.error) {
-        select.innerHTML = '<option value="">Error: Invalid API response</option>';
-        return;
-      }
-
-      const merged = [];
-      (data.smart || []).forEach(pl => merged.push({ ...pl, type: 'smart' }));
-      (data.regular || []).forEach(pl => merged.push({ ...pl, type: 'regular' }));
-
-      if (merged.length > 0) {
-        merged.forEach(playlist => {
-          const option = document.createElement('option');
-          option.value = playlist.id;
-          let typeLabel = '';
-          if (playlist.type === 'smart') typeLabel = ' (Smart)';
-          option.textContent = `${playlist.name || playlist.id}${typeLabel}`;
-          option.dataset.type = playlist.type;
-          option.dataset.songCount = playlist.songCount || 0;
-          option.dataset.owner = playlist.owner || '';
-          option.dataset.name = playlist.name || playlist.id;
-          select.appendChild(option);
-        });
-      } else {
-        select.innerHTML = '<option value="">No playlists found - check Navidrome configuration</option>';
-      }
-    } catch (error) {
-      console.error('Error loading playlists:', error);
-      document.getElementById('playlistFileSelect').innerHTML = '<option value="">Error loading playlists</option>';
-    }
-  }
-
-  async function loadPlaylistForDownload() {
-    const playlistPath = getSelectedPlaylistId();
-    if (!playlistPath) {
-      alert('Please select a playlist');
-      return;
-    }
-
-    try {
-      const response = await fetch(`/api/navidrome/playlist/${encodeURIComponent(playlistPath)}`);
-
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Failed to load playlist');
-
-      const tracks = Array.isArray(data.tracks) ? data.tracks : [];
-      const normalized = {
-        playlist_path: playlistPath,
-        songs: tracks.map(track => ({
-          id: track.id,
-          title: track.title || 'Unknown',
-          artist: track.artist || 'Unknown',
-          album: track.album || 'Unknown',
-          detected: true
-        })),
-        matched_files: tracks.map(track => ({
-          id: track.id,
-          title: track.title || 'Unknown',
-          artist: track.artist || 'Unknown',
-          filename: track.path || ''
-        })),
-        total: tracks.length,
-        matched: tracks.length
-      };
-
-      currentPlaylistData = normalized;
-      displayPlaylistDownloader(normalized);
-    } catch (error) {
-      console.error('Error:', error);
-      alert('Error: ' + error.message);
-    }
-  }
-
-  function getSelectedPlaylistId() {
-    const downloaderSelect = document.getElementById('playlistFileSelect');
-    if (downloaderSelect && downloaderSelect.value) {
-      return downloaderSelect.value;
-    }
-
-    const smartSelect = document.getElementById('smartPlaylistSelect');
-    if (smartSelect && smartSelect.value) {
-      if (downloaderSelect) downloaderSelect.value = smartSelect.value;
-      return smartSelect.value;
-    }
-
-    const regularSelect = document.getElementById('regularPlaylistSelect');
-    if (regularSelect && regularSelect.value) {
-      if (downloaderSelect) downloaderSelect.value = regularSelect.value;
-      return regularSelect.value;
-    }
-
-    return '';
-  }
-
   function loadCurrentPlaylistInDownloader() {
-    const playlistId = getSelectedPlaylistId();
+    const downloaderSelect = document.getElementById('playlistFileSelect');
+    const smartSelect = document.getElementById('smartPlaylistSelect');
+    const regularSelect = document.getElementById('regularPlaylistSelect');
+
+    const playlistId = (smartSelect && smartSelect.value)
+      || (regularSelect && regularSelect.value)
+      || (downloaderSelect && downloaderSelect.value)
+      || '';
+
     if (!playlistId) {
       alert('Please select a smart or regular playlist first.');
       return;
     }
-    loadPlaylistForDownload();
-  }
 
-  function displayPlaylistDownloader(data) {
-    const songs = data.songs || [];
-    const matched = data.matched_files || [];
-
-    document.getElementById('downloaderEmpty').style.display = 'none';
-    document.getElementById('downloaderResults').style.display = 'block';
-
-    document.getElementById('dlTotalCount').textContent = songs.length;
-    document.getElementById('dlMatchedCount').textContent = matched.length;
-    const coverage = songs.length > 0 ? Math.round((matched.length / songs.length) * 100) : 0;
-    document.getElementById('dlCoverage').textContent = coverage + '%';
-
-    // Original Songs (Left Column)
-    const originalHtml = songs.map((song, idx) => `
-      <div class="card mb-2">
-        <div class="card-body py-2">
-          <div class="d-flex justify-content-between align-items-start">
-            <div>
-              <strong class="d-block">${escapeHtml(song.title || 'Unknown')}</strong>
-              <small class="text-muted">${escapeHtml(song.artist || 'Unknown Artist')}</small>
-              ${song.album ? `<br><small class="text-secondary text-opacity-75">${escapeHtml(song.album)}</small>` : ''}
-            </div>
-            <span class="badge ${song.detected ? 'bg-success' : 'bg-warning'}">
-              ${song.detected ? '✓' : '✗'}
-            </span>
-          </div>
-        </div>
-      </div>
-    `).join('');
-    document.getElementById('dlOriginalSongs').innerHTML = originalHtml || '<p class="text-muted text-center py-5">No songs in playlist</p>';
-
-    // Detected Matches (Right Column)
-    const matchedHtml = matched.map((match, idx) => `
-      <div class="card mb-2 border-success">
-        <div class="card-body py-2">
-          <div class="d-flex justify-content-between align-items-start gap-2">
-            <div style="flex: 1;">
-              <strong class="d-block">${escapeHtml(match.title || 'Unknown')}</strong>
-              <small class="text-muted">${escapeHtml(match.artist || 'Unknown')}</small>
-              ${match.filename ? `<br><small class="text-secondary text-opacity-75">${escapeHtml(match.filename.split(/[\/\\]/).pop())}</small>` : ''}
-            </div>
-            <button class="btn btn-sm btn-outline-primary" onclick="replacePlaylistMatch(${idx})" title="Replace this match">
-              <i class="bi bi-arrow-repeat"></i> Replace
-            </button>
-          </div>
-        </div>
-      </div>
-    `).join('');
-    document.getElementById('dlDetectedMatches').innerHTML = matchedHtml || '<p class="text-muted text-center py-5">No matches detected yet</p>';
-
-    selectedReplacements = {};
-  }
-
-  function replacePlaylistMatch(matchIndex) {
-    showToast('Replace functionality coming soon', 'info');
-  }
-
-  async function downloadPlaylistMatches() {
-    if (!currentPlaylistData) return;
-    const btn = document.getElementById('dlDownloadBtn');
-    const originalText = btn.innerHTML;
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Downloading...';
-
-    try {
-      const response = await fetch('/api/playlist/download', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          playlist_path: currentPlaylistData.playlist_path,
-          replacements: selectedReplacements
-        })
-      });
-
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Download failed');
-
-      alert('✅ Download queued! ' + (data.queued || 0) + ' files enqueued');
-    } catch (error) {
-      console.error('Error:', error);
-      alert('❌ Error: ' + error.message);
-    } finally {
-      btn.disabled = false;
-      btn.innerHTML = originalText;
+    if (downloaderSelect) {
+      downloaderSelect.value = playlistId;
     }
+
+    loadPlaylistForDownload();
   }
 
   // =============================================================================
