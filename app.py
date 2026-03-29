@@ -3605,6 +3605,73 @@ def _auto_resume_interrupted_scans():
     threading.Thread(target=_worker, daemon=True, name="boot-scan-resume").start()
 
 
+_QUEUE_MIGRATION_ONCE_MARKER = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    ".queue_migration_once.json",
+)
+
+
+def _arm_queue_migration_for_next_load(limit=None):
+    payload = {
+        "created_at": datetime.now().isoformat(),
+        "limit": limit,
+    }
+    with open(_QUEUE_MIGRATION_ONCE_MARKER, "w", encoding="utf-8") as marker_file:
+        json.dump(payload, marker_file)
+    logging.info("[QUEUE_MIGRATION_ONCE] Armed for next load: %s", _QUEUE_MIGRATION_ONCE_MARKER)
+    return payload
+
+
+def _run_queue_migration_once_if_armed():
+    """Run one-time queue migration when marker file exists, then remove marker immediately."""
+    if not os.path.isfile(_QUEUE_MIGRATION_ONCE_MARKER):
+        return False
+
+    payload = {}
+    try:
+        with open(_QUEUE_MIGRATION_ONCE_MARKER, "r", encoding="utf-8") as marker_file:
+            payload = json.load(marker_file) or {}
+    except Exception as read_err:
+        logging.warning(f"[QUEUE_MIGRATION_ONCE] Could not read marker payload: {read_err}")
+
+    # Remove marker before running so it never runs twice.
+    try:
+        os.remove(_QUEUE_MIGRATION_ONCE_MARKER)
+        logging.info("[QUEUE_MIGRATION_ONCE] Disarmed marker after detection")
+    except Exception as remove_err:
+        logging.warning(f"[QUEUE_MIGRATION_ONCE] Could not remove marker: {remove_err}")
+
+    limit = payload.get("limit")
+    if limit is not None:
+        try:
+            limit = int(limit)
+            if limit <= 0:
+                limit = None
+        except Exception:
+            limit = None
+
+    def _worker():
+        try:
+            from download_queue_manager import migrate_existing_queue_items_to_grouped_setup
+
+            logging.info("[QUEUE_MIGRATION_ONCE] Starting one-time queue migration (limit=%s)", limit)
+            result = migrate_existing_queue_items_to_grouped_setup(limit=limit)
+            if result.get("success"):
+                logging.info(
+                    "[QUEUE_MIGRATION_ONCE] Completed: updated_rows=%s status_updated=%s imported_at_backfilled=%s",
+                    result.get("updated_rows", 0),
+                    result.get("status_updated", 0),
+                    result.get("imported_at_backfilled", 0),
+                )
+            else:
+                logging.error("[QUEUE_MIGRATION_ONCE] Failed: %s", result)
+        except Exception as migration_err:
+            logging.error(f"[QUEUE_MIGRATION_ONCE] Worker failed: {migration_err}", exc_info=True)
+
+    threading.Thread(target=_worker, daemon=True, name="queue-migration-once").start()
+    return True
+
+
 
 
 
@@ -3619,6 +3686,11 @@ if _is_startup_leader_worker:
         _start_boot_album_artist_sync_only()
     except Exception as e:
         logging.error(f"Failed to start boot album-list artist sync: {e}")
+
+    try:
+        _run_queue_migration_once_if_armed()
+    except Exception as e:
+        logging.error(f"Failed to run one-time queue migration hook: {e}")
 
     try:
         _start_queue_processor_if_needed(force_restart=False)
@@ -22268,6 +22340,36 @@ def api_queue_migrate_existing():
         return jsonify(result), status_code
     except Exception as e:
         logging.error(f"Error migrating existing queue rows: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/queue/migrate-existing/arm-next-load", methods=["POST"])
+def api_queue_migrate_arm_next_load():
+    """Arm a one-time queue migration that runs on next app load and then disarms itself."""
+    try:
+        data = request.get_json(silent=True) or {}
+        limit = request.values.get('limit')
+        if limit is None:
+            limit = data.get('limit')
+
+        parsed_limit = None
+        if limit is not None:
+            try:
+                parsed_limit = int(limit)
+                if parsed_limit <= 0:
+                    return jsonify({"error": "limit must be a positive integer"}), 400
+            except (TypeError, ValueError):
+                return jsonify({"error": "limit must be an integer"}), 400
+
+        payload = _arm_queue_migration_for_next_load(limit=parsed_limit)
+        return jsonify({
+            "success": True,
+            "message": "Queue migration armed for next load (one-time)",
+            "marker_path": _QUEUE_MIGRATION_ONCE_MARKER,
+            "payload": payload,
+        })
+    except Exception as e:
+        logging.error(f"Error arming one-time queue migration: {e}", exc_info=True)
         return jsonify({"success": False, "error": str(e)}), 500
 
 
