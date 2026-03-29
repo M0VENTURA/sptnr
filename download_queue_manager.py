@@ -674,10 +674,14 @@ def _apply_release_year_mtime(file_path, year, queue_id=None):
         )
 
 
-def transfer_download_to_music(source_path, dest_path, queue_id=None):
+def transfer_download_to_music(source_path, dest_path, queue_id=None, copy_only=False):
     """Move or convert a downloaded file into the music library destination.
 
     Conversion mode currently supports FLAC -> MP3 when enabled in config.
+
+    copy_only: when True the source file is never removed; the file is copied
+               rather than moved.  FLAC conversion still applies (output is the
+               MP3 destination) but the original FLAC is left untouched.
     """
     if not source_path or not os.path.isfile(source_path):
         return {"success": False, "target_path": None, "error": f"Source file not found: {source_path}"}
@@ -756,7 +760,10 @@ def transfer_download_to_music(source_path, dest_path, queue_id=None):
         original_subfolder = settings.get("original_subfolder", "Original")
 
         try:
-            if original_handling == "delete":
+            if copy_only:
+                # Organize-copy mode: keep original in downloads untouched.
+                pass
+            elif original_handling == "delete":
                 os.remove(source_path)
             else:
                 if _is_under_original_subfolder(source_path, downloads_root, original_subfolder):
@@ -782,7 +789,11 @@ def transfer_download_to_music(source_path, dest_path, queue_id=None):
         }
 
     try:
-        future = _transfer_executor.submit(shutil.move, source_path, final_dest_path)
+        if copy_only:
+            import shutil as _shutil_copy
+            future = _transfer_executor.submit(_shutil_copy.copy2, source_path, final_dest_path)
+        else:
+            future = _transfer_executor.submit(shutil.move, source_path, final_dest_path)
         future.result(timeout=_TRANSFER_TIMEOUT_SECONDS)
     except concurrent.futures.TimeoutError:
         return {

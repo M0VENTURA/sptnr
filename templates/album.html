@@ -625,21 +625,32 @@
                             {% if track.is_missing %}
                             {{ missing_track_row(track) }}
                             {% else %}
-                            <tr class="d-flex flex-column d-md-table-row" data-track-id="{{ track.id }}">
+                            {% set track_is_queued = track.file_path and '__queued_for_download__' in track.file_path %}
+                            <tr class="d-flex flex-column d-md-table-row{% if track_is_queued %} table-secondary opacity-75{% endif %}" data-track-id="{{ track.id }}">
                                 <td class="d-md-none" style="padding: 0.5rem 0; border: none;">
                                     <div class="d-flex justify-content-between align-items-center gap-2">
-                                        <input type="checkbox" class="form-check-input track-checkbox" data-track-id="{{ track.id }}" onchange="updateBulkActionsUI()">
+                                        <input type="checkbox" class="form-check-input track-checkbox" data-track-id="{{ track.id }}" onchange="updateBulkActionsUI()"{% if track_is_queued %} disabled{% endif %}>
                                         <strong>{{ track.track_number or loop.index }}</strong>
-                                        <a href="{{ url_for('track_detail', track_id=track.id) }}" class="text-reset flex-grow-1">
-                                            {{ track.title }}
+                                        <span class="flex-grow-1">
+                                            {% if track_is_queued %}
+                                            <span class="text-muted">{{ track.title }}</span>
                                             {% if track.artist and track.artist != artist_name %}
                                             <small class="text-muted">— {{ track.artist }}</small>
                                             {% endif %}
-                                        </a>
+                                            <span class="badge bg-warning text-dark ms-1" title="This track is currently in the download queue">In Queue</span>
+                                            {% else %}
+                                            <a href="{{ url_for('track_detail', track_id=track.id) }}" class="text-reset">
+                                                {{ track.title }}
+                                                {% if track.artist and track.artist != artist_name %}
+                                                <small class="text-muted">— {{ track.artist }}</small>
+                                                {% endif %}
+                                            </a>
+                                            {% endif %}
+                                        </span>
                                     </div>
                                 </td>
                                 <td class="d-none d-md-table-cell">
-                                    <input type="checkbox" class="form-check-input track-checkbox" data-track-id="{{ track.id }}" onchange="updateBulkActionsUI()">
+                                    <input type="checkbox" class="form-check-input track-checkbox" data-track-id="{{ track.id }}" onchange="updateBulkActionsUI()"{% if track_is_queued %} disabled{% endif %}>
                                 </td>
                                 <td class="d-none d-md-table-cell text-muted">
                                     {{ track.track_number or loop.index }}
@@ -647,11 +658,16 @@
                                 <td class="d-flex justify-content-between d-md-table-cell align-items-center">
                                     <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Track</span>
                                     <div class="d-none d-md-block">
+                                        {% if track_is_queued %}
+                                        <span class="text-muted">{{ track.title }}</span>
+                                        <span class="badge bg-warning text-dark ms-1" title="This track is currently in the download queue">In Queue</span>
+                                        {% else %}
                                         <a href="{{ url_for('track_detail', track_id=track.id) }}">
                                             {{ track.title }}
                                         </a>
                                         {% if track.file_path %}
                                         <div class="text-muted" style="font-size: 0.7rem; word-break: break-all;">{{ track.file_path }}</div>
+                                        {% endif %}
                                         {% endif %}
                                     </div>
                                 </td>

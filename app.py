@@ -21086,6 +21086,8 @@ def api_downloads_clear_queue():
         # Clear queue rows that are rendered inline in Downloads Organized by Folder.
         if has_download_queue:
             cursor.execute("DELETE FROM download_queue")
+            # Remove all queued-download stubs from tracks table
+            cursor.execute("DELETE FROM tracks WHERE file_path LIKE '__queued_for_download__%'")
         
         conn.commit()
         conn.close()
@@ -22809,6 +22811,14 @@ def api_queue_delete(queue_id):
         cursor.execute(f"DELETE FROM download_queue WHERE id = {placeholder}", (queue_id,))
         # Clean up event logs for this deleted item
         clear_queue_events_for_items([queue_id])
+        # Remove any queued-download stub in the tracks table for this item
+        try:
+            cursor.execute(
+                "DELETE FROM tracks WHERE file_path LIKE %s",
+                (f"__queued_for_download__queue_id_{queue_id}%",),
+            )
+        except Exception as stub_err:
+            logging.debug(f"[QUEUE] Could not clean tracks stub for queue {queue_id}: {stub_err}")
         conn.commit()
         
         deleted = cursor.rowcount > 0
@@ -23154,6 +23164,16 @@ def api_queue_remove_group():
 
         if queue_ids:
             clear_queue_events_for_items(queue_ids)
+            # Remove queued-download stubs from tracks table for bulk-deleted items
+            try:
+                stub_paths = [f"__queued_for_download__queue_id_{qid}" for qid in queue_ids]
+                stubs_placeholders = ", ".join(["%s"] * len(stub_paths))
+                cursor.execute(
+                    f"DELETE FROM tracks WHERE file_path IN ({stubs_placeholders})",
+                    stub_paths,
+                )
+            except Exception as _stub_bulk_err:
+                logging.debug(f"[QUEUE] Could not bulk-clean tracks stubs: {_stub_bulk_err}")
 
         conn.commit()
         conn.close()
@@ -23777,7 +23797,8 @@ def api_queue_organize(queue_id):
             logging.warning(f"[ORGANIZE] Metadata update error (non-fatal): {meta_err}")
 
         # Get paths and create directory structure
-        music_root = os.environ.get("MUSIC_ROOT", "/music")
+        from download_queue_manager import resolve_music_dir, transfer_download_to_music
+        music_root = resolve_music_dir()
         target_path = _build_queue_target_path(
             music_root,
             album_artist,
@@ -23791,14 +23812,20 @@ def api_queue_organize(queue_id):
 
         # Copy file and retain source until explicit cleanup.
         logging.info(f"[ORGANIZE] Copying file from {file_path} to {target_path}")
-        shutil.copy2(file_path, target_path)
+        copy_result = transfer_download_to_music(file_path, target_path, queue_id=queue_id, copy_only=True)
+        # transfer_download_to_music may adjust the extension (e.g. FLAC→MP3)
+        if copy_result.get("success"):
+            target_path = copy_result.get("target_path") or target_path
+        else:
+            err = copy_result.get("error", "Unknown copy error")
+            logging.error(f"[ORGANIZE] File transfer failed: {err}")
+            update_queue_item(queue_id, status='failed', failure_reason=err[:200])
+            return jsonify({"error": err}), 500
 
         # Verify copy integrity while source remains in downloads.
         copied_ok = (
             os.path.exists(target_path)
             and os.path.getsize(target_path) > 0
-            and os.path.exists(file_path)
-            and os.path.getsize(file_path) == os.path.getsize(target_path)
         )
 
         if copied_ok:
@@ -24030,7 +24057,8 @@ def api_queue_organize_group():
                 
                 # Move file to music directory
                 try:
-                    music_root = os.environ.get("MUSIC_ROOT", "/music")
+                    from download_queue_manager import resolve_music_dir, transfer_download_to_music
+                    music_root = resolve_music_dir()
                     target_path = _build_queue_target_path(
                         music_root,
                         resolved_album_artist,
@@ -24046,18 +24074,20 @@ def api_queue_organize_group():
                     logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Copy - target={target_path}")
                     
                     logging.info(f"[ORGANIZE_GROUP] Item {item['id']}: Copying file")
-                    os.makedirs(os.path.dirname(target_path), exist_ok=True)
 
-                    if not os.path.exists(target_path):
-                        shutil.copy2(file_path, target_path)
-                    else:
-                        logging.info(f"[ORGANIZE_GROUP] Item {item['id']}: Target already exists, skipping copy")
+                    copy_result = transfer_download_to_music(
+                        file_path, target_path, queue_id=item['id'], copy_only=True
+                    )
+                    # transfer_download_to_music may adjust extension (e.g. FLAC→MP3)
+                    if copy_result.get("success"):
+                        target_path = copy_result.get("target_path") or target_path
+                    elif not copy_result.get("skipped"):
+                        raise RuntimeError(copy_result.get("error", "Copy failed"))
                     
                     # Verify copy integrity before any source deletion
                     copied_ok = (
                         os.path.exists(target_path)
                         and os.path.getsize(target_path) > 0
-                        and os.path.getsize(file_path) == os.path.getsize(target_path)
                     )
 
                     if copied_ok:
