@@ -13,6 +13,7 @@ from download_file_verification import ensure_verification_columns, ensure_queue
 import os
 import glob
 import shutil
+from pathlib import Path
 import xml.etree.ElementTree as ET
 # --- ENVIRONMENT VARIABLE EDITING SUPPORT ---
 ALL_ENV_VARS = [
