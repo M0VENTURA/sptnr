@@ -4462,6 +4462,7 @@ def artists():
     missing_counts_by_artist = {}
     duplicate_artist_counts_by_artist = {}  # Track artists with same MBID but different names
     disc_inconsistent_counts_by_artist = {}  # Albums where some tracks have disc_number and others don't
+    extra_album_artist_counts_by_artist = {}  # Non-canonical album-artist variants on canonical albums
     try:
         # Query 1: Find duplicate tracks
         cursor.execute("""
@@ -4619,6 +4620,66 @@ def artists():
             row_dict = dict(row)
             disc_inconsistent_counts_by_artist[row_dict.get("display_name", "")] = int(row_dict.get("album_count") or 0)
 
+        # Query 5: Per canonical artist, count extra album-artist variants that were
+        # intentionally suppressed from /artists to keep one artist per album.
+        cursor.execute("""
+            WITH normalized_tracks AS (
+                SELECT
+                    COALESCE(
+                        NULLIF(TRIM(musicbrainz_album_mbid), ''),
+                        LOWER(TRIM(album)) || '|' || COALESCE(NULLIF(TRIM(CAST(year AS TEXT)), ''), '')
+                    ) AS album_key,
+                    CASE
+                        WHEN album_artist IS NOT NULL AND TRIM(album_artist) != '' THEN TRIM(album_artist)
+                        WHEN artist IS NOT NULL AND TRIM(artist) != '' THEN TRIM(artist)
+                        ELSE NULL
+                    END AS candidate_album_artist,
+                    CASE
+                        WHEN LOWER(TRIM(COALESCE(album_artist, ''))) IN (
+                            'various artists', 'various', 'v/a', 'va', 'compilation', 'soundtrack', 'original soundtrack'
+                        ) THEN 1
+                        ELSE 0
+                    END AS is_compilation_artist
+                FROM tracks
+                WHERE album IS NOT NULL
+                  AND TRIM(album) != ''
+            ),
+            ranked_album_artists AS (
+                SELECT
+                    album_key,
+                    candidate_album_artist,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY album_key
+                        ORDER BY
+                            MAX(is_compilation_artist) DESC,
+                            COUNT(*) DESC,
+                            candidate_album_artist ASC
+                    ) AS artist_rank
+                FROM normalized_tracks
+                WHERE candidate_album_artist IS NOT NULL
+                  AND candidate_album_artist != ''
+                GROUP BY album_key, candidate_album_artist
+            ),
+            canonical_albums AS (
+                SELECT
+                    album_key,
+                    candidate_album_artist AS canonical_album_artist
+                FROM ranked_album_artists
+                WHERE artist_rank = 1
+            )
+            SELECT
+                ca.canonical_album_artist AS display_name,
+                COUNT(*) AS extra_album_artist_count
+            FROM canonical_albums ca
+            JOIN ranked_album_artists ra
+              ON ra.album_key = ca.album_key
+            WHERE ra.artist_rank > 1
+            GROUP BY ca.canonical_album_artist
+        """)
+        for row in cursor.fetchall():
+            row_dict = dict(row)
+            extra_album_artist_counts_by_artist[row_dict.get("display_name", "")] = int(row_dict.get("extra_album_artist_count") or 0)
+
     except Exception as correction_err:
         logging.debug(f"Could not compute artist correction indicators: {correction_err}")
 
@@ -4628,13 +4689,16 @@ def artists():
         missing_count = missing_counts_by_artist.get(display_name, 0)
         duplicate_artist_count = duplicate_artist_counts_by_artist.get(display_name, 0)
         disc_inconsistent_count = disc_inconsistent_counts_by_artist.get(display_name, 0)
+        extra_album_artist_count = extra_album_artist_counts_by_artist.get(display_name, 0)
         artist_row["duplicate_track_count"] = duplicate_count
         artist_row["missing_track_count"] = missing_count
         artist_row["duplicate_artist_count"] = duplicate_artist_count
         artist_row["disc_inconsistent_count"] = disc_inconsistent_count
+        artist_row["extra_album_artist_count"] = extra_album_artist_count
         artist_row["needs_correction"] = (
             duplicate_count + missing_count
             + (1 if duplicate_artist_count > 0 else 0)
+            + (1 if extra_album_artist_count > 0 else 0)
             + disc_inconsistent_count
         ) > 0
     

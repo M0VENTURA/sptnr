@@ -66,12 +66,48 @@ def _clean_artist_name_for_storage(value: str) -> str:
     if not cleaned:
         return ""
 
-    # Collapse repeated bullet-separated forms: "X • X" -> "X"
-    parts = [p.strip() for p in re.split(r"\s*[•·]+\s*", cleaned) if p.strip()]
+    # Collapse multi-valued artist fields that can appear from malformed metadata.
+    # Keep exactly one canonical artist token.
+    # Supported separators are intentionally conservative to avoid breaking names
+    # like "AC/DC" (no surrounding spaces) while handling values like
+    # "Artist A • Artist B", "Artist A / Artist B", "Artist A | Artist B".
+    parts = [
+        p.strip() for p in re.split(r"\s*[•·]+\s*|\s+[/|;]+\s+", cleaned) if p.strip()
+    ]
     if len(parts) > 1:
-        part_keys = {_normalize_artist_key(p) for p in parts}
-        if len(part_keys) == 1:
-            cleaned = parts[0]
+        buckets = {}
+        for idx, part in enumerate(parts):
+            key = _normalize_artist_key(part)
+            if not key:
+                continue
+            if key not in buckets:
+                buckets[key] = {
+                    "count": 0,
+                    "first_index": idx,
+                    "value": part,
+                }
+            buckets[key]["count"] += 1
+
+        if buckets:
+            various_keys = {
+                "various artists",
+                "various",
+                "va",
+                "v a",
+                "compilation",
+                "original soundtrack",
+                "soundtrack",
+            }
+
+            def _sort_key(item):
+                key, info = item
+                is_various = 1 if key in various_keys else 0
+                # Prefer: highest frequency, then Various Artists-like token,
+                # then earliest appearance.
+                return (info["count"], is_various, -info["first_index"])
+
+            best_key, best_info = max(buckets.items(), key=_sort_key)
+            cleaned = best_info["value"]
 
     # Normalize pure alpha-numeric all-caps/all-lower variants (e.g. EELS/eels -> Eels).
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9' .-]*", cleaned):
