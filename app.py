@@ -30376,6 +30376,8 @@ def api_playlist_load():
         songs = []
         matched_files = []
 
+        music_root = os.environ.get("MUSIC_ROOT") or os.environ.get("MUSIC_FOLDER") or "/music"
+
         conn = None
         cursor = None
         placeholder = "%s"
@@ -30389,10 +30391,15 @@ def api_playlist_load():
             logging.warning(f"Could not initialize DB lookup for playlist paths: {db_init_err}")
 
         for track in tracks:
-            nav_path = (
+            raw_nav_path = (
                 (track.get("path") or "").strip()
                 or (track.get("file") or "").strip()
             )
+            # Navidrome returns paths relative to its music root; make them absolute
+            if raw_nav_path and not os.path.isabs(raw_nav_path):
+                nav_path = os.path.join(music_root, raw_nav_path)
+            else:
+                nav_path = raw_nav_path
             song = {
                 "id": track.get("id"),
                 "title": track.get("title", "Unknown"),
