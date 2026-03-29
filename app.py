@@ -19892,7 +19892,9 @@ def api_downloads_discover():
             "stats": stats,
             "message": f"Discovered {stats['queued']} new files, "
                       f"{stats['already_in_queue']} already queued, "
-                      f"{stats['already_in_library']} in library"
+                      f"{stats['already_in_library']} in library, "
+                      f"{stats.get('skipped_unmatched', 0)} unmatched skipped, "
+                      f"{stats.get('unmatched_folders', 0)} folders for review"
         })
     except Exception as e:
         logging.error(f"[ERROR] Error discovering files: {e}")

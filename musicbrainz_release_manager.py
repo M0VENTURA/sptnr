@@ -40,6 +40,19 @@ def _build_artist_credit_string(artist_credit):
     return result.strip()
 
 
+def _coerce_position_to_int(value, default):
+    """Convert MusicBrainz position strings (e.g. 'A1', '1/12') into an integer."""
+    raw = str(value or '').strip()
+    if not raw:
+        return default
+    if raw.isdigit():
+        return int(raw)
+    match = re.search(r"\d+", raw)
+    if match:
+        return int(match.group(0))
+    return default
+
+
 MUSIC_LIBRARY_DIR = "/music"
 MB_API_URL = "https://musicbrainz.org/ws/2"
 DB_FILE = "sptnr.db"
@@ -379,14 +392,15 @@ class MusicBrainzReleaseManager:
                 
                 for medium in media:
                     tracks = medium.get('tracks', [])
-                    disc_number = str(medium.get('position', 1))
+                    disc_number = _coerce_position_to_int(medium.get('position', 1), 1)
                     
                     for track in tracks:
                         track_count += 1
                         recording = track.get('recording', {})
                         recording_mbid = recording.get('id')
                         
-                        track_number = track.get('number', track_count)
+                        raw_track_number = track.get('number') or track.get('position') or track_count
+                        track_number = _coerce_position_to_int(raw_track_number, track_count)
                         track_title = recording.get('title', 'Unknown Track')
                         # Use per-track artist from recording's artist-credit when available;
                         # fall back to the album artist for non-VA releases.

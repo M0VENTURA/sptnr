@@ -384,6 +384,31 @@ def get_downloads_duplicate_cleanup_settings():
     return settings
 
 
+def get_auto_discover_settings():
+    """Read auto-discovery behavior flags from config with safe defaults."""
+    settings = {
+        # Local imported folders should not become unmatched queue rows by default.
+        "queue_unmatched_discovered_files": False,
+        # Large-folder MusicBrainz auto-promotion can preempt song-level queue matches.
+        # Keep this disabled by default; enable explicitly in config when desired.
+        "enable_large_folder_auto_match": False,
+    }
+    config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+    try:
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            features = cfg.get("features") if isinstance(cfg.get("features"), dict) else {}
+            auto_cfg = features.get("downloads_auto_discover") if isinstance(features.get("downloads_auto_discover"), dict) else {}
+            if "queue_unmatched_discovered_files" in auto_cfg:
+                settings["queue_unmatched_discovered_files"] = bool(auto_cfg.get("queue_unmatched_discovered_files"))
+            if "enable_large_folder_auto_match" in auto_cfg:
+                settings["enable_large_folder_auto_match"] = bool(auto_cfg.get("enable_large_folder_auto_match"))
+    except Exception as e:
+        logger.debug(f"Could not read auto-discovery settings: {e}")
+    return settings
+
+
 def resolve_music_dir():
     """Resolve music library root from config/env with robust fallback."""
     config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
@@ -2360,16 +2385,20 @@ def _normalize_album_artist_for_path(value):
 
 
 def _is_musicbrainz_backed(queue_item):
-    """Return True when a queue item was explicitly tied to a MusicBrainz release
-    via the MusicBrainz search modal.
+    """Return True when a queue item is MBID-backed and eligible for MB flow.
 
-    Requires ``release_source='musicbrainz'`` to be set — a field that is only
-    written by the MB modal search routes (``api_queue_apply_mbid_match``,
-    ``api_queue_add_batch`` with MB data, etc.).  Items that merely contain a
-    UUID-shaped ``release_id`` from a non-MB source are intentionally excluded
-    so that fuzzy-matched or auto-discovered items do not bypass manual approval.
+    Primary signal is ``release_source='musicbrainz'``. As a fallback for legacy
+    or partially migrated rows, accept valid UUID-form MBIDs in ``release_mbid``
+    or ``recording_mbid``.
     """
-    return str(queue_item.get('release_source') or '').strip().lower() == 'musicbrainz'
+    source = str(queue_item.get('release_source') or '').strip().lower()
+    if source == 'musicbrainz':
+        return True
+
+    mbid_pattern = r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+    release_mbid = str(queue_item.get('release_mbid') or '').strip()
+    recording_mbid = str(queue_item.get('recording_mbid') or '').strip()
+    return bool(re.match(mbid_pattern, release_mbid) or re.match(mbid_pattern, recording_mbid))
 
 
 def _is_full_album_ready_for_move(queue_item, cursor=None, placeholder=None,
@@ -4774,6 +4803,8 @@ def auto_discover_and_queue_files():
         'queued': 0,
         'already_in_queue': 0,
         'already_in_library': 0,
+        'skipped_unmatched': 0,
+        'unmatched_folders': 0,
         'folder_auto_matches': 0,
         'folder_auto_match_tracks_queued': 0,
         'duplicate_files_deleted': 0,
@@ -4799,6 +4830,8 @@ def auto_discover_and_queue_files():
             return stats
 
         cleanup_settings = get_downloads_duplicate_cleanup_settings()
+        auto_discover_settings = get_auto_discover_settings()
+        unmatched_folder_paths = set()
 
         # Remove leftover empty folders before scanning files.
         if cleanup_settings.get("prune_empty_folders", True):
@@ -4852,7 +4885,7 @@ def auto_discover_and_queue_files():
                     col_names.append(str(d))
             return [dict(zip(col_names, r)) for r in rows]
 
-        def _find_library_track_id(artist_value, album_value, title_value, album_artist_value=None):
+        def _find_library_track(artist_value, album_value, title_value, album_artist_value=None):
             # psycopg2 treats bare '%' in a query string as a parameter
             # placeholder; use '%%' so it becomes a literal '%' after
             # parameter substitution.  SQLite does not apply this escaping.
@@ -4876,7 +4909,12 @@ def auto_discover_and_queue_files():
                 album_value,
                 album_artist_value,
             )
-            return _row_get(valid_row, 'id', 0, None) if valid_row else None
+            if not valid_row:
+                return None
+            return {
+                'id': _row_get(valid_row, 'id', 0, None),
+                'file_path': _row_get(valid_row, 'file_path', 1, None),
+            }
 
         def _find_library_path_match(source_full_path):
             """Location-based match: /downloads/<rel> -> /music/<rel>."""
@@ -5186,7 +5224,12 @@ def auto_discover_and_queue_files():
                 # file.  On error we reset the SAVEPOINT so the cursor is
                 # ready for the next SQL statement.
                 try:
-                    collection_track_id = None
+                    collection_match = _find_library_track(
+                        artist,
+                        album,
+                        title,
+                        album_artist,
+                    )
                 except Exception as _lib_err:
                     logger.debug(
                         f"[AUTO-DISCOVER] Library check failed for {filename}: {_lib_err}"
@@ -5200,11 +5243,16 @@ def auto_discover_and_queue_files():
                                 conn.rollback()
                             except Exception:
                                 pass
-                    collection_track_id = None
+                    collection_match = None
                 location_match_path = _find_library_path_match(full_path)
-                if location_match_path:
+                if collection_match or location_match_path:
                     stats['already_in_library'] += 1
-                    logger.debug(f"Track already in library by location: {location_match_path}")
+                    matched_file_path = location_match_path or (collection_match.get('file_path') if collection_match else None)
+                    collection_track_id = collection_match.get('id') if collection_match else None
+                    logger.debug(
+                        f"Track already in library: {artist} - {title} "
+                        f"(track_id={collection_track_id}, path={matched_file_path})"
+                    )
 
                     execute_write_with_retry(
                         cursor,
@@ -5213,7 +5261,7 @@ def auto_discover_and_queue_files():
                         UPDATE download_queue
                         SET status = 'in_collection',
                             in_collection = {placeholder},
-                            collection_track_id = NULL,
+                            collection_track_id = {placeholder},
                             collection_matched_at = CURRENT_TIMESTAMP,
                             matched_file_path = {placeholder},
                             found_filename = COALESCE(found_filename, {placeholder}),
@@ -5224,7 +5272,7 @@ def auto_discover_and_queue_files():
                           AND LOWER(title) = LOWER({placeholder})
                           AND status NOT IN ('completed', 'removed', 'cancelled', 'deleted', 'in_collection')
                     """,
-                        (1, location_match_path, filename, full_path, artist, album, title),
+                        (1, collection_track_id, matched_file_path, filename, full_path, artist, album, title),
                         context="auto_discover in-library update"
                     )
 
@@ -5264,7 +5312,8 @@ def auto_discover_and_queue_files():
 
                 if matched_pending:
                     # File belongs to an existing queue item - update it and
-                    # move to /music if the item is MusicBrainz-backed.
+                    # move to /music. MusicBrainz-backed items still wait until
+                    # the full release is ready so compilation metadata stays consistent.
                     item_for_move = dict(matched_pending)
                     item_for_move['file_path'] = full_path
                     # Enrich with discovered file's metadata where queue item is sparse
@@ -5281,12 +5330,13 @@ def auto_discover_and_queue_files():
                         imported_at=datetime.now().isoformat()
                     )
                     if updated:
-                        # Only auto-move items that were explicitly added via the
-                        # MusicBrainz search UI (release_source='musicbrainz') AND only
-                        # when every sibling track for the same release is completed.
-                        if not _is_musicbrainz_backed(matched_pending):
+                        is_musicbrainz_item = _is_musicbrainz_backed(matched_pending)
+
+                        # Keep release-level gating for MusicBrainz imports, but
+                        # keep non-MBID matches as manual approvals.
+                        if not is_musicbrainz_item:
                             logger.info(
-                                f"[AUTO-DISCOVER] Queue {matched_pending['id']}: not from MusicBrainz search — "
+                                f"[AUTO-DISCOVER] Queue {matched_pending['id']}: not MBID-backed — "
                                 f"leaving as completed for manual approval"
                             )
                         elif not _is_full_album_ready_for_move(matched_pending, cursor=cursor, placeholder=placeholder):
@@ -5302,28 +5352,29 @@ def auto_discover_and_queue_files():
                                     f"claimed by another process — skipping"
                                 )
                             else:
-                                # Apply the stored MusicBrainz metadata to the file before moving.
-                                try:
-                                    from post_download_processor import update_file_metadata_with_albumart
-                                    stored_metadata = {
-                                        'title': item_for_move.get('title'),
-                                        'artist': item_for_move.get('artist'),
-                                        'album_artist': item_for_move.get('album_artist') or item_for_move.get('artist'),
-                                        'album': item_for_move.get('album'),
-                                        'year': item_for_move.get('year'),
-                                        'track_number': item_for_move.get('track_number'),
-                                        'disc_number': item_for_move.get('disc_number'),
-                                        'release_mbid': item_for_move.get('release_mbid') or item_for_move.get('release_id'),
-                                        'recording_mbid': item_for_move.get('recording_mbid'),
-                                    }
-                                    update_file_metadata_with_albumart(full_path, stored_metadata)
-                                    logger.info(
-                                        f"[AUTO-DISCOVER] Queue {matched_pending['id']}: applied stored MusicBrainz metadata to file"
-                                    )
-                                except Exception as meta_err:
-                                    logger.warning(
-                                        f"[AUTO-DISCOVER] Queue {matched_pending['id']}: could not apply stored metadata before move: {meta_err}"
-                                    )
+                                if is_musicbrainz_item:
+                                    # Apply the stored MusicBrainz metadata to the file before moving.
+                                    try:
+                                        from post_download_processor import update_file_metadata_with_albumart
+                                        stored_metadata = {
+                                            'title': item_for_move.get('title'),
+                                            'artist': item_for_move.get('artist'),
+                                            'album_artist': item_for_move.get('album_artist') or item_for_move.get('artist'),
+                                            'album': item_for_move.get('album'),
+                                            'year': item_for_move.get('year'),
+                                            'track_number': item_for_move.get('track_number'),
+                                            'disc_number': item_for_move.get('disc_number'),
+                                            'release_mbid': item_for_move.get('release_mbid') or item_for_move.get('release_id'),
+                                            'recording_mbid': item_for_move.get('recording_mbid'),
+                                        }
+                                        update_file_metadata_with_albumart(full_path, stored_metadata)
+                                        logger.info(
+                                            f"[AUTO-DISCOVER] Queue {matched_pending['id']}: applied stored MusicBrainz metadata to file"
+                                        )
+                                    except Exception as meta_err:
+                                        logger.warning(
+                                            f"[AUTO-DISCOVER] Queue {matched_pending['id']}: could not apply stored metadata before move: {meta_err}"
+                                        )
                                 move_result = move_single_track_to_music_dir(item_for_move)
                                 if move_result['success']:
                                     update_queue_item(
@@ -5471,6 +5522,15 @@ def auto_discover_and_queue_files():
                     continue
 
                 # No pending queue item or album group matches → add as 'unmatched'
+                if not auto_discover_settings.get("queue_unmatched_discovered_files", False):
+                    stats['skipped_unmatched'] += 1
+                    unmatched_folder_paths.add(folder_path)
+                    logger.info(
+                        f"[AUTO-DISCOVER] Skipping unmatched local import file (not queued): "
+                        f"{file_info['rel_path']}"
+                    )
+                    continue
+
                 execute_write_with_retry(
                     cursor,
                     conn,
@@ -5601,14 +5661,18 @@ def auto_discover_and_queue_files():
                 stats['errors'].append(error_msg)
         
         conn.close()
+        stats['unmatched_folders'] = len(unmatched_folder_paths)
 
         # After per-file inserts, auto-match large unmatched folders and promote
         # them into queue-ready discovered rows when confidence is high.
-        folder_auto_stats = _auto_match_large_unmatched_folders(downloads_dir, min_track_count=9)
-        stats['folder_auto_matches'] = int(folder_auto_stats.get('matched_folders', 0) or 0)
-        stats['folder_auto_match_tracks_queued'] = int(folder_auto_stats.get('updated_tracks', 0) or 0)
-        if folder_auto_stats.get('errors'):
-            stats['errors'].extend(folder_auto_stats.get('errors') or [])
+        if auto_discover_settings.get("enable_large_folder_auto_match", False):
+            folder_auto_stats = _auto_match_large_unmatched_folders(downloads_dir, min_track_count=9)
+            stats['folder_auto_matches'] = int(folder_auto_stats.get('matched_folders', 0) or 0)
+            stats['folder_auto_match_tracks_queued'] = int(folder_auto_stats.get('updated_tracks', 0) or 0)
+            if folder_auto_stats.get('errors'):
+                stats['errors'].extend(folder_auto_stats.get('errors') or [])
+        else:
+            logger.info("[AUTO-DISCOVER] Large-folder auto-match disabled; unmatched files remain folder-reviewable")
         
         log_queue_event(
             'info',
