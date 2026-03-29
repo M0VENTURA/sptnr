@@ -4031,23 +4031,46 @@ def _resolve_active_navidrome_user_config(cfg):
 
 def _ensure_recommendation_candidates_table(conn):
     cursor = conn.cursor()
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS recommendation_candidates (
-            candidate_id TEXT PRIMARY KEY,
-            app_user TEXT NOT NULL,
-            generator_key TEXT NOT NULL,
-            candidate_index INTEGER NOT NULL DEFAULT 0,
-            playlist_name TEXT NOT NULL,
-            payload_json TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            refreshed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """
-    )
-    cursor.execute(
-        "CREATE INDEX IF NOT EXISTS idx_recommendation_candidates_user_generator ON recommendation_candidates (app_user, generator_key, candidate_index)"
-    )
+    lock_acquired = False
+
+    if _is_postgres_connection(conn):
+        cursor.execute("SELECT pg_advisory_lock(hashtext(%s))", ("recommendation_candidates_schema",))
+        lock_acquired = True
+
+    try:
+        cursor.execute("SAVEPOINT sptnr_reco_candidates_ddl")
+        try:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS recommendation_candidates (
+                    candidate_id TEXT PRIMARY KEY,
+                    app_user TEXT NOT NULL,
+                    generator_key TEXT NOT NULL,
+                    candidate_index INTEGER NOT NULL DEFAULT 0,
+                    playlist_name TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    refreshed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_recommendation_candidates_user_generator ON recommendation_candidates (app_user, generator_key, candidate_index)"
+            )
+        except Exception as exc:
+            cursor.execute("ROLLBACK TO SAVEPOINT sptnr_reco_candidates_ddl")
+            message = str(exc).lower()
+            if "already exists" not in message and "pg_type_typname_nsp_index" not in message:
+                raise
+        finally:
+            cursor.execute("RELEASE SAVEPOINT sptnr_reco_candidates_ddl")
+    finally:
+        if lock_acquired:
+            try:
+                cursor.execute("SELECT pg_advisory_unlock(hashtext(%s))", ("recommendation_candidates_schema",))
+            except Exception:
+                pass
+
     conn.commit()
 
 
@@ -22314,7 +22337,7 @@ def api_queue_imported():
                    import_group, import_type, imported_at, file_path, found_filename,
                    release_id, release_source
             FROM download_queue 
-            WHERE status = 'completed' AND imported_at IS NOT NULL
+            WHERE status IN ('imported', 'completed') AND imported_at IS NOT NULL
               AND release_id IS NOT NULL
             ORDER BY imported_at DESC
             LIMIT {placeholder}
@@ -22340,16 +22363,29 @@ def api_queue_update(queue_id):
     try:
         from download_queue_manager import update_queue_item, mark_as_failed
         
-        data = request.get_json()
-        action = data.get('action')  # 'searching', 'downloading', 'failed', 'completed'
+        data = request.get_json(silent=True) or {}
+        action = (data.get('action') or '').strip().lower()
+        allowed_actions = {
+            'queued', 'queried', 'searching', 'downloading',
+            'completed', 'imported', 'failed', 'unmatched',
+            'matched', 'copy_recommended', 'in_collection',
+            'cancelled', 'deleted', 'pending_match', 'moving',
+        }
+
+        if action not in allowed_actions:
+            return jsonify({
+                "error": f"Invalid action '{action}'. Allowed: {', '.join(sorted(allowed_actions))}"
+            }), 400
         
         if action == 'failed':
             reason = data.get('reason', 'Unknown error')
             retry_delay = int(data.get('retry_delay_minutes', 30))
             item = mark_as_failed(queue_id, reason, retry_delay)
         else:
-            # Generic update
-            item = update_queue_item(queue_id, status=action)
+            update_kwargs = {'status': action}
+            if action == 'imported':
+                update_kwargs['imported_at'] = datetime.now().isoformat()
+            item = update_queue_item(queue_id, **update_kwargs)
         
         if item:
             return jsonify({

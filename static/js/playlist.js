@@ -8,6 +8,7 @@
 // ===============================
 let currentPlaylistId = null;
 let currentPlaylistData = null;
+let currentPlaylistType = null;
 let currentSmartPlaylistId = null;
 let currentSmartPlaylistData = null;
 let currentImportData = null;
@@ -85,11 +86,28 @@ document.addEventListener('DOMContentLoaded', function() {
 
 function setupBrowsePageListeners() {
   try {
+    const browsePlaylistSelect = document.getElementById('browsePlaylistSelect');
+    if (browsePlaylistSelect) {
+      browsePlaylistSelect.addEventListener('change', function() {
+        if (!this.value) return;
+        const selectedOption = this.options[this.selectedIndex];
+        const playlistType = selectedOption?.dataset?.playlistType || 'regular';
+        const downloaderSelect = document.getElementById('playlistFileSelect');
+        if (downloaderSelect) downloaderSelect.value = this.value;
+        loadNavidromePlaylistDetail(this.value, playlistType);
+      });
+    }
+  } catch (e) {
+    console.warn('[Playlist Manager] Could not set up browsePlaylistSelect listener:', e);
+  }
+
+  try {
     const smartPlaylistSelect = document.getElementById('smartPlaylistSelect');
     if (smartPlaylistSelect) {
       smartPlaylistSelect.addEventListener('change', function() {
         if (this.value) {
-          document.getElementById('regularPlaylistSelect').value = '';
+          const regularPlaylistSelect = document.getElementById('regularPlaylistSelect');
+          if (regularPlaylistSelect) regularPlaylistSelect.value = '';
           const downloaderSelect = document.getElementById('playlistFileSelect');
           if (downloaderSelect) downloaderSelect.value = this.value;
           loadNavidromePlaylistDetail(this.value, 'smart');
@@ -105,7 +123,8 @@ function setupBrowsePageListeners() {
     if (regularPlaylistSelect) {
       regularPlaylistSelect.addEventListener('change', function() {
         if (this.value) {
-          document.getElementById('smartPlaylistSelect').value = '';
+          const smartPlaylistSelect = document.getElementById('smartPlaylistSelect');
+          if (smartPlaylistSelect) smartPlaylistSelect.value = '';
           const downloaderSelect = document.getElementById('playlistFileSelect');
           if (downloaderSelect) downloaderSelect.value = this.value;
           loadNavidromePlaylistDetail(this.value, 'regular');
@@ -183,45 +202,88 @@ async function loadNavidromePlaylists() {
     const response = await fetch('/api/navidrome/playlists');
     const data = await response.json();
     console.log('[Playlist Manager] API response:', data);
-    
+
+    const combinedSelect = document.getElementById('browsePlaylistSelect');
     const smartSelect = document.getElementById('smartPlaylistSelect');
     const regularSelect = document.getElementById('regularPlaylistSelect');
-    
-    if (!smartSelect || !regularSelect) {
+
+    if (!combinedSelect && !smartSelect && !regularSelect) {
       console.error('[Playlist Manager] Could not find playlist select elements');
       return;
     }
 
-    smartSelect.innerHTML = '<option value="">Select a smart playlist...</option>';
-    regularSelect.innerHTML = '<option value="">Select a regular playlist...</option>';
+    if (combinedSelect) {
+      combinedSelect.innerHTML = '<option value="">Select a playlist...</option>';
+    }
+    if (smartSelect) {
+      smartSelect.innerHTML = '<option value="">Select a smart playlist...</option>';
+    }
+    if (regularSelect) {
+      regularSelect.innerHTML = '<option value="">Select a regular playlist...</option>';
+    }
     
     if (data.error) {
       console.error('[Playlist Manager] API Error:', data.error);
-      smartSelect.innerHTML = '<option value="">Error: ' + data.error + '</option>';
-      regularSelect.innerHTML = '<option value="">Error: ' + data.error + '</option>';
+      if (combinedSelect) combinedSelect.innerHTML = '<option value="">Error: ' + data.error + '</option>';
+      if (smartSelect) smartSelect.innerHTML = '<option value="">Error: ' + data.error + '</option>';
+      if (regularSelect) regularSelect.innerHTML = '<option value="">Error: ' + data.error + '</option>';
       return;
     }
-    
+
+    if (combinedSelect) {
+      const smartGroup = document.createElement('optgroup');
+      smartGroup.label = 'Smart Playlists';
+      const regularGroup = document.createElement('optgroup');
+      regularGroup.label = 'Regular Playlists';
+
+      if (Array.isArray(data.smart)) {
+        data.smart.forEach(pl => {
+          const opt = document.createElement('option');
+          opt.value = pl.id;
+          opt.textContent = pl.name;
+          opt.dataset.playlistType = 'smart';
+          smartGroup.appendChild(opt);
+        });
+      }
+      if (Array.isArray(data.regular)) {
+        data.regular.forEach(pl => {
+          const opt = document.createElement('option');
+          opt.value = pl.id;
+          opt.textContent = pl.name;
+          opt.dataset.playlistType = 'regular';
+          regularGroup.appendChild(opt);
+        });
+      }
+
+      if (smartGroup.children.length > 0) combinedSelect.appendChild(smartGroup);
+      if (regularGroup.children.length > 0) combinedSelect.appendChild(regularGroup);
+    }
+
     if (data.smart && data.smart.length > 0) {
-      data.smart.forEach(pl => {
-        const opt = document.createElement('option');
-        opt.value = pl.id;
-        opt.textContent = pl.name;
-        smartSelect.appendChild(opt);
-      });
+      if (smartSelect) {
+        data.smart.forEach(pl => {
+          const opt = document.createElement('option');
+          opt.value = pl.id;
+          opt.textContent = pl.name;
+          smartSelect.appendChild(opt);
+        });
+      }
     }
     if (data.regular && data.regular.length > 0) {
-      data.regular.forEach(pl => {
-        const opt = document.createElement('option');
-        opt.value = pl.id;
-        opt.textContent = pl.name;
-        regularSelect.appendChild(opt);
-      });
+      if (regularSelect) {
+        data.regular.forEach(pl => {
+          const opt = document.createElement('option');
+          opt.value = pl.id;
+          opt.textContent = pl.name;
+          regularSelect.appendChild(opt);
+        });
+      }
     }
     if ((!data.smart || data.smart.length === 0) && (!data.regular || data.regular.length === 0)) {
       console.warn('[Playlist Manager] No playlists found in Navidrome');
-      smartSelect.innerHTML = '<option value="">No smart playlists found</option>';
-      regularSelect.innerHTML = '<option value="">No regular playlists found</option>';
+      if (combinedSelect) combinedSelect.innerHTML = '<option value="">No playlists found</option>';
+      if (smartSelect) smartSelect.innerHTML = '<option value="">No smart playlists found</option>';
+      if (regularSelect) regularSelect.innerHTML = '<option value="">No regular playlists found</option>';
     }
   } catch (e) {
     console.error('[Playlist Manager] Failed to load Navidrome playlists:', e);
@@ -230,6 +292,7 @@ async function loadNavidromePlaylists() {
 
 async function loadNavidromePlaylistDetail(playlistId, type) {
   currentPlaylistId = playlistId;
+  currentPlaylistType = type || 'regular';
   
   try {
     const response = await fetch(`/api/navidrome/playlist/${playlistId}`);
@@ -310,7 +373,7 @@ function editPlaylist() {
 
 function refreshPlaylistDetails() {
   if (currentPlaylistId) {
-    const type = document.getElementById('smartPlaylistSelect')?.value ? 'smart' : 'regular';
+    const type = currentPlaylistType || 'regular';
     loadNavidromePlaylistDetail(currentPlaylistId, type);
   }
 }

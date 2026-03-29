@@ -1606,7 +1606,8 @@ def update_queue_status(queue_id, status, **kwargs):
         for key, value in kwargs.items():
             if key in ['found_filename', 'file_path', 'failure_reason', 'retry_count',
                        'last_failure_time', 'source_id', 'source', 'matched_file_path',
-                       'in_collection', 'collection_track_id', 'source_music_path']:
+                       'in_collection', 'collection_track_id', 'source_music_path',
+                       'imported_at']:
                 updates.append(f"{key} = {placeholder}")
                 params.append(value)
         
@@ -3445,6 +3446,7 @@ def check_completed_downloads():
                                         item_id,
                                         status='imported',
                                         file_path=target_path,
+                                        imported_at=datetime.now().isoformat(),
                                         copied_individually=1,
                                         copied_individually_at=datetime.now().isoformat()
                                     )
@@ -3578,11 +3580,12 @@ def process_matched_items(limit=5):
                     dq_update(
                         item_id,
                         status='imported',
+                        imported_at=datetime.now().isoformat(),
                         copied_individually=1,
                         copied_individually_at=datetime.now().isoformat(),
                     )
                 except Exception:
-                    update_queue_status(item_id, 'imported')
+                    update_queue_status(item_id, 'imported', imported_at=datetime.now().isoformat())
 
                 logger.info(
                     f"[MATCHED_MOVE] Queue {item_id}: moved to music and marked as imported: "
@@ -3749,6 +3752,7 @@ def process_completed_mbid_items(limit=10):
                         item_id,
                         status='imported',
                         file_path=target_path,
+                        imported_at=datetime.now().isoformat(),
                         copied_individually=1,
                         copied_individually_at=datetime.now().isoformat(),
                     )

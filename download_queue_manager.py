@@ -1817,6 +1817,10 @@ def update_queue_item(queue_id, **kwargs):
             updates = []
             params = []
 
+            # Keep imported timestamps consistent across all call sites.
+            if kwargs.get('status') == 'imported' and not kwargs.get('imported_at'):
+                kwargs['imported_at'] = datetime.now().isoformat()
+
             # Guardrail: completed rows must always have a file_path, either newly
             # provided or already persisted on the queue item.
             if kwargs.get('status') == 'completed':
@@ -2104,6 +2108,8 @@ def migrate_existing_queue_items_to_grouped_setup(limit=None):
     - Backfill `release_source='musicbrainz'` when `release_id` looks like an MBID
     - Backfill `import_type='album'` for rows tied to a release/album, otherwise `song`
     - Backfill missing `import_group` with stable release/album keys
+    - Normalize invalid/legacy status values to canonical queue statuses
+    - Backfill missing `imported_at` for `status='imported'`
 
     Args:
         limit: Optional maximum number of rows to migrate (most-recent first)
@@ -2122,7 +2128,7 @@ def migrate_existing_queue_items_to_grouped_setup(limit=None):
         fetch_sql = f"""
             SELECT id, artist, title, album, album_artist, source,
                    import_group, import_type, release_id, release_source,
-                   track_number, status
+                   track_number, status, imported_at
             FROM download_queue
             ORDER BY created_at DESC, id DESC
         """
@@ -2137,7 +2143,7 @@ def migrate_existing_queue_items_to_grouped_setup(limit=None):
         selected_columns = [
             'id', 'artist', 'title', 'album', 'album_artist', 'source',
             'import_group', 'import_type', 'release_id', 'release_source',
-            'track_number', 'status'
+            'track_number', 'status', 'imported_at'
         ]
 
         def _row_value(row, key, idx):
@@ -2176,7 +2182,24 @@ def migrate_existing_queue_items_to_grouped_setup(limit=None):
         release_source_updated = 0
         import_type_updated = 0
         import_group_updated = 0
+        status_updated = 0
+        imported_at_backfilled = 0
         total_updated_rows = 0
+
+        valid_statuses = {
+            'queued', 'queried', 'searching', 'downloading',
+            'completed', 'imported', 'failed', 'unmatched',
+            'matched', 'copy_recommended', 'in_collection',
+            'cancelled', 'deleted', 'pending_match', 'moving',
+            'discovered', 'possible_duplicate', 'duplicate',
+        }
+        status_aliases = {
+            'in_progress': 'downloading',
+            'processing': 'downloading',
+            'done': 'completed',
+            'finished': 'completed',
+            'ready': 'queued',
+        }
 
         for row in rows:
             row_id = _row_value(row, 'id', 0)
@@ -2189,6 +2212,8 @@ def migrate_existing_queue_items_to_grouped_setup(limit=None):
             release_id = _norm_text(_row_value(row, 'release_id', 8))
             release_source = _norm_text(_row_value(row, 'release_source', 9)).lower()
             track_number = _norm_text(_row_value(row, 'track_number', 10))
+            status = _norm_text(_row_value(row, 'status', 11)).lower()
+            imported_at = _row_value(row, 'imported_at', 12)
 
             updates = {}
 
@@ -2220,6 +2245,20 @@ def migrate_existing_queue_items_to_grouped_setup(limit=None):
                 else:
                     updates['import_group'] = f"legacy_item_{row_id}"
 
+            # Normalize legacy/invalid statuses so rows don't get stranded.
+            normalized_status = status_aliases.get(status, status)
+            if not normalized_status:
+                normalized_status = 'queued'
+            if normalized_status not in valid_statuses:
+                normalized_status = 'queued'
+            if normalized_status != status:
+                updates['status'] = normalized_status
+
+            # Ensure imported rows always carry imported_at.
+            effective_status = updates.get('status', status)
+            if effective_status == 'imported' and not imported_at:
+                updates['imported_at'] = datetime.now().isoformat()
+
             if not updates:
                 continue
 
@@ -2246,6 +2285,10 @@ def migrate_existing_queue_items_to_grouped_setup(limit=None):
                     import_type_updated += 1
                 if 'import_group' in updates:
                     import_group_updated += 1
+                if 'status' in updates:
+                    status_updated += 1
+                if 'imported_at' in updates:
+                    imported_at_backfilled += 1
 
         conn.commit()
         conn.close()
@@ -2266,6 +2309,8 @@ def migrate_existing_queue_items_to_grouped_setup(limit=None):
             "release_source_updated": release_source_updated,
             "import_type_updated": import_type_updated,
             "import_group_updated": import_group_updated,
+            "status_updated": status_updated,
+            "imported_at_backfilled": imported_at_backfilled,
             "scanned_rows": len(rows),
         }
     except Exception as e:

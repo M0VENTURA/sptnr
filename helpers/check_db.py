@@ -20,8 +20,21 @@ required_columns = {}
 def _ensure_table(cursor, table_name: str, ddl: str) -> None:
     if _table_exists(cursor, table_name):
         return
-    cursor.execute(ddl)
-    logging.info("Created missing PostgreSQL table: %s", table_name)
+    cursor.execute("SAVEPOINT sptnr_schema_table_create")
+    try:
+        cursor.execute(ddl)
+        logging.info("Created missing PostgreSQL table: %s", table_name)
+    except Exception as exc:
+        # CREATE TABLE IF NOT EXISTS can still race under concurrent startup.
+        # Roll back this statement and continue when another worker won the race.
+        cursor.execute("ROLLBACK TO SAVEPOINT sptnr_schema_table_create")
+        message = str(exc).lower()
+        if "already exists" in message or "pg_type_typname_nsp_index" in message:
+            logging.info("PostgreSQL table %s already exists (concurrent create), continuing", table_name)
+        else:
+            raise
+    finally:
+        cursor.execute("RELEASE SAVEPOINT sptnr_schema_table_create")
 
 
 def update_schema(_db_path: str | None = None) -> None:
@@ -33,6 +46,7 @@ def update_schema(_db_path: str | None = None) -> None:
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        cursor.execute("SELECT pg_advisory_lock(hashtext(%s))", ("sptnr_schema_bootstrap",))
 
         _ensure_table(
             cursor,
@@ -91,6 +105,12 @@ def update_schema(_db_path: str | None = None) -> None:
         logging.error("PostgreSQL schema initialization failed: %s", exc)
         raise
     finally:
+        if conn:
+            try:
+                cursor = conn.cursor()
+                cursor.execute("SELECT pg_advisory_unlock(hashtext(%s))", ("sptnr_schema_bootstrap",))
+            except Exception:
+                pass
         if conn:
             try:
                 conn.close()
