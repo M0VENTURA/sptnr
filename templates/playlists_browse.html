@@ -14,35 +14,6 @@
     <p class="text-muted mb-0">View, manage, and download playlists from your Navidrome library</p>
   </div>
 
-  <!-- Recommended Playlists Section -->
-  <div class="mb-4">
-    <div class="d-flex justify-content-between align-items-center mb-3">
-      <h3 class="h5 mb-0">
-        <i class="bi bi-lightbulb"></i> Recommended Playlists
-      </h3>
-      <button class="btn btn-sm btn-outline-secondary" onclick="loadRecommendedPlaylists()" title="Refresh recommendations">
-        <i class="bi bi-arrow-clockwise"></i>
-      </button>
-    </div>
-
-    <div id="loadingRecommendedPlaylists" class="text-center py-5">
-      <div class="spinner-border text-primary" role="status">
-        <span class="visually-hidden">Loading...</span>
-      </div>
-      <p class="text-muted mt-3">Loading personalized recommendations...</p>
-    </div>
-
-    <div id="recommendedPlaylistsContainer" style="display: none;">
-      <!-- Recommendations will be loaded here -->
-    </div>
-
-    <div id="recommendedPlaylistsError" style="display: none;">
-      <div class="alert alert-warning">
-        <i class="bi bi-exclamation-triangle"></i> Unable to load recommendations. Please check your Last.fm and ListenBrainz configuration.
-      </div>
-    </div>
-  </div>
-
   <!-- Playlist Selection -->
   <div class="row mb-4">
     <div class="col-12">
@@ -213,6 +184,42 @@
 
         <div id="downloaderEmpty" class="alert alert-info">
           <i class="bi bi-info-circle"></i> Select a playlist file to get started
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Recommendation Generators -->
+  <div class="mb-4">
+    <div class="card">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0">
+          <i class="bi bi-lightbulb"></i> Recommendation Generators
+        </h5>
+        <button class="btn btn-sm btn-outline-secondary" onclick="loadRecommendedPlaylists(true)" title="Refresh generators">
+          <i class="bi bi-arrow-clockwise"></i>
+        </button>
+      </div>
+      <div class="card-body">
+        <p class="text-muted mb-4">
+          Build playlists from the recommendation generators already available in sptnr. Each section below represents a different generator.
+        </p>
+
+        <div id="loadingRecommendedPlaylists" class="text-center py-5">
+          <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Loading...</span>
+          </div>
+          <p class="text-muted mt-3">Loading recommendation generators...</p>
+        </div>
+
+        <div id="recommendedPlaylistsContainer" style="display: none;">
+          <!-- Recommendation generator sections will be loaded here -->
+        </div>
+
+        <div id="recommendedPlaylistsError" style="display: none;">
+          <div class="alert alert-warning mb-0">
+            <i class="bi bi-exclamation-triangle"></i> Unable to load recommendation generators. Please check your Last.fm and ListenBrainz configuration.
+          </div>
         </div>
       </div>
     </div>
@@ -400,6 +407,13 @@
 </style>
 
 <script>
+  window.recommendedPlaylistsData = {
+    similar_artists: [],
+    top_genres: [],
+    mood_playlists: [],
+    discovery: []
+  };
+
   // Load recommended playlists on page load
   document.addEventListener('DOMContentLoaded', function() {
     loadRecommendedPlaylists();
@@ -516,7 +530,7 @@
     poll();
   }
 
-  async function loadRecommendedPlaylists() {
+  async function loadRecommendedPlaylists(forceRefresh = false) {
     const loading = document.getElementById('loadingRecommendedPlaylists');
     const container = document.getElementById('recommendedPlaylistsContainer');
     const error = document.getElementById('recommendedPlaylistsError');
@@ -526,7 +540,8 @@
     error.style.display = 'none';
 
     try {
-      const response = await fetch('/api/recommended-playlists');
+      const query = forceRefresh ? '?refresh=1' : '';
+      const response = await fetch(`/api/recommended-playlists${query}`);
       const data = await response.json();
 
       if (!data.success) {
@@ -534,6 +549,7 @@
       }
 
       const recs = data.recommendations;
+      window.recommendedPlaylistsData = recs || {};
       let html = '<div class="row g-3">';
 
       // Similar Artists Playlists
@@ -636,15 +652,7 @@
       // Show a loading toast or confirmation
       showToast('Creating playlist: ' + playlistName, 'info');
 
-      // Fetch the current recommendations to get the data for this specific playlist
-      const response = await fetch('/api/recommended-playlists');
-      const data = await response.json();
-
-      if (!data.success) {
-        throw new Error('Failed to load recommendations');
-      }
-
-      const recs = data.recommendations;
+      const recs = window.recommendedPlaylistsData || {};
       let selectedPlaylist = null;
 
       // Find the selected playlist
@@ -662,44 +670,28 @@
         throw new Error('Playlist data not found');
       }
 
-      // Use the existing create-playlist endpoint with the appropriate data
-      const createResponse = await fetch('/api/navidrome/playlists', {
+      const trackIds = Array.isArray(selectedPlaylist.track_ids) ? selectedPlaylist.track_ids : [];
+      const createResponse = await fetch('/api/playlist/create-custom', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
           name: playlistName,
-          comment: selectedPlaylist.description || `Generated ${type} playlist`,
-          public: true
+          description: selectedPlaylist.description || `Generated ${type} playlist`,
+          is_public: true,
+          songs: trackIds.map(id => ({ id }))
         })
       });
 
       const createData = await createResponse.json();
 
-      if (!createData.id) {
-        throw new Error('Failed to create playlist in Navidrome');
+      if (!createResponse.ok || !createData.success) {
+        throw new Error(createData.error || 'Failed to create playlist in Navidrome');
       }
 
-      const playlistId = createData.id;
-
-      // Add tracks to the playlist
-      if (selectedPlaylist.track_ids && selectedPlaylist.track_ids.length > 0) {
-        // Batch add tracks to playlist
-        for (const trackId of selectedPlaylist.track_ids) {
-          await fetch(`/api/navidrome/playlist/${playlistId}/tracks`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              id: trackId
-            })
-          });
-        }
-      }
-
-      showToast(`Playlist "${playlistName}" created successfully with ${selectedPlaylist.track_count || 0} tracks!`, 'success');
+      const ownerText = createData.target_user ? ` for ${createData.target_user}` : '';
+      showToast(`Playlist "${playlistName}" created successfully with ${selectedPlaylist.track_count || trackIds.length || 0} tracks${ownerText}!`, 'success');
 
       // Refresh the playlist lists
       setTimeout(() => {

@@ -2829,7 +2829,7 @@ def detect_single_for_track(
                     mb_client.is_single,
                     API_CALL_TIMEOUT,
                     f"MusicBrainz single detection timed out after {API_CALL_TIMEOUT}s",
-                    lookup_title, artist
+                    lookup_title, artist, None, album_track_count
                 )
                 if result:
                     single_sources.append("musicbrainz")
@@ -2970,7 +2970,7 @@ def detect_single_for_track(
     has_iterative_zscore = "iterative_zscore" in single_sources
     has_discogs_single = "discogs" in single_sources
     has_discogs_video = "discogs_video" in single_sources
-    has_other_sources = any(s in single_sources for s in ["spotify", "musicbrainz", "lastfm"])
+    has_other_sources = any(s in single_sources for s in ["spotify", "musicbrainz", "lastfm", "radio_edit"])
 
     # NEW RULE: 2 medium sources = high confidence
     if has_discogs_single or len(medium_confidence_sources) >= 2:
@@ -6758,7 +6758,7 @@ def popularity_scan(
                         # Get all tracks for this album with metadata
                         # Note: Use COALESCE to handle album_artist grouping like singles detection does
                         cursor.execute(f"""
-                            SELECT id, title, artist, writer, mbid, file_path
+                            SELECT id, title, artist, writer, mbid, file_path, musicbrainz_album_mbid
                             FROM tracks
                             WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
                             ORDER BY COALESCE(track_number, 0), title
@@ -7104,6 +7104,7 @@ def popularity_scan(
                         medium_conf_eligible_sources = {
                             "spotify",
                             "spotify_album_type",
+                            "radio_edit",
                             "musicbrainz",
                             "musicbrainz_video",
                             "musicbrainz_compilation",
@@ -7118,6 +7119,7 @@ def popularity_scan(
                         # Discogs is intentionally the only high-confidence source.
                         high_conf_eligible_sources = {
                             "discogs",
+                            "radio_edit",
                         }
                         high_conf_source_count = len([s for s in single_sources if s in high_conf_eligible_sources]) if single_sources else 0
 

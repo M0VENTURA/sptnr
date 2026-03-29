@@ -253,11 +253,16 @@
                             <td class="text-center">{{ row.tracks_without_disc }}</td>
                             <td class="text-center text-muted small">{{ row.disc_value or '—' }}</td>
                             <td class="text-center">
+                                {% set looks_multi_disc = (row.distinct_disc_values|default(0)|int > 1) or (row.disc_value|string|int > 1) %}
                                 <button class="btn btn-sm btn-outline-warning"
                                         onclick="clearDiscNumber('{{ artist_name | e }}', '{{ row.album | e }}', {{ loop.index }})"
-                                        title="Remove disc number from {{ row.tracks_with_disc }} track(s) so all tracks are consistent">
+                                        {% if looks_multi_disc %}disabled{% endif %}
+                                        title="{% if looks_multi_disc %}Likely multi-disc release: review manually instead of clearing all disc numbers{% else %}Remove disc number from {{ row.tracks_with_disc }} track(s) so all tracks are consistent{% endif %}">
                                     <i class="bi bi-x-circle"></i> Clear disc #
                                 </button>
+                                {% if looks_multi_disc %}
+                                <div class="small text-danger mt-1">Manual review recommended (multi-disc)</div>
+                                {% endif %}
                             </td>
                         </tr>
                         {% endfor %}
@@ -907,7 +912,7 @@ function escapeHtml(str) {
 }
 
 async function clearDiscNumber(artist, album, rowIndex) {
-    if (!confirm(`Remove disc number from tracks in "${album}" that have it set?\n\nThis will clear the disc number tag in both the database and the audio files so all tracks are consistent, which prevents Navidrome showing this as multiple albums.`)) {
+    if (!confirm(`Remove disc number from tracks in "${album}" that have it set?\n\nUse this for single-disc albums where some tracks incorrectly have a disc number and others do not.\n\nThis updates both database values and audio file tags.`)) {
         return;
     }
     const btn = document.querySelector(`#disc-row-${rowIndex} button`);
@@ -926,6 +931,10 @@ async function clearDiscNumber(artist, album, rowIndex) {
         alert(`✓ Done — disc number cleared from ${result.cleared} track(s) in "${album}" (${result.files_updated} file(s) updated).`);
         location.reload();
     } catch (error) {
+        if (error && String(error.message || '').includes('multi-disc')) {
+            alert(`Could not clear disc number for "${album}": this appears to be a multi-disc release. Review track disc numbers manually.`);
+            return;
+        }
         if (btn) {
             btn.disabled = false;
             btn.innerHTML = '<i class="bi bi-x-circle"></i> Clear disc #';

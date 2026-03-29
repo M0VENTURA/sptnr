@@ -234,14 +234,14 @@ def get_source_confidence_settings(config_data: Optional[Dict] = None) -> Dict[s
         
     Returns:
         Dict mapping source names to confidence levels ('low', 'medium', 'high')
-        Default: all sources are 'medium' except Discogs which is 'high'
+        Default: all sources are 'medium' except Discogs and radio/single edit, which are 'high'
     """
     defaults = {
         'discogs': 'high',
         'musicbrainz': 'medium',
         'discogs_video': 'medium',
         'lastfm': 'medium',
-        'radio_edit': 'medium'
+        'radio_edit': 'high'
     }
     
     if not config_data:
@@ -339,6 +339,19 @@ def check_high_confidence_dynamic(
         return True
     
     return False
+
+
+def has_single_or_radio_edit_marker(title: str) -> bool:
+    """Return True when title contains canonical single/radio edit markers."""
+    if not title or not isinstance(title, str):
+        return False
+    return bool(
+        re.search(
+            r"\b(?:radio\s+(?:edit|mix|version)|single\s+(?:version|edit|mix))\b",
+            title,
+            re.IGNORECASE,
+        )
+    )
 
 
 # ============================================================================
@@ -1794,6 +1807,37 @@ def detect_single_enhanced(
     discogs_video_confirmed = False
     lastfm_single_confirmed = False
     artist_mbid = None  # Initialize for use in video/compilation checks
+
+    # Track canonical single/radio edit markers from title and Spotify result names.
+    # This source is configurable through source_radio_edit_confidence.
+    if has_single_or_radio_edit_marker(title):
+        radio_edit_found = True
+    elif spotify_results:
+        for spotify_result in spotify_results:
+            candidate_name = spotify_result.get('name', '') if isinstance(spotify_result, dict) else ''
+            if has_single_or_radio_edit_marker(candidate_name):
+                radio_edit_found = True
+                break
+
+    if radio_edit_found:
+        result['single_sources'].append('radio_edit')
+        result['single_sources_used'].append('radio_edit')
+        log_debug(f"[RADIO_EDIT] ✓ Found single/radio-edit marker for '{title}'")
+
+        if check_high_confidence_dynamic(
+            discogs_confirmed,
+            False,
+            False,
+            False,
+            True,
+            source_confidence_settings,
+        ):
+            log_debug(f"[DETECT] Stopping early with HIGH confidence from single/radio-edit marker")
+            result['single_status'] = 'high'
+            result['single_confidence'] = 'high'
+            result['is_single'] = True
+            result['single_confidence_score'] = 1.0
+            return result
     
     if musicbrainz_client and hasattr(musicbrainz_client, 'enabled') and musicbrainz_client.enabled:
         # OPTIMIZATION: Use z-scores from STAGE 2 to decide if we need expensive API calls

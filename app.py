@@ -62,6 +62,7 @@ except ImportError:
 from contextlib import closing
 from collections import Counter, OrderedDict
 import json
+import uuid
 import yaml
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response, send_file, session, abort, g, has_request_context
 from werkzeug.exceptions import HTTPException
@@ -1259,7 +1260,7 @@ def setup():
                 "source_musicbrainz_compilation_confidence": "medium",
                 "source_discogs_video_confidence": "medium",
                 "source_lastfm_confidence": "medium",
-                "source_radio_edit_confidence": "medium",
+                "source_radio_edit_confidence": "high",
             }
             weights = {"spotify": 0.10, "lastfm": 0.30, "listenbrainz": 0.35, "age": 0.25}
 
@@ -1439,6 +1440,9 @@ scan_process_combined = None  # Combined scan process (Navidrome + Popularity + 
 scan_process_missing_releases = None  # Missing releases scan process
 scan_process_mp3_import = None  # MP3 metadata import scan process
 scan_lock = threading.Lock()
+# Cache MB release metadata lookups so repeated album checks avoid redundant API calls.
+_mb_release_metadata_cache = {}
+_MB_RELEASE_CACHE_TTL_SECONDS = int(os.environ.get("MB_RELEASE_CACHE_TTL_SECONDS", "21600"))
 _QUEUE_NORMALIZE_COOLDOWN_SECONDS = int(os.environ.get("QUEUE_NORMALIZE_COOLDOWN_SECONDS", "300"))
 _queue_normalize_last_run_ts = 0.0
 _queue_normalize_gate_lock = threading.Lock()
@@ -1552,12 +1556,54 @@ def _start_download_queue_cleanup_scheduler():
 def _write_progress_file(path: str, scan_type: str, is_running: bool, extra: dict | None = None):
     """Persist minimal scan progress state so the dashboard can show status."""
     try:
-        payload = {"is_running": is_running, "scan_type": scan_type}
+        payload = {
+            "is_running": is_running,
+            "scan_type": scan_type,
+            "last_updated": datetime.now().isoformat(),
+        }
         if extra:
             payload.update(extra)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f)
+
+        # Keep a lightweight per-scan marker so restart resume logic can recover
+        # the last checkpoint even when the progress file status toggles.
+        try:
+            marker_scan_type = str(scan_type or "unknown").strip().lower().replace("-", "_")
+            marker_dir = os.path.join(os.path.dirname(path), "scan_resume_markers")
+            marker_path = os.path.join(marker_dir, f"{marker_scan_type}.json")
+            os.makedirs(marker_dir, exist_ok=True)
+
+            existing_current_artist = None
+            if os.path.exists(marker_path):
+                try:
+                    with open(marker_path, "r", encoding="utf-8") as marker_file:
+                        existing_marker = json.load(marker_file)
+                    existing_current_artist = existing_marker.get("current_artist")
+                except Exception:
+                    existing_current_artist = None
+
+            marker_payload = {
+                "scan_type": marker_scan_type,
+                "progress_path": path,
+                "is_running": bool(payload.get("is_running", False)),
+                "status": payload.get("status"),
+                "stop_requested": bool(payload.get("stop_requested", False)),
+                "last_updated": payload.get("last_updated") or datetime.now().isoformat(),
+                "marker_updated_at": datetime.now().isoformat(),
+            }
+
+            current_artist = payload.get("current_artist")
+            if current_artist:
+                marker_payload["current_artist"] = current_artist
+            elif existing_current_artist:
+                marker_payload["current_artist"] = existing_current_artist
+
+            with open(marker_path, "w", encoding="utf-8") as marker_file:
+                json.dump(marker_payload, marker_file)
+        except Exception as marker_err:
+            logging.debug(f"Failed to write scan marker for {scan_type}: {marker_err}")
     except Exception as e:
         logging.debug(f"Failed to write progress file {path}: {e}")
 
@@ -3381,6 +3427,9 @@ def _schedule_configured_startup_scan_launch():
                 return
 
             scan_type = str(features.get("startup_scan_type", "navidrome") or "navidrome").strip().lower()
+            if scan_type == "mood":
+                # Backward compatibility for older config values.
+                scan_type = "essentia-mood"
             restart = bool(features.get("startup_scan_restart", False))
             force_enabled = bool(features.get("force", False))
 
@@ -3388,7 +3437,7 @@ def _schedule_configured_startup_scan_launch():
                 "navidrome": ("scan_navidrome", "/scan/navidrome"),
                 "metadata": ("scan_mp3_import", "/scan/mp3-import"),
                 "popularity": ("scan_popularity_route", "/scan/popularity"),
-                "mood": ("scan_mood", "/scan/mood"),
+                "essentia-mood": ("scan_essentia_mood", "/scan/essentia-mood"),
                 "combined": ("scan_combined", "/scan/combined"),
             }
             handler_name, base_path = mapping.get(scan_type, ("scan_navidrome", "/scan/navidrome"))
@@ -3397,7 +3446,7 @@ def _schedule_configured_startup_scan_launch():
             params = []
             if scan_type != "metadata":
                 params.append(f"mode={mode}")
-            if scan_type in {"navidrome", "popularity", "mood", "combined"}:
+            if scan_type in {"navidrome", "popularity", "essentia-mood", "combined"}:
                 params.append("restart=1" if effective_restart else "restart=0")
 
             request_path = base_path + (("?" + "&".join(params)) if params else "")
@@ -3956,6 +4005,130 @@ def _row_get(row, key, index=None, default=None):
             return default
 
     return default
+
+
+def _resolve_active_navidrome_user_config(cfg):
+    current_user = (session.get("username") or "").strip()
+    navidrome_users = cfg.get("navidrome_users", []) if isinstance(cfg, dict) else []
+    user_cfg = None
+
+    if navidrome_users and current_user:
+        user_cfg = next((u for u in navidrome_users if u.get("user") == current_user), None)
+
+    if not user_cfg:
+        fallback = cfg.get("navidrome", {}) if isinstance(cfg.get("navidrome"), dict) else {}
+        fallback_user = (fallback.get("user") or current_user or "default").strip()
+        user_cfg = {
+            "user": fallback_user,
+            "base_url": fallback.get("base_url", ""),
+            "pass": fallback.get("pass", ""),
+        }
+
+    cache_user = (current_user or user_cfg.get("user") or "default").strip() or "default"
+    return cache_user, user_cfg
+
+
+def _ensure_recommendation_candidates_table(conn):
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS recommendation_candidates (
+            candidate_id TEXT PRIMARY KEY,
+            app_user TEXT NOT NULL,
+            generator_key TEXT NOT NULL,
+            candidate_index INTEGER NOT NULL DEFAULT 0,
+            playlist_name TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            refreshed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_recommendation_candidates_user_generator ON recommendation_candidates (app_user, generator_key, candidate_index)"
+    )
+    conn.commit()
+
+
+def _load_cached_recommendation_candidates(conn, app_user):
+    _ensure_recommendation_candidates_table(conn)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT candidate_id, generator_key, payload_json
+        FROM recommendation_candidates
+        WHERE app_user = %s
+        ORDER BY generator_key, candidate_index
+        """,
+        (app_user,),
+    )
+
+    recommendations = {
+        "similar_artists": [],
+        "top_genres": [],
+        "mood_playlists": [],
+        "discovery": [],
+    }
+
+    for row in cursor.fetchall() or []:
+        candidate_id = _row_get(row, "candidate_id", 0)
+        generator_key = _row_get(row, "generator_key", 1)
+        payload_json = _row_get(row, "payload_json", 2, "{}")
+        if generator_key not in recommendations:
+            continue
+        try:
+            payload = json.loads(payload_json or "{}")
+        except Exception:
+            payload = {}
+        if isinstance(payload, dict):
+            payload["candidate_id"] = candidate_id
+            recommendations[generator_key].append(payload)
+
+    has_any = any(recommendations.values())
+    return recommendations if has_any else None
+
+
+def _store_recommendation_candidates(conn, app_user, recommendations):
+    _ensure_recommendation_candidates_table(conn)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM recommendation_candidates WHERE app_user = %s", (app_user,))
+
+    stored = {
+        "similar_artists": [],
+        "top_genres": [],
+        "mood_playlists": [],
+        "discovery": [],
+    }
+
+    for generator_key in stored.keys():
+        items = recommendations.get(generator_key, []) if isinstance(recommendations, dict) else []
+        if not isinstance(items, list):
+            continue
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            candidate_id = str(uuid.uuid4())
+            candidate = dict(item)
+            candidate["candidate_id"] = candidate_id
+            cursor.execute(
+                """
+                INSERT INTO recommendation_candidates (
+                    candidate_id, app_user, generator_key, candidate_index, playlist_name, payload_json, refreshed_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                """,
+                (
+                    candidate_id,
+                    app_user,
+                    generator_key,
+                    index,
+                    candidate.get("name") or f"{generator_key}-{index}",
+                    json.dumps(candidate),
+                ),
+            )
+            stored[generator_key].append(candidate)
+
+    conn.commit()
+    return stored
 
 
 @app.route("/debug/static")
@@ -4758,6 +4931,10 @@ def artist_corrections(name):
                                   OR TRIM(CAST(disc_number AS TEXT)) = ''
                                   OR CAST(disc_number AS TEXT) = '0'
                              THEN 1 ELSE 0 END) AS tracks_without_disc,
+                    COUNT(DISTINCT CASE WHEN disc_number IS NOT NULL
+                                        AND TRIM(CAST(disc_number AS TEXT)) != ''
+                                        AND CAST(disc_number AS TEXT) != '0'
+                                    THEN CAST(disc_number AS TEXT) END) AS distinct_disc_values,
                     MAX(CASE WHEN disc_number IS NOT NULL
                                   AND TRIM(CAST(disc_number AS TEXT)) != ''
                                   AND CAST(disc_number AS TEXT) != '0'
@@ -4783,6 +4960,7 @@ def artist_corrections(name):
                     "track_count": int(rd.get("track_count") or 0),
                     "tracks_with_disc": int(rd.get("tracks_with_disc") or 0),
                     "tracks_without_disc": int(rd.get("tracks_without_disc") or 0),
+                    "distinct_disc_values": int(rd.get("distinct_disc_values") or 0),
                     "disc_value": rd.get("disc_value"),
                 })
         except Exception as disc_err:
@@ -4894,6 +5072,42 @@ def api_artist_corrections_clear_disc_number():
         conn = get_db()
         cursor = conn.cursor()
         placeholder = "%s"
+
+        force_clear = bool(payload.get("force_clear", False))
+        cursor.execute(
+            f"""
+            SELECT
+                COUNT(DISTINCT CASE WHEN disc_number IS NOT NULL
+                                         AND TRIM(CAST(disc_number AS TEXT)) != ''
+                                         AND CAST(disc_number AS TEXT) != '0'
+                                    THEN CAST(disc_number AS TEXT) END) AS distinct_disc_values,
+                MAX(CASE WHEN disc_number IS NOT NULL
+                              AND TRIM(CAST(disc_number AS TEXT)) != ''
+                              AND CAST(disc_number AS TEXT) != '0'
+                         THEN CAST(disc_number AS TEXT) END) AS max_disc_value
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+              AND album = {placeholder}
+            """,
+            (artist_name, album_name),
+        )
+        safety_row = cursor.fetchone()
+        safety = dict(safety_row) if hasattr(safety_row, "keys") else {
+            "distinct_disc_values": safety_row[0] if safety_row else 0,
+            "max_disc_value": safety_row[1] if safety_row else None,
+        }
+        distinct_disc_values = int(safety.get("distinct_disc_values") or 0)
+        max_disc_value = str(safety.get("max_disc_value") or "").strip()
+        likely_multi_disc = distinct_disc_values > 1 or (max_disc_value.isdigit() and int(max_disc_value) > 1)
+        if likely_multi_disc and not force_clear:
+            conn.close()
+            return jsonify({
+                "success": False,
+                "error": "This album appears to be multi-disc. Automatic clear is blocked to avoid damaging correct metadata.",
+                "needs_manual_review": True,
+                "distinct_disc_values": distinct_disc_values,
+                "max_disc_value": max_disc_value or None,
+            }), 409
 
         # Count and collect affected track IDs before clearing
         cursor.execute(
@@ -5069,9 +5283,19 @@ def api_album_missing_tracks():
                 "mbids": mbids,
             })
 
-        # Fetch MusicBrainz release tracklist from cache first.
+        # Fetch MusicBrainz release tracklist from shared in-memory cache first.
         from folder_matching_enhancements import get_musicbrainz_release_metadata
-        mb_release = get_musicbrainz_release_metadata(mb_mbid)
+        now_ts = time.time()
+        cache_entry = _mb_release_metadata_cache.get(mb_mbid)
+        if cache_entry and (now_ts - float(cache_entry.get("cached_at", 0.0)) < _MB_RELEASE_CACHE_TTL_SECONDS):
+            mb_release = cache_entry.get("data")
+        else:
+            mb_release = get_musicbrainz_release_metadata(mb_mbid)
+            if mb_release:
+                _mb_release_metadata_cache[mb_mbid] = {
+                    "cached_at": now_ts,
+                    "data": mb_release,
+                }
         if not mb_release:
             return jsonify({"missing_tracks": [], "missing_count": 0, "library_count": library_count, "reason": "mb_not_found"})
 
@@ -12394,90 +12618,9 @@ def scan_singles():
 
 @app.route("/scan/mood", methods=["POST"])
 def scan_mood():
-    """Run AcousticBrainz mood enrichment scan (MBID-first)."""
-    global scan_process_mood
-
-    mode = request.args.get('mode', 'all')
-    force_scan = (mode == 'force')
-
-    with scan_lock:
-        if scan_process_mood is not None:
-            if isinstance(scan_process_mood, dict):
-                thread = scan_process_mood.get('thread')
-                if thread and thread.is_alive():
-                    flash("Mood scan is already running", "warning")
-                    return redirect(url_for("dashboard"))
-            elif hasattr(scan_process_mood, 'is_alive') and scan_process_mood.is_alive():
-                flash("Mood scan is already running", "warning")
-                return redirect(url_for("dashboard"))
-
-        try:
-            db_dir = os.path.dirname(DB_PATH)
-            mood_progress_file = os.path.join(db_dir, "mood_scan_progress.json")
-            _write_progress_file(mood_progress_file, "mood_scan", True, {"status": "starting"})
-
-            def run_mood_scan_bg():
-                try:
-                    from mood_scan import run_mood_scan
-
-                    result = run_mood_scan(force=force_scan, progress_file=mood_progress_file)
-                    if result.get("stopped"):
-                        _write_progress_with_current_artist(
-                            mood_progress_file,
-                            "mood_scan",
-                            False,
-                            {
-                                "status": "stopped",
-                                "exit_code": 0,
-                                "processed_artists": result.get("processed_artists", 0),
-                                "total_artists": result.get("total_artists", 0),
-                                "scanned_tracks": result.get("scanned_tracks", 0),
-                                "updated_tracks": result.get("updated_tracks", 0),
-                                "synced_files": result.get("synced_files", 0),
-                            },
-                        )
-                        logging.info("Mood scan stopped by user request")
-                    else:
-                        _write_progress_with_current_artist(
-                            mood_progress_file,
-                            "mood_scan",
-                            False,
-                            {
-                                "status": "complete",
-                                "exit_code": 0,
-                                "processed_artists": result.get("processed_artists", 0),
-                                "total_artists": result.get("total_artists", 0),
-                                "scanned_tracks": result.get("scanned_tracks", 0),
-                                "updated_tracks": result.get("updated_tracks", 0),
-                                "synced_files": result.get("synced_files", 0),
-                            },
-                        )
-                        _log_scan_session_complete("mood")
-                        logging.info(
-                            "Mood scan completed: %s tracks scanned, %s updated, %s file tags synced",
-                            result.get("scanned_tracks", 0),
-                            result.get("updated_tracks", 0),
-                            result.get("synced_files", 0),
-                        )
-                except Exception as e:
-                    logging.error(f"Error in mood scan: {e}", exc_info=True)
-                    _write_progress_with_current_artist(
-                        mood_progress_file,
-                        "mood_scan",
-                        False,
-                        {"status": "error", "error": str(e), "exit_code": 1},
-                    )
-
-            scan_thread = threading.Thread(target=run_mood_scan_bg, daemon=False)
-            scan_thread.start()
-            scan_process_mood = {'thread': scan_thread, 'type': 'mood'}
-
-            flash(f"✅ Mood scan started ({'Forced' if force_scan else 'Incremental'} mode)", "success")
-        except Exception as e:
-            logging.error(f"Error starting mood scan: {e}", exc_info=True)
-            flash(f"❌ Error starting mood scan: {str(e)}", "danger")
-
-    return redirect(url_for("dashboard"))
+    """Deprecated AcousticBrainz route: forward to Essentia scan."""
+    flash("AcousticBrainz mood scan has been retired. Starting Essentia mood scan instead.", "info")
+    return scan_essentia_mood()
 
 
 @app.route("/scan/essentia-mood", methods=["POST"])
@@ -12855,26 +12998,8 @@ def scan_stop_combined():
 
 @app.route("/scan/stop-mood", methods=["POST"])
 def scan_stop_mood():
-    """Stop the mood scan."""
-    global scan_process_mood
-
-    with scan_lock:
-        if scan_process_mood is not None:
-            if isinstance(scan_process_mood, dict):
-                thread = scan_process_mood.get('thread')
-                if thread and thread.is_alive():
-                    mood_progress_file = os.path.join(os.path.dirname(DB_PATH), "mood_scan_progress.json")
-                    _request_scan_stop(mood_progress_file, "mood_scan")
-                    scan_process_mood = None
-                    flash("Mood scan stop requested (will finish current track)", "info")
-                else:
-                    flash("No mood scan is currently running", "warning")
-            else:
-                flash("No mood scan is currently running", "warning")
-        else:
-            flash("No mood scan is currently running", "warning")
-
-    return redirect(url_for("dashboard"))
+    """Deprecated AcousticBrainz stop route: forward to Essentia stop."""
+    return scan_stop_essentia_mood()
 
 
 @app.route("/scan/stop-essentia-mood", methods=["POST"])
@@ -13679,6 +13804,8 @@ def config_editor():
     config['features']['retry_scheduler'] = _as_dict(config['features'].get('retry_scheduler'))
     config['features']['download_queue_cleanup_scheduler'] = _as_dict(config['features'].get('download_queue_cleanup_scheduler'))
     config['features']['downloads_duplicate_cleanup'] = _as_dict(config['features'].get('downloads_duplicate_cleanup'))
+    for key in ['spotify', 'lastfm', 'listenbrainz', 'discogs', 'musicbrainz', 'audiodb', 'google', 'youtube']:
+        config['api_integrations'][key] = _as_dict(config['api_integrations'].get(key))
 
     # Keep navidrome_users predictable for setup checks and template iteration.
     config['navidrome_users'] = _as_list_of_dicts(config.get('navidrome_users'))
@@ -13756,6 +13883,18 @@ def config_save_json():
         features['retry_scheduler'] = _as_dict(features.get('retry_scheduler'))
         features['download_queue_cleanup_scheduler'] = _as_dict(features.get('download_queue_cleanup_scheduler'))
 
+        submitted_api_integrations = _as_dict(data.get('api_integrations', {}))
+        api_integrations = {
+            'spotify': _as_dict(submitted_api_integrations.get('spotify', {})),
+            'lastfm': _as_dict(submitted_api_integrations.get('lastfm', {})),
+            'listenbrainz': _as_dict(submitted_api_integrations.get('listenbrainz', {})),
+            'discogs': _as_dict(submitted_api_integrations.get('discogs', {})),
+            'musicbrainz': _as_dict(submitted_api_integrations.get('musicbrainz', {})),
+            'audiodb': _as_dict(submitted_api_integrations.get('audiodb', {})),
+            'google': _as_dict(submitted_api_integrations.get('google', {})),
+            'youtube': _as_dict(submitted_api_integrations.get('youtube', {})),
+        }
+
         config_dict = {
             'navidrome_users': navidrome_users,
             'qbittorrent': _as_dict(data.get('qbittorrent', {})),
@@ -13763,6 +13902,7 @@ def config_save_json():
             'authentik': _as_dict(data.get('authentik', {})),
             'bookmarks': _as_dict(data.get('bookmarks', {})),
             'downloads': _as_dict(data.get('downloads', {})),
+            'api_integrations': api_integrations,
             'logging': _as_dict(data.get('logging', {})),
             'web_api_key': data.get('web_api_key', ''),
             'enable_web_api_key': data.get('enable_web_api_key', True),
@@ -13800,10 +13940,7 @@ def config_save_json():
             if 'essentia' not in data and 'essentia' in existing_config:
                 config_dict['essentia'] = existing_config['essentia']
 
-            # api_integrations and database are no longer managed via this endpoint
-            # (api_integrations is per-user; database is PostgreSQL-only with no UI).
-            # Always restore them from disk to prevent data loss.
-            if 'api_integrations' in existing_config:
+            if 'api_integrations' not in data and 'api_integrations' in existing_config:
                 config_dict['api_integrations'] = existing_config['api_integrations']
             if 'database' in existing_config:
                 config_dict['database'] = existing_config['database']
@@ -14029,7 +14166,9 @@ def api_features_update():
 
         if "startup_scan_type" in data:
             scan_type = str(data.get("startup_scan_type") or "").strip().lower()
-            if scan_type in {"navidrome", "metadata", "popularity", "mood", "combined"}:
+            if scan_type == "mood":
+                scan_type = "essentia-mood"
+            if scan_type in {"navidrome", "metadata", "popularity", "essentia-mood", "combined"}:
                 features["startup_scan_type"] = scan_type
 
         config_data["features"] = features
@@ -26238,11 +26377,24 @@ def api_recommended_playlists():
     """
     try:
         from playlist_recommendations import PlaylistRecommender
+        from api_clients.lastfm import LastFmClient
+        from api_clients.audiodb_and_listenbrainz import ListenBrainzUserClient
         
         cfg = get_config()
+        app_user, user_cfg = _resolve_active_navidrome_user_config(cfg)
+        refresh = request.args.get("refresh", "0").strip().lower() in {"1", "true", "yes"}
         
         # Get database connection
         conn = get_db()
+        if not refresh:
+            cached_recommendations = _load_cached_recommendation_candidates(conn, app_user)
+            if cached_recommendations:
+                conn.close()
+                return jsonify({
+                    "success": True,
+                    "source": "cache",
+                    "recommendations": cached_recommendations
+                })
         
         # Initialize clients if available
         lastfm_client = None
@@ -26250,13 +26402,16 @@ def api_recommended_playlists():
         
         lastfm_config = cfg.get("api_integrations", {}).get("lastfm", {})
         if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
-            from api_clients.lastfm import LastFmClient
-            lastfm_client = LastFmClient(lastfm_config.get("api_key"))
+            lastfm_client = LastFmClient(
+                lastfm_config.get("api_key"),
+                username=(user_cfg.get("lastfm_username") or "").strip(),
+                db_connection=conn,
+            )
         
         listenbrainz_config = cfg.get("api_integrations", {}).get("listenbrainz", {})
-        if listenbrainz_config.get("enabled"):
-            from api_clients.audiodb_and_listenbrainz import ListenBrainzClient
-            listenbrainz_client = ListenBrainzClient()
+        listenbrainz_token = (user_cfg.get("listenbrainz_user_token") or "").strip()
+        if listenbrainz_config.get("enabled") and listenbrainz_token:
+            listenbrainz_client = ListenBrainzUserClient(listenbrainz_token)
         
         # Create recommender instance
         recommender = PlaylistRecommender(
@@ -26267,11 +26422,13 @@ def api_recommended_playlists():
         
         # Get recommendations
         recommendations = recommender.get_recommendations()
+        recommendations = _store_recommendation_candidates(conn, app_user, recommendations)
         
         conn.close()
         
         return jsonify({
             "success": True,
+            "source": "generated",
             "recommendations": recommendations
         })
         

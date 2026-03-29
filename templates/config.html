@@ -38,6 +38,7 @@
       <div class="d-flex flex-wrap gap-2 align-items-center justify-content-center">
         <span class="text-muted small me-2"><i class="bi bi-lightning-fill"></i> Quick Jump:</span>
         <a href="#users" class="btn btn-sm btn-outline-primary">Users</a>
+        <a href="#api-integrations" class="btn btn-sm btn-outline-primary">APIs</a>
         <a href="#downloads" class="btn btn-sm btn-outline-primary">Downloads</a>
         <a href="#sources" class="btn btn-sm btn-outline-primary">Download Sources</a>
         <a href="#watcher" class="btn btn-sm btn-outline-primary">Automation</a>
@@ -77,7 +78,7 @@
       <div class="d-flex justify-content-between align-items-center">
         <div>
           <h5 class="mb-0"><i class="bi bi-people-fill"></i> Music Users</h5>
-          <small class="text-muted">Configure Navidrome, Spotify, and Last.fm for each user</small>
+          <small class="text-muted">Configure Navidrome plus each user's Spotify, Last.fm, and ListenBrainz identities</small>
         </div>
         <div class="d-flex gap-2 flex-wrap justify-content-end">
           <button type="button" class="btn btn-sm btn-outline-success" id="syncRatingsNowBtn" onclick="syncRatingsNow()">
@@ -143,12 +144,14 @@
                   <small class="form-text text-muted">Your Spotify profile username (for personalized recommendations)</small>
                 </div>
                 <div class="col-12 col-sm-6">
-                  <label class="form-label form-label-sm">Client ID</label>
+                  <label class="form-label form-label-sm">Client ID Override</label>
                   <input type="text" class="form-control form-control-sm user-spotify-id" placeholder="spotify_client_id" value="{{ user.get('spotify_client_id', '') }}">
+                  <small class="form-text text-muted">Optional. Leave blank to use the shared Spotify app credentials below.</small>
                 </div>
                 <div class="col-12 col-sm-6">
-                  <label class="form-label form-label-sm">Client Secret</label>
+                  <label class="form-label form-label-sm">Client Secret Override</label>
                   <input type="password" class="form-control form-control-sm user-spotify-secret" placeholder="••••••••" value="{{ user.get('spotify_client_secret', '') }}">
+                  <small class="form-text text-muted">Optional. Leave blank to use the shared Spotify app credentials below.</small>
                 </div>
               </div>
             </div>
@@ -184,6 +187,149 @@
             <i class="bi bi-info-circle"></i> <strong>No users configured.</strong> Click "Add Another User" above to create your first user, or use the Setup Wizard for guided configuration.
           </div>
         {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- Shared API Integrations -->
+  <div class="card shadow-sm mb-3" id="api-integrations">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-plug-fill"></i> Shared API Integrations</h5>
+      <small class="text-muted">Configure app-wide API keys and feature toggles. Per-user usernames and tokens stay in each Music User card above.</small>
+    </div>
+    <div class="card-body">
+      <div class="row g-4">
+        <div class="col-12 col-xl-6">
+          <div class="border rounded p-3 h-100">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <h6 class="mb-0 text-success"><i class="bi bi-spotify"></i> Spotify</h6>
+              <div class="form-check form-switch mb-0">
+                <input class="form-check-input" type="checkbox" id="api_spotify_enabled" {% if config.get('api_integrations', {}).get('spotify', {}).get('enabled') %}checked{% endif %}>
+                <label class="form-check-label" for="api_spotify_enabled">Enabled</label>
+              </div>
+            </div>
+            <div class="row g-2">
+              <div class="col-12 col-md-6">
+                <label class="form-label form-label-sm">Client ID</label>
+                <input type="text" class="form-control form-control-sm" id="api_spotify_client_id" value="{{ config.get('api_integrations', {}).get('spotify', {}).get('client_id', '') }}">
+              </div>
+              <div class="col-12 col-md-6">
+                <label class="form-label form-label-sm">Client Secret</label>
+                <input type="password" class="form-control form-control-sm" id="api_spotify_client_secret" value="{{ config.get('api_integrations', {}).get('spotify', {}).get('client_secret', '') }}">
+              </div>
+              <div class="col-12">
+                <label class="form-label form-label-sm">Default Spotify User ID</label>
+                <input type="text" class="form-control form-control-sm" id="api_spotify_user_id" value="{{ config.get('api_integrations', {}).get('spotify', {}).get('user_id', '') }}">
+                <small class="form-text text-muted">Optional fallback user ID for public Spotify playlist browsing when no user-specific value is provided.</small>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-12 col-xl-6">
+          <div class="border rounded p-3 h-100">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <h6 class="mb-0 text-info"><i class="bi bi-database-fill"></i> Last.fm</h6>
+              <div class="form-check form-switch mb-0">
+                <input class="form-check-input" type="checkbox" id="api_lastfm_enabled" {% if config.get('api_integrations', {}).get('lastfm', {}).get('enabled') %}checked{% endif %}>
+                <label class="form-check-label" for="api_lastfm_enabled">Enabled</label>
+              </div>
+            </div>
+            <label class="form-label form-label-sm">API Key</label>
+            <input type="text" class="form-control form-control-sm" id="api_lastfm_api_key" value="{{ config.get('api_integrations', {}).get('lastfm', {}).get('api_key', '') }}">
+            <small class="form-text text-muted">Shared application key. Personalized recommendations still use each user's Last.fm username above.</small>
+          </div>
+        </div>
+
+        <div class="col-12 col-xl-6">
+          <div class="border rounded p-3 h-100">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <h6 class="mb-0 text-secondary"><i class="bi bi-headphones"></i> ListenBrainz</h6>
+              <div class="form-check form-switch mb-0">
+                <input class="form-check-input" type="checkbox" id="api_listenbrainz_enabled" {% if config.get('api_integrations', {}).get('listenbrainz', {}).get('enabled') %}checked{% endif %}>
+                <label class="form-check-label" for="api_listenbrainz_enabled">Enabled</label>
+              </div>
+            </div>
+            <small class="form-text text-muted">ListenBrainz uses each user's personal token above; this switch controls whether ListenBrainz-powered features are active.</small>
+          </div>
+        </div>
+
+        <div class="col-12 col-xl-6">
+          <div class="border rounded p-3 h-100">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <h6 class="mb-0"><i class="bi bi-vinyl"></i> Discogs</h6>
+              <div class="form-check form-switch mb-0">
+                <input class="form-check-input" type="checkbox" id="api_discogs_enabled" {% if config.get('api_integrations', {}).get('discogs', {}).get('enabled') %}checked{% endif %}>
+                <label class="form-check-label" for="api_discogs_enabled">Enabled</label>
+              </div>
+            </div>
+            <label class="form-label form-label-sm">Personal Access Token</label>
+            <input type="password" class="form-control form-control-sm" id="api_discogs_token" value="{{ config.get('api_integrations', {}).get('discogs', {}).get('token', '') }}">
+          </div>
+        </div>
+
+        <div class="col-12 col-xl-6">
+          <div class="border rounded p-3 h-100">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <h6 class="mb-0"><i class="bi bi-disc"></i> MusicBrainz</h6>
+              <div class="form-check form-switch mb-0">
+                <input class="form-check-input" type="checkbox" id="api_musicbrainz_enabled" {% if config.get('api_integrations', {}).get('musicbrainz', {}).get('enabled', True) %}checked{% endif %}>
+                <label class="form-check-label" for="api_musicbrainz_enabled">Enabled</label>
+              </div>
+            </div>
+            <small class="form-text text-muted">MusicBrainz does not require an API key here, but this toggle controls MusicBrainz-powered lookups and matching features.</small>
+          </div>
+        </div>
+
+        <div class="col-12 col-xl-6">
+          <div class="border rounded p-3 h-100">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <h6 class="mb-0"><i class="bi bi-music-note"></i> AudioDB</h6>
+              <div class="form-check form-switch mb-0">
+                <input class="form-check-input" type="checkbox" id="api_audiodb_enabled" {% if config.get('api_integrations', {}).get('audiodb', {}).get('enabled') %}checked{% endif %}>
+                <label class="form-check-label" for="api_audiodb_enabled">Enabled</label>
+              </div>
+            </div>
+            <label class="form-label form-label-sm">API Key</label>
+            <input type="text" class="form-control form-control-sm" id="api_audiodb_api_key" value="{{ config.get('api_integrations', {}).get('audiodb', {}).get('api_key', '') }}">
+          </div>
+        </div>
+
+        <div class="col-12 col-xl-6">
+          <div class="border rounded p-3 h-100">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <h6 class="mb-0"><i class="bi bi-google"></i> Google Custom Search</h6>
+              <div class="form-check form-switch mb-0">
+                <input class="form-check-input" type="checkbox" id="api_google_enabled" {% if config.get('api_integrations', {}).get('google', {}).get('enabled') %}checked{% endif %}>
+                <label class="form-check-label" for="api_google_enabled">Enabled</label>
+              </div>
+            </div>
+            <div class="row g-2">
+              <div class="col-12 col-md-6">
+                <label class="form-label form-label-sm">API Key</label>
+                <input type="text" class="form-control form-control-sm" id="api_google_api_key" value="{{ config.get('api_integrations', {}).get('google', {}).get('api_key', '') }}">
+              </div>
+              <div class="col-12 col-md-6">
+                <label class="form-label form-label-sm">CSE ID</label>
+                <input type="text" class="form-control form-control-sm" id="api_google_cse_id" value="{{ config.get('api_integrations', {}).get('google', {}).get('cse_id', '') }}">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-12 col-xl-6">
+          <div class="border rounded p-3 h-100">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <h6 class="mb-0"><i class="bi bi-youtube"></i> YouTube</h6>
+              <div class="form-check form-switch mb-0">
+                <input class="form-check-input" type="checkbox" id="api_youtube_enabled" {% if config.get('api_integrations', {}).get('youtube', {}).get('enabled') %}checked{% endif %}>
+                <label class="form-check-label" for="api_youtube_enabled">Enabled</label>
+              </div>
+            </div>
+            <label class="form-label form-label-sm">API Key</label>
+            <input type="text" class="form-control form-control-sm" id="api_youtube_api_key" value="{{ config.get('api_integrations', {}).get('youtube', {}).get('api_key', '') }}">
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -496,7 +642,8 @@
       </div>
     </div>
   </div>
-
+
+
   <!-- Essentia Mood Scan Section -->
   <div class="card shadow-sm mb-3" id="essentia-mood-scan">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
@@ -1074,10 +1221,42 @@ function buildConfigObject() {
       zscore_high_threshold: parseFloat(getValue('zscore_high_threshold', '1.0')) || 1.0,
       standout_gap_z: parseFloat(getValue('standout_gap_z', '0.75')) || 0.75
     },
-    // api_integrations and database are no longer managed via this UI:
-    // api_integrations is per-user (configured under each user account);
-    // database is PostgreSQL-only with no UI controls.
-    // Both sections are restored verbatim from disk by config_save_json.
+    api_integrations: {
+      spotify: {
+        enabled: getChecked('api_spotify_enabled', false),
+        client_id: getValue('api_spotify_client_id', ''),
+        client_secret: getValue('api_spotify_client_secret', ''),
+        user_id: getValue('api_spotify_user_id', '')
+      },
+      lastfm: {
+        enabled: getChecked('api_lastfm_enabled', false),
+        api_key: getValue('api_lastfm_api_key', '')
+      },
+      listenbrainz: {
+        enabled: getChecked('api_listenbrainz_enabled', false)
+      },
+      discogs: {
+        enabled: getChecked('api_discogs_enabled', false),
+        token: getValue('api_discogs_token', '')
+      },
+      musicbrainz: {
+        enabled: getChecked('api_musicbrainz_enabled', true)
+      },
+      audiodb: {
+        enabled: getChecked('api_audiodb_enabled', false),
+        api_key: getValue('api_audiodb_api_key', '')
+      },
+      google: {
+        enabled: getChecked('api_google_enabled', false),
+        api_key: getValue('api_google_api_key', ''),
+        cse_id: getValue('api_google_cse_id', '')
+      },
+      youtube: {
+        enabled: getChecked('api_youtube_enabled', false),
+        api_key: getValue('api_youtube_api_key', '')
+      }
+    },
+    // database remains PostgreSQL-only with no UI controls and is restored by config_save_json.
     strip_parentheses_filters: Array.from(
       document.querySelectorAll('#stripKeywordsList .badge')
     ).map(badge => {
@@ -1351,6 +1530,9 @@ function updateUserTitle(displayNameInput) {
 // --- Features & Weights Editing ---
 function renderFeaturesWeights(features, weights) {
   let html = '';
+  const featureLabelOverrides = {
+    source_radio_edit_confidence: 'Single/Radio Edit Confidence'
+  };
 
   // --- Groupings and Explanations ---
   const featureGroups = [
@@ -1426,7 +1608,7 @@ function renderFeaturesWeights(features, weights) {
         source_musicbrainz_compilation_confidence: 'Confidence level for MusicBrainz compilation detection (track appears on Various Artists/compilation albums). Default: medium. Set to "low" to prevent compilation appearances from counting toward the 2-medium=high rule.',
         source_discogs_video_confidence: 'Confidence level for Discogs music video detection. Default: medium. Set to "high" to skip Last.fm/z-score when video confirms.',
         source_lastfm_confidence: 'Confidence level for Last.fm single detection. Default: medium. Set to "high" to skip z-score inference when Last.fm confirms.',
-        source_radio_edit_confidence: 'Confidence level for Radio Edit detection from Spotify. Default: medium. Set to "high" to treat radio edits as high confidence singles.'
+        source_radio_edit_confidence: 'Confidence level for Single/Radio Edit detection from title and Spotify metadata. Default: high. Set to "medium" if you want this source to require additional confirmation.'
       }
     }
   ];
@@ -1451,8 +1633,9 @@ function renderFeaturesWeights(features, weights) {
     html += `</div>`;
     for (const key of group.keys) {
       if (features.hasOwnProperty(key)) {
+        const displayLabel = featureLabelOverrides[key] || key;
         html += '<div class="col-md-4">';
-        html += `<label class="form-label">${key}</label>`;
+        html += `<label class="form-label">${displayLabel}</label>`;
         if (group.explanations[key]) {
           html += `<div class="text-muted small mb-1">${group.explanations[key]}</div>`;
         }

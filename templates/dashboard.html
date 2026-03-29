@@ -138,7 +138,6 @@
                         <option value="navidrome">Navidrome Import</option>
                         <option value="metadata">Metadata Import</option>
                         <option value="popularity">Popularity and Single Scan</option>
-                        <option value="mood">Mood Scan (AcousticBrainz)</option>
                         <option value="essentia-mood">Mood Scan (Essentia - Local ML)</option>
                         <option value="combined">Combined Scan</option>
                     </select>
@@ -1312,9 +1311,7 @@ function startSelectedScan(restart = false, forceStart = false) {
         actionUrl = '{{ url_for("scan_mp3_import") }}';
     } else if (scanType === 'popularity') {
         actionUrl = '{{ url_for("scan_popularity_route") }}';
-    } else if (scanType === 'mood') {
-        actionUrl = '{{ url_for("scan_mood") }}';
-    } else if (scanType === 'essentia-mood') {
+    } else if (scanType === 'mood' || scanType === 'essentia-mood') {
         actionUrl = '{{ url_for("scan_essentia_mood") }}';
     } else if (scanType === 'combined') {
         actionUrl = '{{ url_for("scan_combined") }}';
@@ -1469,4 +1466,4 @@ function dashboardOpenMbSearch() {
 {% include '_musicbrainz_search_modal.html' %}
 {% include '_musicbrainz_search_functions.html' %}
 
-{% endblock %}
+{% endblock %}

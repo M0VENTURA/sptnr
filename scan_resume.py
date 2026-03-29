@@ -38,6 +38,53 @@ NAVIDROME_PROGRESS_FILE = os.environ.get("NAVIDROME_PROGRESS_FILE", "/database/n
 POPULARITY_PROGRESS_FILE = os.environ.get("POPULARITY_PROGRESS_FILE", "/database/popularity_scan_progress.json")
 
 
+def _normalize_scan_type(scan_type: str) -> str:
+    normalized = str(scan_type or "navidrome").strip().lower().replace("-", "_")
+    alias_map = {
+        "navidrome": "navidrome_scan",
+        "popularity": "popularity_scan",
+        "combined": "combined_scan",
+        "mood": "mood_scan",
+        "essentia_mood": "essentia_mood_scan",
+    }
+    return alias_map.get(normalized, normalized)
+
+
+def _resolve_progress_file(scan_type: str) -> str:
+    normalized = _normalize_scan_type(scan_type)
+    if normalized in {"navidrome", "navidrome_scan"}:
+        return os.environ.get("NAVIDROME_PROGRESS_FILE", "/database/navidrome_scan_progress.json")
+    if normalized in {"popularity", "popularity_scan"}:
+        return os.environ.get("POPULARITY_PROGRESS_FILE", "/database/popularity_scan_progress.json")
+    if normalized in {"combined", "combined_scan"}:
+        return os.environ.get("COMBINED_PROGRESS_FILE", "/database/combined_scan_progress.json")
+    if normalized in {"mood", "mood_scan"}:
+        return os.environ.get("MOOD_PROGRESS_FILE", "/database/mood_scan_progress.json")
+    if normalized in {"essentia_mood", "essentia_mood_scan"}:
+        return os.environ.get("ESSENTIA_MOOD_PROGRESS_FILE", "/database/essentia_mood_scan_progress.json")
+    return os.environ.get("PROGRESS_FILE", "/database/scan_progress.json")
+
+
+def _resolve_marker_file(scan_type: str) -> str:
+    progress_file = _resolve_progress_file(scan_type)
+    marker_name = f"{_normalize_scan_type(scan_type)}.json"
+    return os.path.join(os.path.dirname(progress_file), "scan_resume_markers", marker_name)
+
+
+def _load_scan_marker(scan_type: str) -> Optional[Dict]:
+    marker_file = _resolve_marker_file(scan_type)
+    if not os.path.exists(marker_file):
+        return None
+
+    try:
+        with open(marker_file, "r", encoding="utf-8") as f:
+            marker = json.load(f)
+        return marker if isinstance(marker, dict) else None
+    except Exception as e:
+        log_debug(f"Failed to load scan marker {marker_file}: {e}")
+        return None
+
+
 def load_scan_progress(scan_type: str = "navidrome") -> Optional[Dict]:
     """
     Load scan progress from file.
@@ -48,29 +95,37 @@ def load_scan_progress(scan_type: str = "navidrome") -> Optional[Dict]:
     Returns:
         Progress dict or None if not found
     """
-    # Get progress file path at runtime to support testing
-    if scan_type == "navidrome":
-        progress_file = os.environ.get("NAVIDROME_PROGRESS_FILE", "/database/navidrome_scan_progress.json")
-    elif scan_type == "popularity":
-        progress_file = os.environ.get("POPULARITY_PROGRESS_FILE", "/database/popularity_scan_progress.json")
-    elif scan_type == "combined":
-        progress_file = os.environ.get("COMBINED_PROGRESS_FILE", "/database/combined_scan_progress.json")
-    else:
-        progress_file = os.environ.get("PROGRESS_FILE", "/database/scan_progress.json")
-    
-    if not os.path.exists(progress_file):
-        log_debug(f"No progress file found at: {progress_file}")
+    progress_file = _resolve_progress_file(scan_type)
+    progress: Optional[Dict] = None
+
+    if os.path.exists(progress_file):
+        try:
+            with open(progress_file, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                progress = loaded
+                log_debug(f"Loaded progress from {progress_file}: {progress}")
+        except Exception as e:
+            log_debug(f"Failed to load progress file {progress_file}: {e}")
+
+    marker = _load_scan_marker(scan_type)
+    if not progress and not marker:
+        log_debug(f"No progress state found for {scan_type}")
         return None
-    
-    try:
-        with open(progress_file, 'r') as f:
-            progress = json.load(f)
-        
-        log_debug(f"Loaded progress from {progress_file}: {progress}")
-        return progress
-    except Exception as e:
-        log_debug(f"Failed to load progress file {progress_file}: {e}")
-        return None
+
+    merged = dict(progress or {})
+    if marker:
+        # Marker is authoritative for checkpoint metadata.
+        for key in ("current_artist", "status", "stop_requested", "is_running", "last_updated"):
+            if marker.get(key) is not None:
+                merged[key] = marker.get(key)
+
+    if "scan_type" not in merged:
+        merged["scan_type"] = _normalize_scan_type(scan_type)
+    if "progress_path" not in merged:
+        merged["progress_path"] = progress_file
+
+    return merged
 
 
 def save_scan_progress(scan_type: str, progress_data: Dict) -> bool:
@@ -84,15 +139,7 @@ def save_scan_progress(scan_type: str, progress_data: Dict) -> bool:
     Returns:
         True if successful, False otherwise
     """
-    # Get progress file path at runtime to support testing
-    if scan_type == "navidrome":
-        progress_file = os.environ.get("NAVIDROME_PROGRESS_FILE", "/database/navidrome_scan_progress.json")
-    elif scan_type == "popularity":
-        progress_file = os.environ.get("POPULARITY_PROGRESS_FILE", "/database/popularity_scan_progress.json")
-    elif scan_type == "combined":
-        progress_file = os.environ.get("COMBINED_PROGRESS_FILE", "/database/combined_scan_progress.json")
-    else:
-        progress_file = os.environ.get("PROGRESS_FILE", "/database/scan_progress.json")
+    progress_file = _resolve_progress_file(scan_type)
     
     try:
         # Ensure directory exists
@@ -120,15 +167,7 @@ def clear_scan_progress(scan_type: str = "navidrome") -> bool:
     Returns:
         True if successful, False otherwise
     """
-    # Get progress file path at runtime
-    if scan_type == "navidrome":
-        progress_file = os.environ.get("NAVIDROME_PROGRESS_FILE", "/database/navidrome_scan_progress.json")
-    elif scan_type == "popularity":
-        progress_file = os.environ.get("POPULARITY_PROGRESS_FILE", "/database/popularity_scan_progress.json")
-    elif scan_type == "combined":
-        progress_file = os.environ.get("COMBINED_PROGRESS_FILE", "/database/combined_scan_progress.json")
-    else:
-        progress_file = os.environ.get("PROGRESS_FILE", "/database/scan_progress.json")
+    progress_file = _resolve_progress_file(scan_type)
     
     try:
         if os.path.exists(progress_file):
@@ -171,10 +210,23 @@ def detect_interrupted_scan(scan_type: str = "navidrome") -> Optional[Dict]:
     if not progress:
         return None
     
-    # Check if scan was running
-    is_running = progress.get('is_running', False)
-    if not is_running:
-        log_debug(f"Progress file exists but scan was not running")
+    current_artist = progress.get("current_artist")
+    if not current_artist:
+        log_debug("No checkpoint artist in progress/marker state")
+        return None
+
+    # Allow resume for actively running scans and user-stopped/interrupted scans.
+    is_running = bool(progress.get("is_running", False))
+    status = str(progress.get("status") or "").strip().lower()
+    stop_requested = bool(progress.get("stop_requested", False))
+    resumable_statuses = {"starting", "running", "stopped", "error", "timeout", "interrupted"}
+
+    if (not is_running) and (not stop_requested) and (status not in resumable_statuses):
+        log_debug(f"Progress state is not resumable (status={status!r})")
+        return None
+
+    if (not is_running) and status in {"complete", "completed", "success"}:
+        log_debug("Scan is already complete; no resume needed")
         return None
 
     # A progress file with status='starting' and no current_artist is a fresh

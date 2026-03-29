@@ -51,6 +51,9 @@ class CoverDetector:
         self.is_pg = self._is_postgres(db_connection) if db_connection else False
         self.placeholder = "%s"
         self._band_members_cache = {}  # Cache to avoid repeated API calls
+        self._recording_cover_cache = {}  # recording_mbid -> set(work_ids) when tagged as cover
+        self._release_cover_map_cache = {}  # release_mbid -> {recording_mbid: set(work_ids)}
+        self._work_original_artist_cache = {}  # work_mbid -> original artist string
 
     def _mb_api_get(self, path: str, params: dict) -> dict:
         """Make a rate-limited GET request to the MusicBrainz JSON API.
@@ -92,117 +95,176 @@ class CoverDetector:
         except Exception as e:
             logger.debug(f"[CoverDetector] API error for {path}: {e}")
             return {}
+
+    @staticmethod
+    def _is_cover_work_relation(rel: Dict) -> bool:
+        """True when relation is recording->work with cover attribute."""
+        if (rel or {}).get("target-type") != "work":
+            return False
+        if str((rel or {}).get("type", "")).strip().lower() != "recording of":
+            return False
+        attrs = rel.get("attributes") or []
+        return any(str(a).strip().lower() == "cover" for a in attrs)
+
+    def _extract_cover_work_ids(self, recording_payload: Dict) -> set:
+        work_ids = set()
+        recording = recording_payload.get("recording") if isinstance(recording_payload, dict) and "recording" in recording_payload else recording_payload
+        relations = (recording or {}).get("relations", []) or []
+        for rel in relations:
+            if not self._is_cover_work_relation(rel):
+                continue
+            work_id = (rel.get("work") or {}).get("id")
+            if work_id:
+                work_ids.add(work_id)
+        return work_ids
+
+    def _get_release_cover_map(self, release_mbid: str) -> Dict[str, set]:
+        if not release_mbid:
+            return {}
+        if release_mbid in self._release_cover_map_cache:
+            return self._release_cover_map_cache[release_mbid]
+
+        release_cover_map: Dict[str, set] = {}
+        browse = self._mb_api_get(
+            "recording",
+            {
+                "release": release_mbid,
+                "inc": "work-rels+artist-credits",
+                "limit": 200,
+            },
+        )
+        for rec in browse.get("recordings", []) or []:
+            rec_id = rec.get("id")
+            if not rec_id:
+                continue
+            cover_work_ids = self._extract_cover_work_ids(rec)
+            if cover_work_ids:
+                release_cover_map[rec_id] = cover_work_ids
+
+        self._release_cover_map_cache[release_mbid] = release_cover_map
+        return release_cover_map
+
+    def _get_cover_work_ids_for_recording(self, recording_mbid: str, release_cover_map: Optional[Dict[str, set]] = None) -> set:
+        if not recording_mbid:
+            return set()
+        if recording_mbid in self._recording_cover_cache:
+            return self._recording_cover_cache[recording_mbid]
+
+        if release_cover_map and recording_mbid in release_cover_map:
+            self._recording_cover_cache[recording_mbid] = set(release_cover_map[recording_mbid])
+            return self._recording_cover_cache[recording_mbid]
+
+        rec_data = self._mb_api_get(f"recording/{recording_mbid}", {"inc": "work-rels"})
+        cover_work_ids = self._extract_cover_work_ids(rec_data)
+        self._recording_cover_cache[recording_mbid] = cover_work_ids
+        return cover_work_ids
+
+    def _get_original_artist_for_work(self, work_id: str, album_artist: Optional[str] = None) -> Optional[str]:
+        if not work_id:
+            return None
+        if work_id in self._work_original_artist_cache:
+            return self._work_original_artist_cache[work_id]
+
+        earliest_year = 9999
+        fallback_artist = None
+        original_artist = None
+
+        browse = self._mb_api_get(
+            "recording",
+            {
+                "work": work_id,
+                "inc": "artist-credits+releases",
+                "limit": 100,
+            },
+        )
+        for rec in browse.get("recordings", []) or []:
+            artist_credit = rec.get("artist-credit", []) or []
+            candidate_artist = None
+            for credit in artist_credit:
+                if isinstance(credit, dict):
+                    candidate_artist = (credit.get("artist") or {}).get("name") or credit.get("name")
+                    if candidate_artist:
+                        break
+            if not candidate_artist:
+                continue
+            if fallback_artist is None:
+                fallback_artist = candidate_artist
+
+            if album_artist and self._names_match(candidate_artist, album_artist):
+                continue
+
+            year = None
+            for rel in rec.get("releases", []) or []:
+                date_str = str(rel.get("date") or "")
+                if len(date_str) >= 4 and date_str[:4].isdigit():
+                    y = int(date_str[:4])
+                    if year is None or y < year:
+                        year = y
+            if year is None:
+                frd = str(rec.get("first-release-date") or "")
+                if len(frd) >= 4 and frd[:4].isdigit():
+                    year = int(frd[:4])
+
+            if year is not None and year < earliest_year:
+                earliest_year = year
+                original_artist = candidate_artist
+            elif year is None and original_artist is None:
+                original_artist = candidate_artist
+
+        selected_artist = original_artist or fallback_artist
+        self._work_original_artist_cache[work_id] = selected_artist
+        return selected_artist
     
     def detect_covers_for_album(self, album: str, artist: str, tracks: List[Dict]) -> List[Dict]:
-        """
-        Detect cover songs in an album by analyzing writer information.
-        
-        Logic:
-        - For each track, check if the writer/composer is different from album artist
-        - If a writer appears on only ONE track in the album, it's likely a cover
-        - Look up the earliest recording by that writer on MusicBrainz
-        - Return cover attribution information
-        
-        Args:
-            album: Album name
-            artist: Album artist
-            tracks: List of track dicts with 'id', 'title', 'mbid', etc.
-            
-        Returns:
-            List of dicts with cover detection results:
-            {
-                'track_id': str,
-                'title': str,
-                'is_cover': bool,
-                'original_artist': str,
-                'original_year': int,
-                'writer': str,
-                'confidence': str ('high'|'medium'|'low')
-            }
-        """
+        """Detect covers using MusicBrainz recording->work relations with cover attribute."""
         logger.info(f"Starting cover detection for album '{album}' by '{artist}' ({len(tracks)} tracks)")
-        
-        # Step 1: Collect writer information for all tracks
-        track_writers = {}
-        for track in tracks:
-            writers = self._get_track_writers(track)
-            track_title = track.get('title', 'Unknown')
-            if writers:
-                track_writers[track['id']] = {
-                    'title': track_title,
-                    'writers': writers,
-                    'mbid': track.get('mbid')
-                }
-                logger.debug(f"  Track '{track_title}': Found writers {writers}")
-            else:
-                logger.debug(f"  Track '{track_title}': No writer information in database")
-        
-        if not track_writers:
-            logger.info(f"No writer information found for any tracks in album '{album}' - cover detection skipped")
-            logger.info(f"  → To enable cover detection, ensure 'writer' field is populated from metadata sources during import")
-            logger.info(f"  → Writer field should contain the original songwriter/composer name")
-            return []
-        
-        # Step 2: Identify tracks with writers different from album artist (likely covers)
-        # Any track whose writer/lyricist differs from the album artist is a candidate.
+
         cover_results = []
-        seen_track_ids = set()  # Avoid processing same track twice
-        for track_id, info in track_writers.items():
-            if track_id in seen_track_ids:
+
+        # Prefer one bulk release query when album MBID is available.
+        release_mbid = None
+        for track in tracks:
+            candidate_release = (track.get("musicbrainz_album_mbid") or "").strip()
+            if candidate_release:
+                release_mbid = candidate_release
+                break
+
+        release_cover_map = self._get_release_cover_map(release_mbid) if release_mbid else {}
+
+        for track in tracks:
+            track_id = track.get("id")
+            track_title = track.get("title", "Unknown")
+            recording_mbid = (track.get("mbid") or "").strip()
+            if not track_id or not recording_mbid:
                 continue
 
-            # Collect all writers that differ from the album artist in one pass so
-            # _find_original_recording is called only once per track (not once per
-            # writer), avoiding redundant MusicBrainz API calls.
-            differing_writers = [
-                w for w in info['writers']
-                if not self._is_writer_same_as_artist(w, artist)
-            ]
-
-            if not differing_writers:
+            cover_work_ids = self._get_cover_work_ids_for_recording(recording_mbid, release_cover_map)
+            if not cover_work_ids:
                 continue
 
-            logger.info(
-                f"Potential cover: '{info['title']}' - "
-                f"writer(s) [{', '.join(differing_writers)}] differ from artist '{artist}'"
+            original_artist = None
+            for work_id in cover_work_ids:
+                original_artist = self._get_original_artist_for_work(work_id, album_artist=artist)
+                if original_artist:
+                    break
+
+            display_original = original_artist or "Unknown original artist"
+            cover_results.append({
+                "track_id": track_id,
+                "title": track_title,
+                "is_cover": True,
+                "original_artist": original_artist,
+                "confidence": "high",
+            })
+
+            self.update_cover_metadata(
+                track_id=track_id,
+                title=track_title,
+                original_artist=display_original,
+                file_path=track.get("file_path"),
             )
+            logger.info(f"✓ Cover confirmed via MusicBrainz cover flag: '{track_title}' (original: {display_original})")
 
-            # Look up original recording using all differing writers (tried in order).
-            original = self._find_original_recording(
-                info['title'],
-                differing_writers,
-                album_artist=artist,
-                recording_mbid=info.get('mbid')
-            )
-
-            if original:
-                result = {
-                    'track_id': track_id,
-                    'title': info['title'],
-                    'is_cover': True,
-                    'original_artist': original['artist'],
-                    'original_year': original.get('year'),
-                    'writer': ', '.join(differing_writers),
-                    'confidence': original.get('confidence', 'medium')
-                }
-                cover_results.append(result)
-                seen_track_ids.add(track_id)
-                logger.info(f"✓ Cover confirmed: '{info['title']}' originally by '{original['artist']}' ({original.get('year', 'unknown year')})")
-
-                # Get file path from track info if available
-                track_data = next((t for t in tracks if t.get('id') == track_id), {})
-                file_path = track_data.get('file_path')
-
-                # Update database and file metadata
-                self.update_cover_metadata(
-                    track_id=track_id,
-                    title=info['title'],
-                    original_artist=original['artist'],
-                    file_path=file_path
-                )
-            else:
-                logger.debug(f"No original recording found for '{info['title']}' by writer(s) {differing_writers}")
-        
         logger.info(f"Cover detection complete: found {len(cover_results)} covers in '{album}'")
         return cover_results
     
@@ -641,7 +703,7 @@ class CoverDetector:
                 is_cover_value = True
                 cursor.execute(
                     f"UPDATE tracks SET is_cover = {self.placeholder}, is_cover_reason = {self.placeholder}, original_cover_artist = {self.placeholder} WHERE id = {self.placeholder}",
-                    (is_cover_value, f"Writer-based detection: original by {original_artist}", original_artist, track_id)
+                    (is_cover_value, f"MusicBrainz cover-flag detection: original by {original_artist}", original_artist, track_id)
                 )
 
                 self.db_conn.commit()

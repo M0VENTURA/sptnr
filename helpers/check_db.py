@@ -66,6 +66,26 @@ def update_schema(_db_path: str | None = None) -> None:
             """,
         )
 
+        _ensure_table(
+            cursor,
+            "recommendation_candidates",
+            """
+            CREATE TABLE IF NOT EXISTS recommendation_candidates (
+                candidate_id TEXT PRIMARY KEY,
+                app_user TEXT NOT NULL,
+                generator_key TEXT NOT NULL,
+                candidate_index INTEGER NOT NULL DEFAULT 0,
+                playlist_name TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                refreshed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_recommendation_candidates_user_generator ON recommendation_candidates (app_user, generator_key, candidate_index)"
+        )
+
         conn.commit()
     except Exception as exc:
         logging.error("PostgreSQL schema initialization failed: %s", exc)
