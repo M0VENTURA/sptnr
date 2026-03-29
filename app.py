@@ -22824,7 +22824,6 @@ def api_queue_delete(queue_id):
 
         delete_download_file = request.args.get('delete_download_file', '0').lower() in {'1', 'true', 'yes'}
         downloads_root = os.path.abspath(_resolve_downloads_monitor_dir(get_config()))
-        music_root = os.path.abspath(os.environ.get("MUSIC_ROOT", "/music"))
 
         cursor.execute(
             f"SELECT file_path, found_filename, title FROM download_queue WHERE id = {placeholder}",
@@ -22846,10 +22845,8 @@ def api_queue_delete(queue_id):
                 return False
             try:
                 abs_path = os.path.abspath(path_value)
-                return (
-                    os.path.commonpath([abs_path, downloads_root]) == downloads_root
-                    or os.path.commonpath([abs_path, music_root]) == music_root
-                )
+                # Queue delete should only remove source files from downloads.
+                return os.path.commonpath([abs_path, downloads_root]) == downloads_root
             except Exception:
                 return False
 
@@ -22870,8 +22867,11 @@ def api_queue_delete(queue_id):
             # 1) Delete direct file_path only when it is actually inside DOWNLOADS_DIR.
             _try_delete(file_path)
 
-            # 2) Fallback lookup by found filename inside DOWNLOADS_DIR.
-            if found_filename and os.path.isdir(downloads_root):
+            # 2) Fallback lookup by found filename only when file_path is empty or
+            # still points under downloads. This avoids deleting unrelated files by
+            # filename when file_path already points to /music.
+            can_fallback_by_name = (not file_path) or _is_within_allowed_root(file_path)
+            if can_fallback_by_name and found_filename and os.path.isdir(downloads_root):
                 for root, _dirs, files in os.walk(downloads_root):
                     if found_filename in files:
                         _try_delete(os.path.join(root, found_filename))
@@ -22930,7 +22930,8 @@ def api_queue_cleanup_copied_sources():
         try:
             from download_queue_manager import _ensure_download_queue_columns
             _ensure_download_queue_columns(conn, cursor, is_pg=True)
-            copied_filter = "copied_individually = 1 OR status = 'imported'"
+            # Only auto-cleanup files that were copied individually from downloads.
+            copied_filter = "copied_individually = 1"
         except Exception:
             # Older schemas may not have copied_individually yet.
             copied_filter = "status = 'imported'"
@@ -22979,7 +22980,8 @@ def api_queue_cleanup_copied_sources():
                 deleted = True
                 deleted_paths.append(file_path)
 
-            if not deleted and found_filename and os.path.isdir(downloads_root):
+            can_fallback_by_name = (not file_path) or _is_within_downloads(file_path)
+            if not deleted and can_fallback_by_name and found_filename and os.path.isdir(downloads_root):
                 for root, _dirs, files in os.walk(downloads_root):
                     if found_filename in files:
                         candidate = os.path.join(root, found_filename)
@@ -24164,8 +24166,15 @@ def api_queue_organize_group():
                     if copied_ok:
                         logging.info(f"[ORGANIZE_GROUP] Item {item['id']}: ✅ Copy successful")
 
-                        # Mark queue item imported and point to the new location
-                        update_queue_item(item['id'], status='imported', file_path=target_path)
+                        # Mark queue item imported and copied individually so source
+                        # cleanup can target only safe copied-source cases.
+                        update_queue_item(
+                            item['id'],
+                            status='imported',
+                            file_path=target_path,
+                            copied_individually=1,
+                            copied_individually_at=datetime.now().isoformat(),
+                        )
 
                         logging.info(
                             f"[ORGANIZE_GROUP] Item {item['id']}: Source retained in /downloads; "
