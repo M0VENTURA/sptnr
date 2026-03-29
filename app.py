@@ -890,10 +890,21 @@ def api_navidrome_playlists():
         if not playlists:
             logging.warning("No playlists returned from Navidrome. Check if any exist for the configured user.")
             return jsonify({"error": "No playlists found in Navidrome for the configured user."}), 200
+        def _is_smart_playlist(pl):
+            if not isinstance(pl, dict):
+                return False
+            if pl.get('smart') in (True, 'true', 'True', 1, '1'):
+                return True
+            if pl.get('isSmart') in (True, 'true', 'True', 1, '1'):
+                return True
+            if pl.get('criteria'):
+                return True
+            return str(pl.get('type') or '').strip().lower() == 'smart'
+
         result = {"smart": [], "regular": []}
         for pl in playlists:
             entry = {"id": pl.get("id"), "name": pl.get("name")}
-            if pl.get("type") == "smart":
+            if _is_smart_playlist(pl):
                 result["smart"].append(entry)
             else:
                 result["regular"].append(entry)
@@ -17287,9 +17298,26 @@ def api_get_release_details(release_id):
         cursor = conn.cursor()
         placeholder = "%s"
         
-        # Get release info
+        # Get release info and tolerate older schemas without release_year.
+        release_year_select = "release_year"
+        try:
+            cursor.execute(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_name = 'musicbrainz_releases'
+                  AND table_schema = 'public'
+                  AND column_name = 'release_year'
+                LIMIT 1
+                """
+            )
+            if cursor.fetchone() is None:
+                release_year_select = "NULL AS release_year"
+        except Exception:
+            release_year_select = "NULL AS release_year"
+
         cursor.execute(f"""
-            SELECT id, release_id, release_title, artist, release_year, 
+            SELECT id, release_id, release_title, artist, {release_year_select}, 
                    total_tracks, discovered_count, organized_count, 
                    finalized_count, status, monitoring_folder_path, created_at
             FROM musicbrainz_releases
@@ -17308,19 +17336,23 @@ def api_get_release_details(release_id):
         return jsonify({
             "success": True,
             "release": {
-                "id": row[0],
-                "release_id": row[1],
-                "release_title": row[2],
-                "artist": row[3],
-                "release_year": row[4],
-                "total_tracks": row[5],
-                "discovered_count": row[6],
-                "organized_count": row[7],
-                "finalized_count": row[8],
-                "status": row[9],
-                "monitoring_folder": row[10],
-                "created_at": row[11],
-                "progress_percent": int((row[6] / row[5] * 100) if row[5] > 0 else 0)
+                "id": _row_get(row, 'id', 0),
+                "release_id": _row_get(row, 'release_id', 1),
+                "release_title": _row_get(row, 'release_title', 2),
+                "artist": _row_get(row, 'artist', 3),
+                "release_year": _row_get(row, 'release_year', 4),
+                "total_tracks": _row_get(row, 'total_tracks', 5),
+                "discovered_count": _row_get(row, 'discovered_count', 6),
+                "organized_count": _row_get(row, 'organized_count', 7),
+                "finalized_count": _row_get(row, 'finalized_count', 8),
+                "status": _row_get(row, 'status', 9),
+                "monitoring_folder": _row_get(row, 'monitoring_folder_path', 10),
+                "created_at": _row_get(row, 'created_at', 11),
+                "progress_percent": int((
+                    (_row_get(row, 'discovered_count', 6, 0) or 0)
+                    / (_row_get(row, 'total_tracks', 5, 0) or 1)
+                    * 100
+                ) if (_row_get(row, 'total_tracks', 5, 0) or 0) > 0 else 0)
             },
             "tracks": tracks
         })
@@ -22306,10 +22338,19 @@ def api_queue_cleanup_copied_sources():
 
         downloads_root = os.path.abspath(_resolve_downloads_monitor_dir(get_config()))
 
-        cursor.execute("""
+        copied_filter = "status = 'imported'"
+        try:
+            from download_queue_manager import _ensure_download_queue_columns
+            _ensure_download_queue_columns(conn, cursor, is_pg=True)
+            copied_filter = "copied_individually = 1 OR status = 'imported'"
+        except Exception:
+            # Older schemas may not have copied_individually yet.
+            copied_filter = "status = 'imported'"
+
+        cursor.execute(f"""
             SELECT id, file_path, found_filename
             FROM download_queue
-            WHERE copied_individually = 1 OR status = 'imported'
+            WHERE {copied_filter}
         """)
         items = cursor.fetchall()
 
@@ -23047,24 +23088,48 @@ def api_queue_organize(queue_id):
                 placeholder_local = "%s"
 
                 # Prefer queue_id mapping because it gives exact track_number/title for this queue item.
-                rcursor.execute(f"""
-                    SELECT r.release_title, r.artist, r.release_year,
-                           rt.track_number, rt.track_title, rt.track_artist
-                    FROM musicbrainz_release_tracks rt
-                    JOIN musicbrainz_releases r ON r.release_id = rt.release_id
-                    WHERE rt.queue_id = {placeholder_local}
-                    LIMIT 1
-                """, (queue_id_value,))
+                try:
+                    rcursor.execute(f"""
+                        SELECT r.release_title, r.artist, r.release_year,
+                               rt.track_number, rt.track_title, rt.track_artist
+                        FROM musicbrainz_release_tracks rt
+                        JOIN musicbrainz_releases r ON r.release_id = rt.release_id
+                        WHERE rt.queue_id = {placeholder_local}
+                        LIMIT 1
+                    """, (queue_id_value,))
+                except Exception as release_year_err:
+                    if 'release_year' not in str(release_year_err).lower():
+                        raise
+                    rconn.rollback()
+                    rcursor.execute(f"""
+                        SELECT r.release_title, r.artist, NULL AS release_year,
+                               rt.track_number, rt.track_title, rt.track_artist
+                        FROM musicbrainz_release_tracks rt
+                        JOIN musicbrainz_releases r ON r.release_id = rt.release_id
+                        WHERE rt.queue_id = {placeholder_local}
+                        LIMIT 1
+                    """, (queue_id_value,))
                 row = rcursor.fetchone()
 
                 # Fallback to release-level metadata when track mapping wasn't persisted.
                 if not row and release_id_value:
-                    rcursor.execute(f"""
-                        SELECT release_title, artist, release_year
-                        FROM musicbrainz_releases
-                        WHERE release_id = {placeholder_local}
-                        LIMIT 1
-                    """, (release_id_value,))
+                    try:
+                        rcursor.execute(f"""
+                            SELECT release_title, artist, release_year
+                            FROM musicbrainz_releases
+                            WHERE release_id = {placeholder_local}
+                            LIMIT 1
+                        """, (release_id_value,))
+                    except Exception as release_year_err:
+                        if 'release_year' not in str(release_year_err).lower():
+                            raise
+                        rconn.rollback()
+                        rcursor.execute(f"""
+                            SELECT release_title, artist, NULL AS release_year
+                            FROM musicbrainz_releases
+                            WHERE release_id = {placeholder_local}
+                            LIMIT 1
+                        """, (release_id_value,))
                     row = rcursor.fetchone()
 
                 if row:
@@ -29609,15 +29674,25 @@ def api_playlist_load():
     """Load playlist tracks"""
     try:
         data = request.get_json(force=True, silent=True) or {}
-        playlist_id = data.get("playlist_path")
+        playlist_id = (data.get("playlist_id") or data.get("playlist_path") or "").strip()
         if not playlist_id:
-            return jsonify({"error": "Missing playlist_path"}), 200
+            return jsonify({"error": "Missing playlist_id"}), 400
 
         cfg = get_config()
-        navidrome_config = cfg.get("navidrome", {})
-        base_url = navidrome_config.get("base_url", "http://localhost:4533")
-        user = navidrome_config.get("user", "admin")
-        password = navidrome_config.get("pass", "")
+        current_user = session.get("username")
+        navidrome_users = cfg.get("navidrome_users", [])
+        nav_cfg = None
+
+        if navidrome_users and current_user:
+            nav_cfg = next((u for u in navidrome_users if u.get("user") == current_user), None)
+        if not nav_cfg:
+            nav_cfg = cfg.get("navidrome", {})
+
+        base_url = nav_cfg.get("base_url", "http://localhost:4533")
+        user = nav_cfg.get("user", "admin")
+        password = nav_cfg.get("pass", "")
+        if not (base_url and user and password):
+            return jsonify({"error": "Navidrome not configured for this user"}), 400
         import requests as req
 
         # Get playlist tracks
@@ -29627,13 +29702,14 @@ def api_playlist_load():
                 params={"u": user, "p": password, "c": "popularr", "f": "json", "id": playlist_id},
                 timeout=10
             )
+            playlist_response.raise_for_status()
             playlist_data = playlist_response.json().get("subsonic-response", {}).get("playlist", {})
             tracks = playlist_data.get("entry", [])
             if not isinstance(tracks, list):
                 tracks = [tracks] if tracks else []
         except Exception as e:
             logging.error(f"Navidrome playlist fetch error: {e}")
-            tracks = []
+            return jsonify({"error": f"Failed to fetch playlist from Navidrome: {e}"}), 500
 
         songs = []
         matched_files = []
@@ -29654,6 +29730,7 @@ def api_playlist_load():
             })
 
         return jsonify({
+            "playlist_id": playlist_id,
             "playlist_path": playlist_id,
             "songs": songs,
             "matched_files": matched_files,
@@ -29662,7 +29739,7 @@ def api_playlist_load():
         }), 200
     except Exception as e:
         logging.error(f"Error loading playlist: {e}", exc_info=True)
-        return jsonify({"error": str(e)}), 200
+        return jsonify({"error": str(e)}), 500
 
 # ---------------------------------------------------------------------------
 # PLAYLIST EXPORT TO EXTERNAL MEDIA

@@ -90,6 +90,8 @@ function setupBrowsePageListeners() {
       smartPlaylistSelect.addEventListener('change', function() {
         if (this.value) {
           document.getElementById('regularPlaylistSelect').value = '';
+          const downloaderSelect = document.getElementById('playlistFileSelect');
+          if (downloaderSelect) downloaderSelect.value = this.value;
           loadNavidromePlaylistDetail(this.value, 'smart');
         }
       });
@@ -104,6 +106,8 @@ function setupBrowsePageListeners() {
       regularPlaylistSelect.addEventListener('change', function() {
         if (this.value) {
           document.getElementById('smartPlaylistSelect').value = '';
+          const downloaderSelect = document.getElementById('playlistFileSelect');
+          if (downloaderSelect) downloaderSelect.value = this.value;
           loadNavidromePlaylistDetail(this.value, 'regular');
         }
       });
@@ -332,13 +336,13 @@ async function loadPlaylistList() {
       return;
     }
     
-    if (data.playlists && data.playlists.length > 0) {
+      if (data.playlists && data.playlists.length > 0) {
       data.playlists.forEach(playlist => {
         const option = document.createElement('option');
-        option.value = playlist.path;
+          option.value = playlist.id || playlist.path;
         let typeLabel = '';
         if (playlist.type === 'smart' || playlist.type === 'smart-local') typeLabel = ' (Smart)';
-        option.textContent = `${playlist.name || playlist.path}${typeLabel} [${playlist.songCount || 0}]`;
+          option.textContent = `${playlist.name || playlist.path}${typeLabel} [${playlist.songCount || 0}]`;
         select.appendChild(option);
       });
     } else {
@@ -361,17 +365,31 @@ async function loadPlaylistForDownload() {
   }
 
   try {
-    const response = await fetch('/api/playlist/load', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ playlist_path: playlistPath })
-    });
+    const response = await fetch(`/api/navidrome/playlist/${encodeURIComponent(playlistPath)}`);
 
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Failed to load playlist');
 
-    currentPlaylistData = data;
-    displayPlaylistDownloader(data);
+    const tracks = Array.isArray(data.tracks) ? data.tracks : [];
+    const normalized = {
+      playlist_path: playlistPath,
+      songs: tracks.map(track => ({
+        id: track.id,
+        title: track.title || 'Unknown',
+        artist: track.artist || 'Unknown',
+        album: track.album || 'Unknown',
+        detected: true
+      })),
+      matched_files: tracks.map(track => ({
+        id: track.id,
+        title: track.title || 'Unknown',
+        artist: track.artist || 'Unknown',
+        filename: track.path || ''
+      }))
+    };
+
+    currentPlaylistData = normalized;
+    displayPlaylistDownloader(normalized);
   } catch (error) {
     console.error('Error:', error);
     alert('Error: ' + error.message);

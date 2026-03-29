@@ -19,6 +19,22 @@ logger = logging.getLogger(__name__)
 class NavidromeClient:
     """Client for interacting with Navidrome Subsonic API."""
 
+    @staticmethod
+    def _is_smart_playlist(playlist: dict) -> bool:
+        """Return True when playlist metadata indicates a smart playlist."""
+        if not isinstance(playlist, dict):
+            return False
+
+        # Navidrome/Subsonic payloads vary by version/endpoint.
+        if playlist.get('smart') in (True, 'true', 'True', 1, '1'):
+            return True
+        if playlist.get('isSmart') in (True, 'true', 'True', 1, '1'):
+            return True
+        if playlist.get('criteria'):
+            return True
+        playlist_type = str(playlist.get('type') or '').strip().lower()
+        return playlist_type == 'smart'
+
     def fetch_all_playlists(self) -> list:
         """
         Fetch all playlists (smart and regular) from Navidrome.
@@ -30,12 +46,9 @@ class NavidromeClient:
             res = self.session.get(url, params=params)
             res.raise_for_status()
             playlists = res.json().get("subsonic-response", {}).get("playlists", {}).get("playlist", [])
-            # Add 'type' field: 'smart' if present, else 'regular'
+            # Add normalized type field.
             for pl in playlists:
-                if pl.get('smart', False):
-                    pl['type'] = 'smart'
-                else:
-                    pl['type'] = 'regular'
+                pl['type'] = 'smart' if self._is_smart_playlist(pl) else 'regular'
             return playlists
         except Exception as e:
             logger.error(f"❌ Failed to fetch playlists: {e}")
@@ -57,11 +70,8 @@ class NavidromeClient:
             res = self.session.get(url, params=params)
             res.raise_for_status()
             playlist = res.json().get("subsonic-response", {}).get("playlist", {})
-            # Add type field
-            if playlist.get('smart', False):
-                playlist['type'] = 'smart'
-            else:
-                playlist['type'] = 'regular'
+            # Add normalized type field
+            playlist['type'] = 'smart' if self._is_smart_playlist(playlist) else 'regular'
             # Rename 'entry' to 'tracks' for clarity
             playlist['tracks'] = playlist.pop('entry', [])
             return playlist

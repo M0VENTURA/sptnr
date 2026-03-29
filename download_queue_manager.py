@@ -2117,7 +2117,7 @@ def migrate_existing_queue_items_to_grouped_setup(limit=None):
         cursor = conn.cursor()
         placeholder = "%s"
 
-        _ensure_download_queue_columns(conn, cursor, is_pg=is_pg)
+        _ensure_download_queue_columns(conn, cursor, is_pg=True)
 
         fetch_sql = f"""
             SELECT id, artist, title, album, album_artist, source,

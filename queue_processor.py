@@ -2685,6 +2685,7 @@ def search_and_download(queue_id, queue_item, client):
                 os.makedirs(_queue_folder, exist_ok=True)
                 # Persist to DB if not already set
                 if not (queue_item.get("queue_folder") or "").strip():
+                    _qf_conn = None
                     try:
                         _qf_conn = get_db()
                         _qf_cur = _qf_conn.cursor()
@@ -2693,13 +2694,23 @@ def search_and_download(queue_id, queue_item, client):
                             (_queue_folder, queue_id),
                         )
                         _qf_conn.commit()
-                        _qf_conn.close()
                         queue_item = dict(queue_item)
                         queue_item["queue_folder"] = _queue_folder
                     except Exception as _qf_db_err:
+                        try:
+                            if _qf_conn is not None:
+                                _qf_conn.rollback()
+                        except Exception:
+                            pass
                         logger.debug(
                             f"Queue {queue_id}: could not persist queue_folder: {_qf_db_err}"
                         )
+                    finally:
+                        try:
+                            if _qf_conn is not None:
+                                _qf_conn.close()
+                        except Exception:
+                            pass
         except Exception as _qf_err:
             logger.debug(f"Queue {queue_id}: could not set up queue folder: {_qf_err}")
 
@@ -3465,6 +3476,11 @@ def check_completed_downloads():
         conn.close()
     except Exception as e:
         logger.error(f"Error in check_completed_downloads: {e}")
+        try:
+            if conn is not None:
+                conn.rollback()
+        except Exception:
+            pass
     finally:
         if conn is not None:
             try:
@@ -3486,6 +3502,7 @@ def process_matched_items(limit=5):
     Returns:
         int: number of items successfully moved and marked as 'imported'.
     """
+    conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
@@ -3507,11 +3524,15 @@ def process_matched_items(limit=5):
         )
         rows = cursor.fetchall() or []
         items = [dict(row) for row in rows]
-        conn.close()
-
     except Exception as e:
         logger.error(f"[MATCHED_MOVE] Error fetching matched items: {e}")
         return 0
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     if not items:
         return 0
@@ -3619,6 +3640,11 @@ def process_completed_mbid_items(limit=10):
         conn = None
     except Exception as e:
         logger.error(f"[COMPLETED_MOVE] Error fetching completed MBID items: {e}")
+        try:
+            if conn is not None:
+                conn.rollback()
+        except Exception:
+            pass
         return 0
 
     if not items:

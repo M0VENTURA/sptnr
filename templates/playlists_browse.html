@@ -85,6 +85,9 @@
           <button class="btn btn-sm btn-primary" onclick="editPlaylist()" id="editPlaylistBtn">
             <i class="bi bi-pencil"></i> Edit in Navidrome
           </button>
+          <button class="btn btn-sm btn-outline-success" onclick="loadCurrentPlaylistInDownloader()" id="loadInDownloaderBtn">
+            <i class="bi bi-cloud-download"></i> Load In Downloader
+          </button>
           <button class="btn btn-sm btn-outline-secondary" onclick="refreshPlaylistDetails()" id="refreshPlaylistBtn">
             <i class="bi bi-arrow-clockwise"></i> Refresh
           </button>
@@ -412,28 +415,32 @@
 
   async function loadPlaylistList() {
     try {
-      const response = await fetch('/api/playlist/list');
+      const response = await fetch('/api/navidrome/playlists');
       const data = await response.json();
 
       const select = document.getElementById('playlistFileSelect');
       select.innerHTML = '<option value="">Select a playlist...</option>';
 
-      if (!data || !data.playlists) {
+      if (!data || data.error) {
         select.innerHTML = '<option value="">Error: Invalid API response</option>';
         return;
       }
 
-      if (data.playlists.length > 0) {
-        data.playlists.forEach(playlist => {
+      const merged = [];
+      (data.smart || []).forEach(pl => merged.push({ ...pl, type: 'smart' }));
+      (data.regular || []).forEach(pl => merged.push({ ...pl, type: 'regular' }));
+
+      if (merged.length > 0) {
+        merged.forEach(playlist => {
           const option = document.createElement('option');
-          option.value = playlist.path;
+          option.value = playlist.id;
           let typeLabel = '';
-          if (playlist.type === 'smart' || playlist.type === 'smart-local') typeLabel = ' (Smart)';
-          option.textContent = `${playlist.name || playlist.path}${typeLabel} [${playlist.songCount || 0}]`;
+          if (playlist.type === 'smart') typeLabel = ' (Smart)';
+          option.textContent = `${playlist.name || playlist.id}${typeLabel}`;
           option.dataset.type = playlist.type;
           option.dataset.songCount = playlist.songCount || 0;
           option.dataset.owner = playlist.owner || '';
-          option.dataset.name = playlist.name || playlist.path;
+          option.dataset.name = playlist.name || playlist.id;
           select.appendChild(option);
         });
       } else {
@@ -446,28 +453,74 @@
   }
 
   async function loadPlaylistForDownload() {
-    const playlistPath = document.getElementById('playlistFileSelect').value;
+    const playlistPath = getSelectedPlaylistId();
     if (!playlistPath) {
       alert('Please select a playlist');
       return;
     }
 
     try {
-      const response = await fetch('/api/playlist/load', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ playlist_path: playlistPath })
-      });
+      const response = await fetch(`/api/navidrome/playlist/${encodeURIComponent(playlistPath)}`);
 
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Failed to load playlist');
 
-      currentPlaylistData = data;
-      displayPlaylistDownloader(data);
+      const tracks = Array.isArray(data.tracks) ? data.tracks : [];
+      const normalized = {
+        playlist_path: playlistPath,
+        songs: tracks.map(track => ({
+          id: track.id,
+          title: track.title || 'Unknown',
+          artist: track.artist || 'Unknown',
+          album: track.album || 'Unknown',
+          detected: true
+        })),
+        matched_files: tracks.map(track => ({
+          id: track.id,
+          title: track.title || 'Unknown',
+          artist: track.artist || 'Unknown',
+          filename: track.path || ''
+        })),
+        total: tracks.length,
+        matched: tracks.length
+      };
+
+      currentPlaylistData = normalized;
+      displayPlaylistDownloader(normalized);
     } catch (error) {
       console.error('Error:', error);
       alert('Error: ' + error.message);
     }
+  }
+
+  function getSelectedPlaylistId() {
+    const downloaderSelect = document.getElementById('playlistFileSelect');
+    if (downloaderSelect && downloaderSelect.value) {
+      return downloaderSelect.value;
+    }
+
+    const smartSelect = document.getElementById('smartPlaylistSelect');
+    if (smartSelect && smartSelect.value) {
+      if (downloaderSelect) downloaderSelect.value = smartSelect.value;
+      return smartSelect.value;
+    }
+
+    const regularSelect = document.getElementById('regularPlaylistSelect');
+    if (regularSelect && regularSelect.value) {
+      if (downloaderSelect) downloaderSelect.value = regularSelect.value;
+      return regularSelect.value;
+    }
+
+    return '';
+  }
+
+  function loadCurrentPlaylistInDownloader() {
+    const playlistId = getSelectedPlaylistId();
+    if (!playlistId) {
+      alert('Please select a smart or regular playlist first.');
+      return;
+    }
+    loadPlaylistForDownload();
   }
 
   function displayPlaylistDownloader(data) {
@@ -648,6 +701,7 @@
 
   async function loadRecommendedPlaylists() {
     const loading = document.getElementById('loadingRecommendedPlaylists');
+    const container = document.getElementById('recommendedPlaylistsContainer');
     const error = document.getElementById('recommendedPlaylistsError');
 
     loading.style.display = 'block';
