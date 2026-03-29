@@ -168,6 +168,125 @@ class ListenBrainzUserClient:
         except Exception as e:
             logger.error(f"Failed to get recommendations for {username}: {e}")
             return []
+
+    def get_created_for_playlists(self, username: str) -> dict:
+        """
+        Fetch ListenBrainz "Created for You" playlists.
+
+        Endpoint:
+            GET /1/user/{username}/playlists/createdfor
+
+        Returns:
+            Dict keyed by canonical playlist type:
+            {
+                "weekly_jams": [...],
+                "weekly_exploration": [...],
+                "last_week_jams": [...],
+                "last_week_exploration": [...]
+            }
+        """
+        result = {
+            "weekly_jams": [],
+            "weekly_exploration": [],
+            "last_week_jams": [],
+            "last_week_exploration": [],
+        }
+
+        try:
+            url = f"{self.base_url}/user/{username}/playlists/createdfor"
+            res = self.session.get(url, headers=self.headers, timeout=(5, 30))
+            res.raise_for_status()
+            data = res.json() or {}
+
+            payload = data.get("payload") if isinstance(data, dict) else {}
+            if not isinstance(payload, dict):
+                payload = {}
+
+            playlists = payload.get("playlists", [])
+            if isinstance(playlists, dict):
+                playlists = [playlists]
+            if not isinstance(playlists, list):
+                playlists = []
+
+            name_to_key = {
+                "weekly jams": "weekly_jams",
+                "weekly exploration": "weekly_exploration",
+                "last week's jams": "last_week_jams",
+                "last weeks jams": "last_week_jams",
+                "last week's exploration": "last_week_exploration",
+                "last weeks exploration": "last_week_exploration",
+            }
+
+            for playlist in playlists:
+                if not isinstance(playlist, dict):
+                    continue
+
+                playlist_name = (
+                    playlist.get("title")
+                    or playlist.get("name")
+                    or playlist.get("playlist_name")
+                    or ""
+                )
+                normalized_name = " ".join(str(playlist_name).strip().lower().split())
+                playlist_key = name_to_key.get(normalized_name)
+                if not playlist_key:
+                    continue
+
+                recordings = playlist.get("recordings")
+                if recordings is None:
+                    recordings = playlist.get("tracks")
+                if isinstance(recordings, dict):
+                    recordings = [recordings]
+                if not isinstance(recordings, list):
+                    recordings = []
+
+                normalized_tracks = []
+                for rec in recordings:
+                    if not isinstance(rec, dict):
+                        continue
+
+                    artist_obj = rec.get("artist") if isinstance(rec.get("artist"), dict) else None
+                    release_obj = rec.get("release") if isinstance(rec.get("release"), dict) else None
+
+                    artist_name = rec.get("artist_name") or ""
+                    if not artist_name and artist_obj:
+                        artist_name = artist_obj.get("name", "")
+
+                    track_name = (
+                        rec.get("recording_name")
+                        or rec.get("track_name")
+                        or rec.get("title")
+                        or rec.get("name")
+                        or ""
+                    )
+
+                    release_name = rec.get("release_name") or ""
+                    if not release_name and release_obj:
+                        release_name = release_obj.get("name", "")
+
+                    normalized_tracks.append({
+                        "artist_name": artist_name,
+                        "track_name": track_name,
+                        "release_name": release_name,
+                        "recording_mbid": rec.get("recording_mbid") or rec.get("mbid") or "",
+                        "release_mbid": rec.get("release_mbid") or "",
+                        "source": "listenbrainz-createdfor",
+                    })
+
+                result[playlist_key] = normalized_tracks
+
+            logger.info(
+                "Got Created For playlists for %s (weekly_jams=%s, weekly_exploration=%s, last_week_jams=%s, last_week_exploration=%s)",
+                username,
+                len(result["weekly_jams"]),
+                len(result["weekly_exploration"]),
+                len(result["last_week_jams"]),
+                len(result["last_week_exploration"]),
+            )
+            return result
+        except Exception as e:
+            logger.error(f"Failed to fetch Created For playlists for {username}: {e}")
+            return result
     
     def get_weekly_jams(self, username: str) -> list:
         """
@@ -179,6 +298,10 @@ class ListenBrainzUserClient:
         Returns:
             List of recommended tracks
         """
+        created_for = self.get_created_for_playlists(username)
+        jams = created_for.get("weekly_jams", []) if isinstance(created_for, dict) else []
+        if jams:
+            return jams
         return self.get_recommendations(username, "raw")
     
     def get_weekly_exploration(self, username: str) -> list:
@@ -191,6 +314,11 @@ class ListenBrainzUserClient:
         Returns:
             List of recommended tracks for exploration
         """
+        created_for = self.get_created_for_playlists(username)
+        exploration = created_for.get("weekly_exploration", []) if isinstance(created_for, dict) else []
+        if exploration:
+            return exploration
+
         try:
             # Weekly exploration uses a different endpoint
             url = f"{self.base_url}/user/{username}/recommendations/exploration/weekly"
@@ -224,7 +352,11 @@ class ListenBrainzUserClient:
             provide a direct endpoint for archived weekly recommendations.
             This is a placeholder implementation.
         """
-        logger.warning("get_last_week_jams: Currently using current week's data - archived recommendations not available")
+        created_for = self.get_created_for_playlists(username)
+        last_week = created_for.get("last_week_jams", []) if isinstance(created_for, dict) else []
+        if last_week:
+            return last_week
+        logger.warning("get_last_week_jams: Created For data unavailable, using current recommendations fallback")
         return self.get_recommendations(username, "raw")
     
     def get_last_week_exploration(self, username: str) -> list:
@@ -242,7 +374,11 @@ class ListenBrainzUserClient:
             provide a direct endpoint for archived weekly exploration.
             This is a placeholder implementation.
         """
-        logger.warning("get_last_week_exploration: Currently using current week's data - archived recommendations not available")
+        created_for = self.get_created_for_playlists(username)
+        last_week = created_for.get("last_week_exploration", []) if isinstance(created_for, dict) else []
+        if last_week:
+            return last_week
+        logger.warning("get_last_week_exploration: Created For data unavailable, using current exploration fallback")
         return self.get_weekly_exploration(username)
     
     def get_username_from_token(self) -> str:

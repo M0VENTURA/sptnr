@@ -1980,6 +1980,12 @@ def _start_boot_navidrome_import():
 # --- Daily scheduled task globals ---
 _daily_scheduler_thread = None
 _daily_scheduler_stop = None
+listenbrainz_createdfor_scheduler = {
+    "thread": None,
+    "running": False,
+    "stop_event": None,
+}
+listenbrainz_createdfor_scheduler_lock = threading.Lock()
 _startup_leader_lock_conn = None
 _startup_leader_lock_file_fd = None
 
@@ -2187,9 +2193,9 @@ def api_queue_requeue_all_unmatched():
         return jsonify({"error": str(e)}), 400
 
 def _run_monday_listenbrainz_rss_sync():
-    """Run ListenBrainz RSS playlist sync once per week (Monday morning) for configured users."""
+    """Run ListenBrainz playlist sync once per week at Monday 1am for configured users."""
     now = datetime.now()
-    if now.weekday() != 0 or now.hour < 6:
+    if now.weekday() != 0 or now.hour != 1:
         return
     cfg = get_config()
     users = cfg.get("navidrome_users", []) or []
@@ -2236,6 +2242,154 @@ def _run_monday_listenbrainz_rss_sync():
         conn.commit()
     finally:
         conn.close()
+
+
+def _run_monday_lastfm_playlist_sync():
+    """Queue missing Last.fm recommended tracks once per week at Monday 1am."""
+    now = datetime.now()
+    if now.weekday() != 0 or now.hour != 1:
+        return
+
+    cfg = get_config() or {}
+    lastfm_cfg = cfg.get("api_integrations", {}).get("lastfm", {}) if isinstance(cfg, dict) else {}
+    if not lastfm_cfg.get("enabled"):
+        return
+
+    api_key = (lastfm_cfg.get("api_key") or "").strip()
+    if not api_key:
+        return
+
+    users = cfg.get("navidrome_users", []) or []
+    if not users:
+        return
+
+    from api_clients.lastfm import get_lastfm_recommendations
+    from download_queue_manager import add_to_queue
+
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        placeholder = get_placeholder(conn)
+        # Ensure scheduler table exists for weekly sync dedupe.
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS lastfm_scheduler_config (
+                username TEXT PRIMARY KEY,
+                enabled BOOLEAN DEFAULT TRUE,
+                sync_time TEXT DEFAULT '01:00',
+                last_sync TIMESTAMP,
+                next_sync TIMESTAMP
+            )
+            """
+        )
+
+        week_key = f"{now.isocalendar().year}-W{now.isocalendar().week:02d}"
+        for user_cfg in users:
+            app_user = (user_cfg.get("user") or "").strip()
+            lastfm_username = (user_cfg.get("lastfm_username") or "").strip()
+            if not app_user or not lastfm_username:
+                continue
+
+            cursor.execute(
+                f"SELECT last_sync FROM lastfm_scheduler_config WHERE username = {placeholder}",
+                (app_user,),
+            )
+            row = cursor.fetchone()
+            last_sync = row.get("last_sync") if isinstance(row, dict) else (row[0] if row else None)
+            if last_sync:
+                try:
+                    last_dt = datetime.fromisoformat(str(last_sync))
+                    last_week_key = f"{last_dt.isocalendar().year}-W{last_dt.isocalendar().week:02d}"
+                    if last_week_key == week_key:
+                        continue
+                except Exception:
+                    pass
+
+            recs = get_lastfm_recommendations(api_key, username=lastfm_username)
+            tracks = recs.get("tracks", []) if isinstance(recs, dict) else []
+            queued_count = 0
+            for track in tracks:
+                artist_name = (track.get("artist") or "").strip()
+                track_name = (track.get("name") or "").strip()
+                if not artist_name or not track_name:
+                    continue
+
+                cursor.execute(
+                    f"""SELECT id FROM tracks
+                        WHERE LOWER(artist) = LOWER({placeholder})
+                          AND LOWER(title) = LOWER({placeholder})
+                        LIMIT 1""",
+                    (artist_name, track_name),
+                )
+                if cursor.fetchone():
+                    continue
+
+                queued = add_to_queue(
+                    artist=artist_name,
+                    title=track_name,
+                    album=None,
+                    source="lastfm",
+                    import_type="playlist",
+                    release_source="lastfm",
+                )
+                if queued:
+                    queued_count += 1
+
+            now_iso = datetime.now().isoformat()
+            cursor.execute(
+                """
+                INSERT INTO lastfm_scheduler_config (username, enabled, sync_time, last_sync)
+                VALUES (%s, TRUE, '01:00', %s)
+                ON CONFLICT (username) DO UPDATE SET
+                    last_sync = EXCLUDED.last_sync,
+                    enabled = TRUE,
+                    sync_time = '01:00'
+                """,
+                (app_user, now_iso),
+            )
+            logging.info("[LASTFM_SCHED] Weekly sync for %s queued %s missing track(s)", app_user, queued_count)
+
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _start_listenbrainz_createdfor_scheduler():
+    """Start scheduler to run ListenBrainz Created For sync every Monday at 1:00 AM."""
+    global listenbrainz_createdfor_scheduler
+
+    with listenbrainz_createdfor_scheduler_lock:
+        existing_thread = listenbrainz_createdfor_scheduler.get("thread")
+        if existing_thread and hasattr(existing_thread, "is_alive") and existing_thread.is_alive():
+            listenbrainz_createdfor_scheduler["running"] = True
+            return
+
+        stop_event = threading.Event()
+        listenbrainz_createdfor_scheduler["stop_event"] = stop_event
+
+        def scheduler_worker():
+            try:
+                # Small startup delay so app boot can complete first.
+                time.sleep(20)
+                interval_seconds = 10 * 60
+                while not stop_event.is_set():
+                    try:
+                        _run_monday_listenbrainz_rss_sync()
+                        _run_monday_lastfm_playlist_sync()
+                    except Exception as loop_err:
+                        logging.error(f"[LB_CREATED_FOR] Scheduler loop error: {loop_err}")
+
+                    if stop_event.wait(timeout=interval_seconds):
+                        break
+            finally:
+                with listenbrainz_createdfor_scheduler_lock:
+                    listenbrainz_createdfor_scheduler["running"] = False
+
+        thread = threading.Thread(target=scheduler_worker, daemon=True, name="listenbrainz-createdfor-scheduler")
+        thread.start()
+        listenbrainz_createdfor_scheduler["thread"] = thread
+        listenbrainz_createdfor_scheduler["running"] = True
+        logging.info("[LB_CREATED_FOR] Scheduler started (checks every 10 minutes, runs sync at Monday 1am)")
 
 
 def _run_daily_5am_lb_rematch():
@@ -3929,6 +4083,11 @@ if _is_startup_leader_worker:
         _start_upcoming_release_match_scheduler()
     except Exception as e:
         logging.error(f"Failed to start upcoming release match scheduler: {e}")
+
+    try:
+        _start_listenbrainz_createdfor_scheduler()
+    except Exception as e:
+        logging.error(f"Failed to start ListenBrainz/Last.fm weekly playlist scheduler: {e}")
 else:
     logging.debug("[BOOT] Non-leader worker: startup background schedulers not started in this process")
 
@@ -27695,6 +27854,7 @@ def api_lastfm_create_playlist():
     try:
         data = request.get_json(silent=True) or {}
         rec_type = data.get("type", "tracks")  # tracks, artists, or albums
+        enqueue_missing = bool(data.get("enqueue_missing", True))
         
         cfg = get_config()
         lastfm_config = cfg.get("api_integrations", {}).get("lastfm", {})
@@ -27755,11 +27915,13 @@ def api_lastfm_create_playlist():
         # Search for matching tracks in database
         matched_tracks = []
         missing_tracks = []
+        queued_missing = []
         
         # Get database connection
         conn = get_db()
         cursor = conn.cursor()
         placeholder = "%s"
+        from download_queue_manager import add_to_queue
         
         for rec in rec_list:
             if rec_type == "tracks":
@@ -27785,11 +27947,25 @@ def api_lastfm_create_playlist():
                         "title": _row_get(result, "title", 2),
                     })
                 else:
-                    missing_tracks.append({
+                    missing_item = {
                         "artist": artist_name,
                         "title": track_name,
                         "playcount": rec.get("playcount", 0)
-                    })
+                    }
+                    missing_tracks.append(missing_item)
+
+                    if enqueue_missing:
+                        queued = add_to_queue(
+                            artist=artist_name,
+                            title=track_name,
+                            album=None,
+                            source="lastfm",
+                            import_type="playlist",
+                            release_source="lastfm",
+                        )
+                        if queued:
+                            queue_id = queued.get("id") if isinstance(queued, dict) else None
+                            queued_missing.append({**missing_item, "queue_id": queue_id})
                     
             elif rec_type == "albums":
                 # For albums: rec has "artist" and "name" (album name)
@@ -27814,11 +27990,25 @@ def api_lastfm_create_playlist():
                         "title": _row_get(result, "album", 2),  # Using 'album' as title for display
                     })
                 else:
-                    missing_tracks.append({
+                    missing_item = {
                         "artist": artist_name,
                         "title": album_name,
                         "playcount": rec.get("playcount", 0)
-                    })
+                    }
+                    missing_tracks.append(missing_item)
+
+                    if enqueue_missing:
+                        queued = add_to_queue(
+                            artist=artist_name,
+                            title=album_name,
+                            album=album_name,
+                            source="lastfm",
+                            import_type="album",
+                            release_source="lastfm",
+                        )
+                        if queued:
+                            queue_id = queued.get("id") if isinstance(queued, dict) else None
+                            queued_missing.append({**missing_item, "queue_id": queue_id})
                     
             elif rec_type == "artists":
                 # For artists: rec only has "name" (artist name)
@@ -27858,8 +28048,11 @@ def api_lastfm_create_playlist():
             "total_recommendations": len(rec_list),
             "matched": len(matched_tracks),
             "missing": len(missing_tracks),
+            "queued_missing": len(queued_missing),
             "matched_tracks": matched_tracks,
             "missing_tracks": missing_tracks,
+            "queued_items": queued_missing,
+            "enqueue_missing": enqueue_missing,
             "recommendation_type": rec_type
         })
         
@@ -32398,6 +32591,20 @@ def _normalize_listenbrainz_recommendation(rec, source):
 
 
 def _fetch_listenbrainz_feed_tracks(listenbrainz_username, rec_type, lb_token=None):
+    from api_clients.audiodb_and_listenbrainz import ListenBrainzUserClient
+
+    # Primary source: ListenBrainz Created For API endpoint.
+    if lb_token:
+        try:
+            client = ListenBrainzUserClient(lb_token)
+            created_for = client.get_created_for_playlists(listenbrainz_username)
+            if isinstance(created_for, dict):
+                created_tracks = created_for.get(rec_type, []) or []
+                if created_tracks:
+                    return created_tracks, "listenbrainz-api:createdfor"
+        except Exception as exc:
+            logging.debug(f"[LB_CREATED_FOR] Fallback to RSS/API for {listenbrainz_username}/{rec_type}: {exc}")
+
     request_headers = {
         "User-Agent": "popularr/1.0 (+https://github.com/krestaino/popularr)",
         "Accept": "application/rss+xml, application/atom+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.1",
@@ -32414,7 +32621,6 @@ def _fetch_listenbrainz_feed_tracks(listenbrainz_username, rec_type, lb_token=No
             continue
     if not lb_token:
         return [], ""
-    from api_clients.audiodb_and_listenbrainz import ListenBrainzUserClient
     client = ListenBrainzUserClient(lb_token)
     if rec_type == "weekly_jams":
         recs = client.get_weekly_jams(listenbrainz_username)
