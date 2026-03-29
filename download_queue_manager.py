@@ -2396,9 +2396,14 @@ def _is_musicbrainz_backed(queue_item):
         return True
 
     mbid_pattern = r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+    release_id = str(queue_item.get('release_id') or '').strip()
     release_mbid = str(queue_item.get('release_mbid') or '').strip()
     recording_mbid = str(queue_item.get('recording_mbid') or '').strip()
-    return bool(re.match(mbid_pattern, release_mbid) or re.match(mbid_pattern, recording_mbid))
+    return bool(
+        re.match(mbid_pattern, release_id)
+        or re.match(mbid_pattern, release_mbid)
+        or re.match(mbid_pattern, recording_mbid)
+    )
 
 
 def _is_full_album_ready_for_move(queue_item, cursor=None, placeholder=None,
@@ -2930,7 +2935,10 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
         }
 
         cover_art_data = None
-        release_id = queue_item_dict.get('release_id')
+        # Some queue rows store MB release UUID in release_mbid while others
+        # store it in release_id (legacy). Accept either so MB metadata is
+        # fetched and written before moving to /music.
+        release_id = queue_item_dict.get('release_id') or queue_item_dict.get('release_mbid')
         if release_id:
             try:
                 from post_download_processor import fetch_musicbrainz_release_metadata
