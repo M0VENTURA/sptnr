@@ -955,6 +955,59 @@ def api_navidrome_playlist_detail(playlist_id):
         logging.error(f"Failed to fetch Navidrome playlist detail: {e}", exc_info=True)
         return jsonify({"error": f"Exception occurred: {str(e)}"}), 500
 
+# --- Integration Status API ---
+@app.route("/api/integrations/status", methods=["GET"])
+def api_integrations_status():
+    """Return health/status information for all configured integrations."""
+    try:
+        from helpers.config_helpers import get_all_services_status, is_service_enabled
+        
+        status_map = get_all_services_status()
+        
+        # Build detailed status for each service
+        integrations = {}
+        for service_name, service_info in status_map.items():
+            enabled = is_service_enabled(service_name)
+            integrations[service_name] = {
+                "enabled": enabled,
+                "configured": service_info.get('configured', False),
+                "operational": enabled  # Could be enhanced with actual health checks
+            }
+        
+        # Add Navidrome specific operational check
+        try:
+            if integrations.get('navidrome', {}).get('enabled'):
+                config_data = get_config()
+                nav_config = config_data.get("navidrome", {})
+                base_url = nav_config.get("base_url", "")
+                username = nav_config.get("user", "")
+                password = nav_config.get("pass", "")
+                
+                if base_url and username and password:
+                    from api_clients.navidrome import NavidromeClient
+                    client = NavidromeClient(base_url, username, password)
+                    # Quick health check
+                    try:
+                        client.fetch_all_playlists()
+                        integrations['navidrome']['operational'] = True
+                    except Exception as nav_err:
+                        logging.debug(f"Navidrome operational check failed: {nav_err}")
+                        integrations['navidrome']['operational'] = False
+        except Exception as nav_check_err:
+            logging.debug(f"Could not check Navidrome operational status: {nav_check_err}")
+        
+        return jsonify({
+            "success": True,
+            "integrations": integrations,
+            "timestamp": datetime.now().isoformat()
+        })
+    except Exception as e:
+        logging.error(f"Failed to fetch integration status: {e}", exc_info=True)
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
 # --- Spotify Playlists API ---
 @app.route("/api/spotify/playlists", methods=["GET"])
 def api_spotify_playlists():
@@ -26724,8 +26777,9 @@ def api_lastfm_create_playlist():
     Create a Navidrome playlist from Last.fm recommendations.
     Searches for tracks in the local library and matches them.
     """
+    conn = None
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         rec_type = data.get("type", "tracks")  # tracks, artists, or albums
         
         cfg = get_config()
@@ -26812,9 +26866,9 @@ def api_lastfm_create_playlist():
                 
                 if result:
                     matched_tracks.append({
-                        "id": result[0],
-                        "artist": result[1],
-                        "title": result[2]
+                        "id": _row_get(result, "id", 0),
+                        "artist": _row_get(result, "artist", 1),
+                        "title": _row_get(result, "title", 2),
                     })
                 else:
                     missing_tracks.append({
@@ -26841,9 +26895,9 @@ def api_lastfm_create_playlist():
                 
                 if result:
                     matched_tracks.append({
-                        "id": result[0],
-                        "artist": result[1],
-                        "title": result[2]  # Using 'album' as title for display
+                        "id": _row_get(result, "id", 0),
+                        "artist": _row_get(result, "artist", 1),
+                        "title": _row_get(result, "album", 2),  # Using 'album' as title for display
                     })
                 else:
                     missing_tracks.append({
@@ -26870,9 +26924,9 @@ def api_lastfm_create_playlist():
                 if results:
                     for result in results:
                         matched_tracks.append({
-                            "id": result[0],
-                            "artist": result[1],
-                            "title": result[2]
+                            "id": _row_get(result, "id", 0),
+                            "artist": _row_get(result, "artist", 1),
+                            "title": _row_get(result, "album", 2),
                         })
                 else:
                     missing_tracks.append({
@@ -26882,6 +26936,7 @@ def api_lastfm_create_playlist():
                     })
         
         conn.close()
+        conn = None
         
         logging.info(f"[LASTFM_PLAYLIST] Matched {len(matched_tracks)} / {len(rec_list)} {rec_type} recommendations")
         
@@ -26897,6 +26952,12 @@ def api_lastfm_create_playlist():
     except Exception as e:
         logging.error(f"[LASTFM_PLAYLIST] Error: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @app.route("/api/recommended-playlists", methods=["GET"])
@@ -27930,69 +27991,171 @@ def api_playlist_import():
 
 @app.route("/api/playlist/create", methods=["POST"])
 def api_playlist_create():
-    """API endpoint to create a Navidrome playlist from matched tracks"""
+    """
+    Create a Navidrome playlist from matched tracks.
+    
+    Request body:
+        {
+            "playlist_name": "My Playlist",
+            "playlist_description": "Optional description",
+            "matched_tracks": [
+                {"id": "track-123", "title": "Song", "artist": "Artist"},
+                ...
+            ]
+        }
+    
+    Returns:
+        201 Created: {"success": true, "data": {...}, ...}
+        400 Bad Request: {"success": false, "error": {...}, ...}
+        500 Server Error: {"success": false, "error": {...}, ...}
+    """
     try:
-        data = request.get_json()
-        playlist_name = data.get("playlist_name", "").strip()
-        playlist_description = data.get("playlist_description", "").strip()
+        from helpers.api_response import api_success, api_error
+        
+        # Parse request
+        try:
+            data = request.get_json(force=True, silent=True) or {}
+        except Exception as json_err:
+            logging.error(f"Invalid JSON in playlist/create request: {json_err}")
+            return api_error(
+                "invalid_json",
+                "Request body must be valid JSON",
+                status=400
+            )
+        
+        playlist_name = (data.get("playlist_name") or "").strip()
+        playlist_description = (data.get("playlist_description") or "").strip()
         matched_tracks = data.get("matched_tracks", [])
         
-        if not playlist_name or not matched_tracks:
-            return jsonify({"error": "Missing required fields"}), 400
+        # Validate required fields
+        if not playlist_name:
+            return api_error(
+                "missing_field",
+                "playlist_name is required",
+                status=400,
+                field="playlist_name"
+            )
         
-        # Get track IDs from matched tracks
-        track_ids = [track.get("id") for track in matched_tracks if track.get("id")]
+        if not matched_tracks or not isinstance(matched_tracks, list):
+            return api_error(
+                "missing_field",
+                "matched_tracks is required and must be a list",
+                status=400,
+                field="matched_tracks"
+            )
+        
+        # Extract track IDs
+        track_ids = [
+            str(track.get("id")).strip()
+            for track in matched_tracks
+            if track.get("id")
+        ]
         
         if not track_ids:
-            return jsonify({"error": "No valid tracks to add to playlist"}), 400
+            return api_error(
+                "no_valid_tracks",
+                f"No valid track IDs found in {len(matched_tracks)} provided tracks",
+                status=400,
+                tracks_provided=len(matched_tracks),
+                valid_tracks=0
+            )
         
-        # Create NSP playlist file
+        # Build NSP playlist data structure
         playlist_data = {
             "name": playlist_name,
-            "comment": playlist_description or "Imported from Spotify",
-            "all": []
+            "comment": playlist_description or "Created via SPTNR",
+            "trackIds": track_ids
         }
         
-        # Add track IDs as a list
-        playlist_data["trackIds"] = track_ids
-        
-        # Create playlists directory if it doesn't exist
+        # Determine file system path
         music_folder = os.environ.get("MUSIC_FOLDER", "/music")
         playlists_dir = os.path.join(music_folder, "Playlists")
-        os.makedirs(playlists_dir, exist_ok=True)
         
-        # Sanitize playlist name for filename
-        file_name = "".join(c for c in playlist_name if c.isalnum() or c in ('-', '_', ' '))
-        if not file_name:
-            return jsonify({"error": "Invalid playlist name"}), 400
+        # Sanitize filename
+        safe_name = "".join(
+            c for c in playlist_name 
+            if c.isalnum() or c in ('-', '_', ' ')
+        ).strip()
         
-        file_path = os.path.join(playlists_dir, f"{file_name}.nsp")
+        if not safe_name:
+            return api_error(
+                "invalid_name",
+                f"Playlist name '{playlist_name}' contains no valid filename characters",
+                status=400
+            )
+        
+        file_path = os.path.join(playlists_dir, f"{safe_name}.nsp")
         
         # Check if file already exists
         if os.path.exists(file_path):
-            return jsonify({"error": f"Playlist file '{file_name}.nsp' already exists"}), 400
+            return api_error(
+                "playlist_exists",
+                f"Playlist file '{safe_name}.nsp' already exists",
+                status=409,
+                file_path=file_path
+            )
         
-        # Write the playlist file
+        # Create directory
         try:
-            with open(file_path, 'w') as f:
+            os.makedirs(playlists_dir, exist_ok=True)
+        except OSError as dir_err:
+            logging.error(f"Failed to create playlists directory '{playlists_dir}': {dir_err}")
+            return api_error(
+                "directory_error",
+                f"Could not create playlists directory: {str(dir_err)}",
+                status=500,
+                directory=playlists_dir
+            )
+        
+        # Write playlist file
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
                 json.dump(playlist_data, f, indent=2)
             
-            logging.info(f"Created playlist: {playlist_name} with {len(track_ids)} tracks")
+            logging.info(
+                f"Created playlist: {playlist_name} with {len(track_ids)} tracks at {file_path}"
+            )
             
-            return jsonify({
-                "success": True,
-                "message": f"Playlist '{playlist_name}' created successfully",
-                "file_path": file_path,
-                "file_name": f"{file_name}.nsp",
-                "track_count": len(track_ids)
-            }), 201
+            return api_success(
+                {
+                    "playlist_name": playlist_name,
+                    "file_name": f"{safe_name}.nsp",
+                    "file_path": file_path,
+                    "track_count": len(track_ids),
+                    "track_ids": track_ids
+                },
+                message=f"Playlist '{playlist_name}' created successfully",
+                status=201
+            )
         
-        except IOError as e:
-            return jsonify({"error": f"Failed to write playlist file: {str(e)}"}), 500
+        except IOError as io_err:
+            logging.error(f"Failed to write playlist file '{file_path}': {io_err}")
+            return api_error(
+                "file_write_error",
+                f"Failed to write playlist file: {str(io_err)}",
+                status=500,
+                file_path=file_path
+            )
+        except UnicodeEncodeError as encode_err:
+            logging.error(f"Unicode encoding error writing playlist: {encode_err}")
+            return api_error(
+                "encoding_error",
+                f"Encoding error: {str(encode_err)}",
+                status=500
+            )
     
     except Exception as e:
-        logging.error(f"Playlist creation error: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        logging.error(
+            f"Unexpected error in /api/playlist/create: {type(e).__name__}: {e}",
+            exc_info=True
+        )
+        return api_error(
+            "internal_error",
+            "An unexpected error occurred while creating the playlist",
+            status=500,
+            error_type=type(e).__name__,
+            error_message=str(e)
+        )
 
 
 def extract_spotify_playlist_id(url_or_id):
@@ -30383,12 +30546,41 @@ def api_playlist_list():
 
 @app.route("/api/playlist/load", methods=["POST"])
 def api_playlist_load():
-    """Load playlist tracks"""
+    """
+    Load playlist tracks and match them to database file paths.
+    
+    For each track in the Navidrome playlist, attempts to locate the corresponding
+    file path in the database using multiple strategies:
+    1. MusicBrainz ID (MBID) exact match (most reliable)
+    2. Album + Title + Artist match
+    3. Title + Artist match with album preference
+    4. Title only match (loose match, most likely to match wrong track)
+    
+    Request body:
+        {"playlist_id": "...", "playlist_path": "..."}
+    
+    Response:
+        {
+            "songs": [...],
+            "matched_files": [
+                {
+                    "title": "...",
+                    "artist": "...",
+                    "filename": "...",  # Navidrome path
+                    "file_path": "..."  # DB path (empty if not found)
+                },
+                ...
+            ]
+        }
+    """
     try:
+        from helpers.api_response import api_error
+        
         data = request.get_json(force=True, silent=True) or {}
         playlist_id = (data.get("playlist_id") or data.get("playlist_path") or "").strip()
+        
         if not playlist_id:
-            return jsonify({"error": "Missing playlist_id"}), 400
+            return api_error("missing_playlist_id", "Missing playlist_id or playlist_path", status=400)
 
         cfg = get_config()
         current_user = session.get("username")
@@ -30403,13 +30595,17 @@ def api_playlist_load():
         base_url = nav_cfg.get("base_url", "http://localhost:4533")
         user = nav_cfg.get("user", "admin")
         password = nav_cfg.get("pass", "")
+        
         if not (base_url and user and password):
-            return jsonify({"error": "Navidrome not configured for this user"}), 400
-        # Use the same Navidrome client path as /api/navidrome/playlist/<id>
-        # so browse details and downloader always see consistent track payloads.
+            return api_error(
+                "navidrome_not_configured",
+                "Navidrome not configured for this user",
+                status=400
+            )
+        
+        # Fetch playlist from Navidrome
         try:
             from api_clients.navidrome import NavidromeClient
-
             client = NavidromeClient(base_url, user, password)
             playlist_payload = client.fetch_playlist(playlist_id) or {}
             tracks = playlist_payload.get("tracks")
@@ -30419,25 +30615,29 @@ def api_playlist_load():
                 tracks = [tracks] if tracks else []
         except Exception as e:
             logging.error(f"Navidrome playlist fetch error: {e}")
-            return jsonify({"error": f"Failed to fetch playlist from Navidrome: {e}"}), 500
+            return api_error(
+                "navidrome_fetch_failed",
+                f"Failed to fetch playlist from Navidrome: {str(e)}",
+                status=500,
+                navidrome_error=str(e)
+            )
 
         songs = []
         matched_files = []
-
         music_root = os.environ.get("MUSIC_ROOT") or os.environ.get("MUSIC_FOLDER") or "/music"
-
         conn = None
-        cursor = None
-        placeholder = "%s"
-        is_pg = False
+        
         try:
             conn = get_db()
             cursor = conn.cursor()
             placeholder = get_placeholder(conn)
             is_pg = _is_postgres_connection(conn)
-        except Exception as db_init_err:
-            logging.warning(f"Could not initialize DB lookup for playlist paths: {db_init_err}")
+        except Exception as db_err:
+            logging.warning(f"Could not initialize DB for playlist path lookup: {db_err}")
+            conn = None
+            cursor = None
 
+        # Process each track
         for track in tracks:
             raw_nav_path = (
                 (track.get("path") or "").strip()
@@ -30448,72 +30648,110 @@ def api_playlist_load():
                 nav_path = os.path.join(music_root, raw_nav_path)
             else:
                 nav_path = raw_nav_path
+            title = (track.get("title") or "Unknown").strip()
+            artist = (track.get("artist") or "Unknown").strip()
+            album = (track.get("album") or "Unknown").strip()
+
             song = {
                 "id": track.get("id"),
-                "title": track.get("title", "Unknown"),
-                "artist": track.get("artist", "Unknown"),
-                "album": track.get("album", "Unknown"),
+                "title": title,
+                "artist": artist,
+                "album": album,
                 "path": nav_path,
                 "detected": True
             }
             songs.append(song)
 
+            # Try to find file_path in database
             db_file_path = ""
+            match_method = "none"
+            
             if cursor is not None:
                 try:
-                    mbid = (
-                        (track.get("musicBrainzId") or "").strip()
-                        or (track.get("musicbrainzId") or "").strip()
-                    )
-
-                    row = None
+                    # Strategy 1: Try MBID match (most reliable)
+                    mbid = (track.get("musicBrainzId") or track.get("musicbrainzId") or "").strip()
                     if mbid:
                         cursor.execute(
                             f"SELECT file_path FROM tracks WHERE musicbrainz_id = {placeholder} LIMIT 1",
-                            (mbid,),
+                            (mbid,)
                         )
                         row = cursor.fetchone()
-
-                    if row is None:
+                        if row:
+                            db_file_path = _row_get(row, "file_path", 0) or ""
+                            match_method = "mbid"
+                    
+                    # Strategy 2: Try album + title + artist match
+                    if not db_file_path and album and title and artist:
+                        cursor.execute(
+                            f"""
+                            SELECT file_path, last_scanned
+                            FROM tracks
+                            WHERE LOWER(title) = LOWER({placeholder})
+                              AND LOWER(artist) = LOWER({placeholder})
+                              AND LOWER(album) = LOWER({placeholder})
+                            LIMIT 1
+                            """,
+                            (title, artist, album)
+                        )
+                        row = cursor.fetchone()
+                        if row:
+                            db_file_path = _row_get(row, "file_path", 0) or ""
+                            match_method = "album_title_artist"
+                    
+                    # Strategy 3: Try title + artist match (with album as secondary sort)
+                    if not db_file_path and title and artist:
                         if is_pg:
-                            order_sql = f"CASE WHEN LOWER(album) = LOWER({placeholder}) THEN 0 ELSE 1 END, last_scanned DESC NULLS LAST"
+                            order_clause = f"CASE WHEN LOWER(album) = LOWER({placeholder}) THEN 0 ELSE 1 END, last_scanned DESC NULLS LAST"
                         else:
-                            order_sql = f"CASE WHEN LOWER(album) = LOWER({placeholder}) THEN 0 ELSE 1 END, last_scanned DESC"
-
+                            order_clause = f"CASE WHEN LOWER(album) = LOWER({placeholder}) THEN 0 ELSE 1 END, last_scanned DESC"
+                        
                         cursor.execute(
                             f"""
                             SELECT file_path
                             FROM tracks
                             WHERE LOWER(title) = LOWER({placeholder})
                               AND LOWER(artist) = LOWER({placeholder})
-                            ORDER BY {order_sql}
+                            ORDER BY {order_clause}
                             LIMIT 1
                             """,
-                            (song["title"], song["artist"], song["album"]),
+                            (title, artist, album)
                         )
                         row = cursor.fetchone()
-
-                    if row:
-                        if isinstance(row, dict):
-                            db_file_path = row.get("file_path") or ""
-                        elif isinstance(row, (list, tuple)):
-                            db_file_path = row[0] or ""
-                        elif hasattr(row, "keys"):
-                            db_file_path = row["file_path"] if "file_path" in row.keys() else ""
-                except Exception as track_lookup_err:
+                        if row:
+                            db_file_path = _row_get(row, "file_path", 0) or ""
+                            match_method = "title_artist"
+                    
+                    # Strategy 4: Fallback to title-only match (loose)
+                    if not db_file_path and title:
+                        cursor.execute(
+                            f"""
+                            SELECT file_path
+                            FROM tracks
+                            WHERE LOWER(title) = LOWER({placeholder})
+                            ORDER BY last_scanned DESC
+                            LIMIT 1
+                            """,
+                            (title,)
+                        )
+                        row = cursor.fetchone()
+                        if row:
+                            db_file_path = _row_get(row, "file_path", 0) or ""
+                            match_method = "title_only"
+                
+                except Exception as track_err:
                     logging.debug(
-                        "Playlist DB path lookup failed for %s - %s: %s",
-                        song.get("artist", "?"),
-                        song.get("title", "?"),
-                        track_lookup_err,
+                        f"Playlist DB path lookup failed for {artist} - {title}: {track_err}"
                     )
+                    match_method = "error"
 
             matched_files.append({
                 "id": track.get("id"),
-                "title": song["title"],
-                "artist": song["artist"],
+                "title": title,
+                "artist": artist,
+                "album": album,
                 "filename": nav_path,
                 "file_path": db_file_path,
+                "match_method": match_method
             })
 
         if conn is not None:
@@ -30523,16 +30761,22 @@ def api_playlist_load():
                 pass
 
         return jsonify({
+            "success": True,
             "playlist_id": playlist_id,
             "playlist_path": playlist_id,
             "songs": songs,
             "matched_files": matched_files,
             "total": len(songs),
-            "matched": len(matched_files)
+            "matched": len([m for m in matched_files if m.get("file_path")])
         }), 200
+        
     except Exception as e:
-        logging.error(f"Error loading playlist: {e}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
+        logging.error(f"Error loading playlist: {type(e).__name__}: {e}", exc_info=True)
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "error_type": type(e).__name__
+        }), 500
 
 # ---------------------------------------------------------------------------
 # PLAYLIST EXPORT TO EXTERNAL MEDIA
@@ -31632,8 +31876,9 @@ def api_listenbrainz_create_playlist():
     Create a Navidrome playlist from ListenBrainz recommendations.
     Searches for tracks in the local library and adds them to a new playlist.
     """
+    conn = None
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         rec_type = data.get("type", "weekly_jams")
         playlist_name = data.get("name", f"ListenBrainz {rec_type.replace('_', ' ').title()}")
         
@@ -31693,7 +31938,7 @@ def api_listenbrainz_create_playlist():
                 c.execute(f"SELECT id FROM tracks WHERE musicbrainz_id = {placeholder}", (mbid,))
                 result = c.fetchone()
                 if result:
-                    track_id = result[0]
+                    track_id = _row_get(result, "id", 0)
             
             if not track_id and artist_name and track_name:
                 # Search by artist and title
@@ -31704,7 +31949,7 @@ def api_listenbrainz_create_playlist():
                 """, (artist_name, track_name))
                 result = c.fetchone()
                 if result:
-                    track_id = result[0]
+                    track_id = _row_get(result, "id", 0)
             
             if track_id:
                 matched_tracks.append({"id": track_id, "artist": artist_name, "title": track_name})
@@ -31712,6 +31957,7 @@ def api_listenbrainz_create_playlist():
                 missing_tracks.append({"artist": artist_name, "title": track_name, "mbid": mbid})
         
         conn.close()
+        conn = None
         
         # Note: Playlist creation is delegated to the frontend using matched_tracks
         # The frontend will call /api/playlist/create-custom with the matched tracks
@@ -31730,6 +31976,12 @@ def api_listenbrainz_create_playlist():
     except Exception as e:
         logging.error(f"Error creating ListenBrainz playlist: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @app.route("/api/database/cleanup-duplicates", methods=["POST"])
