@@ -4774,6 +4774,8 @@ def auto_discover_and_queue_files():
         'queued': 0,
         'already_in_queue': 0,
         'already_in_library': 0,
+        'folder_auto_matches': 0,
+        'folder_auto_match_tracks_queued': 0,
         'duplicate_files_deleted': 0,
         'duplicate_entries_deleted': 0,
         'empty_folders_deleted': 0,
@@ -5599,6 +5601,14 @@ def auto_discover_and_queue_files():
                 stats['errors'].append(error_msg)
         
         conn.close()
+
+        # After per-file inserts, auto-match large unmatched folders and promote
+        # them into queue-ready discovered rows when confidence is high.
+        folder_auto_stats = _auto_match_large_unmatched_folders(downloads_dir, min_track_count=9)
+        stats['folder_auto_matches'] = int(folder_auto_stats.get('matched_folders', 0) or 0)
+        stats['folder_auto_match_tracks_queued'] = int(folder_auto_stats.get('updated_tracks', 0) or 0)
+        if folder_auto_stats.get('errors'):
+            stats['errors'].extend(folder_auto_stats.get('errors') or [])
         
         log_queue_event(
             'info',
@@ -5616,7 +5626,7 @@ def auto_discover_and_queue_files():
         update_scan_progress(scanning=False, files_found=stats['scanned'])
         
         # Check for complete albums and auto-process them
-        if stats['queued'] > 0:
+        if stats['queued'] > 0 or stats.get('folder_auto_match_tracks_queued', 0) > 0:
             logger.info("Checking for complete albums to auto-process...")
             album_stats = process_complete_albums()
             stats['albums_processed'] = album_stats.get('processed', 0)
@@ -6181,6 +6191,176 @@ def _normalize_album_for_dedup(title: str) -> str:
     # Collapse any remaining separator characters to a single space.
     t = re.sub(r'[\s\-_:]+', ' ', t).strip().lower()
     return t
+
+
+def _auto_match_large_unmatched_folders(downloads_dir, min_track_count=9):
+    """
+    Auto-match large unmatched folders against MusicBrainz and promote queue rows.
+
+    A folder is eligible when it contains at least ``min_track_count`` audio files
+    and has queue items in ``status='unmatched'``.
+    """
+    stats = {
+        'checked_folders': 0,
+        'matched_folders': 0,
+        'updated_tracks': 0,
+        'errors': [],
+    }
+
+    conn = None
+    try:
+        from download_folder_grouping import (
+            match_folder_group_with_musicbrainz,
+            scan_downloads_grouped_by_folder,
+        )
+        from folder_matching_enhancements import suggest_auto_match
+
+        grouped = scan_downloads_grouped_by_folder(downloads_dir, read_mp3_metadata) or {}
+        folder_groups = grouped.get('folder_groups') or []
+        if not folder_groups:
+            return stats
+
+        conn = get_db()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        _ensure_matching_columns(cursor)
+        conn.commit()
+
+        placeholder = "%s"
+
+        for group in folder_groups:
+            track_count = int(group.get('track_count') or 0)
+            if track_count < min_track_count:
+                continue
+
+            artist = str(group.get('artist') or '').strip()
+            album = str(group.get('album') or '').strip()
+            if not artist or not album:
+                continue
+
+            artist_lower = artist.lower()
+            album_lower = album.lower()
+            if artist_lower.startswith('unknown') or album_lower.startswith('unknown'):
+                continue
+
+            folder_rel = str(group.get('folder_path') or '').strip()
+            folder_abs = os.path.abspath(os.path.join(downloads_dir, folder_rel))
+            folder_prefix = os.path.join(folder_abs, '')
+
+            stats['checked_folders'] += 1
+
+            cursor.execute(
+                f"""
+                SELECT id
+                FROM download_queue
+                WHERE status = 'unmatched'
+                  AND file_path LIKE {placeholder}
+                """,
+                (f"{folder_prefix}%",),
+            )
+            unmatched_rows = cursor.fetchall() or []
+            if not unmatched_rows:
+                continue
+
+            candidates_result = match_folder_group_with_musicbrainz(folder_rel, artist, album)
+            candidates = candidates_result.get('candidates') or []
+            if not candidates:
+                continue
+
+            auto_match = suggest_auto_match(
+                artist,
+                album,
+                candidates,
+                group.get('tracks') or [],
+            )
+            if not auto_match:
+                continue
+
+            release_id = str(auto_match.get('id') or '').strip()
+            if not release_id:
+                continue
+
+            release_source = str(auto_match.get('source') or 'musicbrainz').strip().lower()
+            release_mbid = release_id if release_source == 'musicbrainz' else None
+            confidence = float(auto_match.get('auto_match_confidence') or 0.0)
+            matched_artist = str(auto_match.get('artist') or artist).strip() or artist
+            matched_album = str(auto_match.get('title') or album).strip() or album
+            import_group = f"auto_folder_{release_id}"
+            candidates_json = json.dumps(candidates[:5])
+
+            queue_ids = []
+            for row in unmatched_rows:
+                if isinstance(row, dict):
+                    qid = row.get('id')
+                else:
+                    qid = row[0] if row else None
+                if qid:
+                    queue_ids.append(int(qid))
+
+            if not queue_ids:
+                continue
+
+            ids_placeholders = ', '.join([placeholder] * len(queue_ids))
+            cursor.execute(
+                f"""
+                UPDATE download_queue
+                SET status = 'discovered',
+                    artist = {placeholder},
+                    album = {placeholder},
+                    album_artist = {placeholder},
+                    release_id = {placeholder},
+                    release_mbid = COALESCE({placeholder}, release_mbid),
+                    release_source = {placeholder},
+                    import_group = {placeholder},
+                    mb_match_status = 'auto_matched',
+                    mb_match_score = {placeholder},
+                    mb_match_candidates = {placeholder},
+                    mb_release_group_id = {placeholder},
+                    mb_matched_title = {placeholder},
+                    mb_matched_artist = {placeholder},
+                    mb_last_match_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id IN ({ids_placeholders})
+                """,
+                (
+                    matched_artist,
+                    matched_album,
+                    matched_artist,
+                    release_id,
+                    release_mbid,
+                    release_source,
+                    import_group,
+                    confidence,
+                    candidates_json,
+                    release_id,
+                    matched_album,
+                    matched_artist,
+                    *queue_ids,
+                ),
+            )
+            conn.commit()
+
+            updated_count = int(cursor.rowcount or 0)
+            if updated_count > 0:
+                stats['matched_folders'] += 1
+                stats['updated_tracks'] += updated_count
+                logger.info(
+                    f"[AUTO-MATCH] Folder '{folder_rel or '/'}' auto-matched to "
+                    f"{matched_artist} - {matched_album} ({release_source}:{release_id}) "
+                    f"confidence={confidence:.2f} updated_tracks={updated_count}"
+                )
+
+        return stats
+    except Exception as e:
+        err = f"Large-folder auto-match failed: {e}"
+        logger.error(err)
+        stats['errors'].append(err)
+        return stats
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def _extract_lyricist_and_writers(recording_data):

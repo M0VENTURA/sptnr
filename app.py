@@ -12141,6 +12141,34 @@ def track_detail(track_id):
                     # Otherwise leave as-is (already comma-separated or string)
                 except Exception:
                     pass  # Keep original value if parsing fails
+
+        # Parse mood tags for display. Mood values may be written as
+        # semicolon/comma/backslash-separated strings by different scanners.
+        mood_list = []
+        mood_raw = track.get('mood')
+        if mood_raw:
+            try:
+                if isinstance(mood_raw, str) and mood_raw.strip().startswith('['):
+                    import json as json_module
+                    parsed_moods = json_module.loads(mood_raw)
+                    if isinstance(parsed_moods, list):
+                        mood_list = [str(m).strip() for m in parsed_moods if str(m).strip()]
+                else:
+                    mood_text = str(mood_raw).replace('\\', ',').replace(';', ',')
+                    mood_list = [m.strip() for m in mood_text.split(',') if m.strip()]
+            except Exception:
+                mood_list = [str(mood_raw).strip()] if str(mood_raw).strip() else []
+
+        # Keep unique moods while preserving source order.
+        seen_moods = set()
+        ordered_moods = []
+        for mood_item in mood_list:
+            key = mood_item.lower()
+            if key in seen_moods:
+                continue
+            seen_moods.add(key)
+            ordered_moods.append(mood_item)
+        track['mood_list'] = ordered_moods
         
         # Parse writer field (JSON array from Navidrome lyricist field)
         if 'writer' in track and track['writer']:
@@ -25141,23 +25169,56 @@ def api_musicbrainz_search_releases():
         if mode == 'artist_all' or not album:
             # Artist-wide search: return many releases so UI can render
             # release-first accordion with expandable track lists.
-            query = f'artist:"{artist}"'
-            mb_response = requests.get(
-                "https://musicbrainz.org/ws/2/release/",
-                params={
-                    "query": query,
-                    "fmt": "json",
-                    "limit": requested_limit,
-                },
-                headers={
-                    "User-Agent": MUSICBRAINZ_USER_AGENT,
-                    "Accept": "application/json",
-                },
-                timeout=(5, 10),
-            )
-            mb_response.raise_for_status()
-            payload = mb_response.json() or {}
-            releases = payload.get('releases', []) if isinstance(payload, dict) else []
+            artist_key = ' '.join((artist or '').lower().replace('-', ' ').replace('_', ' ').split())
+            is_various_artist = artist_key in {'various', 'various artist', 'various artists', 'va', 'v/a'}
+
+            release_limit = max(requested_limit, 40 if album else requested_limit)
+            search_queries = []
+
+            if album:
+                escaped_album = _escape_mb_phrase(album)
+                if is_various_artist:
+                    # For compilations, artist-only search is too broad; title-first gives
+                    # far better candidate versions for the same soundtrack/compilation.
+                    search_queries.append(f'release:"{escaped_album}"')
+                    search_queries.append(
+                        f'artist:"{_escape_mb_phrase(artist)}" AND release:"{escaped_album}"'
+                    )
+                else:
+                    search_queries.append(
+                        f'artist:"{_escape_mb_phrase(artist)}" AND release:"{escaped_album}"'
+                    )
+                    search_queries.append(f'artist:"{_escape_mb_phrase(artist)}"')
+            else:
+                search_queries.append(f'artist:"{_escape_mb_phrase(artist)}"')
+
+            releases = []
+            seen_release_ids = set()
+            for query in search_queries:
+                mb_response = requests.get(
+                    "https://musicbrainz.org/ws/2/release/",
+                    params={
+                        "query": query,
+                        "fmt": "json",
+                        "limit": release_limit,
+                    },
+                    headers={
+                        "User-Agent": MUSICBRAINZ_USER_AGENT,
+                        "Accept": "application/json",
+                    },
+                    timeout=(5, 10),
+                )
+                mb_response.raise_for_status()
+                payload = mb_response.json() or {}
+                candidate_releases = payload.get('releases', []) if isinstance(payload, dict) else []
+                for rel in candidate_releases:
+                    rel_id = rel.get('id')
+                    if not rel_id or rel_id in seen_release_ids:
+                        continue
+                    seen_release_ids.add(rel_id)
+                    releases.append(rel)
+                if len(releases) >= requested_limit:
+                    break
 
             target_album = (album or '').strip().lower()
             for rel in releases:
@@ -25178,6 +25239,10 @@ def api_musicbrainz_search_releases():
                 if target_album and rel_title:
                     similarity = SequenceMatcher(None, target_album, rel_title.lower()).ratio()
 
+                artist_similarity = 0.0
+                if rel_artist and artist:
+                    artist_similarity = SequenceMatcher(None, artist.lower(), rel_artist.lower()).ratio()
+
                 formatted_releases.append({
                     'id': rel.get('id'),
                     'title': rel_title,
@@ -25191,16 +25256,19 @@ def api_musicbrainz_search_releases():
                     'format': rel.get('packaging') or rel.get('text-representation', {}).get('script'),
                     'barcode': rel.get('barcode'),
                     'album_similarity': round(float(similarity), 4),
+                    'artist_similarity': round(float(artist_similarity), 4),
                 })
 
             # Sort by best optional album similarity first, then newest date.
             formatted_releases.sort(
                 key=lambda r: (
                     float(r.get('album_similarity') or 0.0),
+                    float(r.get('artist_similarity') or 0.0),
                     str(r.get('date') or ''),
                 ),
                 reverse=True,
             )
+            formatted_releases = formatted_releases[:requested_limit]
         else:
             # Legacy mode for narrow artist+album matching.
             match_result = match_folder_group_with_musicbrainz('', artist, album, allow_discogs_fallback=False)
@@ -31967,191 +32035,283 @@ def api_search_musicbrainz_release():
             })
 
         # ------------------------------------------------------------------
-        # Release-group search path (original): artist + optional album
+        # Release-level search path for album lookups.
+        # This preserves multiple versions of the same release title (e.g.
+        # deluxe/region variants) and improves Various Artists matching.
         # ------------------------------------------------------------------
-        # Search MusicBrainz for release groups.
-        # For artist-only lookups, prefer artist MBID scoping (arid) to avoid title collisions.
-        search_url = "https://musicbrainz.org/ws/2/release-group"
+        if album:
+            from difflib import SequenceMatcher
 
-        requested_artist_norm = _normalize_artist_name(artist) if artist else ""
-        artist_mbid = None
+            artist_key = ' '.join((artist or '').lower().replace('-', ' ').replace('_', ' ').split())
+            is_various_artist = artist_key in {'various', 'various artist', 'various artists', 'va', 'v/a'}
 
-        if artist:
-            try:
-                conn = get_db()
-                cursor = conn.cursor()
-                placeholder = "%s"
-                cursor.execute(
-                    f"""
-                    SELECT MAX(musicbrainz_artist_id) AS mbid
-                    FROM tracks
-                    WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER({placeholder})
-                      AND musicbrainz_artist_id IS NOT NULL
-                    """,
-                    (artist,),
+            escaped_album = _escape_mb_phrase(album)
+            search_queries = []
+            if artist and not is_various_artist:
+                search_queries.append(
+                    f'artist:"{_escape_mb_phrase(artist)}" AND release:"{escaped_album}"'
                 )
-                row = cursor.fetchone()
-                conn.close()
-                if row and row.get('mbid'):
-                    artist_mbid = row.get('mbid')
-            except Exception as db_err:
-                logging.debug(f"[MB_SEARCH] Could not load artist MBID from DB for '{artist}': {db_err}")
-
-            # Fallback MBID lookup from MusicBrainz artist search if DB has no MBID.
-            if not artist_mbid:
-                try:
-                    artist_search_params = {
-                        "fmt": "json",
-                        "query": f'artist:"{artist}"',
-                        "limit": 5,
-                    }
-                    artist_response = requests.get(
-                        "https://musicbrainz.org/ws/2/artist",
-                        headers=headers,
-                        params=artist_search_params,
-                        timeout=15,
+            else:
+                search_queries.append(f'release:"{escaped_album}"')
+                if artist:
+                    search_queries.append(
+                        f'artist:"{_escape_mb_phrase(artist)}" AND release:"{escaped_album}"'
                     )
-                    artist_response.raise_for_status()
-                    artist_data = artist_response.json() or {}
-                    for candidate in artist_data.get("artists", []) or []:
-                        candidate_name = candidate.get("name", "")
-                        candidate_norm = _normalize_artist_name(candidate_name)
-                        if candidate_norm == requested_artist_norm:
-                            artist_mbid = candidate.get("id")
-                            break
-                except Exception as artist_lookup_err:
-                    logging.debug(f"[MB_SEARCH] Artist MBID lookup failed for '{artist}': {artist_lookup_err}")
 
-        if album and artist:
-            # Album + artist targeted search.
-            query = f'artist:"{artist}" AND releasegroup:"{album}"'
-        elif album:
-            # Album-only search (no artist provided).
-            query = f'releasegroup:"{album}"'
-        elif artist_mbid:
-            # Artist-scoped search (exact MBID) to return the artist's real catalog.
-            query = f'arid:"{artist_mbid}" AND (primarytype:album OR primarytype:ep OR primarytype:single)'
-        else:
-            # Fallback artist-only search if MBID unavailable.
-            query = f'artist:"{artist}" AND (primarytype:album OR primarytype:ep OR primarytype:single)'
-
-        params = {
-            "fmt": "json",
-            "query": query,
-            "limit": 20,
-        }
-
-        logging.info(
-            f"[MB_SEARCH] Release-group search: artist='{artist}' album='{album}'"
-            + (f" [arid={artist_mbid}]" if artist_mbid and not album else "")
-        )
-
-        response = requests.get(search_url, headers=headers, params=params, timeout=15)
-        response.raise_for_status()
-        data = response.json()
-
-        release_groups = data.get("release-groups", [])
-        
-        if not release_groups:
-            return jsonify({
-                "success": True,
-                "results": [],
-                "message": "No releases found"
-                        + (f" for '{artist}'" if artist else "")
-                        + (f" - '{album}'" if album else "")
-            })
-        
-        # For each release group, fetch one representative release with tracks.
-        # Use a single browse-releases call per release group (instead of two separate calls)
-        # to avoid Cloudflare 524 timeouts caused by excessive sequential HTTP requests.
-        results = []
-        for rg in release_groups[:_MB_SEARCH_MAX_RELEASE_GROUPS]:
-            rg_id = rg.get("id", "")
-            rg_title = rg.get("title", "")
-            rg_type = rg.get("primary-type", "")
-            first_release_date = rg.get("first-release-date", "")
-
-            # When browsing by artist only without MBID, enforce a strict artist-credit sanity check
-            # to reduce false positives where release titles happen to match the artist name.
-            if artist and not album and not artist_mbid:
-                credits = rg.get("artist-credit", []) or []
-                credit_name = " ".join(c.get("name", "") for c in credits if isinstance(c, dict)).strip()
-                if credit_name:
-                    credit_norm = _normalize_artist_name(credit_name)
-                    if (
-                        credit_norm != requested_artist_norm
-                        and requested_artist_norm not in credit_norm
-                        and credit_norm not in requested_artist_norm
-                    ):
-                        continue
-
-            # Single request: browse releases in this release group with recordings included.
-            # This replaces the previous two-request pattern (release-group detail + release detail)
-            # and keeps rate limiting to one sleep per iteration.
-            time.sleep(1)  # MusicBrainz rate limiting: max 1 req/sec
-
-            try:
-                browse_url = "https://musicbrainz.org/ws/2/release"
-                browse_params = {
-                    "fmt": "json",
-                    "release-group": rg_id,
-                    "inc": "recordings+artist-credits",
-                    "limit": 1,
-                }
-                browse_response = requests.get(browse_url, headers=headers, params=browse_params, timeout=15)
-                browse_response.raise_for_status()
-                browse_data = browse_response.json()
-
-                releases = browse_data.get("releases", [])
-                if not releases:
-                    continue
-
-                release = releases[0]
-                release_id = release.get("id", "")
-                release_date = release.get("date", "")
-
-                # Extract tracks from the inline recordings, including per-track artist.
-                # Per-track artist is essential for "Various Artists" compilations where
-                # each track belongs to a different artist.
-                media = release.get("media", [])
-                tracks = []
-                for disc in media:
-                    for track in disc.get("tracks", []):
-                        recording = track.get("recording", {})
-                        track_entry = {
-                            "title": recording.get("title", "Unknown"),
-                            "position": track.get("position", ""),
-                            "length": recording.get("length", 0),
-                        }
-                        # Include per-track artist when artist-credits are available
-                        rec_credits = recording.get("artist-credit") or []
-                        if rec_credits:
-                            track_entry["artist"] = _build_artist_credit_string(rec_credits)
-                        tracks.append(track_entry)
-
-                # Prefer artist-credit from the release group over the search input when
-                # available, using joinphrase for correct multi-artist formatting.
-                rg_credits = rg.get("artist-credit", []) or []
-                result_artist = (
-                    _build_artist_credit_string(rg_credits)
-                    or artist
+            release_candidates = []
+            seen_release_ids = set()
+            for query in search_queries:
+                time.sleep(1)
+                response = requests.get(
+                    "https://musicbrainz.org/ws/2/release",
+                    headers=headers,
+                    params={
+                        "fmt": "json",
+                        "query": query,
+                        "limit": 50,
+                    },
+                    timeout=15,
                 )
+                response.raise_for_status()
+                data = response.json() or {}
+                for rel in data.get("releases", []) or []:
+                    rel_id = rel.get("id")
+                    if not rel_id or rel_id in seen_release_ids:
+                        continue
+                    seen_release_ids.add(rel_id)
+                    release_candidates.append(rel)
 
-                results.append({
-                    "release_group_id": rg_id,
-                    "release_id": release_id,
-                    "title": rg_title,
-                    "artist": result_artist,
-                    "type": rg_type,
-                    "date": first_release_date or release_date,
-                    "year": (first_release_date or release_date)[:4],
-                    "track_count": len(tracks),
-                    "tracks": tracks
+            if not release_candidates:
+                return jsonify({
+                    "success": True,
+                    "results": [],
+                    "message": "No releases found"
+                            + (f" for '{artist}'" if artist else "")
+                            + (f" - '{album}'" if album else "")
                 })
 
-            except Exception as e:
-                logging.warning(f"Error fetching tracks for release group {rg_id}: {e}")
-                continue
+            album_norm = album.lower()
+            artist_norm = artist.lower()
+
+            def _artist_from_credit(rel):
+                credits = rel.get("artist-credit") or []
+                return _build_artist_credit_string(credits) if credits else ""
+
+            release_candidates.sort(
+                key=lambda rel: (
+                    SequenceMatcher(None, album_norm, (rel.get("title") or "").lower()).ratio(),
+                    SequenceMatcher(None, artist_norm, _artist_from_credit(rel).lower()).ratio() if artist_norm else 0.0,
+                    str(rel.get("date") or ""),
+                ),
+                reverse=True,
+            )
+
+            max_results = max(_MB_SEARCH_MAX_RELEASE_GROUPS * 2, 8)
+            selected_candidates = release_candidates[:max_results]
+
+            results = []
+            for rel in selected_candidates:
+                release_id = rel.get("id", "")
+                time.sleep(1)
+                try:
+                    rel_response = requests.get(
+                        f"https://musicbrainz.org/ws/2/release/{release_id}",
+                        params={"fmt": "json", "inc": "recordings+artist-credits"},
+                        headers=headers,
+                        timeout=15,
+                    )
+                    rel_response.raise_for_status()
+                    release = rel_response.json() or {}
+
+                    media = release.get("media", [])
+                    tracks = []
+                    for disc in media:
+                        for track_row in disc.get("tracks", []):
+                            recording = track_row.get("recording", {})
+                            track_entry = {
+                                "title": recording.get("title", "Unknown"),
+                                "position": track_row.get("position", ""),
+                                "length": recording.get("length", 0),
+                            }
+                            rec_credits = recording.get("artist-credit") or []
+                            if rec_credits:
+                                track_entry["artist"] = _build_artist_credit_string(rec_credits)
+                            tracks.append(track_entry)
+
+                    rg = release.get("release-group") or {}
+                    release_artist = _artist_from_credit(release) or artist
+
+                    results.append({
+                        "release_group_id": rg.get("id", ""),
+                        "release_id": release_id,
+                        "title": release.get("title", ""),
+                        "artist": release_artist,
+                        "type": rg.get("primary-type") or rel.get("status") or "",
+                        "date": release.get("date", "") or rel.get("date", ""),
+                        "year": (release.get("date", "") or rel.get("date", ""))[:4],
+                        "track_count": len(tracks),
+                        "tracks": tracks,
+                    })
+                except Exception as e:
+                    logging.warning(f"Error fetching tracks for release {release_id}: {e}")
+                    continue
+        else:
+            # ------------------------------------------------------------------
+            # Artist-only fallback: keep release-group search behavior.
+            # ------------------------------------------------------------------
+            search_url = "https://musicbrainz.org/ws/2/release-group"
+
+            requested_artist_norm = _normalize_artist_name(artist) if artist else ""
+            artist_mbid = None
+
+            if artist:
+                try:
+                    conn = get_db()
+                    cursor = conn.cursor()
+                    placeholder = "%s"
+                    cursor.execute(
+                        f"""
+                        SELECT MAX(musicbrainz_artist_id) AS mbid
+                        FROM tracks
+                        WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER({placeholder})
+                          AND musicbrainz_artist_id IS NOT NULL
+                        """,
+                        (artist,),
+                    )
+                    row = cursor.fetchone()
+                    conn.close()
+                    if row and row.get('mbid'):
+                        artist_mbid = row.get('mbid')
+                except Exception as db_err:
+                    logging.debug(f"[MB_SEARCH] Could not load artist MBID from DB for '{artist}': {db_err}")
+
+                if not artist_mbid:
+                    try:
+                        artist_search_params = {
+                            "fmt": "json",
+                            "query": f'artist:"{artist}"',
+                            "limit": 5,
+                        }
+                        artist_response = requests.get(
+                            "https://musicbrainz.org/ws/2/artist",
+                            headers=headers,
+                            params=artist_search_params,
+                            timeout=15,
+                        )
+                        artist_response.raise_for_status()
+                        artist_data = artist_response.json() or {}
+                        for candidate in artist_data.get("artists", []) or []:
+                            candidate_name = candidate.get("name", "")
+                            candidate_norm = _normalize_artist_name(candidate_name)
+                            if candidate_norm == requested_artist_norm:
+                                artist_mbid = candidate.get("id")
+                                break
+                    except Exception as artist_lookup_err:
+                        logging.debug(f"[MB_SEARCH] Artist MBID lookup failed for '{artist}': {artist_lookup_err}")
+
+            if artist_mbid:
+                query = f'arid:"{artist_mbid}" AND (primarytype:album OR primarytype:ep OR primarytype:single)'
+            else:
+                query = f'artist:"{artist}" AND (primarytype:album OR primarytype:ep OR primarytype:single)'
+
+            params = {
+                "fmt": "json",
+                "query": query,
+                "limit": 20,
+            }
+
+            logging.info(
+                f"[MB_SEARCH] Release-group search: artist='{artist}'"
+                + (f" [arid={artist_mbid}]" if artist_mbid else "")
+            )
+
+            response = requests.get(search_url, headers=headers, params=params, timeout=15)
+            response.raise_for_status()
+            data = response.json()
+
+            release_groups = data.get("release-groups", [])
+
+            if not release_groups:
+                return jsonify({
+                    "success": True,
+                    "results": [],
+                    "message": "No releases found" + (f" for '{artist}'" if artist else "")
+                })
+
+            results = []
+            for rg in release_groups[:_MB_SEARCH_MAX_RELEASE_GROUPS]:
+                rg_id = rg.get("id", "")
+                rg_title = rg.get("title", "")
+                rg_type = rg.get("primary-type", "")
+                first_release_date = rg.get("first-release-date", "")
+
+                if artist and not artist_mbid:
+                    credits = rg.get("artist-credit", []) or []
+                    credit_name = " ".join(c.get("name", "") for c in credits if isinstance(c, dict)).strip()
+                    if credit_name:
+                        credit_norm = _normalize_artist_name(credit_name)
+                        if (
+                            credit_norm != requested_artist_norm
+                            and requested_artist_norm not in credit_norm
+                            and credit_norm not in requested_artist_norm
+                        ):
+                            continue
+
+                time.sleep(1)
+
+                try:
+                    browse_url = "https://musicbrainz.org/ws/2/release"
+                    browse_params = {
+                        "fmt": "json",
+                        "release-group": rg_id,
+                        "inc": "recordings+artist-credits",
+                        "limit": 1,
+                    }
+                    browse_response = requests.get(browse_url, headers=headers, params=browse_params, timeout=15)
+                    browse_response.raise_for_status()
+                    browse_data = browse_response.json()
+
+                    releases = browse_data.get("releases", [])
+                    if not releases:
+                        continue
+
+                    release = releases[0]
+                    release_id = release.get("id", "")
+                    release_date = release.get("date", "")
+
+                    media = release.get("media", [])
+                    tracks = []
+                    for disc in media:
+                        for track in disc.get("tracks", []):
+                            recording = track.get("recording", {})
+                            track_entry = {
+                                "title": recording.get("title", "Unknown"),
+                                "position": track.get("position", ""),
+                                "length": recording.get("length", 0),
+                            }
+                            rec_credits = recording.get("artist-credit") or []
+                            if rec_credits:
+                                track_entry["artist"] = _build_artist_credit_string(rec_credits)
+                            tracks.append(track_entry)
+
+                    rg_credits = rg.get("artist-credit", []) or []
+                    result_artist = _build_artist_credit_string(rg_credits) or artist
+
+                    results.append({
+                        "release_group_id": rg_id,
+                        "release_id": release_id,
+                        "title": rg_title,
+                        "artist": result_artist,
+                        "type": rg_type,
+                        "date": first_release_date or release_date,
+                        "year": (first_release_date or release_date)[:4],
+                        "track_count": len(tracks),
+                        "tracks": tracks
+                    })
+
+                except Exception as e:
+                    logging.warning(f"Error fetching tracks for release group {rg_id}: {e}")
+                    continue
         
         return jsonify({
             "success": True,

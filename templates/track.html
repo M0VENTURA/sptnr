@@ -302,6 +302,27 @@
                             <small class="form-text text-muted">Press Enter or click Add. Click × to remove.</small>
                         </div>
 
+                        <div class="mb-3">
+                            <h6 class="mb-2">Detected Moods</h6>
+                            <div id="moodsContainer" class="mb-2">
+                                {% if track.mood_list %}
+                                    {% for mood in track.mood_list %}
+                                    <span class="badge bg-info text-dark me-1 mb-1" style="font-size: 0.9rem;">{{ mood }}</span>
+                                    {% endfor %}
+                                {% else %}
+                                    <span class="text-muted small">No mood tags detected yet</span>
+                                {% endif %}
+                            </div>
+                            {% if track.mood_source or track.mood_confidence %}
+                            <small class="text-muted d-block">
+                                Source: {{ track.mood_source or 'unknown' }}
+                                {% if track.mood_confidence %}
+                                • Confidence: {{ track.mood_confidence }}
+                                {% endif %}
+                            </small>
+                            {% endif %}
+                        </div>
+
                         <hr class="my-3">
 
                         <!-- Genre recommendations & source buttons -->
