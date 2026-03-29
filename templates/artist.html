@@ -3485,7 +3485,8 @@ function loadTracklist(artist, album, button = null, mbid = null) {
     }
     
     const tracklist = tracklistResponse.tracklist || [];
-    const matched = new Set((matchResponse.matched || []).map(t => t.title.toLowerCase()));
+    const matched = new Set((matchResponse.matched || []).map(t => (t.title || '').toLowerCase()));
+    const queued = new Set((matchResponse.queued || []).map(t => (t.title || '').toLowerCase()));
     
     if (tracklist.length === 0) {
       contentDiv.innerHTML = '<div class="alert alert-info">No tracks found</div>';
@@ -3502,9 +3503,15 @@ function loadTracklist(artist, album, button = null, mbid = null) {
     `;
     
     tracklist.forEach(track => {
-      const isMatched = matched.has(track.title.toLowerCase());
-      const matchBadge = isMatched ? '<span class="badge bg-success ms-2"><i class="bi bi-check-circle"></i> In Library</span>' : '';
-      const rowClass = isMatched ? '' : '';
+      const normalizedTitle = (track.title || '').toLowerCase();
+      const isQueued = queued.has(normalizedTitle);
+      const isMatched = matched.has(normalizedTitle) && !isQueued;
+      const matchBadge = isMatched
+        ? '<span class="badge bg-success ms-2"><i class="bi bi-check-circle"></i> In Library</span>'
+        : (isQueued
+          ? '<span class="badge bg-warning text-dark ms-2"><i class="bi bi-hourglass-split"></i> In Queue</span>'
+          : '');
+      const rowClass = isQueued ? 'list-group-item-warning' : '';
       
       // Build search query for download (artist + title)
       const searchQuery = `${artist} ${track.title}`;
@@ -3534,7 +3541,7 @@ function loadTracklist(artist, album, button = null, mbid = null) {
             <div class="d-flex align-items-center gap-2">
               <small class="text-muted me-2" style="max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(track.artist || '')}</small>
               ${actionButtons}
-              <button class="btn btn-sm btn-outline-success" onclick="downloadTrack('${escapeJsString(searchQuery)}', '${escapeJsString(artist)}', '${escapeJsString(track.title)}')" title="Download this track" style="flex-shrink: 0;">
+              <button class="btn btn-sm btn-outline-success" onclick="downloadTrack('${escapeJsString(searchQuery)}', '${escapeJsString(artist)}', '${escapeJsString(track.title)}')" title="Download this track" style="flex-shrink: 0;" ${isQueued ? 'disabled' : ''}>
                 <i class="bi bi-download"></i>
               </button>
             </div>
@@ -3546,7 +3553,7 @@ function loadTracklist(artist, album, button = null, mbid = null) {
     html += `
         </div>
         <div class="card-footer text-muted small">
-          <i class="bi bi-info-circle"></i> Green checkmarks = already in library. Click download button to add missing tracks from Soulseek.
+          <i class="bi bi-info-circle"></i> Green checkmarks = already in library. Yellow badges = already in queue. Click download button to add missing tracks from Soulseek.
         </div>
       </div>
     `;

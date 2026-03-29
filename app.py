@@ -19710,23 +19710,38 @@ def api_album_tracklist_match():
         cursor = conn.cursor()
         placeholder = "%s"
         
-        # Get all tracks for this album from the database
+        # Get all tracks for this album from the database, including queued
+        # placeholders so the UI can distinguish "In Library" vs "In Queue".
         cursor.execute(f"""
-            SELECT title FROM tracks WHERE artist = {placeholder} AND album = {placeholder}
+            SELECT title, COALESCE(file_path, '') AS file_path
+            FROM tracks
+            WHERE artist = {placeholder} AND album = {placeholder}
             ORDER BY track_number ASC, title ASC
         """, (artist, album))
-        
-        album_tracks = [row['title'] for row in cursor.fetchall()]
-        conn.close()
-        
-        if album_tracks:
-            # All tracks in the album are already matched (they're in the database)
-            log_info(f"Found {len(album_tracks)} existing album tracks for {artist} - {album}")
-            matched_tracks = [{"title": t} for t in album_tracks]
-            
+
+        album_rows = cursor.fetchall() or []
+        matched_tracks = []
+        queued_tracks = []
+        for row in album_rows:
+            title_value = row['title'] if isinstance(row, dict) else row[0]
+            file_path_value = row['file_path'] if isinstance(row, dict) else row[1]
+            entry = {"title": title_value}
+            if str(file_path_value or '').startswith('__queued_for_download__'):
+                queued_tracks.append(entry)
+            else:
+                matched_tracks.append(entry)
+
+        if album_rows:
+            conn.close()
+            log_info(
+                f"Found {len(album_rows)} existing album tracks for {artist} - {album} "
+                f"(library={len(matched_tracks)}, queued={len(queued_tracks)})"
+            )
+
             return jsonify({
                 "success": True,
                 "matched": matched_tracks,
+                "queued": queued_tracks,
                 "unmatched": []
             })
         
@@ -19811,6 +19826,7 @@ def api_album_tracklist_match():
         return jsonify({
             "success": True,
             "matched": matched_tracks,
+            "queued": queued_tracks,
             "unmatched": unmatched_tracks
         })
     
