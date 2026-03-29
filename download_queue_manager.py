@@ -4203,6 +4203,31 @@ def check_downloads_folder():
                                     'album': queue_item['album'],
                                     'moved': True
                                 })
+                            elif target_path and os.path.isfile(target_path):
+                                # Verification can fail transiently; if file exists in
+                                # /music, treat move as successful to avoid stale completed rows.
+                                logger.warning(
+                                    f"[MOVE] Queue {queue_item['id']}: verification API failed but file exists at "
+                                    f"{target_path} — promoting to imported"
+                                )
+                                mark_queue_item_moved(queue_item['id'], target_path)
+                                update_queue_item(
+                                    queue_item['id'],
+                                    status='imported',
+                                    file_path=target_path,
+                                    copied_individually=1,
+                                    copied_individually_at=datetime.now().isoformat()
+                                )
+                                completed_items.append({
+                                    'queue_id': queue_item['id'],
+                                    'filename': match_found,
+                                    'file_path': target_path,
+                                    'artist': queue_item['artist'],
+                                    'title': queue_item['title'],
+                                    'album': queue_item['album'],
+                                    'moved': True,
+                                    'verification_soft_failed': True
+                                })
                             else:
                                 # Verification failed - update path to target location since file was moved
                                 logger.warning(
@@ -4395,6 +4420,31 @@ def check_downloads_folder():
                             'album': queue_item.get('album'),
                             'moved': True,
                             'reconciled_from_library': True,
+                        })
+                    elif existing_music_path and os.path.isfile(existing_music_path):
+                        logger.warning(
+                            f"[RECONCILE] Queue {queue_item['id']}: verification API failed but file exists at "
+                            f"{existing_music_path} — promoting to imported"
+                        )
+                        mark_queue_item_moved(queue_item['id'], existing_music_path)
+                        update_queue_item(
+                            queue_item['id'],
+                            status='imported',
+                            found_filename=os.path.basename(existing_music_path),
+                            file_path=existing_music_path,
+                            copied_individually=1,
+                            copied_individually_at=datetime.now().isoformat()
+                        )
+                        completed_items.append({
+                            'queue_id': queue_item['id'],
+                            'filename': os.path.basename(existing_music_path),
+                            'file_path': existing_music_path,
+                            'artist': queue_item.get('artist'),
+                            'title': queue_item.get('title'),
+                            'album': queue_item.get('album'),
+                            'moved': True,
+                            'reconciled_from_library': True,
+                            'verification_soft_failed': True,
                         })
                     else:
                         logger.debug(

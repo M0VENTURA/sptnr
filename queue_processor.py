@@ -750,13 +750,37 @@ def _get_album_search_query(queue_item):
         or queue_item.get('artist')
         or ''
     ).strip()
+    track_artist = (queue_item.get('artist') or '').strip()
+
     if _is_generic_artist_name(album_artist):
-        # Compilation-level artists (e.g. Various Artists) produce very broad
-        # album searches and often pollute candidate results.
-        return None
+        # For compilation albums, avoid the generic artist token entirely and
+        # run album-only search, then score each response against individual
+        # queued tracks.
+        return '"{}"'.format(_sanitize_slskd_query(album))
     if album_artist:
         return '"{}" "{}"'.format(
             _sanitize_slskd_query(album_artist),
+            _sanitize_slskd_query(album),
+        )
+
+
+    def _get_track_artist_album_fallback_query(queue_item):
+        """Build fallback query with track artist + album for sparse catalogs.
+
+        This is used only after normal per-track searches return no results.
+        """
+        artist = (queue_item.get('artist') or '').strip()
+        album = (queue_item.get('album') or '').strip()
+
+        if not artist or not album:
+            return None
+        if _is_generic_artist_name(artist):
+            return None
+        if album.lower() in ('unknown', 'unknown album'):
+            return None
+
+        return '"{}" "{}"'.format(
+            _sanitize_slskd_query(artist),
             _sanitize_slskd_query(album),
         )
     return '"{}"'.format(_sanitize_slskd_query(album))
@@ -2649,6 +2673,26 @@ def search_and_download(queue_id, queue_item, client):
                             f"(score={best_score:.2f})"
                         )
 
+        # Pass 2d: artist+album fallback for hard-to-find compilation tracks.
+        if not best_result:
+            artist_album_query = _get_track_artist_album_fallback_query(queue_item)
+            if artist_album_query:
+                normalized_primary = ' '.join((search_query or '').replace('"', '').split()).strip()
+                normalized_artist_album = ' '.join(artist_album_query.replace('"', '').split()).strip()
+                if normalized_artist_album and normalized_artist_album != normalized_primary:
+                    logger.info(
+                        f"Queue {queue_id}: No safe result yet; artist+album fallback: '{artist_album_query}'"
+                    )
+                    aa_id = client.start_search(artist_album_query)
+                    if aa_id:
+                        aa_responses = _poll_search_responses(aa_id, max_poll_attempts=45)
+                        best_result, best_score = _pick_best_candidate_from_responses(aa_responses, queue_item)
+                        if best_result:
+                            logger.info(
+                                f"Queue {queue_id}: Artist+album fallback found a match "
+                                f"(score={best_score:.2f})"
+                            )
+
         if not best_result:
             elapsed = (datetime.now() - poll_start_time).total_seconds()
             logger.warning(f"Queue {queue_id}: ✗ No results found after {elapsed:.0f}s of polling")
@@ -3565,6 +3609,24 @@ def check_completed_downloads():
                                     # the same track that accumulated across retries.
                                     _cleanup_sibling_downloads(item, keep_path=None)
                                     _trigger_navidrome_scan()
+                                elif target_path and os.path.isfile(target_path):
+                                    # Verification can fail transiently (timing/permissions);
+                                    # if the file exists in /music, treat move as successful.
+                                    logger.warning(
+                                        f"[AUTO_MOVE] Queue {item_id}: verification API failed but file exists at "
+                                        f"{target_path} — promoting to imported"
+                                    )
+                                    mark_queue_item_moved(item_id, target_path)
+                                    _safe_update_queue_item(
+                                        item_id,
+                                        status='imported',
+                                        file_path=target_path,
+                                        imported_at=datetime.now().isoformat(),
+                                        copied_individually=1,
+                                        copied_individually_at=datetime.now().isoformat()
+                                    )
+                                    _cleanup_sibling_downloads(item, keep_path=None)
+                                    _trigger_navidrome_scan()
                                 else:
                                     logger.warning(
                                         f"[AUTO_MOVE] Queue {item_id}: file verification failed after move to {target_path}, updating path"
@@ -3866,6 +3928,23 @@ def process_completed_mbid_items(limit=10):
                     )
                     logger.info(
                         f"[COMPLETED_MOVE] Queue {item_id}: verified and imported to {target_path}"
+                    )
+                    _cleanup_sibling_downloads(item, keep_path=None)
+                    _trigger_navidrome_scan()
+                    processed += 1
+                elif target_path and os.path.isfile(target_path):
+                    logger.warning(
+                        f"[COMPLETED_MOVE] Queue {item_id}: verification API failed but file exists at "
+                        f"{target_path} — promoting to imported"
+                    )
+                    mark_queue_item_moved(item_id, target_path)
+                    dq_update_queue_item(
+                        item_id,
+                        status='imported',
+                        file_path=target_path,
+                        imported_at=datetime.now().isoformat(),
+                        copied_individually=1,
+                        copied_individually_at=datetime.now().isoformat(),
                     )
                     _cleanup_sibling_downloads(item, keep_path=None)
                     _trigger_navidrome_scan()
