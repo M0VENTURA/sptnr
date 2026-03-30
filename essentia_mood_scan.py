@@ -322,6 +322,7 @@ def run_essentia_mood_scan(
     artist_filter: str = "",
     album_filter: str = "",
     track_id_filter: str = "",
+    resume_from_artist: str = "",
 ) -> Dict[str, Any]:
     """Run Essentia-based mood/genre detection on tracks with a local file path.
 
@@ -492,6 +493,7 @@ def run_essentia_mood_scan(
     artist_filter = (artist_filter or "").strip()
     album_filter = (album_filter or "").strip()
     track_id_filter = (track_id_filter or "").strip()
+    resume_from_artist = (resume_from_artist or "").strip()
 
     if track_id_filter:
         conditions.append(f"CAST(id AS TEXT) = {placeholder}")
@@ -550,6 +552,8 @@ def run_essentia_mood_scan(
     _essentia_milestone_50 = max(1, int(total_tracks * 0.50))
     _essentia_milestone_75 = max(1, int(total_tracks * 0.75))
 
+    resume_started = not bool(resume_from_artist)
+
     for row in rows:
         if _stop_requested(progress_file):
             conn.commit()
@@ -584,6 +588,14 @@ def run_essentia_mood_scan(
         artist_key = (
             _row_get(row, "album_artist", 4) or _row_get(row, "artist", 3) or "Unknown"
         ).strip()
+
+        # Resume support: skip artists until we reach the checkpoint artist.
+        if not resume_started:
+            if artist_key.lower() != resume_from_artist.lower():
+                continue
+            resume_started = True
+            logger.info("Essentia resume: continuing from artist '%s'", artist_key)
+            log_unified(f"Essentia Scan - Resuming from Artist {artist_key}")
 
         # Resolve relative paths stored by the Navidrome importer.
         # Navidrome's Subsonic API returns paths relative to the music root

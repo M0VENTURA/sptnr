@@ -3751,15 +3751,19 @@ def _schedule_configured_startup_scan_launch():
         effective_restart = restart_requested
         resume_artist = None
 
-        if scan_type not in {"navidrome", "popularity", "combined"}:
-            return mode, effective_restart, resume_artist
+        resume_scan_type = {
+            "essentia-mood": "essentia_mood",
+        }.get(scan_type, scan_type)
 
         try:
             from scan_resume import should_resume_scan
 
-            should_resume, resume_artist = should_resume_scan(scan_type)
+            should_resume, resume_artist = should_resume_scan(resume_scan_type)
             if should_resume:
-                mode = "resume_force" if force_enabled else "resume"
+                if scan_type == "singles":
+                    mode = "singles_resume_force" if force_enabled else "singles_resume"
+                else:
+                    mode = "resume_force" if force_enabled else "resume"
                 effective_restart = False
         except Exception as resume_err:
             logging.warning(f"[BOOT] Could not evaluate resume state for {scan_type}: {resume_err}")
@@ -3798,16 +3802,34 @@ def _schedule_configured_startup_scan_launch():
                 "navidrome": ("scan_navidrome", "/scan/navidrome"),
                 "metadata": ("scan_mp3_import", "/scan/mp3-import"),
                 "popularity": ("scan_popularity_route", "/scan/popularity"),
+                "singles": ("scan_popularity_route", "/scan/popularity"),
                 "essentia-mood": ("scan_essentia_mood", "/scan/essentia-mood"),
                 "combined": ("scan_combined", "/scan/combined"),
             }
+            from scan_resume import should_resume_scan
+
+            # If any interrupted scan exists, resume that first (priority order)
+            # instead of launching a different configured startup scan.
+            resume_priority = ["combined", "navidrome", "singles", "popularity", "essentia_mood"]
+            for resume_candidate in resume_priority:
+                should_resume, _resume_artist = should_resume_scan(resume_candidate)
+                if not should_resume:
+                    continue
+                override_scan_type = "essentia-mood" if resume_candidate == "essentia_mood" else resume_candidate
+                if override_scan_type != scan_type:
+                    logging.info(
+                        f"[BOOT] Interrupted {override_scan_type} scan detected; overriding configured startup scan '{scan_type}'"
+                    )
+                scan_type = override_scan_type
+                break
+
             handler_name, base_path = mapping.get(scan_type, ("scan_navidrome", "/scan/navidrome"))
             mode, effective_restart, resume_artist = _resolve_startup_scan_mode(scan_type, force_enabled, restart)
 
             params = []
             if scan_type != "metadata":
                 params.append(f"mode={mode}")
-            if scan_type in {"navidrome", "popularity", "essentia-mood", "combined"}:
+            if scan_type in {"navidrome", "popularity", "singles", "essentia-mood", "combined"}:
                 params.append("restart=1" if effective_restart else "restart=0")
 
             request_path = base_path + (("?" + "&".join(params)) if params else "")
@@ -3927,9 +3949,11 @@ def _auto_resume_interrupted_scans():
             from scan_resume import detect_interrupted_scan
 
             resumable = [
-                ("navidrome", "scan_navidrome", "/scan/navidrome"),
-                ("popularity", "scan_popularity_route", "/scan/popularity"),
                 ("combined", "scan_combined", "/scan/combined"),
+                ("navidrome", "scan_navidrome", "/scan/navidrome"),
+                ("singles", "scan_popularity_route", "/scan/popularity"),
+                ("popularity", "scan_popularity_route", "/scan/popularity"),
+                ("essentia_mood", "scan_essentia_mood", "/scan/essentia-mood"),
             ]
 
             for scan_type, handler_name, base_path in resumable:
@@ -3946,7 +3970,10 @@ def _auto_resume_interrupted_scans():
                         )
                         continue
 
-                    params = "mode=resume&restart=0"
+                    if scan_type == "singles":
+                        params = "mode=singles_resume&restart=0"
+                    else:
+                        params = "mode=resume&restart=0"
                     request_path = base_path + "?" + params
                     log_unified(
                         f"[BOOT_RESUME] Resuming interrupted {scan_type} scan"
@@ -5623,12 +5650,10 @@ def artist_corrections(name):
         mb_albums=mb_albums,
         mbid_inconsistent_albums=mbid_inconsistent_albums,
         disc_inconsistent_albums=disc_inconsistent_albums,
-        mbid_inconsistent_albums=mbid_inconsistent_albums,
         duplicate_count=sum(max(int(d.get("duplicate_count") or 0) - 1, 0) for d in duplicate_groups),
         missing_count=len(missing_tracks),
         mbid_inconsistent_count=len(mbid_inconsistent_albums),
         disc_inconsistent_count=len(disc_inconsistent_albums),
-        mbid_inconsistent_count=len(mbid_inconsistent_albums),
     )
 
 
@@ -13304,7 +13329,7 @@ def scan_popularity_route():
     global scan_process_popularity
     
     # Get scan mode from query parameters (default: "all")
-    mode = request.args.get('mode', 'all')  # all, force, missing, singles, resume, resume_force
+    mode = request.args.get('mode', 'all')  # all, force, missing, singles, singles_resume, singles_resume_force, resume, resume_force
     restart_requested = str(request.args.get('restart', '0')).strip().lower() in ('1', 'true', 'yes', 'on')
     force_start = str(request.args.get('force_start', '0')).strip().lower() in ('1', 'true', 'yes', 'on')
     
@@ -13334,7 +13359,7 @@ def scan_popularity_route():
                         logging.warning(f"Restart requested but failed to clear popularity checkpoint: {checkpoint_err}")
             
             # Use different progress files for singles-only mode
-            if mode == 'singles':
+            if mode in ('singles', 'singles_resume', 'singles_resume_force'):
                 popularity_progress_file = os.path.join(db_dir, "singles_scan_progress.json")
                 _write_progress_file(popularity_progress_file, "singles_scan", True, {"status": "starting"})
             else:
@@ -13345,15 +13370,16 @@ def scan_popularity_route():
             from popularity import popularity_scan as scan_popularity_func
             
             # Determine force and filter logic based on mode
-            force_rescan = (mode == 'force' or mode == 'resume_force')
+            force_rescan = (mode == 'force' or mode == 'resume_force' or mode == 'singles_resume_force')
             filter_missing = (mode == 'missing')
-            singles_only = (mode == 'singles')
+            singles_only = mode in ('singles', 'singles_resume', 'singles_resume_force')
             
             # Determine resume artist for resume mode
             resume_from_artist = None
-            if mode == 'resume' or mode == 'resume_force':
+            if mode in ('resume', 'resume_force', 'singles_resume', 'singles_resume_force'):
                 from scan_resume import get_last_scanned_artist
-                resume_from_artist = get_last_scanned_artist(scan_type="popularity", db_path=DB_PATH)
+                resume_scan_type = "singles" if singles_only else "popularity"
+                resume_from_artist = get_last_scanned_artist(scan_type=resume_scan_type, db_path=DB_PATH)
                 if resume_from_artist:
                     logging.info(f"Resume mode: Found last scanned artist '{resume_from_artist}'")
                 else:
@@ -13365,7 +13391,7 @@ def scan_popularity_route():
                         logging.info(f"Starting singles-only scan in background")
                         completed = scan_popularity_func(
                             verbose=False,
-                            force=False,
+                            force=force_rescan,
                             singles_only=True,
                             resume_from=resume_from_artist,
                             stop_progress_file=popularity_progress_file
@@ -13408,6 +13434,9 @@ def scan_popularity_route():
                     'all': 'Full', 
                     'force': 'Full (Forced)', 
                     'missing': 'Missing Only',
+                    'singles': 'Singles Only',
+                    'singles_resume': 'Singles Resume from Last',
+                    'singles_resume_force': 'Singles Resume (Forced)',
                     'resume': 'Resume from Last',
                     'resume_force': 'Resume (Forced)'
                 }.get(mode, 'Full')
@@ -13458,12 +13487,23 @@ def scan_essentia_mood():
     global scan_process_essentia_mood
 
     mode = request.args.get('mode', 'all')
-    force_scan = (mode == 'force')
+    force_scan = (mode == 'force' or mode == 'resume_force')
 
     # Scoped-scan filters (from form or query string)
     artist_filter = (request.form.get('artist') or request.args.get('artist') or '').strip()
     album_filter = (request.form.get('album') or request.args.get('album') or '').strip()
     track_id_filter = (request.form.get('track_id') or request.args.get('track_id') or '').strip()
+
+    # Resume from checkpoint artist when requested.
+    resume_from_artist = ""
+    if mode in ('resume', 'resume_force'):
+        try:
+            from scan_resume import get_last_scanned_artist
+            resume_from_artist = (get_last_scanned_artist(scan_type="essentia_mood", db_path=DB_PATH) or "").strip()
+            if resume_from_artist and not artist_filter and not album_filter and not track_id_filter:
+                logging.info(f"Essentia resume mode: continuing from artist '{resume_from_artist}'")
+        except Exception as resume_err:
+            logging.warning(f"Essentia resume mode: failed to resolve checkpoint artist: {resume_err}")
 
     # When scanning a specific artist, album, or track the user is explicitly
     # targeting those items, so force a rescan even if they already have tags.
@@ -13540,6 +13580,7 @@ def scan_essentia_mood():
                         artist_filter=_artist_filter,
                         album_filter=_album_filter,
                         track_id_filter=_track_id_filter,
+                        resume_from_artist=resume_from_artist,
                     )
                     if result.get("stopped"):
                         _write_progress_with_current_artist(

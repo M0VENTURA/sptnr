@@ -43,6 +43,7 @@ def _normalize_scan_type(scan_type: str) -> str:
     alias_map = {
         "navidrome": "navidrome_scan",
         "popularity": "popularity_scan",
+        "singles": "singles_scan",
         "combined": "combined_scan",
         "mood": "mood_scan",
         "essentia_mood": "essentia_mood_scan",
@@ -56,6 +57,8 @@ def _resolve_progress_file(scan_type: str) -> str:
         return os.environ.get("NAVIDROME_PROGRESS_FILE", "/database/navidrome_scan_progress.json")
     if normalized in {"popularity", "popularity_scan"}:
         return os.environ.get("POPULARITY_PROGRESS_FILE", "/database/popularity_scan_progress.json")
+    if normalized in {"singles", "singles_scan"}:
+        return os.environ.get("SINGLES_PROGRESS_FILE", "/database/singles_scan_progress.json")
     if normalized in {"combined", "combined_scan"}:
         return os.environ.get("COMBINED_PROGRESS_FILE", "/database/combined_scan_progress.json")
     if normalized in {"mood", "mood_scan"}:
