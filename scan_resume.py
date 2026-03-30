@@ -51,6 +51,24 @@ def _normalize_scan_type(scan_type: str) -> str:
     return alias_map.get(normalized, normalized)
 
 
+def _scan_type_variants(scan_type: str) -> List[str]:
+    """Return normalized scan_type aliases used in stored progress/history rows."""
+    normalized = _normalize_scan_type(scan_type)
+    variants = {normalized}
+    alias_map = {
+        "navidrome_scan": "navidrome",
+        "popularity_scan": "popularity",
+        "singles_scan": "singles",
+        "combined_scan": "combined",
+        "mood_scan": "mood",
+        "essentia_mood_scan": "essentia_mood",
+    }
+    short = alias_map.get(normalized)
+    if short:
+        variants.add(short)
+    return sorted(variants)
+
+
 def _resolve_progress_file(scan_type: str) -> str:
     normalized = _normalize_scan_type(scan_type)
     if normalized in {"navidrome", "navidrome_scan"}:
@@ -285,12 +303,15 @@ def get_artists_to_scan(all_artists: List[str], resume_from: Optional[str] = Non
         return all_artists
 
 
-def get_last_scanned_artist_from_db(db_path: str = "/database/sptnr.db") -> Optional[str]:
+def get_last_scanned_artist_from_db(
+    db_path: str = "/database/sptnr.db",
+    scan_type: str = "navidrome",
+) -> Optional[str]:
     """
     Get the last scanned artist that NEEDS TO BE RESUMED (not completed).
     
     Priority:
-    1. Check scan_history for incomplete scans (status != 'completed')
+    1. Check scan_history for incomplete scans for the requested scan type
     2. Fall back to most recently scanned artist
     
     Args:
@@ -302,21 +323,28 @@ def get_last_scanned_artist_from_db(db_path: str = "/database/sptnr.db") -> Opti
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        
-        # First, try to find an artist with an incomplete scan in scan_history
-        # This handles the case where a scan was interrupted mid-way through an artist
-        cursor.execute("""
+
+        # First, try to find an artist with an incomplete scan in scan_history,
+        # scoped to the active scan type. Without this filter, an interrupted
+        # unrelated scan can force Essentia/Navidrome to resume from the wrong artist.
+        scan_type_values = _scan_type_variants(scan_type)
+        placeholders = ", ".join(["%s"] * len(scan_type_values))
+        cursor.execute(
+            f"""
             SELECT artist
             FROM scan_history
             WHERE status != 'completed'
+              AND LOWER(COALESCE(scan_type, '')) IN ({placeholders})
             ORDER BY scan_timestamp DESC
             LIMIT 1
-        """)
+            """,
+            tuple(v.lower() for v in scan_type_values),
+        )
         
         row = cursor.fetchone()
         if row:
             artist = row['artist'] if isinstance(row, dict) else row[0]
-            log_debug(f"Found incomplete scan for artist: {artist}")
+            log_debug(f"Found incomplete {scan_type} scan for artist: {artist}")
             conn.close()
             return artist
         
@@ -341,7 +369,7 @@ def get_last_scanned_artist_from_db(db_path: str = "/database/sptnr.db") -> Opti
             return artist
         
     except Exception as e:
-        log_debug(f"Failed to get last scanned artist from DB: {e}")
+        log_debug(f"Failed to get last scanned artist from DB ({scan_type}): {e}")
     
     return None
 
@@ -389,15 +417,15 @@ def get_last_scanned_artist(scan_type: str = "navidrome", db_path: str = "/datab
     Returns:
         Artist name or None
     """
-    # First check progress file for interrupted scan
-    progress = load_scan_progress(scan_type)
-    if progress and progress.get('current_artist'):
-        artist = progress.get('current_artist')
-        log_info(f"Last scanned artist from progress file: {artist}")
+    # First check for a genuinely interrupted scan state.
+    interrupted = detect_interrupted_scan(scan_type)
+    if interrupted and interrupted.get('current_artist'):
+        artist = interrupted.get('current_artist')
+        log_info(f"Last scanned artist from interrupted progress: {artist}")
         return artist
     
     # Fall back to database query - check for incomplete scans
-    artist = get_last_scanned_artist_from_db(db_path)
+    artist = get_last_scanned_artist_from_db(db_path, scan_type=scan_type)
     if artist:
         log_info(f"Last scanned artist from database: {artist}")
         return artist
