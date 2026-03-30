@@ -463,6 +463,36 @@ def get_queued_items(limit=10):
         
         now = datetime.now().isoformat()
 
+        # Legacy queued qBittorrent rows should still be dispatched through
+        # Soulseek. qBittorrent downloads are handled manually outside the queue
+        # worker, so normalize those rows before selection.
+        try:
+            cursor.execute(
+                """
+                UPDATE download_queue
+                SET source = 'soulseek', updated_at = CURRENT_TIMESTAMP
+                WHERE status = 'queued'
+                  AND (next_retry_at IS NULL OR next_retry_at <= {placeholder})
+                  AND COALESCE(LOWER(source), 'soulseek') = 'qbittorrent'
+                """.format(placeholder=placeholder),
+                (now,),
+            )
+            promoted_count = int(cursor.rowcount or 0)
+            if promoted_count > 0:
+                conn.commit()
+                logger.info(
+                    "Queue selector promoted %s queued qBittorrent item(s) to Soulseek dispatch",
+                    promoted_count,
+                )
+            else:
+                conn.rollback()
+        except Exception as promote_err:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            logger.debug(f"Could not promote queued qBittorrent rows to Soulseek: {promote_err}")
+
         # Surface items intentionally excluded from slskd processing so
         # operators can distinguish "not dispatched" from API failures.
         try:
@@ -472,7 +502,7 @@ def get_queued_items(limit=10):
                 FROM download_queue
                 WHERE status = 'queued'
                   AND (next_retry_at IS NULL OR next_retry_at <= {placeholder})
-                  AND COALESCE(LOWER(source), 'soulseek') IN ('qbittorrent', 'local', 'discovered')
+                                    AND COALESCE(LOWER(source), 'soulseek') IN ('local', 'discovered')
                 GROUP BY COALESCE(LOWER(source), 'soulseek')
                 ORDER BY source_key
                 """.format(placeholder=placeholder),
@@ -501,7 +531,7 @@ def get_queued_items(limit=10):
             SELECT * FROM download_queue 
             WHERE status = 'queued'
             AND (next_retry_at IS NULL OR next_retry_at <= {placeholder})
-            AND COALESCE(LOWER(source), 'soulseek') NOT IN ('qbittorrent', 'local', 'discovered')
+            AND COALESCE(LOWER(source), 'soulseek') NOT IN ('local', 'discovered')
             ORDER BY priority ASC, retry_count ASC, next_retry_at ASC, created_at ASC
             LIMIT {placeholder}
         """.format(placeholder=placeholder), (now, limit))

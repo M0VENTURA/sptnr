@@ -23455,30 +23455,16 @@ def api_queue_add_batch():
             title = item_data.get('title', '').strip() if item_data.get('title') else ''
             album = item_data.get('album', '').strip() if item_data.get('album') else None
             item_source = str(item_data.get('source') or '').strip().lower()
-            if item_source in allowed_sources:
-                source = item_source
-            elif batch_source in allowed_sources:
-                source = batch_source
-            else:
-                # Batch default routing policy:
-                # - Album imports: qBittorrent first
-                # - Song/playlist track imports: Soulseek first
-                source = 'qbittorrent' if import_type == 'album' else 'soulseek'
-
-            if item_source and item_source not in allowed_sources:
+            source = 'soulseek'
+            requested_source = item_source or batch_source
+            if requested_source and requested_source not in allowed_sources:
                 logging.info(
-                    f"[QUEUE_BATCH] Ignoring non-transport item source '{item_source}' for {artist} - {title}; using '{source}'"
+                    f"[QUEUE_BATCH] Ignoring non-transport source '{requested_source}' for {artist} - {title}; using 'soulseek'"
                 )
-            elif batch_source and batch_source not in allowed_sources:
+            elif requested_source == 'qbittorrent':
                 logging.info(
-                    f"[QUEUE_BATCH] Ignoring non-transport batch source '{batch_source}' for import_group={import_group_id}; using '{source}'"
+                    f"[QUEUE_BATCH] Normalizing requested qBittorrent source to Soulseek for {artist} - {title}"
                 )
-
-            if source not in allowed_sources:
-                failed_count += 1
-                failed_tracks.append(title or 'Unknown')
-                logging.warning(f"Skipping item with invalid source '{source}' for {artist} - {title}")
-                continue
             
             # Extract MusicBrainz/Discogs metadata if provided
             # Handle both string and int types for numeric fields
@@ -26551,7 +26537,6 @@ def api_queue_import_missing_tracks():
         ref_artist = (_row_get(reference, 'artist', 1, '') or '').strip() if reference else ''
         ref_album = (_row_get(reference, 'album', 2, '') or '').strip() if reference else ''
         ref_album_artist = (_row_get(reference, 'album_artist', 3, '') or '').strip() if reference else ''
-        ref_source = (_row_get(reference, 'source', 4, '') or 'soulseek').strip() if reference else 'soulseek'
         ref_import_group = (_row_get(reference, 'import_group', 5, '') or '').strip() if reference else ''
         ref_import_type = (_row_get(reference, 'import_type', 6, '') or 'album').strip() if reference else 'album'
 
@@ -26582,7 +26567,7 @@ def api_queue_import_missing_tracks():
                 artist=track_artist,
                 title=title,
                 album=release_title,
-                source=ref_source or 'soulseek',
+                source='soulseek',
                 priority=5,
                 import_group=import_group,
                 import_type=ref_import_type or 'album',
