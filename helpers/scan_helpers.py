@@ -201,6 +201,102 @@ def _normalize_album_artist_file_tag(file_path: str, album_artist_value: str) ->
     return False
 
 
+def _resolve_navidrome_file_path_for_storage(path_value: str) -> str:
+    """Normalize Navidrome path values into stable absolute DB paths."""
+    raw = str(path_value or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("__queued_for_download__"):
+        return raw
+
+    normalized = raw.replace("\\", "/")
+    if os.path.isabs(normalized):
+        return os.path.normpath(normalized)
+
+    music_root = os.environ.get("MUSIC_FOLDER") or os.environ.get("MUSIC_ROOT") or "/music"
+    return os.path.normpath(os.path.join(music_root, normalized))
+
+
+def _sanitize_artist_file_paths_and_duplicates(conn, artist_name: str) -> tuple[int, int]:
+    """Fix legacy Navidrome path variants and collapse duplicate rows by normalized file path."""
+    if not artist_name:
+        return 0, 0
+
+    cursor = conn.cursor()
+    placeholder = "%s"
+    cursor.execute(
+        f"""
+        SELECT id, file_path, mbid, suggested_mbid, last_scanned
+        FROM tracks
+        WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+        """,
+        (artist_name,),
+    )
+    rows = cursor.fetchall()
+
+    updates = 0
+    buckets = {}
+
+    for row in rows:
+        row_dict = dict(row) if hasattr(row, "keys") else {
+            "id": row[0],
+            "file_path": row[1],
+            "mbid": row[2],
+            "suggested_mbid": row[3],
+            "last_scanned": row[4],
+        }
+        track_id = row_dict.get("id")
+        file_path = str(row_dict.get("file_path") or "").strip()
+        if not track_id or not file_path:
+            continue
+
+        normalized_path = _resolve_navidrome_file_path_for_storage(file_path)
+        if normalized_path and normalized_path != file_path:
+            cursor.execute(
+                f"UPDATE tracks SET file_path = {placeholder} WHERE id = {placeholder}",
+                (normalized_path, track_id),
+            )
+            updates += int(cursor.rowcount or 0)
+
+        effective_path = normalized_path or file_path
+        if not effective_path or effective_path.startswith("__queued_for_download__"):
+            continue
+
+        buckets.setdefault(effective_path.lower(), []).append({
+            "id": track_id,
+            "mbid": str(row_dict.get("mbid") or "").strip(),
+            "suggested_mbid": str(row_dict.get("suggested_mbid") or "").strip(),
+            "last_scanned": str(row_dict.get("last_scanned") or ""),
+        })
+
+    deleted = 0
+    for _, dup_rows in buckets.items():
+        if len(dup_rows) <= 1:
+            continue
+
+        def _score(entry):
+            return (
+                1 if entry.get("mbid") else 0,
+                1 if entry.get("suggested_mbid") else 0,
+                entry.get("last_scanned") or "",
+                str(entry.get("id") or ""),
+            )
+
+        keeper = max(dup_rows, key=_score)
+        keeper_id = str(keeper.get("id"))
+        for entry in dup_rows:
+            entry_id = str(entry.get("id"))
+            if entry_id == keeper_id:
+                continue
+            cursor.execute(f"DELETE FROM tracks WHERE id = {placeholder}", (entry_id,))
+            deleted += int(cursor.rowcount or 0)
+
+    if updates or deleted:
+        conn.commit()
+
+    return updates, deleted
+
+
 def _extract_writer_from_file_tags(file_path: str) -> str:
     """Best-effort writer/lyricist extraction from local audio tags (returns JSON array string)."""
     if not file_path or not os.path.exists(file_path):
@@ -459,6 +555,15 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     logging.info(f"[ARTIST_NORMALIZE] {canonical_artist_name}: normalized {updated_rows} existing rows")
             except Exception as normalize_err:
                 logging.debug(f"[ARTIST_NORMALIZE] Existing-row normalization skipped for {canonical_artist_name}: {normalize_err}")
+
+            try:
+                path_updates, duplicate_deletes = _sanitize_artist_file_paths_and_duplicates(conn, canonical_artist_name)
+                if path_updates or duplicate_deletes:
+                    logging.info(
+                        f"[NAVIDROME_SANITIZE] {canonical_artist_name}: normalized_paths={path_updates}, deduped_rows={duplicate_deletes}"
+                    )
+            except Exception as sanitize_err:
+                logging.debug(f"[NAVIDROME_SANITIZE] Path sanitization skipped for {canonical_artist_name}: {sanitize_err}")
 
             conn.close()
         except Exception as e:
