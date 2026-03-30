@@ -32372,15 +32372,35 @@ def api_playlist_export_to_external():
     """Start an async job that copies/converts playlist tracks to an external media folder."""
     import uuid
     import threading
-    import requests as req
 
     try:
         data = request.get_json(force=True, silent=True) or {}
         playlist_id = (data.get("playlist_id") or data.get("playlist_path") or "").strip()
         playlist_name = (data.get("playlist_name") or "playlist").strip()
+        provided_tracks = data.get("tracks")
 
         if not playlist_id:
             return jsonify({"error": "Missing playlist_id"}), 400
+
+        # Prefer tracks already loaded in the UI to avoid a second API round-trip
+        # that can fail for some Navidrome playlist types/sessions.
+        tracks = []
+        if isinstance(provided_tracks, list) and provided_tracks:
+            for t in provided_tracks:
+                if not isinstance(t, dict):
+                    continue
+                resolved_path = (
+                    (t.get("path") or "").strip()
+                    or (t.get("file_path") or "").strip()
+                    or (t.get("database_path") or "").strip()
+                    or (t.get("navidrome_path") or "").strip()
+                )
+                tracks.append({
+                    "path": resolved_path,
+                    "title": (t.get("title") or "Unknown").strip(),
+                    "artist": (t.get("artist") or "Unknown").strip(),
+                    "album": (t.get("album") or "Unknown").strip(),
+                })
 
         cfg = get_config()
 
@@ -32397,20 +32417,31 @@ def api_playlist_export_to_external():
         nd_user = nav_cfg.get("user", "admin")
         nd_pass = nav_cfg.get("pass", "")
 
-        # Fetch tracks from Navidrome
-        try:
-            resp = req.get(
-                f"{base_url}/rest/getPlaylist.view",
-                params={"u": nd_user, "p": nd_pass, "c": "popularr", "f": "json", "id": playlist_id},
-                timeout=10,
-            )
-            playlist_data = resp.json().get("subsonic-response", {}).get("playlist", {})
-            tracks = playlist_data.get("entry", [])
-            if not isinstance(tracks, list):
-                tracks = [tracks] if tracks else []
-        except Exception as exc:
-            logging.error(f"Navidrome fetch error in export: {exc}")
-            return jsonify({"error": f"Failed to fetch playlist from Navidrome: {exc}"}), 500
+        # Fallback: fetch tracks from Navidrome if the client did not provide them.
+        if not tracks:
+            try:
+                from api_clients.navidrome import NavidromeClient
+
+                client = NavidromeClient(base_url, nd_user, nd_pass)
+                playlist_data = client.fetch_playlist(playlist_id) or {}
+                fetched = playlist_data.get("tracks")
+                if fetched is None:
+                    fetched = playlist_data.get("entry", [])
+                if not isinstance(fetched, list):
+                    fetched = [fetched] if fetched else []
+
+                for t in fetched:
+                    if not isinstance(t, dict):
+                        continue
+                    tracks.append({
+                        "path": (t.get("path") or "").strip(),
+                        "title": (t.get("title") or "Unknown").strip(),
+                        "artist": (t.get("artist") or "Unknown").strip(),
+                        "album": (t.get("album") or "Unknown").strip(),
+                    })
+            except Exception as exc:
+                logging.error(f"Navidrome fetch error in export: {exc}")
+                return jsonify({"error": f"Failed to fetch playlist from Navidrome: {exc}"}), 500
 
         if not tracks:
             return jsonify({"error": "Playlist is empty or could not be loaded"}), 400

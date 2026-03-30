@@ -406,10 +406,18 @@
     btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Starting…';
 
     try {
+      const loadedTracks = (window.currentPlaylistData && Array.isArray(window.currentPlaylistData.songs))
+        ? window.currentPlaylistData.songs
+        : [];
+
       const resp = await fetch('/api/playlist/export-to-external', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ playlist_id: playlistId, playlist_name: playlistName })
+        body: JSON.stringify({
+          playlist_id: playlistId,
+          playlist_name: playlistName,
+          tracks: loadedTracks
+        })
       });
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.error || 'Export request failed');
