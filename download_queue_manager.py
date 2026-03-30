@@ -904,6 +904,11 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
             raise RuntimeError("download_queue schema ensure requires PostgreSQL connection")
 
         try:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
             # PostgreSQL column checking
             cursor.execute("""
                 SELECT column_name FROM information_schema.columns
@@ -1380,7 +1385,7 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         if isinstance(row, (list, tuple)) and row_cursor and getattr(row_cursor, 'description', None):
             try:
                 columns = [col[0] for col in row_cursor.description]
-                return {col: row[idx] for idx, col in enumerate(columns)}
+                return dict(zip(columns, row))
             except Exception:
                 pass
         return None
@@ -1802,7 +1807,7 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                     existing_item = dict(existing)
                 elif isinstance(existing, (list, tuple)) and getattr(cursor2, 'description', None):
                     columns = [col[0] for col in cursor2.description]
-                    existing_item = {col: existing[idx] for idx, col in enumerate(columns)}
+                    existing_item = dict(zip(columns, existing))
                 else:
                     existing_item = None
                 if existing_item is not None:
@@ -1953,6 +1958,27 @@ def update_queue_item(queue_id, **kwargs):
             # Ensure schema before any queue writes. This prevents missing-column
             # failures on older databases and post-deploy drift.
             _ensure_download_queue_columns(conn, cursor, is_pg=True)
+
+            existing_cols = set()
+            try:
+                cursor.execute(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_name = 'download_queue' AND table_schema = 'public'
+                    """
+                )
+                existing_cols = {
+                    (row.get('column_name') if hasattr(row, 'get') else row[0])
+                    for row in (cursor.fetchall() or [])
+                    if row
+                }
+            except Exception as col_err:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                logger.warning(f"Could not inspect download_queue columns before update: {col_err}")
             
             # Build update query
             updates = []
@@ -1993,6 +2019,9 @@ def update_queue_item(queue_id, **kwargs):
                            'copied_individually', 'copied_individually_at', 'duration',
                            'match_confidence', 'match_method',
                            'slskd_transfer_id', 'slskd_username', 'slskd_state', 'slskd_queue_position', 'slskd_last_sync_at']:
+                    if existing_cols and key not in existing_cols:
+                        logger.debug(f"Skipping missing queue column '{key}' for queue item {queue_id}")
+                        continue
                     # Special handling for file_path to avoid UNIQUE constraint issues
                     if key == 'file_path' and value:
                         # Check if this file_path is already in use by another item
@@ -7773,7 +7802,7 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
 
     conn = None
     try:
-        conn = get_db()
+        conn = _get_postgres_conn_from_app_or_fallback()
         placeholder = "%s"
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 

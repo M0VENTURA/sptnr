@@ -581,11 +581,29 @@ def ensure_track_release_year_column():
             conn.close()
             return False
 
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
         if "release_year" not in _get_table_columns(cursor, "tracks"):
             logging.info("Adding 'release_year' column to tracks table...")
-            cursor.execute("ALTER TABLE tracks ADD COLUMN release_year INTEGER")
-            conn.commit()
-            logging.info("✓ Added 'release_year' column to tracks table")
+            try:
+                cursor.execute("ALTER TABLE tracks ADD COLUMN IF NOT EXISTS release_year INTEGER")
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                err_text = str(e).lower()
+                if "duplicate column" in err_text or "already exists" in err_text:
+                    logging.info("✓ Column 'release_year' already exists in tracks table")
+                else:
+                    raise
+
+            refreshed = _get_table_columns(cursor, "tracks")
+            if "release_year" in refreshed:
+                logging.info("✓ Added 'release_year' column to tracks table")
+            else:
+                logging.warning("⚠ Column 'release_year' was not present after migration attempt")
         else:
             logging.debug("✓ Column 'release_year' already exists in tracks table")
 
