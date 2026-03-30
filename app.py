@@ -33660,22 +33660,26 @@ def api_listenbrainz_create_playlist():
         if not lb_token:
             return jsonify({"error": "ListenBrainz token not configured"}), 400
         
-        # Get recommendations
+        # Get recommendations with Created-For -> RSS -> API fallback chain.
         from api_clients.audiodb_and_listenbrainz import ListenBrainzUserClient
         client = ListenBrainzUserClient(lb_token)
         username = client.get_username_from_token()
-        
-        recommendations = []
-        if rec_type == "weekly_jams":
-            recommendations = client.get_weekly_jams(username)
-        elif rec_type == "weekly_exploration":
-            recommendations = client.get_weekly_exploration(username)
-        elif rec_type == "last_week_jams":
-            recommendations = client.get_last_week_jams(username)
-        elif rec_type == "last_week_exploration":
-            recommendations = client.get_last_week_exploration(username)
+        if not username:
+            return jsonify({"error": "Failed to validate ListenBrainz token"}), 401
+
+        recommendations, source_used = _fetch_listenbrainz_feed_tracks(
+            username,
+            rec_type,
+            lb_token=lb_token,
+        )
         
         if not recommendations:
+            logging.info(
+                "No ListenBrainz recommendations found for user=%s type=%s (source=%s)",
+                username,
+                rec_type,
+                source_used,
+            )
             return jsonify({"error": "No recommendations found"}), 404
         
         # Search for matching tracks in database

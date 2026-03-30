@@ -208,14 +208,20 @@ class ListenBrainzUserClient:
             if not isinstance(playlists, list):
                 playlists = []
 
-            name_to_key = {
-                "weekly jams": "weekly_jams",
-                "weekly exploration": "weekly_exploration",
-                "last week's jams": "last_week_jams",
-                "last weeks jams": "last_week_jams",
-                "last week's exploration": "last_week_exploration",
-                "last weeks exploration": "last_week_exploration",
-            }
+            def _playlist_key_from_name(name: str) -> str:
+                normalized = " ".join(str(name or "").strip().lower().split())
+                if not normalized:
+                    return ""
+                # ListenBrainz titles are not always exact; accept common variants/substrings.
+                if "weekly" in normalized and "exploration" in normalized:
+                    return "weekly_exploration"
+                if "weekly" in normalized and "jams" in normalized:
+                    return "weekly_jams"
+                if "last" in normalized and "exploration" in normalized:
+                    return "last_week_exploration"
+                if "last" in normalized and "jams" in normalized:
+                    return "last_week_jams"
+                return ""
 
             for playlist in playlists:
                 if not isinstance(playlist, dict):
@@ -227,8 +233,7 @@ class ListenBrainzUserClient:
                     or playlist.get("playlist_name")
                     or ""
                 )
-                normalized_name = " ".join(str(playlist_name).strip().lower().split())
-                playlist_key = name_to_key.get(normalized_name)
+                playlist_key = _playlist_key_from_name(playlist_name)
                 if not playlist_key:
                     continue
 
@@ -319,23 +324,48 @@ class ListenBrainzUserClient:
         if exploration:
             return exploration
 
-        try:
-            # Weekly exploration uses a different endpoint
-            url = f"{self.base_url}/user/{username}/recommendations/exploration/weekly"
-            res = self.session.get(url, headers=self.headers, timeout=(5, 30))
-            res.raise_for_status()
-            data = res.json()
-            payload = data.get("payload", {})
-            playlists = payload.get("playlists", [])
-            # Flatten all tracks from playlists
-            tracks = []
-            for playlist in playlists:
-                tracks.extend(playlist.get("recordings", []))
-            logger.info(f"Got {len(tracks)} exploration tracks for {username}")
-            return tracks
-        except Exception as e:
-            logger.error(f"Failed to get weekly exploration for {username}: {e}")
-            return []
+        endpoint_candidates = [
+            f"{self.base_url}/user/{username}/recommendations/exploration/weekly",
+            f"{self.base_url}/user/{username}/recommendations/exploration/weekly/",
+            f"{self.base_url}/user/{username}/recommendations/explore/weekly",
+            f"{self.base_url}/user/{username}/recommendations/explore/weekly/",
+        ]
+
+        for url in endpoint_candidates:
+            try:
+                res = self.session.get(url, headers=self.headers, timeout=(5, 30))
+                if res.status_code == 404:
+                    continue
+                res.raise_for_status()
+                data = res.json() if res.content else {}
+                payload = data.get("payload", {}) if isinstance(data, dict) else {}
+                playlists = payload.get("playlists", []) if isinstance(payload, dict) else []
+                if isinstance(playlists, dict):
+                    playlists = [playlists]
+                if not isinstance(playlists, list):
+                    playlists = []
+
+                tracks = []
+                for playlist in playlists:
+                    if not isinstance(playlist, dict):
+                        continue
+                    recs = playlist.get("recordings") or playlist.get("tracks") or []
+                    if isinstance(recs, dict):
+                        recs = [recs]
+                    if isinstance(recs, list):
+                        tracks.extend([r for r in recs if isinstance(r, dict)])
+
+                if tracks:
+                    logger.info(f"Got {len(tracks)} exploration tracks for {username} via {url}")
+                    return tracks
+            except Exception as e:
+                logger.debug(f"Weekly exploration endpoint failed for {username} ({url}): {e}")
+
+        logger.warning(
+            "Weekly exploration unavailable for %s; falling back to generic recommendations",
+            username,
+        )
+        return self.get_recommendations(username, "raw")
     
     def get_last_week_jams(self, username: str) -> list:
         """
