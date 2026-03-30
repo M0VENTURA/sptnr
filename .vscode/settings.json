@@ -8,5 +8,6 @@
         }
     ],
     "python.analysis.autoImportCompletions": true,
-    "markdown.validate.enabled": true
+    "markdown.validate.enabled": true,
+    "python.analysis.typeCheckingMode": "standard"
 }

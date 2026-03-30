@@ -374,7 +374,7 @@
                             <div id="moodsContainer" class="mb-2">
                                 {% if track.mood_list %}
                                     {% for mood in track.mood_list %}
-                                    <span class="badge bg-info text-dark me-1 mb-1" style="font-size: 0.9rem;">{{ mood }}</span>
+                                    <span class="badge text-dark me-1 mb-1" style="background-color: #F59C00; font-size: 0.9rem;">{{ mood }}</span>
                                     {% endfor %}
                                 {% else %}
                                     <span class="text-muted small">No mood tags detected yet</span>
@@ -389,6 +389,64 @@
                             </small>
                             {% endif %}
                         </div>
+
+                        <hr class="my-3">
+
+                        <!-- Genre Source Display from All Sources -->
+                        {% if genre_sources %}
+                            <h6 class="mb-2">Source Tags</h6>
+                            {% set sources = [
+                              ('mood', 'Mood Scan', 'F59C00', 'light'),
+                              ('spotify_genres', 'Spotify', '1DB954', 'white'),
+                              ('lastfm_tags', 'Last.fm', 'D51007', 'black'),
+                              ('listenbrainz_genres', 'ListenBrainz', '0066FF', 'white'),
+                              ('discogs_genres', 'Discogs', '6c757d', 'white'),
+                              ('essentia_genres', 'Essentia', '7B1FA2', 'white'),
+                              ('musicbrainz_genres', 'MusicBrainz', 'EB743B', 'white')
+                            ] %}
+                            {% set ns = namespace(has_any=False) %}
+                            {% for key, label, bgcolor, textcolor in sources %}
+                              {% if genre_sources.get(key) %}{% set ns.has_any = True %}{% endif %}
+                            {% endfor %}
+                            {% if ns.has_any %}
+                              {% set ns2 = namespace(first=True) %}
+                              <ul class="nav nav-tabs" role="tablist">
+                                {% for key, label, bgcolor, textcolor in sources %}
+                                  {% if genre_sources.get(key) %}
+                                    <li class="nav-item" role="presentation">
+                                      <button class="nav-link {{ 'active' if ns2.first else '' }}"
+                                              id="trackGenreTab{{ key }}-tab" data-bs-toggle="tab"
+                                              data-bs-target="#trackGenreTab{{ key }}-content"
+                                              type="button" role="tab" style="color: #{{ bgcolor }};">
+                                        <i class="bi bi-tag"></i> {{ label }}
+                                        <span class="badge ms-2" style="background-color: #{{ bgcolor }}; color: {{ textcolor }};">{{ genre_sources[key]|length }}</span>
+                                      </button>
+                                    </li>
+                                    {% set ns2.first = False %}
+                                  {% endif %}
+                                {% endfor %}
+                              </ul>
+                              {% set ns3 = namespace(first=True) %}
+                              <div class="tab-content mt-3">
+                                {% for key, label, bgcolor, textcolor in sources %}
+                                  {% if genre_sources.get(key) %}
+                                    <div class="tab-pane fade {{ 'active show' if ns3.first else '' }}"
+                                         id="trackGenreTab{{ key }}-content" role="tabpanel">
+                                      <p class="text-muted small mb-2">Tags/moods from {{ label }} · sorted by frequency</p>
+                                      <div class="d-flex flex-wrap gap-2 mb-3">
+                                        {% for genre in genre_sources[key]|sort(reverse=True, attribute='count') %}
+                                          <span class="badge" style="background-color: #{{ bgcolor }}; color: {{ textcolor }}; font-size:0.85rem;">
+                                            {{ genre.name }}{% if genre.count %} <small class="opacity-75">({{ genre.count }})</small>{% endif %}
+                                          </span>
+                                        {% endfor %}
+                                      </div>
+                                    </div>
+                                    {% set ns3.first = False %}
+                                  {% endif %}
+                                {% endfor %}
+                              </div>
+                            {% endif %}
+                        {% endif %}
 
                         <hr class="my-3">
 

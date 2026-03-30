@@ -12959,6 +12959,14 @@ def track_detail(track_id):
         except Exception:
             track['single_sources_list'] = []
 
+        # Get genre/tag sources for display (from genre_tag_aggregator)
+        genre_sources = {}
+        try:
+            from genre_tag_aggregator import get_track_genres_summary
+            genre_sources = get_track_genres_summary(track)
+        except Exception as ge_err:
+            logging.debug(f"Could not get genre sources for track {track_id}: {ge_err}")
+        
         # Get recommended genres from other tracks with similar titles or artists
         recommended_genres = []
         artist_name = track.get('artist', '')
@@ -12976,6 +12984,9 @@ def track_detail(track_id):
                     genres = [g.strip() for g in row['genres'].split(',') if g.strip()]
                     genre_set.update(genres)
             recommended_genres = sorted(list(genre_set))
+        
+        track = convert_row_to_json_serializable(track)
+        genre_sources = convert_row_to_json_serializable(genre_sources)
 
         # Check favourite status for this track
         is_track_favourite = False
@@ -13004,7 +13015,7 @@ def track_detail(track_id):
             slskd_config = {"enabled": False}
         
         return render_template("track.html", track=track, recommended_genres=recommended_genres, track_id=track_id,
-                     is_track_favourite=is_track_favourite,
+                     is_track_favourite=is_track_favourite, genre_sources=genre_sources,
                              qbit_config=qbit_config, slskd_config=slskd_config)
     
     except Exception as e:

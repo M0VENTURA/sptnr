@@ -13,7 +13,6 @@ import os
 import re
 import requests
 import secrets
-import sqlite3
 import sys
 import time
 import traceback
@@ -368,14 +367,9 @@ def _file_matches_queue_item(file_path, queue_item, relative_name=None):
     return False, 'filename'
 
 def get_db():
-    """Get database connection using app backend (PostgreSQL or SQLite)."""
-    try:
-        from app import get_db as app_get_db
-        return app_get_db()
-    except Exception:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        return conn
+    """Get database connection — PostgreSQL only. Fails fast if unavailable."""
+    from app import get_db as app_get_db
+    return app_get_db()
 
 def get_slskd_client():
     """Get configured SlskdClient instance"""
@@ -628,15 +622,9 @@ def increment_retry_count(queue_id, retry_delay_minutes=30):
 def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=30):
     """Mark queue item as failed, optionally scheduling retry"""
     try:
-        # Try app's get_db first (PostgreSQL-aware)
-        is_pg = False
-        try:
-            from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
-            conn = app_get_db()
-            is_pg = bool(app_is_postgres_connection(conn))
-        except Exception:
-            conn = get_db()
-        
+        from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
+        conn = app_get_db()
+        is_pg = bool(app_is_postgres_connection(conn))
         cursor = conn.cursor()
         placeholder = "%s" if is_pg else "?"
         

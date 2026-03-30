@@ -185,6 +185,82 @@ def _read_essentia_mood_from_file(file_path: str) -> Optional[str]:
     return mood.strip() if mood.strip() else None
 
 
+def _read_essentia_genre_from_file(file_path: str) -> Optional[str]:
+    """Read the GENRE tag that Essentia-to-Metadata wrote to *file_path*.
+
+    tag_music.py writes genres to the standard GENRE / ©gen field.
+    Returns a semicolon-separated string of genre labels, or ``None``.
+    """
+    try:
+        import mutagen
+        from mutagen.flac import FLAC
+        from mutagen.id3 import ID3
+        from mutagen.mp4 import MP4
+        from mutagen.oggvorbis import OggVorbis
+        from mutagen.oggopus import OggOpus
+        from mutagen.asf import ASF
+    except ImportError as exc:
+        logger.warning("mutagen not available, cannot read Essentia genre: %s", exc)
+        return None
+
+    ext = os.path.splitext(file_path)[1].lower()
+    genres: Optional[str] = None
+
+    try:
+        if ext == ".flac":
+            audio = FLAC(file_path)
+            raw = audio.get("GENRE") or audio.get("genre")
+            if raw:
+                genres = "; ".join(str(v) for v in raw if v)
+
+        elif ext == ".mp3":
+            audio = ID3(file_path)
+            tcon = audio.get("TCON")
+            if tcon:
+                texts = getattr(tcon, "text", [])
+                if texts:
+                    genres = "; ".join(str(t) for t in texts if t)
+
+        elif ext in (".ogg", ".oga"):
+            audio = OggVorbis(file_path)
+            raw = audio.get("GENRE") or audio.get("genre")
+            if raw:
+                genres = "; ".join(str(v) for v in raw if v)
+
+        elif ext == ".opus":
+            audio = OggOpus(file_path)
+            raw = audio.get("GENRE") or audio.get("genre")
+            if raw:
+                genres = "; ".join(str(v) for v in raw if v)
+
+        elif ext in (".m4a", ".m4b", ".mp4", ".aac"):
+            audio = MP4(file_path)
+            raw = audio.get("\xa9gen")
+            if raw:
+                genres = "; ".join(str(v) for v in raw if v)
+
+        elif ext == ".wma":
+            audio = ASF(file_path)
+            raw = audio.get("WM/Genre")
+            if raw:
+                genres = "; ".join(str(v) for v in raw if v)
+
+        else:
+            audio = mutagen.File(file_path)
+            if audio and audio.tags:
+                for key in ("Genre", "GENRE", "genre", "\xa9gen"):
+                    val = audio.tags.get(key)
+                    if val:
+                        genres = "; ".join(str(v) for v in (val if isinstance(val, list) else [val]) if v)
+                        break
+
+    except Exception as exc:
+        logger.debug("Failed to read Essentia genre from %s: %s", file_path, exc)
+        return None
+
+    return genres.strip() if genres and genres.strip() else None
+
+
 def _coerce_float(value: Any) -> Optional[float]:
     if value is None:
         return None
@@ -469,6 +545,19 @@ def run_essentia_mood_scan(
     cursor = conn.cursor()
     placeholder = "%s"
 
+    # Ensure the essentia_genres column exists (safe no-op if already present).
+    try:
+        cursor.execute(
+            "ALTER TABLE tracks ADD COLUMN IF NOT EXISTS essentia_genres TEXT"
+        )
+        conn.commit()
+    except Exception as _col_err:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.debug("Could not ensure essentia_genres column: %s", _col_err)
+
     conditions: List[str] = [
         f"COALESCE(file_path, '') NOT LIKE {placeholder}",
         f"CAST(id AS TEXT) NOT LIKE {placeholder}",
@@ -479,14 +568,16 @@ def run_essentia_mood_scan(
 
     if not force:
         if tag_moods and not tag_genres:
+            # Skip tracks that already have a mood from Essentia.
             conditions.append("(mood IS NULL OR mood = '')")
         elif tag_genres and not tag_moods:
-            conditions.append("(genres IS NULL OR genres = '')")
-        # When both are enabled, scan tracks missing EITHER tag (OR is intentional:
-        # we want to add the missing tag even when the other is already present).
+            # Skip tracks that already have Essentia genres.
+            conditions.append("(essentia_genres IS NULL OR essentia_genres = '')")
+        # When both are enabled, only skip tracks where BOTH are already populated.
+        # A track missing either essentia value still needs a scan.
         elif tag_genres and tag_moods:
             conditions.append(
-                "(mood IS NULL OR mood = '' OR genres IS NULL OR genres = '')"
+                "(mood IS NULL OR mood = '' OR essentia_genres IS NULL OR essentia_genres = '')"
             )
 
     # Scoped filters
@@ -494,6 +585,27 @@ def run_essentia_mood_scan(
     album_filter = (album_filter or "").strip()
     track_id_filter = (track_id_filter or "").strip()
     resume_from_artist = (resume_from_artist or "").strip()
+
+    # Auto-resume: when no explicit resume point was given, check the progress
+    # file for a mid-scan checkpoint (e.g. after a server restart mid-scan).
+    if not resume_from_artist and not artist_filter and not album_filter and not track_id_filter:
+        if progress_file and os.path.exists(progress_file):
+            try:
+                with open(progress_file, "r", encoding="utf-8") as _fp:
+                    _saved = json.load(_fp)
+                _saved_status = _saved.get("status", "")
+                _saved_checkpoint = (_saved.get("resume_from_artist") or "").strip()
+                if _saved_status not in ("complete", "completed", "error", "stopped") and _saved_checkpoint:
+                    resume_from_artist = _saved_checkpoint
+                    logger.info(
+                        "Essentia auto-resume: continuing from checkpoint artist '%s'",
+                        resume_from_artist,
+                    )
+                    log_unified(
+                        f"Essentia Scan - Auto-resuming from checkpoint artist '{resume_from_artist}'"
+                    )
+            except Exception as _pr_err:
+                logger.debug("Could not read essentia resume checkpoint: %s", _pr_err)
 
     if track_id_filter:
         conditions.append(f"CAST(id AS TEXT) = {placeholder}")
@@ -512,7 +624,7 @@ def run_essentia_mood_scan(
     where_sql = " AND ".join(conditions)
     cursor.execute(
         f"""
-        SELECT id, title, album, artist, album_artist, file_path, mood
+        SELECT id, title, album, artist, album_artist, file_path, mood, essentia_genres
         FROM tracks
         WHERE {where_sql}
         ORDER BY COALESCE(NULLIF(album_artist, ''), artist), album, track_number, title
@@ -625,6 +737,20 @@ def run_essentia_mood_scan(
                     f"Essentia Scan - Scanning Artist {current_artist}"
                     f" ({processed_artists}/{total_artists})"
                 )
+                # Persist the current artist as a resume checkpoint so a restart
+                # can skip already-processed artists.
+                _write_progress(progress_file, {
+                    "is_running": True,
+                    "scan_type": "essentia_mood_scan",
+                    "status": "running",
+                    "processed_artists": processed_artists,
+                    "total_artists": total_artists,
+                    "scanned_tracks": scanned_tracks,
+                    "updated_tracks": updated_tracks,
+                    "synced_files": synced_files,
+                    "current_artist": current_artist,
+                    "resume_from_artist": current_artist,
+                })
 
         scanned_tracks += 1
         _album_scan_count += 1
@@ -758,6 +884,7 @@ def run_essentia_mood_scan(
         # Read back mood/features written by Essentia.
         # ------------------------------------------------------------------
         mood = _read_essentia_mood_from_file(file_path) if tag_moods else None
+        essentia_genre = _read_essentia_genre_from_file(file_path) if tag_genres else None
         file_bpm = _read_numeric_tag_from_file(file_path, "bpm", "tempo", "TBPM")
         file_danceability = _read_numeric_tag_from_file(
             file_path,
@@ -782,27 +909,11 @@ def run_essentia_mood_scan(
         json_path = sidecar_features.get("json_path")
 
         has_mood_update = bool(mood)
+        has_genre_update = bool(essentia_genre)
         has_feature_update = bpm_value is not None or danceability_value is not None
 
-        # If genres were tagged directly in-file but we have no DB fields to
-        # persist, still count as a successful file-tag update.
-        if tag_genres and not has_mood_update and not has_feature_update:
-            updated_tracks += 1
-            synced_files += 1
-            _write_progress(progress_file, {
-                "is_running": True,
-                "scan_type": "essentia_mood_scan",
-                "status": "running",
-                "processed_artists": processed_artists,
-                "total_artists": total_artists,
-                "scanned_tracks": scanned_tracks,
-                "updated_tracks": updated_tracks,
-                "synced_files": synced_files,
-                "current_artist": current_artist,
-            })
-            continue
-
-        if not has_mood_update and not has_feature_update:
+        # No updates of any kind – skip this track.
+        if not has_mood_update and not has_genre_update and not has_feature_update:
             _write_progress(progress_file, {
                 "is_running": True,
                 "scan_type": "essentia_mood_scan",
@@ -839,7 +950,11 @@ def run_essentia_mood_scan(
             set_clauses.append(f"danceability = {placeholder}")
             query_params.append(float(danceability_value))
 
-        if has_feature_update:
+        if has_genre_update:
+            set_clauses.append(f"essentia_genres = {placeholder}")
+            query_params.append(essentia_genre)
+
+        if has_feature_update or has_genre_update:
             set_clauses.append("essentia_last_updated = CURRENT_TIMESTAMP")
 
         query_params.append(track_id)

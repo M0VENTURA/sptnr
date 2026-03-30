@@ -1655,6 +1655,18 @@ def detect_single_enhanced(
     if is_special_edition and verbose:
         log_debug(f"[DEBUG] Special edition album detected: {album}")
 
+    # Check if album type is marked as 'single' and track title matches album name (high confidence source)
+    album_type_is_single = False
+    if album_type and album_type.lower() == 'single':
+        # Only treat as high-confidence source if track title matches the album name
+        from single_detector import normalize_title_strict
+        if normalize_title_strict(title) == normalize_title_strict(album):
+            album_type_is_single = True
+            log_debug(f"[ALBUM_TYPE] Album marked as single type with matching title — will be treated as high-confidence source")
+            log_info(f"   Album type is 'single' and title matches — treating as high-confidence indicator for {title}")
+        else:
+            log_debug(f"[ALBUM_TYPE] Album marked as single type but title does not match ('{title}' != '{album}') — ignoring")
+
     # Count Spotify versions
     spotify_version_count = count_spotify_versions(spotify_results or [], title, duration, isrc)
     result['spotify_version_count'] = spotify_version_count
@@ -1740,6 +1752,28 @@ def detect_single_enhanced(
     if verbose:
         log_debug(f"Z-score filter: {title} qualifies for detailed single detection (z-threshold varies by score)")
     
+    # STAGE 2b: Album Type Check (HIGH CONFIDENCE)
+    # If the album is marked as type='single' and the track title matches the album name,
+    # this is definitive evidence of a single release.
+    if album_type_is_single:
+        result['single_sources'].append('album_type')
+        result['single_sources_used'].append('album_type')
+        log_debug(f"[ALBUM_TYPE] ✓ CONFIRMED as single via album type")
+        log_info(f"   ✓ Album type confirms single: {title}")
+        
+        # Check if HIGH confidence reached
+        if check_high_confidence_dynamic(
+                True, False, False, False, False,
+                source_confidence_settings
+        ):
+            # HIGH confidence achieved from album_type
+            log_debug(f"[DETECT] HIGH confidence from album_type source")
+            result['single_status'] = 'high'
+            result['single_confidence'] = 'high'
+            result['is_single'] = True
+            result['single_confidence_score'] = 1.0
+            return result
+
     # STAGE 3: MusicBrainz (Secondary Source - checked before Spotify per new ordering)
         # STAGE 3: MusicBrainz (Secondary Source)
     # STAGE 2a: Discogs Check (NOW GATED BY Z-SCORE)

@@ -76,7 +76,8 @@ def get_track_genres_and_tags(track_dict: dict) -> Dict[str, list]:
             'listenbrainz_genres': [{'name': 'alternative rock', 'count': 80}, ...],
             'discogs_genres': [{'name': 'Rock', ...}, ...],
             'spotify_genres': [{'name': 'rock', ...}, ...],
-            'musicbrainz_genres': [...]
+            'musicbrainz_genres': [...],
+            'essentia_genres': [...]
         }
     """
     sources = {}
@@ -97,6 +98,9 @@ def get_track_genres_and_tags(track_dict: dict) -> Dict[str, list]:
     
     if track_dict.get("musicbrainz_genres"):
         sources["musicbrainz_genres"] = parse_json_tags(track_dict["musicbrainz_genres"])
+
+    if track_dict.get("essentia_genres"):
+        sources["essentia_genres"] = parse_json_tags(track_dict["essentia_genres"])
 
     # Mood tags are stored in a dedicated column and can be JSON arrays,
     # semicolon-separated strings, or comma-separated strings.

@@ -453,29 +453,30 @@
                         <h6 class="text-muted mb-2">Source Tags</h6>
                         <div id="albumGenreSourcesContainer">
                           {% set sources = [
-                                                        ('mood', 'Mood Scan', 'warning'),
-                            ('spotify_genres', 'Spotify', 'success'),
-                            ('lastfm_tags', 'Last.fm', 'primary'),
-                            ('listenbrainz_genres', 'ListenBrainz', 'info'),
-                            ('discogs_genres', 'Discogs', 'secondary'),
-                            ('musicbrainz_genres', 'MusicBrainz', 'dark')
+                            ('mood', 'Mood Scan', 'F59C00', 'light'),
+                            ('spotify_genres', 'Spotify', '1DB954', 'white'),
+                            ('lastfm_tags', 'Last.fm', 'D51007', 'black'),
+                            ('listenbrainz_genres', 'ListenBrainz', '0066FF', 'white'),
+                            ('discogs_genres', 'Discogs', '6c757d', 'white'),
+                            ('essentia_genres', 'Essentia', '7B1FA2', 'white'),
+                            ('musicbrainz_genres', 'MusicBrainz', 'EB743B', 'white')
                           ] %}
                           {% set ns = namespace(has_any=False) %}
-                          {% for key, label, color in sources %}
+                          {% for key, label, bgcolor, textcolor in sources %}
                             {% if genre_sources and genre_sources.get(key) %}{% set ns.has_any = True %}{% endif %}
                           {% endfor %}
                           {% if ns.has_any %}
                             {% set ns2 = namespace(first=True) %}
                             <ul class="nav nav-tabs" role="tablist">
-                              {% for key, label, color in sources %}
+                              {% for key, label, bgcolor, textcolor in sources %}
                                 {% if genre_sources and genre_sources.get(key) %}
                                   <li class="nav-item" role="presentation">
                                     <button class="nav-link {{ 'active' if ns2.first else '' }}"
                                             id="albumGenreTab{{ key }}-tab" data-bs-toggle="tab"
                                             data-bs-target="#albumGenreTab{{ key }}-content"
-                                            type="button" role="tab">
+                                            type="button" role="tab" style="color: #{{ bgcolor }};">
                                       <i class="bi bi-tag"></i> {{ label }}
-                                      <span class="badge bg-secondary ms-2">{{ genre_sources[key]|length }}</span>
+                                      <span class="badge ms-2" style="background-color: #{{ bgcolor }}; color: {{ textcolor }};">{{ genre_sources[key]|length }}</span>
                                     </button>
                                   </li>
                                   {% set ns2.first = False %}
@@ -484,14 +485,14 @@
                             </ul>
                             {% set ns3 = namespace(first=True) %}
                             <div class="tab-content mt-3">
-                              {% for key, label, color in sources %}
+                              {% for key, label, bgcolor, textcolor in sources %}
                                 {% if genre_sources and genre_sources.get(key) %}
                                   <div class="tab-pane fade {{ 'active show' if ns3.first else '' }}"
                                        id="albumGenreTab{{ key }}-content" role="tabpanel">
                                     <p class="text-muted small mb-2">Tags/moods from {{ label }} · sorted by frequency</p>
                                     <div class="d-flex flex-wrap gap-2 mb-3">
                                       {% for genre in genre_sources[key]|sort(reverse=True, attribute='count') %}
-                                        <label class="badge bg-{{ color }} genre-source-selectable" style="cursor:pointer;user-select:none;font-size:0.85rem;" title="Click to select">
+                                        <label class="badge genre-source-selectable" style="background-color: #{{ bgcolor }}; color: {{ textcolor }}; cursor:pointer; user-select:none; font-size:0.85rem;" title="Click to select">
                                           <input type="checkbox" class="album-source-tag-check" value="{{ genre.name }}" style="margin-right:0.3rem;cursor:pointer;">
                                           {{ genre.name }}{% if genre.count %} <small class="opacity-75">({{ genre.count }})</small>{% endif %}
                                         </label>

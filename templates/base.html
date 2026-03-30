@@ -1223,33 +1223,10 @@
               <i class="bi bi-download"></i> Downloads
             </a>
           </li>
-          <li class="nav-item dropdown">
-            <a class="nav-link dropdown-toggle" href="#" id="playlistsDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+          <li class="nav-item">
+            <a class="nav-link" href="/playlists/browse">
               <i class="bi bi-collection-play"></i> Playlists
             </a>
-            <ul class="dropdown-menu" aria-labelledby="playlistsDropdown">
-              <li><a class="dropdown-item" href="/playlists/browse">
-                <i class="bi bi-collection"></i> Browse
-              </a></li>
-              <li><hr class="dropdown-divider"></li>
-              <li class="dropdown-header">Create</li>
-              <li><a class="dropdown-item" href="/playlists/create/manual">
-                <i class="bi bi-pencil"></i> Manual Playlist
-              </a></li>
-              <li><a class="dropdown-item" href="/playlists/create/smart">
-                <i class="bi bi-sparkles"></i> Smart Playlist
-              </a></li>
-              <li><a class="dropdown-item" href="/playlists/create/lastfm">
-                <i class="bi bi-star"></i> Last.fm Recommendations
-              </a></li>
-              <li><a class="dropdown-item" href="/playlists/create/listenbrainz">
-                <i class="bi bi-disc"></i> ListenBrainz Recommendations
-              </a></li>
-              <li><hr class="dropdown-divider"></li>
-              <li><a class="dropdown-item" href="/playlists/import">
-                <i class="bi bi-cloud-download"></i> Import
-              </a></li>
-            </ul>
           </li>
           {% if custom_bookmark_links and custom_bookmark_links|length > 0 %}
           <li class="nav-item dropdown">

@@ -28,7 +28,9 @@ You maintain **sptnr**, a full music management solution that:
   - **Discogs** (single/video track detection — highest-confidence single source)
   - **AudioDB** (artist biographies, fan art, album info)
   - **Navidrome / Subsonic API** (star ratings, playlists, library sync)
-- Stores application data primarily in **Postgres**, with seamless SQLite fallback.
+- Stores application data in **PostgreSQL only** — no SQLite fallbacks in active code paths.
+
+> ⚠️ **Postgres-only requirement**: All database operations must use PostgreSQL via `database_abstraction.py`. If PostgreSQL is unavailable, the application must fail fast with a clear error. SQLite fallbacks are strictly prohibited in active code (e.g., `queue_processor.py`, Flask routes). Legacy data migration scripts may use SQLite for reads only.
 
 > ⚠️ **Spotify integration is deprecated and must NOT be used for new work.**
 > The popularity weight config still references `spotify: 0.10` from legacy scans —
@@ -94,13 +96,14 @@ If an album-level update occurs, **all tracks in that album** must be updated in
 - Only fall back to name/artist text search when MBID is missing or invalid.
 - Cache MBID-based lookups where appropriate.
 
-### 3.5 Database strategy: Postgres only
+### 3.5 Database strategy: PostgreSQL only — NO SQLite fallbacks
 
-- All DB I/O must go through `database_abstraction.py`.
-- Never scatter raw SQL across unrelated modules.
-- Use PostgreSQL-style placeholders (`%s`) and PostgreSQL-safe SQL only.
-- Do not add or retain SQLite-specific query branches (`?` placeholders, `PRAGMA`, `INSERT OR REPLACE`, sqlite3-specific SQL).
-- If PostgreSQL is unavailable, fail fast and log a clear error; do not redirect reads/writes to SQLite.
+- **All DB I/O must go through `database_abstraction.py`.**
+- **Never scatter raw SQL across unrelated modules.**
+- **Use PostgreSQL-style placeholders (`%s`) and PostgreSQL-safe SQL only.**
+- **Do NOT add or retain SQLite-specific query branches** (`?` placeholders, `PRAGMA`, `INSERT OR REPLACE`, sqlite3-specific SQL).
+- **CRITICAL: If PostgreSQL is unavailable, fail fast with a clear error.** Do NOT redirect reads/writes to SQLite, do NOT use fallback connections, do NOT catch and suppress connection errors. Let them propagate so the application exits cleanly.
+- Check modules like `queue_processor.py` — they must NEVER have SQLite fallback logic (e.g., `except: conn = sqlite3.connect(...)`).
 
 ---
 
@@ -172,11 +175,12 @@ When artist statistics are available, apply mean-adjusted scoring from `populari
 
 | Stage | Logic |
 |-------|-------|
+| **0 — Album type check** | **NEW**: If MusicBrainz/Spotify marks album as type='single' AND track title matches album name (normalized), treat as HIGH-confidence source. Goes through normal flow but gets high confidence weight immediately. |
 | **1 — Pre-filter** | Exclude titles containing: `live`, `acoustic`, `remix`, `demo`, `karaoke`, `instrumental`, `unplugged`. **"remastered" is NOT excluded** — remastered versions are same performances. |
 | **2 — Album popularity gate** | Track must be in top-3 OR above `album_median − 0.5×stddev`. Skipped for compilations/greatest hits. |
-| **3 — Metadata APIs** | Query enabled sources: Discogs (video track / dedicated single release), MusicBrainz (release type = single), Last.fm (single flag), Spotify *(deprecated)*. |
+| **3 — Metadata APIs** | Query enabled sources: **Album type** (if album_type='single' AND title matches), Discogs (video track / dedicated single release), MusicBrainz (release type = single), Last.fm (single flag), Spotify *(deprecated)*. |
 | **4 — Version count** | 1–2 global versions → likely single. 3+ versions → likely album track with variants. |
-| **5 — Z-score gate** | Medium confidence: z-score ≥ 0.6. High confidence: z-score ≥ 1.0. Remastered-only: bypass z-score, use metadata only. |
+| **5 — Z-score gate** | Medium confidence: z-score ≥ 0.6. High confidence: z-score ≥ 1.0. Remastered-only: bypass z-score, use metadata only. Album type='single' bypasses gate if confirmed. |
 | **6 — ISRC matching** | Match track across databases via ISRC. Detects different versions of same performance. |
 | **7 — Title/duration matching** | Fuzzy title match ≥ 92% similarity + duration ±2 seconds. Filters alternate versions. |
 | **8 — Compilation handling** | Greatest hits / compilations: bypass negative z-score requirement, use metadata sources instead. |
@@ -185,7 +189,7 @@ When artist statistics are available, apply mean-adjusted scoring from `populari
 
 | Level | Z-score | Source requirement |
 |-------|---------|-------------------|
-| `high` | ≥ 1.0 | 1+ Discogs **or** 2+ medium sources |
+| `high` | ≥ 1.0 | 1+ **Album type='single'** (if title matches) **or** 1+ Discogs **or** 2+ medium sources |
 | `medium` | ≥ 0.6 | 1–2 sources (Spotify/MB/Last.fm) or score-only |
 | `low` | < 0.6 | No metadata confirmation |
 | `user` | any | User manually toggled — highest priority, never overridden |
@@ -216,6 +220,61 @@ For compilations/greatest-hits albums, single detection and star assignment use 
 - Discogs confirmation remains highest confidence.
 - Compilation tracks may bypass normal album-median gating when metadata confirms single status.
 - In live album contexts, keep stricter z-score gating for star promotion even when metadata is present.
+
+---
+
+## 5.6) Essentia genre and mood scanning
+
+**Entry point**: `essentia_mood_scan.py::run_essentia_mood_scan()`
+
+### Features
+
+- **Mood detection**: Runs Essentia ML classifier to detect track moods (happy, sad, energetic, etc.)
+- **Genre tagging** (NEW): Extracts genre predictions from Essentia model and writes to audio file tags
+- **Feature extraction**: Reads BPM and danceability from Essentia JSON sidecars
+- **Auto-resume on restart** (NEW): Checkpoints progress to JSON file, resumes from last artist on server restart instead of restarting from beginning
+- **Genre column support** (NEW): Dedicated `essentia_genres` column stores Essentia-predicted genres separately from other sources
+
+### 5.6.1 Genre reading and storage
+
+When `tag_genres=True` in config:
+1. External script (`tag_music.py`) writes genres to standard tags (GENRE/TCON/©gen depending on format)
+2. `_read_essentia_genre_from_file()` reads back the genres from audio tags after processing
+3. Genres are stored in `essentia_genres` DB column as semicolon-separated string
+4. `genre_tag_aggregator.py` recognizes `essentia_genres` as a separate source for display
+
+### 5.6.2 Skip logic
+
+Tracks are skipped if **BOTH** conditions are met:
+- `mood IS NOT NULL` (mood already detected)
+- `essentia_genres IS NOT NULL` (genres already detected)
+
+If either mood or genre is missing, the full scan runs to populate both.
+
+### 5.6.3 Auto-resume on restart (NEW)
+
+**Checkpoint mechanism**:
+- On each artist transition, current artist name is written to progress JSON file under key `resume_from_artist`
+- On scan startup, if no explicit `resume_from_artist` parameter is passed AND progress file exists with status not in ('complete', 'completed', 'error', 'stopped'), the scan auto-loads the checkpoint and resumes from that artist
+
+**Benefit**: If server restarts during a long scan, next run picks up where it left off instead of restarting from "10 Years" (first alphabetical artist).
+
+### 5.6.4 Config options
+
+```yaml
+essentia:
+  script_path: "/opt/Essentia-to-Metadata/tag_music.py"  # Path to external script
+  models_dir: "/opt/essentia_models"  # Model directory (auto-detected if not set)
+  mood_threshold: 0.005  # Minimum mood activation probability (raw, 0.001–0.5)
+  tag_moods: true  # Enable mood detection
+  tag_genres: true  # Enable genre detection (NEW)
+  num_genres: 3  # Number of genres per track
+  genre_threshold: 15.0  # Genre confidence percentage threshold
+  genre_format: "parent_child"  # Genre format: parent_child, child_parent, child_only, raw
+  per_file_timeout: 300  # Seconds to wait per file
+  parse_json_features: true  # Extract BPM/danceability from JSON sidecars
+  delete_json_after_import: true  # Clean up JSON files after processing
+```
 
 ---
 
@@ -262,7 +321,7 @@ else:
 
 **Eligible sources for counting**:
 - Medium confidence: MusicBrainz, Last.fm, Discogs
-- High confidence: **Discogs only** (most reliable single marker)
+- High confidence: **Album type='single'** (if title matches), **Discogs** (most reliable single marker)
 
 ---
 
@@ -766,6 +825,88 @@ Queue processor similarity thresholds:
 - `_NAV_TITLE_SIMILARITY_THRESHOLD = 0.85` (85%)
 - `_NAV_ARTIST_SIMILARITY_THRESHOLD = 0.75` (75%)
 
+### SQL Injection Prevention & Parameter Binding (CRITICAL)
+
+**All queries must use PostgreSQL parameterized placeholders (`%s`)** and never concatenate user input or unsanitized data directly into query strings.
+
+#### ✅ CORRECT patterns
+
+**Single value binding**:
+```python
+conn = get_db()
+cursor = conn.cursor()
+cursor.execute("SELECT * FROM tracks WHERE track_id = %s", (track_id,))
+results = cursor.fetchall()
+```
+
+**Multiple value binding**:
+```python
+cursor.execute(
+    "UPDATE tracks SET popularity = %s, popularity_source = %s WHERE track_id = %s",
+    (score, source, track_id)
+)
+conn.commit()
+```
+
+**IN clause with sanitized list**:
+```python
+ids = [1, 2, 3]  # Validated integers only
+placeholders = ','.join(['%s'] * len(ids))
+cursor.execute(f"SELECT * FROM tracks WHERE track_id IN ({placeholders})", ids)
+```
+
+**JSON operations (safe)**:
+```python
+cursor.execute(
+    "UPDATE tracks SET single_sources = %s WHERE track_id = %s",
+    (json.dumps(["Discogs", "MusicBrainz"]), track_id)
+)
+```
+
+#### ❌ FORBIDDEN patterns
+
+**String concatenation** (SQL INJECTION RISK):
+```python
+cursor.execute(f"SELECT * FROM tracks WHERE artist = '{artist}'")  # ❌ NEVER
+cursor.execute("SELECT * FROM tracks WHERE artist = '" + artist + "'")  # ❌ NEVER
+```
+
+**Partial binding with concatenation**:
+```python
+query = f"SELECT * FROM tracks WHERE {column_name} = %s"  # ❌ Column names NOT parameterized
+```
+
+**String formatting in query**:
+```python
+cursor.execute(query.format(table_name=table), (value,))  # ❌ Do not use .format() for SQL
+```
+
+#### Column name whitelisting (when dynamic columns are needed)
+
+If column names must be dynamic (rare), explicitly whitelist:
+
+```python
+ALLOWED_COLUMNS = {'artist', 'title', 'popularity', 'single_confidence'}
+column_name = request.args.get('column', 'artist')
+
+if column_name not in ALLOWED_COLUMNS:
+    raise ValueError(f"Invalid column: {column_name}")
+
+cursor.execute(f"SELECT * FROM tracks ORDER BY {column_name} ASC")  # Safe after validation
+```
+
+#### String escaping is NOT a substitute
+
+**Never rely on `.replace("'", "''")` or manual escaping:**
+```python
+# ❌ WRONG — escaping is not enough:
+safe_artist = artist.replace("'", "''")
+cursor.execute(f"SELECT * FROM tracks WHERE artist = '{safe_artist}'")
+# This is still vulnerable to sophisticated injection attacks
+```
+
+Use parameterized queries (`%s` placeholders) **always**.
+
 ---
 
 ## 10) Configuration reference (`config.yaml`)
@@ -889,8 +1030,9 @@ Download integrations (slskd, qBittorrent) are **policy-gated** — only enabled
 |---------|-------|
 | Popularity scoring | `popularity.py`, `popularity_helpers.py` |
 | Single detection | `single_detector.py`, `single_detection_enhanced.py` |
+| Essentia scanning | `essentia_mood_scan.py`, `genre_tag_aggregator.py` |
 | Compilation handling | `compilation_manager.py`, `artist_identity.py` |
-| Download queue orchestration | `queue_processor.py`, `download_queue_manager.py`, `download_retry_manager.py` |
+| Download queue orchestration | `queue_processor.py` (**PostgreSQL-only, NO SQLite fallback**), `download_queue_manager.py`, `download_retry_manager.py` |
 | Download organization | `download_folder_grouping.py`, `download_file_manager.py`, `download_file_verification.py` |
 | Download monitoring | `download_monitor_enhancements.py`, `downloads_watcher.py` |
 | API clients | `api_clients/` |
@@ -899,11 +1041,37 @@ Download integrations (slskd, qBittorrent) are **policy-gated** — only enabled
 | App routes | `app.py` |
 | Config UI + templates | `templates/config.html`, `templates/` |
 | Static/UI assets | `static/` |
-| Queue/downloads | `queue_processor.py`, `download_queue_manager.py`, `download_file_manager.py` |
 | MusicBrainz flow | `musicbrainz_import.py`, `musicbrainz_release_manager.py`, `musicbrainz_finalizer.py` |
 | Config | `config/config.yaml`, `templates/config.html` |
 | Tag writing | `mp3scanner.py`, `scan_mp3_import.py` |
 | Watcher | `music_watcher.py`, `downloads_watcher.py` |
+
+> ⚠️ **CRITICAL — `queue_processor.py` is PostgreSQL-only**: This standalone background worker has **NO SQLite fallback**. It must import `get_db` from `app.py` and fail fast if PostgreSQL is unavailable. Never add exception handlers that redirect to SQLite (e.g., `except: conn = sqlite3.connect(...)`). The same applies to all Flask routes and background tasks.
+
+### Database Connection Pattern (all modules)
+
+**Required pattern for every connection attempt**:
+
+```python
+from app import get_db
+
+try:
+    conn = get_db()  # Returns PostgreSQL connection or raises error
+except Exception as e:
+    logger.error(f"Database connection failed (PostgreSQL required): {e}")
+    raise  # Propagate — do NOT fall back to SQLite
+```
+
+**Never write**:
+```python
+try:
+    conn = get_db()
+except:
+    import sqlite3
+    conn = sqlite3.connect(db_path)  # ❌ This is forbidden
+```
+
+If PostgreSQL is unavailable, the entire application must fail fast with a clear error message. This ensures production deployments do not silently degrade to unsafe SQLite state.
 
 ---
 
