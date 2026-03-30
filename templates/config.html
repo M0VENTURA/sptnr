@@ -673,11 +673,30 @@
           <input type="number" class="form-control" id="essentia_per_file_timeout" placeholder="300" value="{{ config.get('essentia', {}).get('per_file_timeout', 300) }}" min="30" max="3600">
           <div class="form-text">Maximum time to wait for Essentia to process one file before skipping it (30 – 3600 s). Increase for slow hardware or large FLAC files. Default: 300.</div>
         </div>
+        <div class="col-12 col-md-6">
+          <label class="form-label">JSON Output Directory <span class="text-muted fw-normal">(optional)</span></label>
+          <input type="text" class="form-control" id="essentia_json_output_dir" placeholder="/music/.essentia-json" value="{{ config.get('essentia', {}).get('json_output_dir', '') }}">
+          <div class="form-text">Optional path where Essentia writes JSON sidecars. Leave blank to auto-detect sidecars next to each audio file.</div>
+        </div>
         <div class="col-12">
           <div class="form-check form-switch mb-2">
             <input class="form-check-input" type="checkbox" id="essentia_tag_moods" {% if config.get('essentia', {}).get('tag_moods', True) %}checked{% endif %}>
             <label class="form-check-label" for="essentia_tag_moods"><strong>Tag Moods</strong></label>
             <small class="d-block text-muted">Write mood tags using the MTG-Jamendo mood model. On by default. Disable for a genres-only run.</small>
+          </div>
+        </div>
+        <div class="col-12 col-md-6">
+          <div class="form-check form-switch mb-2">
+            <input class="form-check-input" type="checkbox" id="essentia_parse_json_features" {% if config.get('essentia', {}).get('parse_json_features', True) %}checked{% endif %}>
+            <label class="form-check-label" for="essentia_parse_json_features"><strong>Import BPM &amp; Danceability from JSON</strong></label>
+            <small class="d-block text-muted">Read BPM and danceability from Essentia sidecar JSON files when available.</small>
+          </div>
+        </div>
+        <div class="col-12 col-md-6">
+          <div class="form-check form-switch mb-2">
+            <input class="form-check-input" type="checkbox" id="essentia_delete_json_after_import" {% if config.get('essentia', {}).get('delete_json_after_import', True) %}checked{% endif %}>
+            <label class="form-check-label" for="essentia_delete_json_after_import"><strong>Delete JSON after import</strong></label>
+            <small class="d-block text-muted">Remove sidecar JSON files after successful BPM/danceability import.</small>
           </div>
         </div>
         <div class="col-12">
@@ -1271,7 +1290,10 @@ function buildConfigObject() {
       models_dir: getValue('essentia_models_dir', ''),
       mood_threshold: parseFloat(getValue('essentia_mood_threshold', '0.005')) || 0.005,
       per_file_timeout: parseInt(getValue('essentia_per_file_timeout', '300')) || 300,
+      json_output_dir: getValue('essentia_json_output_dir', ''),
       tag_moods: getChecked('essentia_tag_moods', true),
+      parse_json_features: getChecked('essentia_parse_json_features', true),
+      delete_json_after_import: getChecked('essentia_delete_json_after_import', true),
       tag_genres: getChecked('essentia_tag_genres', false),
       num_genres: parseInt(getValue('essentia_num_genres', '3')) || 3,
       genre_threshold: parseFloat(getValue('essentia_genre_threshold', '15')) || 15.0,

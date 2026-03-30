@@ -19,6 +19,9 @@ Configuration (config.yaml, ``essentia`` section):
     genre_format    – genre tag format: parent_child | child_parent | child_only | raw
                       (default: parent_child)
     tag_moods       – write mood tags (default: True).  Set False for genres-only.
+    parse_json_features – import BPM / danceability from Essentia JSON sidecars (default: True)
+    delete_json_after_import – delete consumed Essentia JSON sidecars after import (default: False)
+    json_output_dir – optional directory where Essentia writes JSON sidecars
 """
 
 import json
@@ -26,11 +29,12 @@ import logging
 import os
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from helpers.db_utils import get_db_connection, _is_postgres_connection
 from helpers.logging_config import log_unified
-from helpers.tag_manager import sync_track_tags_to_file
+from helpers.tag_manager import sync_track_tags_to_file, update_file_tags
 
 try:
     from scan_history import log_album_scan as _log_album_scan
@@ -181,6 +185,121 @@ def _read_essentia_mood_from_file(file_path: str) -> Optional[str]:
     return mood.strip() if mood.strip() else None
 
 
+def _coerce_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _read_numeric_tag_from_file(file_path: str, *keys: str) -> Optional[float]:
+    """Read a numeric metadata tag from common audio formats."""
+    try:
+        import mutagen
+        audio = mutagen.File(file_path)
+        if not audio or not audio.tags:
+            return None
+
+        for key in keys:
+            raw = audio.tags.get(key) or audio.tags.get(key.lower()) or audio.tags.get(key.upper())
+            if raw is None:
+                continue
+            if isinstance(raw, list) and raw:
+                value = _coerce_float(raw[0])
+                if value is not None:
+                    return value
+            if hasattr(raw, "text"):
+                text_values = getattr(raw, "text", [])
+                if text_values:
+                    value = _coerce_float(text_values[0])
+                    if value is not None:
+                        return value
+            value = _coerce_float(raw)
+            if value is not None:
+                return value
+    except Exception as exc:
+        logger.debug("Failed to read numeric tag from %s: %s", file_path, exc)
+    return None
+
+
+def _candidate_sidecar_paths(file_path: str, json_output_dir: str = "") -> List[Path]:
+    src = Path(file_path)
+    candidates = [
+        src.with_suffix(src.suffix + ".json"),
+        src.with_suffix(".json"),
+        src.parent / f"{src.stem}.json",
+    ]
+    if json_output_dir:
+        out = Path(json_output_dir)
+        candidates.extend([
+            out / f"{src.name}.json",
+            out / f"{src.stem}.json",
+        ])
+
+    dedup: List[Path] = []
+    seen = set()
+    for path in candidates:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        dedup.append(path)
+    return dedup
+
+
+def _extract_first_numeric(payload: Any, key_candidates: List[str]) -> Optional[float]:
+    """Recursively scan dict/list payload for first numeric key match."""
+    if isinstance(payload, dict):
+        for key in key_candidates:
+            if key in payload:
+                value = _coerce_float(payload.get(key))
+                if value is not None:
+                    return value
+        for value in payload.values():
+            nested = _extract_first_numeric(value, key_candidates)
+            if nested is not None:
+                return nested
+    elif isinstance(payload, list):
+        for item in payload:
+            nested = _extract_first_numeric(item, key_candidates)
+            if nested is not None:
+                return nested
+    return None
+
+
+def _read_essentia_features_from_json(file_path: str, json_output_dir: str = "") -> Dict[str, Any]:
+    """Read BPM / danceability from Essentia JSON sidecar if available."""
+    bpm_keys = [
+        "bpm", "tempo", "rhythm.bpm", "musicbrainz.bpm",
+    ]
+    dance_keys = [
+        "danceability", "rhythm.danceability", "highlevel.danceability.all.danceable",
+    ]
+
+    for candidate in _candidate_sidecar_paths(file_path, json_output_dir=json_output_dir):
+        if not candidate.is_file():
+            continue
+        try:
+            with candidate.open("r", encoding="utf-8") as f:
+                payload = json.load(f)
+            bpm = _extract_first_numeric(payload, bpm_keys)
+            danceability = _extract_first_numeric(payload, dance_keys)
+            return {
+                "bpm": bpm,
+                "danceability": danceability,
+                "json_path": str(candidate),
+            }
+        except Exception as exc:
+            logger.debug("Failed parsing Essentia JSON sidecar %s: %s", candidate, exc)
+    return {"bpm": None, "danceability": None, "json_path": None}
+
+
 # ---------------------------------------------------------------------------
 # Main scan
 # ---------------------------------------------------------------------------
@@ -197,6 +316,9 @@ def run_essentia_mood_scan(
     genre_threshold: float = 15.0,
     genre_format: str = "parent_child",
     tag_moods: bool = True,
+    parse_json_features: bool = True,
+    delete_json_after_import: bool = False,
+    json_output_dir: str = "",
     artist_filter: str = "",
     album_filter: str = "",
     track_id_filter: str = "",
@@ -238,6 +360,14 @@ def run_essentia_mood_scan(
     tag_moods:
         When ``False`` the ``--no-moods`` flag is added so the external script
         skips mood analysis (genres-only run).  Defaults to ``True``.
+    parse_json_features:
+        When ``True`` attempt to import BPM and danceability values from
+        Essentia-generated JSON sidecars.
+    delete_json_after_import:
+        When ``True`` delete consumed Essentia JSON sidecars after values are
+        persisted to DB and tags.
+    json_output_dir:
+        Optional directory where Essentia sidecar JSON files are written.
     artist_filter:
         If non-empty, restrict the scan to tracks whose album_artist or artist
         matches this value (case-insensitive).
@@ -613,19 +743,38 @@ def run_essentia_mood_scan(
             continue
 
         # ------------------------------------------------------------------
-        # Read back the mood the external tool just wrote.
-        # When tag_moods=False the mood model was disabled; skip mood read.
+        # Read back mood/features written by Essentia.
         # ------------------------------------------------------------------
         mood = _read_essentia_mood_from_file(file_path) if tag_moods else None
+        file_bpm = _read_numeric_tag_from_file(file_path, "bpm", "tempo", "TBPM")
+        file_danceability = _read_numeric_tag_from_file(
+            file_path,
+            "danceability",
+            "TXXX:DANCEABILITY",
+        )
 
-        # When genres were written directly by Essentia, count the file as
-        # updated even if no mood is available (or moods were disabled).
-        # The script already exited successfully (returncode 0 checked above),
-        # so we can assume genre tags were written.
-        # We do NOT call sync_track_tags_to_file in this case because it would
-        # overwrite the Essentia genre tags with the (un-updated) DB genres.
-        if tag_genres and not mood:
-            # Genres written to file by Essentia; nothing further to persist in DB.
+        sidecar_features = {"bpm": None, "danceability": None, "json_path": None}
+        if parse_json_features:
+            sidecar_features = _read_essentia_features_from_json(
+                file_path, json_output_dir=json_output_dir
+            )
+
+        bpm_value = (
+            file_bpm if file_bpm is not None else _coerce_float(sidecar_features.get("bpm"))
+        )
+        danceability_value = (
+            file_danceability
+            if file_danceability is not None
+            else _coerce_float(sidecar_features.get("danceability"))
+        )
+        json_path = sidecar_features.get("json_path")
+
+        has_mood_update = bool(mood)
+        has_feature_update = bpm_value is not None or danceability_value is not None
+
+        # If genres were tagged directly in-file but we have no DB fields to
+        # persist, still count as a successful file-tag update.
+        if tag_genres and not has_mood_update and not has_feature_update:
             updated_tracks += 1
             synced_files += 1
             _write_progress(progress_file, {
@@ -641,7 +790,7 @@ def run_essentia_mood_scan(
             })
             continue
 
-        if not mood:
+        if not has_mood_update and not has_feature_update:
             _write_progress(progress_file, {
                 "is_running": True,
                 "scan_type": "essentia_mood_scan",
@@ -656,29 +805,68 @@ def run_essentia_mood_scan(
             continue
 
         # ------------------------------------------------------------------
-        # Persist mood in DB.
+        # Persist DB fields updated by this scan.
         # ------------------------------------------------------------------
+        set_clauses: List[str] = []
+        query_params: List[Any] = []
+
+        if has_mood_update:
+            set_clauses.extend([
+                f"mood = {placeholder}",
+                f"mood_confidence = {placeholder}",
+                f"mood_source = {placeholder}",
+                "mood_last_updated = CURRENT_TIMESTAMP",
+            ])
+            query_params.extend([mood, None, "essentia"])
+
+        if bpm_value is not None:
+            set_clauses.append(f"bpm = {placeholder}")
+            query_params.append(float(bpm_value))
+
+        if danceability_value is not None:
+            set_clauses.append(f"danceability = {placeholder}")
+            query_params.append(float(danceability_value))
+
+        if has_feature_update:
+            set_clauses.append("essentia_last_updated = CURRENT_TIMESTAMP")
+
+        query_params.append(track_id)
+
         cursor.execute(
             f"""
             UPDATE tracks
-            SET mood = {placeholder},
-                mood_confidence = {placeholder},
-                mood_source = {placeholder},
-                mood_last_updated = CURRENT_TIMESTAMP
+            SET {', '.join(set_clauses)}
             WHERE id = {placeholder}
             """,
-            (mood, None, "essentia", track_id),
+            tuple(query_params),
         )
 
         if cursor.rowcount and cursor.rowcount > 0:
             updated_tracks += 1
             conn.commit()
+
             if tag_genres:
-                # Essentia wrote genre tags directly; don't sync DB genres
-                # back to the file (that would overwrite Essentia's tags).
-                synced_files += 1
+                # Avoid full DB->file sync here so Essentia-written genres are preserved.
+                selective_updates: Dict[str, Any] = {}
+                if bpm_value is not None:
+                    selective_updates["bpm"] = float(bpm_value)
+                if danceability_value is not None:
+                    selective_updates["danceability"] = float(danceability_value)
+
+                if selective_updates:
+                    if update_file_tags(file_path, selective_updates):
+                        synced_files += 1
+                else:
+                    synced_files += 1
             elif sync_track_tags_to_file(track_id):
                 synced_files += 1
+
+            if parse_json_features and delete_json_after_import and json_path:
+                try:
+                    if os.path.isfile(json_path):
+                        os.remove(json_path)
+                except Exception as exc:
+                    logger.debug("Failed to delete Essentia JSON sidecar %s: %s", json_path, exc)
 
         _write_progress(progress_file, {
             "is_running": True,

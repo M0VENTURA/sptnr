@@ -649,3 +649,49 @@ def ensure_mood_columns():
         logging.error(f"✗ Error ensuring mood columns exist: {e}", exc_info=True)
         return False
 
+
+def ensure_essentia_feature_columns():
+    """Ensure Essentia-derived audio feature columns exist in the tracks table."""
+    import logging
+
+    columns_to_add = [
+        ("danceability", "DOUBLE PRECISION"),
+        ("essentia_last_updated", "TIMESTAMP"),
+    ]
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        if not _table_exists(cursor, "tracks"):
+            logging.warning("Tracks table does not exist yet, skipping Essentia feature migration")
+            conn.close()
+            return False
+
+        existing = _get_table_columns(cursor, "tracks")
+        for col_name, col_def in columns_to_add:
+            if col_name in existing:
+                continue
+            try:
+                cursor.execute(f"ALTER TABLE tracks ADD COLUMN {col_name} {col_def}")
+                conn.commit()
+                logging.info(f"✓ Added '{col_name}' column to tracks table")
+            except Exception as e:
+                err_msg = str(e).lower()
+                if "duplicate column" in err_msg or "already exists" in err_msg:
+                    logging.info(f"✓ Column '{col_name}' already exists")
+                else:
+                    logging.error(f"✗ Failed to add '{col_name}' column: {e}")
+
+        conn.close()
+        return True
+    except RuntimeError as e:
+        if is_transient_pg_startup_error(e):
+            logging.info(f"Skipping Essentia feature migration while PostgreSQL starts: {e}")
+        else:
+            logging.warning(f"⚠ Skipping Essentia feature migration: {e}")
+        return False
+    except Exception as e:
+        logging.error(f"✗ Error ensuring Essentia feature columns exist: {e}", exc_info=True)
+        return False
+

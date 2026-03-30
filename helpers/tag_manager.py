@@ -19,7 +19,7 @@ from pathlib import Path
 # Metadata reading library (supports multiple formats)
 try:
     from mutagen.mp3 import MP3
-    from mutagen.id3 import ID3, TIT2, TPE1, TALB, TPE2, TCON, TRCK, TPOS, TDRC, TCOM, COMM, TXXX, APIC
+    from mutagen.id3 import ID3, TIT2, TPE1, TALB, TPE2, TCON, TRCK, TPOS, TDRC, TCOM, TBPM, COMM, TXXX, APIC
     _MUTAGEN_AVAILABLE = True
 except ImportError:
     _MUTAGEN_AVAILABLE = False
@@ -53,7 +53,7 @@ EDITABLE_FIELDS = {
     # Content
     "genres", "work", "mood",
     # Technical
-    "bpm", "isrc", "script",
+    "bpm", "danceability", "isrc", "script",
     # MusicBrainz IDs
     "musicbrainz_albumartistid", "musicbrainz_albumid", "musicbrainz_albumtype",
     "musicbrainz_albumstatus", "musicbrainz_releasegroupid", "musicbrainz_releasetrackid",
@@ -478,6 +478,13 @@ def _write_id3_tags(file_path: str, tags: Dict[str, Any]) -> bool:
                 audio.tags.delall(frame_key)
                 if value is not None and str(value).strip():
                     audio.tags.add(TXXX(encoding=3, desc="MOOD", text=[str(value)]))
+            elif field == "bpm":
+                _set_text_frame("TBPM", TBPM, value)
+            elif field == "danceability":
+                frame_key = "TXXX:DANCEABILITY"
+                audio.tags.delall(frame_key)
+                if value is not None and str(value).strip():
+                    audio.tags.add(TXXX(encoding=3, desc="DANCEABILITY", text=[str(value)]))
             elif field == "comment":
                 audio.tags.delall("COMM")
                 if value is not None and str(value).strip():
@@ -538,6 +545,8 @@ def _write_flac_tags(file_path: str, tags: Dict[str, Any]) -> bool:
             "disc_number": "discnumber",
             "year": "date",
             "date": "date",
+            "bpm": "bpm",
+            "danceability": "danceability",
             "genre": "genre",
             "genres": "genre",
             "mood": "mood",
@@ -636,9 +645,9 @@ def sync_track_tags_to_file(track_id: str) -> bool:
         
         # Get file path and all tags in one query
         cursor.execute(f"""
-            SELECT id, title, album, artist, album_artist, albumartist, composer, 
+             SELECT id, title, album, artist, album_artist, albumartist, composer, 
                    year, originalyear, track_number, disc_number, genres, 
-                   mood, comment, mbid, musicbrainz_album_mbid, file_path
+                 mood, bpm, danceability, comment, mbid, musicbrainz_album_mbid, file_path
             FROM tracks 
             WHERE id = {placeholder}
         """, (track_id,))
@@ -652,7 +661,7 @@ def sync_track_tags_to_file(track_id: str) -> bool:
         result_fields = [
             'id', 'title', 'album', 'artist', 'album_artist', 'albumartist',
             'composer', 'year', 'originalyear', 'track_number', 'disc_number',
-            'genres', 'mood', 'comment', 'mbid', 'musicbrainz_album_mbid', 'file_path'
+            'genres', 'mood', 'bpm', 'danceability', 'comment', 'mbid', 'musicbrainz_album_mbid', 'file_path'
         ]
 
         # Helper to read from dict-like and tuple-like cursor rows.
@@ -735,6 +744,8 @@ def sync_track_tags_to_file(track_id: str) -> bool:
             'disc_number': 'disc_number',
             'genres': 'genres',
             'mood': 'mood',
+            'bpm': 'bpm',
+            'danceability': 'danceability',
             'comment': 'comment',
             'mbid': 'mbid',
             'musicbrainz_album_mbid': 'musicbrainz_album_mbid'

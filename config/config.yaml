@@ -190,6 +190,9 @@ essentia:
   models_dir: ""   # Leave blank to use the Docker default (/opt/essentia_models)
   mood_threshold: 0.005  # Minimum activation probability for mood tags (Essentia default)
   per_file_timeout: 300  # Seconds to wait for Essentia to process one file (increase for slow hardware)
+  parse_json_features: true  # Import BPM/danceability from Essentia JSON sidecars when present
+  delete_json_after_import: true  # Remove Essentia sidecar JSON after successful import
+  json_output_dir: ""  # Optional override for where Essentia writes JSON sidecars
 
 # Upcoming Releases Sources — Wikipedia pages scraped for upcoming album release data.
 # The source key must contain a 4-digit year (e.g. 2026_rock) for date parsing.
