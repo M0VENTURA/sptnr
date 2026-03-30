@@ -15,6 +15,7 @@ import os
 import glob
 import shutil
 import pathlib
+from pathlib import Path
 import xml.etree.ElementTree as ET
 # --- ENVIRONMENT VARIABLE EDITING SUPPORT ---
 ALL_ENV_VARS = [
@@ -33204,7 +33205,7 @@ def _playlist_output_name(listenbrainz_username, playlist_key):
 
 def _resolve_playlists_dir():
     playlists_root = os.environ.get("PLAYLISTS_OUTPUT_DIR", "/music/playlists")
-    return pathlib.Path(playlists_root)
+    return Path(playlists_root)
 
 
 def _write_m3u_playlist(playlist_name, file_paths):
