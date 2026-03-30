@@ -850,6 +850,74 @@ def process_completed_queue_item(queue_item):
     try:
         queue_id = queue_item['id']
         file_path = queue_item.get('file_path')
+
+        def _is_uuid_mbid(value):
+            if not value:
+                return False
+            return bool(re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}", str(value).strip()))
+
+        def _canonical_release_mbid(item):
+            current = (item.get('release_mbid') or item.get('release_id') or '').strip()
+            import_group = (item.get('import_group') or '').strip()
+            album = (item.get('album') or '').strip()
+            release_source = (item.get('release_source') or '').strip().lower()
+
+            if import_group.startswith('mbid_'):
+                candidate = import_group[5:].strip()
+                if _is_uuid_mbid(candidate):
+                    return candidate
+
+            if release_source != 'musicbrainz' or not import_group or not album:
+                return current if _is_uuid_mbid(current) else None
+
+            conn = None
+            try:
+                conn = get_db()
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT release_mbid, release_id
+                    FROM download_queue
+                    WHERE import_group = %s
+                      AND LOWER(COALESCE(album, '')) = LOWER(%s)
+                    """,
+                    (import_group, album),
+                )
+                rows = cursor.fetchall() or []
+            except Exception:
+                rows = []
+            finally:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+            counts = {}
+            for row in rows:
+                values = [row.get('release_mbid'), row.get('release_id')] if isinstance(row, dict) else []
+                for value in values:
+                    candidate = (value or '').strip()
+                    if _is_uuid_mbid(candidate):
+                        counts[candidate] = counts.get(candidate, 0) + 1
+
+            if not counts:
+                return current if _is_uuid_mbid(current) else None
+
+            best_count = max(counts.values())
+            best_values = [k for k, v in counts.items() if v == best_count]
+            if _is_uuid_mbid(current) and current in best_values:
+                return current
+            return sorted(best_values)[0]
+
+        normalized_release_mbid = _canonical_release_mbid(queue_item)
+        if normalized_release_mbid:
+            queue_item['release_mbid'] = normalized_release_mbid
+            queue_item['release_id'] = normalized_release_mbid
+            try:
+                update_queue_item(queue_id, release_mbid=normalized_release_mbid, release_id=normalized_release_mbid)
+            except Exception:
+                pass
         
         # Check if file exists
         if not file_path or not os.path.exists(file_path):
@@ -878,7 +946,7 @@ def process_completed_queue_item(queue_item):
             'year': queue_item.get('year'),
             'title': queue_item.get('title'),
             'disc_number': queue_item.get('disc_number'),
-            'release_mbid': queue_item.get('release_mbid') or queue_item.get('release_id'),
+            'release_mbid': normalized_release_mbid or queue_item.get('release_mbid') or queue_item.get('release_id'),
             'recording_mbid': queue_item.get('recording_mbid'),
         }
         

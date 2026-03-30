@@ -2906,6 +2906,72 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
         m = re.search(r"(19|20)\d{2}", str(value))
         return m.group(0) if m else None
 
+    def _is_uuid_mbid(value):
+        if not value:
+            return False
+        return bool(re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}", str(value).strip()))
+
+    def _resolve_canonical_release_mbid(item):
+        """Pick one release MBID for an album import group to avoid tag divergence."""
+        current = (item.get('release_mbid') or item.get('release_id') or '').strip()
+        import_group = (item.get('import_group') or '').strip()
+        album = (item.get('album') or '').strip()
+        release_source = (item.get('release_source') or '').strip().lower()
+
+        if import_group.startswith('mbid_'):
+            candidate = import_group[5:].strip()
+            if _is_uuid_mbid(candidate):
+                return candidate
+
+        # Only attempt group-level normalization for MusicBrainz-backed album moves.
+        if release_source != 'musicbrainz' or not import_group or not album:
+            return current if _is_uuid_mbid(current) else None
+
+        conn = None
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            placeholder = _placeholder(conn)
+            cursor.execute(
+                f"""
+                SELECT release_mbid, release_id
+                FROM download_queue
+                WHERE import_group = {placeholder}
+                  AND LOWER(COALESCE(album, '')) = LOWER({placeholder})
+                """,
+                (import_group, album),
+            )
+            rows = cursor.fetchall() or []
+        except Exception as exc:
+            logger.debug(f"[MOVE] Could not resolve canonical release MBID for import_group={import_group}: {exc}")
+            rows = []
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+        counts = {}
+        for row in rows:
+            if isinstance(row, dict):
+                values = [row.get('release_mbid'), row.get('release_id')]
+            else:
+                values = [row[0] if len(row) > 0 else None, row[1] if len(row) > 1 else None]
+            for value in values:
+                candidate = (value or '').strip()
+                if _is_uuid_mbid(candidate):
+                    counts[candidate] = counts.get(candidate, 0) + 1
+
+        if not counts:
+            return current if _is_uuid_mbid(current) else None
+
+        best_count = max(counts.values())
+        best_values = [k for k, v in counts.items() if v == best_count]
+        if _is_uuid_mbid(current) and current in best_values:
+            return current
+        return sorted(best_values)[0]
+
     try:
         music_root = music_dir or resolve_music_dir()
 
@@ -2959,6 +3025,21 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
             downloads_root = os.environ.get('DOWNLOADS_DIR', '/downloads')
 
         queue_id = queue_item_dict.get('id', 'unknown')
+        canonical_release_mbid = _resolve_canonical_release_mbid(queue_item_dict)
+        if canonical_release_mbid:
+            current_release_mbid = (queue_item_dict.get('release_mbid') or '').strip()
+            if current_release_mbid != canonical_release_mbid:
+                logger.info(
+                    f"[MOVE] Queue {queue_id}: normalized release MBID {current_release_mbid or '(empty)'} -> {canonical_release_mbid}"
+                )
+                queue_item_dict['release_mbid'] = canonical_release_mbid
+                queue_item_dict['release_id'] = canonical_release_mbid
+                try:
+                    if queue_id not in (None, 'unknown'):
+                        update_queue_item(queue_id, release_mbid=canonical_release_mbid, release_id=canonical_release_mbid)
+                except Exception as exc:
+                    logger.debug(f"[MOVE] Could not persist normalized release MBID for queue {queue_id}: {exc}")
+
         candidate_paths = [
             queue_item_dict.get('file_path'),
             queue_item_dict.get('matched_file_path'),
@@ -3040,7 +3121,7 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
             'disc_number': None,
             # MusicBrainz IDs written as TXXX/Vorbis tags so Navidrome can
             # group tracks by release MBID rather than album name + year.
-            'release_mbid': queue_item_dict.get('release_mbid') or queue_item_dict.get('release_id'),
+            'release_mbid': canonical_release_mbid or queue_item_dict.get('release_mbid') or queue_item_dict.get('release_id'),
             'recording_mbid': queue_item_dict.get('recording_mbid'),
         }
 
@@ -3048,7 +3129,7 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
         # Some queue rows store MB release UUID in release_mbid while others
         # store it in release_id (legacy). Accept either so MB metadata is
         # fetched and written before moving to /music.
-        release_id = queue_item_dict.get('release_id') or queue_item_dict.get('release_mbid')
+        release_id = canonical_release_mbid or queue_item_dict.get('release_id') or queue_item_dict.get('release_mbid')
         if release_id:
             try:
                 from post_download_processor import fetch_musicbrainz_release_metadata
