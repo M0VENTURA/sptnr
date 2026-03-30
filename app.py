@@ -23028,7 +23028,6 @@ def api_downloads_folder_merge():
     """
     try:
         import shutil
-        from pathlib import Path
         
         data = request.get_json() or {}
         primary_id = data.get('primary_folder_id')
@@ -33198,7 +33197,6 @@ def _playlist_output_name(listenbrainz_username, playlist_key):
 
 
 def _resolve_playlists_dir():
-    from pathlib import Path
     playlists_root = os.environ.get("PLAYLISTS_OUTPUT_DIR", "/music/playlists")
     return Path(playlists_root)
 
