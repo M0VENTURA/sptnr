@@ -258,6 +258,183 @@ def log_queue_event(event_type, message, item_id=None, details=None):
         # Keep only last 200 events
         if len(_queue_events) > _MAX_QUEUE_EVENTS:
             _queue_events = _queue_events[-_MAX_QUEUE_EVENTS:]
+
+
+def _listenbrainz_playlist_tables_exist(cursor):
+    """Return True when ListenBrainz playlist persistence tables are available."""
+    try:
+        cursor.execute(
+            """
+            SELECT COUNT(*)
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_name IN ('listenbrainz_playlist_tracks', 'listenbrainz_playlist_scheduler_state')
+            """
+        )
+        row = cursor.fetchone()
+        count = row.get('count') if hasattr(row, 'get') else (row[0] if row else 0)
+        return int(count or 0) == 2
+    except Exception:
+        return False
+
+
+def _resolve_track_for_playlist_rematch(cursor, queue_item):
+    """Resolve the imported library track (id, file_path) for a completed queue item."""
+    placeholder = "%s"
+
+    recording_mbid = (queue_item.get('recording_mbid') or '').strip()
+    if recording_mbid:
+        cursor.execute(
+            f"""SELECT id, file_path FROM tracks
+                WHERE musicbrainz_id = {placeholder}
+                ORDER BY last_scanned DESC NULLS LAST
+                LIMIT 1""",
+            (recording_mbid,),
+        )
+        row = cursor.fetchone()
+        if row:
+            return {
+                'track_id': row.get('id') if hasattr(row, 'get') else row[0],
+                'file_path': row.get('file_path') if hasattr(row, 'get') else row[1],
+            }
+
+    queue_file_path = (queue_item.get('file_path') or '').strip()
+    if queue_file_path:
+        cursor.execute(
+            f"SELECT id, file_path FROM tracks WHERE file_path = {placeholder} LIMIT 1",
+            (queue_file_path,),
+        )
+        row = cursor.fetchone()
+        if row:
+            return {
+                'track_id': row.get('id') if hasattr(row, 'get') else row[0],
+                'file_path': row.get('file_path') if hasattr(row, 'get') else row[1],
+            }
+
+    artist = (queue_item.get('artist') or '').strip()
+    title = (queue_item.get('title') or '').strip()
+    if artist and title:
+        cursor.execute(
+            f"""SELECT id, file_path FROM tracks
+                WHERE LOWER(artist) = LOWER({placeholder})
+                  AND LOWER(title) = LOWER({placeholder})
+                ORDER BY last_scanned DESC NULLS LAST
+                LIMIT 1""",
+            (artist, title),
+        )
+        row = cursor.fetchone()
+        if row:
+            return {
+                'track_id': row.get('id') if hasattr(row, 'get') else row[0],
+                'file_path': row.get('file_path') if hasattr(row, 'get') else row[1],
+            }
+
+    return None
+
+
+def _write_listenbrainz_playlist_m3u(playlist_name, file_paths):
+    """Persist ListenBrainz playlist paths to m3u after rematch."""
+    output_dir = Path(os.environ.get("PLAYLISTS_OUTPUT_DIR", "/music/playlists"))
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_name = re.sub(r'[\\/:*?"<>|]+', '_', str(playlist_name or '').strip()) or 'listenbrainz_playlist'
+    output_path = output_dir / f"{safe_name}.m3u"
+    lines = ["#EXTM3U"]
+    lines.extend([p for p in (file_paths or []) if p])
+    output_path.write_text("\n".join(lines) + "\n", encoding='utf-8')
+    return str(output_path)
+
+
+def _refresh_listenbrainz_playlists_for_completed_queue_item(conn, queue_item):
+    """When a queued track finishes importing, rematch LB rows and rewrite impacted playlists."""
+    if not queue_item or not queue_item.get('id'):
+        return 0
+
+    cursor = conn.cursor()
+    placeholder = "%s"
+
+    if not _listenbrainz_playlist_tables_exist(cursor):
+        return 0
+
+    queue_id = queue_item.get('id')
+    cursor.execute(
+        f"""SELECT id, username, playlist_key, playlist_name
+            FROM listenbrainz_playlist_tracks
+            WHERE queue_id = {placeholder}
+              AND match_status IN ('missing', 'queued', 'downloading', 'importing', 'completed')""",
+        (queue_id,),
+    )
+    pending_rows = cursor.fetchall() or []
+    if not pending_rows:
+        return 0
+
+    track_match = _resolve_track_for_playlist_rematch(cursor, queue_item)
+    if not track_match or not track_match.get('track_id') or not track_match.get('file_path'):
+        return 0
+
+    now_iso = datetime.now().isoformat()
+    cursor.execute(
+        f"""UPDATE listenbrainz_playlist_tracks
+            SET match_status = 'matched',
+                local_track_id = {placeholder},
+                file_path = {placeholder},
+                synced_at = {placeholder}
+            WHERE queue_id = {placeholder}
+              AND match_status IN ('missing', 'queued', 'downloading', 'importing', 'completed')""",
+        (track_match['track_id'], track_match['file_path'], now_iso, queue_id),
+    )
+    updated_count = cursor.rowcount or 0
+    if updated_count <= 0:
+        return 0
+
+    impacted = {}
+    for row in pending_rows:
+        username = row.get('username') if hasattr(row, 'get') else row[1]
+        playlist_key = row.get('playlist_key') if hasattr(row, 'get') else row[2]
+        playlist_name = row.get('playlist_name') if hasattr(row, 'get') else row[3]
+        if username and playlist_key:
+            impacted[(username, playlist_key)] = playlist_name
+
+    for (username, playlist_key), playlist_name in impacted.items():
+        cursor.execute(
+            f"""SELECT file_path FROM listenbrainz_playlist_tracks
+                WHERE username = {placeholder}
+                  AND playlist_key = {placeholder}
+                  AND match_status = 'matched'
+                  AND file_path IS NOT NULL
+                ORDER BY id DESC""",
+            (username, playlist_key),
+        )
+        file_rows = cursor.fetchall() or []
+        file_paths = [
+            (r.get('file_path') if hasattr(r, 'get') else r[0])
+            for r in file_rows
+            if (r.get('file_path') if hasattr(r, 'get') else (r[0] if r else None))
+        ]
+        try:
+            _write_listenbrainz_playlist_m3u(playlist_name or f"{username} {playlist_key}", file_paths)
+        except Exception as m3u_err:
+            logger.warning(
+                f"[LB_REMATCH] Failed to write m3u for user={username} key={playlist_key}: {m3u_err}"
+            )
+
+        cursor.execute(
+            """
+            INSERT INTO listenbrainz_playlist_scheduler_state (username, last_rematch_at)
+            VALUES (%s, %s)
+            ON CONFLICT (username) DO UPDATE
+            SET last_rematch_at = EXCLUDED.last_rematch_at
+            """,
+            (username, now_iso),
+        )
+
+    logger.info(
+        "[LB_REMATCH] Queue item %s matched %s ListenBrainz row(s) and refreshed %s playlist(s)",
+        queue_id,
+        updated_count,
+        len(impacted),
+    )
+    return updated_count
     
     # Also log to file
     logger.info(f"[QUEUE_EVENT] {event_type}: {message}" + (f" (item_id={item_id})" if item_id else ""))
@@ -2094,6 +2271,22 @@ def update_queue_item(queue_id, **kwargs):
             # Return updated item
             cursor.execute(f"SELECT * FROM download_queue WHERE id = {placeholder}", (queue_id,))
             item = cursor.fetchone()
+
+            # As soon as a queued download is completed/imported, rematch any
+            # pending ListenBrainz playlist entries and refresh impacted m3u files.
+            if item and kwargs.get('status') in ('completed', 'imported'):
+                try:
+                    _refresh_listenbrainz_playlists_for_completed_queue_item(conn, dict(item))
+                    conn.commit()
+                except Exception as lb_rematch_err:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    logger.warning(
+                        f"[LB_REMATCH] Queue completion hook failed for item {queue_id}: {lb_rematch_err}"
+                    )
+
             conn.close()
             
             if item:

@@ -33157,7 +33157,7 @@ def _normalize_listenbrainz_recommendation(rec, source):
 def _fetch_listenbrainz_feed_tracks(listenbrainz_username, rec_type, lb_token=None):
     from api_clients.audiodb_and_listenbrainz import ListenBrainzUserClient
 
-    # Primary source: ListenBrainz Created For API endpoint.
+    # Primary source: ListenBrainz CF recommendations via client wrapper.
     if lb_token:
         try:
             client = ListenBrainzUserClient(lb_token)
@@ -33165,7 +33165,7 @@ def _fetch_listenbrainz_feed_tracks(listenbrainz_username, rec_type, lb_token=No
             if isinstance(created_for, dict):
                 created_tracks = created_for.get(rec_type, []) or []
                 if created_tracks:
-                    return created_tracks, "listenbrainz-api:createdfor"
+                    return created_tracks, "listenbrainz-api:cf"
         except Exception as exc:
             logging.debug(f"[LB_CREATED_FOR] Fallback to RSS/API for {listenbrainz_username}/{rec_type}: {exc}")
 

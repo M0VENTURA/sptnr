@@ -218,6 +218,22 @@ class LastFmClient:
         except Exception as e:
             logger.debug(f"MusicBrainz client not available for album filtering: {e}")
             self.mb_client = None
+
+    @staticmethod
+    def _extract_artist_name(artist_field) -> str:
+        """Handle Last.fm's inconsistent artist payload shapes (#text vs name vs string)."""
+        if isinstance(artist_field, str):
+            return artist_field.strip()
+        if isinstance(artist_field, dict):
+            name = (artist_field.get("name") or artist_field.get("#text") or "").strip()
+            if name:
+                return name
+            nested_artist = artist_field.get("artist")
+            if isinstance(nested_artist, dict):
+                return (nested_artist.get("name") or nested_artist.get("#text") or "").strip()
+            if isinstance(nested_artist, str):
+                return nested_artist.strip()
+        return ""
     
     def _album_exists(self, artist: str, album: str) -> bool:
         """
@@ -1181,13 +1197,7 @@ class LastFmClient:
             # Process albums from the response
             for album in albums:
                 album_name = album.get("name", "")
-                artist_data = album.get("artist", {})
-                
-                # Handle artist name from nested object
-                if isinstance(artist_data, dict):
-                    artist_name = artist_data.get("name", "")
-                else:
-                    artist_name = str(artist_data) if artist_data else ""
+                artist_name = self._extract_artist_name(album.get("artist", {}))
                 
                 if not album_name or not artist_name:
                     continue
@@ -1279,13 +1289,7 @@ class LastFmClient:
             
             for track in tracks:
                 track_name = track.get("name", "")
-                artist_name = ""
-                
-                # Handle both artist string and artist object format
-                if isinstance(track.get("artist"), dict):
-                    artist_name = track["artist"].get("name", "")
-                elif isinstance(track.get("artist"), str):
-                    artist_name = track.get("artist", "")
+                artist_name = self._extract_artist_name(track.get("artist"))
                 
                 if not track_name or not artist_name:
                     continue
