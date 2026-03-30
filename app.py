@@ -7337,6 +7337,21 @@ def artist_detail(name):
                     if _normalize_release_title(a.get('title', '')) not in missing_compilation_names
                 ]
 
+        # Hide cached "missing" releases when the normalized title already
+        # exists in the artist's discovered collection, regardless of bucket.
+        discovered_release_names = {
+            _normalize_release_title(a.get('album', ''))
+            for bucket in albums_by_category.values()
+            for a in bucket
+            if a.get('album')
+        }
+        if discovered_release_names:
+            for cat in ["album", "compilation", "live_album", "remix_album", "ep", "single"]:
+                missing_by_category[cat] = [
+                    a for a in missing_by_category[cat]
+                    if _normalize_release_title(a.get('title', '')) not in discovered_release_names
+                ]
+
         # Merge discovered and missing albums by category, then sort by release date
         merged_albums_by_category = {}
         for category in ["album", "compilation", "live_album", "remix_album", "ep", "single", "unknown"]:
