@@ -627,15 +627,12 @@ def ensure_mood_columns():
             if col_name in existing:
                 continue
             try:
-                cursor.execute(f"ALTER TABLE tracks ADD COLUMN {col_name} {col_def}")
+                cursor.execute(f"ALTER TABLE tracks ADD COLUMN IF NOT EXISTS {col_name} {col_def}")
                 conn.commit()
                 logging.info(f"✓ Added '{col_name}' column to tracks table")
             except Exception as e:
-                err_msg = str(e).lower()
-                if "duplicate column" in err_msg or "already exists" in err_msg:
-                    logging.info(f"✓ Column '{col_name}' already exists")
-                else:
-                    logging.error(f"✗ Failed to add '{col_name}' column: {e}")
+                conn.rollback()
+                logging.error(f"✗ Failed to add '{col_name}' column: {e}")
 
         conn.close()
         return True
@@ -673,15 +670,12 @@ def ensure_essentia_feature_columns():
             if col_name in existing:
                 continue
             try:
-                cursor.execute(f"ALTER TABLE tracks ADD COLUMN {col_name} {col_def}")
+                cursor.execute(f"ALTER TABLE tracks ADD COLUMN IF NOT EXISTS {col_name} {col_def}")
                 conn.commit()
                 logging.info(f"✓ Added '{col_name}' column to tracks table")
             except Exception as e:
-                err_msg = str(e).lower()
-                if "duplicate column" in err_msg or "already exists" in err_msg:
-                    logging.info(f"✓ Column '{col_name}' already exists")
-                else:
-                    logging.error(f"✗ Failed to add '{col_name}' column: {e}")
+                conn.rollback()
+                logging.error(f"✗ Failed to add '{col_name}' column: {e}")
 
         conn.close()
         return True
