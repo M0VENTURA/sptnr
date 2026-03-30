@@ -98,6 +98,9 @@ def resolve_downloads_dir():
 
 DOWNLOADS_DIR = resolve_downloads_dir()
 
+# Enforce a floor between retries so unavailable tracks do not churn.
+MIN_RETRY_DELAY_MINUTES = 60
+
 
 def _normalize_match_text(value):
     """Normalize text for conservative filename/metadata matching."""
@@ -451,7 +454,7 @@ def cleanup_stuck_searching_items():
         logger.error(f"Error cleaning up stuck searching items: {e}")
         return 0
 
-def get_queued_items(limit=10):
+def get_queued_items(limit=None):
     """Get items ready to process (queued or scheduled for retry)"""
     try:
         # First, clean up any items stuck in 'searching' state
@@ -527,14 +530,18 @@ def get_queued_items(limit=10):
             logger.debug(f"Could not compute queue source skip diagnostics: {source_diag_err}")
         
         # Get queued items and items scheduled for retry
-        cursor.execute("""
-            SELECT * FROM download_queue 
+        base_query = """
+            SELECT * FROM download_queue
             WHERE status = 'queued'
             AND (next_retry_at IS NULL OR next_retry_at <= {placeholder})
             AND COALESCE(LOWER(source), 'soulseek') NOT IN ('local', 'discovered')
             ORDER BY priority ASC, retry_count ASC, next_retry_at ASC, created_at ASC
-            LIMIT {placeholder}
-        """.format(placeholder=placeholder), (now, limit))
+        """.format(placeholder=placeholder)
+
+        if isinstance(limit, int) and limit > 0:
+            cursor.execute(base_query + f"\nLIMIT {placeholder}", (now, limit))
+        else:
+            cursor.execute(base_query, (now,))
         
         items = [dict(row) for row in cursor.fetchall()]
         conn.close()
@@ -596,7 +603,8 @@ def increment_retry_count(queue_id, retry_delay_minutes=30):
         
         retry_count = (row['retry_count'] or 0) + 1
         
-        next_retry = datetime.now() + timedelta(minutes=retry_delay_minutes)
+        effective_retry_delay = max(int(retry_delay_minutes or 0), MIN_RETRY_DELAY_MINUTES)
+        next_retry = datetime.now() + timedelta(minutes=effective_retry_delay)
         
         cursor.execute(f"""
             UPDATE download_queue 
@@ -607,7 +615,10 @@ def increment_retry_count(queue_id, retry_delay_minutes=30):
         conn.commit()
         conn.close()
         
-        logger.info(f"Queue {queue_id}: retry count now {retry_count}, next retry at {next_retry}")
+        logger.info(
+            f"Queue {queue_id}: retry count now {retry_count}, "
+            f"next retry at {next_retry} (delay={effective_retry_delay}m)"
+        )
         return True
         
     except Exception as e:
@@ -641,9 +652,13 @@ def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=30):
         
         # Always schedule retry if requested - no max retry limit for Soulseek searches
         if schedule_retry:
-            next_retry = datetime.now() + timedelta(minutes=retry_delay_minutes)
+            effective_retry_delay = max(int(retry_delay_minutes or 0), MIN_RETRY_DELAY_MINUTES)
+            next_retry = datetime.now() + timedelta(minutes=effective_retry_delay)
             new_status = 'queued'
-            logger.warning(f"Queue {queue_id}: Failed ({reason}), scheduling retry #{retry_count} at {next_retry}")
+            logger.warning(
+                f"Queue {queue_id}: Failed ({reason}), scheduling retry #{retry_count} at {next_retry} "
+                f"(delay={effective_retry_delay}m)"
+            )
         else:
             next_retry = None
             new_status = 'failed'
@@ -1300,9 +1315,9 @@ def matches_queue_item(filename, queue_item, file_path=None):
         return False
 
 def process_queue(client):
-    """Process one batch of queued items"""
+    """Process all currently eligible queued items for this cycle."""
     try:
-        items = get_queued_items(limit=5)
+        items = get_queued_items()
         
         if not items:
             logger.debug("No queued items to process")
