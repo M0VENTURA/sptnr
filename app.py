@@ -7,6 +7,7 @@ from helpers.db_utils import (
     ensure_cover_columns,
     ensure_track_release_year_column,
     ensure_mood_columns,
+    ensure_essentia_feature_columns,
     verify_album_artist_column,
 )
 from download_file_verification import ensure_verification_columns, ensure_queue_mbid_columns
@@ -614,6 +615,9 @@ ensure_track_release_year_column()
 
 # Ensure mood scan columns exist in tracks table
 ensure_mood_columns()
+
+# Ensure Essentia-derived feature columns (danceability / timestamps) exist
+ensure_essentia_feature_columns()
 
 # Ensure download file verification columns exist
 ensure_verification_columns()
@@ -4919,6 +4923,7 @@ def artists():
     missing_counts_by_artist = {}
     duplicate_artist_counts_by_artist = {}  # Track artists with same MBID but different names
     disc_inconsistent_counts_by_artist = {}  # Albums where some tracks have disc_number and others don't
+    mbid_inconsistent_counts_by_artist = {}  # Albums where tracks disagree on album MBID
     extra_album_artist_counts_by_artist = {}  # Non-canonical album-artist variants on canonical albums
     try:
         # Query 1: Find duplicate tracks
@@ -5077,7 +5082,32 @@ def artists():
             row_dict = dict(row)
             disc_inconsistent_counts_by_artist[row_dict.get("display_name", "")] = int(row_dict.get("album_count") or 0)
 
-        # Query 5: Per canonical artist, count extra album-artist variants that were
+        # Query 5: Albums with mixed/competing musicbrainz_album_mbid values.
+        cursor.execute("""
+            SELECT
+                COALESCE(NULLIF(album_artist, ''), artist) AS display_name,
+                COUNT(*) AS album_count
+            FROM (
+                SELECT
+                    COALESCE(NULLIF(album_artist, ''), artist) AS display_name,
+                    album
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
+                  AND TRIM(COALESCE(NULLIF(album_artist, ''), artist)) != ''
+                  AND album IS NOT NULL
+                  AND TRIM(album) != ''
+                  AND musicbrainz_album_mbid IS NOT NULL
+                  AND TRIM(musicbrainz_album_mbid) != ''
+                GROUP BY COALESCE(NULLIF(album_artist, ''), artist), album
+                HAVING COUNT(DISTINCT TRIM(musicbrainz_album_mbid)) > 1
+            ) mixed
+            GROUP BY display_name
+        """)
+        for row in cursor.fetchall():
+            row_dict = dict(row)
+            mbid_inconsistent_counts_by_artist[row_dict.get("display_name", "")] = int(row_dict.get("album_count") or 0)
+
+        # Query 6: Per canonical artist, count extra album-artist variants that were
         # intentionally suppressed from /artists to keep one artist per album.
         cursor.execute("""
             WITH normalized_tracks AS (
@@ -5146,17 +5176,20 @@ def artists():
         missing_count = missing_counts_by_artist.get(display_name, 0)
         duplicate_artist_count = duplicate_artist_counts_by_artist.get(display_name, 0)
         disc_inconsistent_count = disc_inconsistent_counts_by_artist.get(display_name, 0)
+        mbid_inconsistent_count = mbid_inconsistent_counts_by_artist.get(display_name, 0)
         extra_album_artist_count = extra_album_artist_counts_by_artist.get(display_name, 0)
         artist_row["duplicate_track_count"] = duplicate_count
         artist_row["missing_track_count"] = missing_count
         artist_row["duplicate_artist_count"] = duplicate_artist_count
         artist_row["disc_inconsistent_count"] = disc_inconsistent_count
+        artist_row["mbid_inconsistent_count"] = mbid_inconsistent_count
         artist_row["extra_album_artist_count"] = extra_album_artist_count
         artist_row["needs_correction"] = (
             duplicate_count + missing_count
             + (1 if duplicate_artist_count > 0 else 0)
             + (1 if extra_album_artist_count > 0 else 0)
             + disc_inconsistent_count
+            + mbid_inconsistent_count
         ) > 0
     
     conn.close()
@@ -5439,6 +5472,7 @@ def artist_corrections(name):
         # disc_number set, others don't — on a single-disc album this
         # causes Navidrome to display the album as multiple entries.
         disc_inconsistent_albums = []
+        mbid_inconsistent_albums = []
         try:
             cursor.execute(f"""
                 SELECT
@@ -5486,6 +5520,36 @@ def artist_corrections(name):
                 })
         except Exception as disc_err:
             logging.debug(f"[CORRECTIONS] Could not fetch disc inconsistency albums: {disc_err}")
+
+        # Fetch albums with mixed MusicBrainz album MBIDs for this artist.
+        try:
+            cursor.execute(f"""
+                SELECT
+                    album,
+                    COUNT(*) AS track_count,
+                    COUNT(DISTINCT TRIM(musicbrainz_album_mbid)) AS distinct_mbid_count,
+                    STRING_AGG(DISTINCT TRIM(musicbrainz_album_mbid), ', ') AS mbid_list
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                  AND album IS NOT NULL
+                  AND TRIM(album) != ''
+                  AND musicbrainz_album_mbid IS NOT NULL
+                  AND TRIM(musicbrainz_album_mbid) != ''
+                GROUP BY album
+                HAVING COUNT(DISTINCT TRIM(musicbrainz_album_mbid)) > 1
+                ORDER BY album
+            """, (artist_name,))
+            for row in cursor.fetchall():
+                rd = dict(row) if hasattr(row, "keys") else {}
+                mbids = [m.strip() for m in str(rd.get("mbid_list") or "").split(',') if m.strip()]
+                mbid_inconsistent_albums.append({
+                    "album": rd.get("album"),
+                    "track_count": int(rd.get("track_count") or 0),
+                    "distinct_mbid_count": int(rd.get("distinct_mbid_count") or 0),
+                    "mbids": mbids,
+                })
+        except Exception as mbid_err:
+            logging.debug(f"[CORRECTIONS] Could not fetch MBID inconsistency albums: {mbid_err}")
     finally:
         conn.close()
 
@@ -5496,9 +5560,11 @@ def artist_corrections(name):
         missing_tracks=missing_tracks,
         mb_albums=mb_albums,
         disc_inconsistent_albums=disc_inconsistent_albums,
+        mbid_inconsistent_albums=mbid_inconsistent_albums,
         duplicate_count=sum(max(int(d.get("duplicate_count") or 0) - 1, 0) for d in duplicate_groups),
         missing_count=len(missing_tracks),
         disc_inconsistent_count=len(disc_inconsistent_albums),
+        mbid_inconsistent_count=len(mbid_inconsistent_albums),
     )
 
 
@@ -5693,6 +5759,87 @@ def api_artist_corrections_clear_disc_number():
         })
     except Exception as e:
         logging.error(f"[CORRECTIONS] Failed to clear disc numbers: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/artist/corrections/apply-album-mbid", methods=["POST"])
+def api_artist_corrections_apply_album_mbid():
+    """Apply one canonical album MBID to all tracks in a specific artist/album."""
+    try:
+        payload = request.get_json(silent=True) or {}
+        artist_name = str(payload.get("artist") or "").strip()
+        album_name = str(payload.get("album") or "").strip()
+        album_mbid = str(payload.get("mbid") or "").strip()
+        release_group_mbid = str(payload.get("release_group_mbid") or "").strip()
+
+        if not artist_name or not album_name or not album_mbid:
+            return jsonify({"success": False, "error": "artist, album, and mbid are required"}), 400
+
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = "%s"
+
+        columns = _get_table_columns(cursor, "tracks") or set()
+        set_parts = []
+        params = []
+
+        if "musicbrainz_album_mbid" in columns:
+            set_parts.append(f"musicbrainz_album_mbid = {placeholder}")
+            params.append(album_mbid)
+        elif "beets_album_mbid" in columns:
+            set_parts.append(f"beets_album_mbid = {placeholder}")
+            params.append(album_mbid)
+        else:
+            conn.close()
+            return jsonify({"success": False, "error": "No album MBID column found on tracks table"}), 500
+
+        if release_group_mbid and "musicbrainz_releasegroupid" in columns:
+            set_parts.append(f"musicbrainz_releasegroupid = {placeholder}")
+            params.append(release_group_mbid)
+
+        cursor.execute(
+            f"SELECT id, file_path FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}",
+            (artist_name, album_name),
+        )
+        track_rows = [dict(r) if hasattr(r, "keys") else {"id": r[0], "file_path": r[1]} for r in cursor.fetchall()]
+
+        if not track_rows:
+            conn.close()
+            return jsonify({"success": False, "error": "No tracks found for this artist/album"}), 404
+
+        params.extend([artist_name, album_name])
+        cursor.execute(
+            f"UPDATE tracks SET {', '.join(set_parts)} WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}",
+            tuple(params),
+        )
+        rows_updated = cursor.rowcount if cursor.rowcount and cursor.rowcount >= 0 else len(track_rows)
+        conn.commit()
+        conn.close()
+
+        files_updated = 0
+        for row in track_rows:
+            file_path = str(row.get("file_path") or "").strip()
+            if not file_path or not os.path.exists(file_path):
+                continue
+            try:
+                from helpers.tag_manager import write_tags_to_file
+
+                tags_to_write = {"musicbrainz_album_mbid": album_mbid}
+                if release_group_mbid:
+                    tags_to_write["musicbrainz_releasegroupid"] = release_group_mbid
+                if write_tags_to_file(file_path, tags_to_write):
+                    files_updated += 1
+            except Exception as file_err:
+                logging.debug(f"[CORRECTIONS] Failed to write album MBID tags for {file_path}: {file_err}")
+
+        return jsonify({
+            "success": True,
+            "rows_updated": rows_updated,
+            "files_updated": files_updated,
+            "message": f"Applied album MBID to {rows_updated} track(s)",
+        })
+    except Exception as e:
+        logging.error(f"[CORRECTIONS] Failed to apply album MBID correction: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 
@@ -13309,6 +13456,9 @@ def scan_essentia_mood():
                     genre_threshold = float(essentia_cfg.get("genre_threshold", 15.0))
                     genre_format = essentia_cfg.get("genre_format", "parent_child")
                     tag_moods = bool(essentia_cfg.get("tag_moods", True))
+                    parse_json_features = bool(essentia_cfg.get("parse_json_features", True))
+                    delete_json_after_import = bool(essentia_cfg.get("delete_json_after_import", True))
+                    json_output_dir = str(essentia_cfg.get("json_output_dir", "") or "").strip()
 
                     result = run_essentia_mood_scan(
                         script_path=script_path,
@@ -13322,6 +13472,9 @@ def scan_essentia_mood():
                         genre_threshold=genre_threshold,
                         genre_format=genre_format,
                         tag_moods=tag_moods,
+                        parse_json_features=parse_json_features,
+                        delete_json_after_import=delete_json_after_import,
+                        json_output_dir=json_output_dir,
                         artist_filter=_artist_filter,
                         album_filter=_album_filter,
                         track_id_filter=_track_id_filter,
@@ -30387,7 +30540,8 @@ def api_album_apply_mbid():
         data = request.get_json()
         artist = data.get("artist", "")
         album = data.get("album", "")
-        mbid = data.get("mbid", "")
+        mbid = str(data.get("mbid", "") or "").strip()
+        release_group_mbid = str(data.get("release_group_mbid", "") or "").strip()
         cover_art_url = data.get("cover_art_url", "")
         
         if not artist or not album:
@@ -30397,7 +30551,7 @@ def api_album_apply_mbid():
         cursor = conn.cursor()
         placeholder = "%s"
 
-        # Detect compatible MBID column for mixed schema deployments.
+        # Detect compatible album-level MBID column for mixed schema deployments.
         track_columns = _get_table_columns(cursor, "tracks") or set()
         mb_album_column = None
         if "musicbrainz_album_mbid" in track_columns:
@@ -30407,10 +30561,10 @@ def api_album_apply_mbid():
         
         # Update all tracks in this album with MBID and cover art
         updates = []
-        if mbid:
-            updates.append(f"mbid = {placeholder}")
-            if mb_album_column:
-                updates.append(f"{mb_album_column} = {placeholder}")
+        if mbid and mb_album_column:
+            updates.append(f"{mb_album_column} = {placeholder}")
+        if release_group_mbid and "musicbrainz_releasegroupid" in track_columns:
+            updates.append(f"musicbrainz_releasegroupid = {placeholder}")
         if cover_art_url:
             updates.append(f"cover_art_url = {placeholder}")
         
@@ -30422,25 +30576,51 @@ def api_album_apply_mbid():
             f"WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}"
         )
         params = []
-        if mbid:
+        if mbid and mb_album_column:
             params.append(mbid)
-            if mb_album_column:
-                params.append(mbid)  # Same ID for both fields
+        if release_group_mbid and "musicbrainz_releasegroupid" in track_columns:
+            params.append(release_group_mbid)
         if cover_art_url:
             params.append(cover_art_url)
         params.extend([artist, album])
+
+        # Capture files for optional tag updates before running the DB update.
+        cursor.execute(
+            f"SELECT file_path FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}",
+            (artist, album),
+        )
+        file_rows = cursor.fetchall()
         
         cursor.execute(query, params)
         rows_updated = cursor.rowcount
         conn.commit()
         conn.close()
         
-        logging.info(f"Applied MBID {mbid} to {rows_updated} tracks in {artist} - {album}")
+        files_updated = 0
+        if mbid or release_group_mbid:
+            for row in file_rows:
+                file_path = row[0] if not hasattr(row, "keys") else row.get("file_path")
+                if not file_path or not os.path.exists(str(file_path)):
+                    continue
+                try:
+                    from helpers.tag_manager import write_tags_to_file
+                    tags = {}
+                    if mbid:
+                        tags["musicbrainz_album_mbid"] = mbid
+                    if release_group_mbid:
+                        tags["musicbrainz_releasegroupid"] = release_group_mbid
+                    if tags and write_tags_to_file(str(file_path), tags):
+                        files_updated += 1
+                except Exception as file_err:
+                    logging.debug(f"[ALBUM_MBID] Could not update file tags for {file_path}: {file_err}")
+
+        logging.info(f"Applied album MBID {mbid} to {rows_updated} tracks in {artist} - {album}")
         
         return jsonify({
             "success": True,
             "message": f"Updated {rows_updated} tracks with MBID and cover art",
-            "rows_updated": rows_updated
+            "rows_updated": rows_updated,
+            "files_updated": files_updated,
         }), 200
     except Exception as e:
         logger = logging.getLogger('sptnr')

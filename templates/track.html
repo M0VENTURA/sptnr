@@ -79,6 +79,73 @@
             </div>
         </div>
     </div>
+
+    {% set has_extended = track.musicbrainz_album_mbid or track.musicbrainz_releasegroupid or track.musicbrainz_releasetrackid or track.musicbrainz_albumstatus or track.musicbrainz_albumtype or track.musicbrainz_releasecountry or track.isrc or track.bpm or track.danceability %}
+    {% if has_extended %}
+    <div class="card mb-4" id="track-extended-tags-section">
+        <div class="card-header">
+            <h5 class="card-title mb-0"><i class="bi bi-diagram-3"></i> Extended Metadata</h5>
+        </div>
+        <div class="card-body">
+            <div class="row g-2">
+                {% if track.musicbrainz_album_mbid %}
+                <div class="col-12 col-md-6">
+                    <small class="text-muted d-block">MusicBrainz Album ID</small>
+                    <code>{{ track.musicbrainz_album_mbid }}</code>
+                </div>
+                {% endif %}
+                {% if track.musicbrainz_releasegroupid %}
+                <div class="col-12 col-md-6">
+                    <small class="text-muted d-block">MusicBrainz Release Group ID</small>
+                    <code>{{ track.musicbrainz_releasegroupid }}</code>
+                </div>
+                {% endif %}
+                {% if track.musicbrainz_releasetrackid %}
+                <div class="col-12 col-md-6">
+                    <small class="text-muted d-block">MusicBrainz Release Track ID</small>
+                    <code>{{ track.musicbrainz_releasetrackid }}</code>
+                </div>
+                {% endif %}
+                {% if track.musicbrainz_albumstatus %}
+                <div class="col-12 col-md-6">
+                    <small class="text-muted d-block">MusicBrainz Album Status</small>
+                    <strong>{{ track.musicbrainz_albumstatus }}</strong>
+                </div>
+                {% endif %}
+                {% if track.musicbrainz_albumtype %}
+                <div class="col-12 col-md-6">
+                    <small class="text-muted d-block">MusicBrainz Album Type</small>
+                    <strong>{{ track.musicbrainz_albumtype }}</strong>
+                </div>
+                {% endif %}
+                {% if track.musicbrainz_releasecountry %}
+                <div class="col-12 col-md-6">
+                    <small class="text-muted d-block">MusicBrainz Release Country</small>
+                    <strong>{{ track.musicbrainz_releasecountry }}</strong>
+                </div>
+                {% endif %}
+                {% if track.isrc %}
+                <div class="col-12 col-md-6">
+                    <small class="text-muted d-block">ISRC</small>
+                    <code>{{ track.isrc }}</code>
+                </div>
+                {% endif %}
+                {% if track.bpm %}
+                <div class="col-12 col-md-3">
+                    <small class="text-muted d-block">BPM</small>
+                    <strong>{{ track.bpm }}</strong>
+                </div>
+                {% endif %}
+                {% if track.danceability is not none and track.danceability != '' %}
+                <div class="col-12 col-md-3">
+                    <small class="text-muted d-block">Danceability</small>
+                    <strong>{{ '%.3f'|format(track.danceability|float) }}</strong>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    {% endif %}
     
     <div class="d-flex flex-column flex-md-row justify-content-between align-items-start mb-4 gap-2">
         <div class="flex-grow-1">

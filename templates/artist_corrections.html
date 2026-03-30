@@ -46,6 +46,9 @@
             {% if disc_inconsistent_count %}
             <span class="badge bg-orange text-dark" style="background-color:#fd7e14!important;">{{ disc_inconsistent_count }} disc # inconsistency</span>
             {% endif %}
+            {% if mbid_inconsistent_count %}
+            <span class="badge bg-danger">{{ mbid_inconsistent_count }} album MBID conflicts</span>
+            {% endif %}
             <span class="badge bg-secondary" id="missing-tracks-badge" style="display: none;">checking MB tracks…</span>
         </div>
     </div>
@@ -263,6 +266,63 @@
                                 {% if looks_multi_disc %}
                                 <div class="small text-danger mt-1">Manual review recommended (multi-disc)</div>
                                 {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    {% if mbid_inconsistent_albums %}
+    <div class="card mb-4" id="mbid-inconsistent-section">
+        <div class="card-header">
+            <h5 class="mb-0">
+                <i class="bi bi-diagram-3"></i> Album MBID Conflicts
+                <small class="text-muted ms-2 fw-normal">Tracks in the same album have conflicting MusicBrainz album MBIDs</small>
+            </h5>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover mb-0 artist-corrections-table">
+                    <thead>
+                        <tr>
+                            <th>Album</th>
+                            <th class="text-center">Tracks</th>
+                            <th class="text-center">Distinct MBIDs</th>
+                            <th>Current MBIDs</th>
+                            <th>Apply Canonical MBID</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in mbid_inconsistent_albums %}
+                        <tr id="mbid-row-{{ loop.index }}">
+                            <td>
+                                <a href="{{ url_for('album_detail', artist=artist_name, album=row.album) }}">{{ row.album }}</a>
+                            </td>
+                            <td class="text-center">{{ row.track_count }}</td>
+                            <td class="text-center">
+                                <span class="badge bg-danger">{{ row.distinct_mbid_count }}</span>
+                            </td>
+                            <td class="small">
+                                {% for mbid in row.mbids %}
+                                    <div><code>{{ mbid }}</code></div>
+                                {% endfor %}
+                            </td>
+                            <td>
+                                <div class="input-group input-group-sm mb-2">
+                                    <input type="text" class="form-control" id="mbid-input-{{ loop.index }}" placeholder="Enter canonical album MBID">
+                                    <button class="btn btn-outline-primary" type="button"
+                                            onclick="applyAlbumMbidCorrection('{{ artist_name|e }}', '{{ row.album|e }}', {{ loop.index }})">
+                                        Apply
+                                    </button>
+                                </div>
+                                <button class="btn btn-sm btn-outline-secondary"
+                                        onclick="searchAndApplyAlbumMbid('{{ artist_name|e }}', '{{ row.album|e }}', {{ loop.index }})">
+                                    <i class="bi bi-search"></i> Search MusicBrainz
+                                </button>
                             </td>
                         </tr>
                         {% endfor %}
@@ -909,6 +969,69 @@ async function deleteDuplicateTrack(trackId, isRecommendedDelete) {
 
 function escapeHtml(str) {
     return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+async function applyAlbumMbidCorrection(artist, album, rowIndex, mbidOverride = null) {
+    const input = document.getElementById(`mbid-input-${rowIndex}`);
+    const mbid = (mbidOverride || (input ? input.value : '') || '').trim();
+    if (!mbid) {
+        alert('Please enter a MusicBrainz album MBID.');
+        return;
+    }
+    if (!confirm(`Apply album MBID to all tracks in "${album}"?\n\nMBID: ${mbid}\n\nThis updates database values and file tags.`)) {
+        return;
+    }
+    try {
+        const response = await fetch('/api/artist/corrections/apply-album-mbid', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ artist, album, mbid })
+        });
+        const result = await response.json();
+        if (!response.ok || !result.success) {
+            throw new Error(result.error || 'Failed to apply MBID');
+        }
+        alert(`✓ Applied MBID to ${result.rows_updated || 0} track(s) in "${album}" (${result.files_updated || 0} files updated).`);
+        location.reload();
+    } catch (error) {
+        alert(`Could not apply MBID: ${error.message}`);
+    }
+}
+
+async function searchAndApplyAlbumMbid(artist, album, rowIndex) {
+    try {
+        const response = await fetch(`/api/album/musicbrainz?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`);
+        const data = await response.json();
+        const results = Array.isArray(data.releases) ? data.releases : [];
+        if (!results.length) {
+            alert(`No MusicBrainz releases found for ${artist} - ${album}`);
+            return;
+        }
+
+        const options = results.slice(0, 8).map((release, idx) => {
+            const date = release.date ? ` (${release.date})` : '';
+            return `${idx + 1}. ${release.title || album}${date}\n   ${release.id || ''}`;
+        }).join('\n\n');
+
+        const choice = window.prompt(`Select release number to apply:\n\n${options}\n\nEnter number:`);
+        if (!choice) {
+            return;
+        }
+        const selectedIdx = parseInt(choice, 10) - 1;
+        if (isNaN(selectedIdx) || selectedIdx < 0 || selectedIdx >= Math.min(results.length, 8)) {
+            alert('Invalid selection.');
+            return;
+        }
+
+        const selected = results[selectedIdx];
+        if (!selected || !selected.id) {
+            alert('Selected release has no MBID.');
+            return;
+        }
+        await applyAlbumMbidCorrection(artist, album, rowIndex, selected.id);
+    } catch (error) {
+        alert(`MusicBrainz search failed: ${error.message}`);
+    }
 }
 
 async function clearDiscNumber(artist, album, rowIndex) {

@@ -396,6 +396,25 @@ class NavidromeClient:
             except (TypeError, ValueError):
                 return None
 
+        def _safe_float(value):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        tags = track.get("tags") if isinstance(track.get("tags"), dict) else {}
+
+        def _get_tag_value(*keys):
+            for key in keys:
+                val = track.get(key)
+                if val not in (None, ""):
+                    return val
+                if isinstance(tags, dict):
+                    val = tags.get(key)
+                    if val not in (None, ""):
+                        return val
+            return ""
+
         # Extract genres from the genres array if available, otherwise fall back to genre field
         genres_list = []
         if track.get("genres") and isinstance(track.get("genres"), list):
@@ -468,7 +487,6 @@ class NavidromeClient:
         # Extract from Navidrome native API tags field (custom/extended tags)
         # Navidrome exposes additional metadata through the tags object that may not
         # be available in standard Subsonic fields
-        tags = track.get("tags")
         if isinstance(tags, dict):
             logger.debug(f"[WRITER] Checking tags field for '{track.get('title')}'")
             tag_candidates = [
@@ -610,6 +628,17 @@ class NavidromeClient:
             "writer": writer_json,  # JSON array of lyricists from Navidrome
             "stars": int(track.get("userRating", 0) or 0),
             "mbid": track.get("mbid", "") or "",
+            "musicbrainz_album_mbid": _get_tag_value("musicbrainz_album_mbid", "musicbrainz_albumid", "musicbrainz_releaseid", "release_mbid") or "",
+            "musicbrainz_releasegroupid": _get_tag_value("musicbrainz_releasegroupid", "musicbrainz_releasegroup_id", "release_group_mbid") or "",
+            "musicbrainz_releasetrackid": _get_tag_value("musicbrainz_releasetrackid", "musicbrainz_release_track_id", "release_track_mbid") or "",
+            "musicbrainz_albumstatus": _get_tag_value("musicbrainz_albumstatus", "musicbrainz_release_status", "release_status") or "",
+            "musicbrainz_albumtype": _get_tag_value("musicbrainz_albumtype", "musicbrainz_release_type", "release_type") or "",
+            "musicbrainz_releasecountry": _get_tag_value("musicbrainz_releasecountry", "musicbrainz_albumcountry", "release_country") or "",
+            "isrc": _get_tag_value("isrc", "musicbrainz_isrc") or "",
+            "bpm": _safe_int(_get_tag_value("bpm", "tempo")),
+            "danceability": _safe_float(_get_tag_value("danceability")),
+            "composer": _get_tag_value("composer", "composers") or "",
+            "comment": _get_tag_value("comment", "comments", "description") or "",
             "file_path": track.get("path", ""),  # File path from Navidrome
         }
     

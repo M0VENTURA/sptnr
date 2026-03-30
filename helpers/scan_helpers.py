@@ -268,6 +268,91 @@ def _extract_writer_from_file_tags(file_path: str) -> str:
 
     return "[]"
 
+
+def _resolve_navidrome_file_path_for_storage(raw_file_path: str, music_root: str) -> str:
+    """Normalize Navidrome file paths to a stable absolute path for DB storage."""
+    file_path = str(raw_file_path or "").strip()
+    if not file_path:
+        return ""
+
+    normalized = file_path.replace("\\", "/")
+    if normalized.startswith("__queued_for_download__"):
+        return normalized
+    if os.path.isabs(normalized):
+        return os.path.normpath(normalized)
+
+    rel = normalized.lstrip("/")
+    if rel.lower().startswith("music/"):
+        rel = rel[6:]
+
+    music_root_clean = os.path.normpath(str(music_root or "/music"))
+    return os.path.normpath(os.path.join(music_root_clean, rel))
+
+
+def _sanitize_artist_file_paths_and_duplicates(conn, artist_name: str) -> dict:
+    """Normalize stale relative paths and collapse duplicate rows by normalized file path."""
+    try:
+        cursor = conn.cursor()
+        placeholder = "%s"
+        cursor.execute(
+            f"""
+            SELECT id, file_path, title, album, track_number, duration, mbid, last_scanned
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+              AND file_path IS NOT NULL
+              AND TRIM(file_path) != ''
+            """,
+            (artist_name,),
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+        if not rows:
+            return {"path_updates": 0, "duplicates_removed": 0}
+
+        music_root = os.environ.get("MUSIC_FOLDER") or os.environ.get("MUSIC_ROOT", "/music")
+        normalized_to_rows = {}
+        path_updates = 0
+
+        for row in rows:
+            raw_path = str(row.get("file_path") or "")
+            normalized = _resolve_navidrome_file_path_for_storage(raw_path, music_root)
+            if normalized and normalized != raw_path:
+                cursor.execute(
+                    f"UPDATE tracks SET file_path = {placeholder} WHERE id = {placeholder}",
+                    (normalized, row.get("id")),
+                )
+                path_updates += 1
+            if normalized:
+                normalized_to_rows.setdefault(normalized, []).append({**row, "file_path": normalized})
+
+        duplicates_removed = 0
+        for _, dup_rows in normalized_to_rows.items():
+            if len(dup_rows) <= 1:
+                continue
+
+            def _row_score(r):
+                mbid_bonus = 100 if str(r.get("mbid") or "").strip() else 0
+                duration_bonus = 10 if r.get("duration") not in (None, "", 0, "0") else 0
+                last_scanned = str(r.get("last_scanned") or "")
+                return (mbid_bonus + duration_bonus, last_scanned, str(r.get("id") or ""))
+
+            keeper = max(dup_rows, key=_row_score)
+            for row in dup_rows:
+                if str(row.get("id")) == str(keeper.get("id")):
+                    continue
+                cursor.execute(
+                    f"DELETE FROM tracks WHERE id = {placeholder}",
+                    (row.get("id"),),
+                )
+                duplicates_removed += 1
+
+        if path_updates or duplicates_removed:
+            conn.commit()
+
+        return {"path_updates": path_updates, "duplicates_removed": duplicates_removed}
+    except Exception as e:
+        logging.debug(f"[NAVIDROME_SANITIZE] Failed for '{artist_name}': {e}")
+        return {"path_updates": 0, "duplicates_removed": 0}
+
 def save_navidrome_scan_progress(current_artist, processed_artists, total_artists,
                                  progress_file: str = None, scan_type: str = "navidrome_scan"):
     """Save Navidrome scan progress to JSON file (using artist list for progress tracking).
@@ -380,6 +465,21 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
             logging.debug(f"Prefetch existing tracks for artist '{artist_name}' failed: {e}")
             log_debug(f"[NAVIDROME_SCAN] Prefetch failed for '{artist_name}': {e}", exc_info=True)
 
+        # Normalize stale file_path values and remove duplicate rows that point to
+        # the same normalized physical file before importing fresh track metadata.
+        try:
+            conn = get_db_connection()
+            sanitize_summary = _sanitize_artist_file_paths_and_duplicates(conn, canonical_artist_name)
+            if sanitize_summary.get("path_updates") or sanitize_summary.get("duplicates_removed"):
+                logging.info(
+                    f"[NAVIDROME_SANITIZE] {canonical_artist_name}: "
+                    f"normalized_paths={sanitize_summary.get('path_updates', 0)}, "
+                    f"duplicates_removed={sanitize_summary.get('duplicates_removed', 0)}"
+                )
+            conn.close()
+        except Exception as sanitize_err:
+            logging.debug(f"[NAVIDROME_SANITIZE] Skipped for {canonical_artist_name}: {sanitize_err}")
+
         albums = fetch_artist_albums(artist_id)
         log_debug(f"[NAVIDROME_SCAN] fetch_artist_albums('{artist_name}') returned {len(albums)} albums")
         
@@ -462,6 +562,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 print(f"   Re-importing album with missing fields: {album_name}")
             # Track the number of tracks actually processed for this album
             album_tracks_processed = 0
+            album_mbids_seen = set()
             
             # Get the album artist with priority order:
             # 1. api_album_artist - from getAlbum.view response (most reliable)
@@ -534,6 +635,15 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "single_confidence": "low",
                     "single_sources": json.dumps([]),  # Serialize as JSON string
                     "mbid": extracted.get("mbid", "") or "",
+                    "musicbrainz_album_mbid": extracted.get("musicbrainz_album_mbid", "") or "",
+                    "musicbrainz_releasegroupid": extracted.get("musicbrainz_releasegroupid", "") or "",
+                    "musicbrainz_releasetrackid": extracted.get("musicbrainz_releasetrackid", "") or "",
+                    "musicbrainz_albumstatus": extracted.get("musicbrainz_albumstatus", "") or "",
+                    "musicbrainz_albumtype": extracted.get("musicbrainz_albumtype", "") or "",
+                    "musicbrainz_releasecountry": extracted.get("musicbrainz_releasecountry", "") or "",
+                    "isrc": extracted.get("isrc", "") or "",
+                    "bpm": extracted.get("bpm"),
+                    "danceability": extracted.get("danceability"),
                     "suggested_mbid": "",
                     "suggested_mbid_confidence": 0.0,
                     "stars": extracted.get("stars", 0),
@@ -541,6 +651,8 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "track_number": extracted.get("track_number"),
                     "disc_number": extracted.get("disc_number"),
                     "year": extracted.get("year"),
+                    "composer": extracted.get("composer", "") or "",
+                    "comment": extracted.get("comment", "") or "",
                     "writer": writer_json,  # JSON array of lyricists/writers from Navidrome or file tags
                     "album_artist": album_artist_value,
                     "bitrate": extracted.get("bitrate"),
@@ -549,6 +661,10 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "album_context_live": 1 if album_context.get("is_live") else 0,
                     "album_context_unplugged": 1 if album_context.get("is_unplugged") else 0,
                 }
+
+                album_mbid_val = str(td.get("musicbrainz_album_mbid") or "").strip()
+                if album_mbid_val:
+                    album_mbids_seen.add(album_mbid_val)
                 save_to_db(td)
 
                 # Keep embedded tag consistent with normalized DB album_artist.
@@ -564,6 +680,13 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
             elif album_needs_reimport or (not force and len(cached_ids_for_album) > 0):
                 # Album was skipped
                 log_unified(f"Navidrome Import - {artist_name} - Skipped album: {album_name} (already cached)")
+
+            if len(album_mbids_seen) > 1:
+                mbid_preview = ", ".join(sorted(album_mbids_seen)[:4])
+                logging.warning(
+                    f"[NAVIDROME_SCAN] Album MBID inconsistency detected for '{artist_name} - {album_name}': "
+                    f"{len(album_mbids_seen)} distinct MBIDs ({mbid_preview})"
+                )
         if verbose:
             print(f"Artist scan complete: {artist_name}")
             logging.info(f"Artist scan complete: {artist_name}")
