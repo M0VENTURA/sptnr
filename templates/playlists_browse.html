@@ -779,6 +779,10 @@
         body: JSON.stringify({ type: recType, name: `ListenBrainz ${recType.replace('_', ' ')}` })
       });
       const analysis = await analysisResp.json();
+      if (analysisResp.status === 404 && (analysis.error || '').toLowerCase().includes('no recommendations')) {
+        showToast(`ListenBrainz returned no ${recType.replace('_', ' ')} recommendations this week. Try another feed type.`, 'warning');
+        return;
+      }
       if (!analysisResp.ok || !analysis.success) {
         throw new Error(analysis.error || 'Failed to fetch ListenBrainz recommendations');
       }
