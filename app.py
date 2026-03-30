@@ -22264,6 +22264,35 @@ def api_downloads_get_queue():
                         f"[QUEUE_NORMALIZE] Corrected {normalized_count} queue row(s) with invalid file-linked state"
                     )
 
+                # Recover soulseek items that were incorrectly set to 'unmatched'
+                # because check_track_exists_in_db matched a __queued_for_download__
+                # placeholder row in the tracks table (album title written as track
+                # title).  Those items have no linked file and should be dispatched
+                # to Soulseek, not left stranded.
+                try:
+                    cursor.execute(
+                        """
+                        UPDATE download_queue
+                        SET status = 'queued',
+                            failure_reason = NULL,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE status = 'unmatched'
+                          AND LOWER(COALESCE(source, '')) NOT IN ('local', 'discovered')
+                          AND TRIM(COALESCE(file_path, '')) = ''
+                          AND TRIM(COALESCE(matched_file_path, '')) = ''
+                          AND TRIM(COALESCE(music_file_path, '')) = ''
+                        """
+                    )
+                    recovered = cursor.rowcount or 0
+                    if recovered:
+                        conn.commit()
+                        logging.info(
+                            f"[QUEUE_NORMALIZE] Promoted {recovered} stuck unmatched soulseek "
+                            f"item(s) back to queued for Soulseek dispatch"
+                        )
+                except Exception as recover_err:
+                    logging.debug(f"[QUEUE_NORMALIZE] Skipped unmatched soulseek recovery: {recover_err}")
+
                 conn.close()
             except Exception as normalize_err:
                 logging.debug(f"[QUEUE_NORMALIZE] Skipped in_collection normalization: {normalize_err}")
@@ -23175,6 +23204,9 @@ def _check_track_in_local_collection(artist, title, album=None):
         cursor = conn.cursor()
         placeholder = "%s"
 
+        # Exclude queue placeholder rows (file_path NOT LIKE '__queued_for_download__%')
+        # so an album whose title was written as a placeholder in the tracks table is
+        # not falsely reported as already in the collection.
         if album:
             album_lc = album.strip().lower()
             cursor.execute(
@@ -23184,6 +23216,7 @@ def _check_track_in_local_collection(artist, title, album=None):
                 WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = {placeholder}
                   AND LOWER(title) = {placeholder}
                   AND LOWER(COALESCE(album, '')) = {placeholder}
+                  AND (file_path IS NULL OR file_path NOT LIKE '__queued_for_download__%%')
                 LIMIT 1
                 """,
                 (artist_lc, title_lc, album_lc),
@@ -23195,6 +23228,7 @@ def _check_track_in_local_collection(artist, title, album=None):
                 FROM tracks
                 WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = {placeholder}
                   AND LOWER(title) = {placeholder}
+                  AND (file_path IS NULL OR file_path NOT LIKE '__queued_for_download__%%')
                 LIMIT 1
                 """,
                 (artist_lc, title_lc),
