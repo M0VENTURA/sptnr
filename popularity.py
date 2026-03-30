@@ -1584,6 +1584,49 @@ def _cleanup_timeout_executor():
         _timeout_executor = None
 
 
+def _ensure_timeout_executor():
+    """Ensure the shared timeout executor exists and can accept work."""
+    global _timeout_executor
+    if _timeout_executor is None:
+        _timeout_executor = ThreadPoolExecutor(max_workers=20, thread_name_prefix="api_timeout")
+    return _timeout_executor
+
+
+def _execute_tracks_batch_with_retry(conn, cursor, query, params, context, max_retries=5):
+    """Execute a batch tracks UPDATE with deadlock recovery and retry."""
+    rows = list(params or [])
+    if not rows:
+        return 0
+
+    delay = 0.15
+    for attempt in range(max_retries):
+        try:
+            cursor.executemany(query, rows)
+            return len(rows)
+        except Exception as e:
+            err = str(e).lower()
+            is_deadlock_like = (
+                "deadlock" in err
+                or "could not serialize" in err
+                or "infailedsqltransaction" in err
+            )
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
+            if is_deadlock_like and attempt < (max_retries - 1):
+                sleep_for = min(delay * (2 ** attempt), 2.0)
+                log_debug(
+                    f"{context}: transient DB contention ({type(e).__name__}) "
+                    f"retry {attempt + 1}/{max_retries} in {sleep_for:.2f}s"
+                )
+                time.sleep(sleep_for)
+                continue
+
+            raise
+
+
 # Register cleanup handler to shutdown executor on exit
 atexit.register(_cleanup_timeout_executor)
 
@@ -1623,12 +1666,19 @@ def _run_with_timeout(func, timeout_seconds, error_message, *args, **kwargs):
         reduced retry counts. Future enhancement: modify API clients to use this
         session for calls made within _run_with_timeout.
     """
-    global _timeout_executor
-    if _timeout_executor is None:
-        raise RuntimeError("Timeout executor has been shut down")
-
     log_verbose(f"[TIMEOUT DEBUG] Submitting task {func.__name__} with timeout {timeout_seconds}s")
-    future = _timeout_executor.submit(func, *args, **kwargs)
+    executor = _ensure_timeout_executor()
+    try:
+        future = executor.submit(func, *args, **kwargs)
+    except RuntimeError as submit_err:
+        if "cannot schedule new futures after shutdown" in str(submit_err).lower():
+            log_debug("Timeout executor was shut down during submit; recreating and retrying once")
+            global _timeout_executor
+            _timeout_executor = None
+            executor = _ensure_timeout_executor()
+            future = executor.submit(func, *args, **kwargs)
+        else:
+            raise
     log_verbose(f"[TIMEOUT DEBUG] Task submitted, waiting for result...")
     try:
         result = future.result(timeout=timeout_seconds)
@@ -5306,9 +5356,12 @@ def popularity_scan(
                 if writer_updates:
                     log_info(f'💾 Committing {len(writer_updates)} writer credit update(s) for album "{album}"')
                     try:
-                        cursor.executemany(
+                        _execute_tracks_batch_with_retry(
+                            conn,
+                            cursor,
                             f"UPDATE tracks SET writer = {placeholder} WHERE id = {placeholder}",
-                            writer_updates
+                            sorted(writer_updates, key=lambda row: str(row[1])),
+                            f"writer batch update for album {album}",
                         )
                         conn.commit()
                         log_info(f"✅ Successfully committed {len(writer_updates)} writer credit update(s) for album '{album}'")
@@ -5324,9 +5377,13 @@ def popularity_scan(
                         # Retry once after rollback in case a previous non-critical SQL error
                         # (e.g. album art upsert) left the transaction in aborted state.
                         try:
-                            cursor.executemany(
+                            _execute_tracks_batch_with_retry(
+                                conn,
+                                cursor,
                                 f"UPDATE tracks SET writer = {placeholder} WHERE id = {placeholder}",
-                                writer_updates
+                                sorted(writer_updates, key=lambda row: str(row[1])),
+                                f"writer batch retry for album {album}",
+                                max_retries=3,
                             )
                             conn.commit()
                             log_info(f"✅ Writer credit retry succeeded for album '{album}' ({len(writer_updates)} updates)")
@@ -5954,9 +6011,12 @@ def popularity_scan(
 
                     if updated_track_updates:
                         try:
-                            cursor.executemany(
+                            _execute_tracks_batch_with_retry(
+                                conn,
+                                cursor,
                                 f"UPDATE tracks SET popularity_score = {placeholder}, spotify_score = {placeholder}, lastfm_ratio = {placeholder}, lastfm_track_playcount = {placeholder}, spotify_genres = {placeholder}, lastfm_tags = {placeholder}, listenbrainz_genres = {placeholder}, discogs_genres = {placeholder}, musicbrainz_genres = {placeholder}, cover_art_url = {placeholder} WHERE id = {placeholder}",
-                                updated_track_updates
+                                sorted(updated_track_updates, key=lambda row: str(row[-1])),
+                                f"popularity batch update for album {album}",
                             )
                             conn.commit()
 
@@ -6736,16 +6796,22 @@ def popularity_scan(
                                 (is_single, single_confidence, single_sources, track_id)
                             )
                     if single_detection_timestamp_updates:
-                        cursor.executemany(
+                        _execute_tracks_batch_with_retry(
+                            conn,
+                            cursor,
                             f"UPDATE tracks SET single_detection_last_updated = {placeholder} WHERE id = {placeholder}",
-                            single_detection_timestamp_updates
+                            sorted(single_detection_timestamp_updates, key=lambda row: str(row[1])),
+                            f"single timestamp batch update for album {album}",
                         )
                     conn.commit()
                     log_debug(f"Batch committed {len(singles_updates)} singles detection results for album '{album}'")
                 elif single_detection_timestamp_updates:
-                    cursor.executemany(
+                    _execute_tracks_batch_with_retry(
+                        conn,
+                        cursor,
                         f"UPDATE tracks SET single_detection_last_updated = {placeholder} WHERE id = {placeholder}",
-                        single_detection_timestamp_updates
+                        sorted(single_detection_timestamp_updates, key=lambda row: str(row[1])),
+                        f"single timestamp-only batch update for album {album}",
                     )
                     conn.commit()
                     log_debug(f"Batch committed {len(single_detection_timestamp_updates)} single detection timestamp update(s) for album '{album}'")
@@ -7316,9 +7382,12 @@ def popularity_scan(
                         log_debug(f"Final star rating for {title}: {stars} stars")
 
                     # Batch update all tracks at once for better performance
-                    cursor.executemany(
+                    _execute_tracks_batch_with_retry(
+                        conn,
+                        cursor,
                         f"""UPDATE tracks SET stars = {placeholder}, artist_z_score = {placeholder} WHERE id = {placeholder}""",
-                        updates
+                        sorted(updates, key=lambda row: str(row[2])),
+                        f"stars batch update for album {album}",
                     )
 
                     # Tag 5-star songs as singles only for high/user confidence.
@@ -7343,9 +7412,12 @@ def popularity_scan(
                     # Tag 5-star high/user-confidence singles
                     if five_star_singles_to_tag:
                         single_true_value = True if is_postgres_connection(conn) else 1
-                        cursor.executemany(
+                        _execute_tracks_batch_with_retry(
+                            conn,
+                            cursor,
                             f"""UPDATE tracks SET is_single = {placeholder} WHERE id = {placeholder}""",
-                            ((single_true_value, track_id) for track_id in five_star_singles_to_tag)
+                            [(single_true_value, track_id) for track_id in sorted(five_star_singles_to_tag, key=lambda v: str(v))],
+                            f"5-star single tag batch update for album {album}",
                         )
                         log_info(f"Tagged {len(five_star_singles_to_tag)} 5-star track(s) as singles (high/user confidence)")
                         log_debug(f"5-star singles tagged: {five_star_singles_to_tag}")
@@ -7353,9 +7425,12 @@ def popularity_scan(
                     # Upgrade is_single flag for medium confidence tracks with 2+ sources
                     if single_upgrades:
                         single_true_value = True if is_postgres_connection(conn) else 1
-                        cursor.executemany(
+                        _execute_tracks_batch_with_retry(
+                            conn,
+                            cursor,
                             f"""UPDATE tracks SET is_single = {placeholder} WHERE id = {placeholder}""",
-                            ((single_true_value, track_id) for track_id in single_upgrades)
+                            [(single_true_value, track_id) for track_id in sorted(single_upgrades, key=lambda v: str(v))],
+                            f"single upgrade batch update for album {album}",
                         )
                         log_info(f"Upgraded {len(single_upgrades)} medium-confidence track(s) to single status (2+ sources) without overriding star rating")
                         log_debug(f"Upgraded tracks: {single_upgrades}")
@@ -7363,11 +7438,14 @@ def popularity_scan(
                     # Enforce downgrade rule for medium confidence tracks that fail the z-score/source gate.
                     if single_downgrades:
                         single_false_value = False if is_postgres_connection(conn) else 0
-                        cursor.executemany(
+                        _execute_tracks_batch_with_retry(
+                            conn,
+                            cursor,
                             f"""UPDATE tracks
                             SET is_single = {placeholder}, single_confidence = {placeholder}
                             WHERE id = {placeholder}""",
-                            ((single_false_value, "low", track_id) for track_id in set(single_downgrades))
+                            [(single_false_value, "low", track_id) for track_id in sorted(set(single_downgrades), key=lambda v: str(v))],
+                            f"single downgrade batch update for album {album}",
                         )
                         log_info(f"Downgraded {len(set(single_downgrades))} track(s) to low confidence (medium source gate failed)")
                         log_debug(f"Downgraded tracks: {list(set(single_downgrades))}")
@@ -7378,11 +7456,14 @@ def popularity_scan(
                     # the now-invalidated cached result.
                     if stale_high_conf_track_ids:
                         unique_stale_ids = list(set(stale_high_conf_track_ids))
-                        cursor.executemany(
+                        _execute_tracks_batch_with_retry(
+                            conn,
+                            cursor,
                             f"""UPDATE tracks
                             SET single_detection_last_updated = NULL
                             WHERE id = {placeholder}""",
-                            ((track_id,) for track_id in unique_stale_ids)
+                            [(track_id,) for track_id in sorted(unique_stale_ids, key=lambda v: str(v))],
+                            f"stale-high-confidence rescan queue update for album {album}",
                         )
                         log_info(
                             f"Queued {len(unique_stale_ids)} track(s) for single detection rescan "
