@@ -1946,6 +1946,12 @@ def update_queue_item(queue_id, **kwargs):
     max_retries = 5
     retry_delay = 0.1
     last_error = None
+    optional_update_fields = {
+        'copied_individually', 'copied_individually_at',
+        'duration', 'match_confidence', 'match_method',
+        'slskd_transfer_id', 'slskd_username', 'slskd_state',
+        'slskd_queue_position', 'slskd_last_sync_at'
+    }
     
     for attempt in range(max_retries):
         conn = None
@@ -1955,11 +1961,26 @@ def update_queue_item(queue_id, **kwargs):
             cursor = conn.cursor()
             placeholder = "%s"
 
+            # Clear any inherited failed transaction state before doing schema checks.
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
             # Ensure schema before any queue writes. This prevents missing-column
             # failures on older databases and post-deploy drift.
-            _ensure_download_queue_columns(conn, cursor, is_pg=True)
+            try:
+                _ensure_download_queue_columns(conn, cursor, is_pg=True)
+            except Exception as schema_err:
+                logger.warning(
+                    f"Schema ensure failed in update_queue_item for queue {queue_id} (continuing): {schema_err}"
+                )
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
 
-            existing_cols = set()
+            existing_cols = None
             try:
                 cursor.execute(
                     """
@@ -2019,7 +2040,12 @@ def update_queue_item(queue_id, **kwargs):
                            'copied_individually', 'copied_individually_at', 'duration',
                            'match_confidence', 'match_method',
                            'slskd_transfer_id', 'slskd_username', 'slskd_state', 'slskd_queue_position', 'slskd_last_sync_at']:
-                    if existing_cols and key not in existing_cols:
+                    if existing_cols is None and key in optional_update_fields:
+                        logger.debug(
+                            f"Skipping optional queue column '{key}' because schema introspection was unavailable for queue item {queue_id}"
+                        )
+                        continue
+                    if existing_cols is not None and key not in existing_cols:
                         logger.debug(f"Skipping missing queue column '{key}' for queue item {queue_id}")
                         continue
                     # Special handling for file_path to avoid UNIQUE constraint issues
@@ -2085,6 +2111,27 @@ def update_queue_item(queue_id, **kwargs):
                 logger.warning(f"DB operational error updating queue item {queue_id}, retrying (attempt {attempt + 1}/{max_retries})...")
                 continue
             logger.error(f"OperationalError updating queue item {queue_id}: {e}")
+            return None
+        except psycopg2.InternalError as e:
+            last_error = e
+            try:
+                if conn:
+                    conn.rollback()
+            except Exception:
+                pass
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 5.0)
+                logger.warning(
+                    f"DB internal error updating queue item {queue_id}, retrying (attempt {attempt + 1}/{max_retries}): {e}"
+                )
+                continue
+            logger.error(f"InternalError updating queue item {queue_id}: {e}")
             return None
         except psycopg2.IntegrityError as e:
             try:

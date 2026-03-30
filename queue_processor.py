@@ -474,9 +474,9 @@ def get_queued_items(limit=None):
                 """
                 UPDATE download_queue
                 SET source = 'soulseek', updated_at = CURRENT_TIMESTAMP
-                WHERE status = 'queued'
+                                WHERE TRIM(LOWER(COALESCE(status, ''))) = 'queued'
                   AND (next_retry_at IS NULL OR next_retry_at <= {placeholder})
-                  AND COALESCE(LOWER(source), 'soulseek') = 'qbittorrent'
+                                    AND TRIM(LOWER(COALESCE(source, 'soulseek'))) = 'qbittorrent'
                 """.format(placeholder=placeholder),
                 (now,),
             )
@@ -503,10 +503,10 @@ def get_queued_items(limit=None):
                 """
                 SELECT COALESCE(LOWER(source), 'soulseek') AS source_key, COUNT(*) AS item_count
                 FROM download_queue
-                WHERE status = 'queued'
+                                WHERE TRIM(LOWER(COALESCE(status, ''))) = 'queued'
                   AND (next_retry_at IS NULL OR next_retry_at <= {placeholder})
-                                    AND COALESCE(LOWER(source), 'soulseek') IN ('local', 'discovered')
-                GROUP BY COALESCE(LOWER(source), 'soulseek')
+                                    AND TRIM(LOWER(COALESCE(source, 'soulseek'))) IN ('local', 'discovered')
+                                GROUP BY COALESCE(LOWER(source), 'soulseek')
                 ORDER BY source_key
                 """.format(placeholder=placeholder),
                 (now,),
@@ -532,9 +532,9 @@ def get_queued_items(limit=None):
         # Get queued items and items scheduled for retry
         base_query = """
             SELECT * FROM download_queue
-            WHERE status = 'queued'
+            WHERE TRIM(LOWER(COALESCE(status, ''))) = 'queued'
             AND (next_retry_at IS NULL OR next_retry_at <= {placeholder})
-            AND COALESCE(LOWER(source), 'soulseek') NOT IN ('local', 'discovered')
+            AND TRIM(LOWER(COALESCE(source, 'soulseek'))) NOT IN ('local', 'discovered')
             ORDER BY priority ASC, retry_count ASC, next_retry_at ASC, created_at ASC
         """.format(placeholder=placeholder)
 
