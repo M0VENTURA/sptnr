@@ -18,6 +18,18 @@ from api_clients.musicbrainz import _VERSION as MUSICBRAINZ_VERSION
 logger = logging.getLogger(__name__)
 
 
+def _canonical_track_title(value: str) -> str:
+    """Normalize track titles so album/version variants still match canonical recordings."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"\[[^\]]*\]", " ", text)
+    text = re.sub(r"\([^)]*\)", " ", text)
+    text = re.sub(r"\s+-\s+.*$", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip().lower()
+
+
 class CoverDetector:
     """Detect and attribute cover songs using MusicBrainz relations and writer/composer data."""
     
@@ -112,6 +124,10 @@ class CoverDetector:
             }
         """
         logger.info(f"Starting cover detection for album '{album}' by '{artist}' ({len(tracks)} tracks)")
+
+        for track in tracks:
+            track.setdefault('album', album)
+            track.setdefault('album_artist', artist)
         
         # Step 1: Collect writer information for all tracks
         track_writers = {}
@@ -143,9 +159,15 @@ class CoverDetector:
             if not track_id or track_id in seen_track_ids:
                 continue
 
-            mbid = track.get('mbid')
+            mbid = track.get('mbid') or self._resolve_recording_mbid(
+                track,
+                album_artist=artist,
+                album_title=album,
+            )
             if not mbid:
                 continue
+
+            track['mbid'] = mbid
 
             relation_original = self._find_original_from_cover_relation(
                 recording_mbid=mbid,
@@ -417,11 +439,109 @@ class CoverDetector:
             except json.JSONDecodeError:
                 logger.debug(f"Could not parse writer field for track {track.get('title')}")
         
-        # If no writers from DB, try MusicBrainz API
-        if not writers and track.get('mbid'):
-            writers = self._fetch_writers_from_musicbrainz(track['mbid'])
+        # If no writers from DB, resolve the recording MBID first and then query MusicBrainz.
+        if not writers:
+            resolved_mbid = track.get('mbid') or self._resolve_recording_mbid(
+                track,
+                album_artist=track.get('album_artist') or track.get('artist'),
+                album_title=track.get('album')
+            )
+            if resolved_mbid:
+                track['mbid'] = resolved_mbid
+                writers = self._fetch_writers_from_musicbrainz(resolved_mbid)
         
         return self._normalize_writer_credits(writers)
+
+    def _resolve_recording_mbid(self, track: Dict, album_artist: Optional[str] = None, album_title: Optional[str] = None) -> Optional[str]:
+        """Resolve a recording MBID for tracks that only have release-level metadata."""
+        existing_mbid = str(track.get('mbid') or '').strip()
+        if existing_mbid:
+            return existing_mbid
+
+        title = str(track.get('title') or '').strip()
+        if not title:
+            return None
+
+        search_artist = str(track.get('artist') or album_artist or '').strip()
+        release_mbid = str(track.get('musicbrainz_album_mbid') or '').strip()
+        mb = self._configure_musicbrainzngs()
+        if mb is None:
+            return None
+
+        target_title = _canonical_track_title(title)
+
+        def _titles_match(left: str, right: str) -> bool:
+            left_title = _canonical_track_title(left)
+            right_title = _canonical_track_title(right)
+            if not left_title or not right_title:
+                return False
+            return (
+                left_title == right_title
+                or left_title.startswith(right_title)
+                or right_title.startswith(left_title)
+            )
+
+        def _artist_matches(artist_credit: List[Dict]) -> bool:
+            if not search_artist:
+                return True
+            for entry in artist_credit or []:
+                if not isinstance(entry, dict):
+                    continue
+                artist_name = (entry.get('artist') or {}).get('name') or entry.get('name')
+                if artist_name and self._names_match(artist_name, search_artist):
+                    return True
+            return False
+
+        if release_mbid:
+            try:
+                release_result = mb.get_release_by_id(
+                    release_mbid,
+                    includes=['recordings', 'artist-credits']
+                )
+                release = release_result.get('release', {})
+                for medium in release.get('medium-list', []) or []:
+                    for medium_track in medium.get('track-list', []) or []:
+                        recording = medium_track.get('recording', {}) or {}
+                        candidate_title = recording.get('title') or medium_track.get('title') or ''
+                        if not _titles_match(title, candidate_title):
+                            continue
+                        artist_credit = recording.get('artist-credit', []) or medium_track.get('artist-credit', [])
+                        if _artist_matches(artist_credit):
+                            resolved_mbid = str(recording.get('id') or '').strip()
+                            if resolved_mbid:
+                                logger.debug(
+                                    f"Resolved recording MBID for '{title}' from album release '{release_mbid}': {resolved_mbid}"
+                                )
+                                return resolved_mbid
+            except Exception as e:
+                logger.debug(
+                    f"Failed release-based recording MBID lookup for '{title}' on '{album_title or release_mbid}': {e}"
+                )
+
+        try:
+            search_kwargs = {'recording': title, 'limit': 10}
+            if search_artist:
+                search_kwargs['artist'] = search_artist
+            result = mb.search_recordings(**search_kwargs)
+            for recording in result.get('recording-list', []) or []:
+                candidate_title = recording.get('title', '')
+                if not _titles_match(title, candidate_title):
+                    continue
+                if not _artist_matches(recording.get('artist-credit', []) or []):
+                    continue
+                resolved_mbid = str(recording.get('id') or '').strip()
+                if resolved_mbid:
+                    logger.debug(
+                        f"Resolved recording MBID for '{title}' from recording search: {resolved_mbid}"
+                    )
+                    return resolved_mbid
+        except Exception as e:
+            logger.debug(f"Failed recording search MBID lookup for '{title}' by '{search_artist}': {e}")
+
+        logger.debug(
+            f"Could not resolve recording MBID for '{title}' by '{search_artist or album_artist or 'unknown artist'}'"
+        )
+        return None
     
     def _normalize_writer_credits(self, writers: List[str]) -> List[str]:
         """Split combined writer credits and dedupe names."""
