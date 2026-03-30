@@ -3746,6 +3746,14 @@ def _start_boot_album_artist_sync_only():
 
 def _schedule_configured_startup_scan_launch():
     """Launch configured scan set after reboot when enabled in feature settings."""
+    def _log_boot_resume_summary(scan_type: str, mode: str, resume_artist: str = "", source: str = "startup"):
+        summary = (
+            f"[BOOT_RESUME_SUMMARY] source={source} scan={scan_type} mode={mode} "
+            f"resume_artist={resume_artist or 'N/A'}"
+        )
+        logging.info(summary)
+        log_unified(summary)
+
     def _resolve_startup_scan_mode(scan_type, force_enabled, restart_requested):
         mode = "force" if force_enabled else "all"
         effective_restart = restart_requested
@@ -3840,6 +3848,7 @@ def _schedule_configured_startup_scan_launch():
 
             if resume_artist:
                 log_unified(f"[BOOT] Launch on startup: resuming {scan_type} from {resume_artist}")
+                _log_boot_resume_summary(scan_type, mode, resume_artist=resume_artist, source="launch_on_startup")
 
             log_unified(
                 f"[BOOT] Launch on startup: starting {scan_type} "
@@ -3979,6 +3988,13 @@ def _auto_resume_interrupted_scans():
                         f"[BOOT_RESUME] Resuming interrupted {scan_type} scan"
                         + (f" from '{resume_artist}'" if resume_artist else "")
                     )
+                    summary = (
+                        f"[BOOT_RESUME_SUMMARY] source=auto_resume scan={scan_type} "
+                        f"mode={'singles_resume' if scan_type == 'singles' else 'resume'} "
+                        f"resume_artist={resume_artist or 'N/A'}"
+                    )
+                    logging.info(summary)
+                    log_unified(summary)
                     with app.test_request_context(request_path, method="POST"):
                         handler()
 
