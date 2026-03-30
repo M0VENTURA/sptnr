@@ -183,6 +183,53 @@
     </div>
   </div>
 
+  <!-- External Recommendations (Last.fm + ListenBrainz) -->
+  <div class="mb-4">
+    <div class="card">
+      <div class="card-header">
+        <h5 class="mb-0">
+          <i class="bi bi-broadcast"></i> Last.fm & ListenBrainz Playlist Actions
+        </h5>
+      </div>
+      <div class="card-body">
+        <p class="text-muted mb-3">
+          Create Navidrome playlists directly from Last.fm and ListenBrainz recommendation sources.
+        </p>
+
+        <div class="row g-3">
+          <div class="col-12 col-lg-6">
+            <div class="card h-100">
+              <div class="card-body">
+                <h6 class="mb-2"><i class="bi bi-star"></i> Last.fm</h6>
+                <p class="small text-muted mb-3">Build a playlist from Last.fm track, artist, or album recommendations.</p>
+                <div class="d-flex flex-wrap gap-2">
+                  <button class="btn btn-sm btn-outline-primary" onclick="createLastfmPlaylistInBrowse('tracks')">Tracks</button>
+                  <button class="btn btn-sm btn-outline-primary" onclick="createLastfmPlaylistInBrowse('artists')">Artists</button>
+                  <button class="btn btn-sm btn-outline-primary" onclick="createLastfmPlaylistInBrowse('albums')">Albums</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="col-12 col-lg-6">
+            <div class="card h-100">
+              <div class="card-body">
+                <h6 class="mb-2"><i class="bi bi-disc"></i> ListenBrainz</h6>
+                <p class="small text-muted mb-3">Build a playlist from weekly or last-week ListenBrainz recommendation feeds.</p>
+                <div class="d-flex flex-wrap gap-2">
+                  <button class="btn btn-sm btn-outline-info" onclick="createListenBrainzPlaylistInBrowse('weekly_jams')">Weekly Jams</button>
+                  <button class="btn btn-sm btn-outline-info" onclick="createListenBrainzPlaylistInBrowse('weekly_exploration')">Weekly Exploration</button>
+                  <button class="btn btn-sm btn-outline-info" onclick="createListenBrainzPlaylistInBrowse('last_week_jams')">Last Week Jams</button>
+                  <button class="btn btn-sm btn-outline-info" onclick="createListenBrainzPlaylistInBrowse('last_week_exploration')">Last Week Exploration</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Custom Playlist Creator -->
   <div class="mb-4">
     <div class="card">
@@ -647,6 +694,113 @@
     setTimeout(() => {
       toast.remove();
     }, 5000);
+  }
+
+  function getTargetPlaylistUser() {
+    const userSelect = document.getElementById('customPlaylistUser');
+    if (!userSelect) return '';
+    const selected = (userSelect.value || '').trim();
+    if (selected) return selected;
+    if (userSelect.options && userSelect.options.length > 0) {
+      const fallback = (userSelect.options[0].value || '').trim();
+      if (fallback) return fallback;
+    }
+    return '';
+  }
+
+  async function createPlaylistFromMatchedTracks(songs, playlistName, description) {
+    if (!Array.isArray(songs) || songs.length === 0) {
+      throw new Error('No matched tracks were returned');
+    }
+
+    const user = getTargetPlaylistUser();
+    const payload = {
+      name: playlistName,
+      description,
+      user,
+      is_public: false,
+      songs: songs
+    };
+
+    const resp = await fetch('/api/playlist/create-custom', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    const data = await resp.json();
+    if (!resp.ok || !data.success) {
+      throw new Error(data.error || 'Failed to create playlist');
+    }
+    return data;
+  }
+
+  async function createLastfmPlaylistInBrowse(recType) {
+    try {
+      showToast(`Loading Last.fm ${recType} recommendations...`, 'info');
+
+      const analysisResp = await fetch('/api/lastfm/create-playlist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: recType, enqueue_missing: true })
+      });
+      const analysis = await analysisResp.json();
+      if (!analysisResp.ok) {
+        throw new Error(analysis.error || 'Failed to fetch Last.fm recommendations');
+      }
+
+      const matched = Array.isArray(analysis.matched_tracks) ? analysis.matched_tracks : [];
+      const timestamp = new Date().toISOString().slice(0, 10);
+      const playlistName = `LastFM ${recType.replace('_', ' ')} ${timestamp}`;
+
+      const result = await createPlaylistFromMatchedTracks(
+        matched,
+        playlistName,
+        `Auto-created from Last.fm ${recType} recommendations`
+      );
+
+      showToast(
+        `Created \"${playlistName}\" with ${matched.length} matched tracks (${analysis.missing || 0} missing). Target user: ${result.target_user || 'default'}`,
+        'success'
+      );
+    } catch (error) {
+      console.error('Last.fm playlist creation failed:', error);
+      showToast('Last.fm playlist failed: ' + error.message, 'danger');
+    }
+  }
+
+  async function createListenBrainzPlaylistInBrowse(recType) {
+    try {
+      showToast(`Loading ListenBrainz ${recType.replace('_', ' ')} recommendations...`, 'info');
+
+      const analysisResp = await fetch('/api/listenbrainz/create-playlist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: recType, name: `ListenBrainz ${recType.replace('_', ' ')}` })
+      });
+      const analysis = await analysisResp.json();
+      if (!analysisResp.ok || !analysis.success) {
+        throw new Error(analysis.error || 'Failed to fetch ListenBrainz recommendations');
+      }
+
+      const matched = Array.isArray(analysis.matched_tracks) ? analysis.matched_tracks : [];
+      const timestamp = new Date().toISOString().slice(0, 10);
+      const playlistName = `ListenBrainz ${recType.replace('_', ' ')} ${timestamp}`;
+
+      const result = await createPlaylistFromMatchedTracks(
+        matched,
+        playlistName,
+        `Auto-created from ListenBrainz ${recType} recommendations`
+      );
+
+      showToast(
+        `Created \"${playlistName}\" with ${matched.length} matched tracks (${analysis.missing || 0} missing). Target user: ${result.target_user || 'default'}`,
+        'success'
+      );
+    } catch (error) {
+      console.error('ListenBrainz playlist creation failed:', error);
+      showToast('ListenBrainz playlist failed: ' + error.message, 'danger');
+    }
   }
 </script>
 
