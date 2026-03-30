@@ -1561,6 +1561,14 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                             isrc = COALESCE(NULLIF({placeholder}, ''), isrc),
                             composer = COALESCE(NULLIF({placeholder}, ''), composer),
                             genres = COALESCE(NULLIF({placeholder}, ''), genres),
+                            status = CASE
+                                WHEN status = 'unmatched'
+                                 AND LOWER(COALESCE(source, '')) NOT IN ('local', 'discovered')
+                                 AND TRIM(COALESCE(file_path, '')) = ''
+                                 AND TRIM(COALESCE(matched_file_path, '')) = ''
+                                THEN 'queued'
+                                ELSE status
+                            END,
                             updated_at = CURRENT_TIMESTAMP
                         WHERE id = {placeholder}
                         """,
@@ -1632,6 +1640,8 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         # Collection matching: location/path-based only.
         # Do not mark as in_collection using metadata-only DB lookups because that
         # can produce ambiguous matches without a concrete file path.
+        # Any tracks-table query used here must guard against placeholder rows:
+        # file_path NOT LIKE '__queued_for_download__%'
         in_collection = False
         collection_track_id = None
 
@@ -4172,7 +4182,11 @@ def check_downloads_folder():
                 return False
 
         def _find_existing_music_file(queue_item):
-            """Find a likely already-imported /music file for an active queue item."""
+            """Find a likely already-imported /music file for an active queue item.
+
+            All tracks-table queries exclude queue placeholder rows:
+            file_path NOT LIKE '__queued_for_download__%'
+            """
             def _row_file_path(row_value):
                 if not row_value:
                     return None
