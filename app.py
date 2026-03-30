@@ -3816,46 +3816,63 @@ def _schedule_configured_startup_scan_launch():
             }
             from scan_resume import should_resume_scan
 
-            # If any interrupted scan exists, resume that first (priority order)
-            # instead of launching a different configured startup scan.
+            # If any interrupted scan exists, resume that first (priority order).
+            # Special case: when startup is configured for Essentia, we still launch
+            # Essentia even if another interrupted scan (for example combined) exists.
+            configured_scan_type = scan_type
+            resume_override_scan_type = None
             resume_priority = ["combined", "navidrome", "singles", "popularity", "essentia_mood"]
             for resume_candidate in resume_priority:
                 should_resume, _resume_artist = should_resume_scan(resume_candidate)
                 if not should_resume:
                     continue
-                override_scan_type = "essentia-mood" if resume_candidate == "essentia_mood" else resume_candidate
-                if override_scan_type != scan_type:
+                resume_override_scan_type = "essentia-mood" if resume_candidate == "essentia_mood" else resume_candidate
+                if resume_override_scan_type != configured_scan_type:
                     logging.info(
-                        f"[BOOT] Interrupted {override_scan_type} scan detected; overriding configured startup scan '{scan_type}'"
+                        f"[BOOT] Interrupted {resume_override_scan_type} scan detected; overriding configured startup scan '{configured_scan_type}'"
                     )
-                scan_type = override_scan_type
                 break
 
-            handler_name, base_path = mapping.get(scan_type, ("scan_navidrome", "/scan/navidrome"))
-            mode, effective_restart, resume_artist = _resolve_startup_scan_mode(scan_type, force_enabled, restart)
+            launch_sequence = []
+            if resume_override_scan_type:
+                launch_sequence.append(resume_override_scan_type)
+                if configured_scan_type == "essentia-mood" and resume_override_scan_type != "essentia-mood":
+                    logging.info("[BOOT] Keeping configured essentia-mood startup launch alongside interrupted-scan resume")
+                    launch_sequence.append("essentia-mood")
+            else:
+                launch_sequence.append(configured_scan_type)
 
-            params = []
-            if scan_type != "metadata":
-                params.append(f"mode={mode}")
-            if scan_type in {"navidrome", "popularity", "singles", "essentia-mood", "combined"}:
-                params.append("restart=1" if effective_restart else "restart=0")
+            launched_types = set()
+            for launch_scan_type in launch_sequence:
+                if launch_scan_type in launched_types:
+                    continue
+                launched_types.add(launch_scan_type)
 
-            request_path = base_path + (("?" + "&".join(params)) if params else "")
-            handler = globals().get(handler_name)
-            if not callable(handler):
-                logging.warning(f"[BOOT] Startup scan launch skipped: handler '{handler_name}' not available")
-                return
+                handler_name, base_path = mapping.get(launch_scan_type, ("scan_navidrome", "/scan/navidrome"))
+                mode, effective_restart, resume_artist = _resolve_startup_scan_mode(launch_scan_type, force_enabled, restart)
 
-            if resume_artist:
-                log_unified(f"[BOOT] Launch on startup: resuming {scan_type} from {resume_artist}")
-                _log_boot_resume_summary(scan_type, mode, resume_artist=resume_artist, source="launch_on_startup")
+                params = []
+                if launch_scan_type != "metadata":
+                    params.append(f"mode={mode}")
+                if launch_scan_type in {"navidrome", "popularity", "singles", "essentia-mood", "combined"}:
+                    params.append("restart=1" if effective_restart else "restart=0")
 
-            log_unified(
-                f"[BOOT] Launch on startup: starting {scan_type} "
-                f"({mode}, {'restart' if effective_restart else 'normal'})"
-            )
-            with app.test_request_context(request_path, method="POST"):
-                handler()
+                request_path = base_path + (("?" + "&".join(params)) if params else "")
+                handler = globals().get(handler_name)
+                if not callable(handler):
+                    logging.warning(f"[BOOT] Startup scan launch skipped: handler '{handler_name}' not available")
+                    continue
+
+                if resume_artist:
+                    log_unified(f"[BOOT] Launch on startup: resuming {launch_scan_type} from {resume_artist}")
+                    _log_boot_resume_summary(launch_scan_type, mode, resume_artist=resume_artist, source="launch_on_startup")
+
+                log_unified(
+                    f"[BOOT] Launch on startup: starting {launch_scan_type} "
+                    f"({mode}, {'restart' if effective_restart else 'normal'})"
+                )
+                with app.test_request_context(request_path, method="POST"):
+                    handler()
         except Exception as exc:
             logging.error(f"[BOOT] Startup scan launch failed: {exc}", exc_info=True)
 
@@ -7846,6 +7863,7 @@ def api_artist_exists():
 def api_artist_missing_releases():
     """Detect missing releases for an artist by comparing to MusicBrainz."""
     artist = request.args.get("artist", "").strip()
+    background_refresh = str(request.args.get("background", "0")).strip().lower() in ("1", "true", "yes", "on")
     if not artist:
         return jsonify({"error": "Artist is required"}), 400
 
@@ -7863,6 +7881,63 @@ def api_artist_missing_releases():
     
     # Use canonical artist identity for all comparisons (album_artist preferred)
     artist_compare_expr = "COALESCE(NULLIF(album_artist, ''), artist)"
+
+    # Background auto-refreshes should never contend with active scans.
+    # When scans are running, return cached missing releases instead of doing
+    # live MusicBrainz lookups from page-load requests.
+    if background_refresh:
+        with scan_lock:
+            scans_active = any(
+                _is_process_alive(proc)
+                for proc in (
+                    scan_process,
+                    scan_process_navidrome,
+                    scan_process_popularity,
+                    scan_process_singles,
+                    scan_process_mood,
+                    scan_process_essentia_mood,
+                    scan_process_combined,
+                    scan_process_missing_releases,
+                    scan_process_mp3_import,
+                )
+            )
+
+        if scans_active:
+            cursor.execute(f"""
+                SELECT DISTINCT album
+                FROM tracks
+                WHERE LOWER({artist_compare_expr}) = LOWER({placeholder})
+            """, (artist,))
+            existing_albums = [row['album'] for row in cursor.fetchall()]
+
+            cursor.execute(f"""
+                SELECT release_id, title, primary_type, first_release_date, cover_art_url, category
+                FROM missing_releases
+                WHERE LOWER(artist) = LOWER({placeholder})
+                ORDER BY first_release_date DESC NULLS LAST, title ASC
+            """, (artist,))
+            cached_rows = cursor.fetchall() or []
+            missing = []
+            for row in cached_rows:
+                missing.append({
+                    "id": row.get("release_id") or "",
+                    "title": row.get("title") or "",
+                    "primary_type": row.get("primary_type") or "",
+                    "first_release_date": row.get("first_release_date") or "",
+                    "secondary_types": [],
+                    "cover_art_url": row.get("cover_art_url") or "",
+                    "category": row.get("category") or "Album",
+                })
+
+            conn.close()
+            return jsonify({
+                "artist": artist,
+                "missing": missing,
+                "total_musicbrainz": 0,
+                "existing_albums": existing_albums,
+                "scan_guarded": True,
+                "info": "Skipped live MusicBrainz lookup during active scan; returned cached missing releases.",
+            })
 
     # Get artist MBID if available for more accurate MusicBrainz lookup
     artist_mbid = None
@@ -16332,27 +16407,44 @@ def scan_combined():
                     # Determine force rescan based on mode
                     force_rescan = (mode == 'force' or mode == 'resume_force')
                     
-                    # Determine start index for resume mode using checkpoint file
+                    # Determine start index for resume mode using checkpoint file.
+                    # Fallback to scan_resume progress metadata when checkpoint file is missing.
                     start_idx = 0
                     if mode == 'resume' or mode == 'resume_force':
+                        last_scanned_artist = None
                         if os.path.exists(checkpoint_path):
                             try:
                                 with open(checkpoint_path, 'r') as f:
                                     checkpoint = json.load(f)
                                     last_scanned_artist = checkpoint.get("last_scanned_artist")
-                                    if last_scanned_artist:
-                                        logging.info(f"Resume mode: Found last scanned artist '{last_scanned_artist}' in checkpoint")
-                                        for idx, (artist_name, _) in enumerate(artists):
-                                            if artist_name == last_scanned_artist:
-                                                start_idx = idx  # Start from this artist (rescan it completely)
-                                                logging.info(f"Resuming combined scan from artist index {start_idx} ('{last_scanned_artist}')")
-                                                break
-                                    else:
-                                        logging.warning("Resume mode: Checkpoint exists but has no last_scanned_artist, starting from beginning")
+                                if last_scanned_artist:
+                                    logging.info(f"Resume mode: Found last scanned artist '{last_scanned_artist}' in checkpoint")
+                                else:
+                                    logging.warning("Resume mode: Checkpoint exists but has no last_scanned_artist")
                             except Exception as e:
-                                logging.warning(f"Resume mode: Error reading checkpoint: {e}, starting from beginning")
+                                logging.warning(f"Resume mode: Error reading checkpoint: {e}")
+
+                        if not last_scanned_artist:
+                            try:
+                                from scan_resume import get_last_scanned_artist
+                                last_scanned_artist = get_last_scanned_artist(scan_type="combined", db_path=DB_PATH)
+                                if last_scanned_artist:
+                                    logging.info(f"Resume mode: Using progress fallback artist '{last_scanned_artist}'")
+                                else:
+                                    logging.warning("Resume mode: No fallback artist found in progress metadata")
+                            except Exception as resume_err:
+                                logging.warning(f"Resume mode: Could not read fallback progress metadata: {resume_err}")
+
+                        if last_scanned_artist:
+                            for idx, (artist_name, _) in enumerate(artists):
+                                if artist_name == last_scanned_artist:
+                                    start_idx = idx  # Start from this artist (rescan it completely)
+                                    logging.info(f"Resuming combined scan from artist index {start_idx} ('{last_scanned_artist}')")
+                                    break
+                            else:
+                                logging.warning(f"Resume mode: Artist '{last_scanned_artist}' not found in current artist index; starting from beginning")
                         else:
-                            logging.warning("Resume mode: No checkpoint found, starting from beginning")
+                            logging.warning("Resume mode: No checkpoint/progress artist found, starting from beginning")
                     
                     # Process each artist sequentially
                     for idx, (artist_name, info) in enumerate(artists[start_idx:], start=start_idx+1):
@@ -16438,9 +16530,7 @@ def scan_combined():
                     logging.info("Combined scan completed successfully")
                 except Exception as e:
                     logging.error(f"Error in combined scan: {e}", exc_info=True)
-                    # Clear checkpoint on error to prevent resuming from error state
-                    if os.path.exists(checkpoint_path):
-                        os.remove(checkpoint_path)
+                    # Keep checkpoint on error so reboot resume can continue from the last saved artist.
                     _write_progress_with_current_artist(combined_progress_file, "combined_scan", False, {"status": "error", "error": str(e), "exit_code": 1})
                 finally:
                     # Ensure the combined scan progress file is never left with is_running=True
@@ -17129,6 +17219,56 @@ def api_musicbrainz_search():
     except Exception as e:
         logging.error(f"[MB_SEARCH] Error: {e}")
         return jsonify({"error": str(e)}), 500
+def _normalize_download_method(requested_method, *, default_method="slskd", context="download request"):
+    """Resolve the effective download transport based on enabled integrations."""
+    method = str(requested_method or default_method).strip().lower()
+    if method == "soulseek":
+        method = "slskd"
+
+    if method not in {"slskd", "qbittorrent"}:
+        return None, "Invalid method. Use 'slskd' or 'qbittorrent'"
+
+    cfg = get_config() or {}
+    slskd_enabled = bool((cfg.get("slskd") or {}).get("enabled", False))
+    qbit_enabled = bool((cfg.get("qbittorrent") or {}).get("enabled", False))
+
+    if method == "qbittorrent" and not qbit_enabled:
+        if slskd_enabled:
+            logging.info(
+                "[QUEUE_ROUTE] qBittorrent requested for %s but disabled; routing through Soulseek",
+                context,
+            )
+            return "slskd", None
+        return None, "qBittorrent is disabled and Soulseek is not enabled"
+
+    if method == "slskd" and not slskd_enabled:
+        if qbit_enabled:
+            logging.info(
+                "[QUEUE_ROUTE] Soulseek requested for %s but disabled; routing through qBittorrent",
+                context,
+            )
+            return "qbittorrent", None
+        return None, "Soulseek is disabled and qBittorrent is not enabled"
+
+    return method, None
+
+
+def _normalize_queue_source(requested_source, *, default_source="soulseek", context="queue request"):
+    """Resolve download_queue source using the transport availability rules."""
+    source = str(requested_source or default_source).strip().lower()
+    if source == "slskd":
+        source = "soulseek"
+
+    method = "slskd" if source == "soulseek" else source
+    normalized_method, error_message = _normalize_download_method(
+        method,
+        default_method="slskd",
+        context=context,
+    )
+    if error_message:
+        return None, error_message
+
+    return ("soulseek" if normalized_method == "slskd" else "qbittorrent"), None
 
 
 @app.route("/api/musicbrainz/download", methods=["POST"])
@@ -17146,12 +17286,13 @@ def api_musicbrainz_download():
     if not all([release_id, release_title, artist]):
         return jsonify({"error": "Missing required parameters"}), 400
 
-    if not method:
-        # Full-release downloads should prefer qBittorrent first.
-        method = "qbittorrent"
-    
-    if method not in ["slskd", "qbittorrent"]:
-        return jsonify({"error": "Invalid method. Use 'slskd' or 'qbittorrent'"}), 400
+    method, method_error = _normalize_download_method(
+        method,
+        default_method="slskd",
+        context=f"MusicBrainz release {release_id}",
+    )
+    if method_error:
+        return jsonify({"error": method_error}), 400
     
     try:
         # Fetch MusicBrainz release data to get all tracks
@@ -18357,13 +18498,21 @@ def api_musicbrainz_retry(download_id):
             return jsonify({"error": "Download not found"}), 404
         
         _, _, _, method, download_query = row
+        method, method_error = _normalize_download_method(
+            method,
+            default_method="slskd",
+            context=f"managed download retry {download_id}",
+        )
+        if method_error:
+            conn.close()
+            return jsonify({"error": method_error}), 400
         
         # Reset status to queued and clear error
         cursor.execute(f"""
             UPDATE managed_downloads 
-            SET status = 'queued', error_message = NULL, external_id = NULL, updated_at = CURRENT_TIMESTAMP
+            SET status = 'queued', method = {placeholder}, error_message = NULL, external_id = NULL, updated_at = CURRENT_TIMESTAMP
             WHERE id = {placeholder}
-        """, (download_id,))
+        """, (method, download_id))
         conn.commit()
         conn.close()
         
@@ -18419,13 +18568,17 @@ def api_start_release_download(release_id):
         data = request.json or {}
         release_title = data.get("release_title", "").strip()
         artist = data.get("artist", "").strip()
-        method = data.get("method", "slskd").lower()
+        method, method_error = _normalize_download_method(
+            data.get("method", "slskd"),
+            default_method="slskd",
+            context=f"release start {release_id}",
+        )
         
         if not all([release_title, artist]):
             return jsonify({"error": "Missing release_title or artist"}), 400
         
-        if method not in ["slskd", "qbittorrent"]:
-            return jsonify({"error": "Invalid method. Use 'slskd' or 'qbittorrent'"}), 400
+        if method_error:
+            return jsonify({"error": method_error}), 400
         
         manager = get_manager()
         result = manager.start_release_download(release_id, release_title, artist, method)
@@ -23274,16 +23427,20 @@ def api_queue_add():
         if explicit_source:
             source = str(explicit_source).strip().lower()
         else:
-            # Default routing policy:
-            # - Album/full-release requests: qBittorrent first
-            # - Individual tracks: Soulseek first
-            is_album_request = bool(data.get('is_album')) or import_type == 'album'
-            source = 'qbittorrent' if is_album_request else 'soulseek'
+            source = 'soulseek'
 
         if source not in allowed_sources:
             return jsonify({
                 "error": f"Invalid source '{source}'. Allowed: {', '.join(sorted(allowed_sources))}"
             }), 400
+
+        source, source_error = _normalize_queue_source(
+            source,
+            default_source='soulseek',
+            context=f"queue add {artist or 'unknown'} - {title or album or 'unknown'}",
+        )
+        if source_error:
+            return jsonify({"error": source_error}), 400
 
         # Optional metadata used by file organization (year-based folder naming)
         # and post-download enrichment.
