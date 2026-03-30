@@ -10,6 +10,7 @@ import logging
 import json
 import sqlite3
 import re
+import time
 from typing import Optional, Dict, List, Tuple
 from pathlib import Path
 
@@ -85,6 +86,118 @@ class CoverDetector:
             # Be permissive if type introspection fails.
             return int(bool(value))
 
+    @staticmethod
+    def _row_value(row, key, index=0, default=None):
+        """Read a value from dict-style or tuple-style DB rows."""
+        if row is None:
+            return default
+        if isinstance(row, dict):
+            return row.get(key, default)
+        if hasattr(row, "keys"):
+            try:
+                return row[key]
+            except Exception:
+                pass
+        try:
+            return row[index]
+        except Exception:
+            return default
+
+    @staticmethod
+    def _is_deadlock_like(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return (
+            "deadlock" in message
+            or "could not serialize" in message
+            or "infailedsqltransaction" in message
+        )
+
+    @staticmethod
+    def _build_cover_title(title: str, original_artist: Optional[str]) -> str:
+        cover_suffix_pattern = re.compile(r'\s*\([^)]+\s+Cover\)\s*$', re.IGNORECASE)
+        if cover_suffix_pattern.search(title):
+            return title
+        if original_artist:
+            return f"{title} ({original_artist} Cover)"
+        return title
+
+    def _apply_cover_metadata_batch(self, updates: List[Dict], max_retries: int = 5) -> List[str]:
+        """Persist cover metadata updates in a deterministic batch to reduce lock churn."""
+        if not self.db_conn or not updates:
+            return []
+
+        rows = sorted(
+            [dict(update) for update in updates if update.get("track_id")],
+            key=lambda item: str(item["track_id"]),
+        )
+        if not rows:
+            return []
+
+        is_cover_value = self._normalize_cover_flag_value(True)
+        delay = 0.15
+
+        for attempt in range(max_retries):
+            try:
+                cursor = self.db_conn.cursor()
+                successful_track_ids = []
+
+                for update in rows:
+                    track_id = update["track_id"]
+                    title = update.get("title", "")
+                    original_artist = update.get("original_artist")
+                    reason = update.get("is_cover_reason") or (
+                        f"Writer-based detection: original by {original_artist}" if original_artist else "Writer-based detection"
+                    )
+                    new_title = self._build_cover_title(title, original_artist)
+
+                    cursor.execute(
+                        f"SELECT genres FROM tracks WHERE id = {self.placeholder}",
+                        (track_id,)
+                    )
+                    result = cursor.fetchone()
+                    current_genres = self._row_value(result, "genres", 0, "") or ""
+                    genres_list = [genre.strip() for genre in current_genres.split(",") if genre.strip()]
+                    if "Cover" not in genres_list:
+                        genres_list.append("Cover")
+                    new_genres = ", ".join(genres_list)
+
+                    if new_title != title:
+                        cursor.execute(
+                            f"UPDATE tracks SET title = {self.placeholder} WHERE id = {self.placeholder}",
+                            (new_title, track_id)
+                        )
+
+                    cursor.execute(
+                        f"UPDATE tracks SET genres = {self.placeholder} WHERE id = {self.placeholder}",
+                        (new_genres, track_id)
+                    )
+                    cursor.execute(
+                        f"UPDATE tracks SET is_cover = {self.placeholder}, is_cover_reason = {self.placeholder}, original_cover_artist = {self.placeholder} WHERE id = {self.placeholder}",
+                        (is_cover_value, reason, original_artist, track_id)
+                    )
+                    successful_track_ids.append(track_id)
+
+                self.db_conn.commit()
+                return successful_track_ids
+            except Exception as exc:
+                try:
+                    self.db_conn.rollback()
+                except Exception:
+                    pass
+
+                if self._is_deadlock_like(exc) and attempt < (max_retries - 1):
+                    sleep_for = min(delay * (2 ** attempt), 2.0)
+                    logger.warning(
+                        f"Cover metadata batch hit transient DB contention ({type(exc).__name__}); "
+                        f"retry {attempt + 1}/{max_retries} in {sleep_for:.2f}s"
+                    )
+                    time.sleep(sleep_for)
+                    continue
+
+                raise
+
+        return []
+
     def _configure_musicbrainzngs(self):
         """Ensure musicbrainzngs identifies itself with the app user agent."""
         try:
@@ -151,6 +264,7 @@ class CoverDetector:
         
         cover_results = []
         seen_track_ids = set()  # Avoid processing same track twice
+        pending_cover_updates = []
 
         # Step 2: Primary detection via MusicBrainz "cover recording of" relation.
         # This is the canonical signal shown in the MB UI and should take precedence.
@@ -192,14 +306,13 @@ class CoverDetector:
                 f"✓ Cover confirmed (MusicBrainz relation): '{track.get('title', '')}' "
                 f"originally by '{relation_original['artist']}' ({relation_original.get('year', 'unknown year')})"
             )
-
-            self.update_cover_metadata(
-                track_id=track_id,
-                title=track.get('title', ''),
-                original_artist=relation_original['artist'],
-                file_path=track.get('file_path'),
-                is_cover_reason="MusicBrainz cover relation"
-            )
+            pending_cover_updates.append({
+                'track_id': track_id,
+                'title': track.get('title', ''),
+                'original_artist': relation_original['artist'],
+                'file_path': track.get('file_path'),
+                'is_cover_reason': 'MusicBrainz cover relation',
+            })
 
         # Step 3: Fallback detection from writer/lyricist mismatch + earliest recording lookup.
         # Any track whose writer/lyricist differs from the album artist is a candidate.
@@ -232,13 +345,13 @@ class CoverDetector:
                         track_data = next((t for t in tracks if t.get('id') == track_id), {})
                         file_path = track_data.get('file_path')
                         
-                        # Update database and file metadata
-                        self.update_cover_metadata(
-                            track_id=track_id,
-                            title=info['title'],
-                            original_artist=original['artist'],
-                            file_path=file_path
-                        )
+                        pending_cover_updates.append({
+                            'track_id': track_id,
+                            'title': info['title'],
+                            'original_artist': original['artist'],
+                            'file_path': file_path,
+                            'is_cover_reason': None,
+                        })
                         break  # Stop after first matching writer for this track
                     else:
                         logger.debug(f"No original recording found for '{info['title']}' by writer '{writer}'")
@@ -266,13 +379,24 @@ class CoverDetector:
             cover_results.append(result)
             seen_track_ids.add(track_id)
 
-            self.update_cover_metadata(
-                track_id=track_id,
-                title=title,
-                original_artist=hint,
-                file_path=track.get('file_path'),
-                is_cover_reason=f"Heuristic detection: title/album hint ({hint})"
-            )
+            pending_cover_updates.append({
+                'track_id': track_id,
+                'title': title,
+                'original_artist': hint,
+                'file_path': track.get('file_path'),
+                'is_cover_reason': f"Heuristic detection: title/album hint ({hint})",
+            })
+
+        if pending_cover_updates:
+            successful_track_ids = set(self._apply_cover_metadata_batch(pending_cover_updates))
+            for update in pending_cover_updates:
+                track_id = update['track_id']
+                if track_id not in successful_track_ids:
+                    continue
+                file_path = update.get('file_path')
+                if file_path and Path(file_path).exists():
+                    new_title = self._build_cover_title(update.get('title', ''), update.get('original_artist'))
+                    self._update_file_metadata(file_path, new_title, ["Cover"])
         
         logger.info(f"Cover detection complete: found {len(cover_results)} covers in '{album}'")
         return cover_results
@@ -964,51 +1088,20 @@ class CoverDetector:
                             file_path: Optional[str] = None, is_cover_reason: Optional[str] = None) -> bool:
         """Update track metadata to reflect cover attribution."""
         try:
-            cover_suffix_pattern = re.compile(r'\s*\([^)]+\s+Cover\)\s*$', re.IGNORECASE)
-            if cover_suffix_pattern.search(title):
-                new_title = title
-                logger.debug(f"Title '{title}' already has cover suffix, skipping title update")
-            elif original_artist:
-                new_title = f"{title} ({original_artist} Cover)"
-            else:
-                new_title = title
+            new_title = self._build_cover_title(title, original_artist)
+            successful_track_ids = self._apply_cover_metadata_batch([
+                {
+                    'track_id': track_id,
+                    'title': title,
+                    'original_artist': original_artist,
+                    'file_path': file_path,
+                    'is_cover_reason': is_cover_reason,
+                }
+            ])
+            if track_id not in successful_track_ids:
+                return False
 
-            if self.db_conn:
-                cursor = self.db_conn.cursor()
-
-                if new_title != title:
-                    cursor.execute(
-                        f"UPDATE tracks SET title = {self.placeholder} WHERE id = {self.placeholder}",
-                        (new_title, track_id)
-                    )
-
-                cursor.execute(
-                    f"SELECT genres FROM tracks WHERE id = {self.placeholder}",
-                    (track_id,)
-                )
-                result = cursor.fetchone()
-                if result:
-                    current_genres = (result['genres'] if self.is_pg else result[0]) or ""
-                    genres_list = [g.strip() for g in current_genres.split(",")] if current_genres else []
-                    if "Cover" not in genres_list:
-                        genres_list.append("Cover")
-                    new_genres = ", ".join(genres_list)
-                    cursor.execute(
-                        f"UPDATE tracks SET genres = {self.placeholder} WHERE id = {self.placeholder}",
-                        (new_genres, track_id)
-                    )
-
-                is_cover_value = self._normalize_cover_flag_value(True)
-                reason = is_cover_reason or (
-                    f"Writer-based detection: original by {original_artist}" if original_artist else "Writer-based detection"
-                )
-                cursor.execute(
-                    f"UPDATE tracks SET is_cover = {self.placeholder}, is_cover_reason = {self.placeholder}, original_cover_artist = {self.placeholder} WHERE id = {self.placeholder}",
-                    (is_cover_value, reason, original_artist, track_id)
-                )
-
-                self.db_conn.commit()
-                logger.info(f"✓ Database updated: '{title}' → '{new_title}' (original: {original_artist})")
+            logger.info(f"✓ Database updated: '{title}' → '{new_title}' (original: {original_artist})")
 
             if file_path and Path(file_path).exists():
                 self._update_file_metadata(file_path, new_title, ["Cover"])

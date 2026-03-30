@@ -21,6 +21,7 @@ import heapq
 import re
 import difflib
 import unicodedata
+import threading
 import requests
 from contextlib import contextmanager
 from datetime import datetime, timedelta
@@ -77,6 +78,7 @@ except ImportError as e:
 # These use timeout_safe_session with reduced retry count to prevent exceeding timeout
 _timeout_safe_mb_client = None
 _timeout_safe_discogs_clients = {}  # token -> client mapping
+_timeout_executor_lock = threading.Lock()
 
 def _get_timeout_safe_musicbrainz_client():
     """Get or create timeout-safe MusicBrainz client for use in popularity scanner."""
@@ -1579,17 +1581,21 @@ _timeout_executor = ThreadPoolExecutor(max_workers=20, thread_name_prefix="api_t
 def _cleanup_timeout_executor():
     """Cleanup function to shutdown the timeout executor gracefully."""
     global _timeout_executor
-    if _timeout_executor:
-        _timeout_executor.shutdown(wait=False)
-        _timeout_executor = None
+    with _timeout_executor_lock:
+        if _timeout_executor:
+            _timeout_executor.shutdown(wait=False)
+            _timeout_executor = None
 
 
 def _ensure_timeout_executor():
     """Ensure the shared timeout executor exists and can accept work."""
     global _timeout_executor
-    if _timeout_executor is None:
-        _timeout_executor = ThreadPoolExecutor(max_workers=20, thread_name_prefix="api_timeout")
-    return _timeout_executor
+    with _timeout_executor_lock:
+        if _timeout_executor is None or getattr(_timeout_executor, "_shutdown", False):
+            if _timeout_executor is not None and getattr(_timeout_executor, "_shutdown", False):
+                log_debug("Timeout executor was already shut down; creating a new shared executor")
+            _timeout_executor = ThreadPoolExecutor(max_workers=20, thread_name_prefix="api_timeout")
+        return _timeout_executor
 
 
 def _execute_tracks_batch_with_retry(conn, cursor, query, params, context, max_retries=5):
@@ -1674,7 +1680,8 @@ def _run_with_timeout(func, timeout_seconds, error_message, *args, **kwargs):
         if "cannot schedule new futures after shutdown" in str(submit_err).lower():
             log_debug("Timeout executor was shut down during submit; recreating and retrying once")
             global _timeout_executor
-            _timeout_executor = None
+            with _timeout_executor_lock:
+                _timeout_executor = None
             executor = _ensure_timeout_executor()
             future = executor.submit(func, *args, **kwargs)
         else:
