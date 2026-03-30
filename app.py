@@ -14,7 +14,7 @@ from download_file_verification import ensure_verification_columns, ensure_queue
 import os
 import glob
 import shutil
-from pathlib import Path
+import pathlib
 import xml.etree.ElementTree as ET
 # --- ENVIRONMENT VARIABLE EDITING SUPPORT ---
 ALL_ENV_VARS = [
@@ -32033,6 +32033,12 @@ def playlist_manager():
     return redirect("/playlists/browse")
 
 
+@app.route("/playlist/browse")
+def playlist_browse_alias():
+    """Backward-compatible alias for playlists browse."""
+    return redirect("/playlists/browse")
+
+
 @app.route("/playlists/browse")
 def playlists_browse():
     """Browse playlists page"""
@@ -33198,7 +33204,7 @@ def _playlist_output_name(listenbrainz_username, playlist_key):
 
 def _resolve_playlists_dir():
     playlists_root = os.environ.get("PLAYLISTS_OUTPUT_DIR", "/music/playlists")
-    return Path(playlists_root)
+    return pathlib.Path(playlists_root)
 
 
 def _write_m3u_playlist(playlist_name, file_paths):
