@@ -1512,7 +1512,7 @@ _queue_normalize_gate_lock = threading.Lock()
 # Maximum number of MusicBrainz release groups to fetch per search request.
 # Kept low to stay well under the Cloudflare/proxy 100-second gateway timeout
 # (each group requires one HTTP request + 1-second rate-limit sleep).
-_MB_SEARCH_MAX_RELEASE_GROUPS = 6
+_MB_SEARCH_MAX_RELEASE_GROUPS = 100
 # Retry scheduler management
 retry_scheduler = {
     "thread": None,
@@ -35255,7 +35255,7 @@ def api_search_musicbrainz_release():
             params = {
                 "fmt": "json",
                 "query": query,
-                "limit": 20,
+                "limit": 100,
             }
 
             logging.info(
