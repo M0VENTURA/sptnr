@@ -194,23 +194,30 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     Score a Soulseek candidate path/name against queue metadata.
 
     Returns float score in [0, 1]. Higher is better.
+
+    Artist / title matching is done against the *basename only* so that an
+    album folder whose name equals the track title (e.g. the title track of an
+    album) does not cause files from OTHER tracks in that folder to score
+    falsely high.  Album matching intentionally uses the full path so the
+    folder name still contributes positive album evidence.
     """
-    filename_norm = _normalize_match_text(filename)
+    filename_norm = _normalize_match_text(filename)             # full path – album only
+    basename_norm = _normalize_match_text(os.path.basename(filename))  # basename – artist/title
     artist_norm = _normalize_match_text(queue_item.get('artist'))
     title_norm = _normalize_match_text(queue_item.get('title'))
     album_norm = _normalize_match_text(queue_item.get('album'))
     title_tokens = _tokenize_meaningful(title_norm)
-    filename_tokens = set(_tokenize_meaningful(filename_norm))
+    basename_tokens = set(_tokenize_meaningful(basename_norm))
 
-    if not artist_norm or not title_norm or not filename_norm:
+    if not artist_norm or not title_norm or not basename_norm:
         return 0.0
 
     if title_tokens:
-        shared_title_tokens = sum(1 for tok in title_tokens if tok in filename_tokens)
+        shared_title_tokens = sum(1 for tok in title_tokens if tok in basename_tokens)
         title_token_ratio = shared_title_tokens / len(title_tokens)
         title_variant_tokens = {"acoustic", "demo", "edit", "instrumental", "intro", "live", "mix", "radio", "remaster", "remastered", "remix", "version"}
         requested_variants = set(title_tokens) & title_variant_tokens
-        candidate_variants = filename_tokens & title_variant_tokens
+        candidate_variants = basename_tokens & title_variant_tokens
 
         if requested_variants or candidate_variants:
             if not requested_variants or not candidate_variants:
@@ -225,22 +232,22 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     else:
         title_token_ratio = 0.0
 
-    # Require both core fields to be reasonably represented in filename/path.
-    artist_sim = SequenceMatcher(None, artist_norm, filename_norm).ratio()
-    title_sim = SequenceMatcher(None, title_norm, filename_norm).ratio()
+    # Require both core fields to be reasonably represented in the basename.
+    artist_sim = SequenceMatcher(None, artist_norm, basename_norm).ratio()
+    title_sim = SequenceMatcher(None, title_norm, basename_norm).ratio()
     if artist_sim < 0.12 or title_sim < 0.12:
         return 0.0
 
     score = (artist_sim * 0.45) + (title_sim * 0.55)
     score += (0.22 * title_token_ratio)
 
-    # Strongly prefer explicit artist/title phrases when present.
-    if artist_norm in filename_norm:
+    # Strongly prefer explicit artist/title phrases when present in the basename.
+    if artist_norm in basename_norm:
         score += 0.18
-    if title_norm in filename_norm:
+    if title_norm in basename_norm:
         score += 0.25
 
-    # Album disambiguation: prevent "Power"-style partial collisions.
+    # Album disambiguation: use full path so the folder name acts as evidence.
     if album_norm:
         album_tokens = _tokenize_meaningful(album_norm)
         if album_tokens:
@@ -1079,6 +1086,27 @@ def check_completed_downloads():
             logger.warning(f"Downloads directory does not exist: {DOWNLOADS_DIR}")
 
         # ------------------------------------------------------------------
+        # Build the set of files already claimed by non-downloading items
+        # so the fuzzy scan never re-assigns a file that another queue item
+        # already owns (e.g. a different track from the same album folder).
+        # ------------------------------------------------------------------
+        claimed_files: set[str] = set()
+        try:
+            cursor.execute("""
+                SELECT found_filename FROM download_queue
+                WHERE found_filename IS NOT NULL
+                  AND found_filename <> ''
+                  AND status NOT IN ('downloading', 'queued', 'failed', 'searching')
+            """)
+            for row in cursor.fetchall():
+                fn = (row.get('found_filename') if isinstance(row, dict) else row[0]) or ''
+                if fn:
+                    claimed_files.add(fn.replace('\\', '/').strip())
+                    claimed_files.add(os.path.basename(fn.replace('\\', '/').strip()))
+        except Exception as ce:
+            logger.debug(f"Could not pre-load claimed files: {ce}")
+
+        # ------------------------------------------------------------------
         # Fetch all items currently in 'downloading' status
         # ------------------------------------------------------------------
         cursor.execute("""
@@ -1136,11 +1164,18 @@ def check_completed_downloads():
             # 3. Fuzzy match against filesystem files
             if match_found is None:
                 for filename in fs_files:
+                    # Skip files already owned by another queue item.
+                    fn_key = filename.replace('\\', '/').strip()
+                    if fn_key in claimed_files or os.path.basename(fn_key) in claimed_files:
+                        continue
                     file_path = os.path.join(DOWNLOADS_DIR, filename)
                     is_match, match_source = _file_matches_queue_item(file_path, item, filename)
                     if is_match:
                         match_found = filename
                         match_meta_state = match_source
+                        # Register so later queue items in this cycle can't also claim it.
+                        claimed_files.add(fn_key)
+                        claimed_files.add(os.path.basename(fn_key))
                         logger.debug(f"Queue {item_id}: fuzzy match found: {filename}")
                         break
 

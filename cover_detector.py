@@ -14,7 +14,7 @@ import time
 from typing import Optional, Dict, List, Tuple
 from pathlib import Path
 
-import requests as _requests
+import requests
 
 from api_clients.musicbrainz import _VERSION as MUSICBRAINZ_VERSION
 
@@ -52,7 +52,7 @@ class _MusicBrainzRestClient:
         try:
             full_params = dict(params or {})
             full_params["fmt"] = "json"
-            resp = _requests.get(
+            resp = requests.get(
                 f"{_MB_BASE_URL}/{path}",
                 params=full_params,
                 headers=_MB_HEADERS,
@@ -71,12 +71,14 @@ class _MusicBrainzRestClient:
         """
         Normalise the JSON API ``relations`` list (all relation types in one
         array) into the separate ``work-relation-list`` / ``artist-relation-list``
-        arrays expected by the cover-detection logic.
+        / ``recording-relation-list`` arrays expected by the cover-detection
+        logic.
         Mutates *data* in-place.
         """
         relations = data.pop("relations", None) or []
         work_rels: List[dict] = []
         artist_rels: List[dict] = []
+        recording_rels: List[dict] = []
         for rel in relations:
             if not isinstance(rel, dict):
                 continue
@@ -84,8 +86,11 @@ class _MusicBrainzRestClient:
                 work_rels.append(rel)
             elif isinstance(rel.get("artist"), dict):
                 artist_rels.append(rel)
+            elif isinstance(rel.get("recording"), dict):
+                recording_rels.append(rel)
         data.setdefault("work-relation-list", work_rels)
         data.setdefault("artist-relation-list", artist_rels)
+        data.setdefault("recording-relation-list", recording_rels)
 
     # ------------------------------------------------------------------
     # Public API (mirrors the subset of musicbrainzngs used here)
@@ -556,7 +561,7 @@ class CoverDetector:
             if rel_type != 'performance':
                 continue
             attributes = rel.get('attributes') or rel.get('attribute-list') or []
-            if 'cover' not in [str(a).lower() for a in attributes]:
+            if not any(str(a).lower() == 'cover' for a in attributes):
                 continue
             # "forward" means this recording is a cover of the linked work.
             if rel_direction and rel_direction != 'forward':
@@ -567,15 +572,109 @@ class CoverDetector:
         return work_ids
 
     def _find_original_from_cover_relation(self, recording_mbid: str, title: str, album_artist: Optional[str] = None) -> Optional[Dict]:
-        """Resolve likely original artist/year from MB cover relations on a recording."""
+        """Resolve likely original artist/year from MB cover relations on a recording.
+
+        Two detection paths are attempted, most reliable first:
+
+        1. **Direct recording→recording "cover" link** — MusicBrainz editors can
+           explicitly tag a recording as "cover recording of" another recording
+           (visible on the MB page as "cover recording of: <Title> (<Year>)").
+           This is the highest-confidence signal.
+
+        2. **Work-level "performance (cover)" relation** — the recording is linked
+           to a work with the "cover" performance attribute.  We then search for
+           other recordings linked to the same work to find the original artist.
+        """
         try:
             mb = self._configure_mb_client()
 
+            # Fetch seed recording with both work *and* recording relations.
             seed_result = mb.get_recording_by_id(
                 recording_mbid,
-                includes=['work-rels', 'artist-credits', 'releases']
+                includes=['work-rels', 'recording-rels', 'artist-credits', 'releases']
             )
             seed_recording = seed_result.get('recording', {})
+
+            # ------------------------------------------------------------------
+            # Fast path: direct recording→recording "cover" relation.
+            # The linked recording IS the original — no further search needed.
+            # ------------------------------------------------------------------
+            def _artist_from_credit(artist_credit: List[Dict]) -> str:
+                for entry in artist_credit or []:
+                    if isinstance(entry, dict):
+                        name = (entry.get('artist') or {}).get('name')
+                        if name:
+                            return name
+                return ''
+
+            def _year_from_recording(rec: Dict) -> Optional[int]:
+                date_str = str(rec.get('first-release-date') or '').strip()
+                if len(date_str) >= 4 and date_str[:4].isdigit():
+                    try:
+                        return int(date_str[:4])
+                    except (ValueError, TypeError):
+                        pass
+                for rel_entry in (rec.get('release-list') or []):
+                    if not isinstance(rel_entry, dict):
+                        continue
+                    rel_date = str(rel_entry.get('date') or '').strip()
+                    if len(rel_date) >= 4 and rel_date[:4].isdigit():
+                        try:
+                            return int(rel_date[:4])
+                        except (ValueError, TypeError):
+                            pass
+                return None
+
+            for rel in seed_recording.get('recording-relation-list', []) or []:
+                if not isinstance(rel, dict):
+                    continue
+                rel_type = str(rel.get('type', '')).strip().lower()
+                direction = str(rel.get('direction', 'forward')).strip().lower()
+                # direction="forward" → this recording IS the cover; linked = original
+                if rel_type != 'cover' or direction != 'forward':
+                    continue
+
+                orig_rec = rel.get('recording') or {}
+                orig_id = orig_rec.get('id', '')
+                if not orig_id or orig_id == recording_mbid:
+                    continue
+
+                orig_artist = _artist_from_credit(orig_rec.get('artist-credit', []))
+                orig_year = _year_from_recording(orig_rec)
+
+                # The inline recording object may have limited data; fetch full
+                # details when artist or year is missing.
+                if not orig_artist or orig_year is None:
+                    try:
+                        orig_details = mb.get_recording_by_id(
+                            orig_id, includes=['artist-credits', 'releases']
+                        )
+                        orig_full = orig_details.get('recording', {})
+                        if not orig_artist:
+                            orig_artist = _artist_from_credit(orig_full.get('artist-credit', []))
+                        if orig_year is None:
+                            orig_year = _year_from_recording(orig_full)
+                    except Exception:
+                        pass
+
+                if not orig_artist:
+                    continue
+                if album_artist and self._names_match(orig_artist, album_artist):
+                    continue
+
+                logger.debug(
+                    "Cover detected via recording→recording link: '%s' originally by '%s' (%s)",
+                    title, orig_artist, orig_year or 'unknown year',
+                )
+                return {
+                    'artist': orig_artist,
+                    'year': orig_year,
+                    'confidence': 'high',
+                }
+
+            # ------------------------------------------------------------------
+            # Slow path: work-level "performance (cover)" relation.
+            # ------------------------------------------------------------------
             cover_work_ids = self._extract_cover_work_ids(seed_recording)
             if not cover_work_ids:
                 return None
