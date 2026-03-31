@@ -194,8 +194,12 @@ function _mbReleaseDateKey(release) {
 function displayMusicBrainzResults(results) {
   const container = document.getElementById('mbSearchResults');
 
-  // Sort newest-first; releases without a date go to the end.
+  // Sort by type (Albums → EPs → Singles → others), then newest-first within each type.
+  const _mbTypeOrder = { 'Album': 0, 'EP': 1, 'Single': 2 };
   results = [...results].sort((a, b) => {
+    const ta = _mbTypeOrder[a.type] !== undefined ? _mbTypeOrder[a.type] : 3;
+    const tb = _mbTypeOrder[b.type] !== undefined ? _mbTypeOrder[b.type] : 3;
+    if (ta !== tb) return ta - tb;
     const da = _mbReleaseDateKey(a);
     const db = _mbReleaseDateKey(b);
     if (!da && !db) return 0;
