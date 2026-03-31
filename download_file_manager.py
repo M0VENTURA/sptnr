@@ -152,7 +152,7 @@ def update_file_metadata(file_path, metadata):
                 logger.debug(f"Could not fetch cover art for metadata update: {art_err}")
 
         if ext == '.mp3':
-            from mutagen.id3 import ID3, TIT2, TPE1, TPE2, TALB, TDRC, TRCK, TPOS, TCON, TCOM, TSRC, APIC
+            from mutagen.id3 import ID3, TIT2, TPE1, TPE2, TALB, TDRC, TRCK, TPOS, TCON, TCOM, TSRC, APIC, TXXX
             from mutagen.mp3 import MP3
             
             audio = MP3(file_path, ID3=ID3)
@@ -188,6 +188,15 @@ def update_file_metadata(file_path, metadata):
 
             if metadata.get('isrc'):
                 audio.tags['TSRC'] = TSRC(encoding=3, text=[str(metadata['isrc'])])
+
+            _release_mbid = (metadata.get('release_mbid') or '').strip()
+            if _release_mbid:
+                audio.tags.setall('TXXX:MUSICBRAINZ ALBUM ID', [])
+                audio.tags.add(TXXX(encoding=3, desc='MUSICBRAINZ ALBUM ID', text=[_release_mbid]))
+            _recording_mbid = (metadata.get('recording_mbid') or '').strip()
+            if _recording_mbid:
+                audio.tags.setall('TXXX:MUSICBRAINZ TRACK ID', [])
+                audio.tags.add(TXXX(encoding=3, desc='MUSICBRAINZ TRACK ID', text=[_recording_mbid]))
 
             if cover_art_data:
                 audio.tags['APIC'] = APIC(
@@ -236,6 +245,13 @@ def update_file_metadata(file_path, metadata):
 
             if metadata.get('isrc'):
                 audio['isrc'] = [str(metadata['isrc'])]
+
+            _release_mbid = (metadata.get('release_mbid') or '').strip()
+            if _release_mbid:
+                audio['musicbrainz_albumid'] = [_release_mbid]
+            _recording_mbid = (metadata.get('recording_mbid') or '').strip()
+            if _recording_mbid:
+                audio['musicbrainz_trackid'] = [_recording_mbid]
 
             if cover_art_data:
                 picture = Picture()
@@ -432,6 +448,8 @@ def copy_file_to_music(source_file_path, queue_item, music_dir):
             'composer': queue_item.get('composer'),
             'isrc': queue_item.get('isrc'),
             'cover_art_url': queue_item.get('cover_art_url'),
+            'release_mbid': queue_item.get('release_mbid') or queue_item.get('release_id'),
+            'recording_mbid': queue_item.get('recording_mbid'),
             'ext': target_ext,
             'source_file_path': source_file_path
         }

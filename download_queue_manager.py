@@ -7436,7 +7436,9 @@ def _process_album_tracks_with_metadata(album, artist, tracks, matched_metadata=
                 'album_artist': consistent_album_artist,
                 'album': consistent_album_title,
                 'year': consistent_year or track.get('year'),
-                'title': track.get('title')
+                'title': track.get('title'),
+                'release_mbid': track.get('release_mbid') or track.get('release_id'),
+                'recording_mbid': track.get('recording_mbid'),
             }
 
             update_file_metadata(file_path, metadata)
