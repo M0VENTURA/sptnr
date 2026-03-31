@@ -397,7 +397,8 @@ class CoverDetector:
                 track_writers[track['id']] = {
                     'title': track_title,
                     'writers': writers,
-                    'mbid': track.get('mbid')
+                    'mbid': track.get('mbid'),
+                    'track_artist': track.get('artist') or track.get('album_artist') or artist,
                 }
                 logger.debug(f"  Track '{track_title}': Found writers {writers}")
             else:
@@ -497,7 +498,11 @@ class CoverDetector:
                     # If this writer appears on multiple tracks in the artist's
                     # catalogue they are a regular collaborator or producer, not
                     # evidence that a particular track is a cover song.
-                    if self._is_common_writer_for_artist(writer, artist):
+                    # On compilations the per-track artist (not the album artist
+                    # "Various Artists") is the relevant lookup key.
+                    if self._is_common_writer_for_artist(
+                        writer, artist, track_artist=info.get('track_artist')
+                    ):
                         logger.info(
                             f"Skipping writer-based cover detection for '{info['title']}': "
                             f"'{writer}' is a common writer in '{artist}' catalogue — "
@@ -1179,10 +1184,15 @@ class CoverDetector:
             )
             return False
 
-    def _is_common_writer_for_artist(self, writer: str, artist: str, min_count: int = 2) -> bool:
-        """Return True if *writer* appears on at least *min_count* tracks by *artist*
-        in the local library, indicating they are a regular collaborator or producer
-        rather than a one-off songwriter whose credit signals a cover.
+    def _is_common_writer_for_artist(self, writer: str, artist: str, track_artist: Optional[str] = None, min_count: int = 2) -> bool:
+        """Return True if *writer* appears on at least *min_count* tracks by the
+        relevant artist in the local library, indicating they are a regular
+        collaborator or producer rather than a one-off songwriter whose credit
+        signals a cover.
+
+        On compilation albums the ``album_artist`` is typically "Various Artists"
+        and is not a useful lookup key; *track_artist* (the per-track credited
+        artist) is used instead when it differs from *artist*.
 
         Writer credits are stored as a JSON array in ``tracks.writer``.  The
         comparison is performed in Python (after fetching all non-null writer rows)
@@ -1191,18 +1201,33 @@ class CoverDetector:
         """
         if not self.db_conn or not writer or not artist:
             return False
+
+        # On compilations, prefer the per-track artist for the DB lookup so
+        # that "Various Artists" is never used as the lookup key.
+        lookup_artist = (
+            track_artist
+            if track_artist and not self._names_match(track_artist, artist)
+            else artist
+        )
+
         try:
             cursor = self.db_conn.cursor()
             # self.placeholder is a fixed constant ("%s" or "?"), not user input.
+            # Query by both album-artist path and raw track artist so that tracks
+            # on compilation albums (where album_artist = "Various Artists" but
+            # artist = the band name) are found correctly.
             cursor.execute(
                 f"""
                 SELECT writer FROM tracks
-                WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER({self.placeholder})
+                WHERE (
+                    LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER({self.placeholder})
+                    OR LOWER(artist) = LOWER({self.placeholder})
+                )
                   AND writer IS NOT NULL
                   AND writer != ''
                   AND writer != '[]'
                 """,
-                (artist,),
+                (lookup_artist, lookup_artist),
             )
             rows = cursor.fetchall() or []
         except Exception as exc:
@@ -1230,7 +1255,7 @@ class CoverDetector:
                 count += 1
                 if count >= min_count:
                     logger.debug(
-                        f"[CoverDetector] '{writer}' is a common writer for '{artist}' "
+                        f"[CoverDetector] '{writer}' is a common writer for '{lookup_artist}' "
                         f"({count}/{min_count} tracks) — not a cover indicator"
                     )
                     return True
