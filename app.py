@@ -2713,6 +2713,11 @@ def _run_daily_musicbrainz_collection_release_refresh():
                 if not album_name:
                     continue
 
+                # Skip releases with disqualifying secondary types.
+                secondary = [str(s).lower() for s in (rg.get("secondary_types") or []) if s]
+                if any(t in secondary for t in ("live", "remix", "compilation")):
+                    continue
+
                 release_year = int(parsed_date[:4]) if len(parsed_date) >= 4 and parsed_date[:4].isdigit() else None
                 release_group_mbid = (rg.get("id") or "").strip() or None
 
@@ -2797,16 +2802,16 @@ def _run_daily_musicbrainz_collection_release_refresh():
                     updated += 1
 
             try:
-                singles_queued = _auto_queue_collection_artist_singles_from_release_groups(artist_name, release_groups)
-                if singles_queued:
+                releases_queued = _auto_queue_collection_artist_singles_from_release_groups(artist_name, release_groups)
+                if releases_queued:
                     logging.info(
-                        "[AUTO-QUEUE] Queued %s current-year single(s) for collection artist '%s'",
-                        singles_queued,
+                        "[AUTO-QUEUE] Queued %s new current-year release(s) for collection artist '%s'",
+                        releases_queued,
                         artist_name,
                     )
             except Exception as auto_queue_err:
                 logging.warning(
-                    "[AUTO-QUEUE] Error auto-queuing singles for '%s': %s",
+                    "[AUTO-QUEUE] Error auto-queuing releases for '%s': %s",
                     artist_name,
                     auto_queue_err,
                 )
@@ -9978,19 +9983,34 @@ def _auto_queue_missing_singles_for_album_artist(artist: str, missing_releases: 
 
 
 def _auto_queue_collection_artist_singles_from_release_groups(artist: str, release_groups: list[dict]) -> int:
-    """Auto-queue current-year singles for collection artists when no same-title album is present."""
+    """
+    Auto-queue new releases for collection artists.
+
+    Singles   – queued as individual tracks (import_type='song') when there is
+                no same-title album released in the same year.
+    Albums/EPs – queued as full albums (import_type='album') when the release
+                 group MBID is not already present in the local collection.
+
+    Only releases without disqualifying secondary types (live / remix /
+    compilation) and with a MusicBrainz release-group MBID are considered.
+    """
     if not artist or not release_groups:
         return 0
 
     current_year = datetime.now().year
-    album_titles_current_year = set()
-    single_candidates = []
-    existing_track_titles_norm = set()
+    album_titles_current_year: set = set()
+    single_candidates: list = []
+    album_ep_candidates: list = []
+    existing_track_titles_norm: set = set()
+    existing_release_mbids: set = set()
 
-    # Build a normalized title set for this artist so we only queue singles that are not already in collection.
+    # ------------------------------------------------------------------ #
+    # Gather what the artist already has in the local library.             #
+    # ------------------------------------------------------------------ #
     try:
         conn = get_db()
         cursor = conn.cursor()
+        # Track titles (for singles dedup)
         cursor.execute("""
             SELECT DISTINCT title
             FROM tracks
@@ -10002,13 +10022,29 @@ def _auto_queue_collection_artist_singles_from_release_groups(artist: str, relea
             norm_track_title = _normalize_release_title(track_title or "")
             if norm_track_title:
                 existing_track_titles_norm.add(norm_track_title)
+        # Release-group MBIDs (for album/EP dedup)
+        cursor.execute("""
+            SELECT DISTINCT musicbrainz_releasegroupid
+            FROM tracks
+            WHERE musicbrainz_releasegroupid IS NOT NULL
+              AND musicbrainz_releasegroupid <> ''
+              AND (LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(%s)
+                   OR LOWER(artist) = LOWER(%s))
+        """, (artist, artist))
+        for row in (cursor.fetchall() or []):
+            mbid = _row_get(row, 'musicbrainz_releasegroupid', index=0)
+            if mbid:
+                existing_release_mbids.add(str(mbid))
         conn.close()
     except Exception as exc:
-        logging.warning("[AUTO-QUEUE] Could not load existing track titles for '%s': %s", artist, exc)
+        logging.warning("[AUTO-QUEUE] Could not load existing library data for '%s': %s", artist, exc)
 
+    # ------------------------------------------------------------------ #
+    # Classify each release group from this artist.                        #
+    # ------------------------------------------------------------------ #
     for rg in release_groups:
         primary_type = (rg.get("primary_type") or "").strip().lower()
-        if primary_type not in ("album", "single"):
+        if primary_type not in ("album", "ep", "single"):
             continue
 
         parsed_date = _parse_musicbrainz_release_date(rg.get("first_release_date"))
@@ -10025,29 +10061,39 @@ def _auto_queue_collection_artist_singles_from_release_groups(artist: str, relea
             continue
 
         secondary = [str(s).lower() for s in (rg.get("secondary_types") or []) if s]
-        if "compilation" in secondary or "live" in secondary or "remix" in secondary:
+        if any(t in secondary for t in ("compilation", "live", "remix")):
             continue
+
+        release_group_mbid = (rg.get("id") or "").strip() or None
 
         if primary_type == "album":
+            # Track album titles so singles with the same name aren't double-queued.
             album_titles_current_year.add(norm_title)
-            continue
+            # Also schedule the album itself for auto-queue check.
+            if release_group_mbid:
+                album_ep_candidates.append((title, norm_title, release_group_mbid, release_year))
+        elif primary_type == "ep":
+            if release_group_mbid:
+                album_ep_candidates.append((title, norm_title, release_group_mbid, release_year))
+        else:  # single
+            single_candidates.append((title, norm_title, release_group_mbid or ""))
 
-        single_candidates.append((title, norm_title, rg.get("id") or ""))
-
-    if not single_candidates:
+    if not single_candidates and not album_ep_candidates:
         return 0
 
     queued_count = 0
     from download_queue_manager import add_to_queue
 
+    # ------------------------------------------------------------------ #
+    # Queue singles not already in the collection.                         #
+    # ------------------------------------------------------------------ #
     for title, norm_title, release_id in single_candidates:
         if norm_title in album_titles_current_year:
             continue
         if norm_title in existing_track_titles_norm:
             logging.info(
-                "[AUTO-QUEUE] Skipping '%s - %s' because a matching track already exists in collection",
-                artist,
-                title,
+                "[AUTO-QUEUE] Skipping single '%s - %s' – track already in collection",
+                artist, title,
             )
             continue
 
@@ -10066,12 +10112,43 @@ def _auto_queue_collection_artist_singles_from_release_groups(artist: str, relea
             if result:
                 queued_count += 1
                 logging.info(
-                    "[AUTO-QUEUE] Added current-year single '%s - %s' to queue (collection artist)",
-                    artist,
-                    title,
+                    "[AUTO-QUEUE] Added current-year single '%s - %s' to queue",
+                    artist, title,
                 )
         except Exception as exc:
             logging.warning("[AUTO-QUEUE] Failed to queue single '%s - %s': %s", artist, title, exc)
+
+    # ------------------------------------------------------------------ #
+    # Queue albums / EPs not already in the collection.                    #
+    # ------------------------------------------------------------------ #
+    for title, norm_title, release_group_mbid, release_year in album_ep_candidates:
+        if release_group_mbid in existing_release_mbids:
+            logging.info(
+                "[AUTO-QUEUE] Skipping album/EP '%s - %s' – MBID already in collection",
+                artist, title,
+            )
+            continue
+
+        try:
+            result = add_to_queue(
+                artist=artist,
+                album=title,
+                title=None,
+                source="soulseek",
+                priority=4,
+                import_type="album",
+                year=str(release_year),
+                release_id=release_group_mbid or None,
+                release_source="musicbrainz_daily_album",
+            )
+            if result:
+                queued_count += 1
+                logging.info(
+                    "[AUTO-QUEUE] Added current-year album/EP '%s - %s' to queue",
+                    artist, title,
+                )
+        except Exception as exc:
+            logging.warning("[AUTO-QUEUE] Failed to queue album/EP '%s - %s': %s", artist, title, exc)
 
     return queued_count
 
