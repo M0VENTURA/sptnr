@@ -175,15 +175,22 @@ def _escape_lucene_special_chars(text: str) -> str:
     Lucene special characters that need escaping:
     + - && || ! ( ) { } [ ] ^ " ~ * ? : \ /
     
+    Note: single '&' and '|' are NOT Lucene operators (only '&&' and '||'
+    are).  Escaping a bare '&' as '\&' inside a quoted phrase (e.g.
+    artist:"Derek \& Brandon Fiechter") causes MusicBrainz to look for a
+    literal backslash in the stored name and therefore returns zero results
+    for artists whose names contain '&'.
+    
     Args:
         text: Text to escape
         
     Returns:
         Escaped text safe for use in Lucene queries
     """
-    # Characters that need to be escaped with backslash in Lucene
-    # Note: We escape double quotes by replacing them with escaped quotes
-    special_chars = ['+', '-', '&', '|', '!', '(', ')', '{', '}', '[', ']', '^', '"', '~', '*', '?', ':', '\\', '/']
+    # Characters that need to be escaped with backslash in Lucene.
+    # '&' and '|' are intentionally omitted: the Lucene operators are the
+    # two-character sequences '&&' and '||', not single characters.
+    special_chars = ['+', '-', '!', '(', ')', '{', '}', '[', ']', '^', '"', '~', '*', '?', ':', '\\', '/']
     
     escaped = text
     # Backslash must be escaped first to avoid double-escaping
