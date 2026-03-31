@@ -8,6 +8,7 @@ from helpers.db_utils import (
     ensure_track_release_year_column,
     ensure_mood_columns,
     ensure_essentia_feature_columns,
+    ensure_navidrome_tag_columns,
     verify_album_artist_column,
 )
 from download_file_verification import ensure_verification_columns, ensure_queue_mbid_columns
@@ -619,6 +620,9 @@ ensure_mood_columns()
 
 # Ensure Essentia-derived feature columns (danceability / timestamps) exist
 ensure_essentia_feature_columns()
+
+# Ensure all Navidrome-mapped tag columns exist
+ensure_navidrome_tag_columns()
 
 # Ensure download file verification columns exist
 ensure_verification_columns()
@@ -13063,6 +13067,54 @@ def track_edit(track_id):
     bitrate = request.form.get("bitrate", type=int) or None
     sample_rate = request.form.get("sample_rate", type=int) or None
     
+    # Sort keys
+    titlesort = request.form.get("titlesort", "").strip() or None
+    albumsort = request.form.get("albumsort", "").strip() or None
+    artistsort = request.form.get("artistsort", "").strip() or None
+    composersort = request.form.get("composersort", "").strip() or None
+    albumartistsort = request.form.get("albumartistsort", "").strip() or None
+    lyricistsort = request.form.get("lyricistsort", "").strip() or None
+    artistssort = request.form.get("artistssort", "").strip() or None
+    albumartistssort = request.form.get("albumartistssort", "").strip() or None
+    # Multi-value artist fields
+    artists = request.form.get("artists", "").strip() or None
+    albumartists = request.form.get("albumartists", "").strip() or None
+    # Additional credits
+    conductor = request.form.get("conductor", "").strip() or None
+    director = request.form.get("director", "").strip() or None
+    djmixer = request.form.get("djmixer", "").strip() or None
+    engineer = request.form.get("engineer", "").strip() or None
+    remixer = request.form.get("remixer", "").strip() or None
+    lyricist = request.form.get("lyricist", "").strip() or None
+    albumversion = request.form.get("albumversion", "").strip() or None
+    # Release info
+    recordlabel = request.form.get("recordlabel", "").strip() or None
+    copyright_field = request.form.get("copyright", "").strip() or None
+    releasedate = request.form.get("releasedate", "").strip() or None
+    discsubtitle = request.form.get("discsubtitle", "").strip() or None
+    # Content
+    lyrics = request.form.get("lyrics", "").strip() or None
+    subtitle = request.form.get("subtitle", "").strip() or None
+    grouping = request.form.get("grouping", "").strip() or None
+    movement = request.form.get("movement", "").strip() or None
+    movementname = request.form.get("movementname", "").strip() or None
+    movementtotal = request.form.get("movementtotal", "").strip() or None
+    # Technical/Legal
+    key = request.form.get("key", "").strip() or None
+    language = request.form.get("language", "").strip() or None
+    license_field = request.form.get("license", "").strip() or None
+    website = request.form.get("website", "").strip() or None
+    encodedby = request.form.get("encodedby", "").strip() or None
+    encodersettings = request.form.get("encodersettings", "").strip() or None
+    explicitstatus = request.form.get("explicitstatus", "").strip() or None
+    # ReplayGain
+    replaygain_track_gain = request.form.get("replaygain_track_gain", "").strip() or None
+    replaygain_track_peak = request.form.get("replaygain_track_peak", "").strip() or None
+    replaygain_album_gain = request.form.get("replaygain_album_gain", "").strip() or None
+    replaygain_album_peak = request.form.get("replaygain_album_peak", "").strip() or None
+    r128_track_gain = request.form.get("r128_track_gain", "").strip() or None
+    r128_album_gain = request.form.get("r128_album_gain", "").strip() or None
+
     # Flags
     is_cover = request.form.get("is_cover") == "on"
     cover_manual_override = request.form.get("cover_manual_override") == "on"
@@ -13104,17 +13156,49 @@ def track_edit(track_id):
                 bpm = {placeholder}, bitrate = {placeholder}, sample_rate = {placeholder},
                 is_cover = {placeholder}, cover_manual_override = {placeholder},
                 alternate_take = {placeholder}, is_compilation = {placeholder},
-                single_manual_override = {placeholder}
+                single_manual_override = {placeholder},
+                titlesort = {placeholder}, albumsort = {placeholder}, artistsort = {placeholder},
+                composersort = {placeholder}, albumartistsort = {placeholder}, lyricistsort = {placeholder},
+                artistssort = {placeholder}, albumartistssort = {placeholder},
+                artists = {placeholder}, albumartists = {placeholder},
+                conductor = {placeholder}, director = {placeholder}, djmixer = {placeholder},
+                engineer = {placeholder}, remixer = {placeholder}, lyricist = {placeholder},
+                albumversion = {placeholder}, recordlabel = {placeholder}, copyright = {placeholder},
+                releasedate = {placeholder}, discsubtitle = {placeholder},
+                lyrics = {placeholder}, subtitle = {placeholder}, grouping = {placeholder},
+                movement = {placeholder}, movementname = {placeholder}, movementtotal = {placeholder},
+                key = {placeholder}, language = {placeholder}, license = {placeholder},
+                website = {placeholder}, encodedby = {placeholder}, encodersettings = {placeholder},
+                explicitstatus = {placeholder},
+                replaygain_track_gain = {placeholder}, replaygain_track_peak = {placeholder},
+                replaygain_album_gain = {placeholder}, replaygain_album_peak = {placeholder},
+                r128_track_gain = {placeholder}, r128_album_gain = {placeholder}
             WHERE id = {placeholder}
-        """, (title, artist, album, album_artist, stars, 
+        """, (title, artist, album, album_artist, stars,
               is_single_db, single_confidence,
               mbid, suggested_mbid, suggested_mbid_confidence,
-              genres, year, composer, writer, 
+              genres, year, composer, writer,
               arranger, mixer, producer, work,
               track_number, disc_number, comment, isrc,
               bpm, bitrate, sample_rate,
               is_cover_db, cover_manual_override_db,
               alternate_take_db, is_compilation_db, single_manual_override_db,
+              titlesort, albumsort, artistsort,
+              composersort, albumartistsort, lyricistsort,
+              artistssort, albumartistssort,
+              artists, albumartists,
+              conductor, director, djmixer,
+              engineer, remixer, lyricist,
+              albumversion, recordlabel, copyright_field,
+              releasedate, discsubtitle,
+              lyrics, subtitle, grouping,
+              movement, movementname, movementtotal,
+              key, language, license_field,
+              website, encodedby, encodersettings,
+              explicitstatus,
+              replaygain_track_gain, replaygain_track_peak,
+              replaygain_album_gain, replaygain_album_peak,
+              r128_track_gain, r128_album_gain,
               track_id))
         
         conn.commit()
@@ -13209,7 +13293,87 @@ def track_edit(track_id):
                     tags_to_write["isrc"] = isrc
                 if bpm:
                     tags_to_write["bpm"] = bpm
-                
+                if titlesort:
+                    tags_to_write["titlesort"] = titlesort
+                if albumsort:
+                    tags_to_write["albumsort"] = albumsort
+                if artistsort:
+                    tags_to_write["artistsort"] = artistsort
+                if composersort:
+                    tags_to_write["composersort"] = composersort
+                if albumartistsort:
+                    tags_to_write["albumartistsort"] = albumartistsort
+                if lyricistsort:
+                    tags_to_write["lyricistsort"] = lyricistsort
+                if artistssort:
+                    tags_to_write["artistssort"] = artistssort
+                if albumartistssort:
+                    tags_to_write["albumartistssort"] = albumartistssort
+                if artists:
+                    tags_to_write["artists"] = artists
+                if albumartists:
+                    tags_to_write["albumartists"] = albumartists
+                if conductor:
+                    tags_to_write["conductor"] = conductor
+                if director:
+                    tags_to_write["director"] = director
+                if djmixer:
+                    tags_to_write["djmixer"] = djmixer
+                if engineer:
+                    tags_to_write["engineer"] = engineer
+                if remixer:
+                    tags_to_write["remixer"] = remixer
+                if lyricist:
+                    tags_to_write["lyricist"] = lyricist
+                if albumversion:
+                    tags_to_write["albumversion"] = albumversion
+                if recordlabel:
+                    tags_to_write["recordlabel"] = recordlabel
+                if copyright_field:
+                    tags_to_write["copyright"] = copyright_field
+                if releasedate:
+                    tags_to_write["releasedate"] = releasedate
+                if discsubtitle:
+                    tags_to_write["discsubtitle"] = discsubtitle
+                if lyrics:
+                    tags_to_write["lyrics"] = lyrics
+                if subtitle:
+                    tags_to_write["subtitle"] = subtitle
+                if grouping:
+                    tags_to_write["grouping"] = grouping
+                if movement:
+                    tags_to_write["movement"] = movement
+                if movementname:
+                    tags_to_write["movementname"] = movementname
+                if movementtotal:
+                    tags_to_write["movementtotal"] = movementtotal
+                if key:
+                    tags_to_write["key"] = key
+                if language:
+                    tags_to_write["language"] = language
+                if license_field:
+                    tags_to_write["license"] = license_field
+                if website:
+                    tags_to_write["website"] = website
+                if encodedby:
+                    tags_to_write["encodedby"] = encodedby
+                if encodersettings:
+                    tags_to_write["encodersettings"] = encodersettings
+                if explicitstatus:
+                    tags_to_write["explicitstatus"] = explicitstatus
+                if replaygain_track_gain:
+                    tags_to_write["replaygain_track_gain"] = replaygain_track_gain
+                if replaygain_track_peak:
+                    tags_to_write["replaygain_track_peak"] = replaygain_track_peak
+                if replaygain_album_gain:
+                    tags_to_write["replaygain_album_gain"] = replaygain_album_gain
+                if replaygain_album_peak:
+                    tags_to_write["replaygain_album_peak"] = replaygain_album_peak
+                if r128_track_gain:
+                    tags_to_write["r128_track_gain"] = r128_track_gain
+                if r128_album_gain:
+                    tags_to_write["r128_album_gain"] = r128_album_gain
+
                 # Write to file
                 file_write_success = write_tags_to_file(resolved_file_path, tags_to_write)
                 

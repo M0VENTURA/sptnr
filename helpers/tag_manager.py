@@ -19,7 +19,12 @@ from pathlib import Path
 # Metadata reading library (supports multiple formats)
 try:
     from mutagen.mp3 import MP3
-    from mutagen.id3 import ID3, TIT2, TPE1, TALB, TPE2, TCON, TRCK, TPOS, TDRC, TCOM, TBPM, COMM, TXXX, APIC
+    from mutagen.id3 import (
+        ID3, TIT2, TPE1, TALB, TPE2, TCON, TRCK, TPOS, TDRC, TCOM, TBPM, COMM, TXXX, APIC,
+        TMOO, TSOT, TSOA, TSOC, TSST, TPE3, TPE4, TIT1, TIT3, TKEY, TLAN, TPUB,
+        TCOP, TENC, TSSE, TDRL, WOAR, USLT, TIPL, TSRC,
+        TEXT as TTEXT,
+    )
     _MUTAGEN_AVAILABLE = True
 except ImportError:
     _MUTAGEN_AVAILABLE = False
@@ -39,21 +44,38 @@ logger = logging.getLogger(__name__)
 # Fields that can be edited
 EDITABLE_FIELDS = {
     # Basic metadata
-    "album", "artist", "title", "album_artist", "albumartist", 
+    "album", "artist", "title", "album_artist", "albumartist",
     "albumartistsort", "artistsort",
+    # Sort keys
+    "titlesort", "albumsort", "composersort", "lyricistsort",
+    "artistssort", "albumartistssort",
+    # Multi-value artist fields
+    "artists", "albumartists",
     # Credits
     "arranger", "composer", "mixer", "producer", "writer", "performer",
+    "conductor", "director", "djmixer", "engineer", "remixer", "lyricist",
     # Release info
     "label", "releasecountry", "releasestatus", "releasetype",
     "media", "barcode", "catalognumber", "asin",
+    "recordlabel", "copyright", "releasedate",
     # Dates
     "year", "originalyear", "originaldate", "date",
     # Numbering
     "track_number", "tracktotal", "disc_number", "totaldiscs",
     # Content
-    "genres", "work", "mood",
+    "genres", "work", "mood", "lyrics",
+    "subtitle", "discsubtitle", "albumversion",
+    "grouping", "movement", "movementname", "movementtotal",
+    # Classical/Work
+    "key", "language", "script",
     # Technical
-    "bpm", "danceability", "isrc", "script",
+    "bpm", "danceability", "isrc",
+    "encodedby", "encodersettings", "website",
+    "license", "explicitstatus",
+    # ReplayGain / R128
+    "replaygain_track_gain", "replaygain_track_peak",
+    "replaygain_album_gain", "replaygain_album_peak",
+    "r128_track_gain", "r128_album_gain",
     # MusicBrainz IDs
     "musicbrainz_albumartistid", "musicbrainz_albumid", "musicbrainz_albumtype",
     "musicbrainz_albumstatus", "musicbrainz_releasegroupid", "musicbrainz_releasetrackid",
@@ -474,10 +496,11 @@ def _write_id3_tags(file_path: str, tags: Dict[str, Any]) -> bool:
                     if genre_values:
                         audio.tags.add(TCON(encoding=3, text=genre_values))
             elif field == "mood":
-                frame_key = "TXXX:MOOD"
-                audio.tags.delall(frame_key)
+                # Fix: use standard TMOO frame (Navidrome reads tmoo alias, not TXXX:MOOD)
+                audio.tags.delall("TXXX:MOOD")
+                audio.tags.delall("TMOO")
                 if value is not None and str(value).strip():
-                    audio.tags.add(TXXX(encoding=3, desc="MOOD", text=[str(value)]))
+                    audio.tags.add(TMOO(encoding=3, text=[str(value)]))
             elif field == "bpm":
                 _set_text_frame("TBPM", TBPM, value)
             elif field == "danceability":
@@ -499,6 +522,152 @@ def _write_id3_tags(file_path: str, tags: Dict[str, Any]) -> bool:
                 audio.tags.delall(frame_key)
                 if value is not None and str(value).strip():
                     audio.tags.add(TXXX(encoding=3, desc="MUSICBRAINZ ALBUM ID", text=[str(value)]))
+            elif field == "titlesort":
+                _set_text_frame("TSOT", TSOT, value)
+            elif field == "albumsort":
+                _set_text_frame("TSOA", TSOA, value)
+            elif field == "albumartistsort":
+                # TSO2 is not a standard ID3v2.3 frame; use TXXX for broader compatibility
+                frame_key = "TXXX:ALBUMARTISTSORT"
+                audio.tags.delall(frame_key)
+                if value is not None and str(value).strip():
+                    audio.tags.add(TXXX(encoding=3, desc="ALBUMARTISTSORT", text=[str(value)]))
+            elif field == "composersort":
+                _set_text_frame("TSOC", TSOC, value)
+            elif field == "lyricistsort":
+                frame_key = "TXXX:lyricistsort"
+                audio.tags.delall(frame_key)
+                if value is not None and str(value).strip():
+                    audio.tags.add(TXXX(encoding=3, desc="lyricistsort", text=[str(value)]))
+            elif field == "artists":
+                frame_key = "TXXX:ARTISTS"
+                audio.tags.delall(frame_key)
+                if value is not None and str(value).strip():
+                    audio.tags.add(TXXX(encoding=3, desc="ARTISTS", text=[str(value)]))
+            elif field == "artistssort":
+                frame_key = "TXXX:artistssort"
+                audio.tags.delall(frame_key)
+                if value is not None and str(value).strip():
+                    audio.tags.add(TXXX(encoding=3, desc="artistssort", text=[str(value)]))
+            elif field == "albumartists":
+                frame_key = "TXXX:ALBUM ARTISTS"
+                audio.tags.delall(frame_key)
+                if value is not None and str(value).strip():
+                    audio.tags.add(TXXX(encoding=3, desc="ALBUM ARTISTS", text=[str(value)]))
+            elif field == "albumartistssort":
+                frame_key = "TXXX:albumartistssort"
+                audio.tags.delall(frame_key)
+                if value is not None and str(value).strip():
+                    audio.tags.add(TXXX(encoding=3, desc="albumartistssort", text=[str(value)]))
+            elif field == "conductor":
+                _set_text_frame("TPE3", TPE3, value)
+            elif field == "director":
+                frame_key = "TXXX:DIRECTOR"
+                audio.tags.delall(frame_key)
+                if value is not None and str(value).strip():
+                    audio.tags.add(TXXX(encoding=3, desc="DIRECTOR", text=[str(value)]))
+            elif field == "djmixer":
+                frame_key = "TXXX:DJMIXER"
+                audio.tags.delall(frame_key)
+                if value is not None and str(value).strip():
+                    audio.tags.add(TXXX(encoding=3, desc="DJMIXER", text=[str(value)]))
+            elif field == "engineer":
+                frame_key = "TXXX:ENGINEER"
+                audio.tags.delall(frame_key)
+                if value is not None and str(value).strip():
+                    audio.tags.add(TXXX(encoding=3, desc="ENGINEER", text=[str(value)]))
+            elif field == "remixer":
+                _set_text_frame("TPE4", TPE4, value)
+            elif field == "lyricist":
+                _set_text_frame("TEXT", TTEXT, value)
+            elif field == "albumversion":
+                frame_key = "TXXX:ALBUMVERSION"
+                audio.tags.delall(frame_key)
+                if value is not None and str(value).strip():
+                    audio.tags.add(TXXX(encoding=3, desc="ALBUMVERSION", text=[str(value)]))
+            elif field == "discsubtitle":
+                _set_text_frame("TSST", TSST, value)
+            elif field == "lyrics":
+                audio.tags.delall("USLT")
+                if value is not None and str(value).strip():
+                    audio.tags.add(USLT(encoding=3, lang="eng", desc="", text=str(value)))
+            elif field == "releasedate":
+                _set_text_frame("TDRL", TDRL, value)
+            elif field == "r128_album_gain":
+                frame_key = "TXXX:R128_ALBUM_GAIN"
+                audio.tags.delall(frame_key)
+                if value is not None and str(value).strip():
+                    audio.tags.add(TXXX(encoding=3, desc="R128_ALBUM_GAIN", text=[str(value)]))
+            elif field == "r128_track_gain":
+                frame_key = "TXXX:R128_TRACK_GAIN"
+                audio.tags.delall(frame_key)
+                if value is not None and str(value).strip():
+                    audio.tags.add(TXXX(encoding=3, desc="R128_TRACK_GAIN", text=[str(value)]))
+            elif field == "explicitstatus":
+                frame_key = "TXXX:ITUNESADVISORY"
+                audio.tags.delall(frame_key)
+                if value is not None and str(value).strip():
+                    audio.tags.add(TXXX(encoding=3, desc="ITUNESADVISORY", text=[str(value)]))
+            elif field == "copyright":
+                _set_text_frame("TCOP", TCOP, value)
+            elif field == "encodedby":
+                _set_text_frame("TENC", TENC, value)
+            elif field == "encodersettings":
+                _set_text_frame("TSSE", TSSE, value)
+            elif field == "grouping":
+                _set_text_frame("TIT1", TIT1, value)
+            elif field == "key":
+                _set_text_frame("TKEY", TKEY, value)
+            elif field == "language":
+                _set_text_frame("TLAN", TLAN, value)
+            elif field == "license":
+                frame_key = "TXXX:LICENSE"
+                audio.tags.delall(frame_key)
+                if value is not None and str(value).strip():
+                    audio.tags.add(TXXX(encoding=3, desc="LICENSE", text=[str(value)]))
+            elif field == "movementname":
+                frame_key = "TXXX:MOVEMENTNAME"
+                audio.tags.delall(frame_key)
+                if value is not None and str(value).strip():
+                    audio.tags.add(TXXX(encoding=3, desc="MOVEMENTNAME", text=[str(value)]))
+            elif field == "movementtotal":
+                frame_key = "TXXX:MOVEMENTTOTAL"
+                audio.tags.delall(frame_key)
+                if value is not None and str(value).strip():
+                    audio.tags.add(TXXX(encoding=3, desc="MOVEMENTTOTAL", text=[str(value)]))
+            elif field == "movement":
+                frame_key = "TXXX:MOVEMENT"
+                audio.tags.delall(frame_key)
+                if value is not None and str(value).strip():
+                    audio.tags.add(TXXX(encoding=3, desc="MOVEMENT", text=[str(value)]))
+            elif field == "subtitle":
+                _set_text_frame("TIT3", TIT3, value)
+            elif field == "website":
+                audio.tags.delall("WOAR")
+                if value is not None and str(value).strip():
+                    audio.tags.add(WOAR(url=str(value)))
+            elif field == "recordlabel":
+                _set_text_frame("TPUB", TPUB, value)
+            elif field == "replaygain_track_gain":
+                frame_key = "TXXX:replaygain_track_gain"
+                audio.tags.delall(frame_key)
+                if value is not None and str(value).strip():
+                    audio.tags.add(TXXX(encoding=3, desc="replaygain_track_gain", text=[str(value)]))
+            elif field == "replaygain_track_peak":
+                frame_key = "TXXX:replaygain_track_peak"
+                audio.tags.delall(frame_key)
+                if value is not None and str(value).strip():
+                    audio.tags.add(TXXX(encoding=3, desc="replaygain_track_peak", text=[str(value)]))
+            elif field == "replaygain_album_gain":
+                frame_key = "TXXX:replaygain_album_gain"
+                audio.tags.delall(frame_key)
+                if value is not None and str(value).strip():
+                    audio.tags.add(TXXX(encoding=3, desc="replaygain_album_gain", text=[str(value)]))
+            elif field == "replaygain_album_peak":
+                frame_key = "TXXX:replaygain_album_peak"
+                audio.tags.delall(frame_key)
+                if value is not None and str(value).strip():
+                    audio.tags.add(TXXX(encoding=3, desc="replaygain_album_peak", text=[str(value)]))
             elif field == "cover_art_data":
                 # value should be raw image bytes; cover_art_mime is read from the same tags dict
                 if value is not None and isinstance(value, (bytes, bytearray)) and len(value) > 0:
@@ -553,6 +722,74 @@ def _write_flac_tags(file_path: str, tags: Dict[str, Any]) -> bool:
             "comment": "comment",
             "mbid": "musicbrainz_trackid",
             "musicbrainz_album_mbid": "musicbrainz_albumid",
+            # Sort keys
+            "titlesort": "titlesort",
+            "albumsort": "albumsort",
+            "artistsort": "artistsort",
+            "composersort": "composersort",
+            "albumartistsort": "albumartistsort",
+            "lyricistsort": "lyricistsort",
+            "artistssort": "artistssort",
+            "albumartistssort": "albumartistssort",
+            # Multi-value artist fields
+            "artists": "artists",
+            "albumartists": "albumartists",
+            # Credits
+            "conductor": "conductor",
+            "director": "director",
+            "djmixer": "djmixer",
+            "engineer": "engineer",
+            "remixer": "remixer",
+            "lyricist": "lyricist",
+            "performer": "performer",
+            "arranger": "arranger",
+            "mixer": "mixer",
+            "producer": "producer",
+            # Release info
+            "label": "label",
+            "releasecountry": "releasecountry",
+            "releasestatus": "releasestatus",
+            "releasetype": "releasetype",
+            "media": "media",
+            "barcode": "barcode",
+            "catalognumber": "catalognumber",
+            "asin": "asin",
+            "recordlabel": "publisher",
+            "copyright": "copyright",
+            "releasedate": "releasedate",
+            # Dates
+            "originalyear": "originalyear",
+            "originaldate": "originaldate",
+            # Numbering
+            "tracktotal": "tracktotal",
+            "totaldiscs": "totaldiscs",
+            # Content
+            "work": "work",
+            "lyrics": "lyrics",
+            "subtitle": "subtitle",
+            "discsubtitle": "discsubtitle",
+            "albumversion": "albumversion",
+            "grouping": "grouping",
+            "movement": "movement",
+            "movementname": "movementname",
+            "movementtotal": "movementtotal",
+            # Technical
+            "isrc": "isrc",
+            "key": "key",
+            "language": "language",
+            "script": "script",
+            "encodedby": "encodedby",
+            "encodersettings": "encodersettings",
+            "website": "website",
+            "license": "license",
+            "explicitstatus": "itunesadvisory",
+            # ReplayGain
+            "replaygain_track_gain": "replaygain_track_gain",
+            "replaygain_track_peak": "replaygain_track_peak",
+            "replaygain_album_gain": "replaygain_album_gain",
+            "replaygain_album_peak": "replaygain_album_peak",
+            "r128_track_gain": "r128_track_gain",
+            "r128_album_gain": "r128_album_gain",
         }
 
         for field, value in tags.items():
