@@ -330,6 +330,284 @@
                     </div>
                 </div>
 
+                <!-- Sort Keys Section -->
+                <div class="card mb-4" id="track-sort-keys-section">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-sort-alpha-down"></i> Sort Keys
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-2">
+                            <div class="col-6">
+                                <label for="titlesort" class="form-label">Title Sort</label>
+                                <input type="text" class="form-control" id="titlesort" name="titlesort" value="{{ track.titlesort or '' }}" placeholder="Sort title">
+                            </div>
+                            <div class="col-6">
+                                <label for="albumsort" class="form-label">Album Sort</label>
+                                <input type="text" class="form-control" id="albumsort" name="albumsort" value="{{ track.albumsort or '' }}" placeholder="Sort album">
+                            </div>
+                        </div>
+                        <div class="row g-2 mt-1">
+                            <div class="col-6">
+                                <label for="artistsort" class="form-label">Artist Sort</label>
+                                <input type="text" class="form-control" id="artistsort" name="artistsort" value="{{ track.artistsort or '' }}" placeholder="Sort artist">
+                            </div>
+                            <div class="col-6">
+                                <label for="albumartistsort" class="form-label">Album Artist Sort</label>
+                                <input type="text" class="form-control" id="albumartistsort" name="albumartistsort" value="{{ track.albumartistsort or '' }}" placeholder="Sort album artist">
+                            </div>
+                        </div>
+                        <div class="row g-2 mt-1">
+                            <div class="col-6">
+                                <label for="composersort" class="form-label">Composer Sort</label>
+                                <input type="text" class="form-control" id="composersort" name="composersort" value="{{ track.composersort or '' }}" placeholder="Sort composer">
+                            </div>
+                            <div class="col-6">
+                                <label for="lyricistsort" class="form-label">Lyricist Sort</label>
+                                <input type="text" class="form-control" id="lyricistsort" name="lyricistsort" value="{{ track.lyricistsort or '' }}" placeholder="Sort lyricist">
+                            </div>
+                        </div>
+                        <div class="row g-2 mt-1">
+                            <div class="col-6">
+                                <label for="artistssort" class="form-label">Artists Sort</label>
+                                <input type="text" class="form-control" id="artistssort" name="artistssort" value="{{ track.artistssort or '' }}" placeholder="Sort artists (multi)">
+                            </div>
+                            <div class="col-6">
+                                <label for="albumartistssort" class="form-label">Album Artists Sort</label>
+                                <input type="text" class="form-control" id="albumartistssort" name="albumartistssort" value="{{ track.albumartistssort or '' }}" placeholder="Sort album artists (multi)">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Additional Credits Section -->
+                <div class="card mb-4" id="track-credits-section">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-people-fill"></i> Additional Credits
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-2">
+                            <div class="col-6">
+                                <label for="artists" class="form-label">Artists (multi)</label>
+                                <input type="text" class="form-control" id="artists" name="artists" value="{{ track.artists or '' }}" placeholder="Semicolon-separated artists">
+                            </div>
+                            <div class="col-6">
+                                <label for="albumartists" class="form-label">Album Artists (multi)</label>
+                                <input type="text" class="form-control" id="albumartists" name="albumartists" value="{{ track.albumartists or '' }}" placeholder="Semicolon-separated album artists">
+                            </div>
+                        </div>
+                        <div class="row g-2 mt-1">
+                            <div class="col-6">
+                                <label for="conductor" class="form-label">Conductor</label>
+                                <input type="text" class="form-control" id="conductor" name="conductor" value="{{ track.conductor or '' }}" placeholder="Conductor name">
+                            </div>
+                            <div class="col-6">
+                                <label for="lyricist" class="form-label">Lyricist</label>
+                                <input type="text" class="form-control" id="lyricist" name="lyricist" value="{{ track.lyricist or '' }}" placeholder="Lyricist name">
+                            </div>
+                        </div>
+                        <div class="row g-2 mt-1">
+                            <div class="col-6">
+                                <label for="remixer" class="form-label">Remixer</label>
+                                <input type="text" class="form-control" id="remixer" name="remixer" value="{{ track.remixer or '' }}" placeholder="Remixer name">
+                            </div>
+                            <div class="col-6">
+                                <label for="director" class="form-label">Director</label>
+                                <input type="text" class="form-control" id="director" name="director" value="{{ track.director or '' }}" placeholder="Director name">
+                            </div>
+                        </div>
+                        <div class="row g-2 mt-1">
+                            <div class="col-6">
+                                <label for="djmixer" class="form-label">DJ Mixer</label>
+                                <input type="text" class="form-control" id="djmixer" name="djmixer" value="{{ track.djmixer or '' }}" placeholder="DJ Mixer name">
+                            </div>
+                            <div class="col-6">
+                                <label for="engineer" class="form-label">Engineer</label>
+                                <input type="text" class="form-control" id="engineer" name="engineer" value="{{ track.engineer or '' }}" placeholder="Recording engineer">
+                            </div>
+                        </div>
+                        <div class="row g-2 mt-1">
+                            <div class="col-6">
+                                <label for="albumversion" class="form-label">Album Version</label>
+                                <input type="text" class="form-control" id="albumversion" name="albumversion" value="{{ track.albumversion or '' }}" placeholder="e.g., Deluxe Edition">
+                            </div>
+                            <div class="col-6">
+                                <label for="subtitle" class="form-label">Subtitle</label>
+                                <input type="text" class="form-control" id="subtitle" name="subtitle" value="{{ track.subtitle or '' }}" placeholder="Track subtitle">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Release Info Section -->
+                <div class="card mb-4" id="track-release-info-section">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-disc-fill"></i> Release Information
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-2">
+                            <div class="col-6">
+                                <label for="recordlabel" class="form-label">Record Label</label>
+                                <input type="text" class="form-control" id="recordlabel" name="recordlabel" value="{{ track.recordlabel or '' }}" placeholder="e.g., Columbia Records">
+                            </div>
+                            <div class="col-6">
+                                <label for="copyright" class="form-label">Copyright</label>
+                                <input type="text" class="form-control" id="copyright" name="copyright" value="{{ track.copyright or '' }}" placeholder="e.g., © 2023 Label">
+                            </div>
+                        </div>
+                        <div class="row g-2 mt-1">
+                            <div class="col-6">
+                                <label for="releasedate" class="form-label">Release Date</label>
+                                <input type="text" class="form-control" id="releasedate" name="releasedate" value="{{ track.releasedate or '' }}" placeholder="e.g., 2023-06-15">
+                            </div>
+                            <div class="col-6">
+                                <label for="discsubtitle" class="form-label">Disc Subtitle</label>
+                                <input type="text" class="form-control" id="discsubtitle" name="discsubtitle" value="{{ track.discsubtitle or '' }}" placeholder="e.g., Live at the Forum">
+                            </div>
+                        </div>
+                        <div class="row g-2 mt-1">
+                            <div class="col-6">
+                                <label for="language" class="form-label">Language</label>
+                                <input type="text" class="form-control" id="language" name="language" value="{{ track.language or '' }}" placeholder="e.g., eng">
+                            </div>
+                            <div class="col-6">
+                                <label for="explicitstatus" class="form-label">Explicit Status</label>
+                                <input type="text" class="form-control" id="explicitstatus" name="explicitstatus" value="{{ track.explicitstatus or '' }}" placeholder="e.g., 0, 1, 2">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Classical / Movement Section -->
+                <div class="card mb-4" id="track-movement-section">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-music-note-beamed"></i> Classical / Movement
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-2">
+                            <div class="col-6">
+                                <label for="grouping" class="form-label">Grouping</label>
+                                <input type="text" class="form-control" id="grouping" name="grouping" value="{{ track.grouping or '' }}" placeholder="Content group / movement">
+                            </div>
+                            <div class="col-6">
+                                <label for="key" class="form-label">Initial Key</label>
+                                <input type="text" class="form-control" id="key" name="key" value="{{ track.key or '' }}" placeholder="e.g., Cmaj, Amin">
+                            </div>
+                        </div>
+                        <div class="row g-2 mt-1">
+                            <div class="col-6">
+                                <label for="movementname" class="form-label">Movement Name</label>
+                                <input type="text" class="form-control" id="movementname" name="movementname" value="{{ track.movementname or '' }}" placeholder="e.g., Allegro ma non troppo">
+                            </div>
+                            <div class="col-6">
+                                <label for="movement" class="form-label">Movement Number</label>
+                                <input type="text" class="form-control" id="movement" name="movement" value="{{ track.movement or '' }}" placeholder="e.g., 1">
+                            </div>
+                        </div>
+                        <div class="row g-2 mt-1">
+                            <div class="col-6">
+                                <label for="movementtotal" class="form-label">Movement Total</label>
+                                <input type="text" class="form-control" id="movementtotal" name="movementtotal" value="{{ track.movementtotal or '' }}" placeholder="e.g., 4">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Technical / Legal Section -->
+                <div class="card mb-4" id="track-technical-legal-section">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-gear-fill"></i> Technical &amp; Legal
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-2">
+                            <div class="col-6">
+                                <label for="website" class="form-label">Artist Website</label>
+                                <input type="url" class="form-control" id="website" name="website" value="{{ track.website or '' }}" placeholder="https://artist.com">
+                            </div>
+                            <div class="col-6">
+                                <label for="license" class="form-label">License</label>
+                                <input type="text" class="form-control" id="license" name="license" value="{{ track.license or '' }}" placeholder="e.g., CC BY-SA 4.0">
+                            </div>
+                        </div>
+                        <div class="row g-2 mt-1">
+                            <div class="col-6">
+                                <label for="encodedby" class="form-label">Encoded By</label>
+                                <input type="text" class="form-control" id="encodedby" name="encodedby" value="{{ track.encodedby or '' }}" placeholder="Encoder name">
+                            </div>
+                            <div class="col-6">
+                                <label for="encodersettings" class="form-label">Encoder Settings</label>
+                                <input type="text" class="form-control" id="encodersettings" name="encodersettings" value="{{ track.encodersettings or '' }}" placeholder="e.g., -V 0">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ReplayGain Section -->
+                <div class="card mb-4" id="track-replaygain-section">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-soundwave"></i> ReplayGain / R128
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <p class="text-muted small mb-3">These values are typically set by scanning tools. Edit only if you know what you are doing.</p>
+                        <div class="row g-2">
+                            <div class="col-6">
+                                <label for="replaygain_track_gain" class="form-label">Track Gain (dB)</label>
+                                <input type="text" class="form-control" id="replaygain_track_gain" name="replaygain_track_gain" value="{{ track.replaygain_track_gain or '' }}" placeholder="e.g., -6.54 dB">
+                            </div>
+                            <div class="col-6">
+                                <label for="replaygain_track_peak" class="form-label">Track Peak</label>
+                                <input type="text" class="form-control" id="replaygain_track_peak" name="replaygain_track_peak" value="{{ track.replaygain_track_peak or '' }}" placeholder="e.g., 0.988">
+                            </div>
+                        </div>
+                        <div class="row g-2 mt-1">
+                            <div class="col-6">
+                                <label for="replaygain_album_gain" class="form-label">Album Gain (dB)</label>
+                                <input type="text" class="form-control" id="replaygain_album_gain" name="replaygain_album_gain" value="{{ track.replaygain_album_gain or '' }}" placeholder="e.g., -5.20 dB">
+                            </div>
+                            <div class="col-6">
+                                <label for="replaygain_album_peak" class="form-label">Album Peak</label>
+                                <input type="text" class="form-control" id="replaygain_album_peak" name="replaygain_album_peak" value="{{ track.replaygain_album_peak or '' }}" placeholder="e.g., 0.999">
+                            </div>
+                        </div>
+                        <div class="row g-2 mt-1">
+                            <div class="col-6">
+                                <label for="r128_track_gain" class="form-label">R128 Track Gain</label>
+                                <input type="text" class="form-control" id="r128_track_gain" name="r128_track_gain" value="{{ track.r128_track_gain or '' }}" placeholder="e.g., -900">
+                            </div>
+                            <div class="col-6">
+                                <label for="r128_album_gain" class="form-label">R128 Album Gain</label>
+                                <input type="text" class="form-control" id="r128_album_gain" name="r128_album_gain" value="{{ track.r128_album_gain or '' }}" placeholder="e.g., -750">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Full Lyrics Section -->
+                <div class="card mb-4" id="track-lyrics-section">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-chat-quote-fill"></i> Full Lyrics
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label for="lyrics" class="form-label">Lyrics</label>
+                            <textarea class="form-control" id="lyrics" name="lyrics" rows="10" placeholder="Paste full song lyrics here...">{{ track.lyrics or '' }}</textarea>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Genres & Tags Section -->
                 <div class="card mb-4" id="track-genres-edit-section">
                     <div class="card-header">

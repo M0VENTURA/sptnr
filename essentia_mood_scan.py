@@ -27,6 +27,7 @@ Configuration (config.yaml, ``essentia`` section):
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -55,6 +56,10 @@ _BUNDLED_MODELS_DIR = "/opt/essentia_models"
 # This constant centralises the detection string so it stays in sync if the
 # Essentia message wording ever changes.
 _ESSENTIA_NO_MODELS_PHRASE = "no classifier models were configured by default"
+
+# Separator used by Essentia-to-Metadata for hierarchical genre labels
+# (e.g. "Rock---Heavy Metal").
+_ESSENTIA_GENRE_SEPARATOR = "---"
 
 
 # ---------------------------------------------------------------------------
@@ -259,6 +264,99 @@ def _read_essentia_genre_from_file(file_path: str) -> Optional[str]:
         return None
 
     return genres.strip() if genres and genres.strip() else None
+
+
+def _extract_child_genres(genre_str: str) -> List[str]:
+    """Extract child genre labels from an Essentia hierarchical genre string.
+
+    Handles formats like:
+      - "Rock---Heavy Metal; Rock---Death Metal"
+      - "Rock---Heavy Metal: 22.04%, Rock---Death Metal: 16.75%"
+      - "Heavy Metal; Death Metal"  (already child-only)
+
+    Returns a deduplicated list of child genre labels.
+    """
+    if not genre_str:
+        return []
+
+    child_genres: List[str] = []
+    seen_lower: set = set()
+    # Split on semicolons or commas
+    for part in re.split(r"[;,]", genre_str):
+        part = part.strip()
+        if not part:
+            continue
+        # Strip trailing confidence percentage: "Heavy Metal: 22.04%"
+        part = re.sub(r":\s*\d+\.?\d*\s*%?\s*$", "", part).strip()
+        # Extract the child part from "Parent---Child" hierarchy
+        if _ESSENTIA_GENRE_SEPARATOR in part:
+            child = part.split(_ESSENTIA_GENRE_SEPARATOR, 1)[-1].strip()
+        else:
+            child = part
+        if child and child.lower() not in seen_lower:
+            seen_lower.add(child.lower())
+            child_genres.append(child)
+    return child_genres
+
+
+def _read_existing_tcon_genres(file_path: str) -> List[str]:
+    """Read the existing TCON/genre tags from a file, excluding hierarchical Essentia entries."""
+    try:
+        from mutagen.id3 import ID3
+        from mutagen.flac import FLAC
+        from mutagen.mp4 import MP4
+        from mutagen.oggvorbis import OggVorbis
+        from mutagen.oggopus import OggOpus
+        from mutagen.asf import ASF
+    except ImportError:
+        return []
+
+    ext = os.path.splitext(file_path)[1].lower()
+    raw_genres: List[str] = []
+
+    try:
+        if ext == ".mp3":
+            audio = ID3(file_path)
+            tcon = audio.get("TCON")
+            if tcon:
+                raw_genres = [str(t).strip() for t in getattr(tcon, "text", []) if str(t).strip()]
+        elif ext == ".flac":
+            audio = FLAC(file_path)
+            raw = audio.get("GENRE") or audio.get("genre") or []
+            raw_genres = [str(v).strip() for v in raw if str(v).strip()]
+        elif ext in (".ogg", ".oga"):
+            audio = OggVorbis(file_path)
+            raw = audio.get("GENRE") or audio.get("genre") or []
+            raw_genres = [str(v).strip() for v in raw if str(v).strip()]
+        elif ext == ".opus":
+            audio = OggOpus(file_path)
+            raw = audio.get("GENRE") or audio.get("genre") or []
+            raw_genres = [str(v).strip() for v in raw if str(v).strip()]
+        elif ext in (".m4a", ".m4b", ".mp4", ".aac"):
+            audio = MP4(file_path)
+            raw = audio.get("\xa9gen") or []
+            raw_genres = [str(v).strip() for v in raw if str(v).strip()]
+        elif ext == ".wma":
+            audio = ASF(file_path)
+            raw = audio.get("WM/Genre") or []
+            raw_genres = [str(v).strip() for v in raw if str(v).strip()]
+    except Exception as exc:
+        logger.debug("Failed to read existing genres from %s: %s", file_path, exc)
+
+    # Filter out hierarchical Essentia entries ("Parent---Child") so they are
+    # replaced by the clean child-only values.
+    return [g for g in raw_genres if _ESSENTIA_GENRE_SEPARATOR not in g]
+
+
+def _merge_genres(existing: List[str], new_genres: List[str]) -> List[str]:
+    """Merge two genre lists, preserving order and avoiding case-insensitive duplicates."""
+    seen_lower = {g.lower() for g in existing}
+    result = list(existing)
+    for g in new_genres:
+        if g.lower() not in seen_lower:
+            seen_lower.add(g.lower())
+            result.append(g)
+    return result
 
 
 def _coerce_float(value: Any) -> Optional[float]:
@@ -973,20 +1071,38 @@ def run_essentia_mood_scan(
             conn.commit()
 
             if tag_genres:
-                # Avoid full DB->file sync here so Essentia-written genres are preserved.
+                # Write proper (child-only) genre tags and TXXX:MOOD to the
+                # file, merging with any genres already present.
                 selective_updates: Dict[str, Any] = {}
                 if bpm_value is not None:
                     selective_updates["bpm"] = float(bpm_value)
                 if danceability_value is not None:
                     selective_updates["danceability"] = float(danceability_value)
 
+                # Extract child genres (e.g. "Heavy Metal" from "Rock---Heavy Metal")
+                # and merge with existing non-hierarchical genres in the file.
+                child_genres = _extract_child_genres(essentia_genre) if essentia_genre else []
+                if child_genres:
+                    existing_genres = _read_existing_tcon_genres(file_path)
+                    selective_updates["genres"] = _merge_genres(existing_genres, child_genres)
+
+                # Write mood to the standard TMOO frame (Navidrome-compatible)
+                # in addition to any COMM frame the external script may have written.
+                if mood:
+                    selective_updates["mood"] = mood
+
                 if selective_updates:
                     if update_file_tags(file_path, selective_updates):
                         synced_files += 1
                 else:
                     synced_files += 1
-            elif sync_track_tags_to_file(track_id):
-                synced_files += 1
+            else:
+                # Mood-only mode: write TMOO frame so Navidrome and players
+                # recognise it, then do the full DB->file sync for all other fields.
+                if mood:
+                    update_file_tags(file_path, {"mood": mood})
+                if sync_track_tags_to_file(track_id):
+                    synced_files += 1
 
             if parse_json_features and delete_json_after_import and json_path:
                 try:

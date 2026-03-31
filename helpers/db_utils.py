@@ -723,3 +723,137 @@ def ensure_essentia_feature_columns():
         logging.error(f"✗ Error ensuring Essentia feature columns exist: {e}", exc_info=True)
         return False
 
+
+
+def ensure_navidrome_tag_columns():
+    """Ensure all Navidrome-mapped tag columns exist in the tracks table."""
+    import logging
+
+    columns_to_add = [
+        # Sort keys
+        ("titlesort", "TEXT"),
+        ("albumsort", "TEXT"),
+        ("composersort", "TEXT"),
+        ("lyricistsort", "TEXT"),
+        ("artistssort", "TEXT"),
+        ("albumartistssort", "TEXT"),
+        # Multi-value artist fields
+        ("artists", "TEXT"),
+        ("albumartists", "TEXT"),
+        # Credits
+        ("conductor", "TEXT"),
+        ("director", "TEXT"),
+        ("djmixer", "TEXT"),
+        ("engineer", "TEXT"),
+        ("remixer", "TEXT"),
+        ("lyricist", "TEXT"),
+        # Release info
+        ("recordlabel", "TEXT"),
+        ("copyright", "TEXT"),
+        ("releasedate", "TEXT"),
+        # Content
+        ("lyrics", "TEXT"),
+        ("subtitle", "TEXT"),
+        ("discsubtitle", "TEXT"),
+        ("albumversion", "TEXT"),
+        ("grouping", "TEXT"),
+        ("movement", "TEXT"),
+        ("movementname", "TEXT"),
+        ("movementtotal", "TEXT"),
+        # Technical/Legal
+        ("key", "TEXT"),
+        ("language", "TEXT"),
+        ("license", "TEXT"),
+        ("website", "TEXT"),
+        ("encodedby", "TEXT"),
+        ("encodersettings", "TEXT"),
+        ("explicitstatus", "TEXT"),
+        # ReplayGain (stored as TEXT to preserve units like "-6.54 dB" from ID3 frames)
+        ("replaygain_track_gain", "TEXT"),
+        ("replaygain_track_peak", "TEXT"),
+        ("replaygain_album_gain", "TEXT"),
+        ("replaygain_album_peak", "TEXT"),
+        # R128
+        ("r128_track_gain", "TEXT"),
+        ("r128_album_gain", "TEXT"),
+        # Fields that may already exist but ensure they're present
+        ("label", "TEXT"),
+        ("barcode", "TEXT"),
+        ("catalognumber", "TEXT"),
+        ("asin", "TEXT"),
+        ("originalyear", "TEXT"),
+        ("originaldate", "TEXT"),
+        ("tracktotal", "TEXT"),
+        ("totaldiscs", "TEXT"),
+        ("disctotal", "TEXT"),
+        ("script", "TEXT"),
+        # Sort fields with single-'s' names (distinct from the double-'s' variants above)
+        ("artistsort", "TEXT"),
+        ("albumartistsort", "TEXT"),
+        # iTunes compilation flag
+        ("compilation", "TEXT"),
+        # Credits not yet covered
+        ("performer", "TEXT"),
+        ("writer", "TEXT"),
+        ("arranger", "TEXT"),
+        ("mixer", "TEXT"),
+        ("producer", "TEXT"),
+        # Release classification (Navidrome album-level tags)
+        ("releasetype", "TEXT"),
+        ("releasestatus", "TEXT"),
+        ("releasecountry", "TEXT"),
+        ("media", "TEXT"),
+        # Identifiers
+        ("isrc", "TEXT"),
+        ("work", "TEXT"),
+        # MusicBrainz IDs (beyond those added by other migrations)
+        ("musicbrainz_trackid", "TEXT"),
+        ("musicbrainz_albumid", "TEXT"),
+        ("musicbrainz_artistid", "TEXT"),
+        ("musicbrainz_albumartistid", "TEXT"),
+        ("musicbrainz_releasegroupid", "TEXT"),
+        ("musicbrainz_releasetrackid", "TEXT"),
+        ("musicbrainz_workid", "TEXT"),
+        # Flag: set TRUE when this track belongs to an album with inconsistent
+        # album-level tags (detected by the /correcting endpoint logic)
+        ("needs_correcting", "BOOLEAN DEFAULT FALSE"),
+    ]
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        if not _table_exists(cursor, "tracks"):
+            logging.warning("Tracks table does not exist yet, skipping Navidrome tag columns migration")
+            conn.close()
+            return False
+
+        for col_name, col_def in columns_to_add:
+            try:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
+                existing = _get_table_columns(cursor, "tracks")
+                if col_name in existing:
+                    continue
+
+                cursor.execute(f"ALTER TABLE tracks ADD COLUMN IF NOT EXISTS {col_name} {col_def}")
+                conn.commit()
+                logging.info(f"✓ Added '{col_name}' column to tracks table")
+            except Exception as e:
+                conn.rollback()
+                logging.error(f"✗ Failed to add '{col_name}' column: {e}")
+
+        conn.close()
+        return True
+    except RuntimeError as e:
+        if is_transient_pg_startup_error(e):
+            logging.info(f"Skipping Navidrome tag columns migration while PostgreSQL starts: {e}")
+        else:
+            logging.warning(f"⚠ Skipping Navidrome tag columns migration: {e}")
+        return False
+    except Exception as e:
+        logging.error(f"✗ Error ensuring Navidrome tag columns exist: {e}", exc_info=True)
+        return False

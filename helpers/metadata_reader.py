@@ -266,7 +266,128 @@ def _read_flac_metadata(file_path):
         if bpm:
             metadata['bpm'] = bpm
 
-        # Audio properties
+        # Extended Vorbis comment fields (Navidrome-mapped)
+        _vorbis_simple = [
+            # Sort keys
+            ('TITLESORT',       'titlesort'),
+            ('ALBUMSORT',       'albumsort'),
+            ('ARTISTSORT',      'artistsort'),
+            ('ALBUMARTISTSORT', 'albumartistsort'),
+            ('COMPOSERSORT',    'composersort'),
+            ('LYRICISTSORT',    'lyricistsort'),
+            ('ARTISTSSORT',     'artistssort'),
+            ('ALBUMARTISTSSORT','albumartistssort'),
+            # Credits
+            ('CONDUCTOR',       'conductor'),
+            ('REMIXER',         'remixer'),
+            ('MIXARTIST',       'remixer'),
+            ('GROUPING',        'grouping'),
+            ('SUBTITLE',        'subtitle'),
+            ('LYRICIST',        'lyricist'),
+            # Release info
+            ('RELEASEDATE',     'releasedate'),
+            ('ORIGINALDATE',    'originaldate'),
+            ('DISCSUBTITLE',    'discsubtitle'),
+            ('SETSUBTITLE',     'discsubtitle'),
+            ('COMPILATION',     'compilation'),
+            ('ALBUMVERSION',    'albumversion'),
+            # IDs / Catalog
+            ('CATALOGNUMBER',   'catalognumber'),
+            ('BARCODE',         'barcode'),
+            ('ASIN',            'asin'),
+            # Technical
+            ('KEY',             'key'),
+            ('INITIALKEY',      'key'),
+            ('ENCODEDBY',       'encodedby'),
+            ('ENCODERSETTINGS', 'encodersettings'),
+            ('LANGUAGE',        'language'),
+            ('SCRIPT',          'script'),
+            ('LICENSE',         'license'),
+            # Legal
+            ('COPYRIGHT',       'copyright'),
+            ('WEBSITE',         'website'),
+            ('WEBLINK',         'website'),
+            # Credits (more)
+            ('DIRECTOR',        'director'),
+            ('DJMIXER',         'djmixer'),
+            ('ENGINEER',        'engineer'),
+            # Classification
+            ('EXPLICITSTATUS',  'explicitstatus'),
+            ('ITUNESADVISORY',  'explicitstatus'),
+            ('RTNG',            'explicitstatus'),
+            # Movement
+            ('MOVEMENTNAME',    'movementname'),
+            ('MOVEMENTTOTAL',   'movementtotal'),
+            ('MOVEMENT',        'movement'),
+            # Multi-artist
+            ('ALBUMARTISTS',    'albumartists'),
+            ('ALBUM ARTISTS',   'albumartists'),
+            ('ARTISTS',         'artists'),
+            # ReplayGain
+            ('REPLAYGAIN_TRACK_GAIN', 'replaygain_track_gain'),
+            ('REPLAYGAIN_TRACK_PEAK', 'replaygain_track_peak'),
+            ('REPLAYGAIN_ALBUM_GAIN', 'replaygain_album_gain'),
+            ('REPLAYGAIN_ALBUM_PEAK', 'replaygain_album_peak'),
+            # R128
+            ('R128_TRACK_GAIN', 'r128_track_gain'),
+            ('R128_ALBUM_GAIN', 'r128_album_gain'),
+            # Publisher / label
+            ('PUBLISHER',       'recordlabel'),
+            ('LABEL',           'recordlabel'),
+            ('RECORDLABEL',     'recordlabel'),
+            # ISRC and Media
+            ('ISRC',            'isrc'),
+            ('MEDIA',           'media'),
+            # Work / credits
+            ('WORK',            'work'),
+            ('WRITER',          'writer'),
+            ('ARRANGER',        'arranger'),
+            ('MIXER',           'mixer'),
+            ('MIX',             'mixer'),
+            ('PRODUCER',        'producer'),
+            ('PERFORMER',       'performer'),
+            # Release metadata
+            ('RELEASETYPE',     'releasetype'),
+            ('MUSICBRAINZ_ALBUMTYPE', 'releasetype'),
+            ('RELEASESTATUS',   'releasestatus'),
+            ('MUSICBRAINZ_ALBUMSTATUS', 'releasestatus'),
+            ('RELEASECOUNTRY',  'releasecountry'),
+            ('MUSICBRAINZ_ALBUMRELEASECOUNTRY', 'releasecountry'),
+            # MusicBrainz IDs
+            ('MUSICBRAINZ_ARTISTID',       'musicbrainz_artistid'),
+            ('MUSICBRAINZ_ALBUMARTISTID',  'musicbrainz_albumartistid'),
+            ('MUSICBRAINZ_ALBUMID',        'musicbrainz_albumid'),
+            ('MUSICBRAINZ_RELEASEGROUPID', 'musicbrainz_releasegroupid'),
+            ('MUSICBRAINZ_TRACKID',        'musicbrainz_trackid'),
+            ('MUSICBRAINZ_RELEASETRACKID', 'musicbrainz_releasetrackid'),
+            ('MUSICBRAINZ_WORKID',         'musicbrainz_workid'),
+        ]
+        for vorbis_key, field_name in _vorbis_simple:
+            val = _get(vorbis_key)
+            if val and field_name not in metadata:
+                metadata[field_name] = val
+
+        # Totals (TRACKTOTAL / TOTALTRACKS and DISCTOTAL / TOTALDISCS)
+        for key in ('TRACKTOTAL', 'TOTALTRACKS'):
+            val = _get(key)
+            if val and 'tracktotal' not in metadata:
+                try:
+                    metadata['tracktotal'] = int(val)
+                except ValueError:
+                    metadata['tracktotal'] = val
+        for key in ('DISCTOTAL', 'TOTALDISCS'):
+            val = _get(key)
+            if val and 'disctotal' not in metadata:
+                try:
+                    metadata['disctotal'] = int(val)
+                except ValueError:
+                    metadata['disctotal'] = val
+
+        # Lyrics (LYRICS or UNSYNCEDLYRICS)
+        for key in ('LYRICS', 'UNSYNCEDLYRICS'):
+            val = _get(key)
+            if val and 'lyrics' not in metadata:
+                metadata['lyrics'] = val
         try:
             metadata['duration_ms'] = audio.info.length * 1000 if hasattr(audio.info, 'length') else None
             metadata['sample_rate'] = audio.info.sample_rate if hasattr(audio.info, 'sample_rate') else None
@@ -329,9 +450,19 @@ def read_mp3_metadata(file_path):
             if 'TRCK' in audio:  # Track Number (may be "7/11" format)
                 raw = str(audio['TRCK'].text[0]) if audio['TRCK'].text else ''
                 metadata['track_number'] = _parse_number_tag(raw)
+                if '/' in raw:
+                    try:
+                        metadata['tracktotal'] = int(raw.split('/')[1].strip())
+                    except (ValueError, IndexError):
+                        pass
             if 'TPOS' in audio:  # Disc Number (may be "1/2" format)
                 raw = str(audio['TPOS'].text[0]) if audio['TPOS'].text else ''
                 metadata['disc_number'] = _parse_number_tag(raw)
+                if '/' in raw:
+                    try:
+                        metadata['disctotal'] = int(raw.split('/')[1].strip())
+                    except (ValueError, IndexError):
+                        pass
             if 'TCON' in audio:  # Genre - can have multiple values
                 # Handle both single TCON frame with multiple values and multiple TCON frames
                 genre_list = []
@@ -355,26 +486,169 @@ def read_mp3_metadata(file_path):
                 metadata['language'] = str(audio['TLAN'].text[0]) if audio['TLAN'].text else ''
             if 'TCOP' in audio:  # Copyright
                 metadata['copyright'] = str(audio['TCOP'].text[0]) if audio['TCOP'].text else ''
-            if 'TPUB' in audio:  # Publisher
-                metadata['publisher'] = str(audio['TPUB'].text[0]) if audio['TPUB'].text else ''
-            
-            # Extract TXXX (user-defined) frame for raw artists field (from Navidrome/beets)
-            # This field contains featured artists, performers, and collaborators
+            if 'TPUB' in audio:  # Publisher / Record Label
+                val = str(audio['TPUB'].text[0]) if audio['TPUB'].text else ''
+                metadata['publisher'] = val
+                metadata['recordlabel'] = val
+            # Extended ID3 frames (Navidrome-mapped)
+            _simple_id3 = [
+                ('TMOO', 'mood'),
+                ('TSOT', 'titlesort'),
+                ('TSOA', 'albumsort'),
+                ('TSOP', 'artistsort'),
+                ('TSO2', 'albumartistsort'),
+                ('TSOC', 'composersort'),
+                ('TPE3', 'conductor'),
+                ('TPE4', 'remixer'),
+                ('TIT1', 'grouping'),
+                ('TIT3', 'subtitle'),
+                ('TKEY', 'key'),
+                ('TENC', 'encodedby'),
+                ('TSSE', 'encodersettings'),
+                ('TDRL', 'releasedate'),
+                ('TDOR', 'originaldate'),
+                ('TSST', 'discsubtitle'),
+                ('TEXT', 'lyricist'),
+                ('TCMP', 'compilation'),
+                # ISRC and Media
+                ('TSRC', 'isrc'),
+                ('TMED', 'media'),
+            ]
+            for frame_id, field_name in _simple_id3:
+                if frame_id in audio:
+                    frame = audio[frame_id]
+                    val = str(frame.text[0]).strip() if hasattr(frame, 'text') and frame.text else ''
+                    if val:
+                        metadata[field_name] = val
+            # WOAR – URL link frame (artist website); read .url not .text
+            if 'WOAR' in audio:
+                frame = audio['WOAR']
+                url = getattr(frame, 'url', None)
+                if url:
+                    metadata['website'] = str(url).strip()
+
+            # TIPL / IPLS – involvement list pairs (arranger, mixer, producer, engineer)
+            for tipl_key in ('TIPL', 'IPLS'):
+                if tipl_key in audio:
+                    frame = audio[tipl_key]
+                    pairs = getattr(frame, 'people', []) or []
+                    _tipl_map = {
+                        'arranger':  'arranger',
+                        'mix':       'mixer',
+                        'mixer':     'mixer',
+                        'producer':  'producer',
+                        'engineer':  'engineer',
+                        'dj-mix':    'djmixer',
+                        'djmixer':   'djmixer',
+                    }
+                    for role, person in pairs:
+                        role_key = role.strip().lower()
+                        field = _tipl_map.get(role_key)
+                        if field and field not in metadata and person.strip():
+                            metadata[field] = person.strip()
+
+            # TXXX descriptor → field mapping (Navidrome / beets conventions)
+            _TXXX_MAP = {
+                'CATALOGNUMBER':     'catalognumber',
+                'CATALOG NUMBER':    'catalognumber',
+                'BARCODE':           'barcode',
+                'ASIN':              'asin',
+                'SCRIPT':            'script',
+                'LICENSE':           'license',
+                'DIRECTOR':          'director',
+                'DJMIXER':           'djmixer',
+                'ENGINEER':          'engineer',
+                'ALBUMVERSION':      'albumversion',
+                'ALBUM VERSION':     'albumversion',
+                'MOVEMENTNAME':      'movementname',
+                'MOVEMENT NAME':     'movementname',
+                'MOVEMENTTOTAL':     'movementtotal',
+                'MOVEMENT TOTAL':    'movementtotal',
+                'MOVEMENT':          'movement',
+                'ALBUM ARTISTS':     'albumartists',
+                'ARTISTSSORT':       'artistssort',
+                'ALBUMARTISTSSORT':  'albumartistssort',
+                'LYRICISTSORT':      'lyricistsort',
+                'COMPOSERSORT':      'composersort',
+                'REPLAYGAIN_TRACK_GAIN': 'replaygain_track_gain',
+                'REPLAYGAIN_TRACK_PEAK': 'replaygain_track_peak',
+                'REPLAYGAIN_ALBUM_GAIN': 'replaygain_album_gain',
+                'REPLAYGAIN_ALBUM_PEAK': 'replaygain_album_peak',
+                'R128_TRACK_GAIN':   'r128_track_gain',
+                'R128_ALBUM_GAIN':   'r128_album_gain',
+                'EXPLICITSTATUS':    'explicitstatus',
+                'ITUNESADVISORY':    'explicitstatus',
+                # Work / credits
+                'WORK':              'work',
+                'WRITER':            'writer',
+                'ARRANGER':          'arranger',
+                'MIXER':             'mixer',
+                'PRODUCER':          'producer',
+                # Label
+                'LABEL':             'recordlabel',
+                'RECORDLABEL':       'recordlabel',
+                # Release metadata
+                'RELEASETYPE':       'releasetype',
+                'RELEASESTATUS':     'releasestatus',
+                'RELEASECOUNTRY':    'releasecountry',
+                'MEDIA':             'media',
+                # MusicBrainz IDs
+                'MUSICBRAINZ ARTIST ID':          'musicbrainz_artistid',
+                'MUSICBRAINZ ALBUM ARTIST ID':    'musicbrainz_albumartistid',
+                'MUSICBRAINZ ALBUM ID':           'musicbrainz_albumid',
+                'MUSICBRAINZ RELEASE GROUP ID':   'musicbrainz_releasegroupid',
+                'MUSICBRAINZ TRACK ID':           'musicbrainz_trackid',
+                'MUSICBRAINZ RELEASE TRACK ID':   'musicbrainz_releasetrackid',
+                'MUSICBRAINZ WORK ID':            'musicbrainz_workid',
+                'MUSICBRAINZ RELEASE STATUS':     'musicbrainz_releasestatus',
+                'MUSICBRAINZ RELEASE TYPE':       'musicbrainz_releasetype',
+                'MUSICBRAINZ RELEASE COUNTRY':    'musicbrainz_releasecountry',
+                # Alternate MusicBrainz key spellings written by some taggers
+                'MUSICBRAINZ ALBUM STATUS':            'musicbrainz_releasestatus',
+                'MUSICBRAINZ ALBUM TYPE':              'musicbrainz_releasetype',
+                'MUSICBRAINZ ALBUM RELEASE COUNTRY':   'musicbrainz_releasecountry',
+                'MUSICBRAINZ_ALBUMARTISTID':           'musicbrainz_albumartistid',
+                'MUSICBRAINZ_ALBUMID':                 'musicbrainz_albumid',
+                'MUSICBRAINZ_ARTISTID':                'musicbrainz_artistid',
+                'MUSICBRAINZ_TRACKID':                 'musicbrainz_trackid',
+                'MUSICBRAINZ_RELEASETRACKID':          'musicbrainz_releasetrackid',
+                'MUSICBRAINZ_RELEASEGROUPID':          'musicbrainz_releasegroupid',
+                'MUSICBRAINZ_WORKID':                  'musicbrainz_workid',
+            }
+
             for key in audio.keys():
-                if key.startswith('TXXX'):
+                if not key.startswith('TXXX'):
+                    continue
+                frame = audio[key]
+                desc = frame.desc.upper() if hasattr(frame, 'desc') else ''
+                text_value = frame.text[0] if frame.text else None
+                if not text_value:
+                    continue
+                text_value = str(text_value)
+
+                # Exact descriptor matches via map
+                if desc in _TXXX_MAP:
+                    field = _TXXX_MAP[desc]
+                    # Don't overwrite composersort if already set from TSOC
+                    if field not in metadata:
+                        metadata[field] = text_value
+                    continue
+
+                # Legacy/fuzzy matches kept for compatibility
+                if desc == 'ARTISTS':
+                    metadata['artists_raw'] = text_value
+                elif desc == 'ALBUMARTIST' and 'album_artist' not in metadata:
+                    metadata['album_artist'] = text_value
+                elif desc == 'PERFORMER':
+                    metadata['performer_raw'] = text_value
+
+            # USLT – unsynchronised lyrics
+            for key in audio.keys():
+                if key.startswith('USLT'):
                     frame = audio[key]
-                    desc = frame.desc.upper() if hasattr(frame, 'desc') else ''
-                    text_value = frame.text[0] if frame.text else None
-                    
-                    # Extract ARTISTS field (JSON array of artist names)
-                    if 'ARTISTS' in desc and text_value:
-                        metadata['artists_raw'] = str(text_value)
-                    # Extract ALBUMARTIST field (raw from tags, may differ from TPE2)
-                    elif 'ALBUMARTIST' in desc and text_value and 'album_artist' not in metadata:
-                        metadata['album_artist'] = str(text_value)
-                    # Extract PERFORMER field (could have multiple values)
-                    elif 'PERFORMER' in desc and text_value:
-                        metadata['performer_raw'] = str(text_value)
+                    if hasattr(frame, 'text') and frame.text:
+                        metadata['lyrics'] = str(frame.text).strip()
+                    break
             
             # Get audio properties (duration, bitrate, sample rate)
             try:

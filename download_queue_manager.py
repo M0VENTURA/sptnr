@@ -45,7 +45,6 @@ PG_USER = os.environ.get("PG_USER")
 PG_PASSWORD = os.environ.get("PG_PASSWORD")
 PG_DATABASE = os.environ.get("PG_DATABASE", "sptnr")
 PG_PORT = os.environ.get("PG_PORT", "5432")
-DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")  # Kept for backward compatibility logging
 
 _GENERIC_ARTIST_NAMES = {
     'various artists',
@@ -1877,37 +1876,6 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                 conn.commit()
                 committed = True
                 queue_id = inserted['id'] if hasattr(inserted, 'keys') else inserted[0]
-            else:
-                placeholder = "?"
-                execute_write_with_retry(
-                    cursor,
-                    conn,
-                    f"""
-                    INSERT INTO download_queue 
-                    (artist, title, album, search_query, source, status, priority, file_path, import_group, import_type, 
-                     track_number, album_artist, year, release_id, release_source,
-                         duration, disc_number, release_mbid, recording_mbid, isrc, composer, genres, release_year, matched_file_path,
-                     in_collection, collection_track_id, collection_matched_at,
-                     cover_art_url, queue_folder,
-                     created_at, updated_at)
-                    VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, NULL, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder},
-                            {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder},
-                            {placeholder}, {placeholder}, {placeholder},
-                            {placeholder}, {placeholder}, {placeholder},
-                            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                    """,
-                    (artist, title, album, search_query, source, initial_status, priority, import_group, import_type,
-                     track_number, album_artist, year, release_id, release_source,
-                         duration, disc_number, release_mbid, recording_mbid, isrc, composer, genres, release_year, matched_file_path,
-                     1 if in_collection else 0, collection_track_id,
-                     datetime.now().isoformat() if in_collection else None,
-                     cover_art_url, queue_folder),
-                    context="add_to_queue insert",
-                    max_retries=8,
-                    initial_delay=0.2,
-                )
-                committed = True
-                queue_id = cursor.lastrowid
             
             logger.info(f"Added to queue: {search_query} (ID: {queue_id}, source: {source}, status: {initial_status})")
             
@@ -3210,7 +3178,7 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
         try:
             conn = get_db()
             cursor = conn.cursor()
-            placeholder = _placeholder(conn)
+            placeholder = "%s"
             cursor.execute(
                 f"""
                 SELECT release_mbid, release_id
@@ -3804,7 +3772,7 @@ def rename_album_files(artist, album, db_conn, music_dir=None):
                             UPDATE tracks
                             SET file_path = {placeholder},
                                 beets_path = {placeholder},
-                                updated_at = {'CURRENT_TIMESTAMP' if is_pg else "datetime('now')"}
+                                updated_at = CURRENT_TIMESTAMP
                             WHERE id = {placeholder}
                         """, (new_path, new_path, track_id))
                         
@@ -5460,10 +5428,11 @@ def auto_discover_and_queue_files():
             return [dict(zip(col_names, r)) for r in rows]
 
         def _find_library_track(artist_value, album_value, title_value, album_artist_value=None):
-            # psycopg2 treats bare '%' in a query string as a parameter
-            # placeholder; use '%%' so it becomes a literal '%' after
-            # parameter substitution.  SQLite does not apply this escaping.
-            like_pct = '%%' if is_pg else '%'
+            # Only match tracks that have a real on-disk path.  Rows with
+            # file_path IS NULL are incomplete imports; rows matching
+            # '__queued_for_download__%' are queue placeholders.  Both are
+            # excluded so pending downloads are not treated as already in
+            # the library.  Use '%%' so psycopg2 forwards a literal '%'.
             cursor.execute(
                 f"""
                 SELECT id, file_path, album, album_artist
@@ -5471,7 +5440,8 @@ def auto_discover_and_queue_files():
                 WHERE LOWER(artist) = LOWER({placeholder})
                   AND LOWER(album) = LOWER({placeholder})
                   AND LOWER(title) = LOWER({placeholder})
-                  AND (file_path IS NULL OR file_path NOT LIKE E'\\_\\_queued\\_for\\_download\\_\\_{like_pct}' ESCAPE '\\')
+                  AND file_path IS NOT NULL
+                  AND file_path NOT LIKE '__queued_for_download__%%'
                 ORDER BY id DESC
                 LIMIT 10
                 """,

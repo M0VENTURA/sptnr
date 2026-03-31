@@ -8,6 +8,7 @@ from helpers.db_utils import (
     ensure_track_release_year_column,
     ensure_mood_columns,
     ensure_essentia_feature_columns,
+    ensure_navidrome_tag_columns,
     verify_album_artist_column,
 )
 from download_file_verification import ensure_verification_columns, ensure_queue_mbid_columns
@@ -619,6 +620,9 @@ ensure_mood_columns()
 
 # Ensure Essentia-derived feature columns (danceability / timestamps) exist
 ensure_essentia_feature_columns()
+
+# Ensure all Navidrome-mapped tag columns exist
+ensure_navidrome_tag_columns()
 
 # Ensure download file verification columns exist
 ensure_verification_columns()
@@ -3209,12 +3213,7 @@ def _has_valid_local_track_paths_for_mp3_import(sample_size: int = 120):
     conn = None
     try:
         conn = get_db()
-        if _is_postgres_connection(conn):
-            cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-            placeholder = "%s"
-        else:
-            cursor = conn.cursor()
-            placeholder = "?"
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         placeholder = "%s"
 
         cursor.execute(
@@ -5256,6 +5255,18 @@ def artists():
     except Exception as correction_err:
         logging.debug(f"Could not compute artist correction indicators: {correction_err}")
 
+    # Build album tag inconsistency counts per artist (lightweight: count albums only)
+    album_tag_inconsistency_counts_by_artist: dict = {}
+    try:
+        tag_inconsistencies = _get_album_tag_inconsistencies(conn)
+        for item in tag_inconsistencies:
+            aa = item.get('album_artist') or ''
+            album_tag_inconsistency_counts_by_artist[aa] = (
+                album_tag_inconsistency_counts_by_artist.get(aa, 0) + 1
+            )
+    except Exception as tag_inc_err:
+        logging.debug(f"Could not compute album tag inconsistency counts: {tag_inc_err}")
+
     for artist_row in artists_data:
         display_name = artist_row.get("display_name", "")
         duplicate_count = duplicate_counts_by_artist.get(display_name, 0)
@@ -5265,6 +5276,7 @@ def artists():
         mbid_inconsistent_count = mbid_inconsistent_counts_by_artist.get(display_name, 0)
         extra_album_artist_count = extra_album_artist_counts_by_artist.get(display_name, 0)
         mbid_inconsistent_count = mbid_inconsistent_counts_by_artist.get(display_name, 0)
+        album_tag_inconsistency_count = album_tag_inconsistency_counts_by_artist.get(display_name, 0)
         artist_row["duplicate_track_count"] = duplicate_count
         artist_row["missing_track_count"] = missing_count
         artist_row["duplicate_artist_count"] = duplicate_artist_count
@@ -5272,6 +5284,7 @@ def artists():
         artist_row["mbid_inconsistent_count"] = mbid_inconsistent_count
         artist_row["extra_album_artist_count"] = extra_album_artist_count
         artist_row["mbid_inconsistent_count"] = mbid_inconsistent_count
+        artist_row["album_tag_inconsistency_count"] = album_tag_inconsistency_count
         artist_row["needs_correction"] = (
             duplicate_count + missing_count
             + (1 if duplicate_artist_count > 0 else 0)
@@ -5279,6 +5292,7 @@ def artists():
             + mbid_inconsistent_count
             + disc_inconsistent_count
             + mbid_inconsistent_count
+            + album_tag_inconsistency_count
         ) > 0
     
     conn.close()
@@ -6379,6 +6393,600 @@ def api_artist_corrections_albums():
     except Exception as e:
         logging.error(f"[CORRECTIONS_ALBUMS] Error: {e}")
         return jsonify({"error": str(e), "albums": []}), 500
+
+
+# ---------------------------------------------------------------------------
+# Global Tag Corrections (/correcting)
+# ---------------------------------------------------------------------------
+
+ALBUM_CONSISTENCY_FIELDS = [
+    ('genres',               'Genre'),
+    ('mood',                 'Mood'),
+    ('year',                 'Year'),
+    ('album_artist',         'Album Artist'),
+    ('releasetype',          'Release Type'),
+    ('releasestatus',        'Release Status'),
+    ('releasecountry',       'Release Country'),
+    ('label',                'Label'),
+    ('recordlabel',          'Record Label'),
+    ('tracktotal',           'Track Total'),
+    ('disctotal',            'Disc Total'),
+    ('compilation',          'Compilation'),
+    ('grouping',             'Grouping'),
+    ('media',                'Media'),
+    ('albumversion',         'Album Version'),
+    ('discsubtitle',         'Disc Subtitle'),
+    ('script',               'Script'),
+    ('replaygain_album_gain','ReplayGain Album Gain'),
+    ('replaygain_album_peak','ReplayGain Album Peak'),
+]
+
+
+def refresh_needs_correcting_flags(conn):
+    """Update the needs_correcting flag on every track in the tracks table.
+
+    Tracks that belong to an album with at least one album-level tag
+    inconsistency across its tracks are flagged TRUE; all others are
+    cleared to FALSE.
+    """
+    try:
+        cursor = conn.cursor()
+
+        # Build the HAVING clause that detects any album-level inconsistency
+        having_parts = []
+        for field, _ in ALBUM_CONSISTENCY_FIELDS:
+            having_parts.append(
+                f"COUNT(DISTINCT COALESCE(CAST({field} AS TEXT), '')) > 1"
+            )
+        having_sql = " OR ".join(having_parts)
+
+        # First: clear flag on all tracks that are now consistent
+        cursor.execute("""
+            UPDATE tracks
+            SET needs_correcting = FALSE
+            WHERE needs_correcting IS DISTINCT FROM FALSE
+        """)
+
+        # Then: set flag on tracks whose album has inconsistencies
+        cursor.execute(f"""
+            UPDATE tracks t
+            SET needs_correcting = TRUE
+            WHERE EXISTS (
+                SELECT 1
+                FROM tracks t2
+                WHERE COALESCE(NULLIF(t2.album_artist, ''), t2.artist)
+                      = COALESCE(NULLIF(t.album_artist, ''), t.artist)
+                  AND t2.album = t.album
+                  AND t2.album IS NOT NULL
+                  AND TRIM(t2.album) != ''
+                GROUP BY COALESCE(NULLIF(t2.album_artist, ''), t2.artist), t2.album
+                HAVING COUNT(*) >= 2 AND ({having_sql})
+            )
+        """)
+
+        # Also flag tracks where releasecountry is set but differs from
+        # the artist's known country (both values must be non-empty).
+        cursor.execute("""
+            UPDATE tracks
+            SET needs_correcting = TRUE
+            WHERE TRIM(COALESCE(releasecountry, '')) != ''
+              AND TRIM(COALESCE(artist_country, ''))  != ''
+              AND LOWER(TRIM(releasecountry)) != LOWER(TRIM(artist_country))
+        """)
+        conn.commit()
+    except Exception as exc:
+        logging.warning(f"[CORRECTING] refresh_needs_correcting_flags failed: {exc}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+
+def _get_album_tag_inconsistencies(conn, artist_filter=None):
+    """Return albums that have inconsistent album-level tag values across their tracks.
+
+    Returns a list of dicts:
+        {album_artist, album, track_count,
+         inconsistencies: [{field, field_label, values: [{value, count, track_ids}]}]}
+    """
+    cursor = conn.cursor()
+
+    # Build per-field HAVING clauses
+    having_parts = []
+    for field, _ in ALBUM_CONSISTENCY_FIELDS:
+        having_parts.append(
+            f"COUNT(DISTINCT COALESCE(CAST({field} AS TEXT), '')) > 1"
+        )
+    having_sql = " OR ".join(having_parts)
+
+    where_sql = "WHERE album IS NOT NULL AND TRIM(album) != ''"
+    params: list = []
+    if artist_filter:
+        where_sql += " AND COALESCE(NULLIF(album_artist,''), artist) = %s"
+        params.append(artist_filter)
+
+    try:
+        cursor.execute(f"""
+            SELECT
+                COALESCE(NULLIF(album_artist, ''), artist) AS album_artist,
+                album,
+                COUNT(*) AS track_count
+            FROM tracks
+            {where_sql}
+            GROUP BY COALESCE(NULLIF(album_artist, ''), artist), album
+            HAVING COUNT(*) >= 2
+              AND ({having_sql})
+            ORDER BY COALESCE(NULLIF(album_artist, ''), artist), album
+        """, params or None)
+        flagged_albums = cursor.fetchall()
+    except Exception as e:
+        logging.warning(f"[CORRECTING] Flagging query failed: {e}")
+        return []
+
+    results = []
+    for row in flagged_albums:
+        row_dict = dict(row) if hasattr(row, 'keys') else {
+            'album_artist': row[0], 'album': row[1], 'track_count': row[2]
+        }
+        album_artist = row_dict.get('album_artist') or ''
+        album = row_dict.get('album') or ''
+        track_count = int(row_dict.get('track_count') or 0)
+
+        # Detail query: get per-field value counts and track ids
+        try:
+            cursor.execute("""
+                SELECT id, %s
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+                  AND album = %s
+            """ % (
+                ', '.join(f for f, _ in ALBUM_CONSISTENCY_FIELDS),
+                '%s', '%s'
+            ), (album_artist, album))
+            detail_rows = cursor.fetchall()
+        except Exception:
+            continue
+
+        col_names = ['id'] + [f for f, _ in ALBUM_CONSISTENCY_FIELDS]
+        inconsistencies = []
+        for field, field_label in ALBUM_CONSISTENCY_FIELDS:
+            col_idx = col_names.index(field)
+            value_map: dict = {}  # value → {count, track_ids}
+            for dr in detail_rows:
+                if hasattr(dr, 'keys'):
+                    track_id = dr.get('id') or dr['id']
+                    val = dr.get(field)
+                else:
+                    track_id = dr[0]
+                    val = dr[col_idx]
+                val_str = str(val).strip() if val is not None else ''
+                if val_str not in value_map:
+                    value_map[val_str] = {'value': val_str, 'count': 0, 'track_ids': []}
+                value_map[val_str]['count'] += 1
+                value_map[val_str]['track_ids'].append(track_id)
+
+            # Only flag if there are 2+ distinct non-empty values
+            non_empty = {v: d for v, d in value_map.items() if v != ''}
+            if len(non_empty) >= 2:
+                inconsistencies.append({
+                    'field': field,
+                    'field_label': field_label,
+                    'values': sorted(non_empty.values(), key=lambda x: -x['count']),
+                })
+
+        if inconsistencies:
+            results.append({
+                'album_artist': album_artist,
+                'album': album,
+                'track_count': track_count,
+                'inconsistencies': inconsistencies,
+            })
+
+    return results
+
+
+def _get_country_mismatches(conn):
+    """Return albums that have tracks whose releasecountry differs from the artist's country.
+
+    Both releasecountry and artist_country must be non-empty for a mismatch to be
+    reported.  Results are grouped by album and ordered by artist then album name.
+
+    Returns a list of dicts:
+        {album_artist, album, track_count, artist_country,
+         release_countries: [{value, count, track_ids}]}
+    """
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            SELECT
+                COALESCE(NULLIF(album_artist, ''), artist) AS album_artist,
+                album,
+                artist_country,
+                COUNT(*)                                   AS track_count
+            FROM tracks
+            WHERE album IS NOT NULL
+              AND TRIM(album) != ''
+              AND TRIM(COALESCE(releasecountry, ''))  != ''
+              AND TRIM(COALESCE(artist_country, ''))  != ''
+              AND LOWER(TRIM(releasecountry)) != LOWER(TRIM(artist_country))
+            GROUP BY
+                COALESCE(NULLIF(album_artist, ''), artist),
+                album,
+                artist_country
+            ORDER BY
+                COALESCE(NULLIF(album_artist, ''), artist),
+                album
+        """)
+        rows = cursor.fetchall()
+    except Exception as exc:
+        logging.warning(f"[CORRECTING] country-mismatch query failed: {exc}")
+        return []
+
+    results = []
+    for row in rows:
+        row_dict = dict(row) if hasattr(row, 'keys') else {
+            'album_artist': row[0], 'album': row[1],
+            'artist_country': row[2], 'track_count': row[3],
+        }
+        album_artist  = row_dict.get('album_artist') or ''
+        album         = row_dict.get('album') or ''
+        artist_country = row_dict.get('artist_country') or ''
+        track_count   = int(row_dict.get('track_count') or 0)
+
+        # Detail: collect the distinct releasecountry values for this album
+        try:
+            cursor.execute("""
+                SELECT id, releasecountry
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+                  AND album = %s
+                  AND TRIM(COALESCE(releasecountry, ''))  != ''
+                  AND TRIM(COALESCE(artist_country, ''))  != ''
+                  AND LOWER(TRIM(releasecountry)) != LOWER(TRIM(artist_country))
+            """, (album_artist, album))
+            detail_rows = cursor.fetchall()
+        except Exception:
+            continue
+
+        value_map: dict = {}
+        for dr in detail_rows:
+            if hasattr(dr, 'keys'):
+                track_id = dr.get('id') or dr['id']
+                val = (dr.get('releasecountry') or '').strip()
+            else:
+                track_id = dr[0]
+                val = (dr[1] or '').strip()
+            if val not in value_map:
+                value_map[val] = {'value': val, 'count': 0, 'track_ids': []}
+            value_map[val]['count'] += 1
+            value_map[val]['track_ids'].append(track_id)
+
+        if not value_map:
+            continue
+
+        results.append({
+            'album_artist':    album_artist,
+            'album':           album,
+            'track_count':     track_count,
+            'artist_country':  artist_country,
+            'release_countries': sorted(value_map.values(), key=lambda x: -x['count']),
+        })
+
+    return results
+
+
+# Fields in ALBUM_CONSISTENCY_FIELDS that MusicBrainz can supply authoritatively
+# from a single release lookup (inc=release-groups+labels).
+_MB_SUGGESTION_FIELDS = {
+    'year',
+    'releasetype',
+    'releasestatus',
+    'releasecountry',
+    'label',
+    'recordlabel',
+    'tracktotal',
+    'disctotal',
+    'compilation',
+    'media',
+    'script',
+    'language',
+}
+
+
+def _fetch_mb_release_suggestions(release_mbid: str) -> dict:
+    """Query MusicBrainz for a single release and return a dict of field→value
+    covering the album-level tags that MB knows about.
+
+    Uses a single API call with inc=release-groups+labels so it respects the
+    MusicBrainz 1 req/sec rate limit from the calling thread.
+
+    Returns an empty dict on any error or when the MBID is unknown.
+    """
+    if not release_mbid or not release_mbid.strip():
+        return {}
+
+    release_mbid = release_mbid.strip()
+    MB_BASE = "https://musicbrainz.org/ws/2/"
+    headers = {"User-Agent": MUSICBRAINZ_USER_AGENT, "Accept": "application/json"}
+
+    def _get(url, params, timeout=12):
+        time.sleep(1.0)   # honour MusicBrainz 1 req/sec policy
+        r = requests.get(url, params=params, headers=headers, timeout=timeout)
+        r.raise_for_status()
+        return r.json()
+
+    try:
+        data = _get(
+            f"{MB_BASE}release/{release_mbid}",
+            {"fmt": "json", "inc": "release-groups+labels"},
+        )
+    except requests.HTTPError as exc:
+        if exc.response is not None and exc.response.status_code == 404:
+            # Might be a release-group MBID – browse its first release
+            try:
+                browse = _get(
+                    f"{MB_BASE}release",
+                    {"fmt": "json", "release-group": release_mbid,
+                     "inc": "release-groups+labels", "limit": 1},
+                )
+                releases = browse.get("releases") or []
+                if not releases:
+                    return {}
+                data = releases[0]
+            except Exception:
+                return {}
+        else:
+            return {}
+    except Exception:
+        return {}
+
+    suggestions: dict = {}
+
+    # Year
+    raw_date = (data.get("date") or "").strip()
+    if raw_date:
+        suggestions["year"] = raw_date[:4]
+
+    # Release country
+    country = (data.get("country") or "").strip()
+    if country:
+        suggestions["releasecountry"] = country
+
+    # Release status (Official, Bootleg, Promotion, …)
+    status = (data.get("status") or "").strip()
+    if status:
+        suggestions["releasestatus"] = status
+
+    # Barcode / ASIN (not in ALBUM_CONSISTENCY_FIELDS but useful context)
+    barcode = (data.get("barcode") or "").strip()
+    if barcode:
+        suggestions["barcode"] = barcode
+    asin = (data.get("asin") or "").strip()
+    if asin:
+        suggestions["asin"] = asin
+
+    # Language + Script (text-representation)
+    text_rep = data.get("text-representation") or {}
+    lang = (text_rep.get("language") or "").strip()
+    if lang:
+        suggestions["language"] = lang
+    script = (text_rep.get("script") or "").strip()
+    if script:
+        suggestions["script"] = script
+
+    # Release type from release-group
+    rg = data.get("release-group") or {}
+    primary_type = (rg.get("primary-type") or "").strip()
+    secondary_types = [t for t in (rg.get("secondary-types") or []) if t]
+    if primary_type or secondary_types:
+        all_types = ([primary_type] if primary_type else []) + secondary_types
+        suggestions["releasetype"] = ", ".join(all_types)
+        # Mark compilation flag
+        if "Compilation" in secondary_types:
+            suggestions["compilation"] = "1"
+
+    # Label and catalog number from label-info
+    label_info = data.get("label-info") or []
+    if label_info:
+        first = label_info[0]
+        label_obj = first.get("label") or {}
+        label_name = (label_obj.get("name") or "").strip()
+        if label_name:
+            suggestions["label"] = label_name
+            suggestions["recordlabel"] = label_name
+        cat = (first.get("catalog-number") or "").strip()
+        if cat:
+            suggestions["catalognumber"] = cat
+
+    # Track and disc totals
+    media_list = data.get("media") or []
+    if media_list:
+        suggestions["disctotal"] = str(len(media_list))
+        total_tracks = sum(
+            len(m.get("tracks") or []) or int(m.get("track-count") or 0)
+            for m in media_list
+        )
+        if total_tracks:
+            suggestions["tracktotal"] = str(total_tracks)
+        # Media format – use first (or most common) disc format
+        formats = [m.get("format") for m in media_list if m.get("format")]
+        if formats:
+            suggestions["media"] = formats[0]
+        # Disc subtitles, if present
+        disc_titles = [m.get("title") for m in media_list if m.get("title")]
+        if len(disc_titles) == 1:
+            suggestions["discsubtitle"] = disc_titles[0]
+
+    return suggestions
+
+
+@app.route("/correcting")
+def correcting():
+    """Global tag corrections page: albums with inconsistent album-level tags."""
+    try:
+        conn = get_db()
+    except Exception as e:
+        return render_template("correcting.html", inconsistencies=[], total=0,
+                               page=1, per_page=50, total_pages=1, error=str(e))
+
+    page = max(1, int(request.args.get('page', 1)))
+    per_page = 50
+    try:
+        all_inconsistencies = _get_album_tag_inconsistencies(conn)
+    except Exception as e:
+        logging.error(f"[CORRECTING] Error: {e}")
+        all_inconsistencies = []
+    finally:
+        conn.close()
+
+    total = len(all_inconsistencies)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    start = (page - 1) * per_page
+    paged = all_inconsistencies[start:start + per_page]
+
+    return render_template(
+        "correcting.html",
+        inconsistencies=paged,
+        total=total,
+        page=page,
+        per_page=per_page,
+        total_pages=total_pages,
+    )
+
+
+@app.route("/api/correcting/fix-album-field", methods=["POST"])
+def api_correcting_fix_album_field():
+    """Apply a single field value to all tracks in an album."""
+    try:
+        payload = request.get_json(silent=True) or {}
+        album_artist = (payload.get('album_artist') or '').strip()
+        album = (payload.get('album') or '').strip()
+        field = (payload.get('field') or '').strip()
+        value = payload.get('value')
+
+        if not album or not field:
+            return jsonify({"success": False, "error": "album and field are required"}), 400
+
+        # Validate field is in the allowed list
+        allowed_fields = {f for f, _ in ALBUM_CONSISTENCY_FIELDS}
+        if field not in allowed_fields:
+            return jsonify({"success": False, "error": f"field '{field}' not allowed"}), 400
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute(f"""
+                UPDATE tracks
+                SET {field} = %s
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+                  AND album = %s
+                RETURNING id, file_path
+            """, (value, album_artist, album))
+            affected = cursor.fetchall()
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            conn.close()
+            return jsonify({"success": False, "error": str(e)}), 500
+
+        updated_count = len(affected)
+
+        # Write tags to file for each affected track
+        files_updated = 0
+        for row in affected:
+            row_dict = dict(row) if hasattr(row, 'keys') else {'id': row[0], 'file_path': row[1]}
+            file_path = row_dict.get('file_path')
+            if not file_path or not os.path.exists(str(file_path)):
+                continue
+            try:
+                from helpers.tag_manager import update_file_tags
+                update_file_tags(str(file_path), {field: value})
+                files_updated += 1
+            except Exception as tag_err:
+                logging.debug(f"[CORRECTING] Could not update tag on {file_path}: {tag_err}")
+
+        conn.close()
+        return jsonify({
+            "success": True,
+            "updated_count": updated_count,
+            "files_updated": files_updated,
+        })
+    except Exception as e:
+        logging.error(f"[CORRECTING] fix-album-field error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/correcting/mb-suggestions")
+def api_correcting_mb_suggestions():
+    """Fetch MusicBrainz authoritative values for a given album.
+
+    Query params:
+        album_artist  – album artist name
+        album         – album title
+
+    Returns JSON:
+        {success: true, suggestions: {field: value, …}, mbid: "…"}
+        or
+        {success: false, error: "…"}
+
+    Only fields in ALBUM_CONSISTENCY_FIELDS (plus a few extras like
+    catalognumber / barcode) that MB can supply are included in the
+    response.  Fields that MB doesn't know are omitted.
+    """
+    album_artist = (request.args.get("album_artist") or "").strip()
+    album        = (request.args.get("album")        or "").strip()
+
+    if not album:
+        return jsonify({"success": False, "error": "album is required"}), 400
+
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        # Find the most commonly stored musicbrainz_albumid for this album
+        cursor.execute("""
+            SELECT musicbrainz_albumid
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist,''), artist) = %s
+              AND album = %s
+              AND musicbrainz_albumid IS NOT NULL
+              AND TRIM(musicbrainz_albumid) != ''
+            GROUP BY musicbrainz_albumid
+            ORDER BY COUNT(*) DESC
+            LIMIT 1
+        """, (album_artist, album))
+        row = cursor.fetchone()
+        conn.close()
+    except Exception as exc:
+        logging.error(f"[CORRECTING] mb-suggestions DB error: {exc}")
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+    if not row:
+        return jsonify({"success": False, "error": "No MusicBrainz album ID found for this album"}), 404
+
+    mbid = (dict(row) if hasattr(row, "keys") else {"musicbrainz_albumid": row[0]})["musicbrainz_albumid"]
+
+    try:
+        suggestions = _fetch_mb_release_suggestions(mbid)
+    except Exception as exc:
+        logging.error(f"[CORRECTING] _fetch_mb_release_suggestions error: {exc}")
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+    if not suggestions:
+        return jsonify({"success": False, "error": "MusicBrainz returned no usable data for this release"}), 404
+
+    # Only expose fields that are in ALBUM_CONSISTENCY_FIELDS (or are catalogue
+    # fields that the fix endpoint can apply), so the client doesn't receive
+    # internal-only keys.
+    allowed = {f for f, _ in ALBUM_CONSISTENCY_FIELDS} | {
+        "catalognumber", "barcode", "asin", "language", "script",
+        "discsubtitle",
+    }
+    filtered = {k: v for k, v in suggestions.items() if k in allowed}
+
+    return jsonify({"success": True, "suggestions": filtered, "mbid": mbid})
 
 
 # ---------------------------------------------------------------------------
@@ -13063,6 +13671,54 @@ def track_edit(track_id):
     bitrate = request.form.get("bitrate", type=int) or None
     sample_rate = request.form.get("sample_rate", type=int) or None
     
+    # Sort keys
+    titlesort = request.form.get("titlesort", "").strip() or None
+    albumsort = request.form.get("albumsort", "").strip() or None
+    artistsort = request.form.get("artistsort", "").strip() or None
+    composersort = request.form.get("composersort", "").strip() or None
+    albumartistsort = request.form.get("albumartistsort", "").strip() or None
+    lyricistsort = request.form.get("lyricistsort", "").strip() or None
+    artistssort = request.form.get("artistssort", "").strip() or None
+    albumartistssort = request.form.get("albumartistssort", "").strip() or None
+    # Multi-value artist fields
+    artists = request.form.get("artists", "").strip() or None
+    albumartists = request.form.get("albumartists", "").strip() or None
+    # Additional credits
+    conductor = request.form.get("conductor", "").strip() or None
+    director = request.form.get("director", "").strip() or None
+    djmixer = request.form.get("djmixer", "").strip() or None
+    engineer = request.form.get("engineer", "").strip() or None
+    remixer = request.form.get("remixer", "").strip() or None
+    lyricist = request.form.get("lyricist", "").strip() or None
+    albumversion = request.form.get("albumversion", "").strip() or None
+    # Release info
+    recordlabel = request.form.get("recordlabel", "").strip() or None
+    copyright_field = request.form.get("copyright", "").strip() or None
+    releasedate = request.form.get("releasedate", "").strip() or None
+    discsubtitle = request.form.get("discsubtitle", "").strip() or None
+    # Content
+    lyrics = request.form.get("lyrics", "").strip() or None
+    subtitle = request.form.get("subtitle", "").strip() or None
+    grouping = request.form.get("grouping", "").strip() or None
+    movement = request.form.get("movement", "").strip() or None
+    movementname = request.form.get("movementname", "").strip() or None
+    movementtotal = request.form.get("movementtotal", "").strip() or None
+    # Technical/Legal
+    key = request.form.get("key", "").strip() or None
+    language = request.form.get("language", "").strip() or None
+    license_field = request.form.get("license", "").strip() or None
+    website = request.form.get("website", "").strip() or None
+    encodedby = request.form.get("encodedby", "").strip() or None
+    encodersettings = request.form.get("encodersettings", "").strip() or None
+    explicitstatus = request.form.get("explicitstatus", "").strip() or None
+    # ReplayGain
+    replaygain_track_gain = request.form.get("replaygain_track_gain", "").strip() or None
+    replaygain_track_peak = request.form.get("replaygain_track_peak", "").strip() or None
+    replaygain_album_gain = request.form.get("replaygain_album_gain", "").strip() or None
+    replaygain_album_peak = request.form.get("replaygain_album_peak", "").strip() or None
+    r128_track_gain = request.form.get("r128_track_gain", "").strip() or None
+    r128_album_gain = request.form.get("r128_album_gain", "").strip() or None
+
     # Flags
     is_cover = request.form.get("is_cover") == "on"
     cover_manual_override = request.form.get("cover_manual_override") == "on"
@@ -13104,17 +13760,49 @@ def track_edit(track_id):
                 bpm = {placeholder}, bitrate = {placeholder}, sample_rate = {placeholder},
                 is_cover = {placeholder}, cover_manual_override = {placeholder},
                 alternate_take = {placeholder}, is_compilation = {placeholder},
-                single_manual_override = {placeholder}
+                single_manual_override = {placeholder},
+                titlesort = {placeholder}, albumsort = {placeholder}, artistsort = {placeholder},
+                composersort = {placeholder}, albumartistsort = {placeholder}, lyricistsort = {placeholder},
+                artistssort = {placeholder}, albumartistssort = {placeholder},
+                artists = {placeholder}, albumartists = {placeholder},
+                conductor = {placeholder}, director = {placeholder}, djmixer = {placeholder},
+                engineer = {placeholder}, remixer = {placeholder}, lyricist = {placeholder},
+                albumversion = {placeholder}, recordlabel = {placeholder}, copyright = {placeholder},
+                releasedate = {placeholder}, discsubtitle = {placeholder},
+                lyrics = {placeholder}, subtitle = {placeholder}, grouping = {placeholder},
+                movement = {placeholder}, movementname = {placeholder}, movementtotal = {placeholder},
+                key = {placeholder}, language = {placeholder}, license = {placeholder},
+                website = {placeholder}, encodedby = {placeholder}, encodersettings = {placeholder},
+                explicitstatus = {placeholder},
+                replaygain_track_gain = {placeholder}, replaygain_track_peak = {placeholder},
+                replaygain_album_gain = {placeholder}, replaygain_album_peak = {placeholder},
+                r128_track_gain = {placeholder}, r128_album_gain = {placeholder}
             WHERE id = {placeholder}
-        """, (title, artist, album, album_artist, stars, 
+        """, (title, artist, album, album_artist, stars,
               is_single_db, single_confidence,
               mbid, suggested_mbid, suggested_mbid_confidence,
-              genres, year, composer, writer, 
+              genres, year, composer, writer,
               arranger, mixer, producer, work,
               track_number, disc_number, comment, isrc,
               bpm, bitrate, sample_rate,
               is_cover_db, cover_manual_override_db,
               alternate_take_db, is_compilation_db, single_manual_override_db,
+              titlesort, albumsort, artistsort,
+              composersort, albumartistsort, lyricistsort,
+              artistssort, albumartistssort,
+              artists, albumartists,
+              conductor, director, djmixer,
+              engineer, remixer, lyricist,
+              albumversion, recordlabel, copyright_field,
+              releasedate, discsubtitle,
+              lyrics, subtitle, grouping,
+              movement, movementname, movementtotal,
+              key, language, license_field,
+              website, encodedby, encodersettings,
+              explicitstatus,
+              replaygain_track_gain, replaygain_track_peak,
+              replaygain_album_gain, replaygain_album_peak,
+              r128_track_gain, r128_album_gain,
               track_id))
         
         conn.commit()
@@ -13209,7 +13897,87 @@ def track_edit(track_id):
                     tags_to_write["isrc"] = isrc
                 if bpm:
                     tags_to_write["bpm"] = bpm
-                
+                if titlesort:
+                    tags_to_write["titlesort"] = titlesort
+                if albumsort:
+                    tags_to_write["albumsort"] = albumsort
+                if artistsort:
+                    tags_to_write["artistsort"] = artistsort
+                if composersort:
+                    tags_to_write["composersort"] = composersort
+                if albumartistsort:
+                    tags_to_write["albumartistsort"] = albumartistsort
+                if lyricistsort:
+                    tags_to_write["lyricistsort"] = lyricistsort
+                if artistssort:
+                    tags_to_write["artistssort"] = artistssort
+                if albumartistssort:
+                    tags_to_write["albumartistssort"] = albumartistssort
+                if artists:
+                    tags_to_write["artists"] = artists
+                if albumartists:
+                    tags_to_write["albumartists"] = albumartists
+                if conductor:
+                    tags_to_write["conductor"] = conductor
+                if director:
+                    tags_to_write["director"] = director
+                if djmixer:
+                    tags_to_write["djmixer"] = djmixer
+                if engineer:
+                    tags_to_write["engineer"] = engineer
+                if remixer:
+                    tags_to_write["remixer"] = remixer
+                if lyricist:
+                    tags_to_write["lyricist"] = lyricist
+                if albumversion:
+                    tags_to_write["albumversion"] = albumversion
+                if recordlabel:
+                    tags_to_write["recordlabel"] = recordlabel
+                if copyright_field:
+                    tags_to_write["copyright"] = copyright_field
+                if releasedate:
+                    tags_to_write["releasedate"] = releasedate
+                if discsubtitle:
+                    tags_to_write["discsubtitle"] = discsubtitle
+                if lyrics:
+                    tags_to_write["lyrics"] = lyrics
+                if subtitle:
+                    tags_to_write["subtitle"] = subtitle
+                if grouping:
+                    tags_to_write["grouping"] = grouping
+                if movement:
+                    tags_to_write["movement"] = movement
+                if movementname:
+                    tags_to_write["movementname"] = movementname
+                if movementtotal:
+                    tags_to_write["movementtotal"] = movementtotal
+                if key:
+                    tags_to_write["key"] = key
+                if language:
+                    tags_to_write["language"] = language
+                if license_field:
+                    tags_to_write["license"] = license_field
+                if website:
+                    tags_to_write["website"] = website
+                if encodedby:
+                    tags_to_write["encodedby"] = encodedby
+                if encodersettings:
+                    tags_to_write["encodersettings"] = encodersettings
+                if explicitstatus:
+                    tags_to_write["explicitstatus"] = explicitstatus
+                if replaygain_track_gain:
+                    tags_to_write["replaygain_track_gain"] = replaygain_track_gain
+                if replaygain_track_peak:
+                    tags_to_write["replaygain_track_peak"] = replaygain_track_peak
+                if replaygain_album_gain:
+                    tags_to_write["replaygain_album_gain"] = replaygain_album_gain
+                if replaygain_album_peak:
+                    tags_to_write["replaygain_album_peak"] = replaygain_album_peak
+                if r128_track_gain:
+                    tags_to_write["r128_track_gain"] = r128_track_gain
+                if r128_album_gain:
+                    tags_to_write["r128_album_gain"] = r128_album_gain
+
                 # Write to file
                 file_write_success = write_tags_to_file(resolved_file_path, tags_to_write)
                 
@@ -18890,7 +19658,7 @@ def api_search_for_release_match():
         conn = get_db()
         cursor = conn.cursor()
         is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         request_data = request.get_json(silent=True) or {}
         release_id = (request_data.get('release_id') or '').strip()
@@ -18985,7 +19753,7 @@ def api_link_queue_to_release():
         conn = get_db()
         cursor = conn.cursor()
         is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         request_data = request.get_json(silent=True) or {}
         release_id = (request_data.get('release_id') or '').strip()
@@ -19071,7 +19839,7 @@ def api_release_apply_queue_match(release_id):
         conn = get_db()
         cursor = conn.cursor()
         is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         request_data = request.get_json(silent=True) or {}
         queue_ids = request_data.get('queue_ids', [])
@@ -19151,7 +19919,7 @@ def api_release_search_queue_matches(release_id):
         conn = get_db()
         cursor = conn.cursor()
         is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         # Get release info
         cursor.execute(f"""
@@ -23214,9 +23982,11 @@ def _check_track_in_local_collection(artist, title, album=None):
         cursor = conn.cursor()
         placeholder = "%s"
 
-        # Exclude queue placeholder rows (file_path NOT LIKE '__queued_for_download__%')
-        # so an album whose title was written as a placeholder in the tracks table is
-        # not falsely reported as already in the collection.
+        # Only match tracks that have a real on-disk path.  Rows with
+        # file_path IS NULL are incomplete imports, and rows matching
+        # '__queued_for_download__%' are queue placeholders — both must be
+        # excluded so pending downloads are not falsely reported as already
+        # in the collection.
         if album:
             album_lc = album.strip().lower()
             cursor.execute(
@@ -23226,7 +23996,8 @@ def _check_track_in_local_collection(artist, title, album=None):
                 WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = {placeholder}
                   AND LOWER(title) = {placeholder}
                   AND LOWER(COALESCE(album, '')) = {placeholder}
-                  AND (file_path IS NULL OR file_path NOT LIKE '__queued_for_download__%%')
+                  AND file_path IS NOT NULL
+                  AND file_path NOT LIKE '__queued_for_download__%'
                 LIMIT 1
                 """,
                 (artist_lc, title_lc, album_lc),
@@ -23238,7 +24009,8 @@ def _check_track_in_local_collection(artist, title, album=None):
                 FROM tracks
                 WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = {placeholder}
                   AND LOWER(title) = {placeholder}
-                  AND (file_path IS NULL OR file_path NOT LIKE '__queued_for_download__%%')
+                  AND file_path IS NOT NULL
+                  AND file_path NOT LIKE '__queued_for_download__%'
                 LIMIT 1
                 """,
                 (artist_lc, title_lc),
@@ -24464,7 +25236,7 @@ def api_queue_verify_and_prune():
         conn = get_db()
         cursor = conn.cursor()
         is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         request_data = request.get_json(silent=True) or {}
         dry_run = bool(request_data.get('dry_run', True))
