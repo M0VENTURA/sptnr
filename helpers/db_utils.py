@@ -768,17 +768,15 @@ def ensure_navidrome_tag_columns():
         ("encodedby", "TEXT"),
         ("encodersettings", "TEXT"),
         ("explicitstatus", "TEXT"),
-        # ReplayGain (stored as DOUBLE PRECISION for numeric queries)
-        ("replaygain_track_gain", "DOUBLE PRECISION"),
-        ("replaygain_track_peak", "DOUBLE PRECISION"),
-        ("replaygain_album_gain", "DOUBLE PRECISION"),
-        ("replaygain_album_peak", "DOUBLE PRECISION"),
+        # ReplayGain (stored as TEXT to preserve units like "-6.54 dB" from ID3 frames)
+        ("replaygain_track_gain", "TEXT"),
+        ("replaygain_track_peak", "TEXT"),
+        ("replaygain_album_gain", "TEXT"),
+        ("replaygain_album_peak", "TEXT"),
         # R128
         ("r128_track_gain", "TEXT"),
         ("r128_album_gain", "TEXT"),
         # Fields that may already exist but ensure they're present
-        ("albumartistsort", "TEXT"),
-        ("artistsort", "TEXT"),
         ("performer", "TEXT"),
         ("label", "TEXT"),
         ("releasecountry", "TEXT"),
