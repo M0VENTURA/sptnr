@@ -4642,8 +4642,18 @@ def check_downloads_folder():
                                 'release_mbid': queue_item.get('release_mbid') or queue_item.get('release_id'),
                                 'recording_mbid': queue_item.get('recording_mbid'),
                             }
+                            # Only clear existing tags when the stored metadata is
+                            # complete enough to replace them.  A partial write with
+                            # clear=True would silently erase album/track/MBID tags
+                            # that may have been embedded by the download source.
+                            _has_core_meta = bool(
+                                stored_metadata.get('artist')
+                                and stored_metadata.get('album')
+                                and stored_metadata.get('title')
+                            )
+                            _effective_clear = should_clear_tags and _has_core_meta
                             update_file_metadata_with_albumart(
-                                match_path, stored_metadata, clear_existing_tags=should_clear_tags
+                                match_path, stored_metadata, clear_existing_tags=_effective_clear
                             )
                             logger.info(
                                 f"[MOVE] Queue {queue_item['id']}: applied stored MusicBrainz metadata to file"
@@ -5911,7 +5921,16 @@ def auto_discover_and_queue_files():
                                             'release_mbid': item_for_move.get('release_mbid') or item_for_move.get('release_id'),
                                             'recording_mbid': item_for_move.get('recording_mbid'),
                                         }
-                                        update_file_metadata_with_albumart(full_path, stored_metadata)
+                                        # Only clear existing tags when the stored metadata is
+                                        # complete enough to replace them.  A partial write with
+                                        # clear=True would silently erase album/track/MBID tags
+                                        # that may have been embedded by the download source.
+                                        _has_core_meta = bool(
+                                            stored_metadata.get('artist')
+                                            and stored_metadata.get('album')
+                                            and stored_metadata.get('title')
+                                        )
+                                        update_file_metadata_with_albumart(full_path, stored_metadata, clear_existing_tags=_has_core_meta)
                                         logger.info(
                                             f"[AUTO-DISCOVER] Queue {matched_pending['id']}: applied stored MusicBrainz metadata to file"
                                         )

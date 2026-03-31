@@ -334,7 +334,7 @@ def update_file_metadata_with_albumart(file_path, metadata, cover_art_data=None,
     try:
         from mutagen.id3 import ID3, TIT2, TPE1, TPE2, TALB, TDRC, TRCK, TPOS, APIC, TXXX
         from mutagen.mp3 import MP3
-        from mutagen.flac import FLAC
+        from mutagen.flac import FLAC, FLACNoHeaderError
         from mutagen.flac import Picture
         
         ext = os.path.splitext(file_path)[1].lower()
@@ -427,7 +427,23 @@ def update_file_metadata_with_albumart(file_path, metadata, cover_art_data=None,
             
         elif ext == '.flac':
             # Update FLAC tags
-            audio = FLAC(file_path)
+            # Some FLAC files from P2P sources have a prepended ID3 block that
+            # prevents mutagen from finding the FLAC stream header.  Strip any
+            # such header and retry once before giving up.
+            try:
+                audio = FLAC(file_path)
+            except FLACNoHeaderError as _flac_open_err:
+                _stripped = False
+                try:
+                    ID3(file_path).delete()
+                    _stripped = True
+                except Exception as _strip_err:
+                    logger.warning(
+                        f"[METADATA] Could not strip prepended ID3 from FLAC {file_path}: {_strip_err}"
+                    )
+                if not _stripped:
+                    raise _flac_open_err
+                audio = FLAC(file_path)
 
             # Remove existing Vorbis comments and embedded pictures first.
             if clear_existing_tags:
