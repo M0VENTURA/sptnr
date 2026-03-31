@@ -1086,8 +1086,8 @@ def run_essentia_mood_scan(
                     existing_genres = _read_existing_tcon_genres(file_path)
                     selective_updates["genres"] = _merge_genres(existing_genres, child_genres)
 
-                # Write mood as TXXX:MOOD in addition to any COMM frame the
-                # external script may have written.
+                # Write mood to the standard TMOO frame (Navidrome-compatible)
+                # in addition to any COMM frame the external script may have written.
                 if mood:
                     selective_updates["mood"] = mood
 
@@ -1097,8 +1097,8 @@ def run_essentia_mood_scan(
                 else:
                     synced_files += 1
             else:
-                # Mood-only mode: write TXXX:MOOD so players recognise it, then
-                # do the full DB->file sync for all other fields.
+                # Mood-only mode: write TMOO frame so Navidrome and players
+                # recognise it, then do the full DB->file sync for all other fields.
                 if mood:
                     update_file_tags(file_path, {"mood": mood})
                 if sync_track_tags_to_file(track_id):
