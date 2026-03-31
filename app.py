@@ -5109,12 +5109,11 @@ def artists():
         # causes Navidrome to show the album as multiple separate albums.
         cursor.execute("""
             SELECT
-                COALESCE(NULLIF(album_artist, ''), artist) AS display_name,
+                display_name,
                 COUNT(DISTINCT album) AS album_count
             FROM (
                 SELECT
-                    album_artist,
-                    artist,
+                    COALESCE(NULLIF(album_artist, ''), artist) AS display_name,
                     album,
                     SUM(CASE WHEN disc_number IS NOT NULL
                                   AND TRIM(CAST(disc_number AS TEXT)) != ''

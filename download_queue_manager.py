@@ -4217,7 +4217,13 @@ def _matches_format_bitrate_priority(file_path, file_meta=None):
     return result
 
 
-def _metadata_matches_queue_item(file_meta, queue_item, threshold=0.68, file_path=None):
+def _metadata_matches_queue_item(
+    file_meta,
+    queue_item,
+    threshold=0.68,
+    file_path=None,
+    check_quality=True,
+):
     """
     Check if discovered file metadata is a good match for a pending queue item.
 
@@ -4229,8 +4235,10 @@ def _metadata_matches_queue_item(file_meta, queue_item, threshold=0.68, file_pat
         False: metadata exists but mismatches (including format/bitrate rejection)
         None: metadata missing/incomplete, caller can use filename fallback
     """
-    # First check format/bitrate priority if file_path provided
-    if file_path:
+    # First check format/bitrate priority if file_path provided.
+    # Callers that pre-filter candidate files can disable this to avoid
+    # repeated quality checks and duplicate reject spam per queue item.
+    if check_quality and file_path:
         quality_check = _matches_format_bitrate_priority(file_path, file_meta)
         if not quality_check['matches']:
             logger.info(f"[QUALITY-FILTER] Rejected: {file_path} - {quality_check['reason']}")
@@ -4361,6 +4369,24 @@ def check_downloads_folder():
             except Exception as e:
                 logger.error(f"Error scanning downloads folder: {e}")
         
+        # Run quality filter once per file to prevent a single rejected file from
+        # being re-evaluated against every queue row in this scan pass.
+        quality_filtered_files = []
+        quality_rejected_count = 0
+        for file_info in downloads_files:
+            quality_check = _matches_format_bitrate_priority(file_info['full_path'])
+            if quality_check.get('matches'):
+                quality_filtered_files.append(file_info)
+            else:
+                quality_rejected_count += 1
+
+        downloads_files = quality_filtered_files
+
+        if quality_rejected_count:
+            logger.info(
+                f"[QUALITY-FILTER] Excluded {quality_rejected_count} file(s) from queue matching in this scan pass"
+            )
+
         logger.info(f"Found {len(downloads_files)} audio files in {downloads_dir}, checking {len(queue_items)} queue items")
         
         music_root = os.path.abspath(MUSIC_DIR)
@@ -4489,7 +4515,12 @@ def check_downloads_folder():
                         except Exception:
                             metadata = None
 
-                        meta_state = _metadata_matches_queue_item(metadata or {}, queue_item, file_path=file_info['full_path'])
+                        meta_state = _metadata_matches_queue_item(
+                            metadata or {},
+                            queue_item,
+                            file_path=file_info['full_path'],
+                            check_quality=False,
+                        )
                         if meta_state is False:
                             # File metadata doesn't match queue item, skip this file
                             continue
@@ -4514,7 +4545,12 @@ def check_downloads_folder():
                     except Exception:
                         metadata = None
 
-                    meta_state = _metadata_matches_queue_item(metadata or {}, queue_item, file_path=file_info['full_path'])
+                    meta_state = _metadata_matches_queue_item(
+                        metadata or {},
+                        queue_item,
+                        file_path=file_info['full_path'],
+                        check_quality=False,
+                    )
 
                     # If tags exist and disagree, never allow filename fallback.
                     if meta_state is False:
