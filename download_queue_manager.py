@@ -2243,7 +2243,7 @@ def update_queue_item(queue_id, **kwargs):
                         return None
             
             for key, value in kwargs.items():
-                if key in ['status', 'source_id', 'found_filename', 'file_path', 'failure_reason',
+                if key in ['status', 'source_id', 'found_filename', 'file_path', 'music_file_path', 'failure_reason',
                            'retry_count', 'last_failure_time', 'imported_at', 'metadata', 'import_group', 'import_type',
                            'copied_individually', 'copied_individually_at', 'duration',
                            'match_confidence', 'match_method',

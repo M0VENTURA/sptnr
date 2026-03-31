@@ -26717,7 +26717,7 @@ def api_queue_organize_group():
                         update_queue_item(
                             item['id'],
                             status='imported',
-                            file_path=target_path,
+                            music_file_path=target_path,
                             copied_individually=1,
                             copied_individually_at=datetime.now().isoformat(),
                         )
