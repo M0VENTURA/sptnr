@@ -26454,7 +26454,7 @@ def api_queue_organize(queue_id):
             update_queue_item(
                 queue_id,
                 status='imported',
-                file_path=target_path,
+                music_file_path=target_path,
                 copied_individually=1,
                 copied_individually_at=datetime.now().isoformat()
             )
@@ -27111,13 +27111,13 @@ def _perform_queue_move_to_music(queue_id):
             update_queue_item(
                 queue_id,
                 status='imported',
-                file_path=target_path,
+                music_file_path=target_path,
                 copied_individually=1,
                 copied_individually_at=datetime.now().isoformat(),
             )
             logging.info(f"[MANUAL_MOVE] Queue {queue_id}: verified and imported to {target_path}")
         else:
-            update_queue_item(queue_id, status='completed', file_path=target_path)
+            update_queue_item(queue_id, status='completed', music_file_path=target_path)
             return {
                 "success": False,
                 "error": f"File moved but verification failed: {verify_result.get('error')}",

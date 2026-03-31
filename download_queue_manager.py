@@ -4728,7 +4728,7 @@ def check_downloads_folder():
                                 update_queue_item(
                                     queue_item['id'],
                                     status='imported',
-                                    file_path=target_path,
+                                    music_file_path=target_path,
                                     copied_individually=1,
                                     copied_individually_at=datetime.now().isoformat()
                                 )
@@ -4755,7 +4755,7 @@ def check_downloads_folder():
                                 update_queue_item(
                                     queue_item['id'],
                                     status='imported',
-                                    file_path=target_path,
+                                    music_file_path=target_path,
                                     copied_individually=1,
                                     copied_individually_at=datetime.now().isoformat()
                                 )
@@ -4778,7 +4778,7 @@ def check_downloads_folder():
                                 update_queue_item(
                                     queue_item['id'],
                                     status='completed',
-                                    file_path=target_path  # File was moved to target_path
+                                    music_file_path=target_path  # File was moved to target_path
                                 )
                                 completed_items.append({
                                     'queue_id': queue_item['id'],
@@ -8601,7 +8601,7 @@ def mark_file_as_copied_individually(queue_id, target_path=None):
             copied_individually=1,
             copied_individually_at=datetime.now().isoformat(),
             status='imported',
-            file_path=target_path if target_path else None
+            music_file_path=target_path if target_path else None
         )
         
         if result:

@@ -1288,7 +1288,7 @@ def check_completed_downloads():
                             update_queue_item(
                                 item_id,
                                 status='imported',
-                                file_path=target_path,
+                                music_file_path=target_path,
                                 copied_individually=1,
                                 copied_individually_at=datetime.now().isoformat()
                             )
@@ -1298,7 +1298,7 @@ def check_completed_downloads():
                                 f"[AUTO_MOVE] Queue {item_id}: verification FAILED "
                                 f"({verify_result.get('error')}), marking back to 'completed'"
                             )
-                            update_queue_item(item_id, status='completed', file_path=file_path)
+                            update_queue_item(item_id, status='completed', music_file_path=target_path)
                     else:
                         logger.warning(
                             f"[AUTO_MOVE] Queue {item_id}: could not move "

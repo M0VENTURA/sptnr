@@ -641,13 +641,31 @@ async function searchMusicBrainzRelease(event, artist, album, upcomingReleaseId 
   errorEl.style.display = 'none';
   resultsEl.innerHTML = '';
 
+  const parseJsonResponse = async (resp, sourceName) => {
+    const contentType = (resp.headers.get('content-type') || '').toLowerCase();
+    if (!contentType.includes('application/json')) {
+      const raw = await resp.text();
+      const htmlResponse = raw && raw.trim().startsWith('<');
+      const hint = htmlResponse
+        ? 'Received HTML instead of JSON (possible auth/session redirect or server error).'
+        : `Unexpected response format from ${sourceName}.`;
+      throw new Error(`${hint} HTTP ${resp.status}`);
+    }
+
+    const parsed = await resp.json();
+    if (!resp.ok) {
+      throw new Error(parsed.error || parsed.message || `${sourceName} request failed (HTTP ${resp.status})`);
+    }
+    return parsed;
+  };
+
   try {
     const response = await fetch('/api/upcoming-releases/search-musicbrainz', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ artist, album })
     });
-    const data = await response.json();
+    const data = await parseJsonResponse(response, 'MusicBrainz');
 
     const isArtistOnlySearch = !album || !String(album).trim();
 
@@ -671,7 +689,7 @@ async function searchMusicBrainzRelease(event, artist, album, upcomingReleaseId 
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ artist, album })
     });
-    const discogsData = await discogsResponse.json();
+    const discogsData = await parseJsonResponse(discogsResponse, 'Discogs');
 
     statusEl.style.display = 'none';
 
