@@ -21289,7 +21289,7 @@ def api_album_art(artist, album):
                 """, (artist, album))
                 result = cursor.fetchone()
                 if result:
-                    cover_art_url = result[0] if result[0] else result[1]
+                    cover_art_url = result['cover_art_url'] if result['cover_art_url'] else result['spotify_album_art_url']
             except Exception:
                 pass
 
@@ -21305,7 +21305,7 @@ def api_album_art(artist, album):
                     """, (artist, album))
                     result = cursor.fetchone()
                     if result:
-                        cover_art_url = result[0] if result[0] else result[1]
+                        cover_art_url = result['cover_art_url'] if result['cover_art_url'] else result['spotify_album_art_url']
                 except Exception:
                     pass
 

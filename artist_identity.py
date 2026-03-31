@@ -398,7 +398,7 @@ class PopularityCalculator:
             query = """
                 SELECT popularity_score
                 FROM tracks
-                WHERE artist = ? OR album_artist = ?
+                WHERE artist = %s OR album_artist = %s
                   AND popularity_score IS NOT NULL
             """
             params = [canonical_artist, canonical_artist]
@@ -415,9 +415,8 @@ class PopularityCalculator:
             if exclude_alternate:
                 query += " AND is_alternate_version = 0"
 
-            query = query.replace("?", self.placeholder)
             cursor.execute(query, params)
-            popularities = [row[0] for row in cursor.fetchall()]
+            popularities = [row['popularity_score'] for row in cursor.fetchall()]
 
             if len(popularities) < 2:
                 return None, None, len(popularities)

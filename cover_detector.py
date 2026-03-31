@@ -8,7 +8,6 @@ then attributes the original artist and updates track metadata accordingly.
 
 import logging
 import json
-import sqlite3
 import re
 import time
 from typing import Optional, Dict, List, Tuple
@@ -186,27 +185,17 @@ def _canonical_track_title(value: str) -> str:
 class CoverDetector:
     """Detect and attribute cover songs using MusicBrainz relations and writer/composer data."""
     
-    @staticmethod
-    def _is_postgres(conn):
-        """Detect if connection is PostgreSQL."""
-        try:
-            import psycopg2
-            return isinstance(conn, psycopg2.extensions.connection)
-        except (ImportError, AttributeError):
-            return False
-    
     def __init__(self, musicbrainz_client, db_connection=None):
         """
         Initialize cover detector.
         
         Args:
             musicbrainz_client: MusicBrainzClient instance for API queries
-            db_connection: SQLite database connection
+            db_connection: database connection
         """
         self.mb_client = musicbrainz_client
         self.db_conn = db_connection
-        self.is_pg = self._is_postgres(db_connection) if db_connection else False
-        self.placeholder = "%s" if self.is_pg else "?"
+        self.placeholder = "%s"
         self._band_members_cache = {}  # Cache to avoid repeated API calls
 
     def _normalize_cover_flag_value(self, value: bool):
@@ -1163,8 +1152,7 @@ class CoverDetector:
             return False
         try:
             cursor = self.db_conn.cursor()
-            # self.placeholder is set at __init__ time to either "%s" (PostgreSQL)
-            # or "?" (SQLite) — it is a fixed constant, not user-supplied input,
+            # self.placeholder is a fixed constant ("%s") and not user-supplied input,
             # so there is no SQL-injection risk from its use in the f-string.
             cursor.execute(
                 f"""
@@ -1212,7 +1200,7 @@ class CoverDetector:
 
         try:
             cursor = self.db_conn.cursor()
-            # self.placeholder is a fixed constant ("%s" or "?"), not user input.
+            # self.placeholder is a fixed constant ("%s"), not user input.
             # Query by both album-artist path and raw track artist so that tracks
             # on compilation albums (where album_artist = "Various Artists" but
             # artist = the band name) are found correctly.

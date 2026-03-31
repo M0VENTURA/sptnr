@@ -1909,10 +1909,7 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                 logger.warning(f"Failed to sync queue item to tracks table: {e_tracks}")
             
             # Return the item
-            if is_pg:
-                cursor.execute("SELECT * FROM download_queue WHERE id = %s", (queue_id,))
-            else:
-                cursor.execute("SELECT * FROM download_queue WHERE id = ?", (queue_id,))
+            cursor.execute("SELECT * FROM download_queue WHERE id = %s", (queue_id,))
             item = cursor.fetchone()
             
             if item:
