@@ -880,6 +880,13 @@ def run_essentia_mood_scan(
             continue
 
         # ------------------------------------------------------------------
+        # Capture existing genre tags before Essentia overwrites the file.
+        # ------------------------------------------------------------------
+        pre_existing_genres: List[str] = (
+            _read_existing_tcon_genres(file_path) if tag_genres else []
+        )
+
+        # ------------------------------------------------------------------
         # Run Essentia on this file.
         # ------------------------------------------------------------------
         cmd = base_cmd + [file_path]
@@ -1080,11 +1087,12 @@ def run_essentia_mood_scan(
                     selective_updates["danceability"] = float(danceability_value)
 
                 # Extract child genres (e.g. "Heavy Metal" from "Rock---Heavy Metal")
-                # and merge with existing non-hierarchical genres in the file.
+                # and merge with existing non-hierarchical genres that were captured
+                # before the Essentia script ran (it uses --overwrite which would
+                # otherwise erase the original genres from the file).
                 child_genres = _extract_child_genres(essentia_genre) if essentia_genre else []
                 if child_genres:
-                    existing_genres = _read_existing_tcon_genres(file_path)
-                    selective_updates["genres"] = _merge_genres(existing_genres, child_genres)
+                    selective_updates["genres"] = _merge_genres(pre_existing_genres, child_genres)
 
                 # Write mood to the standard TMOO frame (Navidrome-compatible)
                 # in addition to any COMM frame the external script may have written.
