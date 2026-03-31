@@ -34762,7 +34762,7 @@ def api_upcoming_releases():
                     "SELECT LOWER(COALESCE(album_artist, artist)) AS artist_key, LOWER(album) AS album_key "
                     "FROM download_queue "
                     "WHERE import_type = 'album' "
-                    "  AND status NOT IN ('completed', 'failed', 'cancelled') "
+                    "  AND status NOT IN ('completed', 'failed', 'cancelled', 'imported', 'in_collection') "
                     "  AND album IS NOT NULL"
                 )
                 queue_albums = set()

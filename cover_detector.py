@@ -397,7 +397,8 @@ class CoverDetector:
                 track_writers[track['id']] = {
                     'title': track_title,
                     'writers': writers,
-                    'mbid': track.get('mbid')
+                    'mbid': track.get('mbid'),
+                    'track_artist': track.get('artist') or track.get('album_artist') or artist,
                 }
                 logger.debug(f"  Track '{track_title}': Found writers {writers}")
             else:
@@ -437,6 +438,18 @@ class CoverDetector:
             if not relation_original:
                 continue
 
+            # Guard: if the detected original artist is the same as the track's
+            # credited artist, this recording is a cover *of* that artist's work —
+            # not a cover *by* them.  Skip to avoid falsely flagging the artist's
+            # own song as a cover of themselves.
+            if self._names_match(relation_original.get('artist', ''), artist):
+                logger.info(
+                    f"Skipping MB-relation cover for '{track.get('title', '')}': "
+                    f"original artist '{relation_original['artist']}' matches track artist "
+                    f"'{artist}' — this is a cover OF the artist, not BY them"
+                )
+                continue
+
             result = {
                 'track_id': track_id,
                 'title': track.get('title', ''),
@@ -469,7 +482,34 @@ class CoverDetector:
                 # Check if writer is different from album artist
                 if not self._is_writer_same_as_artist(writer, artist):
                     logger.info(f"Potential cover: '{info['title']}' - lyricist/writer '{writer}' differs from artist '{artist}'")
-                    
+
+                    # Before making a MusicBrainz lookup, verify the artist does
+                    # not already own an original recording of this title in the
+                    # local library.  This avoids flagging the artist's own songs
+                    # as covers when their writer credit differs from the band name
+                    # (e.g. a producer credit that doesn't match the artist name).
+                    if self._artist_has_original(artist, info['title']):
+                        logger.info(
+                            f"Skipping writer-based cover detection for '{info['title']}': "
+                            f"'{artist}' already has an original recording of this title in the library"
+                        )
+                        break
+
+                    # If this writer appears on multiple tracks in the artist's
+                    # catalogue they are a regular collaborator or producer, not
+                    # evidence that a particular track is a cover song.
+                    # On compilations the per-track artist (not the album artist
+                    # "Various Artists") is the relevant lookup key.
+                    if self._is_common_writer_for_artist(
+                        writer, artist, track_artist=info.get('track_artist')
+                    ):
+                        logger.info(
+                            f"Skipping writer-based cover detection for '{info['title']}': "
+                            f"'{writer}' is a common writer in '{artist}' catalogue — "
+                            f"likely a regular collaborator, not a cover indicator"
+                        )
+                        break
+
                     # Look up original recording by this writer
                     original = self._find_original_recording(info['title'], writer, album_artist=artist)
                     
@@ -511,6 +551,21 @@ class CoverDetector:
             title = track.get('title', '')
             hint = self._detect_cover_hint_from_text(title, album)
             if not hint:
+                continue
+
+            # The heuristic matched a "(X Cover)" pattern in the title or album name.
+            # Before treating it as definitive, strip the cover suffix and check
+            # whether the credited artist already has an original recording of the
+            # base title in the local library.  This prevents falsely marking an
+            # artist's own songs as covers when a tribute/cover album uses a
+            # title pattern like "Song Title (Artist Cover)".
+            _cover_suffix_re = re.compile(r'\s*\([^)]+\s+cover\)\s*$', re.IGNORECASE)
+            base_title = _cover_suffix_re.sub('', title).strip()
+            if base_title and base_title.lower() != title.lower() and self._artist_has_original(artist, base_title):
+                logger.info(
+                    f"Skipping heuristic cover detection for '{title}': "
+                    f"'{artist}' has an original recording of '{base_title}' in the library"
+                )
                 continue
 
             result = {
@@ -1095,6 +1150,116 @@ class CoverDetector:
         intersection = left_tokens & right_tokens
         min_required = min(len(left_tokens), len(right_tokens))
         return len(intersection) >= max(2, min_required)
+
+    def _artist_has_original(self, artist: str, title: str) -> bool:
+        """Return True if the artist already has a non-cover recording of *title*
+        in the local library database.
+
+        Used as a pre-flight guard before heuristic or writer-based cover detection
+        to avoid falsely flagging an artist's own songs as covers when a tribute /
+        cover album happens to name a track like "Song Title (X Cover)".
+        """
+        if not self.db_conn or not artist or not title:
+            return False
+        try:
+            cursor = self.db_conn.cursor()
+            # self.placeholder is set at __init__ time to either "%s" (PostgreSQL)
+            # or "?" (SQLite) — it is a fixed constant, not user-supplied input,
+            # so there is no SQL-injection risk from its use in the f-string.
+            cursor.execute(
+                f"""
+                SELECT 1 FROM tracks
+                WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER({self.placeholder})
+                  AND LOWER(title) = LOWER({self.placeholder})
+                  AND (is_cover IS NULL OR NOT is_cover)
+                LIMIT 1
+                """,
+                (artist, title),
+            )
+            return cursor.fetchone() is not None
+        except Exception as exc:
+            logger.debug(
+                f"[CoverDetector] _artist_has_original lookup failed for "
+                f"{artist!r}/{title!r}: {exc}"
+            )
+            return False
+
+    def _is_common_writer_for_artist(self, writer: str, artist: str, track_artist: Optional[str] = None, min_count: int = 2) -> bool:
+        """Return True if *writer* appears on at least *min_count* tracks by the
+        relevant artist in the local library, indicating they are a regular
+        collaborator or producer rather than a one-off songwriter whose credit
+        signals a cover.
+
+        On compilation albums the ``album_artist`` is typically "Various Artists"
+        and is not a useful lookup key; *track_artist* (the per-track credited
+        artist) is used instead when it differs from *artist*.
+
+        Writer credits are stored as a JSON array in ``tracks.writer``.  The
+        comparison is performed in Python (after fetching all non-null writer rows)
+        so that the same normalisation logic used elsewhere is applied — avoiding
+        false negatives from capitalisation or punctuation differences.
+        """
+        if not self.db_conn or not writer or not artist:
+            return False
+
+        # On compilations, prefer the per-track artist for the DB lookup so
+        # that "Various Artists" is never used as the lookup key.
+        lookup_artist = (
+            track_artist
+            if track_artist and not self._names_match(track_artist, artist)
+            else artist
+        )
+
+        try:
+            cursor = self.db_conn.cursor()
+            # self.placeholder is a fixed constant ("%s" or "?"), not user input.
+            # Query by both album-artist path and raw track artist so that tracks
+            # on compilation albums (where album_artist = "Various Artists" but
+            # artist = the band name) are found correctly.
+            cursor.execute(
+                f"""
+                SELECT writer FROM tracks
+                WHERE (
+                    LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER({self.placeholder})
+                    OR LOWER(artist) = LOWER({self.placeholder})
+                )
+                  AND writer IS NOT NULL
+                  AND writer != ''
+                  AND writer != '[]'
+                """,
+                (lookup_artist, lookup_artist),
+            )
+            rows = cursor.fetchall() or []
+        except Exception as exc:
+            logger.debug(
+                f"[CoverDetector] _is_common_writer_for_artist query failed for "
+                f"{artist!r}/{writer!r}: {exc}"
+            )
+            return False
+
+        writer_norm = self._normalize_name(writer)
+        count = 0
+        for row in rows:
+            raw = self._row_value(row, 'writer', index=0, default='')
+            if not raw:
+                continue
+            try:
+                names = json.loads(raw) if isinstance(raw, str) else raw
+                if not isinstance(names, list):
+                    names = [str(names)]
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+            # Count each track once regardless of how many times the writer
+            # appears in that track's credit list.
+            if any(self._normalize_name(str(n)) == writer_norm for n in names):
+                count += 1
+                if count >= min_count:
+                    logger.debug(
+                        f"[CoverDetector] '{writer}' is a common writer for '{lookup_artist}' "
+                        f"({count}/{min_count} tracks) — not a cover indicator"
+                    )
+                    return True
+        return False
 
     def _find_original_recording(self, title: str, writer: str, album_artist: Optional[str] = None) -> Optional[Dict]:
         """Find earliest likely original recording for a title/writer pair."""
