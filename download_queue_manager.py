@@ -8280,6 +8280,27 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
 
         import shutil
 
+        # Determine whether this is a multi-disc release by inspecting the
+        # disc_number values across all tracks.  If every track belongs to
+        # disc 1 (or has no disc number), suppress the TPOS/discnumber tag so
+        # that single-CD albums are not tagged with an unnecessary "Disc 1".
+        unique_disc_nums = set()
+        for t in tracks:
+            raw = t.get('disc_number')
+            if raw is not None:
+                try:
+                    dn = int(str(raw).split('/')[0])
+                    if dn > 0:
+                        unique_disc_nums.add(dn)
+                except (ValueError, TypeError):
+                    pass
+        is_multi_disc_album = max(unique_disc_nums, default=1) > 1
+        if not is_multi_disc_album:
+            logger.info(
+                f"[AUTO_MOVE] Single-disc album detected for '{dest_album}' — "
+                f"disc_number will be stripped from file tags"
+            )
+
         for track in tracks:
             if track['status'] == 'imported':
                 # Already moved (individually or previously)
@@ -8349,7 +8370,7 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
                     'album': dest_album,
                     'year': dest_year,
                     'track_number': track.get('track_number'),
-                    'disc_number': track.get('disc_number'),
+                    'disc_number': track.get('disc_number') if is_multi_disc_album else None,
                 }
                 update_file_metadata(src, tag_metadata)
             except Exception as tag_err:
