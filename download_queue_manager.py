@@ -924,8 +924,7 @@ def transfer_download_to_music(source_path, dest_path, queue_id=None, copy_only=
     final_dest_path = get_import_destination_path(source_path, dest_path, settings=settings)
     source_ext = os.path.splitext(source_path)[1].lower()
     convert_flac_to_mp3 = bool(
-        settings.get("enabled")
-        and settings.get("mode") == "flac_to_mp3"
+        settings.get("mode") == "flac_to_mp3"
         and source_ext == ".flac"
     )
 
@@ -1052,8 +1051,7 @@ def get_import_destination_path(source_path, dest_path, settings=None):
 
     source_ext = os.path.splitext(source_path or "")[1].lower()
     should_convert = bool(
-        settings.get("enabled")
-        and settings.get("mode") == "flac_to_mp3"
+        settings.get("mode") == "flac_to_mp3"
         and source_ext == ".flac"
     )
     if should_convert:
