@@ -749,6 +749,57 @@ def get_downloads_dir():
     """Dynamically get downloads directory (re-evaluates on each call for config changes)."""
     return resolve_downloads_dir()
 
+
+def cleanup_stale_non_torrent_downloads(downloads_dir, max_age_hours=24):
+    """Delete files in downloads_dir that are NOT under the 'torrents' subfolder
+    and have been present for longer than max_age_hours.
+
+    This keeps the downloads folder clean of stale files (e.g. partial downloads,
+    manual copies) that were not placed by the torrent client.
+
+    Args:
+        downloads_dir: Root downloads directory (e.g. /downloads/Music)
+        max_age_hours: Maximum age in hours before a non-torrent file is deleted
+
+    Returns:
+        Number of files deleted
+    """
+    deleted = 0
+    if not downloads_dir or not os.path.isdir(downloads_dir):
+        return deleted
+
+    abs_downloads = os.path.normpath(os.path.abspath(downloads_dir))
+    torrents_dir = os.path.join(abs_downloads, 'torrents')
+    cutoff = time.time() - (max_age_hours * 3600)
+
+    try:
+        for root, dirs, files in os.walk(abs_downloads, topdown=True):
+            norm_root = os.path.normpath(os.path.abspath(root))
+            # Skip the torrents subfolder and anything inside it
+            if norm_root == torrents_dir:
+                dirs[:] = []
+                continue
+            dirs[:] = [d for d in dirs if d.lower() != 'torrents']
+
+            for filename in files:
+                file_path = os.path.join(root, filename)
+                try:
+                    if os.path.getmtime(file_path) < cutoff:
+                        os.remove(file_path)
+                        deleted += 1
+                        logger.info(f"[CLEANUP] Deleted stale non-torrent file: {file_path}")
+                except Exception as e:
+                    logger.debug(f"[CLEANUP] Could not delete {file_path}: {e}")
+    except Exception as e:
+        logger.debug(f"[CLEANUP] Stale non-torrent cleanup error: {e}")
+
+    if deleted > 0:
+        _prune_empty_download_folders(abs_downloads)
+        logger.info(f"[CLEANUP] Deleted {deleted} stale non-torrent file(s) from {abs_downloads}")
+
+    return deleted
+
+
 MUSIC_DIR = resolve_music_dir()
 
 
@@ -5411,16 +5462,22 @@ def auto_discover_and_queue_files():
     }
     
     try:
-        downloads_dir = get_downloads_dir()
-        logger.info(f"[AUTO-DISCOVER] Starting scan of: {downloads_dir}")
-        logger.info(f"[AUTO-DISCOVER] Directory exists: {os.path.isdir(downloads_dir)}")
-        logger.info(f"[AUTO-DISCOVER] Is absolute path: {os.path.isabs(downloads_dir)}")
-        
+        root_downloads_dir = get_downloads_dir()
+
+        # Only import from the torrents subfolder.  Any other files in the
+        # downloads directory are treated as staging artifacts and are subject
+        # to the stale-file cleanup below.
+        torrents_dir = os.path.join(root_downloads_dir, 'torrents')
+        downloads_dir = torrents_dir
+
+        logger.info(f"[AUTO-DISCOVER] Downloads root: {root_downloads_dir}")
+        logger.info(f"[AUTO-DISCOVER] Torrents scan dir: {downloads_dir}")
+
         # Initialize scan progress tracking
         update_scan_progress(scanning=True, files_found=0)
-        
-        if not os.path.isdir(downloads_dir):
-            error_msg = f"Downloads folder not found or not accessible: {downloads_dir} (exists={os.path.exists(downloads_dir)})"
+
+        if not root_downloads_dir or not os.path.isdir(root_downloads_dir):
+            error_msg = f"Downloads folder not found or not accessible: {root_downloads_dir}"
             logger.error(f"[AUTO-DISCOVER] {error_msg}")
             stats['errors'].append(error_msg)
             update_scan_progress(scanning=False)
@@ -5430,9 +5487,19 @@ def auto_discover_and_queue_files():
         auto_discover_settings = get_auto_discover_settings()
         unmatched_folder_paths = set()
 
+        # Delete stale files in the downloads root that are outside the torrents folder.
+        cleanup_stale_non_torrent_downloads(root_downloads_dir)
+
         # Remove leftover empty folders before scanning files.
-        if cleanup_settings.get("prune_empty_folders", True):
+        if cleanup_settings.get("prune_empty_folders", True) and os.path.isdir(downloads_dir):
             stats['empty_folders_deleted'] += _prune_empty_download_folders(downloads_dir)
+
+        if not os.path.isdir(downloads_dir):
+            logger.info(
+                f"[AUTO-DISCOVER] Torrents subfolder not found at {torrents_dir} - no files to scan"
+            )
+            update_scan_progress(scanning=False)
+            return stats
         
         # Clean up queue items for files that no longer exist
         cleanup_stats = cleanup_missing_files()
