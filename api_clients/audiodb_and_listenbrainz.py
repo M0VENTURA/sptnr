@@ -286,9 +286,7 @@ class ListenBrainzUserClient:
         """
         created_for = self.get_created_for_playlists(username)
         jams = created_for.get("weekly_jams", []) if isinstance(created_for, dict) else []
-        if jams:
-            return jams
-        return self.get_recommendations(username, "raw")
+        return jams
     
     def get_weekly_exploration(self, username: str) -> list:
         """

@@ -578,7 +578,7 @@ def update_queue_status(queue_id, status, **kwargs):
         logger.error(f"Error updating queue status: {e}")
         return False
 
-def increment_retry_count(queue_id, retry_delay_minutes=30):
+def increment_retry_count(queue_id, retry_delay_minutes=60):
     """Increment retry count and schedule next retry"""
     try:
         conn = get_db()
@@ -619,7 +619,7 @@ def increment_retry_count(queue_id, retry_delay_minutes=30):
         logger.error(f"Error incrementing retry count: {e}")
         return False
 
-def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=30):
+def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=60):
     """Mark queue item as failed, optionally scheduling retry"""
     try:
         from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
@@ -941,7 +941,7 @@ def search_and_download(queue_id, queue_item, client):
         if not best_result:
             elapsed = (datetime.now() - poll_start_time).total_seconds()
             logger.warning(f"Queue {queue_id}: ✗ No results found after {elapsed:.0f}s of polling")
-            mark_failed(queue_id, f"No results found for '{search_query}'", schedule_retry=True, retry_delay_minutes=60)
+            mark_failed(queue_id, f"No results found for '{search_query}'", schedule_retry=True, retry_delay_minutes=1440)
             return False
 
         if best_score < 0.45:
@@ -954,7 +954,7 @@ def search_and_download(queue_id, queue_item, client):
                 queue_id,
                 f"No safe Soulseek match for '{search_query}' (best_score={best_score:.2f})",
                 schedule_retry=True,
-                retry_delay_minutes=60,
+                retry_delay_minutes=1440,
             )
             return False
         
