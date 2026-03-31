@@ -5260,6 +5260,18 @@ def artists():
     except Exception as correction_err:
         logging.debug(f"Could not compute artist correction indicators: {correction_err}")
 
+    # Build album tag inconsistency counts per artist (lightweight: count albums only)
+    album_tag_inconsistency_counts_by_artist: dict = {}
+    try:
+        tag_inconsistencies = _get_album_tag_inconsistencies(conn)
+        for item in tag_inconsistencies:
+            aa = item.get('album_artist') or ''
+            album_tag_inconsistency_counts_by_artist[aa] = (
+                album_tag_inconsistency_counts_by_artist.get(aa, 0) + 1
+            )
+    except Exception as tag_inc_err:
+        logging.debug(f"Could not compute album tag inconsistency counts: {tag_inc_err}")
+
     for artist_row in artists_data:
         display_name = artist_row.get("display_name", "")
         duplicate_count = duplicate_counts_by_artist.get(display_name, 0)
@@ -5269,6 +5281,7 @@ def artists():
         mbid_inconsistent_count = mbid_inconsistent_counts_by_artist.get(display_name, 0)
         extra_album_artist_count = extra_album_artist_counts_by_artist.get(display_name, 0)
         mbid_inconsistent_count = mbid_inconsistent_counts_by_artist.get(display_name, 0)
+        album_tag_inconsistency_count = album_tag_inconsistency_counts_by_artist.get(display_name, 0)
         artist_row["duplicate_track_count"] = duplicate_count
         artist_row["missing_track_count"] = missing_count
         artist_row["duplicate_artist_count"] = duplicate_artist_count
@@ -5276,6 +5289,7 @@ def artists():
         artist_row["mbid_inconsistent_count"] = mbid_inconsistent_count
         artist_row["extra_album_artist_count"] = extra_album_artist_count
         artist_row["mbid_inconsistent_count"] = mbid_inconsistent_count
+        artist_row["album_tag_inconsistency_count"] = album_tag_inconsistency_count
         artist_row["needs_correction"] = (
             duplicate_count + missing_count
             + (1 if duplicate_artist_count > 0 else 0)
@@ -5283,6 +5297,7 @@ def artists():
             + mbid_inconsistent_count
             + disc_inconsistent_count
             + mbid_inconsistent_count
+            + album_tag_inconsistency_count
         ) > 0
     
     conn.close()
@@ -6383,6 +6398,230 @@ def api_artist_corrections_albums():
     except Exception as e:
         logging.error(f"[CORRECTIONS_ALBUMS] Error: {e}")
         return jsonify({"error": str(e), "albums": []}), 500
+
+
+# ---------------------------------------------------------------------------
+# Global Tag Corrections (/correcting)
+# ---------------------------------------------------------------------------
+
+ALBUM_CONSISTENCY_FIELDS = [
+    ('genres',          'Genre'),
+    ('mood',            'Mood'),
+    ('year',            'Year'),
+    ('album_artist',    'Album Artist'),
+    ('releasetype',     'Release Type'),
+    ('releasestatus',   'Release Status'),
+    ('releasecountry',  'Release Country'),
+    ('label',           'Label'),
+    ('recordlabel',     'Record Label'),
+    ('tracktotal',      'Track Total'),
+    ('disctotal',       'Disc Total'),
+    ('compilation',     'Compilation'),
+    ('grouping',        'Grouping'),
+    ('media',           'Media'),
+    ('albumversion',    'Album Version'),
+]
+
+
+def _get_album_tag_inconsistencies(conn, artist_filter=None):
+    """Return albums that have inconsistent album-level tag values across their tracks.
+
+    Returns a list of dicts:
+        {album_artist, album, track_count,
+         inconsistencies: [{field, field_label, values: [{value, count, track_ids}]}]}
+    """
+    cursor = conn.cursor()
+
+    # Build per-field HAVING clauses
+    having_parts = []
+    for field, _ in ALBUM_CONSISTENCY_FIELDS:
+        having_parts.append(
+            f"COUNT(DISTINCT COALESCE(CAST({field} AS TEXT), '')) > 1"
+        )
+    having_sql = " OR ".join(having_parts)
+
+    where_sql = "WHERE album IS NOT NULL AND TRIM(album) != ''"
+    params: list = []
+    if artist_filter:
+        where_sql += " AND COALESCE(NULLIF(album_artist,''), artist) = %s"
+        params.append(artist_filter)
+
+    try:
+        cursor.execute(f"""
+            SELECT
+                COALESCE(NULLIF(album_artist, ''), artist) AS album_artist,
+                album,
+                COUNT(*) AS track_count
+            FROM tracks
+            {where_sql}
+            GROUP BY COALESCE(NULLIF(album_artist, ''), artist), album
+            HAVING COUNT(*) >= 2
+              AND ({having_sql})
+            ORDER BY COALESCE(NULLIF(album_artist, ''), artist), album
+        """, params or None)
+        flagged_albums = cursor.fetchall()
+    except Exception as e:
+        logging.warning(f"[CORRECTING] Flagging query failed: {e}")
+        return []
+
+    results = []
+    for row in flagged_albums:
+        row_dict = dict(row) if hasattr(row, 'keys') else {
+            'album_artist': row[0], 'album': row[1], 'track_count': row[2]
+        }
+        album_artist = row_dict.get('album_artist') or ''
+        album = row_dict.get('album') or ''
+        track_count = int(row_dict.get('track_count') or 0)
+
+        # Detail query: get per-field value counts and track ids
+        try:
+            cursor.execute("""
+                SELECT id, %s
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+                  AND album = %s
+            """ % (
+                ', '.join(f for f, _ in ALBUM_CONSISTENCY_FIELDS),
+                '%s', '%s'
+            ), (album_artist, album))
+            detail_rows = cursor.fetchall()
+        except Exception:
+            continue
+
+        col_names = ['id'] + [f for f, _ in ALBUM_CONSISTENCY_FIELDS]
+        inconsistencies = []
+        for field, field_label in ALBUM_CONSISTENCY_FIELDS:
+            col_idx = col_names.index(field)
+            value_map: dict = {}  # value → {count, track_ids}
+            for dr in detail_rows:
+                if hasattr(dr, 'keys'):
+                    track_id = dr.get('id') or dr['id']
+                    val = dr.get(field)
+                else:
+                    track_id = dr[0]
+                    val = dr[col_idx]
+                val_str = str(val).strip() if val is not None else ''
+                if val_str not in value_map:
+                    value_map[val_str] = {'value': val_str, 'count': 0, 'track_ids': []}
+                value_map[val_str]['count'] += 1
+                value_map[val_str]['track_ids'].append(track_id)
+
+            # Only flag if there are 2+ distinct non-empty values
+            non_empty = {v: d for v, d in value_map.items() if v != ''}
+            if len(non_empty) >= 2:
+                inconsistencies.append({
+                    'field': field,
+                    'field_label': field_label,
+                    'values': sorted(non_empty.values(), key=lambda x: -x['count']),
+                })
+
+        if inconsistencies:
+            results.append({
+                'album_artist': album_artist,
+                'album': album,
+                'track_count': track_count,
+                'inconsistencies': inconsistencies,
+            })
+
+    return results
+
+
+@app.route("/correcting")
+def correcting():
+    """Global tag corrections page: albums with inconsistent album-level tags."""
+    try:
+        conn = get_db()
+    except Exception as e:
+        return render_template("correcting.html", inconsistencies=[], total=0,
+                               page=1, per_page=50, total_pages=1, error=str(e))
+
+    page = max(1, int(request.args.get('page', 1)))
+    per_page = 50
+    try:
+        all_inconsistencies = _get_album_tag_inconsistencies(conn)
+    except Exception as e:
+        logging.error(f"[CORRECTING] Error: {e}")
+        all_inconsistencies = []
+    finally:
+        conn.close()
+
+    total = len(all_inconsistencies)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    start = (page - 1) * per_page
+    paged = all_inconsistencies[start:start + per_page]
+
+    return render_template(
+        "correcting.html",
+        inconsistencies=paged,
+        total=total,
+        page=page,
+        per_page=per_page,
+        total_pages=total_pages,
+    )
+
+
+@app.route("/api/correcting/fix-album-field", methods=["POST"])
+def api_correcting_fix_album_field():
+    """Apply a single field value to all tracks in an album."""
+    try:
+        payload = request.get_json(silent=True) or {}
+        album_artist = (payload.get('album_artist') or '').strip()
+        album = (payload.get('album') or '').strip()
+        field = (payload.get('field') or '').strip()
+        value = payload.get('value')
+
+        if not album or not field:
+            return jsonify({"success": False, "error": "album and field are required"}), 400
+
+        # Validate field is in the allowed list
+        allowed_fields = {f for f, _ in ALBUM_CONSISTENCY_FIELDS}
+        if field not in allowed_fields:
+            return jsonify({"success": False, "error": f"field '{field}' not allowed"}), 400
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute(f"""
+                UPDATE tracks
+                SET {field} = %s
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+                  AND album = %s
+                RETURNING id, file_path
+            """, (value, album_artist, album))
+            affected = cursor.fetchall()
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            conn.close()
+            return jsonify({"success": False, "error": str(e)}), 500
+
+        updated_count = len(affected)
+
+        # Write tags to file for each affected track
+        files_updated = 0
+        for row in affected:
+            row_dict = dict(row) if hasattr(row, 'keys') else {'id': row[0], 'file_path': row[1]}
+            file_path = row_dict.get('file_path')
+            if not file_path or not os.path.exists(str(file_path)):
+                continue
+            try:
+                from helpers.tag_manager import update_file_tags
+                update_file_tags(str(file_path), {field: value})
+                files_updated += 1
+            except Exception as tag_err:
+                logging.debug(f"[CORRECTING] Could not update tag on {file_path}: {tag_err}")
+
+        conn.close()
+        return jsonify({
+            "success": True,
+            "updated_count": updated_count,
+            "files_updated": files_updated,
+        })
+    except Exception as e:
+        logging.error(f"[CORRECTING] fix-album-field error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 # ---------------------------------------------------------------------------

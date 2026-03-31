@@ -790,7 +790,15 @@ def ensure_navidrome_tag_columns():
         ("originaldate", "TEXT"),
         ("tracktotal", "TEXT"),
         ("totaldiscs", "TEXT"),
+        ("disctotal", "TEXT"),
         ("script", "TEXT"),
+        # Sort fields with single-'s' names (distinct from the double-'s' variants above)
+        ("artistsort", "TEXT"),
+        ("albumartistsort", "TEXT"),
+        # iTunes compilation flag
+        ("compilation", "TEXT"),
+        # Multi-value artist lists
+        ("artists", "TEXT"),
     ]
 
     try:
