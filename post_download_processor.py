@@ -954,6 +954,33 @@ def process_completed_queue_item(queue_item):
             }
         
         # Build metadata dict
+        raw_disc_number = queue_item.get('disc_number')
+        # Strip disc_number for single-disc releases so that single-CD albums
+        # are not tagged with an unnecessary "Disc 1".  Fetch MusicBrainz
+        # release data if a release ID is available; fall back to treating
+        # "1/1" encoded values as single-disc without a network call.
+        release_id_for_disc = normalized_release_mbid or queue_item.get('release_mbid') or queue_item.get('release_id')
+        if raw_disc_number is not None and release_id_for_disc:
+            try:
+                mb_info = fetch_musicbrainz_release_metadata(release_id_for_disc)
+                if mb_info and mb_info.get('disc_count', 1) <= 1:
+                    logger.info(
+                        f"Queue {queue_id}: Single-disc release — "
+                        f"disc_number stripped from tags"
+                    )
+                    raw_disc_number = None
+            except Exception as mb_disc_err:
+                logger.debug(f"Queue {queue_id}: Could not check disc_count from MB ({mb_disc_err}); keeping disc_number")
+        elif raw_disc_number is not None:
+            # No release ID available — parse "N/total" format as last resort.
+            # Only strip when both disc number and total are 1 (e.g. "1/1").
+            try:
+                parts = str(raw_disc_number).split('/')
+                if len(parts) == 2 and int(parts[0]) == 1 and int(parts[1]) == 1:
+                    raw_disc_number = None
+            except (ValueError, TypeError):
+                pass
+
         metadata = {
             'track_number': queue_item.get('track_number'),
             'artist': queue_item.get('artist'),
@@ -961,8 +988,8 @@ def process_completed_queue_item(queue_item):
             'album': queue_item.get('album'),
             'year': queue_item.get('year'),
             'title': queue_item.get('title'),
-            'disc_number': queue_item.get('disc_number'),
-            'release_mbid': normalized_release_mbid or queue_item.get('release_mbid') or queue_item.get('release_id'),
+            'disc_number': raw_disc_number,
+            'release_mbid': release_id_for_disc,
             'recording_mbid': queue_item.get('recording_mbid'),
         }
         
