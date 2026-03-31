@@ -92,8 +92,7 @@
                     <tbody>
                         {% set ns = namespace(current_letter='') %}
                         {% for artist in artists %}
-                        {% set first_letter = artist.display_name[0]|upper if artist.display_name else '#' %}
-                        {% set letter_key = first_letter if first_letter in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' else '#' %}
+                        {% set letter_key = artist.sort_letter if artist.sort_letter else '#' %}
                         
                         <!-- Letter Section Header -->
                         {% if letter_key != ns.current_letter %}
