@@ -41,8 +41,6 @@ setup_logging("QueueProcessor")
 import logging
 logger = logging.getLogger(__name__)
 
-DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
-
 # Similarity thresholds for Navidrome existence checks
 _NAV_TITLE_SIMILARITY_THRESHOLD = 0.85
 _NAV_ARTIST_SIMILARITY_THRESHOLD = 0.75
@@ -62,7 +60,7 @@ def _is_postgres_connection(conn):
 
 
 def _get_placeholder(conn):
-    return "%s" if _is_postgres_connection(conn) else "?"
+    return "%s"
 
 
 def resolve_downloads_dir():
@@ -622,11 +620,10 @@ def increment_retry_count(queue_id, retry_delay_minutes=60):
 def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=60):
     """Mark queue item as failed, optionally scheduling retry"""
     try:
-        from app import get_db as app_get_db, _is_postgres_connection as app_is_postgres_connection
+        from app import get_db as app_get_db
         conn = app_get_db()
-        is_pg = bool(app_is_postgres_connection(conn))
         cursor = conn.cursor()
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         # Get current retry count
         cursor.execute(f"SELECT retry_count FROM download_queue WHERE id = {placeholder}", (queue_id,))
@@ -730,9 +727,10 @@ def check_track_exists_in_db(queue_item):
         cursor = conn.cursor()
         placeholder = _get_placeholder(conn)
 
-        # Exclude queue placeholder rows so a just-queued album item is not
-        # immediately detected as already in the library.
-        # Guard: file_path NOT LIKE '__queued_for_download__%'
+        # Only match tracks that have a real on-disk path.  Rows with
+        # file_path IS NULL are incomplete imports, and rows matching
+        # '__queued_for_download__%' are queue placeholders — both must be
+        # excluded so pending downloads are not falsely detected as existing.
         if album:
             cursor.execute(
                 f"""
@@ -740,7 +738,8 @@ def check_track_exists_in_db(queue_item):
                 WHERE LOWER(artist) = LOWER({placeholder})
                   AND LOWER(title) = LOWER({placeholder})
                   AND LOWER(album) = LOWER({placeholder})
-                  AND (file_path IS NULL OR file_path NOT LIKE '__queued_for_download__%%')
+                  AND file_path IS NOT NULL
+                  AND file_path NOT LIKE '__queued_for_download__%'
                 LIMIT 1
                 """,
                 (artist, title, album),
@@ -751,7 +750,8 @@ def check_track_exists_in_db(queue_item):
                 SELECT id FROM tracks
                 WHERE LOWER(artist) = LOWER({placeholder})
                   AND LOWER(title) = LOWER({placeholder})
-                  AND (file_path IS NULL OR file_path NOT LIKE '__queued_for_download__%%')
+                  AND file_path IS NOT NULL
+                  AND file_path NOT LIKE '__queued_for_download__%'
                 LIMIT 1
                 """,
                 (artist, title),

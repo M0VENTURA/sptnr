@@ -3213,12 +3213,7 @@ def _has_valid_local_track_paths_for_mp3_import(sample_size: int = 120):
     conn = None
     try:
         conn = get_db()
-        if _is_postgres_connection(conn):
-            cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-            placeholder = "%s"
-        else:
-            cursor = conn.cursor()
-            placeholder = "?"
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         placeholder = "%s"
 
         cursor.execute(
@@ -19663,7 +19658,7 @@ def api_search_for_release_match():
         conn = get_db()
         cursor = conn.cursor()
         is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         request_data = request.get_json(silent=True) or {}
         release_id = (request_data.get('release_id') or '').strip()
@@ -19758,7 +19753,7 @@ def api_link_queue_to_release():
         conn = get_db()
         cursor = conn.cursor()
         is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         request_data = request.get_json(silent=True) or {}
         release_id = (request_data.get('release_id') or '').strip()
@@ -19844,7 +19839,7 @@ def api_release_apply_queue_match(release_id):
         conn = get_db()
         cursor = conn.cursor()
         is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         request_data = request.get_json(silent=True) or {}
         queue_ids = request_data.get('queue_ids', [])
@@ -19924,7 +19919,7 @@ def api_release_search_queue_matches(release_id):
         conn = get_db()
         cursor = conn.cursor()
         is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
         
         # Get release info
         cursor.execute(f"""
@@ -23987,9 +23982,11 @@ def _check_track_in_local_collection(artist, title, album=None):
         cursor = conn.cursor()
         placeholder = "%s"
 
-        # Exclude queue placeholder rows (file_path NOT LIKE '__queued_for_download__%')
-        # so an album whose title was written as a placeholder in the tracks table is
-        # not falsely reported as already in the collection.
+        # Only match tracks that have a real on-disk path.  Rows with
+        # file_path IS NULL are incomplete imports, and rows matching
+        # '__queued_for_download__%' are queue placeholders — both must be
+        # excluded so pending downloads are not falsely reported as already
+        # in the collection.
         if album:
             album_lc = album.strip().lower()
             cursor.execute(
@@ -23999,7 +23996,8 @@ def _check_track_in_local_collection(artist, title, album=None):
                 WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = {placeholder}
                   AND LOWER(title) = {placeholder}
                   AND LOWER(COALESCE(album, '')) = {placeholder}
-                  AND (file_path IS NULL OR file_path NOT LIKE '__queued_for_download__%%')
+                  AND file_path IS NOT NULL
+                  AND file_path NOT LIKE '__queued_for_download__%'
                 LIMIT 1
                 """,
                 (artist_lc, title_lc, album_lc),
@@ -24011,7 +24009,8 @@ def _check_track_in_local_collection(artist, title, album=None):
                 FROM tracks
                 WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = {placeholder}
                   AND LOWER(title) = {placeholder}
-                  AND (file_path IS NULL OR file_path NOT LIKE '__queued_for_download__%%')
+                  AND file_path IS NOT NULL
+                  AND file_path NOT LIKE '__queued_for_download__%'
                 LIMIT 1
                 """,
                 (artist_lc, title_lc),
@@ -25237,7 +25236,7 @@ def api_queue_verify_and_prune():
         conn = get_db()
         cursor = conn.cursor()
         is_pg = _is_postgres_connection(conn)
-        placeholder = "%s" if is_pg else "?"
+        placeholder = "%s"
 
         request_data = request.get_json(silent=True) or {}
         dry_run = bool(request_data.get('dry_run', True))
