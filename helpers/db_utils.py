@@ -768,7 +768,7 @@ def ensure_navidrome_tag_columns():
         ("encodedby", "TEXT"),
         ("encodersettings", "TEXT"),
         ("explicitstatus", "TEXT"),
-        # ReplayGain (numeric values stored as text for precision)
+        # ReplayGain (stored as DOUBLE PRECISION for numeric queries)
         ("replaygain_track_gain", "DOUBLE PRECISION"),
         ("replaygain_track_peak", "DOUBLE PRECISION"),
         ("replaygain_album_gain", "DOUBLE PRECISION"),
