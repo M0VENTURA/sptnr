@@ -21,6 +21,7 @@ from datetime import datetime
 # Use centralized logging to ensure API activity appears in unified_scan.log, info.log, and debug.log
 # instead of Python's default logging system which doesn't route to these files
 from helpers.logging_config import log_unified, log_info, log_debug
+from helpers.helpers import strip_cover_attribution
 from database_abstraction import is_postgres_connection
 
 logger = logging.getLogger(__name__)
@@ -1655,6 +1656,14 @@ def detect_single_enhanced(
     if is_special_edition and verbose:
         log_debug(f"[DEBUG] Special edition album detected: {album}")
 
+    # Strip cover attribution from title for external API searches.
+    # Tracks with "(bandname Cover)" or "[bandname Cover]" in the title should
+    # search without the cover suffix so the original recording's single status
+    # is found correctly.  The original `title` is kept for logging and DB queries.
+    lookup_title = strip_cover_attribution(title)
+    if lookup_title != title:
+        log_debug(f"[COVER] Cover attribution stripped for API lookups: '{title}' -> '{lookup_title}'")
+
     # Check if album type is marked as 'single' and track title matches album name (high confidence source)
     album_type_is_single = False
     if album_type and album_type.lower() == 'single':
@@ -1668,7 +1677,7 @@ def detect_single_enhanced(
             log_debug(f"[ALBUM_TYPE] Album marked as single type but title does not match ('{title}' != '{album}') — ignoring")
 
     # Count Spotify versions
-    spotify_version_count = count_spotify_versions(spotify_results or [], title, duration, isrc)
+    spotify_version_count = count_spotify_versions(spotify_results or [], lookup_title, duration, isrc)
     result['spotify_version_count'] = spotify_version_count
     
     # STAGE 1: Initialize Discogs check (will be gated by z-score in STAGE 2+)
@@ -1787,10 +1796,10 @@ def detect_single_enhanced(
             try:
                 log_debug(f"[DISCOGS] Querying Discogs API for single: {title} by {artist} (z-score gate passed: artist_z={artist_z:.2f})")
                 log_info(f"   Checking Discogs for single: {title}")
-                log_debug(f"   Discogs API: Searching for single '{title}' by '{artist}'")
+                log_debug(f"   Discogs API: Searching for single '{lookup_title}' by '{artist}'")
                 
                 # Use existing is_single method
-                discogs_confirmed = discogs_client.is_single(title, artist, album_context={
+                discogs_confirmed = discogs_client.is_single(lookup_title, artist, album_context={
                     'duration': duration,
                     'is_special_edition': is_special_edition,
                     'album_name': album
@@ -1910,7 +1919,7 @@ def detect_single_enhanced(
                         log_debug(f"[MUSICBRAINZ] Could not fetch artist MBID: {e}")
                     
                     # Use is_single method with artist MBID (preferred) and fallback to name-based search
-                    musicbrainz_confirmed = musicbrainz_client.is_single(title, artist, artist_mbid=artist_mbid)
+                    musicbrainz_confirmed = musicbrainz_client.is_single(lookup_title, artist, artist_mbid=artist_mbid)
                     if musicbrainz_confirmed:
                         result['single_sources'].append('musicbrainz')
                         result['single_sources_used'].append('musicbrainz')
@@ -1983,7 +1992,7 @@ def detect_single_enhanced(
                 log_debug(f"[MUSICBRAINZ] Checking for Various Artists appearances: {title} by {artist}")
                 log_info(f"   Checking MusicBrainz for compilation appearances: {title}")
                 
-                appears_on_va = musicbrainz_client.appears_on_various_artists(title, artist)
+                appears_on_va = musicbrainz_client.appears_on_various_artists(lookup_title, artist)
                 if appears_on_va:
                     result['single_sources'].append('musicbrainz_compilation')
                     result['single_sources_used'].append('musicbrainz_compilation')
@@ -2031,7 +2040,7 @@ def detect_single_enhanced(
             try:
                 # First, check if track exists as a single on Last.fm (by track title)
                 log_debug(f"[LASTFM] Checking if track exists as single: {title} by {artist}")
-                track_is_single = lastfm_client.check_track_as_single(artist, title)
+                track_is_single = lastfm_client.check_track_as_single(artist, lookup_title)
                 
                 if track_is_single:
                     result['single_sources'].append('lastfm')
@@ -2134,10 +2143,10 @@ def detect_single_enhanced(
                     # Log Discogs video checks to info log only (not unified)
                     log_debug(f"[DISCOGS_VIDEO] Querying Discogs for music video: {title} by {artist}")
                     log_info(f"   Checking Discogs for music video: {title}")
-                    log_debug(f"   Discogs API: Searching for music video '{title}' by '{artist}'")
+                    log_debug(f"   Discogs API: Searching for music video '{lookup_title}' by '{artist}'")
                     
                     # Check for official music video
-                    discogs_video_confirmed = discogs_client.has_official_video(title, artist)
+                    discogs_video_confirmed = discogs_client.has_official_video(lookup_title, artist)
                     if discogs_video_confirmed:
                         result['single_sources'].append('discogs_video')
                         result['single_sources_used'].append('discogs_video')
@@ -2246,7 +2255,7 @@ def detect_single_enhanced(
                         log_debug(f"[MUSICBRAINZ] Could not fetch artist MBID: {e}")
                     
                     # Use is_single method with artist MBID (preferred) and fallback to name-based search
-                    musicbrainz_confirmed = musicbrainz_client.is_single(title, artist, artist_mbid=artist_mbid)
+                    musicbrainz_confirmed = musicbrainz_client.is_single(lookup_title, artist, artist_mbid=artist_mbid)
                     if musicbrainz_confirmed:
                         result['single_sources'].append('musicbrainz')
                         result['single_sources_used'].append('musicbrainz')
@@ -2319,7 +2328,7 @@ def detect_single_enhanced(
                 log_debug(f"[MUSICBRAINZ] Checking for Various Artists appearances: {title} by {artist}")
                 log_info(f"   Checking MusicBrainz for compilation appearances: {title}")
                 
-                appears_on_va = musicbrainz_client.appears_on_various_artists(title, artist)
+                appears_on_va = musicbrainz_client.appears_on_various_artists(lookup_title, artist)
                 if appears_on_va:
                     result['single_sources'].append('musicbrainz_compilation')
                     result['single_sources_used'].append('musicbrainz_compilation')
@@ -2347,10 +2356,10 @@ def detect_single_enhanced(
                     # Log Discogs video checks to info log only (not unified)
                     log_debug(f"[DISCOGS_VIDEO] Querying Discogs for music video: {title} by {artist}")
                     log_info(f"   Checking Discogs for music video: {title}")
-                    log_debug(f"   Discogs API: Searching for music video '{title}' by '{artist}'")
+                    log_debug(f"   Discogs API: Searching for music video '{lookup_title}' by '{artist}'")
                     
                     # Check for official music video
-                    discogs_video_confirmed = discogs_client.has_official_video(title, artist)
+                    discogs_video_confirmed = discogs_client.has_official_video(lookup_title, artist)
                     if discogs_video_confirmed:
                         result['single_sources'].append('discogs_video')
                         result['single_sources_used'].append('discogs_video')
@@ -2417,7 +2426,7 @@ def detect_single_enhanced(
             try:
                 # First, check if track exists as a single on Last.fm (by track title)
                 log_debug(f"[LASTFM] Checking if track exists as single: {title} by {artist}")
-                track_is_single = lastfm_client.check_track_as_single(artist, title)
+                track_is_single = lastfm_client.check_track_as_single(artist, lookup_title)
                 
                 if track_is_single:
                     result['single_sources'].append('lastfm')

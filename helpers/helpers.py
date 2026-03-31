@@ -93,8 +93,9 @@ def strip_cover_attribution(title: str) -> str:
     """
     Strip cover attributions from track titles for cleaner API searches.
     
-    Removes parenthetical cover attributions like:
+    Removes parenthetical and bracketed cover attributions like:
     - "(Artist Name Cover)"
+    - "[Artist Name Cover]"
     - "(Artist Cover)"
     - "(Cover Version)"
     - "(Cover by Artist Name)"
@@ -104,6 +105,7 @@ def strip_cover_attribution(title: str) -> str:
     
     Examples:
         "The Pretender (Foo Fighters Cover)" -> "The Pretender"
+        "Song Name [Beatles Cover]" -> "Song Name"
         "Song Name (Cover Version)" -> "Song Name"
         "Track (Acoustic)" -> "Track (Acoustic)"  [keeps other version tags]
         "Title (One) Two" -> "Title (One) Two"  [keeps middle parentheses]
@@ -128,6 +130,7 @@ def strip_cover_attribution(title: str) -> str:
     
     patterns = [
         r'\s*\([^)]*cover[^)]*\)\s*$',  # Any trailing parentheses containing "cover" (case-insensitive)
+        r'\s*\[[^\]]*cover[^\]]*\]\s*$',  # Any trailing square brackets containing "cover" (case-insensitive)
     ]
     
     result = title
