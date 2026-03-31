@@ -1085,10 +1085,10 @@ function searchOtherSources(artist, titleOrAlbum, isQueueItem = false, queueId =
   let query;
   if (isQueueItem) {
     // For tracks: use "Artist - Title" format (matches queue processor)
-    query = encodeURIComponent(`${artist} - ${titleOrAlbum}`);
+    query = encodeURIComponent(normalizeSoulseekQuery(`${artist} - ${titleOrAlbum}`));
   } else {
     // For albums/other sources: use "Artist Album" format
-    query = encodeURIComponent(`${artist} ${titleOrAlbum}`);
+    query = encodeURIComponent(normalizeSoulseekQuery(`${artist} ${titleOrAlbum}`));
   }
   
   // Queue-item manual search now uses an in-page Soulseek modal.
@@ -1164,7 +1164,7 @@ function openSoulseekManualSearchModal(defaultQuery = '', queueId = null) {
   const resultsEl = document.getElementById('soulseekManualResults');
 
   if (queryInput) {
-    queryInput.value = defaultQuery || '';
+    queryInput.value = normalizeSoulseekQuery(defaultQuery || '');
   }
   if (statusEl) {
     statusEl.textContent = 'Edit query if needed, then click Search.';
@@ -1195,10 +1195,14 @@ async function runSoulseekManualSearch() {
   const resultsEl = document.getElementById('soulseekManualResults');
   const searchBtn = document.getElementById('soulseekManualSearchBtn');
 
-  const query = (queryInput?.value || '').trim();
+  const query = normalizeSoulseekQuery(queryInput?.value || '');
   if (!query) {
     alert('Enter search terms first.');
     return;
+  }
+
+  if (queryInput) {
+    queryInput.value = query;
   }
 
   if (!window.soulseekManualSearchState) {
@@ -1346,6 +1350,14 @@ function renderSoulseekManualSearchResults(results) {
   `;
 }
 
+document.addEventListener('DOMContentLoaded', function() {
+  const params = new URLSearchParams(window.location.search);
+  const searchParam = normalizeSoulseekQuery(params.get('search') || '');
+  if (searchParam) {
+    openSoulseekManualSearchModal(searchParam);
+  }
+});
+
 async function downloadSoulseekManualResult(usernameEnc, filenameEnc, size, buttonEl = null) {
   const username = decodeInlineArg(usernameEnc, '');
   const filename = decodeInlineArg(filenameEnc, '');
@@ -1465,6 +1477,15 @@ function decodeInlineArg(value, fallback = null) {
     console.warn('Failed to decode inline argument:', error);
     return fallback;
   }
+}
+
+function normalizeSoulseekQuery(value) {
+  return String(value || '')
+    .replace(/\\u0026/gi, ' ')
+    .replace(/&amp;/gi, ' ')
+    .replace(/&/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function normalizeTrackText(value) {
@@ -1637,8 +1658,8 @@ async function openTrackMatchOverride(folderPath, trackIndex) {
     alert('Release tracklist is unavailable for this match.\n\nTry clicking "Change Match" on the folder above to select a different release.');
     return;
   }
-
-  const folderTrack = (selection.tracks || [])[trackIndex];
+  const tracks = Array.isArray(selection.tracks) ? selection.tracks : [];
+  const folderTrack = tracks[trackIndex];
   if (!folderTrack) {
     alert('Folder track not found.');
     return;
@@ -1646,7 +1667,6 @@ async function openTrackMatchOverride(folderPath, trackIndex) {
 
   const currentMap = selection.trackMapByIndex?.[trackIndex];
   const currentReleaseIndex = Number.isInteger(currentMap?.releaseIndex) ? currentMap.releaseIndex : -1;
-
   // Build modal HTML
   let html = `
     <div class="modal fade" id="trackMatchOverrideModal" tabindex="-1">

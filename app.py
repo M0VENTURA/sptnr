@@ -548,6 +548,15 @@ def escapejs(value):
     
     return value
 
+
+def _normalize_slskd_query(value):
+    text = str(value or '')
+    text = text.replace('\\u0026', ' ')
+    text = text.replace('&amp;', ' ')
+    text = text.replace('&', ' ')
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
 @app.template_filter('format_datetime')
 def format_datetime(value):
     """Format ISO datetime string to DD-MM-YY at HH:MM AM/PM"""
@@ -7507,7 +7516,7 @@ def artist_detail(name):
         # Use NULLIF to treat empty strings as NULL for proper COALESCE behavior
         cursor.execute("""
             SELECT 
-                album,
+                MIN(album) as album,
                 COUNT(*) as track_count,
                 AVG(stars) as avg_stars,
                 COALESCE(SUM(CASE WHEN is_single THEN 1 ELSE 0 END), 0) as singles_count,
@@ -7519,7 +7528,7 @@ def artist_detail(name):
                 MAX(discogs_release_id) as discogs_release_id
             FROM tracks
             WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-            GROUP BY album
+            GROUP BY LOWER(TRIM(COALESCE(album, '')))
             ORDER BY (MIN(year) IS NULL), MIN(year) DESC NULLS LAST, album
         """, (name,))
         albums_data = cursor.fetchall()
@@ -7530,7 +7539,7 @@ def artist_detail(name):
         cursor.execute(f"""
             SELECT 
                 COUNT(*) as track_count,
-                COUNT(DISTINCT album) as album_count,
+                COUNT(DISTINCT NULLIF(LOWER(TRIM(COALESCE(album, ''))), '')) as album_count,
                 AVG(stars) as avg_stars,
                 SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END) as five_star_count,
                 SUM(COALESCE(duration, 0)) as total_duration,
@@ -7675,7 +7684,7 @@ def artist_detail(name):
         # Albums where this artist appears as a featured/track artist but is not the album artist
         cursor.execute("""
             SELECT
-                album,
+                MIN(album) as album,
                 COALESCE(NULLIF(album_artist, ''), artist) as album_artist,
                 COUNT(*) as track_count,
                 AVG(COALESCE(stars, 0)) as avg_stars,
@@ -7686,7 +7695,7 @@ def artist_detail(name):
             WHERE artist = %s
               AND COALESCE(NULLIF(album_artist, ''), artist) != %s
               AND NULLIF(album, '') IS NOT NULL
-            GROUP BY album, COALESCE(NULLIF(album_artist, ''), artist)
+            GROUP BY LOWER(TRIM(COALESCE(album, ''))), COALESCE(NULLIF(album_artist, ''), artist)
             ORDER BY (MIN(year) IS NULL), MIN(year) DESC NULLS LAST, album
         """, (name, name))
         appears_on_albums = cursor.fetchall()
@@ -7697,7 +7706,7 @@ def artist_detail(name):
         # are handled separately under "Appears On".
         cursor.execute("""
             SELECT 
-                album,
+                MIN(album) as album,
                 COUNT(*) as track_count,
                 AVG(stars) as avg_stars,
                 COALESCE(SUM(CASE WHEN is_single THEN 1 ELSE 0 END), 0) as singles_count,
@@ -7709,7 +7718,7 @@ def artist_detail(name):
             FROM tracks
             WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
               AND NULLIF(album, '') IS NOT NULL
-            GROUP BY album
+            GROUP BY LOWER(TRIM(COALESCE(album, '')))
             ORDER BY (MIN(year) IS NULL), MIN(year) DESC NULLS LAST, album
         """, (name,))
         potential_albums = cursor.fetchall()
@@ -12222,7 +12231,8 @@ def album_detail(artist, album):
             cursor.execute(f"""
                 SELECT *
                 FROM tracks
-                WHERE {artist_clause} = {placeholder} AND album = {placeholder}
+                WHERE {artist_clause} = {placeholder}
+                  AND LOWER(COALESCE(album, '')) = LOWER({placeholder})
                 ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 999), title{collate_nocase}
             """, (artist, album))
             tracks_data = cursor.fetchall()
@@ -12274,7 +12284,8 @@ def album_detail(artist, album):
                     MAX(spotify_artist_id) as spotify_artist_id,
                     MAX(discogs_artist_id) as discogs_artist_id
                 FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
+                                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                                    AND LOWER(COALESCE(album, '')) = LOWER({placeholder})
             """, (artist, album))
         except:
             # Fallback for databases without beets columns or album_artist column
@@ -12294,7 +12305,8 @@ def album_detail(artist, album):
                     NULL as spotify_artist_id,
                     NULL as discogs_artist_id
                 FROM tracks
-                WHERE COALESCE(album_artist, artist) = {placeholder} AND album = {placeholder}
+                                WHERE COALESCE(album_artist, artist) = {placeholder}
+                                    AND LOWER(COALESCE(album, '')) = LOWER({placeholder})
             """, (artist, album))
         album_data = cursor.fetchone()
         
@@ -12317,7 +12329,9 @@ def album_detail(artist, album):
         cursor.execute("""
             SELECT COUNT(*) as singles_count
             FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s AND is_single = TRUE
+                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+                            AND LOWER(COALESCE(album, '')) = LOWER(%s)
+                            AND is_single = TRUE
         """, (artist, album))
         singles_row = cursor.fetchone()
         album_data['singles_count'] = singles_row['singles_count'] if singles_row else 0
@@ -12325,7 +12339,9 @@ def album_detail(artist, album):
         # Aggregate genres from tracks in this album - use navidrome_genres which comes from Navidrome
         cursor.execute(f"""
             SELECT DISTINCT navidrome_genres FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder} AND navidrome_genres IS NOT NULL AND navidrome_genres != ''
+                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                            AND LOWER(COALESCE(album, '')) = LOWER({placeholder})
+                            AND navidrome_genres IS NOT NULL AND navidrome_genres != ''
         """, (artist, album))
         genre_rows = cursor.fetchall()
         album_genres = set()
@@ -13807,16 +13823,34 @@ def track_edit(track_id):
     albumartists = request.form.get("albumartists", "").strip() or None
     # Additional credits
     conductor = request.form.get("conductor", "").strip() or None
+    performer = request.form.get("performer", "").strip() or None
     director = request.form.get("director", "").strip() or None
     djmixer = request.form.get("djmixer", "").strip() or None
     engineer = request.form.get("engineer", "").strip() or None
     remixer = request.form.get("remixer", "").strip() or None
     lyricist = request.form.get("lyricist", "").strip() or None
     albumversion = request.form.get("albumversion", "").strip() or None
+    # Merge duplicate writer/lyricist semantics so users can edit either field.
+    if writer and not lyricist:
+        lyricist = writer
+    elif lyricist and not writer:
+        writer = lyricist
     # Release info
     recordlabel = request.form.get("recordlabel", "").strip() or None
     copyright_field = request.form.get("copyright", "").strip() or None
     releasedate = request.form.get("releasedate", "").strip() or None
+    releasetype = request.form.get("releasetype", "").strip() or None
+    releasestatus = request.form.get("releasestatus", "").strip() or None
+    releasecountry = request.form.get("releasecountry", "").strip() or None
+    media = request.form.get("media", "").strip() or None
+    barcode = request.form.get("barcode", "").strip() or None
+    catalognumber = request.form.get("catalognumber", "").strip() or None
+    asin = request.form.get("asin", "").strip() or None
+    originalyear = request.form.get("originalyear", "").strip() or None
+    originaldate = request.form.get("originaldate", "").strip() or None
+    tracktotal = request.form.get("tracktotal", "").strip() or None
+    disctotal = request.form.get("disctotal", "").strip() or None
+    script = request.form.get("script", "").strip() or None
     discsubtitle = request.form.get("discsubtitle", "").strip() or None
     # Content
     lyrics = request.form.get("lyrics", "").strip() or None
@@ -13833,6 +13867,12 @@ def track_edit(track_id):
     encodedby = request.form.get("encodedby", "").strip() or None
     encodersettings = request.form.get("encodersettings", "").strip() or None
     explicitstatus = request.form.get("explicitstatus", "").strip() or None
+    musicbrainz_albumid = request.form.get("musicbrainz_albumid", "").strip() or None
+    musicbrainz_artistid = request.form.get("musicbrainz_artistid", "").strip() or None
+    musicbrainz_albumartistid = request.form.get("musicbrainz_albumartistid", "").strip() or None
+    musicbrainz_releasegroupid = request.form.get("musicbrainz_releasegroupid", "").strip() or None
+    musicbrainz_releasetrackid = request.form.get("musicbrainz_releasetrackid", "").strip() or None
+    musicbrainz_workid = request.form.get("musicbrainz_workid", "").strip() or None
     # ReplayGain
     replaygain_track_gain = request.form.get("replaygain_track_gain", "").strip() or None
     replaygain_track_peak = request.form.get("replaygain_track_peak", "").strip() or None
@@ -13887,15 +13927,22 @@ def track_edit(track_id):
                 composersort = {placeholder}, albumartistsort = {placeholder}, lyricistsort = {placeholder},
                 artistssort = {placeholder}, albumartistssort = {placeholder},
                 artists = {placeholder}, albumartists = {placeholder},
-                conductor = {placeholder}, director = {placeholder}, djmixer = {placeholder},
+                conductor = {placeholder}, performer = {placeholder}, director = {placeholder}, djmixer = {placeholder},
                 engineer = {placeholder}, remixer = {placeholder}, lyricist = {placeholder},
                 albumversion = {placeholder}, recordlabel = {placeholder}, copyright = {placeholder},
-                releasedate = {placeholder}, discsubtitle = {placeholder},
+                releasedate = {placeholder}, releasetype = {placeholder}, releasestatus = {placeholder},
+                releasecountry = {placeholder}, media = {placeholder}, barcode = {placeholder},
+                catalognumber = {placeholder}, asin = {placeholder}, originalyear = {placeholder},
+                originaldate = {placeholder}, tracktotal = {placeholder}, disctotal = {placeholder},
+                script = {placeholder}, discsubtitle = {placeholder},
                 lyrics = {placeholder}, subtitle = {placeholder}, grouping = {placeholder},
                 movement = {placeholder}, movementname = {placeholder}, movementtotal = {placeholder},
                 key = {placeholder}, language = {placeholder}, license = {placeholder},
                 website = {placeholder}, encodedby = {placeholder}, encodersettings = {placeholder},
                 explicitstatus = {placeholder},
+                musicbrainz_albumid = {placeholder}, musicbrainz_artistid = {placeholder},
+                musicbrainz_albumartistid = {placeholder}, musicbrainz_releasegroupid = {placeholder},
+                musicbrainz_releasetrackid = {placeholder}, musicbrainz_workid = {placeholder},
                 replaygain_track_gain = {placeholder}, replaygain_track_peak = {placeholder},
                 replaygain_album_gain = {placeholder}, replaygain_album_peak = {placeholder},
                 r128_track_gain = {placeholder}, r128_album_gain = {placeholder}
@@ -13913,15 +13960,22 @@ def track_edit(track_id):
               composersort, albumartistsort, lyricistsort,
               artistssort, albumartistssort,
               artists, albumartists,
-              conductor, director, djmixer,
+              conductor, performer, director, djmixer,
               engineer, remixer, lyricist,
               albumversion, recordlabel, copyright_field,
-              releasedate, discsubtitle,
+              releasedate, releasetype, releasestatus,
+              releasecountry, media, barcode,
+              catalognumber, asin, originalyear,
+              originaldate, tracktotal, disctotal,
+              script, discsubtitle,
               lyrics, subtitle, grouping,
               movement, movementname, movementtotal,
               key, language, license_field,
               website, encodedby, encodersettings,
               explicitstatus,
+              musicbrainz_albumid, musicbrainz_artistid,
+              musicbrainz_albumartistid, musicbrainz_releasegroupid,
+              musicbrainz_releasetrackid, musicbrainz_workid,
               replaygain_track_gain, replaygain_track_peak,
               replaygain_album_gain, replaygain_album_peak,
               r128_track_gain, r128_album_gain,
@@ -14041,6 +14095,8 @@ def track_edit(track_id):
                     tags_to_write["albumartists"] = albumartists
                 if conductor:
                     tags_to_write["conductor"] = conductor
+                if performer:
+                    tags_to_write["performer"] = performer
                 if director:
                     tags_to_write["director"] = director
                 if djmixer:
@@ -14059,6 +14115,30 @@ def track_edit(track_id):
                     tags_to_write["copyright"] = copyright_field
                 if releasedate:
                     tags_to_write["releasedate"] = releasedate
+                if releasetype:
+                    tags_to_write["releasetype"] = releasetype
+                if releasestatus:
+                    tags_to_write["releasestatus"] = releasestatus
+                if releasecountry:
+                    tags_to_write["releasecountry"] = releasecountry
+                if media:
+                    tags_to_write["media"] = media
+                if barcode:
+                    tags_to_write["barcode"] = barcode
+                if catalognumber:
+                    tags_to_write["catalognumber"] = catalognumber
+                if asin:
+                    tags_to_write["asin"] = asin
+                if originalyear:
+                    tags_to_write["originalyear"] = originalyear
+                if originaldate:
+                    tags_to_write["originaldate"] = originaldate
+                if tracktotal:
+                    tags_to_write["tracktotal"] = tracktotal
+                if disctotal:
+                    tags_to_write["disctotal"] = disctotal
+                if script:
+                    tags_to_write["script"] = script
                 if discsubtitle:
                     tags_to_write["discsubtitle"] = discsubtitle
                 if lyrics:
@@ -14087,6 +14167,18 @@ def track_edit(track_id):
                     tags_to_write["encodersettings"] = encodersettings
                 if explicitstatus:
                     tags_to_write["explicitstatus"] = explicitstatus
+                if musicbrainz_albumid:
+                    tags_to_write["musicbrainz_albumid"] = musicbrainz_albumid
+                if musicbrainz_artistid:
+                    tags_to_write["musicbrainz_artistid"] = musicbrainz_artistid
+                if musicbrainz_albumartistid:
+                    tags_to_write["musicbrainz_albumartistid"] = musicbrainz_albumartistid
+                if musicbrainz_releasegroupid:
+                    tags_to_write["musicbrainz_releasegroupid"] = musicbrainz_releasegroupid
+                if musicbrainz_releasetrackid:
+                    tags_to_write["musicbrainz_releasetrackid"] = musicbrainz_releasetrackid
+                if musicbrainz_workid:
+                    tags_to_write["musicbrainz_workid"] = musicbrainz_workid
                 if replaygain_track_gain:
                     tags_to_write["replaygain_track_gain"] = replaygain_track_gain
                 if replaygain_track_peak:
@@ -16753,6 +16845,9 @@ def api_track_count():
 @app.route("/downloads")
 def downloads():
     """Redirect to download monitor (default page)"""
+    search = _normalize_slskd_query(request.args.get("search", ""))
+    if search:
+        return redirect(url_for("downloads_monitor", search=search))
     return redirect("/downloads/monitor")
 
 
@@ -17032,7 +17127,7 @@ def slskd_search():
     if not slskd_config.get("enabled"):
         return jsonify({"error": "slskd integration not enabled"}), 400
     
-    query = request.json.get("query", "")
+    query = _normalize_slskd_query(request.json.get("query", ""))
     if not query:
         return jsonify({"error": "Query parameter required"}), 400
     
@@ -30976,10 +31071,8 @@ def api_get_track(track_id):
         cursor = conn.cursor()
         placeholder = "%s"
         cursor.execute(f"""
-            SELECT id, title, artist, album, genres, stars, is_single, 
-                   single_confidence, duration, track_number, disc_number,
-                   year, album_artist, composer, comment, mbid, file_path, writer
-            FROM tracks 
+            SELECT *
+            FROM tracks
             WHERE id = {placeholder}
         """, (track_id,))
         
@@ -30991,31 +31084,8 @@ def api_get_track(track_id):
         
         # Safely convert row to dict
         try:
-            if hasattr(row, 'keys'):
-                # Row is already a dict-like object (from Row factory)
-                track = dict(row)
-            else:
-                # Row is a tuple, build dict manually
-                track = {
-                    'id': row[0],
-                    'title': row[1],
-                    'artist': row[2],
-                    'album': row[3],
-                    'genres': row[4],
-                    'stars': row[5],
-                    'is_single': row[6],
-                    'single_confidence': row[7],
-                    'duration': row[8],
-                    'track_number': row[9],
-                    'disc_number': row[10],
-                    'year': row[11],
-                    'album_artist': row[12],
-                    'composer': row[13],
-                    'comment': row[14],
-                    'mbid': row[15],
-                    'file_path': row[16],
-                    'writer': row[17]
-                }
+            track = dict(row) if hasattr(row, 'keys') else convert_row_to_json_serializable(row)
+            track = convert_row_to_json_serializable(track)
         except (IndexError, TypeError) as e:
             logging.error(f"[API] Error converting track row to dict: {e}")
             return jsonify({"error": "Failed to process track data"}), 500
@@ -32723,9 +32793,31 @@ def api_track_update_metadata():
         
         # Build database update with provided fields
         db_updates = {}
-        optional_string_fields = ['title', 'artist', 'album', 'album_artist', 'genres', 'year', 
-                                   'composer', 'writer', 'arranger', 'mixer', 'producer', 'work',
-                                   'track_number', 'comment', 'mbid', 'isrc', 'single_confidence']
+        optional_string_fields = [
+            'title', 'artist', 'album', 'album_artist', 'genres', 'year',
+            'composer', 'writer', 'arranger', 'mixer', 'producer', 'work',
+            'track_number', 'comment', 'mbid', 'isrc', 'single_confidence',
+            # Sort keys
+            'titlesort', 'albumsort', 'artistsort', 'composersort', 'albumartistsort',
+            'lyricistsort', 'artistssort', 'albumartistssort',
+            # Multi-value artist fields
+            'artists', 'albumartists',
+            # Credits
+            'conductor', 'performer', 'director', 'djmixer', 'engineer', 'remixer', 'lyricist',
+            # Release/content fields
+            'albumversion', 'recordlabel', 'copyright', 'releasedate', 'releasetype', 'releasestatus',
+            'releasecountry', 'media', 'barcode', 'catalognumber', 'asin', 'originalyear', 'originaldate',
+            'tracktotal', 'disctotal', 'script', 'discsubtitle', 'lyrics', 'subtitle', 'grouping',
+            'movement', 'movementname', 'movementtotal',
+            # Technical/legal
+            'key', 'language', 'license', 'website', 'encodedby', 'encodersettings', 'explicitstatus',
+            # MusicBrainz release identifiers
+            'musicbrainz_albumid', 'musicbrainz_artistid', 'musicbrainz_albumartistid',
+            'musicbrainz_releasegroupid', 'musicbrainz_releasetrackid', 'musicbrainz_workid',
+            # ReplayGain/R128
+            'replaygain_track_gain', 'replaygain_track_peak', 'replaygain_album_gain',
+            'replaygain_album_peak', 'r128_track_gain', 'r128_album_gain'
+        ]
         optional_int_fields = ['stars', 'disc_number', 'bpm', 'bitrate', 'sample_rate']
         optional_bool_fields = ['is_single', 'is_cover', 'alternate_take', 'is_compilation']
         
@@ -32748,6 +32840,14 @@ def api_track_update_metadata():
                 else:
                     bool_val = bool(raw_val)
                 db_updates[field] = bool_val
+
+        # Merge duplicate writer/lyricist semantics so either field updates both when only one is provided.
+        writer_val = db_updates.get('writer')
+        lyricist_val = db_updates.get('lyricist')
+        if writer_val and not lyricist_val:
+            db_updates['lyricist'] = writer_val
+        elif lyricist_val and not writer_val:
+            db_updates['writer'] = lyricist_val
 
         # Coerce boolean-like flags according to current DB column types.
         present_bool_fields = {field: db_updates[field] for field in optional_bool_fields if field in db_updates}

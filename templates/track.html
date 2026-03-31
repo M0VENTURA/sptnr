@@ -400,13 +400,15 @@
                             </div>
                         </div>
                         <div class="row g-2 mt-1">
-                            <div class="col-6">
+                            <div class="col-12">
                                 <label for="conductor" class="form-label">Conductor</label>
                                 <input type="text" class="form-control" id="conductor" name="conductor" value="{{ track.conductor or '' }}" placeholder="Conductor name">
                             </div>
-                            <div class="col-6">
-                                <label for="lyricist" class="form-label">Lyricist</label>
-                                <input type="text" class="form-control" id="lyricist" name="lyricist" value="{{ track.lyricist or '' }}" placeholder="Lyricist name">
+                        </div>
+                        <div class="row g-2 mt-1">
+                            <div class="col-12">
+                                <label for="performer" class="form-label">Performer</label>
+                                <input type="text" class="form-control" id="performer" name="performer" value="{{ track.performer or '' }}" placeholder="Featured performer or ensemble">
                             </div>
                         </div>
                         <div class="row g-2 mt-1">
@@ -480,6 +482,66 @@
                                 <input type="text" class="form-control" id="explicitstatus" name="explicitstatus" value="{{ track.explicitstatus or '' }}" placeholder="e.g., 0, 1, 2">
                             </div>
                         </div>
+                        <div class="row g-2 mt-1">
+                            <div class="col-6">
+                                <label for="releasetype" class="form-label">Release Type</label>
+                                <input type="text" class="form-control" id="releasetype" name="releasetype" value="{{ track.releasetype or '' }}" placeholder="e.g., album, single, EP">
+                            </div>
+                            <div class="col-6">
+                                <label for="releasestatus" class="form-label">Release Status</label>
+                                <input type="text" class="form-control" id="releasestatus" name="releasestatus" value="{{ track.releasestatus or '' }}" placeholder="e.g., official">
+                            </div>
+                        </div>
+                        <div class="row g-2 mt-1">
+                            <div class="col-6">
+                                <label for="releasecountry" class="form-label">Release Country</label>
+                                <input type="text" class="form-control" id="releasecountry" name="releasecountry" value="{{ track.releasecountry or '' }}" placeholder="e.g., US">
+                            </div>
+                            <div class="col-6">
+                                <label for="media" class="form-label">Media Format</label>
+                                <input type="text" class="form-control" id="media" name="media" value="{{ track.media or '' }}" placeholder="e.g., CD, Digital Media">
+                            </div>
+                        </div>
+                        <div class="row g-2 mt-1">
+                            <div class="col-6">
+                                <label for="barcode" class="form-label">Barcode</label>
+                                <input type="text" class="form-control" id="barcode" name="barcode" value="{{ track.barcode or '' }}" placeholder="Release barcode">
+                            </div>
+                            <div class="col-6">
+                                <label for="catalognumber" class="form-label">Catalog Number</label>
+                                <input type="text" class="form-control" id="catalognumber" name="catalognumber" value="{{ track.catalognumber or '' }}" placeholder="Catalog number">
+                            </div>
+                        </div>
+                        <div class="row g-2 mt-1">
+                            <div class="col-6">
+                                <label for="asin" class="form-label">ASIN</label>
+                                <input type="text" class="form-control" id="asin" name="asin" value="{{ track.asin or '' }}" placeholder="Amazon ASIN">
+                            </div>
+                            <div class="col-6">
+                                <label for="script" class="form-label">Script</label>
+                                <input type="text" class="form-control" id="script" name="script" value="{{ track.script or '' }}" placeholder="e.g., Latn">
+                            </div>
+                        </div>
+                        <div class="row g-2 mt-1">
+                            <div class="col-6">
+                                <label for="originalyear" class="form-label">Original Year</label>
+                                <input type="text" class="form-control" id="originalyear" name="originalyear" value="{{ track.originalyear or '' }}" placeholder="e.g., 1971">
+                            </div>
+                            <div class="col-6">
+                                <label for="originaldate" class="form-label">Original Date</label>
+                                <input type="text" class="form-control" id="originaldate" name="originaldate" value="{{ track.originaldate or '' }}" placeholder="e.g., 1971-10-11">
+                            </div>
+                        </div>
+                        <div class="row g-2 mt-1">
+                            <div class="col-6">
+                                <label for="tracktotal" class="form-label">Track Total</label>
+                                <input type="text" class="form-control" id="tracktotal" name="tracktotal" value="{{ track.tracktotal or '' }}" placeholder="Total tracks on release">
+                            </div>
+                            <div class="col-6">
+                                <label for="disctotal" class="form-label">Disc Total</label>
+                                <input type="text" class="form-control" id="disctotal" name="disctotal" value="{{ track.disctotal or '' }}" placeholder="Total discs in release">
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -546,6 +608,46 @@
                             <div class="col-6">
                                 <label for="encodersettings" class="form-label">Encoder Settings</label>
                                 <input type="text" class="form-control" id="encodersettings" name="encodersettings" value="{{ track.encodersettings or '' }}" placeholder="e.g., -V 0">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card mb-4" id="track-external-ids-section">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-upc-scan"></i> External IDs
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-2">
+                            <div class="col-6">
+                                <label for="musicbrainz_albumid" class="form-label">MusicBrainz Album ID</label>
+                                <input type="text" class="form-control" id="musicbrainz_albumid" name="musicbrainz_albumid" value="{{ track.musicbrainz_albumid or '' }}" placeholder="Release MBID">
+                            </div>
+                            <div class="col-6">
+                                <label for="musicbrainz_artistid" class="form-label">MusicBrainz Artist ID</label>
+                                <input type="text" class="form-control" id="musicbrainz_artistid" name="musicbrainz_artistid" value="{{ track.musicbrainz_artistid or '' }}" placeholder="Artist MBID">
+                            </div>
+                        </div>
+                        <div class="row g-2 mt-1">
+                            <div class="col-6">
+                                <label for="musicbrainz_albumartistid" class="form-label">MusicBrainz Album Artist ID</label>
+                                <input type="text" class="form-control" id="musicbrainz_albumartistid" name="musicbrainz_albumartistid" value="{{ track.musicbrainz_albumartistid or '' }}" placeholder="Album artist MBID">
+                            </div>
+                            <div class="col-6">
+                                <label for="musicbrainz_releasegroupid" class="form-label">MusicBrainz Release Group ID</label>
+                                <input type="text" class="form-control" id="musicbrainz_releasegroupid" name="musicbrainz_releasegroupid" value="{{ track.musicbrainz_releasegroupid or '' }}" placeholder="Release group MBID">
+                            </div>
+                        </div>
+                        <div class="row g-2 mt-1">
+                            <div class="col-6">
+                                <label for="musicbrainz_releasetrackid" class="form-label">MusicBrainz Release Track ID</label>
+                                <input type="text" class="form-control" id="musicbrainz_releasetrackid" name="musicbrainz_releasetrackid" value="{{ track.musicbrainz_releasetrackid or '' }}" placeholder="Release track MBID">
+                            </div>
+                            <div class="col-6">
+                                <label for="musicbrainz_workid" class="form-label">MusicBrainz Work ID</label>
+                                <input type="text" class="form-control" id="musicbrainz_workid" name="musicbrainz_workid" value="{{ track.musicbrainz_workid or '' }}" placeholder="Work MBID">
                             </div>
                         </div>
                     </div>
@@ -1607,7 +1709,12 @@ function openQbitSearchTrack(artist, title) {
 }
 
 function openSlskdSearchTrack(artist, title) {
-    const query = `${artist} ${title}`;
+    const query = `${artist} ${title}`
+        .replace(/\\u0026/gi, ' ')
+        .replace(/&amp;/gi, ' ')
+        .replace(/&/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
     window.location.href = `/downloads?search=${encodeURIComponent(query)}`;
 }
 

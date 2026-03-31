@@ -72,7 +72,9 @@ document.addEventListener('DOMContentLoaded', function() {
   if (queryParam) {
     const searchInput = document.getElementById('slskdSearchQuery');
     if (searchInput) {
-      searchInput.value = queryParam;
+      searchInput.value = typeof normalizeSoulseekQuery === 'function'
+        ? normalizeSoulseekQuery(queryParam)
+        : queryParam;
       // Auto-submit the search form with the parameter
       setTimeout(() => {
         const form = document.getElementById('slskdSearchForm');

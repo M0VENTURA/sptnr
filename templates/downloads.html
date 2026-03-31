@@ -1120,10 +1120,15 @@ function toggleSlskdSelection(username, filename, size, checked) {
 }
 
 function performSlskdSearch() {
-  const query = document.getElementById('slskdSearchInput').value.trim();
+  const input = document.getElementById('slskdSearchInput');
+  const query = normalizeSoulseekQuery(input?.value || '');
   if (!query) {
     alert('Please enter a search query');
     return;
+  }
+
+  if (input) {
+    input.value = query;
   }
   
   // Clear previous results and selections
@@ -1775,6 +1780,15 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+function normalizeSoulseekQuery(value) {
+  return String(value || '')
+    .replace(/\\u0026/gi, ' ')
+    .replace(/&amp;/gi, ' ')
+    .replace(/&/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 // Allow Enter key to trigger search
@@ -3184,7 +3198,7 @@ function downloadArtist(artist) {
 
 function downloadAlbum(artist, album) {
   // Trigger Soulseek search for album
-  document.getElementById('slskdSearchInput').value = `${artist} ${album}`;
+  document.getElementById('slskdSearchInput').value = normalizeSoulseekQuery(`${artist} ${album}`);
   // Switch to Soulseek tab
   document.getElementById('slskdTab').click();
   setTimeout(() => performSlskdSearch(), 300);
@@ -3192,7 +3206,7 @@ function downloadAlbum(artist, album) {
 
 function downloadTrack(artist, track) {
   // Trigger Soulseek search for track
-  document.getElementById('slskdSearchInput').value = `${artist} ${track}`;
+  document.getElementById('slskdSearchInput').value = normalizeSoulseekQuery(`${artist} ${track}`);
   // Switch to Soulseek tab
   document.getElementById('slskdTab').click();
   setTimeout(() => performSlskdSearch(), 300);

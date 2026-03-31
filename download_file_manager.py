@@ -8,6 +8,7 @@ Integrates with MusicBrainz data stored in the queue to update file metadata bef
 import os
 import shutil
 import logging
+import re
 from pathlib import Path
 from datetime import datetime
 from difflib import SequenceMatcher
@@ -22,6 +23,88 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+_UUID_RE = re.compile(
+    r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+)
+
+
+def _is_uuid_like(value):
+    if not value:
+        return False
+    return bool(_UUID_RE.match(str(value).strip()))
+
+
+def _resolve_release_mbid_for_copy(queue_item, metadata):
+    """Best-effort MBID fallback so per-track copies keep album identity cohesive."""
+    existing = (metadata.get('release_mbid') or '').strip()
+    if _is_uuid_like(existing):
+        return existing
+
+    release_source = str(queue_item.get('release_source') or '').strip().lower()
+    release_id = (queue_item.get('release_id') or '').strip()
+    if release_source in {'musicbrainz', 'mb'} and _is_uuid_like(release_id):
+        return release_id
+
+    conn = None
+    try:
+        from helpers.db_utils import get_db_connection
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        placeholder = '%s'
+
+        import_group = (queue_item.get('import_group') or '').strip()
+        if import_group:
+            cursor.execute(
+                f"""
+                SELECT COALESCE(NULLIF(TRIM(CAST(release_mbid AS TEXT)), ''), NULLIF(TRIM(CAST(release_id AS TEXT)), '')) AS mbid
+                FROM download_queue
+                WHERE import_group = {placeholder}
+                  AND COALESCE(NULLIF(TRIM(CAST(release_mbid AS TEXT)), ''), NULLIF(TRIM(CAST(release_id AS TEXT)), '')) IS NOT NULL
+                ORDER BY id DESC
+                LIMIT 25
+                """,
+                (import_group,),
+            )
+            for row in cursor.fetchall() or []:
+                mbid = (row[0] if isinstance(row, (tuple, list)) else row.get('mbid')) if row else None
+                mbid = str(mbid or '').strip()
+                if _is_uuid_like(mbid):
+                    return mbid
+
+        artist = (metadata.get('album_artist') or metadata.get('artist') or '').strip()
+        album = (metadata.get('album') or '').strip()
+        if artist and album:
+            cursor.execute(
+                f"""
+                SELECT
+                    COALESCE(
+                        MAX(NULLIF(TRIM(CAST(musicbrainz_album_mbid AS TEXT)), '')),
+                        MAX(NULLIF(TRIM(CAST(musicbrainz_albumid AS TEXT)), ''))
+                    ) AS mbid
+                FROM tracks
+                WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER({placeholder})
+                  AND LOWER(COALESCE(album, '')) = LOWER({placeholder})
+                """,
+                (artist, album),
+            )
+            row = cursor.fetchone()
+            if row:
+                mbid = (row[0] if isinstance(row, (tuple, list)) else row.get('mbid'))
+                mbid = str(mbid or '').strip()
+                if _is_uuid_like(mbid):
+                    return mbid
+    except Exception as e:
+        logger.debug(f"Could not resolve fallback release MBID for copy: {e}")
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+    return ''
 
 
 def sanitize_filename(filename):
@@ -453,6 +536,11 @@ def copy_file_to_music(source_file_path, queue_item, music_dir):
             'ext': target_ext,
             'source_file_path': source_file_path
         }
+
+        # Ensure album MBID is present so Navidrome groups all copied tracks as one release.
+        resolved_release_mbid = _resolve_release_mbid_for_copy(queue_item, metadata)
+        if resolved_release_mbid:
+            metadata['release_mbid'] = resolved_release_mbid
         
         # Update file metadata
         metadata_updated = update_file_metadata(source_file_path, metadata)

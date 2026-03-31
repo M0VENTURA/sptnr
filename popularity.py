@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Popularity Scanner - Detects track popularity from external sources (Spotify, Last.fm, ListenBrainz).
+Popularity Scanner - Detects track popularity from external sources (Last.fm + age/recency).
 Calculates popularity scores and updates database.
 Note: Singles detection is handled separately by sptnr.py rate_artist() function.
 """
@@ -201,7 +201,7 @@ DEFAULT_POPULARITY_MEAN = 50          # Default mean popularity if no valid scor
 # --- End Config ---
 
 # Metadata source display constant
-POPULARITY_METADATA_SOURCE_NAME = "Spotify/Last.fm popularity"  # Display name for tracks with popularity data but no single sources
+POPULARITY_METADATA_SOURCE_NAME = "Last.fm/recency popularity"  # Display name for tracks with popularity data but no single sources
 
 
 def get_lastfm_config(config: dict) -> dict:
@@ -1743,16 +1743,12 @@ PG_USER = os.environ.get("PG_USER", "")
 PG_PASSWORD = os.environ.get("PG_PASSWORD", "")
 PG_DATABASE = os.environ.get("PG_DATABASE", "")
 from popularity_helpers import (
-    get_spotify_artist_id,
-    search_spotify_track,
     get_lastfm_track_info,
     calculate_lastfm_popularity_score,
     score_by_age,
     update_artist_id_for_artist,
     get_lastfm_client,
-    SPOTIFY_WEIGHT,
     LASTFM_WEIGHT,
-    LISTENBRAINZ_WEIGHT,
     AGE_WEIGHT,
 )
 from helpers.api_rate_limiter import get_rate_limiter
@@ -2519,7 +2515,7 @@ def detect_single_for_track(
         title: Track title
         artist: Artist name
         album_track_count: Number of tracks on the album (for context-based confidence)
-        spotify_results_cache: Optional dict mapping title to Spotify search results
+        spotify_results_cache: Deprecated legacy argument; ignored by scan-side detection
         verbose: Enable verbose logging
         discogs_token: Optional Discogs API token (will load from config if not provided)
         track_id: Track ID for advanced detection (optional)
@@ -2554,10 +2550,8 @@ def detect_single_for_track(
             # get_db_connection is already available in this module
             conn = existing_conn or get_db_connection()
 
-            # Get Spotify results if cached
+            # Spotify lookups are deprecated and no longer performed during scans.
             spotify_search_results = None
-            if spotify_results_cache is not None:
-                spotify_search_results = spotify_results_cache.get(title)
 
             # Get API clients
             discogs_client = None
@@ -2815,67 +2809,7 @@ def detect_single_for_track(
     if isinstance(_raw_mb_comp_conf, str) and _raw_mb_comp_conf.lower() in ("high", "medium", "low"):
         mb_compilation_confidence = _raw_mb_comp_conf.lower()
 
-    # First check: Spotify single detection
-    try:
-        # Use cached results if available
-        spotify_results = None
-        if spotify_results_cache is not None:
-            spotify_results = spotify_results_cache.get(title)
-
-        if spotify_results is None:
-            # Query Spotify
-            if verbose:
-                log_verbose(f"   Spotify results not cached for {title}, querying...")
-            spotify_results = _run_with_timeout(
-                search_spotify_track,
-                API_CALL_TIMEOUT,
-                f"Spotify single detection timed out after {API_CALL_TIMEOUT}s",
-                lookup_title, artist
-            )
-        else:
-            if verbose:
-                log_verbose(f"   âœ“ Reusing cached Spotify results for {title}")
-
-        if spotify_results and isinstance(spotify_results, list) and len(spotify_results) > 0:
-            # Use new sophisticated matching logic
-            # Convert duration from seconds to milliseconds if provided
-            duration_ms = int(duration * 1000) if duration else None
-
-            # Log all releases before filtering if verbose
-            if verbose:
-                log_verbose(f"   Spotify returned {len(spotify_results)} releases for {title}")
-
-            # Use the sophisticated version-aware matching with improved fuzzy matching
-            matched_release = find_matching_spotify_single(
-                spotify_results=spotify_results,
-                track_title=title,
-                track_duration_ms=duration_ms,
-                track_artist=artist,  # Pass artist for improved fuzzy matching
-                track_album=album,    # Pass album for improved fuzzy matching
-                track_isrc=isrc,      # Pass ISRC for perfect matching
-                duration_tolerance_sec=2,
-                logger=logger if verbose else None
-            )
-
-            if matched_release:
-                single_sources.append("spotify")
-                medium_confidence_sources.append("spotify")
-                album_info = matched_release.get("album", {})
-                if verbose:
-                    log_verbose(f"   âœ“ Spotify confirms single: {title}")
-                    log_verbose(f"      Matched release: {matched_release.get('name')}")
-                    log_verbose(f"      Album: {album_info.get('name')} (type: {album_info.get('album_type')})")
-            else:
-                if verbose:
-                    log_verbose(f"   â“˜ No matching Spotify single found for {title}")
-    except TimeoutError as e:
-        if verbose:
-            log_verbose(f"Spotify single check timed out for {title}: {e}")
-    except Exception as e:
-        if verbose:
-            log_verbose(f"Spotify single check failed for {title}: {e}")
-
-    # Second check: MusicBrainz single detection
+    # First active check: MusicBrainz single detection
     if HAVE_MUSICBRAINZ:
         try:
             log_info(f"   Checking MusicBrainz for single: {title}")
@@ -3352,81 +3286,36 @@ def get_artist_lastfm_context(artist_name: str, conn: object, artist_mbid: str =
         }
 
 
-def get_dynamic_weights(
-    spotify_score: float,
-    lastfm_score: float,
+def get_dynamic_lastfm_weight(
     artist_context: dict,
     track_lastfm_listeners: int,
-    base_spotify_weight: float = 0.4,
-    base_lastfm_weight: float = 0.3
-) -> tuple:
-    """
-    Calculate dynamically adjusted weights based on artist catalogue context.
-
-    For tracks that are outliers in their artist's catalogue, boost the weight
-    of the more reliable source signal (e.g., Last.fm for heavily-streamed tracks).
-
-    Example:
-        - Colossus: Spotify 28, Last.fm 43,991 listeners (z=3.9 above artist mean)
-        - Base weights: Spotify 0.4, Last.fm 0.3
-        - Colossus is extreme outlier → boost Last.fm to 0.5 (indicates real popularity)
-        - Result: Weighted more toward Last.fm's signal
-
-    Args:
-        spotify_score: Spotify popularity score (0-100)
-        lastfm_score: Last.fm popularity score (0-100)
-        artist_context: Dict from get_artist_lastfm_context()
-        track_lastfm_listeners: Track's Last.fm listener count (raw value)
-        base_spotify_weight: Default Spotify weight (typically 0.4)
-        base_lastfm_weight: Default Last.fm weight (typically 0.3)
-
-    Returns:
-        Tuple of (adjusted_spotify_weight, adjusted_lastfm_weight)
-    """
+    base_lastfm_weight: float = 0.3,
+) -> float:
+    """Adjust the active Last.fm weight based on artist-catalogue outlier context."""
     try:
         artist_mean = artist_context.get('mean', 0)
         artist_stdev = artist_context.get('stdev', 0)
 
-        # If insufficient artist context, return base weights
-        if artist_stdev == 0 or artist_mean == 0:
-            return (base_spotify_weight, base_lastfm_weight)
+        if artist_stdev == 0 or artist_mean == 0 or track_lastfm_listeners <= 0:
+            return base_lastfm_weight
 
-        # Calculate z-score for this track relative to artist mean
-        if track_lastfm_listeners > 0:
-            track_zscore = (track_lastfm_listeners - artist_mean) / artist_stdev
-        else:
-            return (base_spotify_weight, base_lastfm_weight)
-
-        # Boost weight for outliers (tracks significantly above/below artist mean)
-        # z-score magnitude indicates how unusual this track is
+        track_zscore = (track_lastfm_listeners - artist_mean) / artist_stdev
         abs_zscore = abs(track_zscore)
 
-        if abs_zscore >= 2.0:
-            # Track is 2+ standard deviations from mean (highly unusual in artist's catalogue)
-            if track_lastfm_listeners > artist_mean * 1.5:
-                # Above mean outlier - Last.fm signal is stronger, boost it
-                adjustment = 1.5 - abs(track_zscore) * 0.05  # Cap adjustment at ~1.5x
-                new_lastfm = base_lastfm_weight * adjustment
-                # Redistribute unused weight to Spotify proportionally
-                weight_freed = base_lastfm_weight * (adjustment - 1.0)
-                new_spotify = base_spotify_weight + weight_freed * 0.3
-                log_debug(f"Outlier boost (above mean): Last.fm weight {base_lastfm_weight:.2f} → {new_lastfm:.2f} (z={track_zscore:.2f})")
-                return (max(0.1, new_spotify), min(0.6, new_lastfm))
-            else:
-                # Below mean outlier - Spotify signal relatively more important
-                adjustment = 1.3
-                new_spotify = base_spotify_weight * adjustment
-                weight_freed = base_spotify_weight * (adjustment - 1.0)
-                new_lastfm = base_lastfm_weight + weight_freed * 0.3
-                log_debug(f"Outlier adjustment (below mean): Spotify weight {base_spotify_weight:.2f} → {new_spotify:.2f} (z={track_zscore:.2f})")
-                return (min(0.6, new_spotify), max(0.1, new_lastfm))
+        if abs_zscore >= 2.0 and track_lastfm_listeners > artist_mean * 1.5:
+            adjustment = max(1.0, 1.5 - abs(track_zscore) * 0.05)
+            new_lastfm = min(0.6, base_lastfm_weight * adjustment)
+            log_debug(
+                f"Outlier boost (above mean): Last.fm weight {base_lastfm_weight:.2f} → {new_lastfm:.2f} "
+                f"(z={track_zscore:.2f})"
+            )
+            return new_lastfm
 
-        # Return base weights for normal tracks
-        return (base_spotify_weight, base_lastfm_weight)
+        return base_lastfm_weight
 
     except Exception as e:
-        log_debug(f"Error calculating dynamic weights: {e}")
-        return (base_spotify_weight, base_lastfm_weight)
+        log_debug(f"Error calculating dynamic Last.fm weight: {e}")
+        return base_lastfm_weight
 
 
 def popularity_scan(
@@ -3808,99 +3697,42 @@ def popularity_scan(
             else:
                 log_debug(f"No Last.fm listener data available for artist {artist} - will use base weights")
 
-            # Get Spotify artist ID once per artist (before album loop)
-            # Skip for compilation albums (Various Artists, Compilation, Soundtrack)
-            # Also skip if Spotify weight is 0 (API calls would be wasted)
-            spotify_artist_id = None
+            # Spotify popularity lookups are deprecated and removed from popularity scanning.
             is_compilation_group = artist.lower() in ('various artists', 'various artists -', 'various', 'compilation', 'soundtrack')
-
-            if not is_compilation_group and SPOTIFY_WEIGHT > 0:
-                # Lookup Spotify artist ID for non-compilation artists
+            if not is_compilation_group:
+                # Fetch and update Discogs artist ID from Discogs API during popularity scan.
+                # This remains useful metadata even after Spotify popularity removal.
                 try:
-                    # First, try to get cached artist ID from database
-                    cursor.execute(f"""
-                        SELECT spotify_artist_id
-                        FROM tracks
-                        WHERE artist = {placeholder} AND spotify_artist_id IS NOT NULL
-                        LIMIT 1
-                    """, (artist,))
-                    row = cursor.fetchone()
+                    from popularity_helpers import update_discogs_artist_id_for_artist
+                    from api_clients.discogs import DiscogsClient
 
-                    if row and row_get(row, 'spotify_artist_id'):
-                        spotify_artist_id = row_get(row, 'spotify_artist_id')
-                        log_info(f'Using cached Spotify artist ID for {artist}: {spotify_artist_id}')
-                        log_debug(f'Cached Spotify artist ID: {spotify_artist_id}')
-                    else:
-                        log_info(f'Looking up Spotify artist ID for: {artist}')
-                        rate_limiter = get_rate_limiter()
-                        can_proceed, reason = rate_limiter.check_spotify_limit()
-                        if not can_proceed:
-                            log_debug(f'Spotify rate limit check failed: {reason}')
-                            if rate_limiter.wait_if_needed_spotify(max_wait_seconds=5.0):
-                                can_proceed = True  # Successfully waited, can proceed now
-                            else:
-                                log_info(f'Skipping Spotify artist ID lookup for {artist} due to rate limits')
-
-                        if can_proceed:
-                            spotify_artist_id = _run_with_timeout(
-                                get_spotify_artist_id,
-                                API_CALL_TIMEOUT,
-                                f"Spotify artist ID lookup timed out after {API_CALL_TIMEOUT}s",
+                    discogs_config = config.get("api_integrations", {}).get("discogs", {})
+                    if discogs_config.get("enabled") and discogs_config.get("token"):
+                        try:
+                            discogs_client = DiscogsClient(token=discogs_config.get("token"))
+                            discogs_artist_id = _run_with_timeout(
+                                discogs_client.get_artist_id,
+                                12,
+                                f"Discogs artist ID lookup timed out after 12s",
                                 artist
                             )
-                            # Record API request for rate limiting
-                            rate_limiter.record_spotify_request()
-                            log_debug(f'Spotify API call recorded for rate limiting')
 
-                    if spotify_artist_id:
-                        log_info(f'Spotify artist ID found: {spotify_artist_id}')
-                        log_debug(f'Updating all tracks for artist {artist} with Spotify artist ID: {spotify_artist_id}')
-                        # Batch update all tracks for this artist with the artist ID
-                        update_artist_id_for_artist(artist, spotify_artist_id)
-
-                        # Fetch and update Discogs artist ID from Discogs API during popularity scan
-                        try:
-                            from popularity_helpers import update_discogs_artist_id_for_artist
-                            from api_clients.discogs import DiscogsClient
-
-                            # Get Discogs client if available
-                            discogs_config = config.get("api_integrations", {}).get("discogs", {})
-                            if discogs_config.get("enabled") and discogs_config.get("token"):
-                                try:
-                                    discogs_client = DiscogsClient(token=discogs_config.get("token"))
-                                    discogs_artist_id = _run_with_timeout(
-                                        discogs_client.get_artist_id,
-                                        12,  # 12 second timeout for Discogs artist lookup
-                                        f"Discogs artist ID lookup timed out after 12s",
-                                        artist
-                                    )
-
-                                    if discogs_artist_id:
-                                        log_info(f'Discogs artist ID found: {artist} -> {discogs_artist_id}')
-                                        # Update all tracks for this artist
-                                        update_discogs_artist_id_for_artist(artist, discogs_artist_id)
-                                        log_debug(f'Updated artist Discogs ID in database: {artist} -> {discogs_artist_id}')
-                                    else:
-                                        log_debug(f'No Discogs artist ID found for artist: {artist}')
-                                except TimeoutError as e:
-                                    log_debug(f"Discogs artist ID lookup timed out for {artist}: {e}")
-                                except Exception as e:
-                                    log_debug(f"Discogs artist ID lookup failed for {artist}: {e}")
+                            if discogs_artist_id:
+                                log_info(f'Discogs artist ID found: {artist} -> {discogs_artist_id}')
+                                update_discogs_artist_id_for_artist(artist, discogs_artist_id)
+                                log_debug(f'Updated artist Discogs ID in database: {artist} -> {discogs_artist_id}')
                             else:
-                                log_debug(f"Discogs not enabled or token missing for artist: {artist}")
+                                log_debug(f'No Discogs artist ID found for artist: {artist}')
+                        except TimeoutError as e:
+                            log_debug(f"Discogs artist ID lookup timed out for {artist}: {e}")
                         except Exception as e:
-                            log_debug(f"Discogs artist lookup initialization failed for {artist}: {e}")
-
+                            log_debug(f"Discogs artist ID lookup failed for {artist}: {e}")
                     else:
-                        log_info(f'No Spotify artist ID found for: {artist}')
-                except TimeoutError as e:
-                    log_info(f"Spotify artist ID lookup timed out for {artist}")
-                    log_debug(f"Timeout error: {e}")
+                        log_debug(f"Discogs not enabled or token missing for artist: {artist}")
                 except Exception as e:
-                    log_info(f"Spotify artist ID lookup failed for {artist}: {e}")
-                    log_debug(f"Exception details: {type(e).__name__}: {str(e)}")
+                    log_debug(f"Discogs artist lookup initialization failed for {artist}: {e}")
             else:
-                log_info(f"Skipping Spotify/Discogs/MusicBrainz lookups for compilation album group: {artist}")
+                log_info(f"Skipping artist-ID lookup for compilation album group: {artist}")
 
             # Fetch and update artist metadata (country, bio, image) for ALL artists
             # This is independent of Spotify lookup success and applies to all artists
@@ -5002,10 +4834,6 @@ def popularity_scan(
 
                 log_debug(f'Album type determined: {album_type} for "{artist} - {album}"')
 
-                # Cache Spotify search results for singles detection reuse
-                # Initialize unconditionally for both singles_only and normal mode
-                spotify_results_cache = {}
-
                 # Fetch and cache album art using fallback strategy for this album
                 album_art_url = None
                 if not singles_only:
@@ -5032,48 +4860,8 @@ def popularity_scan(
                     else:
                         log_debug(f'[ALBUM_ART] Failed to obtain album art from any source for {artist} - {album}')
 
-                # Batch-fetch ListenBrainz popularity data for all tracks with MBIDs
-                # This is more efficient than per-track calls and respects rate limits
-                album_listenbrainz_data = {}  # Map of track_id -> {"total_listen_count": int, "total_user_count": int}
-                if not singles_only:
-                    try:
-                        # Collect all MBIDs from this album's tracks
-                        mbids_to_fetch = []
-                        mbid_to_track_id = {}  # Map MBID -> track_id for results
-
-                        for track in album_tracks:
-                            track_mbid = row_get(track, 'mbid')
-                            if track_mbid:
-                                mbids_to_fetch.append(track_mbid)
-                                mbid_to_track_id[track_mbid] = track["id"]
-
-                        if mbids_to_fetch:
-                            log_debug(f'Batch-fetching ListenBrainz popularity for {len(mbids_to_fetch)} recording(s) in album "{album}"')
-
-                            # Import batch function
-                            from api_clients.audiodb_and_listenbrainz import get_recording_popularity_batch
-                            from api_clients.musicbrainz import _USER_AGENT as MB_USER_AGENT
-
-                            # Call batch API with MusicBrainz user agent for consistency
-                            lb_results = get_recording_popularity_batch(mbids_to_fetch, user_agent=MB_USER_AGENT)
-
-                            # Process results and store by track_id
-                            for mbid, data in lb_results.items():
-                                track_id = mbid_to_track_id.get(mbid)
-                                if track_id and data:
-                                    # Only store if we have valid listen count
-                                    if data.get('total_listen_count') is not None and data.get('total_listen_count') > 0:
-                                        album_listenbrainz_data[track_id] = {
-                                            "total_listen_count": data.get('total_listen_count', 0),
-                                            "total_user_count": data.get('total_user_count', 0)
-                                        }
-                                        log_debug(f'ListenBrainz data for track {track_id}: {data.get("total_listen_count")} listens, {data.get("total_user_count")} users')
-
-                            log_info(f'Fetched ListenBrainz popularity for {len(album_listenbrainz_data)} track(s) with MBID data')
-
-                    except Exception as e:
-                        log_debug(f'ListenBrainz batch fetch failed for album "{album}": {e}')
-                        log_info(f'Continuing without ListenBrainz data for this album')
+                # ListenBrainz popularity lookups are intentionally skipped during scan.
+                # The source remains available for tags/genres and other non-score features.
 
                 # Collect Last.fm data for all album tracks for z-score normalization
                 # This enables us to calculate z-scores relative to the album
@@ -5566,155 +5354,14 @@ def popularity_scan(
 
                         # If not using full cache, proceed with individual API lookups
 
-                        # Skip Spotify lookup for obvious non-album tracks (live, remix, etc.)
-                        # This prevents the scan from hanging on albums with many bonus/live tracks
-                        # Strip cover attributions and single-release suffixes so "Song (Radio Edit)"
-                        # isn't caught by the "edit" keyword and skipped from the Spotify lookup
-                        base_title = strip_single_release_suffix(strip_cover_attribution(title))
-                        skip_spotify_lookup = any(k in base_title.lower() for k in IGNORE_SINGLE_KEYWORDS)
-                        if skip_spotify_lookup:
-                            log_info(f'Skipping Spotify lookup for: {title} (keyword filter: live/remix/etc.)')
-                            log_debug(f'Track "{title}" matched keyword filter for exclusion')
-
-                        # Try to get popularity from Spotify (using cached data or API)
-                        log_debug(f'Initiating Spotify lookup for: {title}')
                         spotify_score = 0
-                        spotify_search_results = None
                         spotify_release_date = None
                         lastfm_info = {}  # Initialize for genre extraction later
-
-                        # Check if we can use cached Spotify popularity score
-                        if not skip_spotify_lookup and not (FORCE_RESCAN or force):
-                            if should_use_cached_score(track, 'spotify_popularity', 'last_spotify_lookup'):
-                                spotify_score = row_get(track, 'spotify_popularity', 0)
-                                skip_spotify_lookup = True
-                                log_info(f'Using cached Spotify popularity for: {title} (score: {spotify_score})')
-                                log_debug(f'Cached Spotify data reused for track {track_id}')
-
-                        try:
-                            if "Spotify" in enabled_apis and SPOTIFY_WEIGHT > 0 and spotify_artist_id and not skip_spotify_lookup:
-                                # Check rate limit before making API call
-                                rate_limiter = get_rate_limiter()
-                                can_proceed, reason = rate_limiter.check_spotify_limit()
-                                if not can_proceed:
-                                    log_debug(f'Spotify rate limit check failed: {reason}')
-                                    # Try to wait if reasonable
-                                    if not rate_limiter.wait_if_needed_spotify(max_wait_seconds=5.0):
-                                        log_info(f'Skipping Spotify lookup for {title} due to rate limits')
-                                        skip_spotify_lookup = True
-
-                                if not skip_spotify_lookup:
-                                    log_info(f'Searching Spotify for track: {title} by {track_artist}')
-                                    # Normalize album name to remove version suffixes for better matching
-                                    # This helps match albums like "Helix (2021 version)" with "Helix"
-                                    normalized_album = normalize_album(album) if album else None
-                                    log_debug(f'Spotify search params - title: {api_lookup_title}, artist: {track_artist}, album: {album} (normalized: {normalized_album})')
-                                    # For popularity scoring, we pass album for better matching accuracy
-                                    # For live/unplugged albums, this is especially important to avoid matching studio versions
-                                    spotify_search_results = _run_with_timeout(
-                                        search_spotify_track,
-                                        API_CALL_TIMEOUT,
-                                        f"Spotify track search timed out after {API_CALL_TIMEOUT}s",
-                                        api_lookup_title, track_artist, normalized_album
-                                    )
-                                    # Record API request for rate limiting
-                                    rate_limiter.record_spotify_request()
-                                    log_debug(f'Spotify API request recorded for rate limiting')
-
-                                    # Cache results for singles detection reuse (using title as key)
-                                    spotify_results_cache[title] = spotify_search_results
-                                    log_debug(f'Cached Spotify results for track: {title}')
-
-                                # Update last_spotify_lookup timestamp
-                                current_timestamp = datetime.now().isoformat()
-                                try:
-                                    cursor.execute(f"""
-                                        UPDATE tracks
-                                        SET last_spotify_lookup = {placeholder}
-                                        WHERE id = {placeholder}
-                                    """, (current_timestamp, track_id))
-                                    log_debug(f'Updated last_spotify_lookup for track {track_id}')
-                                except Exception as e:
-                                    # Don't let timestamp update fail the entire scan
-                                    # This can happen with PostgreSQL transaction state issues
-                                    log_debug(f'Warning: Failed to update last_spotify_lookup for track {track_id}: {e}')
-                                    # Continue anyway - popularity data is more important than timestamp
-
-                                log_info(f'Spotify search completed. Results count: {len(spotify_search_results) if spotify_search_results else 0}')
-                                if spotify_search_results and isinstance(spotify_search_results, list) and len(spotify_search_results) > 0:
-                                    log_debug(f'Processing {len(spotify_search_results)} Spotify search results')
-                                    # Use strict matching if enabled, otherwise use standard highest popularity
-                                    if strict_spotify_matching:
-                                        from helpers import select_best_spotify_match_strict
-                                        # Get track metadata for strict matching
-                                        track_duration_ms = None
-                                        track_isrc = None
-                                        track_duration = row_get(track, "duration", None)
-                                        if track_duration:
-                                            # Duration is stored in seconds, convert to milliseconds
-                                            track_duration_ms = int(track_duration * 1000)
-                                        track_isrc = row_get(track, "isrc", None)
-
-                                        log_debug(f'Strict matching - duration_ms: {track_duration_ms}, isrc: {track_isrc}')
-                                        best_match = select_best_spotify_match_strict(
-                                            spotify_search_results,
-                                            title,
-                                            track_duration_ms,
-                                            track_isrc,
-                                            duration_tolerance_sec
-                                        )
-                                        if best_match:
-                                            log_info(f'Strict match found for: {title}')
-                                            log_debug(f'Best match track_id: {best_match.get("id")}, popularity: {best_match.get("popularity")}')
-                                        else:
-                                            log_info(f'No strict match found for: {title} (trying standard matching)')
-                                            # Fallback to standard matching if no strict match
-                                            best_match = max(spotify_search_results, key=lambda r: r.get('popularity', 0))
-                                            log_debug(f'Fallback to standard match - id: {best_match.get("id")}, popularity: {best_match.get("popularity")}')
-                                    else:
-                                        # Standard matching: highest popularity
-                                        best_match = max(spotify_search_results, key=lambda r: r.get('popularity', 0))
-                                        # Log only essential fields to reduce log bloat
-                                        log_debug(f'Standard matching - best match: {best_match.get("name")}, popularity: {best_match.get("popularity")}')
-
-                                    if best_match:
-                                        spotify_score = best_match.get("popularity", 0)
-                                        spotify_track_id = best_match.get("id")
-                                        # Extract release date from Spotify result for age scoring
-                                        spotify_release_date = best_match.get("album", {}).get("release_date")
-                                        log_info(f'Spotify popularity score: {spotify_score}')
-                                        log_debug(f'Spotify track ID: {spotify_track_id}')
-                                        log_debug(f'Spotify release date: {spotify_release_date}')
-                                    else:
-                                        spotify_score = 0
-                                        spotify_track_id = None
-                                        spotify_release_date = None
-                                        log_info(f'No Spotify match found for: {title}')
-
-                                    # Skip comprehensive metadata fetch during popularity scan (can be fetched on-demand later)
-                                    # This was causing 90s timeouts per track which severely slowed down scans
-                                    log_debug(f"Skipping comprehensive metadata fetch for {title} (can be fetched on-demand later)")
-                                else:
-                                    log_info(f'No Spotify results found for: {title}')
-                                    log_debug(f"[ALBUM_ART] No Spotify results available, cannot extract album art for {title}")
-                            else:
-                                log_info(f'No Spotify artist ID available')
-                        except TimeoutError as e:
-                            log_info(f"Spotify lookup timed out for {artist} - {title}")
-                            log_debug(f"Timeout error: {e}")
-                        except KeyboardInterrupt:
-                            # Allow user to interrupt the scan
-                            raise
-                        except Exception as e:
-                            log_info(f"Spotify lookup failed for {artist} - {title}: {e}")
-                            log_debug(f"Spotify error details: {type(e).__name__}: {str(e)}")
-                            import traceback
-                            log_debug(f"Exception traceback: {traceback.format_exc()}")
 
                         # Try to get popularity from Last.fm (using cached data or API)
                         lastfm_score = 0
                         lastfm_listeners = row_get(track, 'lastfm_track_playcount', 0) or 0
-                        skip_lastfm_lookup = skip_spotify_lookup  # Use same filter for Last.fm as Spotify
+                        skip_lastfm_lookup = False
 
                         # Check if we can use cached Last.fm listeners
                         if not skip_lastfm_lookup and not (FORCE_RESCAN or force):
@@ -5822,6 +5469,12 @@ def popularity_scan(
                         # Try to get ListenBrainz score if mbid is available
                         # Calculate age score if release date is available
                         age_score = 0
+                        if not spotify_release_date:
+                            # Fall back to local year metadata when Spotify release-date lookups are disabled.
+                            local_year = row_get(track, 'year', None)
+                            if local_year:
+                                spotify_release_date = str(local_year)
+
                         if spotify_release_date:
                             try:
                                 log_debug(f'Calculating age score for release date: {spotify_release_date}')
@@ -5902,54 +5555,31 @@ def popularity_scan(
                                 log_debug(f'Failed to extract MusicBrainz genres: {e}')
 
                         # Calculate weighted popularity score
-                        # Include 4 sources: Spotify, Last.fm, ListenBrainz, Age
+                        # Include 2 active sources: Last.fm + Age
                         # Only include sources that have data (score > 0)
                         scores = []
                         weights = []
 
                         # Calculate dynamic weights based on artist catalogue context
                         # This boosts Last.fm weight for tracks that are outliers in the artist's catalogue
-                        dynamic_spotify_weight = SPOTIFY_WEIGHT
                         dynamic_lastfm_weight = LASTFM_WEIGHT
-                        dynamic_listenbrainz_weight = LISTENBRAINZ_WEIGHT
+                        listeners = int(lastfm_listeners or 0)
 
                         if artist_lastfm_context and artist_lastfm_context.get('track_count', 0) > 0 and listeners > 0:
-                            dynamic_spotify_weight, dynamic_lastfm_weight = get_dynamic_weights(
-                                spotify_score, lastfm_score,
+                            dynamic_lastfm_weight = get_dynamic_lastfm_weight(
                                 artist_lastfm_context,
                                 listeners,
-                                SPOTIFY_WEIGHT, LASTFM_WEIGHT
+                                LASTFM_WEIGHT,
                             )
-                            if dynamic_spotify_weight != SPOTIFY_WEIGHT or dynamic_lastfm_weight != LASTFM_WEIGHT:
-                                log_info(f"Dynamic weight adjustment for artist context: Spotify {SPOTIFY_WEIGHT:.2f}→{dynamic_spotify_weight:.2f}, Last.fm {LASTFM_WEIGHT:.2f}→{dynamic_lastfm_weight:.2f}")
-
-                        if spotify_score > 0:
-                            scores.append(spotify_score)
-                            weights.append(dynamic_spotify_weight)
-                            log_debug(f'Including Spotify score: {spotify_score} (weight: {dynamic_spotify_weight:.2f})')
+                            if dynamic_lastfm_weight != LASTFM_WEIGHT:
+                                log_info(f"Dynamic weight adjustment for artist context: Last.fm {LASTFM_WEIGHT:.2f}→{dynamic_lastfm_weight:.2f}")
 
                         if lastfm_score > 0:
                             scores.append(lastfm_score)
                             weights.append(dynamic_lastfm_weight)
                             log_debug(f'Including Last.fm score: {lastfm_score} (weight: {dynamic_lastfm_weight:.2f})')
 
-                        # NEW: Include ListenBrainz score if available
                         listenbrainz_score = 0
-                        if track_id in album_listenbrainz_data:
-                            lb_data = album_listenbrainz_data[track_id]
-                            lb_listen_count = lb_data.get('total_listen_count', 0)
-                            lb_user_count = lb_data.get('total_user_count', 0)
-
-                            if lb_listen_count > 0:
-                                # Calculate ListenBrainz score using logarithmic scaling (similar to LastFm)
-                                # log10(100) = 2.0 → 25 points
-                                # log10(1000) = 3.0 → 37.5 points
-                                # log10(10000) = 4.0 → 50 points
-                                listenbrainz_score = min(100.0, max(0.0, 12.5 * math.log10(lb_listen_count)))
-
-                                scores.append(listenbrainz_score)
-                                weights.append(dynamic_listenbrainz_weight)
-                                log_debug(f'Including ListenBrainz score: {listenbrainz_score:.1f} (listens: {lb_listen_count}, users: {lb_user_count}, weight: {dynamic_listenbrainz_weight:.2f})')
 
                         if age_score > 0:
                             scores.append(age_score)
@@ -5966,7 +5596,7 @@ def popularity_scan(
                             scanned_count += 1
                             album_scanned += 1
                             log_info(f'Track scanned successfully: "{title}" (weighted: {popularity_score:.1f})')
-                            log_debug(f'Weighted popularity calculation - spotify: {spotify_score:.1f}, lastfm: {lastfm_score:.1f}, listenbrainz: {listenbrainz_score:.1f}, age: {age_score:.1f}, weighted: {popularity_score:.1f}')
+                            log_debug(f'Weighted popularity calculation - lastfm: {lastfm_score:.1f}, age: {age_score:.1f}, weighted: {popularity_score:.1f}')
                         else:
                             log_info(f"No popularity score found for {artist} - {title}")
                             log_debug(f'No data sources available for scoring')
@@ -6695,7 +6325,6 @@ def popularity_scan(
                             title=title,
                             artist=track_artist,
                             album_track_count=album_track_count,
-                            spotify_results_cache=spotify_results_cache,
                             verbose=verbose,  # Pass function parameter, not module constant
                             discogs_token=discogs_token,  # Pass already-loaded token
                             # Advanced detection parameters

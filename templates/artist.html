@@ -207,17 +207,6 @@
               </div>
               <div class="row g-2">
                 <div class="col-12 col-lg-6">
-                  <label class="form-label fw-bold small">Spotify Artist ID</label>
-                  <div class="input-group input-group-sm">
-                    <input type="text" class="form-control" id="spotifyArtistId" value="{{ stats.spotify_artist_id or '' }}" readonly>
-                    {% if stats.spotify_artist_id %}
-                    <a href="https://open.spotify.com/artist/{{ stats.spotify_artist_id }}" target="_blank" class="btn btn-outline-secondary">
-                      <i class="bi bi-box-arrow-up-right"></i>
-                    </a>
-                    {% endif %}
-                  </div>
-                </div>
-                <div class="col-12 col-lg-6">
                   <label class="form-label fw-bold small">MusicBrainz Artist ID</label>
                   <div class="input-group input-group-sm">
                     <input type="text" class="form-control" id="musicbrainzArtistId" value="{{ stats.musicbrainz_artist_id or stats.lastfm_artist_mbid or '' }}" readonly>
@@ -1206,6 +1195,22 @@
                             <input type="text" class="form-control" id="editArtistTrackMBIDField" name="mbid" placeholder="e.g., 579fc21e-40d4-4d72-835c-659e2a4108e4">
                         </div>
                     </div>
+
+                      <!-- Advanced Navidrome Fields -->
+                      <div class="accordion mb-4" id="editArtistTrackAdvancedAccordion">
+                        <div class="accordion-item">
+                          <h2 class="accordion-header" id="editArtistTrackAdvancedHeading">
+                            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#editArtistTrackAdvancedCollapse" aria-expanded="false" aria-controls="editArtistTrackAdvancedCollapse">
+                              Advanced Navidrome Fields
+                            </button>
+                          </h2>
+                          <div id="editArtistTrackAdvancedCollapse" class="accordion-collapse collapse" aria-labelledby="editArtistTrackAdvancedHeading" data-bs-parent="#editArtistTrackAdvancedAccordion">
+                            <div class="accordion-body">
+                              <div id="editArtistTrackAdvancedFields" class="row g-3"></div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
                     
                     <!-- Comment -->
                     <div class="mb-3">
@@ -1308,7 +1313,6 @@ if (typeof handleGenreRemoval === 'undefined') {
 // ===== Artist IDs Modal Functions (defined early for onclick handlers) =====
 function openEditArtistIdsModal() {
   const artistName = {{ artist_name|tojson }};
-  const spotifyId = document.getElementById('spotifyArtistId').value;
   const musicbrainzId = document.getElementById('musicbrainzArtistId').value;
   const discogsId = (function() { const el = document.getElementById('discogsArtistId'); return el ? el.value : ''; })();
   
@@ -1321,13 +1325,6 @@ function openEditArtistIdsModal() {
             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
           </div>
           <div class="modal-body">
-            <div class="mb-3">
-              <label for="editSpotifyArtistId" class="form-label">Spotify Artist ID</label>
-              <input type="text" class="form-control" id="editSpotifyArtistId" value="${escapeHtml(spotifyId)}" placeholder="e.g., 3TVXtAsR1Inumwj472S9r4">
-              <div class="form-text">
-                <a href="https://open.spotify.com/search/${encodeURIComponent(artistName)}" target="_blank">Search Spotify</a> to find the artist ID
-              </div>
-            </div>
             <div class="mb-3">
               <label for="editMusicbrainzArtistId" class="form-label">MusicBrainz Artist ID</label>
               <input type="text" class="form-control" id="editMusicbrainzArtistId" value="${escapeHtml(musicbrainzId)}" placeholder="e.g., a74b1b7f-71a5-4011-9441-d0b5e4122711">
@@ -1365,7 +1362,6 @@ function openEditArtistIdsModal() {
 
 function saveArtistIds() {
   const artistName = {{ artist_name|tojson }};
-  const spotifyId = document.getElementById('editSpotifyArtistId').value.trim();
   const musicbrainzId = document.getElementById('editMusicbrainzArtistId').value.trim();
   const discogsId = document.getElementById('editDiscogsArtistId').value.trim();
   
@@ -1374,7 +1370,6 @@ function saveArtistIds() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       artist: artistName,
-      spotify_artist_id: spotifyId,
       lastfm_artist_mbid: musicbrainzId,
       musicbrainz_artist_id: musicbrainzId,
       discogs_artist_id: discogsId
@@ -1383,7 +1378,6 @@ function saveArtistIds() {
     .then(r => r.json())
     .then(data => {
       if (data.success) {
-        document.getElementById('spotifyArtistId').value = spotifyId;
         document.getElementById('musicbrainzArtistId').value = musicbrainzId;
         if (document.getElementById('discogsArtistId')) {
           document.getElementById('discogsArtistId').value = discogsId;
@@ -2664,7 +2658,8 @@ async function downloadMusicBrainzRelease(artist, album, tracks, year, release_i
     return false;
   }
 
-  const closeModal = options.closeModal !== false;
+  // Keep modal open by default so users can queue multiple albums without re-running the search.
+  const closeModal = options.closeModal === true;
   const selectionLabel = options.selectionLabel || null;
   
   try {
@@ -2971,7 +2966,12 @@ function applyArtistImage(artistName, imageUrl) {
 
 function openSlskdSearch(query, artistName) {
   // If artistName is provided, search for "artist + query", otherwise just query
-  const searchQuery = artistName ? artistName + ' ' + query : query;
+  const searchQuery = (artistName ? artistName + ' ' + query : query)
+    .replace(/\\u0026/gi, ' ')
+    .replace(/&amp;/gi, ' ')
+    .replace(/&/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
   window.location.href = `/downloads?search=${encodeURIComponent(searchQuery)}`;
 }
 
@@ -4516,6 +4516,107 @@ async function loadArtistCoveredBy(artistName) {
   let editArtistTrackCurrentGenres = [];
   let editArtistTrackModalInstance = null;
 
+  const ARTIST_MODAL_ADVANCED_FIELDS = [
+    { name: 'writer', label: 'Writer/Lyricist' },
+    { name: 'arranger', label: 'Arranger' },
+    { name: 'mixer', label: 'Mixer' },
+    { name: 'producer', label: 'Producer' },
+    { name: 'work', label: 'Work/Composition' },
+    { name: 'isrc', label: 'ISRC' },
+    { name: 'bpm', label: 'BPM' },
+    { name: 'bitrate', label: 'Bitrate (kbps)' },
+    { name: 'sample_rate', label: 'Sample Rate (Hz)' },
+    { name: 'titlesort', label: 'Title Sort' },
+    { name: 'albumsort', label: 'Album Sort' },
+    { name: 'artistsort', label: 'Artist Sort' },
+    { name: 'composersort', label: 'Composer Sort' },
+    { name: 'albumartistsort', label: 'Album Artist Sort' },
+    { name: 'lyricistsort', label: 'Lyricist Sort' },
+    { name: 'artistssort', label: 'Artists Sort' },
+    { name: 'albumartistssort', label: 'Album Artists Sort' },
+    { name: 'artists', label: 'Artists (multi)' },
+    { name: 'albumartists', label: 'Album Artists (multi)' },
+    { name: 'conductor', label: 'Conductor' },
+    { name: 'performer', label: 'Performer' },
+    { name: 'director', label: 'Director' },
+    { name: 'djmixer', label: 'DJ Mixer' },
+    { name: 'engineer', label: 'Engineer' },
+    { name: 'remixer', label: 'Remixer' },
+    { name: 'lyricist', label: 'Lyricist' },
+    { name: 'albumversion', label: 'Album Version' },
+    { name: 'recordlabel', label: 'Record Label' },
+    { name: 'copyright', label: 'Copyright' },
+    { name: 'releasedate', label: 'Release Date' },
+    { name: 'releasetype', label: 'Release Type' },
+    { name: 'releasestatus', label: 'Release Status' },
+    { name: 'releasecountry', label: 'Release Country' },
+    { name: 'media', label: 'Media Format' },
+    { name: 'barcode', label: 'Barcode' },
+    { name: 'catalognumber', label: 'Catalog Number' },
+    { name: 'asin', label: 'ASIN' },
+    { name: 'originalyear', label: 'Original Year' },
+    { name: 'originaldate', label: 'Original Date' },
+    { name: 'tracktotal', label: 'Track Total' },
+    { name: 'disctotal', label: 'Disc Total' },
+    { name: 'script', label: 'Script' },
+    { name: 'discsubtitle', label: 'Disc Subtitle' },
+    { name: 'subtitle', label: 'Subtitle' },
+    { name: 'grouping', label: 'Grouping' },
+    { name: 'movement', label: 'Movement' },
+    { name: 'movementname', label: 'Movement Name' },
+    { name: 'movementtotal', label: 'Movement Total' },
+    { name: 'key', label: 'Musical Key' },
+    { name: 'language', label: 'Language' },
+    { name: 'license', label: 'License' },
+    { name: 'website', label: 'Website' },
+    { name: 'encodedby', label: 'Encoded By' },
+    { name: 'encodersettings', label: 'Encoder Settings' },
+    { name: 'explicitstatus', label: 'Explicit Status' },
+    { name: 'musicbrainz_albumid', label: 'MusicBrainz Album ID' },
+    { name: 'musicbrainz_artistid', label: 'MusicBrainz Artist ID' },
+    { name: 'musicbrainz_albumartistid', label: 'MusicBrainz Album Artist ID' },
+    { name: 'musicbrainz_releasegroupid', label: 'MusicBrainz Release Group ID' },
+    { name: 'musicbrainz_releasetrackid', label: 'MusicBrainz Release Track ID' },
+    { name: 'musicbrainz_workid', label: 'MusicBrainz Work ID' },
+    { name: 'replaygain_track_gain', label: 'ReplayGain Track Gain' },
+    { name: 'replaygain_track_peak', label: 'ReplayGain Track Peak' },
+    { name: 'replaygain_album_gain', label: 'ReplayGain Album Gain' },
+    { name: 'replaygain_album_peak', label: 'ReplayGain Album Peak' },
+    { name: 'r128_track_gain', label: 'R128 Track Gain' },
+    { name: 'r128_album_gain', label: 'R128 Album Gain' },
+    { name: 'lyrics', label: 'Lyrics', type: 'textarea' }
+  ];
+
+  function renderArtistAdvancedTrackFields(trackData) {
+    const container = document.getElementById('editArtistTrackAdvancedFields');
+    if (!container) return;
+
+    container.innerHTML = ARTIST_MODAL_ADVANCED_FIELDS.map(def => {
+      const fieldId = `editArtistTrackAdv_${def.name}`;
+      if (def.type === 'textarea') {
+        return `
+          <div class="col-12">
+            <label for="${fieldId}" class="form-label">${def.label}</label>
+            <textarea class="form-control" id="${fieldId}" rows="4"></textarea>
+          </div>
+        `;
+      }
+      return `
+        <div class="col-md-6">
+          <label for="${fieldId}" class="form-label">${def.label}</label>
+          <input type="text" class="form-control" id="${fieldId}">
+        </div>
+      `;
+    }).join('');
+
+    ARTIST_MODAL_ADVANCED_FIELDS.forEach(def => {
+      const el = document.getElementById(`editArtistTrackAdv_${def.name}`);
+      if (el) {
+        el.value = trackData?.[def.name] || '';
+      }
+    });
+  }
+
   function openEditTrackFromArtistModal(trackId, trackTitle) {
     fetch(`/api/track/${trackId}`)
       .then(r => {
@@ -4549,6 +4650,7 @@ async function loadArtistCoveredBy(artistName) {
     document.getElementById('editArtistTrackDiscNumberField').value = trackData.disc_number || '';
     document.getElementById('editArtistTrackMBIDField').value = trackData.mbid || '';
     document.getElementById('editArtistTrackCommentField').value = trackData.comment || '';
+    renderArtistAdvancedTrackFields(trackData || {});
     
     // Handle genres
     editArtistTrackCurrentGenres = [];
@@ -4700,6 +4802,13 @@ async function loadArtistCoveredBy(artistName) {
       comment: document.getElementById('editArtistTrackCommentField').value.trim() || null,
       sync_to_file: true
     };
+
+    ARTIST_MODAL_ADVANCED_FIELDS.forEach(def => {
+      const el = document.getElementById(`editArtistTrackAdv_${def.name}`);
+      if (!el) return;
+      const raw = (el.value || '').trim();
+      payload[def.name] = raw || null;
+    });
     
     // Validate required fields
     if (!payload.title) {
