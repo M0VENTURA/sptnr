@@ -335,6 +335,32 @@ def _read_flac_metadata(file_path):
             ('PUBLISHER',       'recordlabel'),
             ('LABEL',           'recordlabel'),
             ('RECORDLABEL',     'recordlabel'),
+            # ISRC and Media
+            ('ISRC',            'isrc'),
+            ('MEDIA',           'media'),
+            # Work / credits
+            ('WORK',            'work'),
+            ('WRITER',          'writer'),
+            ('ARRANGER',        'arranger'),
+            ('MIXER',           'mixer'),
+            ('MIX',             'mixer'),
+            ('PRODUCER',        'producer'),
+            ('PERFORMER',       'performer'),
+            # Release metadata
+            ('RELEASETYPE',     'releasetype'),
+            ('MUSICBRAINZ_ALBUMTYPE', 'releasetype'),
+            ('RELEASESTATUS',   'releasestatus'),
+            ('MUSICBRAINZ_ALBUMSTATUS', 'releasestatus'),
+            ('RELEASECOUNTRY',  'releasecountry'),
+            ('MUSICBRAINZ_ALBUMRELEASECOUNTRY', 'releasecountry'),
+            # MusicBrainz IDs
+            ('MUSICBRAINZ_ARTISTID',       'musicbrainz_artistid'),
+            ('MUSICBRAINZ_ALBUMARTISTID',  'musicbrainz_albumartistid'),
+            ('MUSICBRAINZ_ALBUMID',        'musicbrainz_albumid'),
+            ('MUSICBRAINZ_RELEASEGROUPID', 'musicbrainz_releasegroupid'),
+            ('MUSICBRAINZ_TRACKID',        'musicbrainz_trackid'),
+            ('MUSICBRAINZ_RELEASETRACKID', 'musicbrainz_releasetrackid'),
+            ('MUSICBRAINZ_WORKID',         'musicbrainz_workid'),
         ]
         for vorbis_key, field_name in _vorbis_simple:
             val = _get(vorbis_key)
@@ -484,6 +510,9 @@ def read_mp3_metadata(file_path):
                 ('TSST', 'discsubtitle'),
                 ('TEXT', 'lyricist'),
                 ('TCMP', 'compilation'),
+                # ISRC and Media
+                ('TSRC', 'isrc'),
+                ('TMED', 'media'),
             ]
             for frame_id, field_name in _simple_id3:
                 if frame_id in audio:
@@ -497,6 +526,26 @@ def read_mp3_metadata(file_path):
                 url = getattr(frame, 'url', None)
                 if url:
                     metadata['website'] = str(url).strip()
+
+            # TIPL / IPLS – involvement list pairs (arranger, mixer, producer, engineer)
+            for tipl_key in ('TIPL', 'IPLS'):
+                if tipl_key in audio:
+                    frame = audio[tipl_key]
+                    pairs = getattr(frame, 'people', []) or []
+                    _tipl_map = {
+                        'arranger':  'arranger',
+                        'mix':       'mixer',
+                        'mixer':     'mixer',
+                        'producer':  'producer',
+                        'engineer':  'engineer',
+                        'dj-mix':    'djmixer',
+                        'djmixer':   'djmixer',
+                    }
+                    for role, person in pairs:
+                        role_key = role.strip().lower()
+                        field = _tipl_map.get(role_key)
+                        if field and field not in metadata and person.strip():
+                            metadata[field] = person.strip()
 
             # TXXX descriptor → field mapping (Navidrome / beets conventions)
             _TXXX_MAP = {
@@ -529,6 +578,42 @@ def read_mp3_metadata(file_path):
                 'R128_ALBUM_GAIN':   'r128_album_gain',
                 'EXPLICITSTATUS':    'explicitstatus',
                 'ITUNESADVISORY':    'explicitstatus',
+                # Work / credits
+                'WORK':              'work',
+                'WRITER':            'writer',
+                'ARRANGER':          'arranger',
+                'MIXER':             'mixer',
+                'PRODUCER':          'producer',
+                # Label
+                'LABEL':             'recordlabel',
+                'RECORDLABEL':       'recordlabel',
+                # Release metadata
+                'RELEASETYPE':       'releasetype',
+                'RELEASESTATUS':     'releasestatus',
+                'RELEASECOUNTRY':    'releasecountry',
+                'MEDIA':             'media',
+                # MusicBrainz IDs
+                'MUSICBRAINZ ARTIST ID':          'musicbrainz_artistid',
+                'MUSICBRAINZ ALBUM ARTIST ID':    'musicbrainz_albumartistid',
+                'MUSICBRAINZ ALBUM ID':           'musicbrainz_albumid',
+                'MUSICBRAINZ RELEASE GROUP ID':   'musicbrainz_releasegroupid',
+                'MUSICBRAINZ TRACK ID':           'musicbrainz_trackid',
+                'MUSICBRAINZ RELEASE TRACK ID':   'musicbrainz_releasetrackid',
+                'MUSICBRAINZ WORK ID':            'musicbrainz_workid',
+                'MUSICBRAINZ RELEASE STATUS':     'musicbrainz_releasestatus',
+                'MUSICBRAINZ RELEASE TYPE':       'musicbrainz_releasetype',
+                'MUSICBRAINZ RELEASE COUNTRY':    'musicbrainz_releasecountry',
+                # Alternate MusicBrainz key spellings written by some taggers
+                'MUSICBRAINZ ALBUM STATUS':            'musicbrainz_releasestatus',
+                'MUSICBRAINZ ALBUM TYPE':              'musicbrainz_releasetype',
+                'MUSICBRAINZ ALBUM RELEASE COUNTRY':   'musicbrainz_releasecountry',
+                'MUSICBRAINZ_ALBUMARTISTID':           'musicbrainz_albumartistid',
+                'MUSICBRAINZ_ALBUMID':                 'musicbrainz_albumid',
+                'MUSICBRAINZ_ARTISTID':                'musicbrainz_artistid',
+                'MUSICBRAINZ_TRACKID':                 'musicbrainz_trackid',
+                'MUSICBRAINZ_RELEASETRACKID':          'musicbrainz_releasetrackid',
+                'MUSICBRAINZ_RELEASEGROUPID':          'musicbrainz_releasegroupid',
+                'MUSICBRAINZ_WORKID':                  'musicbrainz_workid',
             }
 
             for key in audio.keys():

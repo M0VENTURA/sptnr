@@ -3960,6 +3960,16 @@ def popularity_scan(
                         # Update tracks table with artist country
                         cursor.execute(f"UPDATE tracks SET artist_country = {placeholder} WHERE COALESCE(album_artist, artist) = {placeholder}",
                                      (artist_country, artist))
+
+                        # Also backfill releasecountry for tracks that have no
+                        # release country from their file tags, so Navidrome's
+                        # smart-playlist "Release Country" field is populated.
+                        cursor.execute(
+                            f"UPDATE tracks SET releasecountry = {placeholder}"
+                            f" WHERE COALESCE(album_artist, artist) = {placeholder}"
+                            f"   AND (releasecountry IS NULL OR TRIM(releasecountry) = '')",
+                            (artist_country, artist)
+                        )
                         conn.commit()
                         log_debug(f'Updated artist country in database: {artist} -> {artist_country}')
                     else:

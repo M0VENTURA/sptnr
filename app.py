@@ -6405,22 +6405,86 @@ def api_artist_corrections_albums():
 # ---------------------------------------------------------------------------
 
 ALBUM_CONSISTENCY_FIELDS = [
-    ('genres',          'Genre'),
-    ('mood',            'Mood'),
-    ('year',            'Year'),
-    ('album_artist',    'Album Artist'),
-    ('releasetype',     'Release Type'),
-    ('releasestatus',   'Release Status'),
-    ('releasecountry',  'Release Country'),
-    ('label',           'Label'),
-    ('recordlabel',     'Record Label'),
-    ('tracktotal',      'Track Total'),
-    ('disctotal',       'Disc Total'),
-    ('compilation',     'Compilation'),
-    ('grouping',        'Grouping'),
-    ('media',           'Media'),
-    ('albumversion',    'Album Version'),
+    ('genres',               'Genre'),
+    ('mood',                 'Mood'),
+    ('year',                 'Year'),
+    ('album_artist',         'Album Artist'),
+    ('releasetype',          'Release Type'),
+    ('releasestatus',        'Release Status'),
+    ('releasecountry',       'Release Country'),
+    ('label',                'Label'),
+    ('recordlabel',          'Record Label'),
+    ('tracktotal',           'Track Total'),
+    ('disctotal',            'Disc Total'),
+    ('compilation',          'Compilation'),
+    ('grouping',             'Grouping'),
+    ('media',                'Media'),
+    ('albumversion',         'Album Version'),
+    ('discsubtitle',         'Disc Subtitle'),
+    ('script',               'Script'),
+    ('replaygain_album_gain','ReplayGain Album Gain'),
+    ('replaygain_album_peak','ReplayGain Album Peak'),
 ]
+
+
+def refresh_needs_correcting_flags(conn):
+    """Update the needs_correcting flag on every track in the tracks table.
+
+    Tracks that belong to an album with at least one album-level tag
+    inconsistency across its tracks are flagged TRUE; all others are
+    cleared to FALSE.
+    """
+    try:
+        cursor = conn.cursor()
+
+        # Build the HAVING clause that detects any album-level inconsistency
+        having_parts = []
+        for field, _ in ALBUM_CONSISTENCY_FIELDS:
+            having_parts.append(
+                f"COUNT(DISTINCT COALESCE(CAST({field} AS TEXT), '')) > 1"
+            )
+        having_sql = " OR ".join(having_parts)
+
+        # First: clear flag on all tracks that are now consistent
+        cursor.execute("""
+            UPDATE tracks
+            SET needs_correcting = FALSE
+            WHERE needs_correcting IS DISTINCT FROM FALSE
+        """)
+
+        # Then: set flag on tracks whose album has inconsistencies
+        cursor.execute(f"""
+            UPDATE tracks t
+            SET needs_correcting = TRUE
+            WHERE EXISTS (
+                SELECT 1
+                FROM tracks t2
+                WHERE COALESCE(NULLIF(t2.album_artist, ''), t2.artist)
+                      = COALESCE(NULLIF(t.album_artist, ''), t.artist)
+                  AND t2.album = t.album
+                  AND t2.album IS NOT NULL
+                  AND TRIM(t2.album) != ''
+                GROUP BY COALESCE(NULLIF(t2.album_artist, ''), t2.artist), t2.album
+                HAVING COUNT(*) >= 2 AND ({having_sql})
+            )
+        """)
+
+        # Also flag tracks where releasecountry is set but differs from
+        # the artist's known country (both values must be non-empty).
+        cursor.execute("""
+            UPDATE tracks
+            SET needs_correcting = TRUE
+            WHERE TRIM(COALESCE(releasecountry, '')) != ''
+              AND TRIM(COALESCE(artist_country, ''))  != ''
+              AND LOWER(TRIM(releasecountry)) != LOWER(TRIM(artist_country))
+        """)
+        conn.commit()
+    except Exception as exc:
+        logging.warning(f"[CORRECTING] refresh_needs_correcting_flags failed: {exc}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
 
 
 def _get_album_tag_inconsistencies(conn, artist_filter=None):
@@ -6526,6 +6590,241 @@ def _get_album_tag_inconsistencies(conn, artist_filter=None):
     return results
 
 
+def _get_country_mismatches(conn):
+    """Return albums that have tracks whose releasecountry differs from the artist's country.
+
+    Both releasecountry and artist_country must be non-empty for a mismatch to be
+    reported.  Results are grouped by album and ordered by artist then album name.
+
+    Returns a list of dicts:
+        {album_artist, album, track_count, artist_country,
+         release_countries: [{value, count, track_ids}]}
+    """
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            SELECT
+                COALESCE(NULLIF(album_artist, ''), artist) AS album_artist,
+                album,
+                artist_country,
+                COUNT(*)                                   AS track_count
+            FROM tracks
+            WHERE album IS NOT NULL
+              AND TRIM(album) != ''
+              AND TRIM(COALESCE(releasecountry, ''))  != ''
+              AND TRIM(COALESCE(artist_country, ''))  != ''
+              AND LOWER(TRIM(releasecountry)) != LOWER(TRIM(artist_country))
+            GROUP BY
+                COALESCE(NULLIF(album_artist, ''), artist),
+                album,
+                artist_country
+            ORDER BY
+                COALESCE(NULLIF(album_artist, ''), artist),
+                album
+        """)
+        rows = cursor.fetchall()
+    except Exception as exc:
+        logging.warning(f"[CORRECTING] country-mismatch query failed: {exc}")
+        return []
+
+    results = []
+    for row in rows:
+        row_dict = dict(row) if hasattr(row, 'keys') else {
+            'album_artist': row[0], 'album': row[1],
+            'artist_country': row[2], 'track_count': row[3],
+        }
+        album_artist  = row_dict.get('album_artist') or ''
+        album         = row_dict.get('album') or ''
+        artist_country = row_dict.get('artist_country') or ''
+        track_count   = int(row_dict.get('track_count') or 0)
+
+        # Detail: collect the distinct releasecountry values for this album
+        try:
+            cursor.execute("""
+                SELECT id, releasecountry
+                FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+                  AND album = %s
+                  AND TRIM(COALESCE(releasecountry, ''))  != ''
+                  AND TRIM(COALESCE(artist_country, ''))  != ''
+                  AND LOWER(TRIM(releasecountry)) != LOWER(TRIM(artist_country))
+            """, (album_artist, album))
+            detail_rows = cursor.fetchall()
+        except Exception:
+            continue
+
+        value_map: dict = {}
+        for dr in detail_rows:
+            if hasattr(dr, 'keys'):
+                track_id = dr.get('id') or dr['id']
+                val = (dr.get('releasecountry') or '').strip()
+            else:
+                track_id = dr[0]
+                val = (dr[1] or '').strip()
+            if val not in value_map:
+                value_map[val] = {'value': val, 'count': 0, 'track_ids': []}
+            value_map[val]['count'] += 1
+            value_map[val]['track_ids'].append(track_id)
+
+        if not value_map:
+            continue
+
+        results.append({
+            'album_artist':    album_artist,
+            'album':           album,
+            'track_count':     track_count,
+            'artist_country':  artist_country,
+            'release_countries': sorted(value_map.values(), key=lambda x: -x['count']),
+        })
+
+    return results
+
+
+# Fields in ALBUM_CONSISTENCY_FIELDS that MusicBrainz can supply authoritatively
+# from a single release lookup (inc=release-groups+labels).
+_MB_SUGGESTION_FIELDS = {
+    'year',
+    'releasetype',
+    'releasestatus',
+    'releasecountry',
+    'label',
+    'recordlabel',
+    'tracktotal',
+    'disctotal',
+    'compilation',
+    'media',
+    'script',
+    'language',
+}
+
+
+def _fetch_mb_release_suggestions(release_mbid: str) -> dict:
+    """Query MusicBrainz for a single release and return a dict of field→value
+    covering the album-level tags that MB knows about.
+
+    Uses a single API call with inc=release-groups+labels so it respects the
+    MusicBrainz 1 req/sec rate limit from the calling thread.
+
+    Returns an empty dict on any error or when the MBID is unknown.
+    """
+    if not release_mbid or not release_mbid.strip():
+        return {}
+
+    release_mbid = release_mbid.strip()
+    MB_BASE = "https://musicbrainz.org/ws/2/"
+    headers = {"User-Agent": MUSICBRAINZ_USER_AGENT, "Accept": "application/json"}
+
+    def _get(url, params, timeout=12):
+        time.sleep(1.0)   # honour MusicBrainz 1 req/sec policy
+        r = requests.get(url, params=params, headers=headers, timeout=timeout)
+        r.raise_for_status()
+        return r.json()
+
+    try:
+        data = _get(
+            f"{MB_BASE}release/{release_mbid}",
+            {"fmt": "json", "inc": "release-groups+labels"},
+        )
+    except requests.HTTPError as exc:
+        if exc.response is not None and exc.response.status_code == 404:
+            # Might be a release-group MBID – browse its first release
+            try:
+                browse = _get(
+                    f"{MB_BASE}release",
+                    {"fmt": "json", "release-group": release_mbid,
+                     "inc": "release-groups+labels", "limit": 1},
+                )
+                releases = browse.get("releases") or []
+                if not releases:
+                    return {}
+                data = releases[0]
+            except Exception:
+                return {}
+        else:
+            return {}
+    except Exception:
+        return {}
+
+    suggestions: dict = {}
+
+    # Year
+    raw_date = (data.get("date") or "").strip()
+    if raw_date:
+        suggestions["year"] = raw_date[:4]
+
+    # Release country
+    country = (data.get("country") or "").strip()
+    if country:
+        suggestions["releasecountry"] = country
+
+    # Release status (Official, Bootleg, Promotion, …)
+    status = (data.get("status") or "").strip()
+    if status:
+        suggestions["releasestatus"] = status
+
+    # Barcode / ASIN (not in ALBUM_CONSISTENCY_FIELDS but useful context)
+    barcode = (data.get("barcode") or "").strip()
+    if barcode:
+        suggestions["barcode"] = barcode
+    asin = (data.get("asin") or "").strip()
+    if asin:
+        suggestions["asin"] = asin
+
+    # Language + Script (text-representation)
+    text_rep = data.get("text-representation") or {}
+    lang = (text_rep.get("language") or "").strip()
+    if lang:
+        suggestions["language"] = lang
+    script = (text_rep.get("script") or "").strip()
+    if script:
+        suggestions["script"] = script
+
+    # Release type from release-group
+    rg = data.get("release-group") or {}
+    primary_type = (rg.get("primary-type") or "").strip()
+    secondary_types = [t for t in (rg.get("secondary-types") or []) if t]
+    if primary_type or secondary_types:
+        all_types = ([primary_type] if primary_type else []) + secondary_types
+        suggestions["releasetype"] = ", ".join(all_types)
+        # Mark compilation flag
+        if "Compilation" in secondary_types:
+            suggestions["compilation"] = "1"
+
+    # Label and catalog number from label-info
+    label_info = data.get("label-info") or []
+    if label_info:
+        first = label_info[0]
+        label_obj = first.get("label") or {}
+        label_name = (label_obj.get("name") or "").strip()
+        if label_name:
+            suggestions["label"] = label_name
+            suggestions["recordlabel"] = label_name
+        cat = (first.get("catalog-number") or "").strip()
+        if cat:
+            suggestions["catalognumber"] = cat
+
+    # Track and disc totals
+    media_list = data.get("media") or []
+    if media_list:
+        suggestions["disctotal"] = str(len(media_list))
+        total_tracks = sum(
+            len(m.get("tracks") or []) or int(m.get("track-count") or 0)
+            for m in media_list
+        )
+        if total_tracks:
+            suggestions["tracktotal"] = str(total_tracks)
+        # Media format – use first (or most common) disc format
+        formats = [m.get("format") for m in media_list if m.get("format")]
+        if formats:
+            suggestions["media"] = formats[0]
+        # Disc subtitles, if present
+        disc_titles = [m.get("title") for m in media_list if m.get("title")]
+        if len(disc_titles) == 1:
+            suggestions["discsubtitle"] = disc_titles[0]
+
+    return suggestions
+
+
 @app.route("/correcting")
 def correcting():
     """Global tag corrections page: albums with inconsistent album-level tags."""
@@ -6622,6 +6921,77 @@ def api_correcting_fix_album_field():
     except Exception as e:
         logging.error(f"[CORRECTING] fix-album-field error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/correcting/mb-suggestions")
+def api_correcting_mb_suggestions():
+    """Fetch MusicBrainz authoritative values for a given album.
+
+    Query params:
+        album_artist  – album artist name
+        album         – album title
+
+    Returns JSON:
+        {success: true, suggestions: {field: value, …}, mbid: "…"}
+        or
+        {success: false, error: "…"}
+
+    Only fields in ALBUM_CONSISTENCY_FIELDS (plus a few extras like
+    catalognumber / barcode) that MB can supply are included in the
+    response.  Fields that MB doesn't know are omitted.
+    """
+    album_artist = (request.args.get("album_artist") or "").strip()
+    album        = (request.args.get("album")        or "").strip()
+
+    if not album:
+        return jsonify({"success": False, "error": "album is required"}), 400
+
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        # Find the most commonly stored musicbrainz_albumid for this album
+        cursor.execute("""
+            SELECT musicbrainz_albumid
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist,''), artist) = %s
+              AND album = %s
+              AND musicbrainz_albumid IS NOT NULL
+              AND TRIM(musicbrainz_albumid) != ''
+            GROUP BY musicbrainz_albumid
+            ORDER BY COUNT(*) DESC
+            LIMIT 1
+        """, (album_artist, album))
+        row = cursor.fetchone()
+        conn.close()
+    except Exception as exc:
+        logging.error(f"[CORRECTING] mb-suggestions DB error: {exc}")
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+    if not row:
+        return jsonify({"success": False, "error": "No MusicBrainz album ID found for this album"}), 404
+
+    mbid = (dict(row) if hasattr(row, "keys") else {"musicbrainz_albumid": row[0]})["musicbrainz_albumid"]
+
+    try:
+        suggestions = _fetch_mb_release_suggestions(mbid)
+    except Exception as exc:
+        logging.error(f"[CORRECTING] _fetch_mb_release_suggestions error: {exc}")
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+    if not suggestions:
+        return jsonify({"success": False, "error": "MusicBrainz returned no usable data for this release"}), 404
+
+    # Only expose fields that are in ALBUM_CONSISTENCY_FIELDS (or are catalogue
+    # fields that the fix endpoint can apply), so the client doesn't receive
+    # internal-only keys.
+    allowed = {f for f, _ in ALBUM_CONSISTENCY_FIELDS} | {
+        "catalognumber", "barcode", "asin", "language", "script",
+        "discsubtitle",
+    }
+    filtered = {k: v for k, v in suggestions.items() if k in allowed}
+
+    return jsonify({"success": True, "suggestions": filtered, "mbid": mbid})
 
 
 # ---------------------------------------------------------------------------

@@ -106,15 +106,53 @@
                 <span class="badge bg-secondary ms-2">{{ item.track_count }} tracks</span>
                 <span class="badge bg-warning text-dark ms-1">{{ item.inconsistencies | length }} field{% if item.inconsistencies | length != 1 %}s{% endif %}</span>
             </div>
-            <button class="btn btn-sm btn-outline-warning fix-all-btn"
-                    data-album-artist="{{ item.album_artist | e }}"
-                    data-album="{{ item.album | e }}"
-                    data-index="{{ loop.index }}"
-                    title="Apply the most common value for each inconsistent field">
-                <i class="bi bi-magic"></i> Fix All (majority)
-            </button>
+            <div class="d-flex gap-2">
+                <button class="btn btn-sm btn-outline-warning fix-all-btn"
+                        data-album-artist="{{ item.album_artist | e }}"
+                        data-album="{{ item.album | e }}"
+                        data-index="{{ loop.index }}"
+                        title="Apply the most common value for each inconsistent field">
+                    <i class="bi bi-magic"></i> Fix All (majority)
+                </button>
+                <button class="btn btn-sm btn-outline-info mb-lookup-btn"
+                        data-album-artist="{{ item.album_artist | e }}"
+                        data-album="{{ item.album | e }}"
+                        data-index="{{ loop.index }}"
+                        title="Look up authoritative values from MusicBrainz">
+                    <i class="bi bi-search"></i> Lookup MusicBrainz
+                </button>
+            </div>
         </div>
         <div class="card-body p-0">
+            <!-- MusicBrainz suggestions panel (hidden until loaded) -->
+            <div class="mb-suggestions-panel px-3 pt-3 pb-1 d-none border-bottom"
+                 id="mb-panel-{{ loop.index }}"
+                 style="background:var(--tertiary-bg);">
+                <div class="mb-suggestions-loading text-secondary small d-none">
+                    <span class="spinner-border spinner-border-sm me-2" role="status"></span>
+                    Querying MusicBrainz…
+                </div>
+                <div class="mb-suggestions-error alert alert-warning py-2 small d-none"></div>
+                <div class="mb-suggestions-content d-none">
+                    <p class="small fw-semibold mb-2">
+                        <i class="bi bi-database-check text-info me-1"></i>
+                        MusicBrainz authoritative values
+                        <span class="text-secondary fw-normal mb-mbid-label"></span>
+                    </p>
+                    <div class="table-responsive">
+                        <table class="table table-sm table-hover mb-0 correcting-table">
+                            <thead>
+                                <tr>
+                                    <th style="width:160px;">Field</th>
+                                    <th>MB Value</th>
+                                    <th class="text-end" style="width:180px;">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody class="mb-suggestions-rows"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
             <div class="table-responsive">
                 <table class="table table-hover mb-0 correcting-table">
                     <thead>
@@ -289,6 +327,99 @@
             }
             progressModal.hide();
             window.location.reload();
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // MusicBrainz lookup buttons
+    // -----------------------------------------------------------------------
+    const FIELD_LABELS = {
+        year: 'Year', releasetype: 'Release Type', releasestatus: 'Release Status',
+        releasecountry: 'Release Country', label: 'Label', recordlabel: 'Record Label',
+        tracktotal: 'Track Total', disctotal: 'Disc Total', compilation: 'Compilation',
+        media: 'Media', script: 'Script', language: 'Language',
+        discsubtitle: 'Disc Subtitle', catalognumber: 'Catalog Number',
+        barcode: 'Barcode', asin: 'ASIN',
+    };
+
+    document.querySelectorAll('.mb-lookup-btn').forEach(function (btn) {
+        btn.addEventListener('click', async function () {
+            const albumArtist = btn.dataset.albumArtist;
+            const album       = btn.dataset.album;
+            const idx         = btn.dataset.index;
+            const panel       = document.getElementById('mb-panel-' + idx);
+            if (!panel) return;
+
+            const loadingEl  = panel.querySelector('.mb-suggestions-loading');
+            const errorEl    = panel.querySelector('.mb-suggestions-error');
+            const contentEl  = panel.querySelector('.mb-suggestions-content');
+            const rowsEl     = panel.querySelector('.mb-suggestions-rows');
+            const mbidLabel  = panel.querySelector('.mb-mbid-label');
+
+            // Show panel, reset state
+            panel.classList.remove('d-none');
+            loadingEl.classList.remove('d-none');
+            errorEl.classList.add('d-none');
+            contentEl.classList.add('d-none');
+            btn.disabled = true;
+
+            try {
+                const params = new URLSearchParams({album_artist: albumArtist, album: album});
+                const resp = await fetch('/api/correcting/mb-suggestions?' + params.toString());
+                const data = await resp.json();
+
+                loadingEl.classList.add('d-none');
+                btn.disabled = false;
+
+                if (!data.success) {
+                    errorEl.textContent = 'MusicBrainz: ' + (data.error || 'No data found');
+                    errorEl.classList.remove('d-none');
+                    return;
+                }
+
+                const suggestions = data.suggestions || {};
+                if (!Object.keys(suggestions).length) {
+                    errorEl.textContent = 'MusicBrainz returned no relevant field values for this release.';
+                    errorEl.classList.remove('d-none');
+                    return;
+                }
+
+                // Build rows
+                rowsEl.innerHTML = '';
+                Object.entries(suggestions).forEach(function ([field, value]) {
+                    const label = FIELD_LABELS[field] || field;
+                    const displayVal = value.length > 40 ? value.slice(0, 40) + '…' : value;
+                    const tr = document.createElement('tr');
+                    tr.innerHTML =
+                        `<td class="fw-semibold align-middle">${label}</td>` +
+                        `<td><span class="badge bg-info text-dark" title="${value}">${displayVal}</span></td>` +
+                        `<td class="text-end align-middle">` +
+                        `<button class="btn btn-sm btn-outline-info fix-btn apply-field-btn"` +
+                        ` data-album-artist="${albumArtist.replace(/"/g,'&quot;')}"` +
+                        ` data-album="${album.replace(/"/g,'&quot;')}"` +
+                        ` data-field="${field}"` +
+                        ` data-value="${value.replace(/"/g,'&quot;')}"` +
+                        ` title="Apply MB value &quot;${value}&quot; to all tracks">` +
+                        `<i class="bi bi-database-check me-1"></i>Apply MB value` +
+                        `</button></td>`;
+                    rowsEl.appendChild(tr);
+
+                    // Wire the newly-created button using the existing applyFix helper
+                    tr.querySelector('.apply-field-btn').addEventListener('click', function (e) {
+                        const b = e.currentTarget;
+                        if (!confirm(`Apply MB value "${b.dataset.value}" to ALL tracks of "${album}" for field "${b.dataset.field}"?`)) return;
+                        applyFix(b.dataset.albumArtist, b.dataset.album, b.dataset.field, b.dataset.value, b);
+                    });
+                });
+
+                if (mbidLabel) mbidLabel.textContent = ' — MBID: ' + data.mbid;
+                contentEl.classList.remove('d-none');
+            } catch (err) {
+                loadingEl.classList.add('d-none');
+                btn.disabled = false;
+                errorEl.textContent = 'Request failed: ' + err;
+                errorEl.classList.remove('d-none');
+            }
         });
     });
 })();

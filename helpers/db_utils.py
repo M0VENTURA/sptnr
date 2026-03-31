@@ -777,12 +777,7 @@ def ensure_navidrome_tag_columns():
         ("r128_track_gain", "TEXT"),
         ("r128_album_gain", "TEXT"),
         # Fields that may already exist but ensure they're present
-        ("performer", "TEXT"),
         ("label", "TEXT"),
-        ("releasecountry", "TEXT"),
-        ("releasestatus", "TEXT"),
-        ("releasetype", "TEXT"),
-        ("media", "TEXT"),
         ("barcode", "TEXT"),
         ("catalognumber", "TEXT"),
         ("asin", "TEXT"),
@@ -797,8 +792,31 @@ def ensure_navidrome_tag_columns():
         ("albumartistsort", "TEXT"),
         # iTunes compilation flag
         ("compilation", "TEXT"),
-        # Multi-value artist lists
-        ("artists", "TEXT"),
+        # Credits not yet covered
+        ("performer", "TEXT"),
+        ("writer", "TEXT"),
+        ("arranger", "TEXT"),
+        ("mixer", "TEXT"),
+        ("producer", "TEXT"),
+        # Release classification (Navidrome album-level tags)
+        ("releasetype", "TEXT"),
+        ("releasestatus", "TEXT"),
+        ("releasecountry", "TEXT"),
+        ("media", "TEXT"),
+        # Identifiers
+        ("isrc", "TEXT"),
+        ("work", "TEXT"),
+        # MusicBrainz IDs (beyond those added by other migrations)
+        ("musicbrainz_trackid", "TEXT"),
+        ("musicbrainz_albumid", "TEXT"),
+        ("musicbrainz_artistid", "TEXT"),
+        ("musicbrainz_albumartistid", "TEXT"),
+        ("musicbrainz_releasegroupid", "TEXT"),
+        ("musicbrainz_releasetrackid", "TEXT"),
+        ("musicbrainz_workid", "TEXT"),
+        # Flag: set TRUE when this track belongs to an album with inconsistent
+        # album-level tags (detected by the /correcting endpoint logic)
+        ("needs_correcting", "BOOLEAN DEFAULT FALSE"),
     ]
 
     try:
