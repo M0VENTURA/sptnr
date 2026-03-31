@@ -615,7 +615,21 @@ class NavidromeClient:
         else:
             logger.debug(f"[WRITER] No writers found for '{track.get('title')}' after all extraction attempts")
 
+        # Extract multi-value artist arrays (OpenSubsonic extension).
+        # Navidrome exposes these as arrays of {id, name} objects; serialise to
+        # backslash-separated strings to match the convention used elsewhere.
+        def _people_array_to_str(field_name: str) -> str:
+            raw = track.get(field_name)
+            if isinstance(raw, list):
+                names = [
+                    (item.get("name", "") if isinstance(item, dict) else str(item)).strip()
+                    for item in raw
+                ]
+                return "\\".join(n for n in names if n)
+            return _get_tag_value(field_name)
+
         return {
+            # ── Core playback / identity ─────────────────────────────────────
             "duration": track.get("duration"),  # seconds
             "track_number": _safe_int(raw_track),
             "disc_number": _safe_int(raw_disc),
@@ -625,21 +639,101 @@ class NavidromeClient:
             "bitrate": track.get("bitRate"),  # kbps
             "sample_rate": track.get("samplingRate"),  # Hz
             "navidrome_genres": navidrome_genres,
+            "navidrome_genre": genres_list[0] if genres_list else "",  # first genre only
             "writer": writer_json,  # JSON array of lyricists from Navidrome
             "stars": int(track.get("userRating", 0) or 0),
+            "file_path": track.get("path", ""),  # File path from Navidrome
+            # ── MusicBrainz IDs ──────────────────────────────────────────────
+            # Navidrome guidelines: consistent musicbrainz_albumid across all
+            # tracks on an album is the most reliable way to prevent splits.
+            # See: https://www.navidrome.org/docs/usage/library/tagging/
             "mbid": track.get("mbid", "") or "",
             "musicbrainz_album_mbid": _get_tag_value("musicbrainz_album_mbid", "musicbrainz_albumid", "musicbrainz_releaseid", "release_mbid") or "",
+            "musicbrainz_albumid": _get_tag_value("musicbrainz_albumid", "musicbrainz_album_mbid", "musicbrainz_releaseid") or "",
+            "musicbrainz_trackid": _get_tag_value("musicbrainz_trackid", "musicbrainz_track_id") or "",
             "musicbrainz_releasegroupid": _get_tag_value("musicbrainz_releasegroupid", "musicbrainz_releasegroup_id", "release_group_mbid") or "",
             "musicbrainz_releasetrackid": _get_tag_value("musicbrainz_releasetrackid", "musicbrainz_release_track_id", "release_track_mbid") or "",
             "musicbrainz_albumstatus": _get_tag_value("musicbrainz_albumstatus", "musicbrainz_release_status", "release_status") or "",
             "musicbrainz_albumtype": _get_tag_value("musicbrainz_albumtype", "musicbrainz_release_type", "release_type") or "",
             "musicbrainz_releasecountry": _get_tag_value("musicbrainz_releasecountry", "musicbrainz_albumcountry", "release_country") or "",
+            "musicbrainz_artistid": _get_tag_value("musicbrainz_artistid", "musicbrainz_artist_id") or "",
+            "musicbrainz_albumartistid": _get_tag_value("musicbrainz_albumartistid", "musicbrainz_albumartist_id") or "",
+            "musicbrainz_workid": _get_tag_value("musicbrainz_workid", "musicbrainz_work_id") or "",
+            # ── Album-level consistency fields (Navidrome split causes) ──────
+            # Inconsistencies in any of these across tracks of the same album
+            # can cause Navidrome to split the album into multiple entries.
+            "releasetype": _get_tag_value("releasetype", "release_type", "albumtype") or "",
+            "releasestatus": _get_tag_value("releasestatus", "release_status", "musicbrainz_albumstatus") or "",
+            "releasecountry": _get_tag_value("releasecountry", "release_country", "musicbrainz_releasecountry") or "",
+            "media": _get_tag_value("media", "mediatype", "discmedia") or "",
+            "label": _get_tag_value("label", "publisher", "organization") or "",
+            "recordlabel": _get_tag_value("recordlabel", "record_label", "label") or "",
+            "tracktotal": _get_tag_value("tracktotal", "totaltracks", "tracktotals", "trackcount") or "",
+            "disctotal": _get_tag_value("disctotal", "totaldiscs", "disccount", "discs") or "",
+            "compilation": _get_tag_value("compilation", "itunescompilation", "tcmp", "part_of_a_compilation") or "",
+            "grouping": _get_tag_value("grouping", "contentgroup", "tit1") or "",
+            "albumversion": _get_tag_value("albumversion", "version") or "",
+            "discsubtitle": _get_tag_value("discsubtitle", "setsubtitle", "disc_subtitle") or "",
+            "script": _get_tag_value("script") or "",
+            # ── ReplayGain / R128 ────────────────────────────────────────────
+            "replaygain_track_gain": _get_tag_value("replaygain_track_gain") or "",
+            "replaygain_track_peak": _get_tag_value("replaygain_track_peak") or "",
+            "replaygain_album_gain": _get_tag_value("replaygain_album_gain") or "",
+            "replaygain_album_peak": _get_tag_value("replaygain_album_peak") or "",
+            "r128_track_gain": _get_tag_value("r128_track_gain") or "",
+            "r128_album_gain": _get_tag_value("r128_album_gain") or "",
+            # ── Release / catalogue metadata ─────────────────────────────────
+            "releasedate": _get_tag_value("releasedate", "originalreleasedate", "release_date") or "",
+            "originalyear": _get_tag_value("originalyear", "original_year", "originalreleaseyear") or "",
+            "originaldate": _get_tag_value("originaldate", "original_date", "originalreleasedate") or "",
+            "copyright": _get_tag_value("copyright") or "",
+            "barcode": _get_tag_value("barcode", "ean", "upc") or "",
+            "catalognumber": _get_tag_value("catalognumber", "catalog", "catalognum", "catalog_number") or "",
+            "asin": _get_tag_value("asin") or "",
+            # ── Content / structural ─────────────────────────────────────────
+            "subtitle": _get_tag_value("subtitle") or "",
+            "lyrics": _get_tag_value("lyrics", "unsyncedlyrics") or "",
+            "language": _get_tag_value("language", "lang") or "",
+            "work": _get_tag_value("work", "contentgroup") or "",
+            "movement": _get_tag_value("movement", "movementnumber", "mvin") or "",
+            "movementname": _get_tag_value("movementname", "mvnm") or "",
+            "movementtotal": _get_tag_value("movementtotal", "mvcn") or "",
+            "key": _get_tag_value("key", "initialkey") or "",
+            "explicitstatus": _get_tag_value("explicitstatus", "explicit", "itunesadvisory") or "",
+            # ── Credits ──────────────────────────────────────────────────────
+            "composer": _get_tag_value("composer", "composers") or "",
+            "lyricist": _get_tag_value("lyricist", "lyricists", "textwriter") or "",
+            "conductor": _get_tag_value("conductor") or "",
+            "remixer": _get_tag_value("remixer", "mixartist", "tpe4") or "",
+            "producer": _get_tag_value("producer") or "",
+            "arranger": _get_tag_value("arranger") or "",
+            "mixer": _get_tag_value("mixer") or "",
+            "engineer": _get_tag_value("engineer") or "",
+            "director": _get_tag_value("director") or "",
+            "djmixer": _get_tag_value("djmixer", "dj_mixer") or "",
+            "performer": _get_tag_value("performer") or "",
+            # ── Sort tags ────────────────────────────────────────────────────
+            "titlesort": _get_tag_value("titlesort", "tsot") or "",
+            "albumsort": _get_tag_value("albumsort", "tsoa") or "",
+            "artistsort": _get_tag_value("artistsort", "tsop") or "",
+            "albumartistsort": _get_tag_value("albumartistsort", "tsopalbumartist", "albumartist_sort") or "",
+            "albumartistssort": _get_tag_value("albumartistssort") or "",
+            "artistssort": _get_tag_value("artistssort") or "",
+            "composersort": _get_tag_value("composersort") or "",
+            "lyricistsort": _get_tag_value("lyricistsort") or "",
+            # ── Multi-value artist arrays (OpenSubsonic) ─────────────────────
+            "artists": _people_array_to_str("artists"),
+            "albumartists": _people_array_to_str("albumArtists"),
+            # ── Encoding / technical ─────────────────────────────────────────
+            "encodedby": _get_tag_value("encodedby", "encoded_by") or "",
+            "encodersettings": _get_tag_value("encodersettings", "encoder", "encodingsettings") or "",
+            "website": _get_tag_value("website", "url", "weblink") or "",
+            "license": _get_tag_value("license") or "",
+            # ── Acoustic analysis ────────────────────────────────────────────
             "isrc": _get_tag_value("isrc", "musicbrainz_isrc") or "",
             "bpm": _safe_int(_get_tag_value("bpm", "tempo")),
             "danceability": _safe_float(_get_tag_value("danceability")),
-            "composer": _get_tag_value("composer", "composers") or "",
             "comment": _get_tag_value("comment", "comments", "description") or "",
-            "file_path": track.get("path", ""),  # File path from Navidrome
         }
     
     def start_scan(self) -> bool:
