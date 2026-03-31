@@ -6420,18 +6420,30 @@ def api_artist_corrections_albums():
 # ---------------------------------------------------------------------------
 
 ALBUM_CONSISTENCY_FIELDS = [
-    ('genres',               'Genre'),
-    ('mood',                 'Mood'),
-    ('year',                 'Year'),
+    # ── Primary Navidrome split causes ────────────────────────────────────────
+    # Navidrome groups tracks into albums using ALBUM + ALBUMARTIST. Inconsistencies
+    # in these fields are the most common cause of "split album" problems.
+    # See: https://www.navidrome.org/docs/usage/library/tagging/
     ('album_artist',         'Album Artist'),
+    # When PID.Album="musicbrainz_albumid" is set in Navidrome config, tracks with
+    # different MBIDs will always be treated as separate albums.
+    ('musicbrainz_album_mbid', 'MusicBrainz Album ID'),
+    ('musicbrainz_releasegroupid', 'MusicBrainz Release Group ID'),
+    # ── Album classification tags ──────────────────────────────────────────────
     ('releasetype',          'Release Type'),
     ('releasestatus',        'Release Status'),
     ('releasecountry',       'Release Country'),
+    # COMPILATION=1 is required for Navidrome to correctly group VA compilations
+    # under "Various Artists" rather than splitting them.
+    ('compilation',          'Compilation'),
+    # ── Standard album-level tags ──────────────────────────────────────────────
+    ('genres',               'Genre'),
+    ('mood',                 'Mood'),
+    ('year',                 'Year'),
     ('label',                'Label'),
     ('recordlabel',          'Record Label'),
     ('tracktotal',           'Track Total'),
     ('disctotal',            'Disc Total'),
-    ('compilation',          'Compilation'),
     ('grouping',             'Grouping'),
     ('media',                'Media'),
     ('albumversion',         'Album Version'),
@@ -6448,6 +6460,18 @@ def refresh_needs_correcting_flags(conn):
     Tracks that belong to an album with at least one album-level tag
     inconsistency across its tracks are flagged TRUE; all others are
     cleared to FALSE.
+
+    Navidrome tagging guidelines (https://www.navidrome.org/docs/usage/library/tagging/):
+      - ALBUM + ALBUMARTIST must be identical across all tracks on the same album.
+      - For compilations/VA albums, ALBUMARTIST should be "Various Artists" and
+        COMPILATION=1 must be set on every track.
+      - For split releases (Band A / Band B), use a single ALBUMARTIST with both
+        artists separated by a semicolon, or ensure MUSICBRAINZ_ALBUMID is the
+        same on all tracks (when PID.Album="musicbrainz_albumid" is configured).
+      - Inconsistent MUSICBRAINZ_ALBUMID values across tracks will cause Navidrome
+        to treat them as separate albums when persistent IDs are enabled.
+      - RELEASETYPE/RELEASESTATUS/RELEASECOUNTRY inconsistencies indicate different
+        editions are mixed together and should be corrected.
     """
     try:
         cursor = conn.cursor()

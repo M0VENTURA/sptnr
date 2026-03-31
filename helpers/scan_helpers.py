@@ -716,8 +716,8 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "listenbrainz_score": 0,
                     "age_score": 0,
                     "genres": extracted.get("navidrome_genres", "") or "",  # Initialize with Navidrome genre
-                    "navidrome_genres": extracted.get("navidrome_genres", "") or "",  # Store as comma-separated string
-                    "navidrome_genre": extracted.get("navidrome_genres", "").split("\\")[0] if extracted.get("navidrome_genres") else "",  # First genre only
+                    "navidrome_genres": extracted.get("navidrome_genres", "") or "",  # Store as backslash-separated string
+                    "navidrome_genre": extracted.get("navidrome_genre", "") or "",  # First genre only
                     "spotify_genres": json.dumps([]),  # Serialize as JSON string
                     "lastfm_tags": json.dumps([]),  # Serialize as JSON string
                     "discogs_genres": json.dumps([]),  # Serialize as JSON string
@@ -739,16 +739,92 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "is_single": False,
                     "single_confidence": "low",
                     "single_sources": json.dumps([]),  # Serialize as JSON string
+                    # ── MusicBrainz IDs ───────────────────────────────────────
                     "mbid": extracted.get("mbid", "") or "",
                     "musicbrainz_album_mbid": extracted.get("musicbrainz_album_mbid", "") or "",
+                    "musicbrainz_albumid": extracted.get("musicbrainz_albumid", "") or "",
+                    "musicbrainz_trackid": extracted.get("musicbrainz_trackid", "") or "",
                     "musicbrainz_releasegroupid": extracted.get("musicbrainz_releasegroupid", "") or "",
                     "musicbrainz_releasetrackid": extracted.get("musicbrainz_releasetrackid", "") or "",
                     "musicbrainz_albumstatus": extracted.get("musicbrainz_albumstatus", "") or "",
                     "musicbrainz_albumtype": extracted.get("musicbrainz_albumtype", "") or "",
                     "musicbrainz_releasecountry": extracted.get("musicbrainz_releasecountry", "") or "",
+                    "musicbrainz_artistid": extracted.get("musicbrainz_artistid", "") or "",
+                    "musicbrainz_albumartistid": extracted.get("musicbrainz_albumartistid", "") or "",
+                    "musicbrainz_workid": extracted.get("musicbrainz_workid", "") or "",
+                    # ── Album-level consistency / Navidrome split-cause fields ─
+                    "releasetype": extracted.get("releasetype", "") or "",
+                    "releasestatus": extracted.get("releasestatus", "") or "",
+                    "releasecountry": extracted.get("releasecountry", "") or "",
+                    "media": extracted.get("media", "") or "",
+                    "label": extracted.get("label", "") or "",
+                    "recordlabel": extracted.get("recordlabel", "") or "",
+                    "tracktotal": extracted.get("tracktotal", "") or "",
+                    "disctotal": extracted.get("disctotal", "") or "",
+                    "compilation": extracted.get("compilation", "") or "",
+                    "grouping": extracted.get("grouping", "") or "",
+                    "albumversion": extracted.get("albumversion", "") or "",
+                    "discsubtitle": extracted.get("discsubtitle", "") or "",
+                    "script": extracted.get("script", "") or "",
+                    # ── ReplayGain / R128 ─────────────────────────────────────
+                    "replaygain_track_gain": extracted.get("replaygain_track_gain", "") or "",
+                    "replaygain_track_peak": extracted.get("replaygain_track_peak", "") or "",
+                    "replaygain_album_gain": extracted.get("replaygain_album_gain", "") or "",
+                    "replaygain_album_peak": extracted.get("replaygain_album_peak", "") or "",
+                    "r128_track_gain": extracted.get("r128_track_gain", "") or "",
+                    "r128_album_gain": extracted.get("r128_album_gain", "") or "",
+                    # ── Release / catalogue metadata ──────────────────────────
+                    "releasedate": extracted.get("releasedate", "") or "",
+                    "originalyear": extracted.get("originalyear", "") or "",
+                    "originaldate": extracted.get("originaldate", "") or "",
+                    "copyright": extracted.get("copyright", "") or "",
+                    "barcode": extracted.get("barcode", "") or "",
+                    "catalognumber": extracted.get("catalognumber", "") or "",
+                    "asin": extracted.get("asin", "") or "",
+                    # ── Content / structural ──────────────────────────────────
+                    "subtitle": extracted.get("subtitle", "") or "",
+                    "lyrics": extracted.get("lyrics", "") or "",
+                    "language": extracted.get("language", "") or "",
+                    "work": extracted.get("work", "") or "",
+                    "movement": extracted.get("movement", "") or "",
+                    "movementname": extracted.get("movementname", "") or "",
+                    "movementtotal": extracted.get("movementtotal", "") or "",
+                    "key": extracted.get("key", "") or "",
+                    "explicitstatus": extracted.get("explicitstatus", "") or "",
+                    # ── Credits ───────────────────────────────────────────────
+                    "composer": extracted.get("composer", "") or "",
+                    "lyricist": extracted.get("lyricist", "") or "",
+                    "conductor": extracted.get("conductor", "") or "",
+                    "remixer": extracted.get("remixer", "") or "",
+                    "producer": extracted.get("producer", "") or "",
+                    "arranger": extracted.get("arranger", "") or "",
+                    "mixer": extracted.get("mixer", "") or "",
+                    "engineer": extracted.get("engineer", "") or "",
+                    "director": extracted.get("director", "") or "",
+                    "djmixer": extracted.get("djmixer", "") or "",
+                    "performer": extracted.get("performer", "") or "",
+                    # ── Sort tags ─────────────────────────────────────────────
+                    "titlesort": extracted.get("titlesort", "") or "",
+                    "albumsort": extracted.get("albumsort", "") or "",
+                    "artistsort": extracted.get("artistsort", "") or "",
+                    "albumartistsort": extracted.get("albumartistsort", "") or "",
+                    "albumartistssort": extracted.get("albumartistssort", "") or "",
+                    "artistssort": extracted.get("artistssort", "") or "",
+                    "composersort": extracted.get("composersort", "") or "",
+                    "lyricistsort": extracted.get("lyricistsort", "") or "",
+                    # ── Multi-value artist arrays ─────────────────────────────
+                    "artists": extracted.get("artists", "") or "",
+                    "albumartists": extracted.get("albumartists", "") or "",
+                    # ── Encoding / technical ──────────────────────────────────
+                    "encodedby": extracted.get("encodedby", "") or "",
+                    "encodersettings": extracted.get("encodersettings", "") or "",
+                    "website": extracted.get("website", "") or "",
+                    "license": extracted.get("license", "") or "",
+                    # ── Acoustic / playback ───────────────────────────────────
                     "isrc": extracted.get("isrc", "") or "",
                     "bpm": extracted.get("bpm"),
                     "danceability": extracted.get("danceability"),
+                    "comment": extracted.get("comment", "") or "",
                     "suggested_mbid": "",
                     "suggested_mbid_confidence": 0.0,
                     "stars": extracted.get("stars", 0),
@@ -756,8 +832,6 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "track_number": extracted.get("track_number"),
                     "disc_number": extracted.get("disc_number"),
                     "year": extracted.get("year"),
-                    "composer": extracted.get("composer", "") or "",
-                    "comment": extracted.get("comment", "") or "",
                     "writer": writer_json,  # JSON array of lyricists/writers from Navidrome or file tags
                     "album_artist": album_artist_value,
                     "bitrate": extracted.get("bitrate"),
