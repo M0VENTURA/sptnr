@@ -503,6 +503,18 @@ class CoverDetector:
                     original = self._find_original_recording(info['title'], writer, album_artist=artist)
                     
                     if original:
+                        # The MusicBrainz lookup resolved the "original" recording
+                        # to the album artist themselves (e.g. a co-writer search
+                        # matched Brandy's own recording of her own song).  This is
+                        # not a cover — skip it.
+                        if self._names_match(original.get('artist', ''), artist):
+                            logger.info(
+                                f"Skipping writer-based cover detection for '{info['title']}': "
+                                f"found original recording by '{original['artist']}' which matches "
+                                f"album artist '{artist}' — not a cover"
+                            )
+                            break
+
                         result = {
                             'track_id': track_id,
                             'title': info['title'],
@@ -1135,6 +1147,13 @@ class CoverDetector:
         right_tokens = {token for token in right_norm.split() if len(token) > 1}
         if not left_tokens or not right_tokens:
             return False
+
+        # If one name's tokens are entirely contained in the other's, treat as a
+        # match.  This covers stage-name vs real-name pairs like "Brandy" vs
+        # "Brandy Norwood" where the stage name is a single token that is a subset
+        # of the full legal name's tokens.
+        if left_tokens <= right_tokens or right_tokens <= left_tokens:
+            return True
 
         intersection = left_tokens & right_tokens
         min_required = min(len(left_tokens), len(right_tokens))
