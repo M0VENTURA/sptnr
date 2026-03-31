@@ -2513,16 +2513,25 @@ function displayMusicBrainzResults(results) {
   
   // Attach event listeners to download buttons
   container.querySelectorAll('.mb-download-release').forEach(button => {
-    button.addEventListener('click', function() {
+    button.addEventListener('click', async function() {
       const dataKey = this.dataset.releaseKey;
       const releaseData = window.mbReleaseData[dataKey];
-      
+
       if (!releaseData) {
         alert('Error: Release data not found');
         return;
       }
-      
-      downloadMusicBrainzRelease(releaseData.artist, releaseData.album, releaseData.tracks, releaseData.year, releaseData.release_id, releaseData.source);
+
+      const btn = this;
+      const originalHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span> Queuing…';
+      try {
+        await downloadMusicBrainzRelease(releaseData.artist, releaseData.album, releaseData.tracks, releaseData.year, releaseData.release_id, releaseData.source);
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
+      }
     });
   });
 
