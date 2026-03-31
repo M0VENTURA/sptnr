@@ -3438,6 +3438,7 @@ def popularity_scan(
     force: bool = False,
     filter_missing: bool = False,
     singles_only: bool = False,
+    singles_with_missing_popularity: bool = False,
     clear_single_detection_sources: list = None,
     stop_progress_file: str = None,
     caller_scan_type: str = None,
@@ -3454,6 +3455,9 @@ def popularity_scan(
         force: Force re-scan of albums even if they were already scanned (also clears single detection cache)
         filter_missing: Only scan artists/albums with missing popularity data
         singles_only: Only rescan singles detection, skip popularity scoring
+        singles_with_missing_popularity: Run singles detection for all albums; only fetch popularity
+                                         data from external sources for albums that have no existing
+                                         popularity scores in the database.
         clear_single_detection_sources: List of sources to clear from cache (e.g., ['discogs', 'spotify'])
                                        If force=True, all sources are cleared automatically
         stop_progress_file: Optional progress file path used to cooperatively stop an in-flight scan
@@ -3476,7 +3480,7 @@ def popularity_scan(
         except Exception:
             return False
 
-    progress_scan_type = "singles_scan" if singles_only else "popularity_scan"
+    progress_scan_type = "singles_scan" if (singles_only or singles_with_missing_popularity) else "popularity_scan"
     progress_file_path = stop_progress_file or POPULARITY_PROGRESS_FILE
 
     if not skip_header:
@@ -3485,11 +3489,13 @@ def popularity_scan(
         log_info("Popularity Scanner Started")
         log_info("=" * 60)
         log_info(f"Popularity scan started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        log_debug(f"Popularity scan params - verbose: {verbose}, resume: {resume_from}, artist: {artist_filter}, album: {album_filter}, force: {force}, filter_missing: {filter_missing}, singles_only: {singles_only}")
+        log_debug(f"Popularity scan params - verbose: {verbose}, resume: {resume_from}, artist: {artist_filter}, album: {album_filter}, force: {force}, filter_missing: {filter_missing}, singles_only: {singles_only}, singles_with_missing_popularity: {singles_with_missing_popularity}")
 
     # Log scan mode details to info
     if singles_only:
         log_info("Singles-only mode enabled - will only rescan singles detection")
+    elif singles_with_missing_popularity:
+        log_info("Singles scan mode enabled - will run popularity scan only for albums with no existing popularity data")
     elif FORCE_RESCAN or force:
         log_info("Force rescan mode enabled - will rescan all albums regardless of scan history")
     else:
@@ -4614,6 +4620,19 @@ def popularity_scan(
                     log_unified(f'Singles Detection - Scanning Album {album} ({album_num}/{len(albums)})')
                     log_info(f'⏭️ SINGLES-ONLY MODE: Skipping popularity scan for "{artist} - {album}"')
                     log_info(f'🔍 Will proceed directly to singles detection')
+                elif singles_with_missing_popularity:
+                    # Smart singles scan: only fetch popularity from external sources when the album
+                    # has no existing popularity data in the database.
+                    log_unified(f'Singles Detection - Scanning Album {album} ({album_num}/{len(albums)})')
+                    if not (FORCE_RESCAN or force) and not album_filter:
+                        has_pop_data = any(int(t.get('popularity_score') or 0) > 0 for t in album_tracks)
+                        if has_pop_data:
+                            log_info(f'⏭️ SINGLES SCAN: Album "{artist} - {album}" already has popularity data - running singles detection only')
+                            skip_popularity_for_album = True
+                        else:
+                            log_info(f'📊 SINGLES SCAN: Album "{artist} - {album}" has no popularity data - running full popularity scan first')
+                    else:
+                        log_info(f'📊 SINGLES SCAN: Force mode - running full popularity scan for "{artist} - {album}"')
                 else:
                         # ------------------------------------------------------------------
                         # Fast "skip-if-unchanged" check: when not forced and not a targeted
