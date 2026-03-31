@@ -177,6 +177,13 @@ _MAX_QUEUE_EVENTS = 200
 # when many unmatched files are discovered at once.
 _MB_ENRICH_MAX_WORKERS = 1
 _MB_ENRICH_MAX_INFLIGHT = 12
+
+# How long (minutes) a newly-created 'unmatched' queue item must age before the
+# system performs an independent MusicBrainz text-search lookup on it.  Waiting
+# gives the slskd queue processor time to correctly match the file to an existing
+# queue entry (which already carries the right release MBID) before we do a
+# potentially wrong artist+album search.
+_UNMATCHED_MB_ENRICHMENT_DELAY_MINUTES = 120
 _mb_enrichment_executor = concurrent.futures.ThreadPoolExecutor(
     max_workers=_MB_ENRICH_MAX_WORKERS,
     thread_name_prefix="mb-enrich",
@@ -5332,6 +5339,47 @@ def _parse_folder_name_for_metadata(folder_path):
     return result
 
 
+def _enrich_stale_unmatched_queue_items():
+    """
+    Trigger background MusicBrainz enrichment for 'unmatched' queue items that:
+      - have no release_mbid / release_id yet, AND
+      - were created at least _UNMATCHED_MB_ENRICHMENT_DELAY_MINUTES ago.
+
+    Waiting before enriching gives the slskd queue processor time to correctly
+    match a downloaded file to an existing queue entry (which already carries
+    the right release MBID).  Enriching immediately after insertion risks
+    overwriting that MBID with a wrong text-search result (e.g. matching a
+    multi-track album song to its standalone single release).
+    """
+    try:
+        conn = _get_postgres_conn_from_app_or_fallback()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cursor.execute(
+            """
+            SELECT id, artist, title, album
+            FROM download_queue
+            WHERE status = 'unmatched'
+              AND (release_mbid IS NULL OR release_mbid = '')
+              AND (release_id   IS NULL OR release_id   = '')
+              AND file_path IS NOT NULL
+              AND created_at <= CURRENT_TIMESTAMP - %s * INTERVAL '1 minute'
+            LIMIT 50
+            """,
+            (_UNMATCHED_MB_ENRICHMENT_DELAY_MINUTES,)
+        )
+        rows = cursor.fetchall() or []
+        conn.close()
+        for row in rows:
+            queue_id = row.get('id') if isinstance(row, dict) else None
+            artist   = (row.get('artist') if isinstance(row, dict) else None) or ''
+            title    = (row.get('title')  if isinstance(row, dict) else None) or ''
+            album    = (row.get('album')  if isinstance(row, dict) else None) or ''
+            if queue_id and album:
+                _enqueue_musicbrainz_auto_enrichment(queue_id, artist, title, album)
+    except Exception as _e:
+        logger.debug(f"[ENRICH_STALE] Could not query stale unmatched items: {_e}")
+
+
 def auto_discover_and_queue_files():
     """
     Scan /downloads folder for audio files and add them to download_queue with status 'discovered'.
@@ -5398,6 +5446,12 @@ def auto_discover_and_queue_files():
         conn = _get_postgres_conn_from_app_or_fallback()
         is_pg = True
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        # Trigger deferred MusicBrainz enrichment for 'unmatched' items that are
+        # now old enough.  This runs every discovery cycle but each item is only
+        # enriched once (the inflight-dedup guard in _enqueue_musicbrainz_auto_enrichment
+        # prevents parallel duplicate tasks).
+        _enrich_stale_unmatched_queue_items()
 
         def _row_get(row, key, index=None, default=None):
             if row is None:
@@ -6116,39 +6170,14 @@ def auto_discover_and_queue_files():
                 if inserted_sig:
                     existing_queue_signatures.add(inserted_sig)
 
-                # Queue MusicBrainz enrichment in the background so scan throughput and
-                # UI responsiveness are not blocked by external API latency.
-                try:
-                    inserted_queue_id = None
-                    cursor.execute(
-                        f"""
-                        SELECT id
-                        FROM download_queue
-                        WHERE file_path = {placeholder}
-                        ORDER BY created_at DESC
-                        LIMIT 1
-                        """,
-                        (full_path,)
-                    )
-                    inserted_row = cursor.fetchone()
-                    if inserted_row:
-                        inserted_queue_id = _row_get(inserted_row, 'id', 0, None)
-
-                    _enqueue_musicbrainz_auto_enrichment(
-                        inserted_queue_id,
-                        artist,
-                        title,
-                        album,
-                    )
-                except Exception as mb_err:
-                    logger.debug(f"MusicBrainz auto-enrichment skipped for unmatched track: {mb_err}")
-                    # Any SQL error in the block above leaves the PostgreSQL transaction
-                    # in a failed state.  Roll back to allow subsequent files to proceed.
-                    if is_pg:
-                        try:
-                            conn.rollback()
-                        except Exception:
-                            pass
+                # MusicBrainz enrichment is intentionally deferred.  The slskd queue
+                # processor may still match this file to an existing queue entry
+                # (which already carries the correct release MBID) within the next
+                # few minutes.  Running a text-search lookup immediately risks
+                # overwriting that MBID with a wrong result (e.g. resolving
+                # a track to its standalone single instead of the parent album).
+                # _enrich_stale_unmatched_queue_items() will pick this item up
+                # after _UNMATCHED_MB_ENRICHMENT_DELAY_MINUTES have elapsed.
 
                 stats['queued'] += 1
 
@@ -6881,8 +6910,9 @@ def _auto_match_large_unmatched_folders(downloads_dir, min_track_count=9):
                 FROM download_queue
                 WHERE status = 'unmatched'
                   AND file_path LIKE {placeholder}
+                  AND created_at <= CURRENT_TIMESTAMP - {placeholder} * INTERVAL '1 minute'
                 """,
-                (f"{folder_prefix}%",),
+                (f"{folder_prefix}%", _UNMATCHED_MB_ENRICHMENT_DELAY_MINUTES),
             )
             unmatched_rows = cursor.fetchall() or []
             if not unmatched_rows:
