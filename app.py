@@ -4970,18 +4970,33 @@ def artists():
         artists_data = [dict(row) for row in cursor.fetchall()]
     
     # Sort by display_name, handling special characters and numbers that should be grouped under '#'
+    # Leading articles ("The", "A", "An") are stripped for sort purposes so e.g.
+    # "The Pretty Reckless" sorts under "P" not "T".
+    _SORT_ARTICLES = ("the ", "a ", "an ")
+
     def get_sort_key(artist):
         name = artist.get('display_name', '')
         if not name:
             return ('~', '')  # Sort empty names to the end
-        first_char = name[0].upper()
+        sort_name = name
+        lower = name.lower()
+        for article in _SORT_ARTICLES:
+            if lower.startswith(article):
+                sort_name = name[len(article):]
+                break
+        first_char = sort_name[0].upper() if sort_name else name[0].upper()
         # If first character is A-Z, use it; otherwise use '#' for sorting
         if first_char in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ':
-            return (first_char, name.lower())
+            return (first_char, sort_name.lower())
         else:
-            return ('#', name.lower())
+            return ('#', sort_name.lower())
     
     artists_data = sorted(artists_data, key=get_sort_key)
+
+    # Annotate each artist with its sort_letter so the template can build correct letter headers
+    for _artist in artists_data:
+        _sk = get_sort_key(_artist)
+        _artist['sort_letter'] = _sk[0] if _sk[0] != '~' else '#'
 
     # Build per-artist correction indicators (duplicates, missing core metadata, and duplicate artists)
     duplicate_counts_by_artist = {}
@@ -9965,7 +9980,7 @@ def _auto_queue_missing_singles_for_album_artist(artist: str, missing_releases: 
             result = add_to_queue(
                 artist=artist,
                 title=title,
-                album=None,
+                album=title,
                 source="soulseek",
                 priority=4,
                 import_type="song",
@@ -10101,7 +10116,7 @@ def _auto_queue_collection_artist_singles_from_release_groups(artist: str, relea
             result = add_to_queue(
                 artist=artist,
                 title=title,
-                album=None,
+                album=title,
                 source="soulseek",
                 priority=4,
                 import_type="song",
