@@ -21260,9 +21260,9 @@ def api_album_art(artist, album):
             result = cursor.fetchone()
             conn.close()
 
-            if result and result[0]:
-                image_data = result[0]
-                mime_type = result[1] or 'image/jpeg'
+            if result and result['image_data']:
+                image_data = result['image_data']
+                mime_type = result['image_mime_type'] or 'image/jpeg'
                 log_info(f"Album art found in local database for {artist} - {album}")
                 return send_file(
                     io.BytesIO(image_data),
