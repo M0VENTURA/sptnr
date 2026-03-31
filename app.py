@@ -3775,11 +3775,16 @@ def _schedule_configured_startup_scan_launch():
             if should_resume:
                 if scan_type == "singles":
                     mode = "singles_resume_force" if force_enabled else "singles_resume"
+                elif scan_type == "singles-detection":
+                    mode = "singles_detection_force" if force_enabled else "singles_detection"
                 else:
                     mode = "resume_force" if force_enabled else "resume"
                 effective_restart = False
         except Exception as resume_err:
             logging.warning(f"[BOOT] Could not evaluate resume state for {scan_type}: {resume_err}")
+
+        if scan_type == "singles-detection" and mode in ("force", "all"):
+            mode = "singles_detection_force" if force_enabled else "singles_detection"
 
         return mode, effective_restart, resume_artist
 
@@ -3816,6 +3821,7 @@ def _schedule_configured_startup_scan_launch():
                 "metadata": ("scan_mp3_import", "/scan/mp3-import"),
                 "popularity": ("scan_popularity_route", "/scan/popularity"),
                 "singles": ("scan_popularity_route", "/scan/popularity"),
+                "singles-detection": ("scan_popularity_route", "/scan/popularity"),
                 "essentia-mood": ("scan_essentia_mood", "/scan/essentia-mood"),
                 "combined": ("scan_combined", "/scan/combined"),
             }
@@ -14330,7 +14336,7 @@ def scan_popularity_route():
     global scan_process_popularity
     
     # Get scan mode from query parameters (default: "all")
-    mode = request.args.get('mode', 'all')  # all, force, missing, singles, singles_resume, singles_resume_force, resume, resume_force
+    mode = request.args.get('mode', 'all')  # all, force, missing, singles, singles_resume, singles_resume_force, singles_detection, singles_detection_force, resume, resume_force
     restart_requested = str(request.args.get('restart', '0')).strip().lower() in ('1', 'true', 'yes', 'on')
     force_start = str(request.args.get('force_start', '0')).strip().lower() in ('1', 'true', 'yes', 'on')
     
@@ -14359,8 +14365,8 @@ def scan_popularity_route():
                     except Exception as checkpoint_err:
                         logging.warning(f"Restart requested but failed to clear popularity checkpoint: {checkpoint_err}")
             
-            # Use different progress files for singles-only mode
-            if mode in ('singles', 'singles_resume', 'singles_resume_force'):
+            # Use different progress files for singles-only / singles-detection modes
+            if mode in ('singles', 'singles_resume', 'singles_resume_force', 'singles_detection', 'singles_detection_force'):
                 popularity_progress_file = os.path.join(db_dir, "singles_scan_progress.json")
                 _write_progress_file(popularity_progress_file, "singles_scan", True, {"status": "starting"})
             else:
@@ -14371,9 +14377,10 @@ def scan_popularity_route():
             from popularity import popularity_scan as scan_popularity_func
             
             # Determine force and filter logic based on mode
-            force_rescan = (mode == 'force' or mode == 'resume_force' or mode == 'singles_resume_force')
+            force_rescan = (mode == 'force' or mode == 'resume_force' or mode == 'singles_resume_force' or mode == 'singles_detection_force')
             filter_missing = (mode == 'missing')
             singles_only = mode in ('singles', 'singles_resume', 'singles_resume_force')
+            singles_with_missing_popularity = mode in ('singles_detection', 'singles_detection_force')
             
             # Determine resume artist for resume mode
             resume_from_artist = None
@@ -14404,6 +14411,21 @@ def scan_popularity_route():
                             _write_progress_with_current_artist(popularity_progress_file, "singles_scan", False, {"status": "complete", "exit_code": 0})
                             logging.info("Singles scan completed successfully")
                             _log_scan_session_complete("singles")
+                    elif singles_with_missing_popularity:
+                        logging.info(f"Starting singles scan (with popularity fetch for new albums) in background (force={force_rescan})")
+                        completed = scan_popularity_func(
+                            verbose=False,
+                            force=force_rescan,
+                            singles_with_missing_popularity=True,
+                            stop_progress_file=popularity_progress_file
+                        )
+                        if completed is False:
+                            _write_progress_with_current_artist(popularity_progress_file, "singles_scan", False, {"status": "stopped", "exit_code": 0})
+                            logging.info("Singles scan stopped by user request")
+                        else:
+                            _write_progress_with_current_artist(popularity_progress_file, "singles_scan", False, {"status": "complete", "exit_code": 0})
+                            logging.info("Singles scan completed successfully")
+                            _log_scan_session_complete("singles")
                     else:
                         logging.info(f"Starting popularity score scan in background (force={force_rescan}, filter_missing={filter_missing}, resume_from={resume_from_artist})")
                         completed = scan_popularity_func(
@@ -14422,13 +14444,16 @@ def scan_popularity_route():
                             _log_scan_session_complete("popularity")
                 except Exception as e:
                     logging.error(f"Error in popularity scan: {e}", exc_info=True)
-                    _write_progress_with_current_artist(popularity_progress_file, "popularity_scan" if not singles_only else "singles_scan", False, {"status": "error", "error": str(e), "exit_code": 1})
+                    scan_type_label = "singles_scan" if (singles_only or singles_with_missing_popularity) else "popularity_scan"
+                    _write_progress_with_current_artist(popularity_progress_file, scan_type_label, False, {"status": "error", "error": str(e), "exit_code": 1})
             
             scan_thread = threading.Thread(target=run_popularity_scan_bg, daemon=False)
             scan_thread.start()
             scan_process_popularity = {'thread': scan_thread, 'type': 'popularity'}
             
-            if singles_only:
+            if singles_with_missing_popularity:
+                flash("✅ Singles scan started (fetches popularity only for new albums)", "success")
+            elif singles_only:
                 flash("✅ Singles detection scan started (popularity only)", "success")
             else:
                 mode_desc = {
