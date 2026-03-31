@@ -1178,7 +1178,7 @@ class CoverDetector:
                 SELECT 1 FROM tracks
                 WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER({self.placeholder})
                   AND LOWER(title) = LOWER({self.placeholder})
-                  AND (is_cover IS NULL OR NOT is_cover)
+                                    AND COALESCE(is_cover, 0) = 0
                 LIMIT 1
                 """,
                 (artist, title),

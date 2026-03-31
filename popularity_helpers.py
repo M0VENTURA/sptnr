@@ -32,6 +32,25 @@ from helpers.db_utils import _is_postgres_connection
 Z_SCORE_MIDPOINT = 50.0
 Z_SCORE_TO_POPULARITY_SCALE = 16.7
 _TRACKS_COLUMN_CACHE: Dict[str, set[str]] = {}
+_TRACKS_COLUMN_TYPES_CACHE: Dict[str, Dict[str, str]] = {}
+
+_PG_INT_TYPES = {
+    "smallint",
+    "integer",
+    "bigint",
+    "int2",
+    "int4",
+    "int8",
+}
+_PG_FLOAT_TYPES = {
+    "real",
+    "double precision",
+    "numeric",
+    "decimal",
+    "float4",
+    "float8",
+}
+_PG_BOOL_TYPES = {"boolean", "bool"}
 
 
 def _get_tracks_table_columns(cursor) -> set[str]:
@@ -55,6 +74,97 @@ def _get_tracks_table_columns(cursor) -> set[str]:
 
     _TRACKS_COLUMN_CACHE[cache_key] = columns
     return columns
+
+
+def _get_tracks_table_column_types(cursor) -> Dict[str, str]:
+    """Return cached mapping of tracks column -> PostgreSQL type name."""
+    cache_key = "postgres"
+    cached = _TRACKS_COLUMN_TYPES_CACHE.get(cache_key)
+    if cached:
+        return cached
+
+    cursor.execute(
+        """
+        SELECT column_name, data_type, udt_name
+        FROM information_schema.columns
+        WHERE table_name = 'tracks' AND table_schema = 'public'
+        """
+    )
+    column_types: Dict[str, str] = {}
+    for row in cursor.fetchall():
+        column_name = row.get("column_name") if hasattr(row, "get") else row[0]
+        data_type = row.get("data_type") if hasattr(row, "get") else row[1]
+        udt_name = row.get("udt_name") if hasattr(row, "get") else row[2]
+        normalized_type = (data_type or udt_name or "").lower()
+        if not normalized_type and udt_name:
+            normalized_type = str(udt_name).lower()
+        column_types[column_name] = normalized_type
+
+    _TRACKS_COLUMN_TYPES_CACHE[cache_key] = column_types
+    return column_types
+
+
+def _coerce_track_value_for_pg_type(column: str, value, pg_type: str):
+    """Normalize track values to match PostgreSQL column types."""
+    if value is None:
+        return None
+
+    normalized_type = (pg_type or "").lower()
+    stripped = value.strip() if isinstance(value, str) else value
+
+    if normalized_type in _PG_INT_TYPES:
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str):
+            if stripped == "":
+                return None
+            try:
+                return int(float(stripped))
+            except ValueError:
+                logging.debug(
+                    f"save_to_db coercion: invalid integer for column {column}: {value!r}; storing NULL"
+                )
+                return None
+
+    if normalized_type in _PG_FLOAT_TYPES:
+        if isinstance(value, bool):
+            return float(int(value))
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            if stripped == "":
+                return None
+            try:
+                return float(stripped)
+            except ValueError:
+                logging.debug(
+                    f"save_to_db coercion: invalid float for column {column}: {value!r}; storing NULL"
+                )
+                return None
+
+    if normalized_type in _PG_BOOL_TYPES:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(int(value))
+        if isinstance(value, str):
+            if stripped == "":
+                return None
+            lowered = stripped.lower()
+            if lowered in {"1", "t", "true", "y", "yes", "on"}:
+                return True
+            if lowered in {"0", "f", "false", "n", "no", "off"}:
+                return False
+            logging.debug(
+                f"save_to_db coercion: invalid boolean for column {column}: {value!r}; storing NULL"
+            )
+            return None
+
+    return value
 
 
 def calculate_track_zscore(score: float, mean: float, stddev: float) -> float:
@@ -870,12 +980,23 @@ def save_to_db(track_data):
     # from aborting the entire track save and poisoning the transaction.
     try:
         existing_track_columns = _get_tracks_table_columns(cursor)
+        existing_track_column_types = _get_tracks_table_column_types(cursor)
         dropped_keys = [key for key in list(sanitized_data.keys()) if key not in existing_track_columns]
         for key in dropped_keys:
             sanitized_data.pop(key, None)
         if dropped_keys:
             logging.warning(
                 f"save_to_db dropped unknown tracks column(s): {', '.join(sorted(dropped_keys))}"
+            )
+
+        # Ensure values match Postgres column types (prevents "invalid input syntax"
+        # errors such as empty strings being written into BIGINT columns).
+        for key in list(sanitized_data.keys()):
+            column_type = existing_track_column_types.get(key, "")
+            sanitized_data[key] = _coerce_track_value_for_pg_type(
+                key,
+                sanitized_data[key],
+                column_type,
             )
     except Exception as schema_err:
         logging.debug(f"save_to_db could not inspect tracks schema before upsert: {schema_err}")
