@@ -78,14 +78,12 @@ def _get_db_connection():
 
 
 def _cursor(conn):
-    """Return a dict-capable cursor for PG and a standard cursor for SQLite."""
-    if _is_postgres_connection(conn):
-        return conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    return conn.cursor()
+    """Return a dict-capable cursor."""
+    return conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
 
 def _placeholder(conn):
-    return "%s" if _is_postgres_connection(conn) else "?"
+    return "%s"
 
 
 def _row_get(row, key, default=None):

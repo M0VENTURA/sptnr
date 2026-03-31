@@ -238,8 +238,8 @@ def sync_navidrome_to_db():
                 # Get track count before import
                 conn = get_db_connection()
                 cursor = conn.cursor()
-                cursor.execute("SELECT COUNT(*) FROM tracks WHERE artist = ?", (artist,))
-                before_count = cursor.fetchone()[0]
+                cursor.execute("SELECT COUNT(*) AS track_count FROM tracks WHERE artist = %s", (artist,))
+                before_count = cursor.fetchone()['track_count']
                 conn.close()
                 
                 # Import from Navidrome
@@ -249,8 +249,8 @@ def sync_navidrome_to_db():
                 # Get track count after import
                 conn = get_db_connection()
                 cursor = conn.cursor()
-                cursor.execute("SELECT COUNT(*) FROM tracks WHERE artist = ?", (artist,))
-                after_count = cursor.fetchone()[0]
+                cursor.execute("SELECT COUNT(*) AS track_count FROM tracks WHERE artist = %s", (artist,))
+                after_count = cursor.fetchone()['track_count']
                 conn.close()
                 
                 # Calculate new tracks
