@@ -1544,6 +1544,39 @@ def maybe_check_missing_moved_files(now_ts, last_run_ts, interval_seconds=300):
 
     return now_ts
 
+
+def maybe_cleanup_stale_downloads(now_ts, last_run_ts, interval_seconds=3600):
+    """
+    Periodically delete files in the downloads folder that are outside the 'torrents'
+    subfolder and older than 24 hours.  Runs every hour by default as a safety net
+    independent of the auto-discovery setting.
+
+    Args:
+        now_ts: Current timestamp
+        last_run_ts: Timestamp of last run
+        interval_seconds: Interval between checks (default 3600 seconds = 1 hour)
+
+    Returns:
+        Updated last-run timestamp
+    """
+    if last_run_ts is not None and (now_ts - last_run_ts) < interval_seconds:
+        return last_run_ts
+
+    try:
+        from download_queue_manager import get_downloads_dir, cleanup_stale_non_torrent_downloads
+
+        downloads_dir = get_downloads_dir()
+        deleted = cleanup_stale_non_torrent_downloads(downloads_dir)
+        if deleted > 0:
+            logger.info(f"[STALE-CLEANUP] Deleted {deleted} stale non-torrent file(s)")
+        else:
+            logger.debug("[STALE-CLEANUP] No stale non-torrent files found")
+    except Exception as e:
+        logger.error(f"[STALE-CLEANUP] Error during stale downloads cleanup: {e}")
+
+    return now_ts
+
+
 def run_processor(interval=30):
     """Run queue processor loop"""
     logger.info("=== Queue Processor Started ===")
@@ -1559,7 +1592,8 @@ def run_processor(interval=30):
     last_mb_check_ts = None
     last_mb_finalize_ts = None
     last_verify_ts = None
-    
+    last_stale_cleanup_ts = None
+
     try:
         while True:
             try:
@@ -1571,6 +1605,7 @@ def run_processor(interval=30):
                 last_mb_check_ts = maybe_check_musicbrainz_files(now_ts, last_mb_check_ts)
                 last_mb_finalize_ts = maybe_finalize_musicbrainz_releases(now_ts, last_mb_finalize_ts)
                 last_verify_ts = maybe_check_missing_moved_files(now_ts, last_verify_ts)
+                last_stale_cleanup_ts = maybe_cleanup_stale_downloads(now_ts, last_stale_cleanup_ts)
                 
                 processed = process_queue(client)
                 

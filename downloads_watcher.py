@@ -637,15 +637,17 @@ def add_to_database(file_info, metadata, source_file_path=None):
         return False
 
 def scan_downloads_folder():
-    """Scan downloads folder recursively for MP3/FLAC files."""
+    """Scan torrents subfolder of downloads directory recursively for MP3/FLAC files."""
     downloads_dir = get_downloads_dir()
-    if not os.path.exists(downloads_dir):
-        logger.warning(f"Downloads folder not found: {downloads_dir}")
+    torrents_dir = os.path.join(downloads_dir, 'torrents')
+
+    if not os.path.exists(torrents_dir):
+        logger.info(f"Torrents subfolder not found: {torrents_dir} - skipping scan")
         return []
-    
+
     results = []
 
-    for root, _, files in os.walk(downloads_dir):
+    for root, _, files in os.walk(torrents_dir):
         for filename in files:
             if not filename.lower().endswith((".mp3", ".flac")):
                 continue
