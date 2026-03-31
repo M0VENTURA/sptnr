@@ -1147,6 +1147,9 @@ async function loadUpcomingReleasesBanner() {
         
         let releases = data.releases.slice();
 
+        // Remove albums already in the collection – nothing to do for those.
+        releases = releases.filter(r => !r.album_in_collection);
+
         // Dashboard window: last 2 weeks + upcoming month.
         const now = new Date();
         const twoWeeksAgo = new Date(now);
@@ -1190,16 +1193,14 @@ async function loadUpcomingReleasesBanner() {
             const recommendedBadge = release.artist_in_recommended
                 ? '<span class="badge bg-warning text-dark ms-2">Artist in Recommended</span>'
                 : '';
+            const inQueueBadge = release.in_queue
+                ? '<span class="badge bg-info text-dark ms-2">In Queue</span>'
+                : '';
 
-            const inCollection = !!release.album_in_collection;
-            const inQueue = !!release.in_queue;
-            const disableAdd = inCollection || inQueue;
-            const addIcon = disableAdd
+            const addIcon = release.in_queue
                 ? '<i class="bi bi-check2-circle"></i>'
                 : '<i class="bi bi-plus-circle"></i>';
-            const addTitle = inCollection
-                ? 'Already in collection'
-                : (inQueue ? 'Already in queue' : 'Add album to queue');
+            const addTitle = release.in_queue ? 'Already in queue' : 'Add album to queue';
 
             const encodedArtist = encodeURIComponent(release.artist_name || '');
             const encodedAlbum = encodeURIComponent(release.album_name || '');
@@ -1211,7 +1212,7 @@ async function loadUpcomingReleasesBanner() {
                 <div class="list-group-item d-flex justify-content-between align-items-start py-2">
                     <div class="flex-grow-1">
                         <h6 class="mb-1" style="font-size: 0.95rem;">
-                            ${releaseDate} ${statusBadge} ${collectionBadge} ${recommendedBadge}
+                            ${releaseDate} ${statusBadge} ${collectionBadge} ${recommendedBadge} ${inQueueBadge}
                         </h6>
                         <small class="text-muted">${escapeHtml(release.artist_name)} - ${escapeHtml(release.album_name)}</small>
                     </div>
@@ -1221,7 +1222,7 @@ async function loadUpcomingReleasesBanner() {
                             onclick='searchMusicBrainzRelease(event, ${searchArtistArg}, ${searchAlbumArg})'>
                             <i class="bi bi-search"></i>
                         </button>
-                        <button class="btn btn-sm btn-outline-primary" ${disableAdd ? 'disabled' : ''}
+                        <button class="btn btn-sm btn-outline-primary" ${release.in_queue ? 'disabled' : ''}
                             title="${addTitle}"
                             onclick="addUpcomingReleaseToQueueDashboard('${encodedArtist}', '${encodedAlbum}', '${encodedDate}', this)">
                             ${addIcon}

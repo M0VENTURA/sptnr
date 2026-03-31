@@ -14,9 +14,156 @@ import time
 from typing import Optional, Dict, List, Tuple
 from pathlib import Path
 
+import requests as _requests
+
 from api_clients.musicbrainz import _VERSION as MUSICBRAINZ_VERSION
 
 logger = logging.getLogger(__name__)
+
+_MB_BASE_URL = "https://musicbrainz.org/ws/2"
+_MB_HEADERS = {
+    "User-Agent": f"sptnr/{MUSICBRAINZ_VERSION} (+https://github.com/M0VENTURA/sptnr)",
+    "Accept": "application/json",
+}
+_MB_RATE_LIMIT = 1.1  # seconds between requests per MusicBrainz policy
+
+
+class _MusicBrainzRestClient:
+    """
+    REST-based MusicBrainz client for cover detection.
+
+    Uses the MusicBrainz JSON API (v2) directly via *requests*, returning
+    dicts whose structure matches what the cover-detection logic expects
+    (i.e. the same field names used by musicbrainzngs XML responses).
+    """
+
+    def __init__(self) -> None:
+        self._last_request: float = 0.0
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _get(self, path: str, params: Optional[dict] = None) -> dict:
+        """Rate-limited GET to the MusicBrainz JSON API."""
+        elapsed = time.monotonic() - self._last_request
+        if elapsed < _MB_RATE_LIMIT:
+            time.sleep(_MB_RATE_LIMIT - elapsed)
+        try:
+            full_params = dict(params or {})
+            full_params["fmt"] = "json"
+            resp = _requests.get(
+                f"{_MB_BASE_URL}/{path}",
+                params=full_params,
+                headers=_MB_HEADERS,
+                timeout=(6, 20),
+            )
+            self._last_request = time.monotonic()
+            resp.raise_for_status()
+            return resp.json() or {}
+        except Exception as exc:
+            logger.debug("MusicBrainz REST request failed for '%s': %s", path, exc)
+            self._last_request = time.monotonic()
+            return {}
+
+    @staticmethod
+    def _split_relations(data: dict) -> None:
+        """
+        Normalise the JSON API ``relations`` list (all relation types in one
+        array) into the separate ``work-relation-list`` / ``artist-relation-list``
+        arrays expected by the cover-detection logic.
+        Mutates *data* in-place.
+        """
+        relations = data.pop("relations", None) or []
+        work_rels: List[dict] = []
+        artist_rels: List[dict] = []
+        for rel in relations:
+            if not isinstance(rel, dict):
+                continue
+            if isinstance(rel.get("work"), dict):
+                work_rels.append(rel)
+            elif isinstance(rel.get("artist"), dict):
+                artist_rels.append(rel)
+        data.setdefault("work-relation-list", work_rels)
+        data.setdefault("artist-relation-list", artist_rels)
+
+    # ------------------------------------------------------------------
+    # Public API (mirrors the subset of musicbrainzngs used here)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _esc(value: str) -> str:
+        """
+        Escape a Lucene query value for safe embedding inside double-quotes.
+        Only the double-quote and backslash characters need escaping when the
+        value is wrapped in quotes (as in ``field:"<value>"``).
+        """
+        return value.replace("\\", "\\\\").replace('"', '\\"')
+
+    def set_useragent(self, *args, **kwargs) -> None:  # noqa: D401
+        """No-op – user-agent is set globally via _MB_HEADERS."""
+
+    def search_works(self, work: str = "", artist: str = "", limit: int = 25) -> dict:
+        """
+        Search for MusicBrainz works by title and composer/writer.
+        Returns ``{"work-list": [...]}``.
+        """
+        parts: List[str] = []
+        if work:
+            parts.append(f'work:"{self._esc(work)}"')
+        if artist:
+            parts.append(f'artist:"{self._esc(artist)}"')
+        query = " AND ".join(parts) if parts else "*"
+        data = self._get("work", {"query": query, "limit": limit})
+        return {"work-list": data.get("works", [])}
+
+    def search_recordings(self, recording: str = "", limit: int = 25) -> dict:
+        """
+        Search for MusicBrainz recordings by title.
+        Returns ``{"recording-list": [...]}``.
+        """
+        query = f'recording:"{self._esc(recording)}"' if recording else "*"
+        data = self._get("recording", {"query": query, "limit": limit})
+        return {"recording-list": data.get("recordings", [])}
+
+    def get_recording_by_id(self, mbid: str, includes: Optional[List[str]] = None) -> dict:
+        """
+        Fetch a recording by MBID with optional includes.
+        Returns ``{"recording": {...}}`` with normalised relation lists.
+        """
+        inc = "+".join(includes or [])
+        data = self._get(f"recording/{mbid}", {"inc": inc} if inc else {})
+        # Normalise: rename releases list and split relations
+        if "releases" in data:
+            data["release-list"] = data.pop("releases")
+        self._split_relations(data)
+        return {"recording": data}
+
+    def get_work_by_id(self, work_id: str, includes: Optional[List[str]] = None) -> dict:
+        """
+        Fetch a work by ID with optional includes.
+        Returns ``{"work": {...}}`` with normalised artist-relation-list.
+        """
+        inc = "+".join(includes or [])
+        data = self._get(f"work/{work_id}", {"inc": inc} if inc else {})
+        self._split_relations(data)
+        return {"work": data}
+
+    def get_release_by_id(self, release_id: str, includes: Optional[List[str]] = None) -> dict:
+        """
+        Fetch a release by ID with optional includes.
+        Returns ``{"release": {...}}`` with normalised medium/track lists.
+        """
+        inc = "+".join(includes or [])
+        data = self._get(f"release/{release_id}", {"inc": inc} if inc else {})
+        # Normalise media list
+        if "media" in data:
+            media = data.pop("media") or []
+            for medium in media:
+                if "tracks" in medium:
+                    medium["track-list"] = medium.pop("tracks")
+            data["medium-list"] = media
+        return {"release": data}
 
 
 def _canonical_track_title(value: str) -> str:
@@ -198,15 +345,9 @@ class CoverDetector:
 
         return []
 
-    def _configure_musicbrainzngs(self):
-        """Ensure musicbrainzngs identifies itself with the app user agent."""
-        try:
-            import musicbrainzngs as mb
-            mb.set_useragent("sptnr", MUSICBRAINZ_VERSION, "https://github.com/M0VENTURA/sptnr")
-            return mb
-        except Exception as e:
-            logger.debug(f"Failed to configure musicbrainzngs user agent: {e}")
-            return None
+    def _configure_mb_client(self) -> _MusicBrainzRestClient:
+        """Return a MusicBrainz REST client for cover-detection lookups."""
+        return _MusicBrainzRestClient()
     
     def detect_covers_for_album(self, album: str, artist: str, tracks: List[Dict]) -> List[Dict]:
         """
@@ -402,12 +543,20 @@ class CoverDetector:
         return cover_results
 
     def _extract_cover_work_ids(self, recording: Dict) -> set:
-        """Extract work IDs linked by MB "cover" relations from a recording payload."""
+        """Extract work IDs linked by MB "cover" performance relations from a recording payload."""
         work_ids = set()
         for rel in recording.get('work-relation-list', []) or []:
+            if not isinstance(rel, dict):
+                continue
             rel_type = str(rel.get('type', '')).strip().lower()
             rel_direction = str(rel.get('direction', '')).strip().lower()
-            if rel_type != 'cover':
+            # In MusicBrainz a cover song has a 'performance' work relation
+            # with 'cover' listed in its attributes.  (The type is never
+            # literally 'cover' — that was a previous misread of the API.)
+            if rel_type != 'performance':
+                continue
+            attributes = rel.get('attributes') or rel.get('attribute-list') or []
+            if 'cover' not in [str(a).lower() for a in attributes]:
                 continue
             # "forward" means this recording is a cover of the linked work.
             if rel_direction and rel_direction != 'forward':
@@ -420,9 +569,7 @@ class CoverDetector:
     def _find_original_from_cover_relation(self, recording_mbid: str, title: str, album_artist: Optional[str] = None) -> Optional[Dict]:
         """Resolve likely original artist/year from MB cover relations on a recording."""
         try:
-            mb = self._configure_musicbrainzngs()
-            if mb is None:
-                return None
+            mb = self._configure_mb_client()
 
             seed_result = mb.get_recording_by_id(
                 recording_mbid,
@@ -588,9 +735,7 @@ class CoverDetector:
 
         search_artist = str(track.get('artist') or album_artist or '').strip()
         release_mbid = str(track.get('musicbrainz_album_mbid') or '').strip()
-        mb = self._configure_musicbrainzngs()
-        if mb is None:
-            return None
+        mb = self._configure_mb_client()
 
         target_title = _canonical_track_title(title)
 
@@ -716,10 +861,8 @@ class CoverDetector:
             List of writer names
         """
         try:
-            mb = self._configure_musicbrainzngs()
-            if mb is None:
-                return []
-            
+            mb = self._configure_mb_client()
+
             result = mb.get_recording_by_id(
                 mbid,
                 includes=['artist-rels', 'work-rels']
@@ -857,9 +1000,7 @@ class CoverDetector:
     def _find_original_recording(self, title: str, writer: str, album_artist: Optional[str] = None) -> Optional[Dict]:
         """Find earliest likely original recording for a title/writer pair."""
         try:
-            mb = self._configure_musicbrainzngs()
-            if mb is None:
-                return None
+            mb = self._configure_mb_client()
 
             # First query works by title+writer. This mirrors the MusicBrainz web
             # Works view and gives us canonical writer-linked work IDs.
