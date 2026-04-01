@@ -3328,6 +3328,7 @@ def popularity_scan(
     filter_missing: bool = False,
     singles_only: bool = False,
     singles_with_missing_popularity: bool = False,
+    metadata_only: bool = False,
     clear_single_detection_sources: list = None,
     stop_progress_file: str = None,
     caller_scan_type: str = None,
@@ -3347,6 +3348,8 @@ def popularity_scan(
         singles_with_missing_popularity: Run singles detection for all albums; only fetch popularity
                                          data from external sources for albums that have no existing
                                          popularity scores in the database.
+        metadata_only: Run metadata enrichment lookups only (tags/writer/album context/missing track checks);
+                   skip popularity scoring, singles detection, and star assignments.
         clear_single_detection_sources: List of sources to clear from cache (e.g., ['discogs', 'spotify'])
                                        If force=True, all sources are cleared automatically
         stop_progress_file: Optional progress file path used to cooperatively stop an in-flight scan
@@ -3369,7 +3372,12 @@ def popularity_scan(
         except Exception:
             return False
 
-    progress_scan_type = "singles_scan" if (singles_only or singles_with_missing_popularity) else "popularity_scan"
+    if metadata_only:
+        progress_scan_type = "metadata_lookup_scan"
+    elif singles_only or singles_with_missing_popularity:
+        progress_scan_type = "singles_scan"
+    else:
+        progress_scan_type = "popularity_scan"
     progress_file_path = stop_progress_file or POPULARITY_PROGRESS_FILE
 
     if not skip_header:
@@ -3385,6 +3393,8 @@ def popularity_scan(
         log_info("Singles-only mode enabled - will only rescan singles detection")
     elif singles_with_missing_popularity:
         log_info("Singles scan mode enabled - will run popularity scan only for albums with no existing popularity data")
+    elif metadata_only:
+        log_info("Metadata-only mode enabled - will run metadata lookups without popularity/singles/star scoring")
     elif FORCE_RESCAN or force:
         log_info("Force rescan mode enabled - will rescan all albums regardless of scan history")
     else:
@@ -3441,18 +3451,18 @@ def popularity_scan(
         if conn_for_cache:
             conn_for_cache.close()
 
-    # Initialize popularity helpers to configure Spotify client
-    from popularity_helpers import configure_popularity_helpers
-    try:
-        configure_popularity_helpers()
-        if not skip_header:
-            log_info("Spotify client configured successfully")
-        log_debug("Spotify client configuration complete")
-    except Exception as e:
-        log_info(f"Warning: Failed to configure Spotify client: {e}")
-        log_info("Popularity scan will continue but Spotify lookups may fail")
-        import traceback
-        log_debug(f"Configuration error details: {traceback.format_exc()}")
+    if not metadata_only:
+        # Initialize popularity helpers for legacy popularity scan paths.
+        from popularity_helpers import configure_popularity_helpers
+        try:
+            configure_popularity_helpers()
+            if not skip_header:
+                log_info("Popularity helpers configured successfully")
+            log_debug("Popularity helper configuration complete")
+        except Exception as e:
+            log_info(f"Warning: Failed to configure popularity helpers: {e}")
+            import traceback
+            log_debug(f"Configuration error details: {traceback.format_exc()}")
 
     log_debug("Connecting to database for popularity scan...")
     conn = None
@@ -3463,28 +3473,20 @@ def popularity_scan(
         # Determine database type for proper placeholder syntax
         placeholder = "%s"
 
-        # Load strict matching configuration from config.yaml
+        # Load configuration from config.yaml
         # Initialize config to empty dict to ensure it's always defined
         config = {}
-        strict_spotify_matching = False
-        duration_tolerance_sec = 2
         album_skip_days = 7  # Default value
         try:
             config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
             with open(config_path, 'r') as f:
                 config = yaml.safe_load(f)
             features = config.get('features', {})
-            strict_spotify_matching = features.get('strict_spotify_matching', False)
-            duration_tolerance_sec = features.get('spotify_duration_tolerance', 2)
             album_skip_days = features.get('album_skip_days', 7)
-            log_debug(f"Configuration loaded - strict_spotify_matching: {strict_spotify_matching}, duration_tolerance: {duration_tolerance_sec}s, album_skip_days: {album_skip_days}")
-            if strict_spotify_matching:
-                log_info(f"Strict Spotify matching enabled (duration tolerance: ⏱{duration_tolerance_sec}s)")
-            else:
-                log_info("Standard Spotify matching mode (highest popularity)")
+            log_debug(f"Configuration loaded - album_skip_days: {album_skip_days}")
             log_info(f"Album skip days: {album_skip_days} (albums scanned within {album_skip_days} days will be skipped)")
         except Exception as e:
-            log_debug(f"Could not load strict matching config (using defaults): {e}")
+            log_debug(f"Could not load scan config (using defaults): {e}")
 
         # Build SQL query with optional filters
         sql_conditions = []
@@ -3499,7 +3501,7 @@ def popularity_scan(
         sql_params.append('queue_%')
 
         # Only filter by popularity_score if not forcing rescan
-        if not (FORCE_RESCAN or force):
+        if not (FORCE_RESCAN or force) and not metadata_only:
             sql_conditions.append("(popularity_score IS NULL OR popularity_score = 0)")
 
         if artist_filter:
@@ -3611,21 +3613,21 @@ def popularity_scan(
 
         # Determine which APIs are enabled
         enabled_apis = []
-        # Check if Spotify is available based on configuration
         try:
             config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
             with open(config_path, 'r') as f:
                 config = yaml.safe_load(f)
-            if config.get("api_integrations", {}).get("spotify", {}).get("enabled", True):
-                enabled_apis.append("Spotify")
             if config.get("api_integrations", {}).get("lastfm", {}).get("api_key"):
                 enabled_apis.append("Last.FM")
             if config.get("api_integrations", {}).get("listenbrainz", {}).get("token"):
                 enabled_apis.append("ListenBrainz")
+            if config.get("api_integrations", {}).get("discogs", {}).get("enabled", False):
+                enabled_apis.append("Discogs")
+            if config.get("api_integrations", {}).get("musicbrainz", {}).get("enabled", True):
+                enabled_apis.append("MusicBrainz")
         except (FileNotFoundError, yaml.YAMLError, KeyError, AttributeError) as e:
             log_debug(f"Could not load API configuration: {e}")
-            # If config loading fails, default to Spotify enabled for backward compatibility
-            enabled_apis.append("Spotify")
+            enabled_apis.extend(["Last.FM", "Discogs", "MusicBrainz"])
 
         mature_track_freeze_cutoff_years = get_mature_track_freeze_cutoff_years(config, default_years=2)
 
@@ -4476,7 +4478,7 @@ def popularity_scan(
                         #   * Either condition missing → run the appropriate pass
                         #   * force=True or album_filter set → bypass this check entirely
                         # ------------------------------------------------------------------
-                        if not (FORCE_RESCAN or force) and not album_filter:
+                        if not (FORCE_RESCAN or force) and not album_filter and not metadata_only:
                             try:
                                 total_in_album = len(album_tracks)
                                 if total_in_album > 0:
@@ -4527,7 +4529,7 @@ def popularity_scan(
                                 log_debug(f"skip-if-unchanged check failed for '{artist} - {album}': {_unch_err}")
 
                         # Check if album was already scanned (unless force rescan is enabled)
-                        if not (FORCE_RESCAN or force) and was_album_scanned(artist, album, 'popularity', album_skip_days):
+                        if not (FORCE_RESCAN or force) and not metadata_only and was_album_scanned(artist, album, 'popularity', album_skip_days):
                             log_unified(f'Popularity Scan - Skipping album "{album}" (scanned within last {album_skip_days} days)')
                             log_info(f'⏱️ Album "{artist} - {album}" was already scanned within {album_skip_days} days - POPULARITY SKIP')
                             skipped_count += 1
@@ -5223,7 +5225,7 @@ def popularity_scan(
                     log_info(f'ℹ️ No writer updates needed for album "{album}" (all tracks already have writer data or MusicBrainz unavailable)')
 
                 # In singles_only mode, skip all popularity scoring
-                if not singles_only and not skip_popularity_for_album:
+                if not singles_only and not skip_popularity_for_album and not metadata_only:
                     # Batch updates for this album (commit once at end instead of per-track)
                     track_updates = []
 
@@ -5244,7 +5246,7 @@ def popularity_scan(
                         log_info(f"Singles-only mode for album '{album}': all popularity processing skipped")
                     track_updates = []
 
-                if not singles_only and not skip_popularity_for_album:
+                if not singles_only and not skip_popularity_for_album and not metadata_only:
                     for track in album_tracks:
                         track_id = track["id"]
                         title = track["title"]
@@ -5618,7 +5620,7 @@ def popularity_scan(
                             milestones_logged.add(75)
 
 # Batch update all popularity scores and genre sources for this album in one commit (skipped in singles_only mode)
-                if track_updates and not singles_only:
+                if track_updates and not singles_only and not metadata_only:
                     # Merge tags from album_tags_data into track_updates BEFORE committing
                     # This ensures Last.fm tags and other genre data are saved
                     updated_track_updates = []
@@ -5729,7 +5731,7 @@ def popularity_scan(
                     else:
                         log_debug(f"[ALBUM_ART] Album art will be fetched on-demand from Navidrome or Apple Music sources")
 
-                if not singles_only:
+                if not singles_only and not metadata_only:
                     log_unified(f'Popularity Scan - Popularity Scanning for {album} Complete')
                     log_info(f'Album "{artist} - {album}" scanned. Popularity applied to {album_scanned} tracks')
 
@@ -5955,6 +5957,21 @@ def popularity_scan(
                     log_debug(f"Bulk tag lookup failed for \"{artist} - {album}\": {e}")
                     # Continue with single detection even if bulk tag lookup fails
                 # --- End bulk tag lookup section ---
+
+                if metadata_only:
+                    log_info(f'Metadata-only scan complete for "{artist} - {album}" (popularity/singles/stars skipped)')
+
+                    current_timestamp = datetime.now().isoformat()
+                    cursor.execute(
+                        f"""UPDATE tracks
+                        SET last_scanned = {placeholder}
+                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}""",
+                        (current_timestamp, artist, album)
+                    )
+                    conn.commit()
+
+                    log_album_scan(artist, album, 'metadata', len(album_tracks), 'completed')
+                    continue
 
                 # Perform singles detection for album tracks
                 log_info(f'Starting singles detection for "{artist} - {album}"')

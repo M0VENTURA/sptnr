@@ -3769,7 +3769,10 @@ def _schedule_configured_startup_scan_launch():
         log_unified(summary)
 
     def _resolve_startup_scan_mode(scan_type, force_enabled, restart_requested):
-        mode = "force" if force_enabled else "all"
+        if scan_type == "metadata-scan":
+            mode = "metadata_force" if force_enabled else "metadata"
+        else:
+            mode = "force" if force_enabled else "all"
         effective_restart = restart_requested
         resume_artist = None
 
@@ -3828,6 +3831,7 @@ def _schedule_configured_startup_scan_launch():
             mapping = {
                 "navidrome": ("scan_navidrome", "/scan/navidrome"),
                 "metadata": ("scan_mp3_import", "/scan/mp3-import"),
+                "metadata-scan": ("scan_popularity_route", "/scan/popularity"),
                 "popularity": ("scan_popularity_route", "/scan/popularity"),
                 "singles": ("scan_popularity_route", "/scan/popularity"),
                 "singles-detection": ("scan_popularity_route", "/scan/popularity"),
@@ -3874,7 +3878,7 @@ def _schedule_configured_startup_scan_launch():
                 params = []
                 if launch_scan_type != "metadata":
                     params.append(f"mode={mode}")
-                if launch_scan_type in {"navidrome", "popularity", "singles", "essentia-mood", "combined"}:
+                if launch_scan_type in {"navidrome", "popularity", "singles", "essentia-mood", "combined", "metadata-scan"}:
                     params.append("restart=1" if effective_restart else "restart=0")
 
                 request_path = base_path + (("?" + "&".join(params)) if params else "")
@@ -5573,13 +5577,40 @@ def artist_corrections(name):
                 album,
                 track_number,
                 disc_number,
-                file_path
+                year,
+                duration,
+                COALESCE(NULLIF(mbid, ''), '') AS mbid,
+                COALESCE(NULLIF(suggested_mbid, ''), '') AS suggested_mbid,
+                file_path,
+                CASE
+                    WHEN title IS NULL OR TRIM(title) = '' THEN 'Missing track title'
+                    WHEN album IS NULL OR TRIM(album) = '' THEN 'Missing album name'
+                    WHEN track_number IS NULL OR TRIM(CAST(track_number AS TEXT)) = '' THEN 'Missing track number'
+                    WHEN CAST(COALESCE(NULLIF(TRIM(CAST(track_number AS TEXT)), ''), '0') AS INTEGER) <= 0 THEN 'Invalid track number (<= 0)'
+                    WHEN duration IS NULL OR CAST(duration AS DOUBLE PRECISION) <= 0 THEN 'Missing or invalid duration'
+                    WHEN year IS NOT NULL AND TRIM(CAST(year AS TEXT)) != ''
+                         AND (CAST(COALESCE(NULLIF(TRIM(CAST(year AS TEXT)), ''), '0') AS INTEGER) < 1900
+                              OR CAST(COALESCE(NULLIF(TRIM(CAST(year AS TEXT)), ''), '0') AS INTEGER) > 2100)
+                         THEN 'Suspicious year value'
+                    WHEN (mbid IS NULL OR TRIM(mbid) = '') AND (suggested_mbid IS NULL OR TRIM(suggested_mbid) = '') THEN 'Missing recording MBID and suggested MBID'
+                    ELSE 'Metadata needs review'
+                END AS metadata_issue_reason
             FROM tracks
             WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
               AND (
                     title IS NULL OR TRIM(title) = '' OR
                     album IS NULL OR TRIM(album) = '' OR
-                    track_number IS NULL OR TRIM(CAST(track_number AS TEXT)) = ''
+                    track_number IS NULL OR TRIM(CAST(track_number AS TEXT)) = '' OR
+                    CAST(COALESCE(NULLIF(TRIM(CAST(track_number AS TEXT)), ''), '0') AS INTEGER) <= 0 OR
+                    duration IS NULL OR CAST(duration AS DOUBLE PRECISION) <= 0 OR
+                    (
+                        year IS NOT NULL AND TRIM(CAST(year AS TEXT)) != '' AND
+                        (
+                            CAST(COALESCE(NULLIF(TRIM(CAST(year AS TEXT)), ''), '0') AS INTEGER) < 1900 OR
+                            CAST(COALESCE(NULLIF(TRIM(CAST(year AS TEXT)), ''), '0') AS INTEGER) > 2100
+                        )
+                    ) OR
+                    ((mbid IS NULL OR TRIM(mbid) = '') AND (suggested_mbid IS NULL OR TRIM(suggested_mbid) = ''))
                   )
             ORDER BY album, track_number, title
         """, (artist_name,))
@@ -7545,7 +7576,7 @@ def artist_detail(name):
                 SUM(COALESCE(duration, 0)) as total_duration,
                 MIN(year) as earliest_year,
                 MAX(year) as latest_year,
-                MAX(musicbrainz_artist_id) as musicbrainz_artist_id,
+                MAX(COALESCE(NULLIF(musicbrainz_artist_id, ''), NULLIF(musicbrainz_artistid, ''))) as musicbrainz_artist_id,
                 MAX(spotify_artist_id) as spotify_artist_id,
                 MAX(lastfm_artist_mbid) as lastfm_artist_mbid,
                 MAX(discogs_artist_id) as discogs_artist_id,
@@ -14428,7 +14459,7 @@ def scan_popularity_route():
     global scan_process_popularity
     
     # Get scan mode from query parameters (default: "all")
-    mode = request.args.get('mode', 'all')  # all, force, missing, singles, singles_resume, singles_resume_force, singles_detection, singles_detection_force, resume, resume_force
+    mode = request.args.get('mode', 'all')  # all, force, missing, metadata, metadata_force, singles, singles_resume, singles_resume_force, singles_detection, singles_detection_force, resume, resume_force
     restart_requested = str(request.args.get('restart', '0')).strip().lower() in ('1', 'true', 'yes', 'on')
     force_start = str(request.args.get('force_start', '0')).strip().lower() in ('1', 'true', 'yes', 'on')
     
@@ -14461,6 +14492,9 @@ def scan_popularity_route():
             if mode in ('singles', 'singles_resume', 'singles_resume_force', 'singles_detection', 'singles_detection_force'):
                 popularity_progress_file = os.path.join(db_dir, "singles_scan_progress.json")
                 _write_progress_file(popularity_progress_file, "singles_scan", True, {"status": "starting"})
+            elif mode in ('metadata', 'metadata_force'):
+                popularity_progress_file = os.path.join(db_dir, "metadata_lookup_scan_progress.json")
+                _write_progress_file(popularity_progress_file, "metadata_lookup_scan", True, {"status": "starting"})
             else:
                 popularity_progress_file = os.path.join(db_dir, "popularity_scan_progress.json")
                 _write_progress_file(popularity_progress_file, "popularity_scan", True, {"status": "starting"})
@@ -14469,8 +14503,9 @@ def scan_popularity_route():
             from popularity import popularity_scan as scan_popularity_func
             
             # Determine force and filter logic based on mode
-            force_rescan = (mode == 'force' or mode == 'resume_force' or mode == 'singles_resume_force' or mode == 'singles_detection_force')
+            force_rescan = (mode == 'force' or mode == 'resume_force' or mode == 'metadata_force' or mode == 'singles_resume_force' or mode == 'singles_detection_force')
             filter_missing = (mode == 'missing')
+            metadata_only = mode in ('metadata', 'metadata_force')
             singles_only = mode in ('singles', 'singles_resume', 'singles_resume_force')
             singles_with_missing_popularity = mode in ('singles_detection', 'singles_detection_force')
             
@@ -14503,6 +14538,26 @@ def scan_popularity_route():
                             _write_progress_with_current_artist(popularity_progress_file, "singles_scan", False, {"status": "complete", "exit_code": 0})
                             logging.info("Singles scan completed successfully")
                             _log_scan_session_complete("singles")
+                    elif metadata_only:
+                        logging.info(f"Starting metadata-only lookup scan in background (force={force_rescan})")
+                        completed = scan_popularity_func(
+                            verbose=False,
+                            force=force_rescan,
+                            metadata_only=True,
+                            stop_progress_file=popularity_progress_file
+                        )
+                        if completed is False:
+                            _write_progress_with_current_artist(popularity_progress_file, "metadata_lookup_scan", False, {"status": "stopped", "exit_code": 0})
+                            logging.info("Metadata lookup scan stopped by user request")
+                        else:
+                            _write_progress_with_current_artist(popularity_progress_file, "metadata_lookup_scan", False, {"status": "complete", "exit_code": 0})
+                            logging.info("Metadata lookup scan completed successfully")
+                            try:
+                                logging.info("Metadata lookup scan complete; starting missing releases refresh")
+                                _run_daily_missing_releases_scan()
+                            except Exception as missing_release_err:
+                                logging.warning(f"Metadata lookup post-step failed (missing releases refresh): {missing_release_err}")
+                            _log_scan_session_complete("metadata")
                     elif singles_with_missing_popularity:
                         logging.info(f"Starting singles scan (with popularity fetch for new albums) in background (force={force_rescan})")
                         completed = scan_popularity_func(
@@ -14536,7 +14591,12 @@ def scan_popularity_route():
                             _log_scan_session_complete("popularity")
                 except Exception as e:
                     logging.error(f"Error in popularity scan: {e}", exc_info=True)
-                    scan_type_label = "singles_scan" if (singles_only or singles_with_missing_popularity) else "popularity_scan"
+                    if metadata_only:
+                        scan_type_label = "metadata_lookup_scan"
+                    elif singles_only or singles_with_missing_popularity:
+                        scan_type_label = "singles_scan"
+                    else:
+                        scan_type_label = "popularity_scan"
                     _write_progress_with_current_artist(popularity_progress_file, scan_type_label, False, {"status": "error", "error": str(e), "exit_code": 1})
             
             scan_thread = threading.Thread(target=run_popularity_scan_bg, daemon=False)
@@ -14547,11 +14607,15 @@ def scan_popularity_route():
                 flash("✅ Singles scan started (fetches popularity only for new albums)", "success")
             elif singles_only:
                 flash("✅ Singles detection scan started (popularity only)", "success")
+            elif metadata_only:
+                flash("✅ Metadata lookup scan started (no popularity/singles scoring)", "success")
             else:
                 mode_desc = {
                     'all': 'Full', 
                     'force': 'Full (Forced)', 
                     'missing': 'Missing Only',
+                    'metadata': 'Metadata Lookup Only',
+                    'metadata_force': 'Metadata Lookup (Forced)',
                     'singles': 'Singles Only',
                     'singles_resume': 'Singles Resume from Last',
                     'singles_resume_force': 'Singles Resume (Forced)',
@@ -17957,10 +18021,7 @@ def slskd_retry():
         try:
             conn = get_db()
             cursor = conn.cursor()
-            cursor.execute(
-                "SELECT slskd_username, slskd_transfer_id, found_filename FROM download_queue WHERE id = %s",
-                (queue_id,),
-            )
+            cursor.execute("SELECT slskd_username, slskd_transfer_id, found_filename FROM download_queue WHERE id = %s", (queue_id,))
             row = cursor.fetchone()
             conn.close()
             if row:
@@ -18589,7 +18650,7 @@ def _initiate_slskd_download_bg(tracking_id, query):
                     # Insert all results into database
                     for file_result in all_files:
                         cursor2.execute(f"""
-                            INSERT INTO slskd_search_results 
+                            SELECT MAX(COALESCE(NULLIF(musicbrainz_artist_id, ''), NULLIF(musicbrainz_artistid, '')))
                             (download_id, username, filename, size, match_score)
                             VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
                         """, (tracking_id, file_result['username'], file_result['filename'], 
@@ -19386,7 +19447,7 @@ def api_list_playlist_download_sessions():
         # Get all sessions, ordered by most recent first
         cursor.execute("""
             SELECT id, session_name, user, status, total_tracks, completed_tracks, 
-                   failed_tracks, skipped_tracks, created_at, updated_at, completed_at
+                        SELECT MAX(COALESCE(NULLIF(musicbrainz_artist_id, ''), NULLIF(musicbrainz_artistid, ''))) AS mbid
             FROM playlist_download_sessions
             ORDER BY updated_at DESC
             LIMIT 100

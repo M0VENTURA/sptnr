@@ -137,6 +137,7 @@
                     <select id="scanTypeSelect" class="form-select form-select-sm" style="min-width: 210px;">
                         <option value="navidrome">Navidrome Import</option>
                         <option value="metadata">Metadata Import</option>
+                        <option value="metadata-scan">Metadata Scan</option>
                         <option value="popularity">Popularity and Single Scan</option>
                         <option value="singles-detection">Singles Scan</option>
                         <option value="essentia-mood">Mood Scan (Essentia - Local ML)</option>
@@ -465,6 +466,7 @@
 // Used by both the progress-bar detection logic and the "already running" confirm dialog.
 var SCAN_TYPE_DISPLAY_NAMES = {
     'navidrome_scan': 'Navidrome Import',
+    'metadata_lookup_scan': 'Metadata Scan',
     'popularity_scan': 'Popularity and Single Scan',
     'singles_scan': 'Singles Detection',
     'mood_scan': 'Mood Scan',
@@ -825,6 +827,9 @@ document.addEventListener('DOMContentLoaded', function() {
                     } else if (data.scan_type === 'missing_releases_scan') {
                         activeScanType = 'missing_releases_scan';
                         scanDisplayName = SCAN_TYPE_DISPLAY_NAMES['missing_releases_scan'];
+                    } else if (data.scan_type === 'metadata_lookup_scan') {
+                        activeScanType = 'metadata_lookup_scan';
+                        scanDisplayName = SCAN_TYPE_DISPLAY_NAMES['metadata_lookup_scan'];
                     } else {
                         activeScanType = 'popularity_scan';
                         scanDisplayName = SCAN_TYPE_DISPLAY_NAMES['popularity_scan'];
@@ -832,6 +837,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 } else {
                     const scanTypeMapping = {
                         'navidrome_scan': { type: 'navidrome_scan', name: SCAN_TYPE_DISPLAY_NAMES['navidrome_scan'] },
+                        'metadata_lookup_scan': { type: 'metadata_lookup_scan', name: SCAN_TYPE_DISPLAY_NAMES['metadata_lookup_scan'] },
                         'popularity_scan': { type: 'popularity_scan', name: SCAN_TYPE_DISPLAY_NAMES['popularity_scan'] },
                         'singles_scan': { type: 'singles_scan', name: SCAN_TYPE_DISPLAY_NAMES['singles_scan'] },
                         'mood_scan': { type: 'mood_scan', name: SCAN_TYPE_DISPLAY_NAMES['mood_scan'] },
@@ -1302,10 +1308,12 @@ function startSelectedScan(restart = false, forceStart = false) {
 
     const forced = document.getElementById('forcedCheck').checked;
 
-    // For singles-detection, use dedicated mode strings; for all others use all/force.
+    // Use dedicated mode strings where needed; default others to all/force.
     let mode;
     if (scanType === 'singles-detection') {
         mode = forced ? 'singles_detection_force' : 'singles_detection';
+    } else if (scanType === 'metadata-scan') {
+        mode = forced ? 'metadata_force' : 'metadata';
     } else {
         mode = forced ? 'force' : 'all';
     }
@@ -1331,6 +1339,8 @@ function startSelectedScan(restart = false, forceStart = false) {
         actionUrl = '{{ url_for("scan_navidrome") }}';
     } else if (scanType === 'metadata') {
         actionUrl = '{{ url_for("scan_mp3_import") }}';
+    } else if (scanType === 'metadata-scan') {
+        actionUrl = '{{ url_for("scan_popularity_route") }}';
     } else if (scanType === 'popularity' || scanType === 'singles-detection') {
         actionUrl = '{{ url_for("scan_popularity_route") }}';
     } else if (scanType === 'mood' || scanType === 'essentia-mood') {
@@ -1343,7 +1353,7 @@ function startSelectedScan(restart = false, forceStart = false) {
     if (scanType !== 'metadata') {
         url.searchParams.append('mode', mode);
     }
-    if (scanType === 'navidrome' || scanType === 'popularity' || scanType === 'singles-detection' || scanType === 'mood' || scanType === 'essentia-mood' || scanType === 'combined') {
+    if (scanType === 'navidrome' || scanType === 'popularity' || scanType === 'singles-detection' || scanType === 'mood' || scanType === 'essentia-mood' || scanType === 'combined' || scanType === 'metadata-scan') {
         url.searchParams.append('restart', restart ? '1' : '0');
     }
     if (forceStart) {

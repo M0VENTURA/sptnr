@@ -750,6 +750,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "musicbrainz_albumtype": extracted.get("musicbrainz_albumtype", "") or "",
                     "musicbrainz_releasecountry": extracted.get("musicbrainz_releasecountry", "") or "",
                     "musicbrainz_artistid": extracted.get("musicbrainz_artistid", "") or "",
+                    "musicbrainz_artist_id": extracted.get("musicbrainz_artist_id", "") or extracted.get("musicbrainz_artistid", "") or "",
                     "musicbrainz_albumartistid": extracted.get("musicbrainz_albumartistid", "") or "",
                     "musicbrainz_workid": extracted.get("musicbrainz_workid", "") or "",
                     # ── Album-level consistency / Navidrome split-cause fields ─
