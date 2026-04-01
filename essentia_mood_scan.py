@@ -866,6 +866,11 @@ def run_essentia_mood_scan(
 
         # Skip if file no longer exists.
         if not file_path or not os.path.isfile(file_path):
+            logger.debug(
+                "Essentia scan: skipping track %s — file not found at path %r",
+                track_id,
+                file_path,
+            )
             _write_progress(progress_file, {
                 "is_running": True,
                 "scan_type": "essentia_mood_scan",

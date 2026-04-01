@@ -812,6 +812,12 @@ def ensure_navidrome_tag_columns():
         # Flag: set TRUE when this track belongs to an album with inconsistent
         # album-level tags (detected by the /correcting endpoint logic)
         ("needs_correcting", "BOOLEAN DEFAULT FALSE"),
+        # Navidrome genre fields: populated during Navidrome import and used
+        # throughout the app for genre aggregation and display.
+        # navidrome_genres: backslash-separated list of all genres (e.g. "Rock\Pop\Electronic")
+        # navidrome_genre: first/primary genre only
+        ("navidrome_genres", "TEXT"),
+        ("navidrome_genre", "TEXT"),
     ]
 
     try:

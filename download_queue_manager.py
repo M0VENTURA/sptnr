@@ -1200,6 +1200,10 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                 'slskd_state': "TEXT",
                 'slskd_queue_position': "INTEGER",
                 'slskd_last_sync_at': "TEXT",
+                # Tracks the last time the status column changed value, useful
+                # for detecting stalled items (e.g. stuck in 'queued' for days).
+                # Backfilled with CURRENT_TIMESTAMP on first ADD COLUMN.
+                'status_changed_at': "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
             }
 
             for col, col_type in required_cols.items():
