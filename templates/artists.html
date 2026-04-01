@@ -122,7 +122,7 @@
                                 </a>
                                 {% if artist.needs_correction %}
                                     <a href="{{ url_for('artist_corrections', name=artist.link_artist) }}" class="ms-2 text-decoration-none" title="{{ artist.duplicate_track_count or 0 }} duplicate rows, {{ artist.missing_track_count or 0 }} missing metadata{% if artist.duplicate_artist_count and artist.duplicate_artist_count > 0 %}, {{ artist.duplicate_artist_count }} duplicate artist names{% endif %}{% if artist.extra_album_artist_count and artist.extra_album_artist_count > 0 %}, {{ artist.extra_album_artist_count }} extra album-artist variants{% endif %}">
-                                        <span class="badge bg-danger">Correcting Needed</span>
+                                        <span class="badge bg-danger">Needs Correcting</span>
                                     </a>
                                 {% endif %}
                             </td>
@@ -133,7 +133,7 @@
                                     </a>
                                     {% if artist.needs_correction %}
                                         <a href="{{ url_for('artist_corrections', name=artist.link_artist) }}" class="ms-1 text-decoration-none" title="{{ artist.duplicate_track_count or 0 }} duplicate rows, {{ artist.missing_track_count or 0 }} missing metadata{% if artist.duplicate_artist_count and artist.duplicate_artist_count > 0 %}, {{ artist.duplicate_artist_count }} duplicate artist names{% endif %}{% if artist.extra_album_artist_count and artist.extra_album_artist_count > 0 %}, {{ artist.extra_album_artist_count }} extra album-artist variants{% endif %}">
-                                            <span class="badge bg-danger">Correcting Needed</span>
+                                            <span class="badge bg-danger">Needs Correcting</span>
                                         </a>
                                     {% endif %}
                                 </div>

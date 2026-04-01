@@ -3519,6 +3519,15 @@ def popularity_scan(
         sql_conditions = []
         sql_params = []
 
+        # Normalize last_scanned to timestamptz for mixed schemas where the
+        # column may be stored as text in legacy databases.
+        last_scanned_ts_expr = (
+            "CASE "
+            "WHEN last_scanned IS NULL OR TRIM(CAST(last_scanned AS TEXT)) = '' THEN NULL "
+            "WHEN CAST(last_scanned AS TEXT) ~ '^\\\\d{4}-\\\\d{2}-\\\\d{2}' THEN CAST(CAST(last_scanned AS TEXT) AS TIMESTAMPTZ) "
+            "ELSE NULL END"
+        )
+
         # Never scan placeholder queue rows created before files are imported.
         # Use placeholders so PostgreSQL does not misinterpret raw '%' characters
         # when parameters are bound.
@@ -3530,14 +3539,14 @@ def popularity_scan(
         # Only filter by popularity_score if not forcing rescan
         if not (FORCE_RESCAN or force) and not metadata_only and not singles_only and not singles_with_missing_popularity:
             sql_conditions.append(
-                f"(popularity_score IS NULL OR popularity_score = 0 OR last_scanned IS NULL OR last_scanned < (NOW() - ({placeholder} * INTERVAL '1 day')))"
+                f"(popularity_score IS NULL OR popularity_score = 0 OR {last_scanned_ts_expr} IS NULL OR {last_scanned_ts_expr} < (NOW() - ({placeholder} * INTERVAL '1 day')))"
             )
             sql_params.append(max(1, int(album_skip_days)))
 
         if not (FORCE_RESCAN or force) and metadata_only:
             sql_conditions.append(
                 f"(" \
-                f"last_scanned IS NULL OR last_scanned < (NOW() - ({placeholder} * INTERVAL '1 day')) OR " \
+                f"{last_scanned_ts_expr} IS NULL OR {last_scanned_ts_expr} < (NOW() - ({placeholder} * INTERVAL '1 day')) OR " \
                 f"COALESCE(NULLIF(mbid, ''), '') = '' OR COALESCE(NULLIF(musicbrainz_album_mbid, ''), '') = '' OR " \
                 f"writer IS NULL OR TRIM(CAST(writer AS TEXT)) IN ('', '[]', 'null', 'None') OR " \
                 f"lastfm_tags IS NULL OR TRIM(CAST(lastfm_tags AS TEXT)) = '' OR " \

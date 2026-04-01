@@ -139,7 +139,7 @@
             <form method="POST" action="{{ url_for('scan_essentia_mood') }}" class="d-inline">
                 <input type="hidden" name="artist" value="{{ artist_name }}">
                 <input type="hidden" name="album" value="{{ album_name }}">
-                <button class="btn btn-outline-primary btn-sm" type="submit" title="Run Essentia ML mood/genre scan for this album">
+                <button class="btn btn-sm" style="border-color:#6f42c1;color:#6f42c1;" type="submit" title="Run Essentia ML mood/genre scan for this album">
                     <i class="bi bi-cpu"></i> <span class="d-none d-sm-inline">Essentia Scan</span>
                 </button>
             </form>
@@ -458,7 +458,7 @@
                             ('lastfm_tags', 'Last.fm', 'D51007', 'black'),
                             ('listenbrainz_genres', 'ListenBrainz', '0066FF', 'white'),
                             ('discogs_genres', 'Discogs', '6c757d', 'white'),
-                            ('essentia_genres', 'Essentia', '7B1FA2', 'white'),
+                            ('essentia_genres', 'Essentia', '6f42c1', 'white'),
                             ('musicbrainz_genres', 'MusicBrainz', 'EB743B', 'white')
                           ] %}
                           {% set ns = namespace(has_any=False) %}

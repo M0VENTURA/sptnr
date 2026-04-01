@@ -63,9 +63,6 @@
       <p class="text-muted mb-0">Artist overview</p>
     </div>
     <div class="d-flex gap-2 flex-row flex-wrap">
-      <button class="btn btn-outline-warning" onclick='updateArtistAlbumsWithBeets({{ artist_name|tojson }})' title="Update all albums with beets (write tags and organize files)">
-        <i class="bi bi-wrench"></i> <span class="d-none d-sm-inline">Update All Albums</span>
-      </button>
       {% if (qbit_config.enabled and qbit_config.web_url) or slskd_config.enabled %}
       <button class="btn btn-outline-info" onclick='openDownloadSearch({{ artist_name|tojson }})' title="Download {{ artist_name }} releases">
         <i class="bi bi-download"></i> <span class="d-none d-sm-inline">Download</span>
@@ -90,7 +87,7 @@
       </form>
       <form action="{{ url_for('scan_essentia_mood') }}" method="post" class="d-flex align-items-center gap-2">
         <input type="hidden" name="artist" value="{{ artist_name }}">
-        <button type="submit" class="btn btn-outline-primary" title="Run Essentia ML mood/genre scan for this artist">
+        <button type="submit" class="btn" style="border-color:#6f42c1;color:#6f42c1;" title="Run Essentia ML mood/genre scan for this artist">
           <i class="bi bi-cpu"></i> <span class="d-none d-sm-inline">Essentia Scan</span>
         </button>
       </form>
@@ -98,10 +95,10 @@
   </div>
   {% endif %}
 
-  <!-- Correcting Needed badge — always shown when corrections exist -->
+  <!-- Needs Correcting badge — always shown when corrections exist -->
   <div id="artist-corrections-banner" style="display:none;" class="mb-3">
     <a href="{{ url_for('artist_corrections', name=artist_name) }}" class="btn btn-outline-danger btn-sm">
-      <i class="bi bi-tools"></i> Correcting Needed
+      <i class="bi bi-tools"></i> Needs Correcting
     </a>
     <span id="artist-missing-tracks-badge" class="badge bg-warning text-dark ms-2" style="display:none;"></span>
   </div>
@@ -323,7 +320,7 @@
               ('lastfm_tags', 'Last.fm', 'D51007', 'black'),
               ('listenbrainz_genres', 'ListenBrainz', '0066FF', 'white'),
               ('discogs_genres', 'Discogs', '6c757d', 'white'),
-              ('essentia_genres', 'Essentia', '7B1FA2', 'white'),
+              ('essentia_genres', 'Essentia', '6f42c1', 'white'),
               ('musicbrainz_genres', 'MusicBrainz', 'EB743B', 'white')
             ] %}
             {% set ns = namespace(has_any=False) %}

@@ -5061,17 +5061,28 @@ def artists():
 
         cursor.execute("""
             SELECT
-                album_artist AS display_name,
+                COALESCE(NULLIF(album_artist, ''), artist) AS display_name,
                 COUNT(*) AS missing_count
             FROM tracks
-            WHERE album_artist IS NOT NULL
-              AND TRIM(album_artist) != ''
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
+              AND TRIM(COALESCE(NULLIF(album_artist, ''), artist)) != ''
               AND (
                     title IS NULL OR TRIM(title) = '' OR
                     album IS NULL OR TRIM(album) = '' OR
-                    track_number IS NULL OR TRIM(CAST(track_number AS TEXT)) = ''
+                    track_number IS NULL OR TRIM(CAST(track_number AS TEXT)) = '' OR
+                    CAST(COALESCE(NULLIF(TRIM(CAST(track_number AS TEXT)), ''), '0') AS INTEGER) <= 0 OR
+                    duration IS NULL OR CAST(duration AS DOUBLE PRECISION) <= 0 OR
+                    (
+                        year IS NOT NULL AND TRIM(CAST(year AS TEXT)) != '' AND
+                        (
+                            CAST(COALESCE(NULLIF(TRIM(CAST(year AS TEXT)), ''), '0') AS INTEGER) < 1900 OR
+                            CAST(COALESCE(NULLIF(TRIM(CAST(year AS TEXT)), ''), '0') AS INTEGER) > 2100
+                        )
+                    ) OR
+                    ((mbid IS NULL OR TRIM(mbid) = '') AND (suggested_mbid IS NULL OR TRIM(suggested_mbid) = '')) OR
+                    writer IS NULL OR TRIM(CAST(writer AS TEXT)) IN ('', '[]', 'null', 'None')
                   )
-            GROUP BY album_artist
+            GROUP BY COALESCE(NULLIF(album_artist, ''), artist)
         """)
 
         for row in cursor.fetchall():
@@ -5588,6 +5599,7 @@ def artist_corrections(name):
                     WHEN track_number IS NULL OR TRIM(CAST(track_number AS TEXT)) = '' THEN 'Missing track number'
                     WHEN CAST(COALESCE(NULLIF(TRIM(CAST(track_number AS TEXT)), ''), '0') AS INTEGER) <= 0 THEN 'Invalid track number (<= 0)'
                     WHEN duration IS NULL OR CAST(duration AS DOUBLE PRECISION) <= 0 THEN 'Missing or invalid duration'
+                    WHEN writer IS NULL OR TRIM(CAST(writer AS TEXT)) IN ('', '[]', 'null', 'None') THEN 'Missing writer/lyricist metadata'
                     WHEN year IS NOT NULL AND TRIM(CAST(year AS TEXT)) != ''
                          AND (CAST(COALESCE(NULLIF(TRIM(CAST(year AS TEXT)), ''), '0') AS INTEGER) < 1900
                               OR CAST(COALESCE(NULLIF(TRIM(CAST(year AS TEXT)), ''), '0') AS INTEGER) > 2100)
@@ -5603,6 +5615,7 @@ def artist_corrections(name):
                     track_number IS NULL OR TRIM(CAST(track_number AS TEXT)) = '' OR
                     CAST(COALESCE(NULLIF(TRIM(CAST(track_number AS TEXT)), ''), '0') AS INTEGER) <= 0 OR
                     duration IS NULL OR CAST(duration AS DOUBLE PRECISION) <= 0 OR
+                    writer IS NULL OR TRIM(CAST(writer AS TEXT)) IN ('', '[]', 'null', 'None') OR
                     (
                         year IS NOT NULL AND TRIM(CAST(year AS TEXT)) != '' AND
                         (
@@ -7586,60 +7599,8 @@ def artist_detail(name):
         """, (name,))
         artist_stats = cursor.fetchone()
         
-        # If artist ID not found in tracks, try to get it from album MusicBrainz IDs as fallback
-        if artist_stats and not dict(artist_stats).get('musicbrainz_artist_id'):
-            try:
-                # Look for any album with a MusicBrainz release ID
-                cursor.execute("""
-                    SELECT DISTINCT musicbrainz_album_mbid 
-                    FROM tracks 
-                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s 
-                    AND musicbrainz_album_mbid IS NOT NULL AND musicbrainz_album_mbid != ''
-                    LIMIT 1
-                """, (name,))
-                album_mbid_row = cursor.fetchone()
-                
-                if album_mbid_row:
-                    album_mbid = album_mbid_row['musicbrainz_album_mbid']
-                    
-                    # Fetch the artist ID from this album's MusicBrainz release
-                    try:
-                        import requests
-                        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
-                        release_url = f"https://musicbrainz.org/ws/2/release/{album_mbid}"
-                        params = {"fmt": "json", "inc": "artist-credits"}
-                        resp = requests.get(release_url, params=params, headers=headers, timeout=5)
-                        
-                        if resp.status_code == 200:
-                            release_data = resp.json()
-                            artist_credits = release_data.get("artist-credit", [])
-                            if artist_credits:
-                                # Get the first artist credit
-                                first_artist = artist_credits[0]
-                                if isinstance(first_artist, dict):
-                                    artist_id = first_artist.get("artist", {}).get("id")
-                                    if artist_id:
-                                        logging.info(f"Found artist ID {artist_id} for {name} via album {album_mbid}")
-                                        # Update stats dict with the found artist ID
-                                        artist_stats = dict(artist_stats) if artist_stats else {}
-                                        artist_stats['musicbrainz_artist_id'] = artist_id
-                                        
-                                        # Save to database so it persists
-                                        try:
-                                            cursor.execute("""
-                                                UPDATE tracks
-                                                SET musicbrainz_artist_id = %s, lastfm_artist_mbid = %s
-                                                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-                                                AND (musicbrainz_artist_id IS NULL OR musicbrainz_artist_id = '')
-                                            """, (artist_id, artist_id, name))
-                                            conn.commit()
-                                            logging.debug(f"Saved artist ID {artist_id} to {name} tracks")
-                                        except Exception as e:
-                                            logging.debug(f"Failed to save artist ID to database: {e}")
-                    except Exception as e:
-                        logging.debug(f"Failed to get artist ID from album MBID: {e}")
-            except Exception as e:
-                logging.debug(f"Fallback artist ID lookup failed: {e}")
+        # Do not perform external metadata lookups during page load.
+        # Artist ID fallback enrichment should run in metadata scan jobs only.
         
         # Get missing releases from database cache
         cursor.execute("""
@@ -7805,20 +7766,8 @@ def artist_detail(name):
         except Exception as e:
             logging.debug(f"Error fetching genre data for artist page: {e}")
 
+        # Do not call external APIs during page render; keep page loads DB-only.
         artist_members = []
-        try:
-            from api_clients.musicbrainz import MusicBrainzClient
-
-            mb_client = MusicBrainzClient()
-            artist_mbid = None
-            if isinstance(artist_stats, dict):
-                artist_mbid = artist_stats.get('musicbrainz_artist_id') or artist_stats.get('lastfm_artist_mbid')
-            elif artist_stats:
-                artist_mbid = dict(artist_stats).get('musicbrainz_artist_id') or dict(artist_stats).get('lastfm_artist_mbid')
-
-            artist_members = mb_client.get_artist_members(artist=name, artist_mbid=artist_mbid)
-        except Exception as e:
-            logging.debug(f"Error fetching band members for artist page: {e}")
 
         # Convert all Row objects to dicts while connection is still open.
         # This is critical because Row objects become invalid after connection closes
@@ -12459,51 +12408,8 @@ def album_detail(artist, album):
 
         tracks_with_genre_fit = sorted(tracks_with_genre_fit, key=_album_track_sort_key)
 
-        # Fetch missing tracks from MusicBrainz and merge into the list
-        mb_mbid = album_data.get('musicbrainz_album_mbid')
-        if mb_mbid:
-            try:
-                from folder_matching_enhancements import get_musicbrainz_release_metadata
-                mb_release = get_musicbrainz_release_metadata(mb_mbid)
-                if mb_release:
-                    # Build a set of (disc, normalised_title) keys already in the library
-                    library_keys = set()
-                    for t in tracks_with_genre_fit:
-                        t_disc = int(t.get('disc_number') or 1)
-                        t_norm = re.sub(r'\s+', ' ', (t.get('title') or '').lower().strip())
-                        library_keys.add((t_disc, t_norm))
-
-                    mb_year = mb_release.get('release_year') or ''
-                    mb_disc_count = mb_release.get('disc_count', 1)
-
-                    for mb_track in mb_release.get('tracks', []):
-                        t_disc = mb_track.get('disc_number', 1)
-                        t_title_raw = mb_track.get('title', '')
-                        t_norm = re.sub(r'\s+', ' ', t_title_raw.lower().strip())
-                        if (t_disc, t_norm) not in library_keys:
-                            tracks_with_genre_fit.append({
-                                'is_missing': True,
-                                'disc_number': t_disc,
-                                'track_number': mb_track.get('track_number'),
-                                'title': t_title_raw,
-                                'artist': mb_track.get('artist') or artist,
-                                'album': album,
-                                'album_artist': artist,
-                                'year': mb_year,
-                                'release_id': mb_mbid,
-                                'genre_matches': 0,
-                                'genre_fit_percent': 0,
-                                'matching_genres': [],
-                            })
-
-                    # Ensure total_discs covers any extra MB discs
-                    if mb_disc_count > (album_data.get('total_discs') or 1):
-                        album_data['total_discs'] = mb_disc_count
-
-                    # Re-sort so missing tracks appear in position among library tracks
-                    tracks_with_genre_fit = sorted(tracks_with_genre_fit, key=_album_track_sort_key)
-            except Exception as _mb_err:
-                logging.debug(f"[ALBUM] Could not fetch MB missing tracks for {artist} - {album}: {_mb_err}")
+        # Avoid external metadata lookups on album page load.
+        # Missing-track enrichment via MusicBrainz should run in background metadata scans.
 
 
         tracks_by_disc = {}
