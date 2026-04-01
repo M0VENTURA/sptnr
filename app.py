@@ -17427,7 +17427,7 @@ def scan_navidrome():
 
 @app.route("/scan/combined", methods=["POST"])
 def scan_combined():
-    """Run combined scan: Navidrome import + popularity + singles for each artist."""
+    """Run combined scan per artist: Navidrome -> Metadata -> Popularity -> Singles -> Mood."""
     global scan_process_combined
     
     # Get scan mode from query parameters (default: "all")
@@ -17460,6 +17460,8 @@ def scan_combined():
                 try:
                     logging.info(f"Starting combined scan (mode={mode})")
                     from popularity import popularity_scan as scan_popularity_func
+                    from essentia_mood_scan import run_essentia_mood_scan
+                    from helpers.config_helpers import get_config
 
                     if restart_requested and os.path.exists(checkpoint_path):
                         try:
@@ -17574,25 +17576,90 @@ def scan_combined():
                             logging.error(f"Error in Navidrome import for {artist_name}: {e}")
                             # Continue with next steps even if Navidrome import fails
                         
-                        # Step 2: Popularity and singles scan for this artist
-                        # Note: artist_filter expects artist name (string), not ID
-                        # This is by design - popularity_scan uses name for SQL WHERE clause
-                        logging.info(f"  → Popularity & singles scan for {artist_name}")
+                        # Step 2: Metadata lookup stage for this artist
+                        logging.info(f"  → Metadata lookup scan for {artist_name}")
                         try:
                             completed = scan_popularity_func(
                                 verbose=False, 
                                 force=force_rescan,
                                 artist_filter=artist_name,
+                                metadata_only=True,
                                 stop_progress_file=combined_progress_file,
                                 caller_scan_type="combined_scan",
                             )
                             if completed is False:
-                                logging.info(f"Combined scan stop detected during popularity step for {artist_name}")
+                                logging.info(f"Combined scan stop detected during metadata step for {artist_name}")
                                 _write_progress_with_current_artist(combined_progress_file, "combined_scan", False, {"status": "stopped", "exit_code": 0})
                                 return
                         except Exception as e:
-                            logging.error(f"Error in popularity scan for {artist_name}: {e}")
-                            # Continue with next artist even if popularity scan fails
+                            logging.error(f"Error in metadata lookup scan for {artist_name}: {e}")
+
+                        # Step 3: Popularity-only scan for this artist
+                        logging.info(f"  → Popularity scan for {artist_name}")
+                        try:
+                            completed = scan_popularity_func(
+                                verbose=False,
+                                force=force_rescan,
+                                artist_filter=artist_name,
+                                popularity_only=True,
+                                stop_progress_file=combined_progress_file,
+                                caller_scan_type="combined_scan",
+                            )
+                            if completed is False:
+                                logging.info(f"Combined scan stop detected during popularity stage for {artist_name}")
+                                _write_progress_with_current_artist(combined_progress_file, "combined_scan", False, {"status": "stopped", "exit_code": 0})
+                                return
+                        except Exception as e:
+                            logging.error(f"Error in popularity-only scan for {artist_name}: {e}")
+
+                        # Step 4: Singles-only scan for this artist
+                        logging.info(f"  → Singles scan for {artist_name}")
+                        try:
+                            completed = scan_popularity_func(
+                                verbose=False,
+                                force=force_rescan,
+                                artist_filter=artist_name,
+                                singles_only=True,
+                                stop_progress_file=combined_progress_file,
+                                caller_scan_type="combined_scan",
+                            )
+                            if completed is False:
+                                logging.info(f"Combined scan stop detected during singles stage for {artist_name}")
+                                _write_progress_with_current_artist(combined_progress_file, "combined_scan", False, {"status": "stopped", "exit_code": 0})
+                                return
+                        except Exception as e:
+                            logging.error(f"Error in singles-only scan for {artist_name}: {e}")
+
+                        # Step 5: Mood scan for this artist
+                        logging.info(f"  → Mood scan for {artist_name}")
+                        try:
+                            cfg = get_config()
+                            essentia_cfg = cfg.get("essentia", {}) if isinstance(cfg, dict) else {}
+                            mood_result = run_essentia_mood_scan(
+                                script_path=essentia_cfg.get("script_path", ""),
+                                models_dir=essentia_cfg.get("models_dir", ""),
+                                mood_threshold=float(essentia_cfg.get("mood_threshold", 0.005)),
+                                per_file_timeout=int(essentia_cfg.get("per_file_timeout", 300)),
+                                force=force_rescan,
+                                progress_file=os.path.join(os.path.dirname(DB_PATH), "essentia_mood_scan_progress.json"),
+                                tag_genres=bool(essentia_cfg.get("tag_genres", False)),
+                                num_genres=int(essentia_cfg.get("num_genres", 3)),
+                                genre_threshold=float(essentia_cfg.get("genre_threshold", 15.0)),
+                                genre_format=essentia_cfg.get("genre_format", "parent_child"),
+                                tag_moods=bool(essentia_cfg.get("tag_moods", True)),
+                                parse_json_features=bool(essentia_cfg.get("parse_json_features", True)),
+                                delete_json_after_import=bool(essentia_cfg.get("delete_json_after_import", True)),
+                                json_output_dir=str(essentia_cfg.get("json_output_dir", "") or "").strip(),
+                                artist_filter=artist_name,
+                            )
+                            if mood_result.get("stopped"):
+                                logging.info(f"Combined scan stop detected during mood stage for {artist_name}")
+                                _write_progress_with_current_artist(combined_progress_file, "combined_scan", False, {"status": "stopped", "exit_code": 0})
+                                return
+                            if mood_result.get("error"):
+                                logging.error(f"Error in mood scan for {artist_name}: {mood_result.get('error')}")
+                        except Exception as e:
+                            logging.error(f"Error in mood scan for {artist_name}: {e}")
                         
                         # Update checkpoint with the last scanned artist
                         try:
@@ -17644,7 +17711,7 @@ def scan_combined():
                 'resume_force': 'Resume (Forced)'
             }.get(mode, 'Full')
             restart_desc = " with restart" if restart_requested else ""
-            flash(f"✅ Combined scan started ({mode_desc}{restart_desc} - Navidrome → Popularity → Singles for each artist)", "success")
+            flash(f"✅ Combined scan started ({mode_desc}{restart_desc} - Navidrome → Metadata → Popularity → Singles → Mood per artist)", "success")
         except Exception as e:
             logging.error(f"Error starting combined scan: {e}", exc_info=True)
             flash(f"❌ Error starting combined scan: {str(e)}", "danger")

@@ -3328,6 +3328,7 @@ def popularity_scan(
     filter_missing: bool = False,
     singles_only: bool = False,
     singles_with_missing_popularity: bool = False,
+    popularity_only: bool = False,
     metadata_only: bool = False,
     clear_single_detection_sources: list = None,
     stop_progress_file: str = None,
@@ -3348,6 +3349,7 @@ def popularity_scan(
         singles_with_missing_popularity: Run singles detection for all albums; only fetch popularity
                                          data from external sources for albums that have no existing
                                          popularity scores in the database.
+        popularity_only: Run popularity scoring only; skip singles detection/star assignment.
         metadata_only: Run metadata enrichment lookups only (tags/writer/album context/missing track checks);
                    skip popularity scoring, singles detection, and star assignments.
         clear_single_detection_sources: List of sources to clear from cache (e.g., ['discogs', 'spotify'])
@@ -3390,9 +3392,11 @@ def popularity_scan(
 
     # Log scan mode details to info
     if singles_only:
-        log_info("Singles-only mode enabled - will only rescan singles detection")
+        log_info("Singles-only mode enabled - will only rescan singles detection (albums without popularity data are skipped)")
     elif singles_with_missing_popularity:
         log_info("Singles scan mode enabled - will run popularity scan only for albums with no existing popularity data")
+    elif popularity_only:
+        log_info("Popularity-only mode enabled - will score popularity and skip singles/star stages")
     elif metadata_only:
         log_info("Metadata-only mode enabled - will run metadata lookups without popularity/singles/star scoring")
     elif FORCE_RESCAN or force:
@@ -3451,8 +3455,9 @@ def popularity_scan(
         if conn_for_cache:
             conn_for_cache.close()
 
-    if not metadata_only:
+    if not metadata_only and not singles_only:
         # Initialize popularity helpers for legacy popularity scan paths.
+        # Singles-only mode skips all popularity scoring, so helpers are not needed.
         from popularity_helpers import configure_popularity_helpers
         try:
             configure_popularity_helpers()
@@ -3501,8 +3506,37 @@ def popularity_scan(
         sql_params.append('queue_%')
 
         # Only filter by popularity_score if not forcing rescan
-        if not (FORCE_RESCAN or force) and not metadata_only:
-            sql_conditions.append("(popularity_score IS NULL OR popularity_score = 0)")
+        if not (FORCE_RESCAN or force) and not metadata_only and not singles_only and not singles_with_missing_popularity:
+            sql_conditions.append(
+                f"(popularity_score IS NULL OR popularity_score = 0 OR last_scanned IS NULL OR last_scanned < (NOW() - ({placeholder} * INTERVAL '1 day')))"
+            )
+            sql_params.append(max(1, int(album_skip_days)))
+
+        # Singles-only scan requires existing popularity scores so the album z-score context
+        # is valid. Filter here to only albums where at least one track already has a
+        # popularity_score. Albums without any popularity data are skipped — they must go
+        # through the popularity scan first.
+        if singles_only and not (FORCE_RESCAN or force):
+            sql_conditions.append(
+                f"album IN ("
+                f"  SELECT DISTINCT album FROM tracks"
+                f"  WHERE COALESCE(popularity_score, 0) > 0"
+                f")"
+            )
+
+        if not (FORCE_RESCAN or force) and metadata_only:
+            sql_conditions.append(
+                f"(" \
+                f"last_scanned IS NULL OR last_scanned < (NOW() - ({placeholder} * INTERVAL '1 day')) OR " \
+                f"COALESCE(NULLIF(mbid, ''), '') = '' OR COALESCE(NULLIF(musicbrainz_album_mbid, ''), '') = '' OR " \
+                f"writer IS NULL OR TRIM(CAST(writer AS TEXT)) IN ('', '[]', 'null', 'None') OR " \
+                f"lastfm_tags IS NULL OR TRIM(CAST(lastfm_tags AS TEXT)) = '' OR " \
+                f"listenbrainz_genres IS NULL OR TRIM(CAST(listenbrainz_genres AS TEXT)) = '' OR " \
+                f"discogs_genres IS NULL OR TRIM(CAST(discogs_genres AS TEXT)) = '' OR " \
+                f"musicbrainz_genres IS NULL OR TRIM(CAST(musicbrainz_genres AS TEXT)) = ''" \
+                f")"
+            )
+            sql_params.append(max(1, int(album_skip_days)))
 
         if artist_filter:
             # Artist scans should only include albums owned by that album artist.
@@ -4423,31 +4457,32 @@ def popularity_scan(
                     except Exception as e:
                         log_debug(f"Failed PostgreSQL transaction-state check for '{artist} - {album}': {e}")
 
-                # Fetch and store album tags from Last.fm
-                try:
-                    lastfm_config = get_lastfm_config(config)
-                    if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
-                        api_key = lastfm_config.get("api_key")
-                        # Skip if placeholder key
-                        if api_key not in ["your_lastfm_api_key", "YOUR_API_KEY", "<your_api_key>", ""]:
-                            from api_clients.lastfm import LastFmClient
-                            lastfm_client = LastFmClient(api_key)
+                # Fetch and store album tags from Last.fm (metadata enrichment — skip in singles modes)
+                if not singles_only and not singles_with_missing_popularity:
+                    try:
+                        lastfm_config = get_lastfm_config(config)
+                        if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
+                            api_key = lastfm_config.get("api_key")
+                            # Skip if placeholder key
+                            if api_key not in ["your_lastfm_api_key", "YOUR_API_KEY", "<your_api_key>", ""]:
+                                from api_clients.lastfm import LastFmClient
+                                lastfm_client = LastFmClient(api_key)
 
-                        album_tags = _run_with_timeout(
-                            lastfm_client.get_album_top_tags,
-                            8,
-                            "Last.fm album tags lookup timed out after 8s",
-                            artist, album,
-                            limit=15
-                        )
+                            album_tags = _run_with_timeout(
+                                lastfm_client.get_album_top_tags,
+                                8,
+                                "Last.fm album tags lookup timed out after 8s",
+                                artist, album,
+                                limit=15
+                            )
 
-                        if album_tags:
-                            log_info(f"Found {len(album_tags)} top tags for '{album}' by '{artist}' from Last.fm")
-                            log_debug(f"Album tags: {[t.get('name') for t in album_tags]}")
-                        else:
-                            log_debug(f"No top tags found for '{album}' by '{artist}' from Last.fm")
-                except Exception as e:
-                    log_debug(f"Last.fm album tags lookup failed for '{album}' by '{artist}': {e}")
+                            if album_tags:
+                                log_info(f"Found {len(album_tags)} top tags for '{album}' by '{artist}' from Last.fm")
+                                log_debug(f"Album tags: {[t.get('name') for t in album_tags]}")
+                            else:
+                                log_debug(f"No top tags found for '{album}' by '{artist}' from Last.fm")
+                    except Exception as e:
+                        log_debug(f"Last.fm album tags lookup failed for '{album}' by '{artist}': {e}")
 
                 # In singles_only mode, skip popularity scanning and go directly to singles detection
                 if singles_only:
@@ -5971,6 +6006,21 @@ def popularity_scan(
                     conn.commit()
 
                     log_album_scan(artist, album, 'metadata', len(album_tracks), 'completed')
+                    continue
+
+                if popularity_only:
+                    log_info(f'Popularity-only scan complete for "{artist} - {album}" (singles/stars skipped)')
+
+                    current_timestamp = datetime.now().isoformat()
+                    cursor.execute(
+                        f"""UPDATE tracks
+                        SET last_scanned = {placeholder}
+                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}""",
+                        (current_timestamp, artist, album)
+                    )
+                    conn.commit()
+
+                    log_album_scan(artist, album, 'popularity', album_scanned, 'completed')
                     continue
 
                 # Perform singles detection for album tracks
