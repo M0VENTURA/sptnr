@@ -166,8 +166,8 @@
     <!-- Two-Column Layout for Edit & Overview -->
     <form method="POST" action="{{ url_for('album_edit', artist=artist_name, album=album_name) }}" id="albumMetadataForm">
         <div class="row g-3 mb-4">
-            <!-- LEFT COLUMN: EDIT FORM -->
-            <div class="col-12 col-lg-6">
+            <!-- EDIT FORM -->
+            <div class="col-12 order-2">
                 <!-- Album Edit Card -->
                 <div class="card" id="album-information-section">
                     <div class="card-header d-flex justify-content-between align-items-center">
@@ -250,14 +250,51 @@
                             </div>
                         </div>
 
-                        <input type="hidden" id="album_mbid" name="album_mbid" value="">
+                        <hr class="my-3">
+
+                        <h6 class="text-muted mb-3">Release IDs and Genres (Applied on Save)</h6>
+                        <div class="row g-2 mb-3">
+                            <div class="col-12 col-md-6">
+                                <label for="album_mbid" class="form-label">MusicBrainz Release ID</label>
+                                <input type="text" class="form-control" id="album_mbid" name="album_mbid" value="{{ album_data.musicbrainz_album_mbid or '' }}" placeholder="MusicBrainz release MBID">
+                            </div>
+                            <div class="col-12 col-md-6">
+                                <label for="album_discogs_id" class="form-label">Discogs Release ID</label>
+                                <input type="text" class="form-control" id="album_discogs_id" name="album_discogs_id" value="{{ album_data.discogs_album_id or '' }}" placeholder="Discogs release ID">
+                            </div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="newAlbumGenreInput" class="form-label">Album Genres</label>
+                            <div id="albumGenresContainer" class="mb-2">
+                                {% if album_genres %}
+                                    {% for genre in album_genres %}
+                                    <span class="badge bg-primary me-1 mb-1" style="font-size: 0.9rem;">
+                                        {{ genre }}
+                                        <button type="button" class="btn-close btn-close-white ms-1" style="font-size: 0.6rem;" onclick="stageRemoveAlbumGenre('{{ genre|escapejs }}')" aria-label="Remove"></button>
+                                    </span>
+                                    {% endfor %}
+                                {% else %}
+                                    <span class="text-muted small">No genres set</span>
+                                {% endif %}
+                            </div>
+                            <div class="input-group">
+                                <input type="text" class="form-control" id="newAlbumGenreInput" placeholder="Add genre (e.g., Rock, Jazz)">
+                                <button class="btn btn-outline-success" type="button" onclick="addAlbumGenre()">
+                                    <i class="bi bi-plus-circle"></i> Add
+                                </button>
+                            </div>
+                            <small class="form-text text-muted">Genres are staged here and written to all album tracks when you press Save.</small>
+                        </div>
+
+                        <input type="hidden" id="album_genres" name="album_genres" value="{{ album_genres|join(', ') if album_genres else '' }}">
                         <input type="hidden" id="cover_art_url" name="cover_art_url" value="">
                     </div>
                 </div>
             </div>
 
-            <!-- RIGHT COLUMN: OVERVIEW -->
-            <div class="col-12 col-lg-6">
+            <!-- OVERVIEW -->
+            <div class="col-12 order-1">
                 <!-- Album Overview Card -->
                 {% if album_data %}
                 <div class="card" id="album-overview-section">
@@ -411,29 +448,6 @@
                         </h5>
                     </div>
                     <div class="card-body">
-                        <!-- Editable Genres -->
-                        <h6 class="text-muted mb-2">Your Genres</h6>
-                        <div id="albumGenresContainer" class="mb-3">
-                            {% if album_genres %}
-                                {% for genre in album_genres %}
-                                <span class="badge bg-primary me-1 mb-1" style="font-size: 0.9rem;">
-                                    {{ genre }}
-                                    <button type="button" class="btn-close btn-close-white ms-1" style="font-size: 0.6rem;" onclick="removeAlbumGenre('{{ genre|escapejs }}', '{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')" aria-label="Remove"></button>
-                                </span>
-                                {% endfor %}
-                            {% else %}
-                                <span class="text-muted small">No genres set</span>
-                            {% endif %}
-                        </div>
-                        <div class="input-group mb-3">
-                            <input type="text" class="form-control" id="newAlbumGenreInput" placeholder="Add genre (e.g., Rock, Jazz)">
-                            <button class="btn btn-outline-success" type="button" onclick="addAlbumGenre()">
-                                <i class="bi bi-plus-circle"></i> Add
-                            </button>
-                        </div>
-
-                        <hr class="my-3">
-
                         <!-- Genre Recommendations -->
                         <h6 class="text-muted mb-2">Get Suggestions</h6>
                         <button type="button" class="btn btn-sm btn-outline-primary w-100 mb-2" onclick="fetchGenreRecommendations()" id="fetchGenresBtn">
@@ -499,7 +513,7 @@
                                       {% endfor %}
                                     </div>
                                     <button class="btn btn-sm btn-outline-success album-apply-source-tags-btn" style="display:none" onclick="applySelectedAlbumSourceTags()">
-                                      <i class="bi bi-check-circle"></i> Save Selected to Album Tracks
+                                                                            <i class="bi bi-check-circle"></i> Add Selected to Save List
                                     </button>
                                   </div>
                                   {% set ns3.first = False %}
@@ -513,8 +527,6 @@
                             </div>
                           {% endif %}
                         </div>
-
-                        <input type="hidden" id="album_genres" name="album_genres" value="{{ album_genres|join(', ') if album_genres else '' }}">
                     </div>
                 </div>
 
@@ -2052,6 +2064,10 @@
         if (mbid) {
             document.getElementById('album_mbid').value = mbid;
         }
+        if (discogsId) {
+            const discogsField = document.getElementById('album_discogs_id');
+            if (discogsField) discogsField.value = discogsId;
+        }
         if (coverArtUrl) {
             document.getElementById('cover_art_url').value = coverArtUrl;
         }
@@ -2406,6 +2422,30 @@
                 }
             });
         }
+
+        // Reorder key sections to Overview -> Similar Artists -> Edit Album.
+        const overview = document.getElementById('album-overview-section');
+        const similar = document.getElementById('album-similar-section');
+        const edit = document.getElementById('album-information-section');
+        if (overview && similar && edit) {
+            const row = edit.closest('.row');
+            if (row) {
+                const similarWrapper = similar.parentElement;
+                row.parentElement.insertBefore(similarWrapper, row);
+            }
+        }
+
+        // Show a visible loading state when saving album edits.
+        const albumForm = document.getElementById('albumMetadataForm');
+        if (albumForm) {
+            albumForm.addEventListener('submit', function() {
+                const saveBtn = albumForm.querySelector('button[type="submit"]');
+                if (saveBtn) {
+                    saveBtn.disabled = true;
+                    saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" style="width:0.8rem;height:0.8rem;"></span> Saving...';
+                }
+            });
+        }
         
         // Load track-level genre recommendations
         loadTrackRecommendations();
@@ -2427,30 +2467,14 @@
         const checked = document.querySelectorAll('.album-source-tag-check:checked');
         const selected = Array.from(checked).map(cb => cb.value).filter(Boolean);
         if (selected.length === 0) { alert('No tags selected'); return; }
-        const artistName = {{ artist_name|tojson }};
-        const albumName = {{ album_name|tojson }};
-        if (!confirm(`Save tags [${selected.join(', ')}] to all tracks on "${albumName}"?`)) return;
-        const btns = document.querySelectorAll('.album-apply-source-tags-btn');
-        btns.forEach(b => { b.disabled = true; b.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Saving…'; });
-        fetch('/api/album/apply-genres', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ artist: artistName, album: albumName, genres: selected })
-        })
-        .then(r => r.json())
-        .then(data => {
-            if (data.success) {
-                alert('✅ ' + (data.message || 'Tags saved to album tracks'));
-                location.reload();
-            } else {
-                alert('❌ Error: ' + (data.error || 'Failed to save tags'));
-                btns.forEach(b => { b.disabled = false; b.innerHTML = '<i class="bi bi-check-circle"></i> Save Selected to Album Tracks'; });
-            }
-        })
-        .catch(err => {
-            alert('❌ Network error: ' + err.message);
-            btns.forEach(b => { b.disabled = false; b.innerHTML = '<i class="bi bi-check-circle"></i> Save Selected to Album Tracks'; });
+        selected.forEach(genre => {
+            const normalized = String(genre || '').trim();
+            if (normalized) currentAlbumGenres.add(normalized);
         });
+        updateAlbumGenresDisplay();
+        checked.forEach(cb => { cb.checked = false; });
+        document.querySelectorAll('.album-apply-source-tags-btn').forEach(b => { b.style.display = 'none'; });
+        alert('Selected tags added. Press Save in Edit Album to apply to all tracks.');
     }
 
     function addAlbumGenre() {
@@ -2471,42 +2495,10 @@
         input.focus();
     }
     
-    // removeAlbumGenre function is now provided by genre-utils.js
-    // Fallback defined if genre-utils.js fails to load
-    if (typeof removeAlbumGenre === 'undefined') {
-        window.removeAlbumGenre = function(genre, artistName, albumName) {
-            if (!artistName) artistName = "{{ artist_name|escapejs }}";
-            if (!albumName) albumName = "{{ album_name|escapejs }}";
-            
-            // Call API to remove genre
-            fetch('/api/genres/remove', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    artist_name: artistName,
-                    album_name: albumName,
-                    genres: [genre]
-                })
-            })
-            .then(r => r.json())
-            .then(data => {
-                if (data.error) {
-                    console.error('Error removing genre:', data.error);
-                    alert('❌ Error: ' + data.error);
-                } else {
-                    // Remove from local Set and update display
-                    if (typeof currentAlbumGenres !== 'undefined') {
-                        currentAlbumGenres.delete(genre);
-                        updateAlbumGenresDisplay();
-                    }
-                    alert(`✅ Genre "${genre}" removed from all tracks`);
-                }
-            })
-            .catch(error => {
-                console.error('Failed to remove genre:', error);
-                alert('❌ Failed to remove genre: ' + error.message);
-            });
-        };
+    function stageRemoveAlbumGenre(genre) {
+        if (!genre) return;
+        currentAlbumGenres.delete(String(genre));
+        updateAlbumGenresDisplay();
     }
     
     function updateAlbumGenresDisplay() {
@@ -2524,7 +2516,7 @@
             html += `
                 <span class="badge bg-primary me-1 mb-1" style="font-size: 0.9rem;">
                     ${escapeHtml(genre)}
-                    <button type="button" class="btn-close btn-close-white ms-1" style="font-size: 0.6rem;" onclick='removeAlbumGenre("${escapeHtml(genre)}", {{ artist_name|tojson }}, {{ album_name|tojson }})' aria-label="Remove"></button>
+                    <button type="button" class="btn-close btn-close-white ms-1" style="font-size: 0.6rem;" onclick='stageRemoveAlbumGenre("${escapeHtml(genre)}")' aria-label="Remove"></button>
                 </span>
             `;
         });

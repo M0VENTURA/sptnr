@@ -3392,6 +3392,7 @@ def popularity_scan(
     else:
         progress_scan_type = "popularity_scan"
     progress_file_path = stop_progress_file or POPULARITY_PROGRESS_FILE
+    metadata_enrichment_enabled = bool(metadata_only)
 
     if not skip_header:
         log_unified("Popularity Scan - Starting Popularity Scan")
@@ -5067,7 +5068,7 @@ def popularity_scan(
                         else:
                             log_debug(f'No API clients available for batch tag fetch, will use per-track fallback if needed')
 
-                        for track in album_tracks:
+                        for track in (album_tracks if metadata_enrichment_enabled else []):
                             track_id = track["id"]
                             title = track["title"]
                             track_artist = track["artist"]
@@ -5180,7 +5181,7 @@ def popularity_scan(
                 # are populated even when the album's popularity was already scanned recently.
                 # This ensures writer data is always kept up to date from MusicBrainz.
                 writer_updates = []
-                if HAVE_MUSICBRAINZ:
+                if metadata_enrichment_enabled and HAVE_MUSICBRAINZ:
                     log_info(f'Starting MusicBrainz writer backfill for album "{album}" ({len(album_tracks)} tracks)')
                     for track in album_tracks:
                         track_id = track["id"]
@@ -5577,71 +5578,72 @@ def popularity_scan(
                             log_debug(f'No release date available for age scoring: {title}')
 
                         # Collect genre sources from available APIs
-                        spotify_genres_json = None
-                        lastfm_tags_json = None
-                        listenbrainz_genres_json = None
-                        discogs_genres_json = None
-                        musicbrainz_genres_json = None
+                        spotify_genres_json = row_get(track, 'spotify_genres')
+                        lastfm_tags_json = row_get(track, 'lastfm_tags')
+                        listenbrainz_genres_json = row_get(track, 'listenbrainz_genres')
+                        discogs_genres_json = row_get(track, 'discogs_genres')
+                        musicbrainz_genres_json = row_get(track, 'musicbrainz_genres')
 
-                        # Extract Spotify genres from artist metadata (saved by fetch_comprehensive_metadata)
-                        try:
-                            spotify_artist_genres = row_get(track, 'spotify_artist_genres')
-                            if spotify_artist_genres:
-                                spotify_genres_json = spotify_artist_genres
-                                log_debug(f'Spotify genres available for: {title}')
-                        except Exception as e:
-                            log_debug(f'Failed to extract Spotify genres: {e}')
-
-                        # Use batch-fetched tag data if available (more efficient than per-track fetches)
-                        if track_id in album_tags_data:
-                            tags_dict = album_tags_data[track_id]
-                            if tags_dict.get("lastfm_tags"):
-                                lastfm_tags_json = json.dumps(tags_dict["lastfm_tags"])
-                                log_debug(f'Using batch-fetched Last.fm tags for: {title}')
-                            if tags_dict.get("discogs_genres"):
-                                discogs_genres_json = json.dumps(tags_dict["discogs_genres"])
-                                log_debug(f'Using batch-fetched Discogs genres for: {title}')
-
-                        # If batch fetch didn't provide Last.fm tags, try extracting from lastfm_info
-                        if not lastfm_tags_json:
+                        if metadata_enrichment_enabled:
+                            # Extract Spotify genres from artist metadata (saved by fetch_comprehensive_metadata)
                             try:
-                                if lastfm_info and lastfm_info.get("toptags"):
-                                    tags_list = lastfm_info.get("toptags", {}).get("tag", [])
-                                    if tags_list and isinstance(tags_list, list):
-                                        tag_names = [tag.get("name") for tag in tags_list if isinstance(tag, dict) and tag.get("name")]
-                                        if tag_names:
-                                            lastfm_tags_json = json.dumps(tag_names)
-                                            log_debug(f'Last.fm tags extracted from API for: {title} - {len(tag_names)} tags')
+                                spotify_artist_genres = row_get(track, 'spotify_artist_genres')
+                                if spotify_artist_genres:
+                                    spotify_genres_json = spotify_artist_genres
+                                    log_debug(f'Spotify genres available for: {title}')
                             except Exception as e:
-                                log_debug(f'Failed to extract Last.fm tags from API: {e}')
+                                log_debug(f'Failed to extract Spotify genres: {e}')
 
-                        # Extract Discogs genres (if not already fetched in batch)
-                        if not discogs_genres_json and HAVE_DISCOGS and discogs_token:
-                            try:
-                                discogs_release_id = row_get(track, 'discogs_release_id')
-                                if discogs_release_id:
-                                    log_debug(f'Fetching Discogs genres for release ID: {discogs_release_id}')
-                                    discogs_client = DiscogsClient(token=discogs_token)
-                                    discogs_genres = discogs_client.get_genres(title, artist)
-                                    if discogs_genres:
-                                        discogs_genres_json = json.dumps(discogs_genres)
-                                        log_debug(f'Discogs genres extracted for: {title} - {len(discogs_genres)} genres')
-                            except Exception as e:
-                                log_debug(f'Failed to extract Discogs genres: {e}')
+                            # Use batch-fetched tag data if available (more efficient than per-track fetches)
+                            if track_id in album_tags_data:
+                                tags_dict = album_tags_data[track_id]
+                                if tags_dict.get("lastfm_tags"):
+                                    lastfm_tags_json = json.dumps(tags_dict["lastfm_tags"])
+                                    log_debug(f'Using batch-fetched Last.fm tags for: {title}')
+                                if tags_dict.get("discogs_genres"):
+                                    discogs_genres_json = json.dumps(tags_dict["discogs_genres"])
+                                    log_debug(f'Using batch-fetched Discogs genres for: {title}')
 
-                        # Extract MusicBrainz genres (from recording metadata)
-                        if HAVE_MUSICBRAINZ:
-                            try:
-                                track_mbid = row_get(track, 'mbid')
-                                if track_mbid:
-                                    log_debug(f'Fetching MusicBrainz genres for MBID: {track_mbid}')
-                                    mb_client = MusicBrainzClient()
-                                    mb_genres = mb_client.get_genres(title, artist)
-                                    if mb_genres:
-                                        musicbrainz_genres_json = json.dumps(mb_genres)
-                                        log_debug(f'MusicBrainz genres extracted for: {title} - {len(mb_genres)} genres')
-                            except Exception as e:
-                                log_debug(f'Failed to extract MusicBrainz genres: {e}')
+                            # If batch fetch didn't provide Last.fm tags, try extracting from lastfm_info
+                            if not lastfm_tags_json:
+                                try:
+                                    if lastfm_info and lastfm_info.get("toptags"):
+                                        tags_list = lastfm_info.get("toptags", {}).get("tag", [])
+                                        if tags_list and isinstance(tags_list, list):
+                                            tag_names = [tag.get("name") for tag in tags_list if isinstance(tag, dict) and tag.get("name")]
+                                            if tag_names:
+                                                lastfm_tags_json = json.dumps(tag_names)
+                                                log_debug(f'Last.fm tags extracted from API for: {title} - {len(tag_names)} tags')
+                                except Exception as e:
+                                    log_debug(f'Failed to extract Last.fm tags from API: {e}')
+
+                            # Extract Discogs genres (if not already fetched in batch)
+                            if not discogs_genres_json and HAVE_DISCOGS and discogs_token:
+                                try:
+                                    discogs_release_id = row_get(track, 'discogs_release_id')
+                                    if discogs_release_id:
+                                        log_debug(f'Fetching Discogs genres for release ID: {discogs_release_id}')
+                                        discogs_client = DiscogsClient(token=discogs_token)
+                                        discogs_genres = discogs_client.get_genres(title, artist)
+                                        if discogs_genres:
+                                            discogs_genres_json = json.dumps(discogs_genres)
+                                            log_debug(f'Discogs genres extracted for: {title} - {len(discogs_genres)} genres')
+                                except Exception as e:
+                                    log_debug(f'Failed to extract Discogs genres: {e}')
+
+                            # Extract MusicBrainz genres (from recording metadata)
+                            if HAVE_MUSICBRAINZ:
+                                try:
+                                    track_mbid = row_get(track, 'mbid')
+                                    if track_mbid:
+                                        log_debug(f'Fetching MusicBrainz genres for MBID: {track_mbid}')
+                                        mb_client = MusicBrainzClient()
+                                        mb_genres = mb_client.get_genres(title, artist)
+                                        if mb_genres:
+                                            musicbrainz_genres_json = json.dumps(mb_genres)
+                                            log_debug(f'MusicBrainz genres extracted for: {title} - {len(mb_genres)} genres')
+                                except Exception as e:
+                                    log_debug(f'Failed to extract MusicBrainz genres: {e}')
 
                         # Calculate weighted popularity score
                         # Include 2 active sources: Last.fm + Age
@@ -5937,7 +5939,7 @@ def popularity_scan(
                 # This enriches tracks with community-aggregated MusicBrainz tags/genres
                 # Run BEFORE single detection to ensure all metadata is available
                 try:
-                    if HAVE_MUSICBRAINZ:  # Only proceed if MusicBrainz support available
+                    if metadata_enrichment_enabled and HAVE_MUSICBRAINZ:  # Only metadata scans run bulk tag enrichment
                         # Collect recording MBIDs from all tracks that have them
                         mbid_list = []
                         track_mbid_map = {}  # Map MBID -> track_id for updating results
@@ -6046,6 +6048,25 @@ def popularity_scan(
                 # --- End bulk tag lookup section ---
 
                 if metadata_only:
+                    covers_found_count = 0
+                    if HAVE_COVER_DETECTOR:
+                        try:
+                            log_info(f'Starting cover detection for album "{artist} - {album}" (metadata-only mode)')
+                            cursor.execute(f"""
+                                SELECT id, title, artist, writer, mbid, file_path, musicbrainz_album_mbid
+                                FROM tracks
+                                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
+                                ORDER BY COALESCE(track_number, 0), title
+                            """, (artist, album))
+                            album_tracks_for_cover = [dict(row) for row in cursor.fetchall()]
+                            if album_tracks_for_cover:
+                                cover_detector = CoverDetector(db_connection=conn, musicbrainz_client=_get_timeout_safe_musicbrainz_client())
+                                covers_detected = cover_detector.detect_covers_for_album(album, artist, album_tracks_for_cover)
+                                covers_found_count = len(covers_detected or [])
+                                log_info(f'Cover detection complete for "{artist} - {album}": {covers_found_count} cover(s) detected')
+                        except Exception as cover_error:
+                            log_debug(f'Cover detection failed in metadata-only mode for "{artist} - {album}": {cover_error}')
+
                     log_info(f'Metadata-only scan complete for "{artist} - {album}" (popularity/singles/stars skipped)')
 
                     current_timestamp = datetime.now().isoformat()
@@ -6600,7 +6621,7 @@ def popularity_scan(
                     log_debug(f"Batch committed {len(single_detection_timestamp_updates)} single detection timestamp update(s) for album '{album}'")
 
                 # COVER DETECTION: Detect and mark cover songs (MB relation first, writer fallback)
-                if HAVE_COVER_DETECTOR:
+                if metadata_enrichment_enabled and HAVE_COVER_DETECTOR:
                     try:
                         log_info(f'Starting cover detection for album "{artist} - {album}"')
 

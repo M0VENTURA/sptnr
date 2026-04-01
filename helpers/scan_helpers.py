@@ -706,6 +706,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 track_artist = _clean_artist_name_for_storage(t.get("artist", "") or canonical_artist_name) or canonical_artist_name
                 
                 td = {
+                    "_navidrome_sync": True,
                     "id": track_id,
                     "title": t.get("title", ""),
                     "album": album_name,

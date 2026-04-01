@@ -10671,6 +10671,113 @@ def api_artist_update_ids():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/artist/lookup-ids", methods=["POST"])
+def api_artist_lookup_ids():
+    """Lookup artist IDs from MusicBrainz/Discogs and persist them for this artist."""
+    try:
+        data = request.get_json(silent=True) or {}
+        artist_name = str(data.get("artist") or "").strip()
+        if not artist_name:
+            return jsonify({"error": "Missing artist name"}), 400
+
+        placeholder = "%s"
+        musicbrainz_id = ""
+        discogs_id = ""
+
+        # MusicBrainz lookup
+        try:
+            import difflib
+
+            mb_resp = requests.get(
+                "https://musicbrainz.org/ws/2/artist",
+                params={
+                    "query": f'artist:"{_escape_mb_phrase(artist_name)}"',
+                    "fmt": "json",
+                    "limit": 5,
+                },
+                headers={"User-Agent": MUSICBRAINZ_USER_AGENT},
+                timeout=8,
+            )
+            if mb_resp.ok:
+                mb_artists = (mb_resp.json() or {}).get("artists", []) or []
+                if mb_artists:
+                    def _mb_score(item):
+                        candidate = str(item.get("name") or "")
+                        return difflib.SequenceMatcher(None, artist_name.lower(), candidate.lower()).ratio()
+
+                    best_mb = sorted(mb_artists, key=_mb_score, reverse=True)[0]
+                    musicbrainz_id = str(best_mb.get("id") or "").strip()
+        except Exception as mb_err:
+            logging.debug(f"Artist MBID lookup failed for {artist_name}: {mb_err}")
+
+        # Discogs lookup (only if token configured)
+        try:
+            cfg = get_config()
+            discogs_cfg = cfg.get("api_integrations", {}).get("discogs", {}) or cfg.get("discogs", {})
+            token = str(discogs_cfg.get("token") or "").strip()
+            if token:
+                import difflib
+                from api_clients import session
+
+                dc_resp = session.get(
+                    "https://api.discogs.com/database/search",
+                    params={"q": artist_name, "type": "artist", "per_page": 5},
+                    headers={
+                        "Authorization": f"Discogs token={token}",
+                        "User-Agent": "sptnr/1.0 +https://github.com/M0VENTURA/sptnr",
+                    },
+                    timeout=(5, 10),
+                )
+                if dc_resp.ok:
+                    dc_results = (dc_resp.json() or {}).get("results", []) or []
+                    if dc_results:
+                        def _dc_score(item):
+                            candidate = str(item.get("title") or "")
+                            return difflib.SequenceMatcher(None, artist_name.lower(), candidate.lower()).ratio()
+
+                        best_dc = sorted(dc_results, key=_dc_score, reverse=True)[0]
+                        discogs_id = str(best_dc.get("id") or "").strip()
+        except Exception as dc_err:
+            logging.debug(f"Artist Discogs lookup failed for {artist_name}: {dc_err}")
+
+        if not musicbrainz_id and not discogs_id:
+            return jsonify({"error": "No IDs found from external lookup"}), 404
+
+        conn = get_db()
+        cursor = conn.cursor()
+        updates = []
+        params = []
+
+        if musicbrainz_id:
+            updates.append(f"musicbrainz_artist_id = {placeholder}")
+            params.append(musicbrainz_id)
+            updates.append(f"lastfm_artist_mbid = {placeholder}")
+            params.append(musicbrainz_id)
+        if discogs_id:
+            updates.append(f"discogs_artist_id = {placeholder}")
+            params.append(discogs_id)
+
+        params.append(artist_name)
+        cursor.execute(
+            f"UPDATE tracks SET {', '.join(updates)} WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}",
+            params,
+        )
+        rows_updated = cursor.rowcount
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            "success": True,
+            "artist": artist_name,
+            "musicbrainz_artist_id": musicbrainz_id or None,
+            "discogs_artist_id": discogs_id or None,
+            "rows_updated": rows_updated,
+        })
+    except Exception as e:
+        logging.error(f"Error looking up artist IDs: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/album/update-ids", methods=["POST"])
 def api_album_update_ids():
     """Update album/release IDs for an album"""
@@ -12579,6 +12686,32 @@ def album_detail(artist, album):
 
         tracks_with_genre_fit = sorted(tracks_with_genre_fit, key=_album_track_sort_key)
 
+        # If album-level IDs are missing, infer from track-level IDs in this album.
+        def _infer_album_id_from_tracks(rows, key_name):
+            counts = {}
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                value = str(row.get(key_name) or "").strip()
+                if not value:
+                    continue
+                counts[value] = counts.get(value, 0) + 1
+            if not counts:
+                return None
+            return sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
+
+        if not album_data.get('musicbrainz_album_mbid'):
+            album_data['musicbrainz_album_mbid'] = _infer_album_id_from_tracks(
+                tracks_with_genre_fit,
+                'musicbrainz_album_mbid'
+            )
+
+        if not album_data.get('discogs_album_id'):
+            inferred_discogs = _infer_album_id_from_tracks(tracks_with_genre_fit, 'discogs_album_id')
+            if not inferred_discogs:
+                inferred_discogs = _infer_album_id_from_tracks(tracks_with_genre_fit, 'discogs_release_id')
+            album_data['discogs_album_id'] = inferred_discogs
+
         # Avoid external metadata lookups on album page load.
         # Missing-track enrichment via MusicBrainz should run in background metadata scans.
 
@@ -13049,6 +13182,7 @@ def album_edit(artist, album):
         album_type = "album+compilation"
     
     album_mbid = request.form.get("album_mbid", "").strip() or None
+    album_discogs_id = request.form.get("album_discogs_id", "").strip() or None
     album_genres = request.form.get("album_genres", "").strip()
     cover_art_url = request.form.get("cover_art_url", "").strip() or None
     
@@ -13067,6 +13201,12 @@ def album_edit(artist, album):
         conn = get_db()
         cursor = conn.cursor()
         placeholder = "%s"
+        track_columns = _get_table_columns(cursor, "tracks") or set()
+        discogs_album_column = None
+        if "discogs_album_id" in track_columns:
+            discogs_album_column = "discogs_album_id"
+        elif "discogs_release_id" in track_columns:
+            discogs_album_column = "discogs_release_id"
         
         # Update all tracks in this album
         update_fields = []
@@ -13105,6 +13245,11 @@ def album_edit(artist, album):
         if album_mbid:
             update_fields.append(f"musicbrainz_album_mbid = {placeholder}")
             update_values.append(album_mbid)
+
+        # Update album Discogs release ID if provided
+        if album_discogs_id and discogs_album_column:
+            update_fields.append(f"{discogs_album_column} = {placeholder}")
+            update_values.append(album_discogs_id)
         
         # Update genres
         if album_genres:
@@ -13123,7 +13268,11 @@ def album_edit(artist, album):
         if update_fields:
             # Validate that update_fields only contains safe column assignments
             # All field assignments should be in the format "column_name = <placeholder>"
-            allowed_columns = {'album', 'artist', 'album_artist', 'year', 'spotify_album_type', 'musicbrainz_album_mbid', 'genres', 'composer', 'comment', 'cover_art_url'}
+            allowed_columns = {
+                'album', 'artist', 'album_artist', 'year', 'spotify_album_type',
+                'musicbrainz_album_mbid', 'discogs_album_id', 'discogs_release_id',
+                'genres', 'composer', 'comment', 'cover_art_url'
+            }
             for field in update_fields:
                 column_name = field.split('=')[0].strip()
                 if column_name not in allowed_columns:
@@ -14655,11 +14804,12 @@ def scan_popularity_route():
                             logging.info("Singles scan completed successfully")
                             _log_scan_session_complete("singles")
                     else:
-                        logging.info(f"Starting popularity score scan in background (force={force_rescan}, filter_missing={filter_missing}, resume_from={resume_from_artist})")
+                        logging.info(f"Starting popularity-only scan in background (force={force_rescan}, filter_missing={filter_missing}, resume_from={resume_from_artist})")
                         completed = scan_popularity_func(
                             verbose=False,
                             force=force_rescan,
                             filter_missing=filter_missing,
+                            popularity_only=True,
                             resume_from=resume_from_artist,
                             stop_progress_file=popularity_progress_file
                         )
@@ -14668,7 +14818,7 @@ def scan_popularity_route():
                             logging.info("Popularity scan stopped by user request")
                         else:
                             _write_progress_with_current_artist(popularity_progress_file, "popularity_scan", False, {"status": "complete", "exit_code": 0})
-                            logging.info("Popularity scan completed successfully")
+                            logging.info("Popularity-only scan completed successfully")
                             _log_scan_session_complete("popularity")
                 except Exception as e:
                     logging.error(f"Error in popularity scan: {e}", exc_info=True)
@@ -14687,23 +14837,23 @@ def scan_popularity_route():
             if singles_with_missing_popularity:
                 flash("✅ Singles scan started (fetches popularity only for new albums)", "success")
             elif singles_only:
-                flash("✅ Singles detection scan started (popularity only)", "success")
+                flash("✅ Singles detection scan started (single detection only)", "success")
             elif metadata_only:
-                flash("✅ Metadata lookup scan started (no popularity/singles scoring)", "success")
+                flash("✅ Metadata lookup scan started (metadata + cover detection only)", "success")
             else:
                 mode_desc = {
-                    'all': 'Full', 
-                    'force': 'Full (Forced)', 
+                    'all': 'Popularity Only',
+                    'force': 'Popularity Only (Forced)',
                     'missing': 'Missing Only',
-                    'metadata': 'Metadata Lookup Only',
-                    'metadata_force': 'Metadata Lookup (Forced)',
-                    'singles': 'Singles Only',
+                    'metadata': 'Metadata + Cover Detection Only',
+                    'metadata_force': 'Metadata + Cover Detection (Forced)',
+                    'singles': 'Singles Detection Only',
                     'singles_resume': 'Singles Resume from Last',
                     'singles_resume_force': 'Singles Resume (Forced)',
                     'resume': 'Resume from Last',
                     'resume_force': 'Resume (Forced)'
-                }.get(mode, 'Full')
-                flash(f"✅ Popularity and singles scan started ({mode_desc} scan)", "success")
+                }.get(mode, 'Popularity Only')
+                flash(f"✅ Popularity scan started ({mode_desc} scan)", "success")
             logging.info("Popularity scan thread started successfully")
         except Exception as e:
             logging.error(f"Error starting popularity scan: {e}", exc_info=True)
@@ -14716,15 +14866,51 @@ def scan_popularity_route():
 def scan_singles():
     """Run single detection"""
     global scan_process_singles
-    
+
     with scan_lock:
-        if scan_process_singles and scan_process_singles.poll() is None:
-            flash("Single detection scan is already running", "warning")
-            return redirect(url_for("dashboard"))
-        
-        # Note: Standalone singles detection script is not available.
-        # Singles are detected during popularity scans via is_discogs_single() in api_clients.discogs
-        flash("❌ Standalone single detection is not available. Singles are detected during popularity scans.", "warning")
+        if scan_process_singles is not None:
+            if isinstance(scan_process_singles, dict):
+                thread = scan_process_singles.get('thread')
+                if thread and thread.is_alive():
+                    flash("Single detection scan is already running", "warning")
+                    return redirect(url_for("dashboard"))
+            elif hasattr(scan_process_singles, 'is_alive') and scan_process_singles.is_alive():
+                flash("Single detection scan is already running", "warning")
+                return redirect(url_for("dashboard"))
+
+        try:
+            from popularity import popularity_scan as scan_popularity_func
+
+            singles_progress_file = os.path.join(os.path.dirname(DB_PATH), "singles_scan_progress.json")
+            _write_progress_file(singles_progress_file, "singles_scan", True, {"status": "starting"})
+
+            def run_singles_scan_bg():
+                try:
+                    completed = scan_popularity_func(
+                        verbose=False,
+                        force=False,
+                        singles_only=True,
+                        stop_progress_file=singles_progress_file,
+                    )
+                    if completed is False:
+                        _write_progress_with_current_artist(singles_progress_file, "singles_scan", False, {"status": "stopped", "exit_code": 0})
+                        logging.info("Singles scan stopped by user request")
+                    else:
+                        _write_progress_with_current_artist(singles_progress_file, "singles_scan", False, {"status": "complete", "exit_code": 0})
+                        logging.info("Singles scan completed successfully")
+                        _log_scan_session_complete("singles")
+                except Exception as e:
+                    logging.error(f"Error in singles scan: {e}", exc_info=True)
+                    _write_progress_with_current_artist(singles_progress_file, "singles_scan", False, {"status": "error", "error": str(e), "exit_code": 1})
+
+            scan_thread = threading.Thread(target=run_singles_scan_bg, daemon=False)
+            scan_thread.start()
+            scan_process_singles = {'thread': scan_thread, 'type': 'singles'}
+
+            flash("✅ Singles detection scan started (single detection only)", "success")
+        except Exception as e:
+            logging.error(f"Error starting singles scan: {e}", exc_info=True)
+            flash(f"❌ Error starting single detection scan: {str(e)}", "danger")
     
     return redirect(url_for("dashboard"))
 

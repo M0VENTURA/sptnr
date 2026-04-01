@@ -1296,10 +1296,10 @@
                         </div>
                         {% endif %}
                         <div class="d-grid gap-2">
-                            <button type="button" class="btn btn-outline-info btn-sm" onclick="lookupMusicBrainz()">
+                            <button type="button" class="btn btn-outline-info btn-sm" onclick="lookupMusicBrainz(this)">
                                 <i class="bi bi-search"></i> MusicBrainz Lookup
                             </button>
-                            <button type="button" class="btn btn-outline-warning btn-sm" onclick="lookupDiscogs()">
+                            <button type="button" class="btn btn-outline-warning btn-sm" onclick="lookupDiscogs(this)">
                                 <i class="bi bi-search"></i> Discogs Lookup
                             </button>
                         </div>
@@ -1320,6 +1320,19 @@
 </div>
 
 <script>
+    const CURRENT_TRACK_ID = {{ track.id|tojson }};
+
+    function setButtonLoading(button, text) {
+        if (!button) return null;
+        const original = button.innerHTML;
+        button.disabled = true;
+        button.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" style="width:0.8rem;height:0.8rem;"></span> ' + text;
+        return () => {
+            button.disabled = false;
+            button.innerHTML = original;
+        };
+    }
+
     function renameTrackFile(trackId) {
         const btn = document.getElementById('renameFileBtn');
         const originalHtml = btn.innerHTML;
@@ -1421,7 +1434,7 @@
     }
 
 
-    function lookupMusicBrainz() {
+    function lookupMusicBrainz(button) {
         const trackTitle = document.getElementById('title').value;
         const trackArtist = document.getElementById('artist').value;
         
@@ -1430,6 +1443,7 @@
             return;
         }
         
+        const done = setButtonLoading(button, 'Looking up...');
         fetch('/api/track/musicbrainz', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1450,10 +1464,13 @@
             displayExternalResults(data.results, 'musicbrainz');
             modal.show();
         })
-        .catch(error => alert('Network error: ' + error.message));
+        .catch(error => alert('Network error: ' + error.message))
+        .finally(() => {
+            if (done) done();
+        });
     }
 
-    function lookupDiscogs() {
+    function lookupDiscogs(button) {
         const trackTitle = document.getElementById('title').value;
         const trackArtist = document.getElementById('artist').value;
         const trackAlbum = document.getElementById('album').value;
@@ -1463,6 +1480,7 @@
             return;
         }
         
+        const done = setButtonLoading(button, 'Looking up...');
         fetch('/api/track/discogs', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1484,7 +1502,10 @@
             displayExternalResults(data.results, 'discogs');
             modal.show();
         })
-        .catch(error => alert('Network error: ' + error.message));
+        .catch(error => alert('Network error: ' + error.message))
+        .finally(() => {
+            if (done) done();
+        });
     }
 
     function displayExternalResults(results, source) {
@@ -1506,8 +1527,8 @@
                                     <h6 class="mb-1">MBID: <code>${result.mbid}</code></h6>
                                     <p class="text-muted mb-0" style="font-size: 0.85rem;">Confidence: ${(result.confidence * 100).toFixed(1)}%</p>
                                 </div>
-                                <button class="btn btn-sm btn-primary" onclick="applyMBID('${result.mbid}', ${result.confidence || 0})">
-                                    <i class="bi bi-check-circle"></i> Apply
+                                <button class="btn btn-sm btn-primary" onclick="applyMBID(this, '${encodeURIComponent(JSON.stringify(result))}')">
+                                    <i class="bi bi-check-circle"></i> Apply and Save
                                 </button>
                             </div>
                         </div>
@@ -1535,8 +1556,8 @@
                             </div>
                             ${genres ? '<p class="mb-2" style="font-size: 0.85rem;"><strong>Genres:</strong> ' + genres + '</p>' : ''}
                             ${styles ? '<p class="mb-2" style="font-size: 0.85rem;"><strong>Styles:</strong> ' + styles + '</p>' : ''}
-                            <button class="btn btn-sm btn-primary" onclick="applyDiscogsData('${result.discogs_id}', '${result.title}', '${genres}', ${result.is_single})">
-                                <i class="bi bi-check-circle"></i> Apply Metadata
+                            <button class="btn btn-sm btn-primary" onclick="applyDiscogsData(this, '${encodeURIComponent(JSON.stringify(result))}')">
+                                <i class="bi bi-check-circle"></i> Apply and Save
                             </button>
                         </div>
                     </div>
@@ -1547,51 +1568,133 @@
         resultsDiv.innerHTML = html;
     }
 
-    function applyMBID(mbid, confidence) {
-        // Populate the main MBID field
-        const mbidField = document.getElementById('mbid');
-        if (!mbidField.value || confirm('Replace current MBID with this suggested one?')) {
-            mbidField.value = mbid;
-        }
-        
-        // Close modal and show success
-        const modal = bootstrap.Modal.getInstance(document.getElementById('externalLookupModal'));
-        if (modal) modal.hide();
-        
-        alert('✅ MBID applied! Remember to save the form.');
-    }
-
-    function applyDiscogsData(discogsId, title, genres, isSingle) {
-        // Send request to apply Discogs metadata to all tracks in this album
-        const artist = document.getElementById('artist').value;
-        const album = document.getElementById('album').value;
-        
-        if (!artist || !album) {
-            alert('Please ensure artist and album are filled in');
+    async function applyMBID(button, encodedResult) {
+        let result = {};
+        try {
+            result = JSON.parse(decodeURIComponent(encodedResult || ''));
+        } catch (_e) {
+            alert('Invalid lookup result data.');
             return;
         }
-        
-        fetch('/api/album/apply-discogs-id', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                artist: artist,
-                album: album,
-                discogs_id: discogsId,
-                is_single: isSingle
-            })
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                alert('✅ Discogs metadata applied to ' + data.rows_updated + ' track(s)!' + (isSingle ? ' Marked as single.' : ''));
-                // Reload to see updated data
-                location.reload();
-            } else {
-                alert('❌ Error: ' + data.error);
+
+        if (!result.mbid) {
+            alert('Missing MusicBrainz ID in selected result.');
+            return;
+        }
+
+        const done = setButtonLoading(button, 'Saving...');
+        const payload = {
+            track_id: String(CURRENT_TRACK_ID),
+            mbid: String(result.mbid),
+            sync_to_file: true
+        };
+        if (result.year) payload.year = String(result.year);
+        if (result.album) payload.album = String(result.album);
+        if (result.composer) {
+            payload.composer = String(result.composer);
+            payload.writer = String(result.composer);
+        }
+
+        try {
+            const response = await fetch('/api/track/update-metadata', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await response.json();
+            if (!data.success) {
+                alert('Save failed: ' + (data.error || 'Unknown error'));
+                return;
             }
-        })
-        .catch(error => alert('Network error: ' + error.message));
+
+            const mbidField = document.getElementById('mbid');
+            if (mbidField) mbidField.value = result.mbid;
+            if (result.album && document.getElementById('album')) {
+                document.getElementById('album').value = result.album;
+            }
+
+            const modal = bootstrap.Modal.getInstance(document.getElementById('externalLookupModal'));
+            if (modal) modal.hide();
+            alert('Metadata saved from MusicBrainz.');
+        } catch (error) {
+            alert('Network error: ' + error.message);
+        } finally {
+            if (done) done();
+        }
+    }
+
+    async function applyDiscogsData(button, encodedResult) {
+        let result = {};
+        try {
+            result = JSON.parse(decodeURIComponent(encodedResult || ''));
+        } catch (_e) {
+            alert('Invalid lookup result data.');
+            return;
+        }
+
+        const done = setButtonLoading(button, 'Saving...');
+        try {
+            const mergedGenres = [];
+            const g1 = Array.isArray(result.genre) ? result.genre : [];
+            const g2 = Array.isArray(result.style) ? result.style : [];
+            [...g1, ...g2].forEach(g => {
+                const value = String(g || '').trim();
+                if (value && !mergedGenres.includes(value)) mergedGenres.push(value);
+            });
+
+            const payload = {
+                track_id: String(CURRENT_TRACK_ID),
+                sync_to_file: true,
+                is_single: result.is_single ? 1 : 0,
+                single_confidence: result.is_single ? 'medium' : 'low'
+            };
+            if (result.year) payload.year = String(result.year);
+            if (mergedGenres.length) payload.genres = mergedGenres.join('\\');
+
+            if (result.matched_track && result.matched_track.track_number) {
+                payload.track_number = String(result.matched_track.track_number);
+            }
+            if (result.matched_track && Array.isArray(result.matched_track.writers) && result.matched_track.writers.length) {
+                const writers = result.matched_track.writers.join(', ');
+                payload.writer = writers;
+                payload.composer = writers;
+            }
+
+            const trackResponse = await fetch('/api/track/update-metadata', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const trackData = await trackResponse.json();
+            if (!trackData.success) {
+                alert('Track metadata save failed: ' + (trackData.error || 'Unknown error'));
+                return;
+            }
+
+            const artist = document.getElementById('artist').value;
+            const album = document.getElementById('album').value;
+            if (result.discogs_id && artist && album) {
+                await fetch('/api/album/apply-discogs-id', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        artist: artist,
+                        album: album,
+                        discogs_id: result.discogs_id,
+                        is_single: !!result.is_single
+                    })
+                });
+            }
+
+            const modal = bootstrap.Modal.getInstance(document.getElementById('externalLookupModal'));
+            if (modal) modal.hide();
+            alert('Metadata saved from Discogs.');
+            location.reload();
+        } catch (error) {
+            alert('Network error: ' + error.message);
+        } finally {
+            if (done) done();
+        }
     }
 </script>
 

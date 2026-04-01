@@ -1339,6 +1339,9 @@ function openEditArtistIdsModal() {
           </div>
           <div class="modal-footer">
             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="button" class="btn btn-outline-info" onclick="lookupAndSaveArtistIds(this)">
+              <i class="bi bi-cloud-download"></i> Lookup and Save
+            </button>
             <button type="button" class="btn btn-primary" onclick="saveArtistIds()">
               <i class="bi bi-save"></i> Save Changes
             </button>
@@ -1361,6 +1364,12 @@ function saveArtistIds() {
   const artistName = {{ artist_name|tojson }};
   const musicbrainzId = document.getElementById('editMusicbrainzArtistId').value.trim();
   const discogsId = document.getElementById('editDiscogsArtistId').value.trim();
+  const saveBtn = document.querySelector('#editArtistIdsModal .btn.btn-primary');
+  const originalBtnHtml = saveBtn ? saveBtn.innerHTML : null;
+  if (saveBtn) {
+    saveBtn.disabled = true;
+    saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" style="width:0.8rem;height:0.8rem;"></span> Saving...';
+  }
   
   fetch('/api/artist/update-ids', {
     method: 'POST',
@@ -1392,6 +1401,54 @@ function saveArtistIds() {
     .catch(err => {
       console.error('Error:', err);
       alert('❌ Network error: ' + err.message);
+    })
+    .finally(() => {
+      if (saveBtn) {
+        saveBtn.disabled = false;
+        saveBtn.innerHTML = originalBtnHtml;
+      }
+    });
+}
+
+function lookupAndSaveArtistIds(button) {
+  const artistName = {{ artist_name|tojson }};
+  const originalHtml = button.innerHTML;
+  button.disabled = true;
+  button.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" style="width:0.8rem;height:0.8rem;"></span> Looking up...';
+
+  fetch('/api/artist/lookup-ids', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ artist: artistName })
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (!data.success) {
+        alert('❌ Error: ' + (data.error || 'Lookup failed'));
+        return;
+      }
+
+      const mbid = data.musicbrainz_artist_id || '';
+      const discogs = data.discogs_artist_id || '';
+
+      const editMb = document.getElementById('editMusicbrainzArtistId');
+      const editDc = document.getElementById('editDiscogsArtistId');
+      if (editMb && mbid) editMb.value = mbid;
+      if (editDc && discogs) editDc.value = discogs;
+
+      const readonlyMb = document.getElementById('musicbrainzArtistId');
+      const readonlyDc = document.getElementById('discogsArtistId');
+      if (readonlyMb && mbid) readonlyMb.value = mbid;
+      if (readonlyDc && discogs) readonlyDc.value = discogs;
+
+      alert('✅ Lookup complete and IDs saved to artist tracks.');
+    })
+    .catch(err => {
+      alert('❌ Network error: ' + err.message);
+    })
+    .finally(() => {
+      button.disabled = false;
+      button.innerHTML = originalHtml;
     });
 }
 

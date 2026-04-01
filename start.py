@@ -618,6 +618,7 @@ def set_track_rating_for_all(track_id, stars):
                             logging.debug(f"[WRITER] Could not read ID3 tags from {file_path}: {e}")
                 
                 td = {
+                    "_navidrome_sync": True,
                     "id": track_id,
                     "title": t.get("title", ""),
                     "album": album_name,

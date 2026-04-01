@@ -939,6 +939,89 @@ def fetch_album_tracks(album_id):
 # All other boolean-like fields use INTEGER/BIGINT and require int conversion.
 _PG_BOOLEAN_COLUMNS = {'is_single'}
 
+# Fields populated from Navidrome tags/payload. During non-Navidrome updates
+# (for example metadata enrichment), these should be treated as backfill-only
+# so existing Navidrome values are not overwritten.
+_NAVIDROME_OWNED_FIELDS = {
+    "navidrome_genres",
+    "navidrome_genre",
+    "writer",
+    "composer",
+    "lyricist",
+    "arranger",
+    "mixer",
+    "producer",
+    "work",
+    "isrc",
+    "titlesort",
+    "albumsort",
+    "artistsort",
+    "albumartistsort",
+    "lyricistsort",
+    "artistssort",
+    "albumartistssort",
+    "artists",
+    "albumartists",
+    "releasetype",
+    "releasestatus",
+    "releasecountry",
+    "media",
+    "label",
+    "recordlabel",
+    "tracktotal",
+    "disctotal",
+    "compilation",
+    "grouping",
+    "albumversion",
+    "discsubtitle",
+    "script",
+    "releasedate",
+    "originalyear",
+    "originaldate",
+    "copyright",
+    "barcode",
+    "catalognumber",
+    "asin",
+    "subtitle",
+    "lyrics",
+    "language",
+    "movement",
+    "movementname",
+    "movementtotal",
+    "key",
+    "explicitstatus",
+    "conductor",
+    "remixer",
+    "engineer",
+    "director",
+    "djmixer",
+    "performer",
+    "composersort",
+    "encodedby",
+    "encodersettings",
+    "website",
+    "license",
+    "replaygain_track_gain",
+    "replaygain_track_peak",
+    "replaygain_album_gain",
+    "replaygain_album_peak",
+    "r128_track_gain",
+    "r128_album_gain",
+}
+
+
+def _has_meaningful_value(value) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped not in {"", "[]", "{}", "null", "None"}
+    if isinstance(value, (list, dict, tuple, set)):
+        return len(value) > 0
+    if isinstance(value, (int, float)):
+        return value != 0
+    return True
+
 def save_to_db(track_data):
     """
     Save or update a track in the database.
@@ -953,6 +1036,10 @@ def save_to_db(track_data):
     3. Track with file_path (has file location)
     4. Most recently scanned track
     """
+    # Caller can explicitly mark Navidrome sync writes so these updates remain
+    # authoritative for Navidrome-owned fields.
+    is_navidrome_sync = bool(track_data.get('_navidrome_sync'))
+
     conn = get_db_connection()
     cursor = conn.cursor()
     placeholder = "%s"
@@ -1001,25 +1088,35 @@ def save_to_db(track_data):
     except Exception as schema_err:
         logging.debug(f"save_to_db could not inspect tracks schema before upsert: {schema_err}")
 
-    # Preserve existing writer credits when the incoming payload has no writer data.
-    # Some Navidrome responses omit credit fields; without this guard we'd erase valid writer values.
-    incoming_writer = sanitized_data.get('writer')
-    if incoming_writer in (None, '', '[]'):
-        existing_writer = None
-        track_id_for_writer = sanitized_data.get('id')
-        if track_id_for_writer:
+    # Preserve Navidrome-owned fields during non-Navidrome writes.
+    # Metadata scans should only backfill these when DB is empty.
+    if not is_navidrome_sync:
+        track_id_for_merge = sanitized_data.get('id')
+        merge_fields = [f for f in _NAVIDROME_OWNED_FIELDS if f in sanitized_data]
+        if track_id_for_merge and merge_fields:
             try:
+                select_cols = ', '.join(merge_fields)
                 _run_with_db_lock_retry(
-                    lambda: cursor.execute(f"SELECT writer FROM tracks WHERE id = {placeholder}", (track_id_for_writer,)),
-                    "save_to_db writer lookup"
+                    lambda: cursor.execute(
+                        f"SELECT {select_cols} FROM tracks WHERE id = {placeholder}",
+                        (track_id_for_merge,),
+                    ),
+                    "save_to_db navidrome field merge lookup",
                 )
                 existing_row = cursor.fetchone()
                 if existing_row:
-                    existing_writer = existing_row['writer'] if hasattr(existing_row, 'keys') else existing_row[0]
+                    for field in merge_fields:
+                        existing_value = (
+                            existing_row[field] if hasattr(existing_row, 'keys') else None
+                        )
+                        incoming_value = sanitized_data.get(field)
+                        if _has_meaningful_value(existing_value):
+                            sanitized_data[field] = existing_value
+                        elif not _has_meaningful_value(incoming_value):
+                            sanitized_data[field] = existing_value
             except Exception:
-                existing_writer = None
-        if existing_writer and existing_writer not in ('', '[]'):
-            sanitized_data['writer'] = existing_writer
+                # Keep write path resilient if merge lookup fails.
+                pass
     
     # Check for existing track by content (artist, album, title, duration)
     # This prevents duplicate albums when Navidrome IDs change
