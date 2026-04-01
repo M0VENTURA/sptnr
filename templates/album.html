@@ -85,6 +85,18 @@
                                 <strong><span class="badge bg-success">{{ album_data.avg_stars|round(2) }}★</span></strong>
                             </div>
                             {% endif %}
+                            {% if album_data and album_data.record_label %}
+                            <div class="col-6">
+                                <small class="text-muted d-block">Record Label</small>
+                                <strong>{{ album_data.record_label }}</strong>
+                            </div>
+                            {% endif %}
+                            {% if album_data and album_data.catalog_number %}
+                            <div class="col-6">
+                                <small class="text-muted d-block">Catalog #</small>
+                                <strong>{{ album_data.catalog_number }}</strong>
+                            </div>
+                            {% endif %}
                         </div>
                     </div>
                 </div>
