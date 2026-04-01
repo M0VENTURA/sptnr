@@ -6893,18 +6893,20 @@ def cleanup_imported(days=7):
         return 0
 
 
-def check_album_exists_in_library(album, artist):
+def check_album_exists_in_library(album, artist, release_mbid=None):
     """Check if an album already exists in the tracks database.
 
-    First attempts an exact (case-insensitive) SQL match.  If that finds
-    nothing, falls back to a normalised comparison via
-    :func:`_normalize_album_for_dedup` so that albums whose names differ
-    only in edition suffixes or punctuation (e.g. ``"Album (OST)"`` vs
-    ``"Album - Original Soundtrack"``) are still detected as duplicates.
+    Tries three checks in order of increasing cost:
+    1. MBID fast path – if ``release_mbid`` is provided, match against
+       ``musicbrainz_albumid`` in ``tracks`` (exact, no text ambiguity).
+    2. Exact text match – case-insensitive ``album`` + ``artist``.
+    3. Fuzzy text pass – normalised via :func:`_normalize_album_for_dedup`
+       so that edition/punctuation variants are still detected as duplicates.
 
     Args:
         album: Album name
         artist: Artist or album artist name
+        release_mbid: MusicBrainz release UUID (optional)
 
     Returns:
         bool: True if album exists in library, False otherwise
@@ -6913,7 +6915,24 @@ def check_album_exists_in_library(album, artist):
         conn = get_db()
         cursor = conn.cursor()
 
-        # Fast path – exact case-insensitive match.
+        # Fast path – MBID-based match (most accurate, no text normalisation needed).
+        mbid = (release_mbid or '').strip()
+        if mbid:
+            cursor.execute(
+                """
+                SELECT COUNT(*) as count FROM tracks
+                WHERE musicbrainz_albumid = %s
+                  AND file_path IS NOT NULL
+                  AND file_path NOT LIKE '__queued_for_download__%'
+                """,
+                (mbid,),
+            )
+            result = cursor.fetchone()
+            if result and result['count'] > 0:
+                conn.close()
+                return True
+
+        # Exact text match – case-insensitive.
         cursor.execute(
             """
             SELECT COUNT(*) as count FROM tracks
@@ -8123,7 +8142,15 @@ def process_complete_albums():
 
                 logger.info(f"Complete album found: {artist} - {album} ({completion['total_tracks']} tracks)")
 
-                if check_album_exists_in_library(album, artist):
+                album_release_mbid = next(
+                    (
+                        mbid for t in completion['tracks']
+                        for mbid in [(t.get('release_mbid') or t.get('release_id') or '').strip()]
+                        if mbid
+                    ),
+                    None,
+                )
+                if check_album_exists_in_library(album, artist, release_mbid=album_release_mbid):
                     conn = get_db()
                     cursor = conn.cursor()
                     downloads_root = get_downloads_dir()

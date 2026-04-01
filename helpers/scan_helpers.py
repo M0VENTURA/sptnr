@@ -365,6 +365,94 @@ def _extract_writer_from_file_tags(file_path: str) -> str:
     return "[]"
 
 
+def _backfill_from_file_tags(file_path: str, extracted: dict) -> None:
+    """
+    Backfill missing metadata fields in *extracted* by reading the audio file directly.
+
+    Navidrome's standard Subsonic API (``/rest/getAlbum.view``) does not expose many
+    extended tags such as ReplayGain, R128, MusicBrainz IDs, record label, copyright,
+    release country, etc.  This function fills any fields that are currently empty in
+    *extracted* with the corresponding values read from the local file via
+    ``metadata_reader.read_mp3_metadata``.  Values already provided by Navidrome are
+    never overridden.
+
+    Args:
+        file_path: Absolute path to the audio file on disk.
+        extracted:  Metadata dict returned by ``NavidromeClient.extract_track_metadata``;
+                    mutated in-place.
+    """
+    if not file_path or not os.path.exists(file_path):
+        return
+
+    # Fields to attempt to backfill from file tags when Navidrome didn't expose them.
+    # Ordered roughly by importance / likelihood of being missing.
+    # Note: musicbrainz_album_mbid is handled via alias after the loop; do not list it here.
+    _BACKFILL_FIELDS = [
+        # MusicBrainz IDs
+        "musicbrainz_albumid",
+        "musicbrainz_albumartistid",
+        "musicbrainz_releasegroupid", "musicbrainz_releasetrackid",
+        "musicbrainz_workid", "musicbrainz_artistid", "musicbrainz_trackid",
+        "musicbrainz_releasecountry", "musicbrainz_albumstatus", "musicbrainz_albumtype",
+        # ReplayGain / R128
+        "replaygain_track_gain", "replaygain_track_peak",
+        "replaygain_album_gain", "replaygain_album_peak",
+        "r128_track_gain", "r128_album_gain",
+        # Release / catalogue info
+        "recordlabel", "copyright", "releasedate", "originaldate", "originalyear",
+        "releasecountry", "media", "barcode", "catalognumber", "asin", "script",
+        "language", "explicitstatus", "releasetype", "releasestatus",
+        # Track structure
+        "tracktotal", "disctotal", "discsubtitle", "grouping", "subtitle", "key",
+        "movement", "movementname", "movementtotal", "albumversion", "compilation",
+        # Technical / encoding
+        "encodedby", "encodersettings", "license", "website", "isrc", "lyrics",
+        # Credits
+        "composer", "lyricist", "conductor", "remixer", "producer", "arranger",
+        "mixer", "engineer", "director", "djmixer", "performer",
+        # Sort tags
+        "titlesort", "albumsort", "artistsort", "albumartistsort",
+        "albumartistssort", "artistssort", "composersort", "lyricistsort",
+    ]
+
+    # Avoid reading the file at all when every target field already has a value.
+    needs_backfill = any(not extracted.get(field) for field in _BACKFILL_FIELDS)
+    if not needs_backfill:
+        return
+
+    try:
+        from helpers.metadata_reader import read_mp3_metadata
+        file_meta = read_mp3_metadata(file_path)
+    except Exception as exc:
+        logging.debug(f"[BACKFILL] Could not read file tags from {file_path}: {exc}")
+        return
+
+    if not file_meta:
+        return
+
+    backfilled = []
+    for field in _BACKFILL_FIELDS:
+        if not extracted.get(field) and file_meta.get(field):
+            extracted[field] = file_meta[field]
+            backfilled.append(field)
+
+    # ``label`` is a separate DB column that mirrors recordlabel; derive it when absent.
+    if not extracted.get("label") and extracted.get("recordlabel"):
+        extracted["label"] = extracted["recordlabel"]
+        backfilled.append("label")
+
+    # musicbrainz_album_mbid is an alias for musicbrainz_albumid in this codebase.
+    if not extracted.get("musicbrainz_album_mbid") and extracted.get("musicbrainz_albumid"):
+        extracted["musicbrainz_album_mbid"] = extracted["musicbrainz_albumid"]
+        backfilled.append("musicbrainz_album_mbid")
+
+    if backfilled:
+        logging.debug(
+            f"[BACKFILL] Filled {len(backfilled)} field(s) from file tags for "
+            f"'{file_path}': {', '.join(backfilled)}"
+        )
+
+
 def _resolve_navidrome_file_path_for_storage(raw_file_path: str, music_root: str) -> str:
     """Normalize Navidrome file paths to a stable absolute path for DB storage."""
     file_path = str(raw_file_path or "").strip()
@@ -700,7 +788,13 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 writer_json = extracted.get("writer", "[]")
                 if writer_json in (None, "", "[]"):
                     writer_json = _extract_writer_from_file_tags(extracted.get("file_path", "") or t.get("path", ""))
-                
+
+                # Backfill missing metadata fields from the local audio file.
+                # Navidrome's Subsonic API often omits extended tags such as
+                # ReplayGain, R128, MusicBrainz IDs, record label, copyright, etc.
+                _file_path_for_backfill = extracted.get("file_path", "") or t.get("path", "")
+                _backfill_from_file_tags(_file_path_for_backfill, extracted)
+
                 # Extract track-level artist for featured artist detection
                 # Fallback to album artist if track artist not available
                 track_artist = _clean_artist_name_for_storage(t.get("artist", "") or canonical_artist_name) or canonical_artist_name

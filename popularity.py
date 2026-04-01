@@ -4953,6 +4953,174 @@ def popularity_scan(
                 # ListenBrainz popularity lookups are intentionally skipped during scan.
                 # The source remains available for tags/genres and other non-score features.
 
+                # Writer/MBID backfill: run BEFORE per-track tag/genre lookups so that the
+                # recording MBID is available for ListenBrainz genre fetching in the same pass.
+                # Condition covers both missing writer AND missing MBID so that tracks which
+                # already have a writer but no MBID still get the MBID populated here.
+                writer_updates = []
+                mbid_updates = []
+                if metadata_enrichment_enabled and HAVE_MUSICBRAINZ:
+                    log_info(f'Starting MusicBrainz writer/MBID backfill for album "{album}" ({len(album_tracks)} tracks)')
+                    for track in album_tracks:
+                        track_id = track["id"]
+                        title = track["title"]
+                        track_artist = track["artist"]
+
+                        track_needs_writer = _writer_is_empty(row_get(track, 'writer'))
+                        track_needs_mbid = not (row_get(track, 'mbid') or '').strip()
+                        if track_needs_writer or track_needs_mbid:
+                            log_debug(f'Writer or MBID missing for "{title}" - querying MusicBrainz')
+                            try:
+                                if mb_writer_client is None:
+                                    mb_writer_client = MusicBrainzClient()
+                                    log_debug(f'Initialized MusicBrainz client for writer backfill')
+
+                                normalized_title = normalize_title_for_lookup(title)
+
+                                # Retry with progressively simplified title variants because
+                                # MusicBrainz recording search often fails for live/remaster suffixes.
+                                title_candidates = []
+                                for candidate in (
+                                    normalized_title,
+                                    strip_search_parentheses(normalized_title),
+                                    strip_parentheses(normalized_title),
+                                ):
+                                    cleaned_candidate = (candidate or "").strip()
+                                    if cleaned_candidate and cleaned_candidate not in title_candidates:
+                                        title_candidates.append(cleaned_candidate)
+
+                                if not title_candidates:
+                                    title_candidates = [title]
+
+                                artist_candidates = []
+                                for artist_candidate in (track_artist, artist):
+                                    cleaned_artist = (artist_candidate or "").strip()
+                                    if cleaned_artist and cleaned_artist not in artist_candidates:
+                                        artist_candidates.append(cleaned_artist)
+
+                                mb_writer_names = []
+                                found_recording_mbid = ""
+                                for artist_candidate in artist_candidates:
+                                    if mb_writer_names:
+                                        break
+                                    for title_candidate in title_candidates:
+                                        log_debug(
+                                            f'MusicBrainz writer lookup attempt: title="{title_candidate}", '
+                                            f'artist="{artist_candidate}"'
+                                        )
+                                        mb_lookup_result = _run_with_timeout(
+                                            mb_writer_client.get_composers_for_track,
+                                            API_CALL_TIMEOUT,
+                                            f"MusicBrainz writer lookup timed out after {API_CALL_TIMEOUT}s",
+                                            title_candidate,
+                                            artist_candidate
+                                        )
+                                        mb_writer_names, found_recording_mbid = mb_lookup_result
+                                        if mb_writer_names:
+                                            break
+
+                                log_debug(f'MusicBrainz returned {len(mb_writer_names) if mb_writer_names else 0} writer(s) for "{title}"')
+
+                                # Save recording MBID whenever the MusicBrainz search found one
+                                # and the track doesn't already have one stored.
+                                if found_recording_mbid and track_needs_mbid:
+                                    mbid_updates.append((found_recording_mbid, track_id))
+                                    track['mbid'] = found_recording_mbid
+                                    log_info(f'✅ MusicBrainz recording MBID backfill: "{title}" -> {found_recording_mbid}')
+
+                                # Only update writer if it was originally missing; don't overwrite existing data.
+                                if mb_writer_names and track_needs_writer:
+                                    log_debug(f'Raw MusicBrainz writer names: {mb_writer_names}')
+                                    deduped_writers = []
+                                    for name in mb_writer_names:
+                                        cleaned = str(name).strip()
+                                        if cleaned and cleaned not in deduped_writers:
+                                            deduped_writers.append(cleaned)
+
+                                    if deduped_writers:
+                                        writer_json = json.dumps(deduped_writers)
+                                        writer_updates.append((writer_json, track_id))
+                                        track['writer'] = writer_json
+                                        log_info(f'✅ MusicBrainz writer backfill: "{title}" -> {deduped_writers}')
+                                    else:
+                                        log_debug(f'MusicBrainz writer lookup returned only empty values for "{title}"')
+                                elif track_needs_writer:
+                                    log_info(f'❌ No MusicBrainz writer credits found for "{title}"')
+                            except TimeoutError as e:
+                                log_info(f'⏱️ MusicBrainz writer lookup timed out for "{title}": {e}')
+                            except Exception as e:
+                                log_info(f'❌ Failed MusicBrainz writer backfill for "{title}": {e}')
+                                import traceback
+                                log_debug(f'Writer backfill error traceback: {traceback.format_exc()}')
+                        else:
+                            log_debug(f'Writer and MBID already populated for "{title}", skipping MusicBrainz lookup')
+
+                # Commit writer updates immediately, before tag/genre fetching so MBID is in DB.
+                if writer_updates:
+                    log_info(f'💾 Committing {len(writer_updates)} writer credit update(s) for album "{album}"')
+                    try:
+                        _execute_tracks_batch_with_retry(
+                            conn,
+                            cursor,
+                            f"UPDATE tracks SET writer = {placeholder} WHERE id = {placeholder}",
+                            sorted(writer_updates, key=lambda row: str(row[1])),
+                            f"writer batch update for album {album}",
+                        )
+                        conn.commit()
+                        log_info(f"✅ Successfully committed {len(writer_updates)} writer credit update(s) for album '{album}'")
+                        log_debug(f"Committed {len(writer_updates)} writer credit update(s) for album '{album}'")
+                    except Exception as e:
+                        log_info(f"❌ Failed to batch update writer credits: {e}")
+                        log_debug(f"Warning: Failed to batch update writer credits: {e}")
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
+
+                        # Retry once after rollback in case a previous non-critical SQL error
+                        # (e.g. album art upsert) left the transaction in aborted state.
+                        try:
+                            _execute_tracks_batch_with_retry(
+                                conn,
+                                cursor,
+                                f"UPDATE tracks SET writer = {placeholder} WHERE id = {placeholder}",
+                                sorted(writer_updates, key=lambda row: str(row[1])),
+                                f"writer batch retry for album {album}",
+                                max_retries=3,
+                            )
+                            conn.commit()
+                            log_info(f"✅ Writer credit retry succeeded for album '{album}' ({len(writer_updates)} updates)")
+                            log_debug(f"Writer retry committed {len(writer_updates)} updates for album '{album}'")
+                        except Exception as retry_error:
+                            log_info(f"❌ Writer credit retry failed for album '{album}': {retry_error}")
+                            log_debug(f"Writer retry failed for album '{album}': {retry_error}")
+                            try:
+                                conn.rollback()
+                            except Exception:
+                                pass
+                else:
+                    log_info(f'ℹ️ No writer updates needed for album "{album}" (all tracks already have writer data or MusicBrainz unavailable)')
+
+                # Commit recording MBID backfills discovered during the writer lookup pass.
+                if mbid_updates:
+                    log_info(f'💾 Committing {len(mbid_updates)} recording MBID backfill(s) for album "{album}"')
+                    try:
+                        _execute_tracks_batch_with_retry(
+                            conn,
+                            cursor,
+                            f"UPDATE tracks SET mbid = {placeholder} WHERE id = {placeholder} AND (mbid IS NULL OR TRIM(mbid) = '')",
+                            sorted(mbid_updates, key=lambda row: str(row[1])),
+                            f"mbid batch update for album {album}",
+                        )
+                        conn.commit()
+                        log_info(f"✅ Successfully committed {len(mbid_updates)} recording MBID backfill(s) for album '{album}'")
+                    except Exception as e:
+                        log_info(f"❌ Failed to batch update recording MBIDs: {e}")
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
+
                 # Collect Last.fm data for all album tracks for z-score normalization
                 # This enables us to calculate z-scores relative to the album
                 album_lastfm_data = {}  # Map of track_id -> {"listeners": int, "playcount": int}
@@ -5175,142 +5343,6 @@ def popularity_scan(
                     except Exception as e:
                         log_debug(f'Error during tag/genre batch fetch for album "{album}": {e}')
                         log_info(f'Continuing with per-track fallback for tag/genre data for this album')
-
-
-                # Writer backfill: run independently of popularity scoring so that writer credits
-                # are populated even when the album's popularity was already scanned recently.
-                # This ensures writer data is always kept up to date from MusicBrainz.
-                writer_updates = []
-                if metadata_enrichment_enabled and HAVE_MUSICBRAINZ:
-                    log_info(f'Starting MusicBrainz writer backfill for album "{album}" ({len(album_tracks)} tracks)')
-                    for track in album_tracks:
-                        track_id = track["id"]
-                        title = track["title"]
-                        track_artist = track["artist"]
-
-                        if _writer_is_empty(row_get(track, 'writer')):
-                            log_debug(f'Writer field empty for "{title}" - querying MusicBrainz')
-                            try:
-                                if mb_writer_client is None:
-                                    mb_writer_client = MusicBrainzClient()
-                                    log_debug(f'Initialized MusicBrainz client for writer backfill')
-
-                                normalized_title = normalize_title_for_lookup(title)
-
-                                # Retry with progressively simplified title variants because
-                                # MusicBrainz recording search often fails for live/remaster suffixes.
-                                title_candidates = []
-                                for candidate in (
-                                    normalized_title,
-                                    strip_search_parentheses(normalized_title),
-                                    strip_parentheses(normalized_title),
-                                ):
-                                    cleaned_candidate = (candidate or "").strip()
-                                    if cleaned_candidate and cleaned_candidate not in title_candidates:
-                                        title_candidates.append(cleaned_candidate)
-
-                                if not title_candidates:
-                                    title_candidates = [title]
-
-                                artist_candidates = []
-                                for artist_candidate in (track_artist, artist):
-                                    cleaned_artist = (artist_candidate or "").strip()
-                                    if cleaned_artist and cleaned_artist not in artist_candidates:
-                                        artist_candidates.append(cleaned_artist)
-
-                                mb_writer_names = []
-                                for artist_candidate in artist_candidates:
-                                    if mb_writer_names:
-                                        break
-                                    for title_candidate in title_candidates:
-                                        log_debug(
-                                            f'MusicBrainz writer lookup attempt: title="{title_candidate}", '
-                                            f'artist="{artist_candidate}"'
-                                        )
-                                        mb_writer_names = _run_with_timeout(
-                                            mb_writer_client.get_composers_for_track,
-                                            API_CALL_TIMEOUT,
-                                            f"MusicBrainz writer lookup timed out after {API_CALL_TIMEOUT}s",
-                                            title_candidate,
-                                            artist_candidate
-                                        )
-                                        if mb_writer_names:
-                                            break
-
-                                log_debug(f'MusicBrainz returned {len(mb_writer_names) if mb_writer_names else 0} writer(s) for "{title}"')
-
-                                if mb_writer_names:
-                                    log_debug(f'Raw MusicBrainz writer names: {mb_writer_names}')
-                                    deduped_writers = []
-                                    for name in mb_writer_names:
-                                        cleaned = str(name).strip()
-                                        if cleaned and cleaned not in deduped_writers:
-                                            deduped_writers.append(cleaned)
-
-                                    if deduped_writers:
-                                        writer_json = json.dumps(deduped_writers)
-                                        writer_updates.append((writer_json, track_id))
-                                        track['writer'] = writer_json
-                                        log_info(f'✅ MusicBrainz writer backfill: "{title}" -> {deduped_writers}')
-                                    else:
-                                        log_debug(f'MusicBrainz writer lookup returned only empty values for "{title}"')
-                                else:
-                                    log_info(f'❌ No MusicBrainz writer credits found for "{title}"')
-                            except TimeoutError as e:
-                                log_info(f'⏱️ MusicBrainz writer lookup timed out for "{title}": {e}')
-                            except Exception as e:
-                                log_info(f'❌ Failed MusicBrainz writer backfill for "{title}": {e}')
-                                import traceback
-                                log_debug(f'Writer backfill error traceback: {traceback.format_exc()}')
-                        else:
-                            current_writer = row_get(track, 'writer')
-                            log_debug(f'Writer field already populated for "{title}": {current_writer}')
-
-                # Commit writer updates immediately, independent of popularity scoring.
-                if writer_updates:
-                    log_info(f'💾 Committing {len(writer_updates)} writer credit update(s) for album "{album}"')
-                    try:
-                        _execute_tracks_batch_with_retry(
-                            conn,
-                            cursor,
-                            f"UPDATE tracks SET writer = {placeholder} WHERE id = {placeholder}",
-                            sorted(writer_updates, key=lambda row: str(row[1])),
-                            f"writer batch update for album {album}",
-                        )
-                        conn.commit()
-                        log_info(f"✅ Successfully committed {len(writer_updates)} writer credit update(s) for album '{album}'")
-                        log_debug(f"Committed {len(writer_updates)} writer credit update(s) for album '{album}'")
-                    except Exception as e:
-                        log_info(f"❌ Failed to batch update writer credits: {e}")
-                        log_debug(f"Warning: Failed to batch update writer credits: {e}")
-                        try:
-                            conn.rollback()
-                        except Exception:
-                            pass
-
-                        # Retry once after rollback in case a previous non-critical SQL error
-                        # (e.g. album art upsert) left the transaction in aborted state.
-                        try:
-                            _execute_tracks_batch_with_retry(
-                                conn,
-                                cursor,
-                                f"UPDATE tracks SET writer = {placeholder} WHERE id = {placeholder}",
-                                sorted(writer_updates, key=lambda row: str(row[1])),
-                                f"writer batch retry for album {album}",
-                                max_retries=3,
-                            )
-                            conn.commit()
-                            log_info(f"✅ Writer credit retry succeeded for album '{album}' ({len(writer_updates)} updates)")
-                            log_debug(f"Writer retry committed {len(writer_updates)} updates for album '{album}'")
-                        except Exception as retry_error:
-                            log_info(f"❌ Writer credit retry failed for album '{album}': {retry_error}")
-                            log_debug(f"Writer retry failed for album '{album}': {retry_error}")
-                            try:
-                                conn.rollback()
-                            except Exception:
-                                pass
-                else:
-                    log_info(f'ℹ️ No writer updates needed for album "{album}" (all tracks already have writer data or MusicBrainz unavailable)')
 
                 # In singles_only mode, skip all popularity scoring
                 if not singles_only and not skip_popularity_for_album and not metadata_only:
