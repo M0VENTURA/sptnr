@@ -650,12 +650,19 @@ class NavidromeClient:
             "mbid": track.get("mbid", "") or "",
             "musicbrainz_album_mbid": _get_tag_value("musicbrainz_album_mbid", "musicbrainz_albumid", "musicbrainz_releaseid", "release_mbid") or "",
             "musicbrainz_albumid": _get_tag_value("musicbrainz_albumid", "musicbrainz_album_mbid", "musicbrainz_releaseid") or "",
-            "musicbrainz_trackid": _get_tag_value("musicbrainz_trackid", "musicbrainz_track_id") or "",
+            # Per Navidrome mappings.yaml:
+            #   musicbrainz_recordingid → UFID frame (recording UUID)
+            #   musicbrainz_trackid     → TXXX "musicbrainz release track id" (release track UUID)
+            # We map recording UUID → our musicbrainz_trackid column, and
+            # release track UUID → our musicbrainz_releasetrackid column.
+            "musicbrainz_trackid": _get_tag_value("musicbrainz_recordingid", "musicbrainz_trackid", "musicbrainz_track_id") or "",
             "musicbrainz_releasegroupid": _get_tag_value("musicbrainz_releasegroupid", "musicbrainz_releasegroup_id", "release_group_mbid") or "",
-            "musicbrainz_releasetrackid": _get_tag_value("musicbrainz_releasetrackid", "musicbrainz_release_track_id", "release_track_mbid") or "",
-            "musicbrainz_albumstatus": _get_tag_value("musicbrainz_albumstatus", "musicbrainz_release_status", "release_status") or "",
-            "musicbrainz_albumtype": _get_tag_value("musicbrainz_albumtype", "musicbrainz_release_type", "release_type") or "",
-            "musicbrainz_releasecountry": _get_tag_value("musicbrainz_releasecountry", "musicbrainz_albumcountry", "release_country") or "",
+            "musicbrainz_releasetrackid": _get_tag_value("musicbrainz_trackid", "musicbrainz_releasetrackid", "musicbrainz_release_track_id", "release_track_mbid") or "",
+            # Navidrome exposes these as releasestatus/releasetype/releasecountry;
+            # fall back to legacy musicbrainz_album* names for files tagged by older tools.
+            "musicbrainz_albumstatus": _get_tag_value("releasestatus", "musicbrainz_albumstatus", "musicbrainz_release_status", "release_status") or "",
+            "musicbrainz_albumtype": _get_tag_value("releasetype", "musicbrainz_albumtype", "musicbrainz_release_type", "release_type") or "",
+            "musicbrainz_releasecountry": _get_tag_value("releasecountry", "musicbrainz_releasecountry", "musicbrainz_albumcountry", "release_country") or "",
             "musicbrainz_artistid": _get_tag_value("musicbrainz_artistid", "musicbrainz_artist_id") or "",
             "musicbrainz_albumartistid": _get_tag_value("musicbrainz_albumartistid", "musicbrainz_albumartist_id") or "",
             "musicbrainz_workid": _get_tag_value("musicbrainz_workid", "musicbrainz_work_id") or "",
