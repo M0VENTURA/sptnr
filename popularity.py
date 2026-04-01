@@ -3456,11 +3456,33 @@ def popularity_scan(
             conn_for_cache.close()
 
     if not metadata_only and not singles_only:
-        # Initialize popularity helpers for legacy popularity scan paths.
-        # Singles-only mode skips all popularity scoring, so helpers are not needed.
+        # Initialize popularity helpers for scan-time weighting logic.
+        # Force Spotify disabled for scans to avoid any Spotify client/API usage.
         from popularity_helpers import configure_popularity_helpers
         try:
-            configure_popularity_helpers()
+            helper_config = {}
+            helper_config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+            try:
+                with open(helper_config_path, 'r') as helper_config_file:
+                    helper_config = yaml.safe_load(helper_config_file) or {}
+            except Exception:
+                helper_config = {}
+
+            if not isinstance(helper_config, dict):
+                helper_config = {}
+
+            api_integrations = helper_config.get("api_integrations")
+            if not isinstance(api_integrations, dict):
+                api_integrations = {}
+                helper_config["api_integrations"] = api_integrations
+
+            spotify_cfg = api_integrations.get("spotify")
+            if not isinstance(spotify_cfg, dict):
+                spotify_cfg = {}
+            spotify_cfg["enabled"] = False
+            api_integrations["spotify"] = spotify_cfg
+
+            configure_popularity_helpers(config=helper_config)
             if not skip_header:
                 log_info("Popularity helpers configured successfully")
             log_debug("Popularity helper configuration complete")
@@ -6056,7 +6078,6 @@ def popularity_scan(
                 # Log which sources are available for single detection
                 discogs_client_available = bool(discogs_token and _get_timeout_safe_discogs_client(discogs_token))
                 sources_available = []
-                sources_available.append("Spotify")
                 if HAVE_MUSICBRAINZ:
                     sources_available.append("MusicBrainz")
                 if discogs_client_available:
@@ -6064,12 +6085,12 @@ def popularity_scan(
                 if discogs_client_available:
                     sources_available.append("Discogs Video")
                 log_info(f'Available sources for single detection: {[", ".join(sources_available)]}')
-                log_debug(f'Source details: Spotify=enabled, MB={HAVE_MUSICBRAINZ}, Discogs={discogs_client_available}, Video={discogs_client_available}')
+                log_debug(f'Source details: MB={HAVE_MUSICBRAINZ}, Discogs={discogs_client_available}, Video={discogs_client_available}')
 
                 # Calculate artist-level popularity statistics BEFORE single detection
                 # Reason: We need to determine if this album is underperforming vs the artist's catalog
                 # so that z-score single detection can be conditionally disabled for underperforming albums
-                # while still using metadata-based detection (Discogs, Spotify, MusicBrainz).
+                # while still using metadata-based detection (Discogs, MusicBrainz, Last.fm).
                 artist_stats = calculate_artist_popularity_stats(artist, conn)
 
                 # Log artist statistics for reference in single detection decisions
