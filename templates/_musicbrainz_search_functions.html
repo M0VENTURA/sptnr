@@ -243,7 +243,8 @@ function displayMusicBrainzResults(results) {
       album: release.title,
       tracks: release.tracks,
       year: release.date || release.year || null,
-      release_id: release.release_id || release.release_group_id || null,
+      release_id: release.release_id || null,
+      release_group_id: release.release_group_id || null,
       source: release.source || 'musicbrainz'
     };
     
@@ -251,7 +252,7 @@ function displayMusicBrainzResults(results) {
     const source = release.source || 'musicbrainz';
     const sourceBadge = source === 'discogs' ? 
       '<span class="badge bg-info ms-2">Discogs</span>' : 
-      '<span class="badge bg-primary ms-2">MusicBrainz</span>';
+      '<span class="badge ms-2" style="background:#f06a34;color:#fff;border-radius:999px;"><i class="bi bi-hexagon-fill me-1" style="color:#d45aa3;"></i>MusicBrainz</span>';
     
     // Format tracks based on source
     const tracksHtml = release.tracks.map((track, trackIndex) => {

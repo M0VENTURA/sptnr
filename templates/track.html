@@ -776,29 +776,27 @@
                         {% if genre_sources %}
                             <h6 class="mb-2">Source Tags</h6>
                             {% set sources = [
-                              ('mood', 'Mood Scan', 'F59C00', 'light'),
-                              ('spotify_genres', 'Spotify', '1DB954', 'white'),
-                              ('lastfm_tags', 'Last.fm', 'D51007', 'black'),
-                              ('listenbrainz_genres', 'ListenBrainz', '0066FF', 'white'),
-                              ('discogs_genres', 'Discogs', '6c757d', 'white'),
-                              ('essentia_genres', 'Essentia', '6f42c1', 'white'),
-                              ('musicbrainz_genres', 'MusicBrainz', 'EB743B', 'white')
+                                                            ('discogs_genres', 'Discogs', '6c757d', 'white', 'bi-vinyl-fill'),
+                                                            ('mood', 'Essentia Moods', 'F59C00', 'black', 'bi-emoji-smile-fill'),
+                                                            ('essentia_genres', 'Essentia Genres', '6f42c1', 'white', 'bi-cpu-fill'),
+                                                            ('musicbrainz_genres', 'MusicBrainz Genres', 'EB743B', 'white', 'bi-hexagon-fill'),
+                                                            ('lastfm_tags', 'Last.fm Genres', 'D51007', 'white', 'bi-music-note-beamed')
                             ] %}
                             {% set ns = namespace(has_any=False) %}
-                            {% for key, label, bgcolor, textcolor in sources %}
+                                                        {% for key, label, bgcolor, textcolor, icon in sources %}
                               {% if genre_sources.get(key) %}{% set ns.has_any = True %}{% endif %}
                             {% endfor %}
                             {% if ns.has_any %}
                               {% set ns2 = namespace(first=True) %}
                               <ul class="nav nav-tabs" role="tablist">
-                                {% for key, label, bgcolor, textcolor in sources %}
+                                                                {% for key, label, bgcolor, textcolor, icon in sources %}
                                   {% if genre_sources.get(key) %}
                                     <li class="nav-item" role="presentation">
                                       <button class="nav-link {{ 'active' if ns2.first else '' }}"
                                               id="trackGenreTab{{ key }}-tab" data-bs-toggle="tab"
                                               data-bs-target="#trackGenreTab{{ key }}-content"
                                               type="button" role="tab" style="color: #{{ bgcolor }};">
-                                        <i class="bi bi-tag"></i> {{ label }}
+                                                                                <i class="bi {{ icon }}"></i> {{ label }}
                                         <span class="badge ms-2" style="background-color: #{{ bgcolor }}; color: {{ textcolor }};">{{ genre_sources[key]|length }}</span>
                                       </button>
                                     </li>
@@ -808,7 +806,7 @@
                               </ul>
                               {% set ns3 = namespace(first=True) %}
                               <div class="tab-content mt-3">
-                                {% for key, label, bgcolor, textcolor in sources %}
+                                                                {% for key, label, bgcolor, textcolor, icon in sources %}
                                   {% if genre_sources.get(key) %}
                                     <div class="tab-pane fade {{ 'active show' if ns3.first else '' }}"
                                          id="trackGenreTab{{ key }}-content" role="tabpanel">
@@ -834,24 +832,24 @@
                         <div>
                             <h6 class="mb-2">Add From Sources</h6>
                             <div class="d-flex flex-wrap gap-2 mb-3">
-                                {% if track.spotify_genres %}
-                                <button type="button" class="btn btn-sm btn-outline-success" onclick='addGenresFromSourceText({{ track.spotify_genres|tojson }}, "Spotify")'>
-                                    <i class="bi bi-plus-circle"></i> Spotify
-                                </button>
-                                {% endif %}
                                 {% if track.lastfm_tags %}
                                 <button type="button" class="btn btn-sm btn-outline-primary" onclick='addGenresFromSourceText({{ track.lastfm_tags|tojson }}, "Last.fm")'>
                                     <i class="bi bi-plus-circle"></i> Last.fm
                                 </button>
                                 {% endif %}
-                                {% if track.listenbrainz_genres %}
-                                <button type="button" class="btn btn-sm btn-outline-info" onclick='addGenresFromSourceText({{ track.listenbrainz_genres|tojson }}, "ListenBrainz")'>
-                                    <i class="bi bi-plus-circle"></i> ListenBrainz
+                                {% if track.mood_list %}
+                                <button type="button" class="btn btn-sm btn-outline-warning" onclick='addGenresToCurrent({{ track.mood_list|tojson }}, "Essentia Moods")'>
+                                    <i class="bi bi-plus-circle"></i> Essentia Moods
                                 </button>
                                 {% endif %}
                                 {% if track.discogs_genres %}
                                 <button type="button" class="btn btn-sm btn-outline-warning" onclick='addGenresFromSourceText({{ track.discogs_genres|tojson }}, "Discogs")'>
                                     <i class="bi bi-plus-circle"></i> Discogs
+                                </button>
+                                {% endif %}
+                                {% if track.essentia_genres %}
+                                <button type="button" class="btn btn-sm" style="border-color:#6f42c1;color:#b89cff;" onclick='addGenresFromSourceText({{ track.essentia_genres|tojson }}, "Essentia Genres")'>
+                                    <i class="bi bi-plus-circle"></i> Essentia Genres
                                 </button>
                                 {% endif %}
                                 {% if track.musicbrainz_genres %}
@@ -867,14 +865,14 @@
 
                         <hr class="my-3">
 
-                        <!-- Recommendations -->
+                        <!-- Recommendations From Repeated Source Tags -->
                         <div>
-                            <button type="button" class="btn btn-sm btn-outline-primary w-100" onclick="fetchGenreRecommendations()">
-                                <i class="bi bi-cloud-download"></i> Get Recommendations
-                            </button>
-                            <div id="genreRecommendations" class="mt-3" style="display: none;">
-                                <small class="text-muted d-block mb-2">Recommended for this track:</small>
-                                <div id="genreRecommendationsList"></div>
+                            <h6 class="mb-2">Recommended Genres</h6>
+                            <small class="text-muted d-block mb-2">Genres that appear in multiple source scans</small>
+                            <div id="genreRecommendations" class="mt-2">
+                                <div id="genreRecommendationsList">
+                                    <span class="text-muted small">No repeated source genres yet</span>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -1422,46 +1420,58 @@
         .catch(err => { resultsDiv.innerHTML = '<div class="alert alert-danger">Search failed: ' + err + '</div>'; });
     }
 
-    function selectCoverMatch(originalArtist) {
-        // Update the hidden is_cover field and close the modal
-        document.querySelector('input[name="is_cover"]').value = 'on';
-        const modal = bootstrap.Modal.getInstance(document.getElementById('coverSearchModal'));
-        if (modal) modal.hide();
-        // Update the cover detected badge in the UI
-        const badge = document.querySelector('#track-scoring-section .badge.bg-secondary, #track-scoring-section .badge.bg-info');
-        if (badge) { badge.className = 'badge bg-info'; badge.textContent = 'Yes'; }
-        alert('Cover match selected: ' + originalArtist + '\nSave the form to confirm.');
-    }
-
-
-    function lookupMusicBrainz(button) {
-        const trackTitle = document.getElementById('title').value;
-        const trackArtist = document.getElementById('artist').value;
-        
-        if (!trackTitle || !trackArtist) {
-            alert('Please enter track title and artist');
+    function renderRepeatedGenreRecommendations(data) {
+        const list = document.getElementById('genreRecommendationsList');
+        if (!list) {
             return;
         }
-        
-        const done = setButtonLoading(button, 'Looking up...');
-        fetch('/api/track/musicbrainz', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                title: trackTitle,
-                artist: trackArtist
-            })
-        })
+
+        const sourceKeys = ['discogs_genres', 'mood', 'essentia_genres', 'musicbrainz_genres', 'lastfm_tags'];
+        const freqMap = new Map();
+
+        sourceKeys.forEach(key => {
+            const entries = (data && data.genres && Array.isArray(data.genres[key])) ? data.genres[key] : [];
+            entries.forEach(entry => {
+                const name = String((entry && entry.name) || '').trim();
+                if (!name) {
+                    return;
+                }
+                const norm = name.toLowerCase();
+                const existing = freqMap.get(norm) || { name, sources: 0 };
+                existing.sources += 1;
+                freqMap.set(norm, existing);
+            });
+        });
+
+        const repeated = Array.from(freqMap.values())
+            .filter(item => item.sources >= 2)
+            .sort((a, b) => b.sources - a.sources || a.name.localeCompare(b.name));
+
+        if (!repeated.length) {
+            list.innerHTML = '<span class="text-muted small">No repeated source genres yet</span>';
+            return;
+        }
+
+        list.innerHTML = repeated.map(item => {
+            const safe = escapeHtml(item.name);
+            const payload = JSON.stringify([item.name]).replace(/"/g, '&quot;');
+            return `<button type="button" class="btn btn-sm btn-outline-success me-1 mb-1" onclick="addGenresToCurrent(${payload}, 'Recommended Genres')"><i class="bi bi-plus"></i> ${safe} <small>(${item.sources})</small></button>`;
+        }).join('');
+    }
+
+    function lookupMusicBrainz(button) {
+        const done = setButtonLoading(button, 'Searching...');
+        fetch('/api/track/musicbrainz?track_id=' + encodeURIComponent(CURRENT_TRACK_ID))
         .then(response => response.json())
         .then(data => {
             if (data.error) {
                 alert('Error: ' + data.error);
                 return;
             }
-            
+
             const modal = new bootstrap.Modal(document.getElementById('externalLookupModal'));
             document.getElementById('lookupTitle').textContent = 'MusicBrainz Lookup Results';
-            displayExternalResults(data.results, 'musicbrainz');
+            displayExternalResults(data.results || [], 'musicbrainz');
             modal.show();
         })
         .catch(error => alert('Network error: ' + error.message))
@@ -1471,35 +1481,18 @@
     }
 
     function lookupDiscogs(button) {
-        const trackTitle = document.getElementById('title').value;
-        const trackArtist = document.getElementById('artist').value;
-        const trackAlbum = document.getElementById('album').value;
-        
-        if (!trackTitle || !trackArtist) {
-            alert('Please enter track title and artist');
-            return;
-        }
-        
-        const done = setButtonLoading(button, 'Looking up...');
-        fetch('/api/track/discogs', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                title: trackTitle,
-                artist: trackArtist,
-                album: trackAlbum
-            })
-        })
+        const done = setButtonLoading(button, 'Searching...');
+        fetch('/api/track/discogs?track_id=' + encodeURIComponent(CURRENT_TRACK_ID))
         .then(response => response.json())
         .then(data => {
             if (data.error) {
                 alert('Error: ' + data.error);
                 return;
             }
-            
+
             const modal = new bootstrap.Modal(document.getElementById('externalLookupModal'));
             document.getElementById('lookupTitle').textContent = 'Discogs Lookup Results';
-            displayExternalResults(data.results, 'discogs');
+            displayExternalResults(data.results || [], 'discogs');
             modal.show();
         })
         .catch(error => alert('Network error: ' + error.message))
@@ -2016,81 +2009,6 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-function fetchGenreRecommendations() {
-    const trackId = '{{ track.id }}';
-    const artist = '{{ track.artist }}';
-    const album = '{{ track.album }}';
-    const title = '{{ track.title }}';
-    
-    const btn = window.event ? window.event.target : document.activeElement;
-    const originalHtml = btn.innerHTML;
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Loading...';
-    
-    // Fetch genre recommendations from Spotify, Last.fm, MusicBrainz, etc.
-    fetch(`/api/track/genre-recommendations?track_id=${encodeURIComponent(trackId)}`)
-        .then(r => r.json())
-        .then(data => {
-            btn.disabled = false;
-            btn.innerHTML = originalHtml;
-            
-            if (data.error) {
-                alert(`Error: ${data.error}`);
-                return;
-            }
-            
-            const recommendations = data.recommendations || [];
-            if (recommendations.length === 0) {
-                alert('No genre recommendations found for this track.');
-                return;
-            }
-            
-            // Display recommendations
-            const recContainer = document.getElementById('genreRecommendations');
-            const recList = document.getElementById('genreRecommendationsList');
-            
-            let html = '';
-            recommendations.forEach(genre => {
-                // Skip if already added
-                if (!currentGenres.has(genre)) {
-                    html += `
-                        <button type="button" class="btn btn-sm btn-outline-success me-1 mb-1" 
-                                onclick="addRecommendedGenre('${escapeHtml(genre)}')">
-                            <i class="bi bi-plus"></i> ${escapeHtml(genre)}
-                        </button>
-                    `;
-                }
-            });
-            
-            if (html) {
-                recList.innerHTML = html;
-                recContainer.style.display = 'block';
-            } else {
-                alert('All recommended genres are already added.');
-            }
-        })
-        .catch(err => {
-            btn.disabled = false;
-            btn.innerHTML = originalHtml;
-            alert(`Network error: ${err.message}`);
-        });
-}
-
-function addRecommendedGenre(genre) {
-    currentGenres.add(genre);
-    updateGenresDisplay();
-    
-    // Remove the button from recommendations
-    const btn = window.event ? window.event.target : document.activeElement;
-    btn.remove();
-    
-    // Hide recommendations if all are added
-    const recList = document.getElementById('genreRecommendationsList');
-    if (!recList.innerHTML.trim()) {
-        document.getElementById('genreRecommendations').style.display = 'none';
-    }
-}
-
 // Initialize genre loading on page load
 let genresLoaded = false;
 
@@ -2152,11 +2070,11 @@ function displayTrackGenres(data) {
     }
     
     const sources = [
-        { key: 'spotify_genres', label: 'Spotify', color: 'success' },
-        { key: 'lastfm_tags', label: 'Last.fm', color: 'primary' },
-        { key: 'listenbrainz_genres', label: 'ListenBrainz', color: 'info' },
         { key: 'discogs_genres', label: 'Discogs', color: 'warning' },
-        { key: 'musicbrainz_genres', label: 'MusicBrainz', color: 'secondary' }
+        { key: 'mood', label: 'Essentia Moods', color: 'warning' },
+        { key: 'essentia_genres', label: 'Essentia Genres', color: 'secondary' },
+        { key: 'musicbrainz_genres', label: 'MusicBrainz Genres', color: 'secondary' },
+        { key: 'lastfm_tags', label: 'Last.fm Genres', color: 'primary' }
     ];
     
     const sourceBlocks = [];
@@ -2197,6 +2115,8 @@ function displayTrackGenres(data) {
     } else {
         container.innerHTML = `<div class="mb-2"><small class="text-muted">Click any genre to merge it into the editable Genres field.</small></div>${sourceBlocks.join('')}`;
     }
+
+    renderRepeatedGenreRecommendations(data);
 }
 
 function showGenresError(message) {
@@ -2585,10 +2505,10 @@ function addGenresFromSourceText(rawText, sourceLabel) {
 
 function addAllKnownSourceGenres() {
     const sourceFields = [
-        { label: 'Spotify', value: '{{ track.spotify_genres|default("", true)|escape }}' },
+        { label: 'Essentia Moods', value: '{{ (track.mood_list or [])|join(",")|escape }}' },
         { label: 'Last.fm', value: '{{ track.lastfm_tags|default("", true)|escape }}' },
-        { label: 'ListenBrainz', value: '{{ track.listenbrainz_genres|default("", true)|escape }}' },
         { label: 'Discogs', value: '{{ track.discogs_genres|default("", true)|escape }}' },
+        { label: 'Essentia Genres', value: '{{ track.essentia_genres|default("", true)|escape }}' },
         { label: 'MusicBrainz', value: '{{ track.musicbrainz_genres|default("", true)|escape }}' }
     ];
 

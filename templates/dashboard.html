@@ -191,31 +191,17 @@
             </div>
         </div>
     </div>
-    
-    <!-- Unified Log Area (shared across all scans) -->
-    <div class="card mb-4">
-        <div class="card-header py-2 px-3 d-flex justify-content-between align-items-center">
-            <span class="fw-semibold"><i class="bi bi-terminal"></i> Unified Log</span>
-            <button id="pauseLogBtn" type="button" class="btn btn-outline-secondary btn-sm ms-2"><i class="bi bi-pause"></i> Pause</button>
-        </div>
-        <div class="card-body p-2">
-            <pre id="unifiedLog" class="bg-dark text-light p-2 mb-2" style="height: 400px; overflow-y: auto; font-family: monospace; font-size: 12px;"></pre>
-            <!-- Log Download Buttons -->
-            <div class="d-flex gap-2 justify-content-end mt-2">
-                <a href="/api/download-log/unified" class="btn btn-sm btn-outline-primary" download>
-                    <i class="bi bi-download"></i> Unified (1h)
-                </a>
-                <a href="/api/download-log/info" class="btn btn-sm btn-outline-info" download>
-                    <i class="bi bi-download"></i> Info (1h)
-                </a>
-                <a href="/api/download-log/debug" class="btn btn-sm btn-outline-warning" download>
-                    <i class="bi bi-download"></i> Debug (1h)
-                </a>
-                <a href="/api/download-log/queue" class="btn btn-sm btn-outline-success" download>
-                    <i class="bi bi-download"></i> Queue (1h)
-                </a>
-            </div>
-        </div>
+
+    <div class="d-flex flex-column flex-md-row gap-2 mb-4">
+        <a href="{{ url_for('artists') }}" class="btn btn-primary flex-grow-1">
+            <i class="bi bi-people"></i> <span class="d-none d-sm-inline">Browse Artists</span>
+        </a>
+        <a href="{{ url_for('analytics_genres_moods_page') }}" class="btn btn-outline-info flex-grow-1">
+            <i class="bi bi-bar-chart-line"></i> <span class="d-none d-sm-inline">Genres & Moods</span>
+        </a>
+        <a href="{{ url_for('config_editor') }}" class="btn btn-outline-secondary flex-grow-1">
+            <i class="bi bi-gear"></i> <span class="d-none d-sm-inline">Settings</span>
+        </a>
     </div>
     
     <!-- Recent Scans -->
@@ -242,18 +228,31 @@
                         </tr>
                     </thead>
                     <tbody id="recent-scans-body">
-                        <tr>
-                            <td colspan="5" class="text-center text-muted">No recent scans yet</td>
-                        </tr>
-                    </tbody>
-                </table>
+
+            <!-- Unified Log Area (shared across all scans) -->
+            <div class="card mb-4">
+                <div class="card-header py-2 px-3 d-flex justify-content-between align-items-center">
+                    <span class="fw-semibold"><i class="bi bi-terminal"></i> Unified Log</span>
+                    <button id="pauseLogBtn" type="button" class="btn btn-outline-secondary btn-sm ms-2"><i class="bi bi-pause"></i> Pause</button>
+                </div>
+                <div class="card-body p-2">
+                    <pre id="unifiedLog" class="bg-dark text-light p-2 mb-2" style="height: 400px; overflow-y: auto; font-family: monospace; font-size: 12px;"></pre>
+                    <div class="d-flex gap-2 justify-content-end mt-2">
+                        <a href="/api/download-log/unified" class="btn btn-sm btn-outline-primary" download>
+                            <i class="bi bi-download"></i> Unified (1h)
+                        </a>
+                        <a href="/api/download-log/info" class="btn btn-sm btn-outline-info" download>
+                            <i class="bi bi-download"></i> Info (1h)
+                        </a>
+                        <a href="/api/download-log/debug" class="btn btn-sm btn-outline-warning" download>
+                            <i class="bi bi-download"></i> Debug (1h)
+                        </a>
+                        <a href="/api/download-log/queue" class="btn btn-sm btn-outline-success" download>
+                            <i class="bi bi-download"></i> Queue (1h)
+                        </a>
+                    </div>
+                </div>
             </div>
-        </div>
-    
-    
-    <div class="d-flex flex-column flex-md-row gap-2">
-        <a href="{{ url_for('artists') }}" class="btn btn-primary flex-grow-1">
-            <i class="bi bi-people"></i> <span class="d-none d-sm-inline">Browse Artists</span>
         </a>
         <a href="{{ url_for('analytics_genres_moods_page') }}" class="btn btn-outline-info flex-grow-1">
             <i class="bi bi-bar-chart-line"></i> <span class="d-none d-sm-inline">Genres & Moods</span>
@@ -457,6 +456,48 @@
     
     .scan-operation-card .btn-group {
         position: static;
+    }
+
+    .badge-musicbrainz {
+        background: #f06a34;
+        color: #fff;
+        border-radius: 999px;
+        font-weight: 600;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+    }
+
+    .badge-musicbrainz::before {
+        content: '';
+        width: 0.65rem;
+        height: 0.65rem;
+        background: #d45aa3;
+        clip-path: polygon(25% 5%, 75% 5%, 100% 50%, 75% 95%, 25% 95%, 0% 50%);
+        display: inline-block;
+    }
+
+    .upcoming-source-chip {
+        font-size: 0.72rem;
+        padding: 0.2rem 0.45rem;
+        border-radius: 999px;
+        font-weight: 600;
+        margin-left: 0.35rem;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+    }
+
+    .upcoming-source-musicbrainz {
+        background: rgba(240, 106, 52, 0.2);
+        color: #ff9e73;
+        border: 1px solid rgba(240, 106, 52, 0.45);
+    }
+
+    .upcoming-source-wikipedia {
+        background: rgba(120, 135, 160, 0.2);
+        color: #c7d2e6;
+        border: 1px solid rgba(120, 135, 160, 0.45);
     }
 </style>
 
@@ -665,6 +706,8 @@ document.addEventListener('DOMContentLoaded', function() {
                     badgeHtml = '<span class="badge bg-info text-dark" title="' + st.timestamp + '"><i class="bi bi-lightning-fill"></i> Combined</span>';
                 } else if (st.type === 'unified') {
                     badgeHtml = '<span class="badge bg-secondary" title="' + st.timestamp + '"><i class="bi bi-layers"></i> Unified</span>';
+                } else if (st.type === 'metadata' || st.type === 'metadata_scan' || st.type === 'metadata_lookup_scan') {
+                    badgeHtml = '<span class="badge badge-musicbrainz" title="' + st.timestamp + '">Metadata</span>';
                 }
                 return badgeHtml;
             }).join(' ');
@@ -1189,6 +1232,10 @@ async function loadUpcomingReleasesBanner() {
         releases.forEach(release => {
             const releaseDate = release.release_date || 'TBA';
             const isUpcoming = new Date(releaseDate) > new Date();
+            const sourceRaw = String(release.source || '').toLowerCase();
+            const sourceBadge = sourceRaw.includes('wiki')
+                ? '<span class="upcoming-source-chip upcoming-source-wikipedia"><i class="bi bi-wikipedia"></i> Wikipedia</span>'
+                : '<span class="upcoming-source-chip upcoming-source-musicbrainz"><i class="bi bi-hexagon-fill"></i> MusicBrainz</span>';
             const statusBadge = isUpcoming ? 
                 '<span class="badge bg-success ms-2">Upcoming</span>' :
                 '<span class="badge bg-primary ms-2">Recent</span>';
@@ -1218,7 +1265,7 @@ async function loadUpcomingReleasesBanner() {
                 <div class="list-group-item d-flex justify-content-between align-items-start py-2">
                     <div class="flex-grow-1">
                         <h6 class="mb-1" style="font-size: 0.95rem;">
-                            ${releaseDate} ${statusBadge} ${collectionBadge} ${recommendedBadge} ${inQueueBadge}
+                            ${releaseDate} ${statusBadge} ${collectionBadge} ${recommendedBadge} ${inQueueBadge} ${sourceBadge}
                         </h6>
                         <small class="text-muted">${escapeHtml(release.artist_name)} - ${escapeHtml(release.album_name)}</small>
                     </div>
