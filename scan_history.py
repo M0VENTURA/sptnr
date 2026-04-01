@@ -14,6 +14,24 @@ from helpers.db_utils import get_db_connection, _is_postgres_connection, is_post
 # don't query information_schema on every call.  Reset to False if the process
 # reconnects to a fresh database.
 _scan_history_source_column_ensured = False
+_recent_scans_cache = []
+_recent_scans_last_ok_ts = 0.0
+_recent_scans_last_error_log_ts = 0.0
+
+
+def _is_transient_db_error(exc: Exception) -> bool:
+    """Best-effort classification for short-lived DB connectivity faults."""
+    msg = str(exc).lower()
+    transient_markers = (
+        "timeout expired",
+        "read timed out",
+        "temporary failure in name resolution",
+        "could not translate host name",
+        "connection refused",
+        "connection reset",
+        "server closed the connection unexpectedly",
+    )
+    return any(marker in msg for marker in transient_markers)
 
 
 def _get_db_path():
@@ -289,79 +307,105 @@ def get_recent_album_scans(limit: int = 10):
     Returns:
         List of dicts with scan information
     """
-    try:
-        conn = get_db_connection()
-        placeholder = "%s"
-        cursor = conn.cursor()
+    global _recent_scans_cache, _recent_scans_last_ok_ts, _recent_scans_last_error_log_ts
 
-        # Check if scan_history table exists
-        if not _table_exists(cursor, "scan_history"):
-            conn.close()
-            return []
+    max_attempts = 2
+    last_error = None
 
-        # Self-heal: add source column if missing from older schema.
-        # Use the module-level flag so information_schema is only queried once
-        # per process (same logic as log_album_scan).
-        global _scan_history_source_column_ensured
-        if not _scan_history_source_column_ensured:
-            cursor.execute(
-                """
-                SELECT 1 FROM information_schema.columns
-                WHERE table_schema = current_schema()
-                  AND table_name = 'scan_history'
-                  AND column_name = 'source'
-                """
-            )
-            if cursor.fetchone():
-                _scan_history_source_column_ensured = True
-            else:
-                try:
-                    cursor.execute(
-                        "ALTER TABLE scan_history ADD COLUMN IF NOT EXISTS source TEXT DEFAULT ''"
-                    )
-                    conn.commit()
+    for attempt in range(max_attempts):
+        try:
+            conn = get_db_connection()
+            placeholder = "%s"
+            cursor = conn.cursor()
+
+            # Check if scan_history table exists
+            if not _table_exists(cursor, "scan_history"):
+                conn.close()
+                _recent_scans_cache = []
+                _recent_scans_last_ok_ts = time.time()
+                return []
+
+            # Self-heal: add source column if missing from older schema.
+            # Use the module-level flag so information_schema is only queried once
+            # per process (same logic as log_album_scan).
+            global _scan_history_source_column_ensured
+            if not _scan_history_source_column_ensured:
+                cursor.execute(
+                    """
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = current_schema()
+                      AND table_name = 'scan_history'
+                      AND column_name = 'source'
+                    """
+                )
+                if cursor.fetchone():
                     _scan_history_source_column_ensured = True
-                except Exception:
-                    pass  # Added concurrently by another worker
+                else:
+                    try:
+                        cursor.execute(
+                            "ALTER TABLE scan_history ADD COLUMN IF NOT EXISTS source TEXT DEFAULT ''"
+                        )
+                        conn.commit()
+                        _scan_history_source_column_ensured = True
+                    except Exception:
+                        pass  # Added concurrently by another worker
 
-        # PostgreSQL puts NULLs FIRST on DESC by default; old rows
-        # inserted before the explicit-timestamp fix (a5abcbb Mar 16)
-        # have NULL scan_timestamp and float to the top, hiding newer entries.
-        order_clause = "NULLS LAST"
-        cursor.execute(
-            f"""
-            SELECT artist, album, scan_type, scan_timestamp, tracks_processed, status, source
-            FROM scan_history
-            WHERE status != 'skipped'
-            ORDER BY scan_timestamp DESC {order_clause}
-            LIMIT {placeholder}
-            """,
-            (limit,)
-        )
+            # PostgreSQL puts NULLs FIRST on DESC by default; old rows
+            # inserted before the explicit-timestamp fix (a5abcbb Mar 16)
+            # have NULL scan_timestamp and float to the top, hiding newer entries.
+            order_clause = "NULLS LAST"
+            cursor.execute(
+                f"""
+                SELECT artist, album, scan_type, scan_timestamp, tracks_processed, status, source
+                FROM scan_history
+                WHERE status != 'skipped'
+                ORDER BY scan_timestamp DESC {order_clause}
+                LIMIT {placeholder}
+                """,
+                (limit,)
+            )
 
-        scans = []
-        for row in cursor.fetchall():
-            raw_ts = row["scan_timestamp"] if hasattr(row, "keys") else row[3]
-            if hasattr(raw_ts, "isoformat"):
-                scan_ts = raw_ts.isoformat()
-            elif raw_ts is not None:
-                scan_ts = str(raw_ts).replace(" ", "T", 1)
-            else:
-                scan_ts = ""
-            keys = row.keys() if hasattr(row, "keys") else None
-            scans.append({
-                "artist": row["artist"] if keys else row[0],
-                "album": row["album"] if keys else row[1],
-                "scan_type": row["scan_type"] if keys else row[2],
-                "scan_timestamp": scan_ts,
-                "tracks_processed": row["tracks_processed"] if keys else row[4],
-                "status": row["status"] if keys else row[5],
-                "source": (row["source"] if keys and "source" in keys else (row[6] if not keys and len(row) > 6 else ""))
-            })
+            scans = []
+            for row in cursor.fetchall():
+                raw_ts = row["scan_timestamp"] if hasattr(row, "keys") else row[3]
+                if hasattr(raw_ts, "isoformat"):
+                    scan_ts = raw_ts.isoformat()
+                elif raw_ts is not None:
+                    scan_ts = str(raw_ts).replace(" ", "T", 1)
+                else:
+                    scan_ts = ""
+                keys = row.keys() if hasattr(row, "keys") else None
+                scans.append({
+                    "artist": row["artist"] if keys else row[0],
+                    "album": row["album"] if keys else row[1],
+                    "scan_type": row["scan_type"] if keys else row[2],
+                    "scan_timestamp": scan_ts,
+                    "tracks_processed": row["tracks_processed"] if keys else row[4],
+                    "status": row["status"] if keys else row[5],
+                    "source": (row["source"] if keys and "source" in keys else (row[6] if not keys and len(row) > 6 else ""))
+                })
 
-        conn.close()
-        return scans
-    except Exception as e:
-        logging.error(f"Error getting recent scans: {e}")
-        logging.error(f"DB target={_db_target_description()}")
-        return []
+            conn.close()
+            _recent_scans_cache = scans
+            _recent_scans_last_ok_ts = time.time()
+            return scans
+        except Exception as e:
+            last_error = e
+            if attempt < (max_attempts - 1) and _is_transient_db_error(e):
+                time.sleep(0.25)
+                continue
+            break
+
+    now = time.time()
+    transient = _is_transient_db_error(last_error) if last_error else False
+    if transient:
+        # Throttle noisy transient connectivity logs to at most once every 30s.
+        if (now - _recent_scans_last_error_log_ts) >= 30.0:
+            logging.warning(f"Transient error getting recent scans: {last_error}")
+            logging.warning(f"DB target={_db_target_description()}")
+            _recent_scans_last_error_log_ts = now
+        return (_recent_scans_cache or [])[:max(0, int(limit))]
+
+    logging.error(f"Error getting recent scans: {last_error}")
+    logging.error(f"DB target={_db_target_description()}")
+    return (_recent_scans_cache or [])[:max(0, int(limit))]

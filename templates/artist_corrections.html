@@ -198,7 +198,9 @@
                             <th>Album</th>
                             <th class="text-center">Track #</th>
                             <th class="text-center">Disc #</th>
+                            <th>What's Missing</th>
                             <th>File</th>
+                            <th class="text-center">Action</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -210,12 +212,23 @@
                                 <td>{{ row.album or '—' }}</td>
                                 <td class="text-center">{{ row.track_number or '—' }}</td>
                                 <td class="text-center">{{ row.disc_number or '—' }}</td>
+                                <td>
+                                    <span class="badge bg-warning text-dark mb-1">{{ row.metadata_issue_reason or 'Needs review' }}</span>
+                                    {% if row.metadata_missing_fields %}
+                                    <div class="small text-muted">{{ row.metadata_missing_fields }}</div>
+                                    {% endif %}
+                                </td>
                                 <td class="small text-muted">{{ row.file_path or '—' }}</td>
+                                <td class="text-center">
+                                    <a class="btn btn-sm btn-outline-primary" href="{{ url_for('track_edit', track_id=row.id) }}" title="Open track editor to fix metadata">
+                                        <i class="bi bi-pencil-square"></i> Fix
+                                    </a>
+                                </td>
                             </tr>
                             {% endfor %}
                         {% else %}
                             <tr>
-                                <td colspan="6" class="text-center text-muted py-4">No missing core metadata found.</td>
+                                <td colspan="8" class="text-center text-muted py-4">No missing core metadata found.</td>
                             </tr>
                         {% endif %}
                     </tbody>

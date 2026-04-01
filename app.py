@@ -5025,12 +5025,30 @@ def artists():
     mbid_inconsistent_counts_by_artist = {}  # Albums where tracks disagree on album MBID
     extra_album_artist_counts_by_artist = {}  # Non-canonical album-artist variants on canonical albums
     mbid_inconsistent_counts_by_artist = {}  # Albums with mixed musicbrainz_album_mbid values
+    track_columns = _get_table_columns(cursor, 'tracks')
+    has_album_artist = 'album_artist' in track_columns
+    artist_expr = "COALESCE(NULLIF(album_artist, ''), artist)" if has_album_artist else "artist"
+    candidate_album_artist_expr = (
+        "CASE "
+        "WHEN album_artist IS NOT NULL AND TRIM(album_artist) != '' THEN TRIM(album_artist) "
+        "WHEN artist IS NOT NULL AND TRIM(artist) != '' THEN TRIM(artist) "
+        "ELSE NULL END"
+        if has_album_artist
+        else "CASE WHEN artist IS NOT NULL AND TRIM(artist) != '' THEN TRIM(artist) ELSE NULL END"
+    )
+    is_compilation_artist_expr = (
+        "CASE "
+        "WHEN LOWER(TRIM(COALESCE(album_artist, ''))) IN ('various artists', 'various', 'v/a', 'va', 'compilation', 'soundtrack', 'original soundtrack') THEN 1 "
+        "ELSE 0 END"
+        if has_album_artist
+        else "CASE WHEN LOWER(TRIM(COALESCE(artist, ''))) IN ('various artists', 'various', 'v/a', 'va', 'compilation', 'soundtrack', 'original soundtrack') THEN 1 ELSE 0 END"
+    )
     try:
         # Query 1: Find duplicate tracks
-        cursor.execute("""
+        cursor.execute(f"""
             WITH dup_groups AS (
                 SELECT
-                    album_artist AS display_name,
+                    {artist_expr} AS display_name,
                     album,
                     LOWER(TRIM(title)) AS norm_title,
                     LOWER(TRIM(COALESCE(artist, ''))) AS norm_artist,
@@ -5038,12 +5056,12 @@ def artists():
                     TRIM(COALESCE(CAST(disc_number AS TEXT), '')) AS norm_disc_number,
                     COUNT(*) AS grp_count
                 FROM tracks
-                WHERE album_artist IS NOT NULL
-                  AND TRIM(album_artist) != ''
+                WHERE {artist_expr} IS NOT NULL
+                  AND TRIM({artist_expr}) != ''
                   AND title IS NOT NULL
                   AND TRIM(title) != ''
                 GROUP BY
-                    album_artist,
+                    {artist_expr},
                     album,
                     LOWER(TRIM(title)),
                     LOWER(TRIM(COALESCE(artist, ''))),
@@ -5059,13 +5077,13 @@ def artists():
             row_dict = dict(row)
             duplicate_counts_by_artist[row_dict.get("display_name", "")] = int(row_dict.get("duplicate_count") or 0)
 
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT
-                COALESCE(NULLIF(album_artist, ''), artist) AS display_name,
+                {artist_expr} AS display_name,
                 COUNT(*) AS missing_count
             FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
-              AND TRIM(COALESCE(NULLIF(album_artist, ''), artist)) != ''
+            WHERE {artist_expr} IS NOT NULL
+              AND TRIM({artist_expr}) != ''
               AND (
                     title IS NULL OR TRIM(title) = '' OR
                     album IS NULL OR TRIM(album) = '' OR
@@ -5079,29 +5097,27 @@ def artists():
                             CAST(COALESCE(NULLIF(TRIM(CAST(year AS TEXT)), ''), '0') AS INTEGER) > 2100
                         )
                     ) OR
-                    ((mbid IS NULL OR TRIM(mbid) = '') AND (suggested_mbid IS NULL OR TRIM(suggested_mbid) = '')) OR
-                    writer IS NULL OR TRIM(CAST(writer AS TEXT)) IN ('', '[]', 'null', 'None')
+                    ((mbid IS NULL OR TRIM(mbid) = '') AND (suggested_mbid IS NULL OR TRIM(suggested_mbid) = ''))
                   )
-            GROUP BY COALESCE(NULLIF(album_artist, ''), artist)
-        """)
+                        GROUP BY {artist_expr}
+                """)
 
         for row in cursor.fetchall():
             row_dict = dict(row)
             missing_counts_by_artist[row_dict.get("display_name", "")] = int(row_dict.get("missing_count") or 0)
         
-                # Query 3: Find duplicate artists (same MBID, different album_artist names)
-        # Note: Using album_artist directly to only check album artists
-        cursor.execute("""
+        # Query 3: Find duplicate artists (same MBID, different names)
+        cursor.execute(f"""
             SELECT 
-                album_artist as effective_artist,
+                {artist_expr} as effective_artist,
                 COUNT(DISTINCT musicbrainz_artist_id) as mbid_count,
                 COUNT(*) as track_count
             FROM tracks
             WHERE musicbrainz_artist_id IS NOT NULL 
               AND musicbrainz_artist_id != ''
-              AND album_artist IS NOT NULL
-              AND TRIM(album_artist) != ''
-            GROUP BY album_artist
+              AND {artist_expr} IS NOT NULL
+              AND TRIM({artist_expr}) != ''
+            GROUP BY {artist_expr}
         """)
         
         artist_mbid_map = {}  # Map artist name to their MBID(s)
@@ -5112,18 +5128,18 @@ def artists():
                 artist_mbid_map[artist_name] = row_dict
         
         # Now find which album artists share the same MBID
-        cursor.execute("""
+                cursor.execute(f"""
             SELECT 
                 musicbrainz_artist_id,
-                COUNT(DISTINCT album_artist) as distinct_artist_names,
+                                COUNT(DISTINCT {artist_expr}) as distinct_artist_names,
                 COUNT(*) as total_tracks
             FROM tracks
             WHERE musicbrainz_artist_id IS NOT NULL 
               AND musicbrainz_artist_id != ''
-              AND album_artist IS NOT NULL
-              AND TRIM(album_artist) != ''
+                            AND {artist_expr} IS NOT NULL
+                            AND TRIM({artist_expr}) != ''
             GROUP BY musicbrainz_artist_id
-            HAVING COUNT(DISTINCT album_artist) > 1
+                        HAVING COUNT(DISTINCT {artist_expr}) > 1
         """)
         
         # Build map of MBID -> list of artist names
@@ -5135,15 +5151,15 @@ def artists():
                 mbid_to_artists_map[mbid] = row_dict.get("distinct_artist_names", 0)
         
         # Get list of album artists by MBID to populate duplicate_artist_counts_by_artist
-        cursor.execute("""
+                cursor.execute(f"""
             SELECT DISTINCT
-                album_artist as effective_artist,
+                                {artist_expr} as effective_artist,
                 musicbrainz_artist_id
             FROM tracks
             WHERE musicbrainz_artist_id IS NOT NULL 
               AND musicbrainz_artist_id != ''
-              AND album_artist IS NOT NULL
-              AND TRIM(album_artist) != ''
+                            AND {artist_expr} IS NOT NULL
+                            AND TRIM({artist_expr}) != ''
         """)
         
         for row in cursor.fetchall():
@@ -5156,13 +5172,13 @@ def artists():
         # Query 4: Albums where some tracks have disc_number and others don't
         # (within what should be a single-disc album).  This inconsistency
         # causes Navidrome to show the album as multiple separate albums.
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT
                 display_name,
                 COUNT(DISTINCT album) AS album_count
             FROM (
                 SELECT
-                    COALESCE(NULLIF(album_artist, ''), artist) AS display_name,
+                    {artist_expr} AS display_name,
                     album,
                     SUM(CASE WHEN disc_number IS NOT NULL
                                   AND TRIM(CAST(disc_number AS TEXT)) != ''
@@ -5177,11 +5193,11 @@ def artists():
                                              AND CAST(disc_number AS TEXT) != '0'
                                         THEN CAST(disc_number AS TEXT) END) AS distinct_disc_nums
                 FROM tracks
-                WHERE album_artist IS NOT NULL
-                  AND TRIM(album_artist) != ''
+                                WHERE {artist_expr} IS NOT NULL
+                                    AND TRIM({artist_expr}) != ''
                   AND album IS NOT NULL
                   AND TRIM(album) != ''
-                GROUP BY COALESCE(NULLIF(album_artist, ''), artist), album
+                                GROUP BY {artist_expr}, album
             ) sub
             WHERE tracks_with_disc > 0
               AND tracks_without_disc > 0
@@ -5193,22 +5209,22 @@ def artists():
             disc_inconsistent_counts_by_artist[row_dict.get("display_name", "")] = int(row_dict.get("album_count") or 0)
 
         # Query 5: Albums with mixed/competing musicbrainz_album_mbid values.
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT
-                COALESCE(NULLIF(album_artist, ''), artist) AS display_name,
+                {artist_expr} AS display_name,
                 COUNT(*) AS album_count
             FROM (
                 SELECT
-                    COALESCE(NULLIF(album_artist, ''), artist) AS display_name,
+                    {artist_expr} AS display_name,
                     album
                 FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
-                  AND TRIM(COALESCE(NULLIF(album_artist, ''), artist)) != ''
+                WHERE {artist_expr} IS NOT NULL
+                  AND TRIM({artist_expr}) != ''
                   AND album IS NOT NULL
                   AND TRIM(album) != ''
                   AND musicbrainz_album_mbid IS NOT NULL
                   AND TRIM(musicbrainz_album_mbid) != ''
-                GROUP BY COALESCE(NULLIF(album_artist, ''), artist), album
+                GROUP BY {artist_expr}, album
                 HAVING COUNT(DISTINCT TRIM(musicbrainz_album_mbid)) > 1
             ) mixed
             GROUP BY display_name
@@ -5219,24 +5235,15 @@ def artists():
 
         # Query 6: Per canonical artist, count extra album-artist variants that were
         # intentionally suppressed from /artists to keep one artist per album.
-        cursor.execute("""
+        cursor.execute(f"""
             WITH normalized_tracks AS (
                 SELECT
                     COALESCE(
                         NULLIF(TRIM(musicbrainz_album_mbid), ''),
                         LOWER(TRIM(album)) || '|' || COALESCE(NULLIF(TRIM(CAST(year AS TEXT)), ''), '')
                     ) AS album_key,
-                    CASE
-                        WHEN album_artist IS NOT NULL AND TRIM(album_artist) != '' THEN TRIM(album_artist)
-                        WHEN artist IS NOT NULL AND TRIM(artist) != '' THEN TRIM(artist)
-                        ELSE NULL
-                    END AS candidate_album_artist,
-                    CASE
-                        WHEN LOWER(TRIM(COALESCE(album_artist, ''))) IN (
-                            'various artists', 'various', 'v/a', 'va', 'compilation', 'soundtrack', 'original soundtrack'
-                        ) THEN 1
-                        ELSE 0
-                    END AS is_compilation_artist
+                    {candidate_album_artist_expr} AS candidate_album_artist,
+                    {is_compilation_artist_expr} AS is_compilation_artist
                 FROM tracks
                 WHERE album IS NOT NULL
                   AND TRIM(album) != ''
@@ -5280,20 +5287,20 @@ def artists():
         # Query 6: Per artist, count albums with conflicting album-level MBIDs.
         # These are high-risk for Navidrome album splitting and should be surfaced
         # under Needs Correcting.
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT
                 display_name,
                 COUNT(*) AS album_count
             FROM (
                 SELECT
-                    COALESCE(NULLIF(album_artist, ''), artist) AS display_name,
+                    {artist_expr} AS display_name,
                     album
                 FROM tracks
                 WHERE album IS NOT NULL
                   AND TRIM(album) != ''
                   AND musicbrainz_album_mbid IS NOT NULL
                   AND TRIM(musicbrainz_album_mbid) != ''
-                GROUP BY COALESCE(NULLIF(album_artist, ''), artist), album
+                GROUP BY {artist_expr}, album
                 HAVING COUNT(DISTINCT TRIM(musicbrainz_album_mbid)) > 1
             ) mixed
             GROUP BY display_name
@@ -5593,13 +5600,27 @@ def artist_corrections(name):
                 COALESCE(NULLIF(mbid, ''), '') AS mbid,
                 COALESCE(NULLIF(suggested_mbid, ''), '') AS suggested_mbid,
                 file_path,
+                 CONCAT_WS(', ',
+                    CASE WHEN title IS NULL OR TRIM(title) = '' THEN 'Title' END,
+                    CASE WHEN album IS NULL OR TRIM(album) = '' THEN 'Album' END,
+                    CASE WHEN track_number IS NULL OR TRIM(CAST(track_number AS TEXT)) = '' THEN 'Track Number' END,
+                    CASE WHEN CAST(COALESCE(NULLIF(TRIM(CAST(track_number AS TEXT)), ''), '0') AS INTEGER) <= 0 THEN 'Track Number <= 0' END,
+                    CASE WHEN duration IS NULL OR CAST(duration AS DOUBLE PRECISION) <= 0 THEN 'Duration' END,
+                    CASE WHEN year IS NOT NULL AND TRIM(CAST(year AS TEXT)) != ''
+                          AND (CAST(COALESCE(NULLIF(TRIM(CAST(year AS TEXT)), ''), '0') AS INTEGER) < 1900
+                              OR CAST(COALESCE(NULLIF(TRIM(CAST(year AS TEXT)), ''), '0') AS INTEGER) > 2100)
+                        THEN 'Suspicious Year' END,
+                    CASE WHEN (mbid IS NULL OR TRIM(mbid) = '') AND (suggested_mbid IS NULL OR TRIM(suggested_mbid) = '')
+                        THEN 'Recording MBID' END,
+                    CASE WHEN writer IS NULL OR TRIM(CAST(writer AS TEXT)) IN ('', '[]', 'null', 'None')
+                        THEN 'Writer/Lyricist (optional)' END
+                 ) AS metadata_missing_fields,
                 CASE
                     WHEN title IS NULL OR TRIM(title) = '' THEN 'Missing track title'
                     WHEN album IS NULL OR TRIM(album) = '' THEN 'Missing album name'
                     WHEN track_number IS NULL OR TRIM(CAST(track_number AS TEXT)) = '' THEN 'Missing track number'
                     WHEN CAST(COALESCE(NULLIF(TRIM(CAST(track_number AS TEXT)), ''), '0') AS INTEGER) <= 0 THEN 'Invalid track number (<= 0)'
                     WHEN duration IS NULL OR CAST(duration AS DOUBLE PRECISION) <= 0 THEN 'Missing or invalid duration'
-                    WHEN writer IS NULL OR TRIM(CAST(writer AS TEXT)) IN ('', '[]', 'null', 'None') THEN 'Missing writer/lyricist metadata'
                     WHEN year IS NOT NULL AND TRIM(CAST(year AS TEXT)) != ''
                          AND (CAST(COALESCE(NULLIF(TRIM(CAST(year AS TEXT)), ''), '0') AS INTEGER) < 1900
                               OR CAST(COALESCE(NULLIF(TRIM(CAST(year AS TEXT)), ''), '0') AS INTEGER) > 2100)
@@ -5615,7 +5636,6 @@ def artist_corrections(name):
                     track_number IS NULL OR TRIM(CAST(track_number AS TEXT)) = '' OR
                     CAST(COALESCE(NULLIF(TRIM(CAST(track_number AS TEXT)), ''), '0') AS INTEGER) <= 0 OR
                     duration IS NULL OR CAST(duration AS DOUBLE PRECISION) <= 0 OR
-                    writer IS NULL OR TRIM(CAST(writer AS TEXT)) IN ('', '[]', 'null', 'None') OR
                     (
                         year IS NOT NULL AND TRIM(CAST(year AS TEXT)) != '' AND
                         (
@@ -6320,8 +6340,28 @@ def api_album_title_mismatches():
             conn.close()
             return jsonify({"mismatches": [], "mismatch_count": 0, "library_count": library_count, "reason": "no_mbid"})
 
+        track_columns = _get_table_columns(cursor, "tracks") or set()
+        has_is_cover = "is_cover" in track_columns
+        has_cover_manual_override = "cover_manual_override" in track_columns
+        has_original_cover_artist = "original_cover_artist" in track_columns
+        has_is_cover_reason = "is_cover_reason" in track_columns
+
+        extra_cols = []
+        if has_is_cover:
+            extra_cols.append("is_cover")
+        if has_cover_manual_override:
+            extra_cols.append("cover_manual_override")
+        if has_original_cover_artist:
+            extra_cols.append("original_cover_artist")
+        if has_is_cover_reason:
+            extra_cols.append("is_cover_reason")
+
+        select_cols = "id, title, track_number, disc_number, duration, file_path"
+        if extra_cols:
+            select_cols += ", " + ", ".join(extra_cols)
+
         cursor.execute(f"""
-            SELECT id, title, track_number, disc_number, duration, file_path
+            SELECT {select_cols}
             FROM tracks
             WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
         """, (artist, album))
@@ -6342,11 +6382,35 @@ def api_album_title_mismatches():
 
         # Build a lookup from (disc, track_number) → library track
         lib_by_tracknum = {}
+
+        def _is_cover_track(track_row):
+            """Return True if a row is marked/identified as a cover track."""
+            def _is_truthy(value):
+                if isinstance(value, bool):
+                    return value
+                if isinstance(value, (int, float)):
+                    return value != 0
+                return str(value or "").strip().lower() in {"1", "true", "t", "yes", "y", "on"}
+
+            if _is_truthy(track_row.get("is_cover")):
+                return True
+            if str(track_row.get("original_cover_artist") or "").strip():
+                return True
+            cover_reason = str(track_row.get("is_cover_reason") or "").lower()
+            if "cover" in cover_reason:
+                return True
+            return False
+
         for t in library_rows:
             t_dict = dict(t) if hasattr(t, "keys") else {
                 "id": t[0], "title": t[1], "track_number": t[2],
                 "disc_number": t[3], "duration": t[4], "file_path": t[5],
             }
+
+            # Covers are intentionally excluded from MB title mismatch checks.
+            if _is_cover_track(t_dict):
+                continue
+
             disc = int(t_dict.get("disc_number") or 1)
             track_num = t_dict.get("track_number")
             if track_num is not None:
@@ -6534,13 +6598,24 @@ def refresh_needs_correcting_flags(conn):
     """
     try:
         cursor = conn.cursor()
+        track_columns = _get_table_columns(cursor, 'tracks')
+        has_album_artist = 'album_artist' in track_columns
+        album_expr_t = "COALESCE(NULLIF(t.album_artist, ''), t.artist)" if has_album_artist else "t.artist"
+        album_expr_t2 = "COALESCE(NULLIF(t2.album_artist, ''), t2.artist)" if has_album_artist else "t2.artist"
+        effective_consistency_fields = [
+            (field, label)
+            for field, label in ALBUM_CONSISTENCY_FIELDS
+            if field != 'album_artist' or has_album_artist
+        ]
 
         # Build the HAVING clause that detects any album-level inconsistency
         having_parts = []
-        for field, _ in ALBUM_CONSISTENCY_FIELDS:
+        for field, _ in effective_consistency_fields:
             having_parts.append(
                 f"COUNT(DISTINCT COALESCE(CAST({field} AS TEXT), '')) > 1"
             )
+        if not having_parts:
+            return
         having_sql = " OR ".join(having_parts)
 
         # First: clear flag on all tracks that are now consistent
@@ -6557,12 +6632,11 @@ def refresh_needs_correcting_flags(conn):
             WHERE EXISTS (
                 SELECT 1
                 FROM tracks t2
-                WHERE COALESCE(NULLIF(t2.album_artist, ''), t2.artist)
-                      = COALESCE(NULLIF(t.album_artist, ''), t.artist)
+                WHERE {album_expr_t2} = {album_expr_t}
                   AND t2.album = t.album
                   AND t2.album IS NOT NULL
                   AND TRIM(t2.album) != ''
-                GROUP BY COALESCE(NULLIF(t2.album_artist, ''), t2.artist), t2.album
+                GROUP BY {album_expr_t2}, t2.album
                 HAVING COUNT(*) >= 2 AND ({having_sql})
             )
         """)
@@ -6593,33 +6667,43 @@ def _get_album_tag_inconsistencies(conn, artist_filter=None):
          inconsistencies: [{field, field_label, values: [{value, count, track_ids}]}]}
     """
     cursor = conn.cursor()
+    track_columns = _get_table_columns(cursor, 'tracks')
+    has_album_artist = 'album_artist' in track_columns
+    artist_expr = "COALESCE(NULLIF(album_artist, ''), artist)" if has_album_artist else "artist"
+    effective_consistency_fields = [
+        (field, label)
+        for field, label in ALBUM_CONSISTENCY_FIELDS
+        if field != 'album_artist' or has_album_artist
+    ]
 
     # Build per-field HAVING clauses
     having_parts = []
-    for field, _ in ALBUM_CONSISTENCY_FIELDS:
+    for field, _ in effective_consistency_fields:
         having_parts.append(
             f"COUNT(DISTINCT COALESCE(CAST({field} AS TEXT), '')) > 1"
         )
+    if not having_parts:
+        return []
     having_sql = " OR ".join(having_parts)
 
     where_sql = "WHERE album IS NOT NULL AND TRIM(album) != ''"
     params: list = []
     if artist_filter:
-        where_sql += " AND COALESCE(NULLIF(album_artist,''), artist) = %s"
+        where_sql += f" AND {artist_expr} = %s"
         params.append(artist_filter)
 
     try:
         cursor.execute(f"""
             SELECT
-                COALESCE(NULLIF(album_artist, ''), artist) AS album_artist,
+                {artist_expr} AS album_artist,
                 album,
                 COUNT(*) AS track_count
             FROM tracks
             {where_sql}
-            GROUP BY COALESCE(NULLIF(album_artist, ''), artist), album
+            GROUP BY {artist_expr}, album
             HAVING COUNT(*) >= 2
               AND ({having_sql})
-            ORDER BY COALESCE(NULLIF(album_artist, ''), artist), album
+            ORDER BY {artist_expr}, album
         """, params or None)
         flagged_albums = cursor.fetchall()
     except Exception as e:
@@ -6640,19 +6724,19 @@ def _get_album_tag_inconsistencies(conn, artist_filter=None):
             cursor.execute("""
                 SELECT id, %s
                 FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
+                WHERE %s = %s
                   AND album = %s
             """ % (
-                ', '.join(f for f, _ in ALBUM_CONSISTENCY_FIELDS),
-                '%s', '%s'
+                ', '.join(f for f, _ in effective_consistency_fields),
+                artist_expr, '%s'
             ), (album_artist, album))
             detail_rows = cursor.fetchall()
         except Exception:
             continue
 
-        col_names = ['id'] + [f for f, _ in ALBUM_CONSISTENCY_FIELDS]
+        col_names = ['id'] + [f for f, _ in effective_consistency_fields]
         inconsistencies = []
-        for field, field_label in ALBUM_CONSISTENCY_FIELDS:
+        for field, field_label in effective_consistency_fields:
             col_idx = col_names.index(field)
             value_map: dict = {}  # value → {count, track_ids}
             for dr in detail_rows:
@@ -6699,10 +6783,13 @@ def _get_country_mismatches(conn):
          release_countries: [{value, count, track_ids}]}
     """
     cursor = conn.cursor()
+    track_columns = _get_table_columns(cursor, 'tracks')
+    has_album_artist = 'album_artist' in track_columns
+    artist_expr = "COALESCE(NULLIF(album_artist, ''), artist)" if has_album_artist else "artist"
     try:
         cursor.execute("""
             SELECT
-                COALESCE(NULLIF(album_artist, ''), artist) AS album_artist,
+                %s AS album_artist,
                 album,
                 artist_country,
                 COUNT(*)                                   AS track_count
@@ -6713,13 +6800,13 @@ def _get_country_mismatches(conn):
               AND TRIM(COALESCE(artist_country, ''))  != ''
               AND LOWER(TRIM(releasecountry)) != LOWER(TRIM(artist_country))
             GROUP BY
-                COALESCE(NULLIF(album_artist, ''), artist),
+                %s,
                 album,
                 artist_country
             ORDER BY
-                COALESCE(NULLIF(album_artist, ''), artist),
+                %s,
                 album
-        """)
+        """ % (artist_expr, artist_expr, artist_expr))
         rows = cursor.fetchall()
     except Exception as exc:
         logging.warning(f"[CORRECTING] country-mismatch query failed: {exc}")
@@ -7035,8 +7122,8 @@ def api_correcting_mb_suggestions():
         {success: false, error: "…"}
 
     Only fields in ALBUM_CONSISTENCY_FIELDS (plus a few extras like
-    catalognumber / barcode) that MB can supply are included in the
-    response.  Fields that MB doesn't know are omitted.
+    barcode/asin) are returned in the suggestions object.
+    Fields that MB doesn't know are omitted.
     """
     album_artist = (request.args.get("album_artist") or "").strip()
     album        = (request.args.get("album")        or "").strip()

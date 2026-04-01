@@ -136,7 +136,6 @@
                 <div class="d-flex align-items-center gap-2">
                     <select id="scanTypeSelect" class="form-select form-select-sm" style="min-width: 210px;">
                         <option value="navidrome">Navidrome Import</option>
-                        <option value="metadata">Metadata Import</option>
                         <option value="metadata-scan">Metadata Scan</option>
                         <option value="popularity">Popularity and Single Scan</option>
                         <option value="singles-detection">Singles Scan</option>
@@ -1337,8 +1336,6 @@ function startSelectedScan(restart = false, forceStart = false) {
     var actionUrl = '';
     if (scanType === 'navidrome') {
         actionUrl = '{{ url_for("scan_navidrome") }}';
-    } else if (scanType === 'metadata') {
-        actionUrl = '{{ url_for("scan_mp3_import") }}';
     } else if (scanType === 'metadata-scan') {
         actionUrl = '{{ url_for("scan_popularity_route") }}';
     } else if (scanType === 'popularity' || scanType === 'singles-detection') {
@@ -1350,9 +1347,7 @@ function startSelectedScan(restart = false, forceStart = false) {
     }
 
     var url = new URL(actionUrl, window.location.origin);
-    if (scanType !== 'metadata') {
-        url.searchParams.append('mode', mode);
-    }
+    url.searchParams.append('mode', mode);
     if (scanType === 'navidrome' || scanType === 'popularity' || scanType === 'singles-detection' || scanType === 'mood' || scanType === 'essentia-mood' || scanType === 'combined' || scanType === 'metadata-scan') {
         url.searchParams.append('restart', restart ? '1' : '0');
     }
