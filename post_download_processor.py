@@ -191,7 +191,7 @@ def fetch_musicbrainz_release_metadata(release_id):
         # ------------------------------------------------------------------
         # Step 1: Try direct release lookup (release MBID path)
         # ------------------------------------------------------------------
-        mb_url = f"https://musicbrainz.org/ws/2/release/{release_id}?inc=recordings+artist-credits&fmt=json"
+        mb_url = f"https://musicbrainz.org/ws/2/release/{release_id}?inc=recordings+artist-credits+release-groups&fmt=json"
         
         response = requests.get(mb_url, headers=headers, timeout=10)
 
@@ -207,7 +207,7 @@ def fetch_musicbrainz_release_metadata(release_id):
             browse_params = {
                 "fmt": "json",
                 "release-group": release_id,
-                "inc": "recordings+artist-credits",
+                "inc": "recordings+artist-credits+release-groups",
                 "limit": 1,
             }
             time.sleep(1)  # Respect MusicBrainz rate limit between requests
@@ -228,9 +228,19 @@ def fetch_musicbrainz_release_metadata(release_id):
             response.raise_for_status()
             mb_data = response.json()
         
+        # Release-group data – needed for original date and release type.
+        rg = mb_data.get("release-group") or {}
+
+        # Year – prefer the release-group's first-release-date (the year the album
+        # originally came out) over the specific release's date so that a 2020
+        # remastered reissue still reports the original release year, not 2020.
+        original_date = (rg.get("first-release-date") or "").strip()
+        release_date = (mb_data.get("date") or "").strip()
+        raw_date = original_date or release_date
+
         release_info = {
             'release_title': mb_data.get('title', 'Unknown Album'),
-            'release_year': str(mb_data.get('date', ''))[:4] if mb_data.get('date') else '',
+            'release_year': raw_date[:4] if raw_date else '',
             'artist': '',
             'disc_count': len(mb_data.get('media', [])),
             'cover_art': None,
@@ -272,9 +282,16 @@ def fetch_musicbrainz_release_metadata(release_id):
                 
                 release_info['tracks'].append(track_info)
         
-        # Try to fetch cover art from MusicBrainz
+        # Try to fetch cover art from MusicBrainz.
+        # Prefer the release-group URL (more reliably available in CAA than art
+        # for a specific pressing/reissue MBID).
+        rg_id = rg.get("id", "")
         try:
-            cover_url = f"https://coverartarchive.org/release/{release_id}/front-500"
+            cover_url = (
+                f"https://coverartarchive.org/release-group/{rg_id}/front-500"
+                if rg_id
+                else f"https://coverartarchive.org/release/{release_id}/front-500"
+            )
             cover_response = requests.get(cover_url, timeout=5)
             if cover_response.status_code == 200:
                 release_info['cover_art'] = cover_response.content
