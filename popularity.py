@@ -5181,6 +5181,7 @@ def popularity_scan(
                 # are populated even when the album's popularity was already scanned recently.
                 # This ensures writer data is always kept up to date from MusicBrainz.
                 writer_updates = []
+                mbid_updates = []
                 if metadata_enrichment_enabled and HAVE_MUSICBRAINZ:
                     log_info(f'Starting MusicBrainz writer backfill for album "{album}" ({len(album_tracks)} tracks)')
                     for track in album_tracks:
@@ -5219,6 +5220,7 @@ def popularity_scan(
                                         artist_candidates.append(cleaned_artist)
 
                                 mb_writer_names = []
+                                found_recording_mbid = ""
                                 for artist_candidate in artist_candidates:
                                     if mb_writer_names:
                                         break
@@ -5227,17 +5229,25 @@ def popularity_scan(
                                             f'MusicBrainz writer lookup attempt: title="{title_candidate}", '
                                             f'artist="{artist_candidate}"'
                                         )
-                                        mb_writer_names = _run_with_timeout(
+                                        _result = _run_with_timeout(
                                             mb_writer_client.get_composers_for_track,
                                             API_CALL_TIMEOUT,
                                             f"MusicBrainz writer lookup timed out after {API_CALL_TIMEOUT}s",
                                             title_candidate,
                                             artist_candidate
                                         )
+                                        mb_writer_names, found_recording_mbid = _result
                                         if mb_writer_names:
                                             break
 
                                 log_debug(f'MusicBrainz returned {len(mb_writer_names) if mb_writer_names else 0} writer(s) for "{title}"')
+
+                                # Save recording MBID whenever the MusicBrainz search found one
+                                # and the track doesn't already have one stored.
+                                if found_recording_mbid and not (row_get(track, 'mbid') or "").strip():
+                                    mbid_updates.append((found_recording_mbid, track_id))
+                                    track['mbid'] = found_recording_mbid
+                                    log_info(f'✅ MusicBrainz recording MBID backfill: "{title}" -> {found_recording_mbid}')
 
                                 if mb_writer_names:
                                     log_debug(f'Raw MusicBrainz writer names: {mb_writer_names}')
@@ -5311,6 +5321,26 @@ def popularity_scan(
                                 pass
                 else:
                     log_info(f'ℹ️ No writer updates needed for album "{album}" (all tracks already have writer data or MusicBrainz unavailable)')
+
+                # Commit recording MBID backfills discovered during the writer lookup pass.
+                if mbid_updates:
+                    log_info(f'💾 Committing {len(mbid_updates)} recording MBID backfill(s) for album "{album}"')
+                    try:
+                        _execute_tracks_batch_with_retry(
+                            conn,
+                            cursor,
+                            f"UPDATE tracks SET mbid = {placeholder} WHERE id = {placeholder} AND (mbid IS NULL OR TRIM(mbid) = '')",
+                            sorted(mbid_updates, key=lambda row: str(row[1])),
+                            f"mbid batch update for album {album}",
+                        )
+                        conn.commit()
+                        log_info(f"✅ Successfully committed {len(mbid_updates)} recording MBID backfill(s) for album '{album}'")
+                    except Exception as e:
+                        log_info(f"❌ Failed to batch update recording MBIDs: {e}")
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
 
                 # In singles_only mode, skip all popularity scoring
                 if not singles_only and not skip_popularity_for_album and not metadata_only:

@@ -1100,7 +1100,7 @@ class MusicBrainzClient:
         
         return False
     
-    def get_composers_for_track(self, title: str, artist: str) -> list[str]:
+    def get_composers_for_track(self, title: str, artist: str) -> tuple[list[str], str]:
         """
         Fetch composer(s) for a track from MusicBrainz.
         
@@ -1120,10 +1120,12 @@ class MusicBrainzClient:
             artist: Artist name
             
         Returns:
-            List of composer names (empty list if not found or error)
+            Tuple of (composers, recording_mbid) where composers is a list of composer
+            names and recording_mbid is the MusicBrainz recording UUID (empty string if
+            not found or on error).
         """
         if not self.enabled:
-            return []
+            return [], ""
         
         max_retries = 3
         retry_delay = 1.0
@@ -1153,11 +1155,11 @@ class MusicBrainzClient:
                 recordings = r.json().get("recordings", [])
                 
                 if not recordings:
-                    return []
+                    return [], ""
                 
                 recording_mbid = recordings[0].get("id")
                 if not recording_mbid:
-                    return []
+                    return [], ""
                 
                 # Step 2: Look up the recording by MBID with relationship includes.
                 # ``artist-rels``      – direct artist credits on the recording itself
@@ -1210,7 +1212,7 @@ class MusicBrainzClient:
                                 if work_target and work_target.get("name"):
                                     composers.append(work_target["name"])
                 
-                return list(dict.fromkeys(composers))  # Remove duplicates while preserving order
+                return list(dict.fromkeys(composers)), recording_mbid  # Remove duplicates while preserving order
                 
             except (requests.exceptions.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
                 if attempt < max_retries - 1:
@@ -1219,12 +1221,12 @@ class MusicBrainzClient:
                     retry_delay *= 2
                 else:
                     logger.debug(f"MusicBrainz composer lookup failed for '{title}' by '{artist}' after {max_retries} retries: {e}")
-                    return []
+                    return [], ""
             except Exception as e:
                 logger.debug(f"MusicBrainz composer lookup error for '{title}' by '{artist}': {e}")
-                return []
+                return [], ""
         
-        return []
+        return [], ""
 
 
 # Backward-compatible module functions
