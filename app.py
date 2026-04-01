@@ -10124,6 +10124,32 @@ def _auto_queue_missing_singles_for_album_artist(artist: str, missing_releases: 
         if release_bucket != "single":
             continue
 
+        parsed_release_date = _parse_musicbrainz_release_date(release.get("first_release_date"))
+        if not parsed_release_date:
+            logging.debug(
+                "[AUTO-QUEUE] Skipping missing single '%s - %s' because first_release_date is missing/invalid",
+                artist,
+                title,
+            )
+            continue
+        try:
+            if datetime.strptime(parsed_release_date, "%Y-%m-%d").date() <= datetime.now().date():
+                logging.debug(
+                    "[AUTO-QUEUE] Skipping missing single '%s - %s' because release date %s is not in the future",
+                    artist,
+                    title,
+                    parsed_release_date,
+                )
+                continue
+        except ValueError:
+            logging.debug(
+                "[AUTO-QUEUE] Skipping missing single '%s - %s' due to unparsable release date '%s'",
+                artist,
+                title,
+                parsed_release_date,
+            )
+            continue
+
         norm_title = _normalize_release_title(title)
         if not norm_title or norm_title in seen_titles:
             continue
