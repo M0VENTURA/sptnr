@@ -640,6 +640,21 @@ ensure_verification_columns()
 # Required by download_monitor_enhancements.py and /api/queue/<id>/apply-mbid-match.
 ensure_queue_mbid_columns()
 
+# Backfill enriched metadata (MBIDs, ISRC, writer, release_year) for any queued
+# track placeholder rows that were created before queue-time enrichment was added.
+# Runs in a background daemon thread so it does not block startup.
+def _run_queued_track_backfill():
+    import time as _time
+    _time.sleep(5)  # Let the DB finish its own startup migrations first
+    try:
+        from download_queue_manager import backfill_queued_track_metadata
+        backfill_queued_track_metadata()
+    except Exception as _bf_err:
+        import logging as _log
+        _log.getLogger(__name__).warning(f"Queued track metadata backfill failed: {_bf_err}")
+
+threading.Thread(target=_run_queued_track_backfill, daemon=True, name="queued-track-backfill").start()
+
 
 def _is_pg_startup_unavailable_error(error) -> bool:
     """Return True for transient PostgreSQL availability/connectivity errors."""
@@ -16977,6 +16992,10 @@ def api_scan_progress():
                 "total_artists": state.get("total_artists"),
                 "scanned_albums": state.get("scanned_albums"),
                 "total_albums": state.get("total_albums"),
+                # Extra fields for mood / essentia / missing-releases detail lines
+                "scanned_tracks": state.get("scanned_tracks"),
+                "updated_tracks": state.get("updated_tracks"),
+                "total_missing_found": state.get("total_missing_found"),
             }
 
         active_scans = []

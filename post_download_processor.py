@@ -332,7 +332,7 @@ def update_file_metadata_with_albumart(file_path, metadata, cover_art_data=None,
         bool: True if successful, False otherwise
     """
     try:
-        from mutagen.id3 import ID3, TIT2, TPE1, TPE2, TALB, TDRC, TRCK, TPOS, APIC, TXXX
+        from mutagen.id3 import ID3, TIT2, TPE1, TPE2, TALB, TDRC, TRCK, TPOS, APIC, TXXX, TSRC
         from mutagen.mp3 import MP3
         from mutagen.flac import FLAC, FLACNoHeaderError
         from mutagen.flac import Picture
@@ -386,6 +386,12 @@ def update_file_metadata_with_albumart(file_path, metadata, cover_art_data=None,
             if _recording_mbid:
                 audio.tags.setall('TXXX:MUSICBRAINZ TRACK ID', [])
                 audio.tags.add(TXXX(encoding=3, desc='MUSICBRAINZ TRACK ID', text=[_recording_mbid]))
+
+            # ISRC — write as the standard ID3 TSRC frame (only when a value is present)
+            _isrc = (metadata.get('isrc') or '').strip()
+            if _isrc:
+                audio.tags['TSRC'] = TSRC(encoding=3, text=[_isrc])
+                logger.debug(f"[METADATA] Embedded ISRC {_isrc} in MP3: {file_path}")
 
             # Add composer/writer/lyricist credits as TXXX frames
             composers = metadata.get('composers', [])
@@ -482,6 +488,12 @@ def update_file_metadata_with_albumart(file_path, metadata, cover_art_data=None,
             _recording_mbid = _get_mbid_from_metadata(metadata, 'recording_mbid', 'musicbrainz_trackid')
             if _recording_mbid:
                 audio['musicbrainz_trackid'] = [_recording_mbid]
+
+            # ISRC — standard Vorbis comment field (only when a value is present)
+            _isrc = (metadata.get('isrc') or '').strip()
+            if _isrc:
+                audio['isrc'] = [_isrc]
+                logger.debug(f"[METADATA] Embedded ISRC {_isrc} in FLAC: {file_path}")
 
             # Add composer/writer/lyricist credits as Vorbis comments
             composers = metadata.get('composers', [])

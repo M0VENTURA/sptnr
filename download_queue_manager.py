@@ -1461,11 +1461,15 @@ def trigger_navidrome_scan():
 
 def _add_queue_item_to_tracks_table(conn, cursor, is_pg, artist, title, album, album_artist,
                                      track_number, year, duration, disc_number, release_mbid,
-                                     recording_mbid, queue_id, status):
+                                     recording_mbid, queue_id, status,
+                                     isrc=None, composer=None):
     """
     Sync queue item to tracks table for consistent tracking across pages.
     Similar to how Navidrome imports work - adds tracks immediately to main database.
-    
+
+    Stores all available metadata (MBIDs, ISRC, composer/writer, release_year) so the
+    pre-populated record can drive file-tagging before the file is moved to /music.
+
     Uses a special file_path marker to indicate this is a queued download, not a completed track.
     When the download completes, this record will be updated with the actual file_path.
     """
@@ -1513,15 +1517,39 @@ def _add_queue_item_to_tracks_table(conn, cursor, is_pg, artist, title, album, a
         
         placeholder = "%s"
         
+        # Only store release_mbid in musicbrainz_albumid when it is a proper UUID
+        # (not a Discogs numeric ID) so Navidrome can use it for album grouping.
+        # re is imported at the top of the module.
+        _uuid_pattern = re.compile(
+            r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
+        )
+        mb_album_id = release_mbid if (release_mbid and _uuid_pattern.match(str(release_mbid).strip())) else None
+        mb_track_id = recording_mbid if (recording_mbid and _uuid_pattern.match(str(recording_mbid).strip())) else None
+
+        # Convert year to integer for release_year column.
+        release_year_int = None
+        if year:
+            try:
+                _ym = re.search(r'(19|20)\d{2}', str(year))
+                release_year_int = int(_ym.group(0)) if _ym else None
+            except Exception:
+                pass
+
         cursor.execute(f"""
             INSERT INTO tracks (
                 id, artist, album, title, album_artist, track_number, year,
                 duration, disc_number, mbid, suggested_mbid, file_path,
+                musicbrainz_albumid, musicbrainz_trackid, isrc, writer, release_year,
                 score, spotify_score, lastfm_score, listenbrainz_score, age_score,
                 stars, is_single, single_confidence, last_scanned
             ) VALUES (
+                -- id, artist, album, title, album_artist, track_number, year
                 %s, %s, %s, %s, %s, %s, %s,
+                -- duration, disc_number, mbid (recording), suggested_mbid (release), file_path
                 %s, %s, %s, %s, %s,
+                -- musicbrainz_albumid, musicbrainz_trackid, isrc, writer, release_year
+                %s, %s, %s, %s, %s,
+                -- score columns (zeros), stars/is_single/single_confidence, last_scanned
                 0, 0, 0, 0, 0,
                 0, FALSE, 'unknown', CURRENT_TIMESTAMP
             )
@@ -1537,10 +1565,16 @@ def _add_queue_item_to_tracks_table(conn, cursor, is_pg, artist, title, album, a
                 mbid = EXCLUDED.mbid,
                 suggested_mbid = EXCLUDED.suggested_mbid,
                 file_path = EXCLUDED.file_path,
+                musicbrainz_albumid = COALESCE(EXCLUDED.musicbrainz_albumid, tracks.musicbrainz_albumid),
+                musicbrainz_trackid = COALESCE(EXCLUDED.musicbrainz_trackid, tracks.musicbrainz_trackid),
+                isrc = COALESCE(EXCLUDED.isrc, tracks.isrc),
+                writer = COALESCE(EXCLUDED.writer, tracks.writer),
+                release_year = COALESCE(EXCLUDED.release_year, tracks.release_year),
                 last_scanned = CURRENT_TIMESTAMP
         """, (
             track_id, artist, album, title, album_artist or artist, track_number, year,
-            duration, disc_number, recording_mbid, release_mbid, file_path_marker
+            duration, disc_number, recording_mbid, release_mbid, file_path_marker,
+            mb_album_id, mb_track_id, isrc or None, composer or None, release_year_int
         ))
 
         # Remove stale duplicate queued placeholders for the same track identity,
@@ -1951,7 +1985,9 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
                     release_mbid=release_mbid,
                     recording_mbid=recording_mbid,
                     queue_id=queue_id,
-                    status=initial_status
+                    status=initial_status,
+                    isrc=isrc,
+                    composer=composer,
                 )
             except Exception as e_tracks:
                 # Non-fatal - queue still created successfully
@@ -3425,6 +3461,49 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
             'recording_mbid': queue_item_dict.get('recording_mbid'),
         }
 
+        # Enrich tag_metadata from the pre-populated tracks DB record (created by
+        # _add_queue_item_to_tracks_table when the item was first queued).  That record
+        # holds fields like ISRC and composer that are stored at queue-add time and are
+        # not re-fetched from MusicBrainz during the move step.
+        _pre_queue_id = queue_item_dict.get('id')
+        if _pre_queue_id:
+            try:
+                _pre_conn = get_db()
+                _pre_cur = _pre_conn.cursor()
+                _pre_cur.execute(
+                    "SELECT isrc, writer, musicbrainz_albumid, musicbrainz_trackid,"
+                    "       musicbrainz_releasegroupid"
+                    " FROM tracks WHERE file_path = %s",
+                    (f"__queued_for_download__queue_id_{_pre_queue_id}",),
+                )
+                _db_row = _pre_cur.fetchone()
+                _pre_conn.close()
+                if _db_row:
+                    def _dr(key):
+                        return (_db_row.get(key) if hasattr(_db_row, 'get') else None) or None
+                    # Fill ISRC from the DB record if not already in queue item
+                    tag_metadata['isrc'] = (
+                        queue_item_dict.get('isrc') or _dr('isrc')
+                    )
+                    # Fill writer/composer (stored as single string; wrap in list for tag writer)
+                    _writer = queue_item_dict.get('composer') or _dr('writer')
+                    if _writer:
+                        tag_metadata['writers'] = [_writer]
+                    # Fill MBIDs from DB record when not already resolved
+                    if not tag_metadata.get('release_mbid'):
+                        tag_metadata['release_mbid'] = _dr('musicbrainz_albumid')
+                    if not tag_metadata.get('recording_mbid'):
+                        tag_metadata['recording_mbid'] = _dr('musicbrainz_trackid')
+                    if _dr('musicbrainz_releasegroupid'):
+                        tag_metadata['musicbrainz_releasegroupid'] = _dr('musicbrainz_releasegroupid')
+            except Exception as _pre_err:
+                logger.debug(f"[MOVE] Queue {_pre_queue_id}: could not read pre-populated tracks record: {_pre_err}")
+        # Also pull ISRC / composer directly from the queue item dict when no DB record was found
+        if not tag_metadata.get('isrc') and queue_item_dict.get('isrc'):
+            tag_metadata['isrc'] = queue_item_dict.get('isrc')
+        if not tag_metadata.get('writers') and queue_item_dict.get('composer'):
+            tag_metadata['writers'] = [queue_item_dict.get('composer')]
+
         cover_art_data = None
         # Some queue rows store MB release UUID in release_mbid while others
         # store it in release_id (legacy). Accept either so MB metadata is
@@ -3653,6 +3732,32 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
 
         final_target = transfer_result.get('target_path')
         logger.info(f"[MOVE] {file_path} → {final_target}")
+
+        # Promote the pre-populated tracks placeholder record to a real file path now
+        # that the file is in /music.  This replaces the __queued_for_download__ marker
+        # so the track appears with its actual path (and loses the "In Queue" badge on
+        # the artist page) before Navidrome runs its next import scan.
+        _move_queue_id = queue_item_dict.get('id')
+        if _move_queue_id and final_target:
+            try:
+                _fp_conn = get_db()
+                _fp_cur = _fp_conn.cursor()
+                _fp_cur.execute(
+                    "UPDATE tracks SET file_path = %s WHERE file_path = %s",
+                    (
+                        final_target,
+                        f"__queued_for_download__queue_id_{_move_queue_id}",
+                    ),
+                )
+                _fp_conn.commit()
+                _fp_conn.close()
+                logger.debug(
+                    f"[MOVE] Queue {_move_queue_id}: tracks record file_path promoted to {final_target}"
+                )
+            except Exception as _fp_err:
+                logger.debug(
+                    f"[MOVE] Queue {_move_queue_id}: could not promote tracks record file_path: {_fp_err}"
+                )
 
         # Set the file's modification time to the release year from MusicBrainz
         # so the library reflects the original release date rather than today.
@@ -8772,3 +8877,156 @@ def get_album_copy_progress(album, album_artist):
             'is_complete': False,
             'error': str(e)
         }
+
+
+def backfill_queued_track_metadata():
+    """
+    One-time startup backfill: find every placeholder tracks row created before
+    queue-time enrichment was introduced (i.e. rows where file_path contains the
+    ``__queued_for_download__`` marker but musicbrainz_albumid / isrc / writer are
+    still NULL), join them against the download_queue table, and re-apply the
+    enrichment logic.
+
+    Only non-empty values from the queue row are written — fields that are NULL or
+    empty in the queue item are skipped so that existing partial data in the tracks
+    record is never overwritten with blanks.
+
+    Intended to be called once at startup from a background daemon thread so it does
+    not block the web server.
+    """
+    import re as _re_bf
+
+    _uuid_pat = _re_bf.compile(
+        r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}'
+        r'-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
+    )
+
+    def _valid_uuid(v):
+        return bool(v and _uuid_pat.match(str(v).strip()))
+
+    def _year_int(v):
+        if not v:
+            return None
+        m = _re_bf.search(r'(19|20)\d{2}', str(v))
+        return int(m.group(0)) if m else None
+
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        # Fetch all queued placeholder rows that are still missing enriched fields.
+        cursor.execute("""
+            SELECT id, file_path
+            FROM tracks
+            WHERE file_path LIKE %s
+              AND (
+                  musicbrainz_albumid IS NULL
+                  OR musicbrainz_trackid IS NULL
+                  OR isrc IS NULL
+                  OR writer IS NULL
+              )
+        """, ('__queued_for_download__%',))
+        rows = cursor.fetchall() or []
+
+        if not rows:
+            logger.debug("[BACKFILL] No queued tracks need metadata backfill.")
+            conn.close()
+            return
+
+        logger.info(f"[BACKFILL] Starting metadata backfill for {len(rows)} queued track placeholder(s).")
+
+        updated = 0
+        skipped = 0
+
+        for row in rows:
+            try:
+                track_id = row['id'] if hasattr(row, 'get') else row[0]
+                file_path_val = row['file_path'] if hasattr(row, 'get') else row[1]
+
+                # Extract the queue_id from the marker string.
+                marker_prefix = '__queued_for_download__queue_id_'
+                if marker_prefix not in str(file_path_val):
+                    skipped += 1
+                    continue
+                raw_id = str(file_path_val).split(marker_prefix, 1)[-1].strip()
+                try:
+                    queue_id = int(raw_id)
+                except ValueError:
+                    skipped += 1
+                    continue
+
+                # Look up the download_queue row.
+                cursor.execute(
+                    "SELECT release_mbid, recording_mbid, isrc, composer, year, release_year"
+                    " FROM download_queue WHERE id = %s",
+                    (queue_id,),
+                )
+                qrow = cursor.fetchone()
+                if not qrow:
+                    skipped += 1
+                    continue
+
+                def _qget(key):
+                    val = (qrow.get(key) if hasattr(qrow, 'get') else None)
+                    return str(val).strip() if val else None
+
+                release_mbid  = _qget('release_mbid')
+                recording_mbid = _qget('recording_mbid')
+                isrc_val      = _qget('isrc')
+                composer_val  = _qget('composer')
+                year_val      = _qget('year')
+
+                mb_album_id = release_mbid  if _valid_uuid(release_mbid)  else None
+                mb_track_id = recording_mbid if _valid_uuid(recording_mbid) else None
+                release_year_int = _year_int(_qget('release_year') or year_val)
+
+                # Build the SET clause dynamically — only include fields that have
+                # actual values so we never overwrite existing data with NULL/empty.
+                set_parts = []
+                params = []
+
+                if mb_album_id:
+                    set_parts.append("musicbrainz_albumid = COALESCE(musicbrainz_albumid, %s)")
+                    params.append(mb_album_id)
+                if mb_track_id:
+                    set_parts.append("musicbrainz_trackid = COALESCE(musicbrainz_trackid, %s)")
+                    params.append(mb_track_id)
+                if isrc_val:
+                    set_parts.append("isrc = COALESCE(isrc, %s)")
+                    params.append(isrc_val)
+                if composer_val:
+                    set_parts.append("writer = COALESCE(writer, %s)")
+                    params.append(composer_val)
+                if release_year_int:
+                    set_parts.append("release_year = COALESCE(release_year, %s)")
+                    params.append(release_year_int)
+
+                if not set_parts:
+                    # Nothing in the queue row to contribute — skip silently.
+                    skipped += 1
+                    continue
+
+                params.append(track_id)
+                cursor.execute(
+                    f"UPDATE tracks SET {', '.join(set_parts)} WHERE id = %s",
+                    params,
+                )
+                conn.commit()
+                updated += 1
+
+            except Exception as _row_err:
+                logger.debug(f"[BACKFILL] Skipping row due to error: {_row_err}")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                skipped += 1
+
+        conn.close()
+        logger.info(
+            f"[BACKFILL] Queued track metadata backfill complete: "
+            f"{updated} updated, {skipped} skipped (no data or already enriched)."
+        )
+
+    except Exception as e:
+        logger.error(f"[BACKFILL] backfill_queued_track_metadata failed: {e}", exc_info=True)
