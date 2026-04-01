@@ -683,30 +683,20 @@ def ensure_essentia_feature_columns():
             conn.close()
             return False
 
-        # Run column checks per-iteration so concurrent startups or prior
-        # transactional errors do not poison subsequent ALTER statements.
-        for col_name, col_def in columns_to_add:
+        existing = _get_table_columns(cursor, "tracks")
+        missing_columns = [(col_name, col_def) for col_name, col_def in columns_to_add if col_name not in existing]
+
+        if not missing_columns:
+            # Keep startup logs quiet when schema is already current.
+            logging.debug("Essentia feature columns already present; skipping migration")
+            conn.close()
+            return True
+
+        for col_name, col_def in missing_columns:
             try:
-                # Clear any inherited aborted transaction state before checking.
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-
-                existing = _get_table_columns(cursor, "tracks")
-                if col_name in existing:
-                    logging.info(f"✓ Column '{col_name}' already exists")
-                    continue
-
                 cursor.execute(f"ALTER TABLE tracks ADD COLUMN IF NOT EXISTS {col_name} {col_def}")
                 conn.commit()
-
-                # Re-check existence to emit an accurate message.
-                refreshed = _get_table_columns(cursor, "tracks")
-                if col_name in refreshed:
-                    logging.info(f"✓ Added '{col_name}' column to tracks table")
-                else:
-                    logging.warning(f"⚠ Column '{col_name}' was not present after migration attempt")
+                logging.info(f"✓ Added '{col_name}' column to tracks table")
             except Exception as e:
                 conn.rollback()
                 logging.error(f"✗ Failed to add '{col_name}' column: {e}")

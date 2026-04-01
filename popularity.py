@@ -3392,7 +3392,7 @@ def popularity_scan(
 
     # Log scan mode details to info
     if singles_only:
-        log_info("Singles-only mode enabled - will only rescan singles detection (albums without popularity data are skipped)")
+        log_info("Singles-only mode enabled - will only rescan singles detection")
     elif singles_with_missing_popularity:
         log_info("Singles scan mode enabled - will run popularity scan only for albums with no existing popularity data")
     elif popularity_only:
@@ -3511,18 +3511,6 @@ def popularity_scan(
                 f"(popularity_score IS NULL OR popularity_score = 0 OR last_scanned IS NULL OR last_scanned < (NOW() - ({placeholder} * INTERVAL '1 day')))"
             )
             sql_params.append(max(1, int(album_skip_days)))
-
-        # Singles-only scan requires existing popularity scores so the album z-score context
-        # is valid. Filter here to only albums where at least one track already has a
-        # popularity_score. Albums without any popularity data are skipped — they must go
-        # through the popularity scan first.
-        if singles_only and not (FORCE_RESCAN or force):
-            sql_conditions.append(
-                f"album IN ("
-                f"  SELECT DISTINCT album FROM tracks"
-                f"  WHERE COALESCE(popularity_score, 0) > 0"
-                f")"
-            )
 
         if not (FORCE_RESCAN or force) and metadata_only:
             sql_conditions.append(
@@ -3735,7 +3723,7 @@ def popularity_scan(
 
             # Spotify popularity lookups are deprecated and removed from popularity scanning.
             is_compilation_group = artist.lower() in ('various artists', 'various artists -', 'various', 'compilation', 'soundtrack')
-            if not is_compilation_group:
+            if not is_compilation_group and not singles_only and not singles_with_missing_popularity:
                 # Fetch and update Discogs artist ID from Discogs API during popularity scan.
                 # This remains useful metadata even after Spotify popularity removal.
                 try:
@@ -3812,7 +3800,7 @@ def popularity_scan(
                     return ""
 
             try:
-                if HAVE_MUSICBRAINZ:
+                if HAVE_MUSICBRAINZ and not singles_only and not singles_with_missing_popularity:
                     log_debug(f'Fetching artist country from MusicBrainz for: {artist}')
                     artist_country = _run_with_timeout(
                         get_artist_country,
@@ -3978,7 +3966,7 @@ def popularity_scan(
 
             # Fallback: Save artist bio/image even when MusicBrainz is unavailable.
             # Country lookup depends on MusicBrainz, but biography and image should not.
-            if not HAVE_MUSICBRAINZ:
+            if not HAVE_MUSICBRAINZ and not singles_only and not singles_with_missing_popularity:
                 try:
                     # Check what (if anything) is already stored so we don't re-fetch.
                     _fb_bio = ""
@@ -4118,6 +4106,8 @@ def popularity_scan(
 
             # Fetch similar artists for all artists (including compilations for recommendation purposes)
             try:
+                if singles_only or singles_with_missing_popularity:
+                    raise StopIteration
                 if similar_artists_cached:
                     raise StopIteration
 
@@ -4258,6 +4248,8 @@ def popularity_scan(
 
             # Fetch and store artist tags from Last.fm
             try:
+                if singles_only or singles_with_missing_popularity:
+                    raise StopIteration
                 lastfm_config = get_lastfm_config(config)
                 if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
                     api_key = lastfm_config.get("api_key")
@@ -4290,12 +4282,14 @@ def popularity_scan(
                             log_debug(f"Failed to store Last.fm tags for '{artist}': {e}")
                     else:
                         log_debug(f"No top tags found for '{artist}' from Last.fm")
+            except StopIteration:
+                pass
             except Exception as e:
                 log_debug(f"Last.fm artist tags lookup failed for {artist}: {e}")
 
             # Fetch missing releases from MusicBrainz and update database
             try:
-                if HAVE_MUSICBRAINZ:
+                if HAVE_MUSICBRAINZ and not singles_only and not singles_with_missing_popularity:
                     log_debug(f"Checking for missing releases for '{artist}' on MusicBrainz")
 
                     # Get existing albums for this artist
@@ -4491,15 +4485,31 @@ def popularity_scan(
                     log_info(f'🔍 Will proceed directly to singles detection')
                 elif singles_with_missing_popularity:
                     # Smart singles scan: only fetch popularity from external sources when the album
-                    # has no existing popularity data in the database.
+                    # has no existing popularity data in the database, or when z-score context
+                    # cannot be validated from existing scores.
                     log_unified(f'Singles Detection - Scanning Album {album} ({album_num}/{len(albums)})')
                     if not (FORCE_RESCAN or force) and not album_filter:
-                        has_pop_data = any(int(t.get('popularity_score') or 0) > 0 for t in album_tracks)
-                        if has_pop_data:
-                            log_info(f'⏭️ SINGLES SCAN: Album "{artist} - {album}" already has popularity data - running singles detection only')
+                        zscore_ready_track_count = 0
+                        has_popularity_for_all_tracks = True
+                        for t in album_tracks:
+                            pop_value = row_get(t, 'popularity_score', 0) or 0
+                            if float(pop_value) <= 0:
+                                has_popularity_for_all_tracks = False
+                            if float(pop_value) > 0 and not should_exclude_track_from_stats(row_get(t, 'title', ''), row_get(t, 'album', '')):
+                                zscore_ready_track_count += 1
+
+                        has_pop_data = has_popularity_for_all_tracks
+                        has_zscore_context = zscore_ready_track_count >= 2
+
+                        if has_pop_data and has_zscore_context:
+                            log_info(f'⏭️ SINGLES SCAN: Album "{artist} - {album}" already has popularity data and z-score context - running singles detection only')
                             skip_popularity_for_album = True
                         else:
-                            log_info(f'📊 SINGLES SCAN: Album "{artist} - {album}" has no popularity data - running full popularity scan first')
+                            log_info(
+                                f'📊 SINGLES SCAN: Album "{artist} - {album}" missing popularity/z-score context '
+                                f'(all_tracks_scored={has_pop_data}, zscore_tracks={zscore_ready_track_count}) - '
+                                f'running popularity scan first'
+                            )
                     else:
                         log_info(f'📊 SINGLES SCAN: Force mode - running full popularity scan for "{artist} - {album}"')
                 else:
