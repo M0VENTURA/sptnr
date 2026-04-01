@@ -7005,8 +7005,15 @@ def _fetch_mb_release_suggestions(release_mbid: str) -> dict:
 
     suggestions: dict = {}
 
-    # Year
-    raw_date = (data.get("date") or "").strip()
+    # Release-group data – needed for original date and release type.
+    rg = data.get("release-group") or {}
+
+    # Year – prefer the release-group's first-release-date (the year the album
+    # originally came out) over the specific release's date so that a 2020
+    # remastered reissue still reports the original release year, not 2020.
+    original_date = (rg.get("first-release-date") or "").strip()
+    release_date = (data.get("date") or "").strip()
+    raw_date = original_date or release_date
     if raw_date:
         suggestions["year"] = raw_date[:4]
 
@@ -7037,8 +7044,7 @@ def _fetch_mb_release_suggestions(release_mbid: str) -> dict:
     if script:
         suggestions["script"] = script
 
-    # Release type from release-group
-    rg = data.get("release-group") or {}
+    # Release type from release-group (rg already extracted above)
     primary_type = (rg.get("primary-type") or "").strip()
     secondary_types = [t for t in (rg.get("secondary-types") or []) if t]
     if primary_type or secondary_types:
@@ -31850,13 +31856,24 @@ def api_album_musicbrainz_lookup():
                     rel_date = rel_data.get("date", "")
                     rg = rel_data.get("release-group") or {}
                     primary_type = rg.get("primary-type", "Album")
-                    cover_art_url = f"https://coverartarchive.org/release/{existing_mbid}/front-250"
+                    rg_id = rg.get("id", "")
+                    # Prefer release-group cover art (more reliably available in CAA
+                    # than art for a specific pressing/reissue MBID)
+                    cover_art_url = (
+                        f"https://coverartarchive.org/release-group/{rg_id}/front-250"
+                        if rg_id
+                        else f"https://coverartarchive.org/release/{existing_mbid}/front-250"
+                    )
+                    # Use the release-group's original first-release-date so that
+                    # a remaster/reissue shows the original album year, not the
+                    # reissue year.
+                    display_date = rg.get("first-release-date", "") or rel_date
                     stored_result = {
                         "mbid": existing_mbid,
                         "title": rel_data.get("title", album),
                         "artist": rel_artist,
                         "primary_type": primary_type,
-                        "first_release_date": rel_date,
+                        "first_release_date": display_date,
                         "cover_art_url": cover_art_url,
                         "confidence": 1.0,
                         "source": "musicbrainz",
