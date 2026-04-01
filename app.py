@@ -12555,7 +12555,9 @@ def album_detail(artist, album):
                     COALESCE(MAX(discogs_album_id), MAX(discogs_release_id)) as discogs_album_id,
                     MAX(spotify_album_id) as spotify_album_id,
                     MAX(spotify_artist_id) as spotify_artist_id,
-                    MAX(discogs_artist_id) as discogs_artist_id
+                    MAX(discogs_artist_id) as discogs_artist_id,
+                    MAX(COALESCE(NULLIF(recordlabel, ''), NULLIF(label, ''))) as record_label,
+                    MAX(catalognumber) as catalog_number
                 FROM tracks
                                 WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
                                     AND LOWER(COALESCE(album, '')) = LOWER({placeholder})
@@ -12576,7 +12578,9 @@ def album_detail(artist, album):
                     NULL as discogs_album_id,
                     NULL as spotify_album_id,
                     NULL as spotify_artist_id,
-                    NULL as discogs_artist_id
+                    NULL as discogs_artist_id,
+                    NULL as record_label,
+                    NULL as catalog_number
                 FROM tracks
                                 WHERE COALESCE(album_artist, artist) = {placeholder}
                                     AND LOWER(COALESCE(album, '')) = LOWER({placeholder})
@@ -12595,7 +12599,9 @@ def album_detail(artist, album):
                 'spotify_album_type': None,
                 'spotify_album_art_url': None,
                 'last_scanned': None,
-                'total_discs': 1
+                'total_discs': 1,
+                'record_label': None,
+                'catalog_number': None,
             }
         
         # Count singles in this album (based on is_single from single detection)
