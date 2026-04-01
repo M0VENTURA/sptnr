@@ -5008,14 +5008,14 @@ def popularity_scan(
                                             f'MusicBrainz writer lookup attempt: title="{title_candidate}", '
                                             f'artist="{artist_candidate}"'
                                         )
-                                        _result = _run_with_timeout(
+                                        mb_lookup_result = _run_with_timeout(
                                             mb_writer_client.get_composers_for_track,
                                             API_CALL_TIMEOUT,
                                             f"MusicBrainz writer lookup timed out after {API_CALL_TIMEOUT}s",
                                             title_candidate,
                                             artist_candidate
                                         )
-                                        mb_writer_names, found_recording_mbid = _result
+                                        mb_writer_names, found_recording_mbid = mb_lookup_result
                                         if mb_writer_names:
                                             break
 
