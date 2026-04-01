@@ -16992,6 +16992,10 @@ def api_scan_progress():
                 "total_artists": state.get("total_artists"),
                 "scanned_albums": state.get("scanned_albums"),
                 "total_albums": state.get("total_albums"),
+                # Extra fields for mood / essentia / missing-releases detail lines
+                "scanned_tracks": state.get("scanned_tracks"),
+                "updated_tracks": state.get("updated_tracks"),
+                "total_missing_found": state.get("total_missing_found"),
             }
 
         active_scans = []
