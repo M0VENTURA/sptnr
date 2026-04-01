@@ -250,6 +250,28 @@ def is_compilation_type(album_type: str) -> bool:
     )
 
 
+def normalize_primary_release_type(album_type: str) -> str:
+    """Normalize composite album type strings to primary release type.
+
+    Examples:
+    - "album (live)" -> "album"
+    - "album+compilation" -> "album"
+    - "single" -> "single"
+    """
+    value = (album_type or '').strip().lower()
+    if not value:
+        return 'album'
+
+    if '+' in value:
+        value = value.split('+', 1)[0].strip()
+    if '(' in value:
+        value = value.split('(', 1)[0].strip()
+
+    if value in {'album', 'ep', 'single'}:
+        return value
+    return 'album'
+
+
 def should_exclude_track_from_stats(title: str, album: str = "") -> bool:
     """
     Determine if a track should be excluded from album/artist statistics calculations.
@@ -4687,17 +4709,22 @@ def popularity_scan(
 
                 # Update ALL tracks in this album with the detected type
                 if detected_album_type and detected_album_type != current_album_type:
+                    primary_release_type = normalize_primary_release_type(detected_album_type)
                     tracks_updated = 0
                     for track in album_tracks:
                         track_id = track["id"]
                         cursor.execute(f"""
                             UPDATE tracks
-                            SET spotify_album_type = {placeholder}
+                            SET spotify_album_type = {placeholder},
+                                releasetype = {placeholder},
+                                musicbrainz_albumtype = {placeholder}
                             WHERE id = {placeholder}
-                        """, (detected_album_type, track_id))
+                        """, (detected_album_type, primary_release_type, detected_album_type, track_id))
                         tracks_updated += 1
                         # Update the track dict for use in rest of scan
                         track["spotify_album_type"] = detected_album_type
+                        track["releasetype"] = primary_release_type
+                        track["musicbrainz_albumtype"] = detected_album_type
 
                     if tracks_updated > 0:
                         conn.commit()
