@@ -120,7 +120,9 @@ def validate_track_data(
     if not isinstance(popularity, (int, float)):
         return False, f"Invalid popularity for {title}: must be numeric"
     
-    if popularity < 0 or popularity > 100:
+    # Allow tiny floating-point drift (e.g. 100.00000000000001).
+    epsilon = 1e-6
+    if popularity < -epsilon or popularity > 100 + epsilon:
         return False, f"Invalid popularity for {title}: must be 0-100, got {popularity}"
     
     return True, None

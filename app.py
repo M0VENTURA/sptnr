@@ -4529,6 +4529,32 @@ def _row_get(row, key, index=None, default=None):
     return default
 
 
+def _coerce_optional_int(value, allow_prefix=False):
+    """Return an int for numeric input, otherwise None."""
+    if value is None:
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    candidate = text
+    if allow_prefix and "/" in text:
+        candidate = text.split("/", 1)[0].strip()
+
+    if not candidate:
+        return None
+
+    signless = candidate[1:] if candidate.startswith("-") else candidate
+    if not signless.isdigit():
+        return None
+
+    try:
+        return int(candidate)
+    except (TypeError, ValueError):
+        return None
+
+
 def _resolve_active_navidrome_user_config(cfg):
     current_user = (session.get("username") or "").strip()
     navidrome_users = cfg.get("navidrome_users", []) if isinstance(cfg, dict) else []
@@ -5311,6 +5337,10 @@ def artists():
 
     except Exception as correction_err:
         logging.debug(f"Could not compute artist correction indicators: {correction_err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
 
     # Build album tag inconsistency counts per artist (lightweight: count albums only)
     album_tag_inconsistency_counts_by_artist: dict = {}
@@ -5323,6 +5353,10 @@ def artists():
             )
     except Exception as tag_inc_err:
         logging.debug(f"Could not compute album tag inconsistency counts: {tag_inc_err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
 
     for artist_row in artists_data:
         display_name = artist_row.get("display_name", "")
@@ -5366,6 +5400,14 @@ def artist_corrections(name):
     conn = get_db()
     cursor = conn.cursor()
     placeholder = "%s"
+    track_columns = _get_table_columns(cursor, 'tracks')
+    has_album_artist = 'album_artist' in track_columns
+    artist_expr = "COALESCE(NULLIF(album_artist, ''), artist)" if has_album_artist else "artist"
+    album_artist_select = (
+        "COALESCE(NULLIF(album_artist, ''), artist) AS album_artist"
+        if has_album_artist else
+        "artist AS album_artist"
+    )
 
     duplicate_groups = []
     missing_tracks = []
@@ -5384,9 +5426,9 @@ def artist_corrections(name):
                 duration,
                 COALESCE(NULLIF(mbid, ''), '') AS mbid,
                 COALESCE(NULLIF(suggested_mbid, ''), '') AS suggested_mbid,
-                COALESCE(NULLIF(album_artist, ''), artist) AS album_artist
+                                {album_artist_select}
             FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                        WHERE {artist_expr} = {placeholder}
               AND title IS NOT NULL
               AND TRIM(title) != ''
             ORDER BY album, title, track_artist, track_number, id
@@ -5629,7 +5671,7 @@ def artist_corrections(name):
                     ELSE 'Metadata needs review'
                 END AS metadata_issue_reason
             FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                        WHERE {artist_expr} = {placeholder}
               AND (
                     title IS NULL OR TRIM(title) = '' OR
                     album IS NULL OR TRIM(album) = '' OR
@@ -5656,7 +5698,7 @@ def artist_corrections(name):
             cursor.execute(f"""
                 SELECT album, COUNT(*) as track_count, MAX(musicbrainz_album_mbid) as mb_mbid
                 FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                                WHERE {artist_expr} = {placeholder}
                   AND musicbrainz_album_mbid IS NOT NULL AND musicbrainz_album_mbid != ''
                 GROUP BY album
                 ORDER BY album
@@ -5670,6 +5712,10 @@ def artist_corrections(name):
                 })
         except Exception as mb_err:
             logging.debug(f"[CORRECTIONS] Could not fetch MB albums: {mb_err}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
 
         # Albums with mixed album MBIDs. These need manual approval of one
         # canonical MBID across all tracks.
@@ -5681,7 +5727,7 @@ def artist_corrections(name):
                     COUNT(DISTINCT TRIM(musicbrainz_album_mbid)) AS mbid_count,
                     STRING_AGG(DISTINCT TRIM(musicbrainz_album_mbid), ',' ORDER BY TRIM(musicbrainz_album_mbid)) AS mbid_values
                 FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                                WHERE {artist_expr} = {placeholder}
                   AND album IS NOT NULL
                   AND TRIM(album) != ''
                   AND musicbrainz_album_mbid IS NOT NULL
@@ -5702,6 +5748,10 @@ def artist_corrections(name):
                 })
         except Exception as mbid_err:
             logging.debug(f"[CORRECTIONS] Could not fetch mixed album MBIDs: {mbid_err}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
 
         # Fetch albums with disc number inconsistency: some tracks have
         # disc_number set, others don't — on a single-disc album this
@@ -5730,7 +5780,7 @@ def artist_corrections(name):
                                   AND CAST(disc_number AS TEXT) != '0'
                              THEN CAST(disc_number AS TEXT) END) AS disc_value
                 FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                                WHERE {artist_expr} = {placeholder}
                   AND album IS NOT NULL AND TRIM(album) != ''
                 GROUP BY album
                 HAVING SUM(CASE WHEN disc_number IS NOT NULL
@@ -5755,6 +5805,10 @@ def artist_corrections(name):
                 })
         except Exception as disc_err:
             logging.debug(f"[CORRECTIONS] Could not fetch disc inconsistency albums: {disc_err}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
 
         # Fetch albums with mixed MusicBrainz album MBIDs for this artist.
         try:
@@ -5765,7 +5819,7 @@ def artist_corrections(name):
                     COUNT(DISTINCT TRIM(musicbrainz_album_mbid)) AS distinct_mbid_count,
                     STRING_AGG(DISTINCT TRIM(musicbrainz_album_mbid), ', ') AS mbid_list
                 FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                                WHERE {artist_expr} = {placeholder}
                   AND album IS NOT NULL
                   AND TRIM(album) != ''
                   AND musicbrainz_album_mbid IS NOT NULL
@@ -5785,6 +5839,10 @@ def artist_corrections(name):
                 })
         except Exception as mbid_err:
             logging.debug(f"[CORRECTIONS] Could not fetch MBID inconsistency albums: {mbid_err}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
     finally:
         conn.close()
 
@@ -13795,9 +13853,12 @@ def track_detail(track_id):
         return redirect(url_for("dashboard"))
 
 
-@app.route("/track/<track_id>/edit", methods=["POST"])
+@app.route("/track/<track_id>/edit", methods=["GET", "POST"])
 def track_edit(track_id):
     """Update track metadata and write to audio file"""
+    if request.method == "GET":
+        return redirect(url_for("track_detail", track_id=track_id))
+
     conn = get_db()
     cursor = conn.cursor()
     placeholder = "%s"
@@ -13807,7 +13868,7 @@ def track_edit(track_id):
     artist = request.form.get("artist", "").strip() or None
     album = request.form.get("album", "").strip() or None
     album_artist = request.form.get("album_artist", "").strip() or None
-    stars = request.form.get("stars", type=int)
+    stars = _coerce_optional_int(request.form.get("stars", ""))
     # is_single is now a dropdown ("true"/"false") but also accept legacy "on" checkbox value
     is_single_raw = request.form.get("is_single", "false")
     is_single = is_single_raw in ("true", "on", "1", "yes")
@@ -13825,13 +13886,14 @@ def track_edit(track_id):
     mixer = request.form.get("mixer", "").strip() or None
     producer = request.form.get("producer", "").strip() or None
     work = request.form.get("work", "").strip() or None
-    track_number = request.form.get("track_number", "").strip() or None
-    disc_number = request.form.get("disc_number", type=int) or None
+    track_number_raw = request.form.get("track_number", "").strip()
+    track_number = _coerce_optional_int(track_number_raw, allow_prefix=True)
+    disc_number = _coerce_optional_int(request.form.get("disc_number", ""))
     comment = request.form.get("comment", "").strip() or None
     isrc = request.form.get("isrc", "").strip() or None
-    bpm = request.form.get("bpm", type=int) or None
-    bitrate = request.form.get("bitrate", type=int) or None
-    sample_rate = request.form.get("sample_rate", type=int) or None
+    bpm = _coerce_optional_int(request.form.get("bpm", ""))
+    bitrate = _coerce_optional_int(request.form.get("bitrate", ""))
+    sample_rate = _coerce_optional_int(request.form.get("sample_rate", ""))
     
     # Sort keys
     titlesort = request.form.get("titlesort", "").strip() or None
@@ -14085,8 +14147,8 @@ def track_edit(track_id):
                     tags_to_write["producer"] = producer
                 if work:
                     tags_to_write["work"] = work
-                if track_number:
-                    tags_to_write["track_number"] = int(track_number.split("/")[0]) if "/" in str(track_number) else (int(track_number) if str(track_number).isdigit() else track_number)
+                if track_number_raw:
+                    tags_to_write["track_number"] = int(track_number_raw.split("/")[0]) if "/" in str(track_number_raw) else (int(track_number_raw) if str(track_number_raw).isdigit() else track_number_raw)
                 if disc_number:
                     tags_to_write["disc_number"] = disc_number
                 if comment:
@@ -17808,12 +17870,13 @@ def slskd_queue_download():
         return jsonify({"error": "slskd integration not enabled"}), 400
 
     payload = request.json or {}
-    queue_id = payload.get("queue_id")
+    queue_id_raw = payload.get("queue_id")
+    queue_id = _coerce_optional_int(queue_id_raw)
     username = (payload.get("username") or "").strip()
     filename = (payload.get("filename") or "").strip()
     size = int(payload.get("size") or 0)
 
-    if not queue_id:
+    if queue_id is None:
         return jsonify({"error": "queue_id is required"}), 400
     if not username or not filename:
         return jsonify({"error": "username and filename are required"}), 400
@@ -17988,13 +18051,17 @@ def slskd_cancel():
         return jsonify({"error": "slskd integration not enabled"}), 400
 
     payload = request.json or {}
-    queue_id = payload.get("queue_id")
+    queue_id_raw = payload.get("queue_id")
+    queue_id = _coerce_optional_int(queue_id_raw)
     username = payload.get("username", "")
     filename = payload.get("filename", "")
     transfer_id = payload.get("transfer_id") or payload.get("remoteToken") or payload.get("id")
 
     # If this is queue-linked, prefer persisted transfer identity for deterministic cancel.
-    if queue_id:
+    if queue_id_raw is not None and str(queue_id_raw).strip() and queue_id is None:
+        return jsonify({"error": "queue_id must be a valid integer"}), 400
+
+    if queue_id is not None:
         try:
             conn = get_db()
             cursor = conn.cursor()
@@ -18041,7 +18108,7 @@ def slskd_cancel():
         success = client.cancel_download(resolved_username, resolved_transfer_id, remove=True, timeout=10)
 
         if success:
-            if queue_id:
+            if queue_id is not None:
                 try:
                     from download_queue_manager import update_queue_item
                     update_queue_item(
@@ -18070,14 +18137,18 @@ def slskd_retry():
         return jsonify({"error": "slskd integration not enabled"}), 400
 
     payload = request.json or {}
-    queue_id = payload.get("queue_id")
+    queue_id_raw = payload.get("queue_id")
+    queue_id = _coerce_optional_int(queue_id_raw)
     username = payload.get("username", "")
     filename = payload.get("filename", "")
     size = payload.get("size", 0)
     transfer_id = payload.get("transfer_id") or payload.get("remoteToken") or payload.get("id")
 
     # Queue-linked retries should use stored transfer identity/filename first.
-    if queue_id:
+    if queue_id_raw is not None and str(queue_id_raw).strip() and queue_id is None:
+        return jsonify({"error": "queue_id must be a valid integer"}), 400
+
+    if queue_id is not None:
         try:
             conn = get_db()
             cursor = conn.cursor()
@@ -18129,7 +18200,7 @@ def slskd_retry():
 
         if success:
             new_transfer_id = (enqueue_result.get('transfer_id') or '').strip() or str(transfer_id or "")
-            if queue_id:
+            if queue_id is not None:
                 try:
                     from download_queue_manager import update_queue_item
                     update_queue_item(
@@ -18525,7 +18596,7 @@ def api_musicbrainz_download():
                         """, (track_artist, release_title, track_title, search_query, queue_source, import_group, release_id, 'musicbrainz', track_number, artist, release_year))
                         queue_row = cursor.fetchone()
                         queue_id = queue_row[0] if queue_row else None
-                        if queue_id:
+                        if queue_id is not None:
                             queue_ids.append(queue_id)
         
         conn.commit()
