@@ -804,6 +804,11 @@ def ensure_navidrome_tag_columns():
         ("musicbrainz_releasegroupid", "TEXT"),
         ("musicbrainz_releasetrackid", "TEXT"),
         ("musicbrainz_workid", "TEXT"),
+        # Legacy EasyID3 / MusicBrainz Picard tag names that differ from the
+        # Navidrome Subsonic field names (releasestatus / releasetype).
+        # Kept as separate columns so data written by either path is preserved.
+        ("musicbrainz_albumstatus", "TEXT"),
+        ("musicbrainz_albumtype", "TEXT"),
         # Flag: set TRUE when this track belongs to an album with inconsistent
         # album-level tags (detected by the /correcting endpoint logic)
         ("needs_correcting", "BOOLEAN DEFAULT FALSE"),

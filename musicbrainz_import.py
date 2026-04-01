@@ -16,16 +16,19 @@ from helpers.metadata_reader import (
 
 # Mapping of MP3 tag fields to database columns
 MB_FIELD_MAPPING = {
-    'musicbrainz_artistid': 'musicbrainz_track_artistid',         # Track artist ID
+    'musicbrainz_artistid': 'musicbrainz_artistid',               # Track artist ID
     'musicbrainz_albumartistid': 'musicbrainz_albumartistid',     # Album artist ID
     'musicbrainz_albumid': 'musicbrainz_albumid',                 # Album/Release ID
     'musicbrainz_trackid': 'musicbrainz_trackid',                 # Track/Recording ID
     'musicbrainz_releasegroupid': 'musicbrainz_releasegroupid',   # Release group ID
     'musicbrainz_releasetrackid': 'musicbrainz_releasetrackid',   # Release track ID
     'musicbrainz_workid': 'musicbrainz_workid',                   # Work ID
-    'musicbrainz_releasestatus': 'musicbrainz_releasestatus',     # Release status
-    'musicbrainz_releasetype': 'musicbrainz_releasetype',         # Release type
-    'musicbrainz_releasecountry': 'musicbrainz_releasecountry',   # Release country
+    # TXXX "MUSICBRAINZ ALBUM STATUS / RELEASE STATUS" → releasestatus column
+    'musicbrainz_releasestatus': 'releasestatus',                 # Release status
+    # TXXX "MUSICBRAINZ ALBUM TYPE / RELEASE TYPE" → releasetype column
+    'musicbrainz_releasetype': 'releasetype',                     # Release type
+    # TXXX "MUSICBRAINZ ALBUM RELEASE COUNTRY" → releasecountry column
+    'musicbrainz_releasecountry': 'releasecountry',               # Release country
 }
 
 # Reverse mapping for writing to MP3
@@ -258,16 +261,16 @@ def get_musicbrainz_tags_for_track(artist, album, title, db_path="/database/sptn
         
         cursor.execute("""
             SELECT 
-                musicbrainz_track_artistid,
+                musicbrainz_artistid,
                 musicbrainz_albumartistid,
                 musicbrainz_albumid,
                 musicbrainz_trackid,
                 musicbrainz_releasegroupid,
                 musicbrainz_releasetrackid,
                 musicbrainz_workid,
-                musicbrainz_releasestatus,
-                musicbrainz_releasetype,
-                musicbrainz_releasecountry,
+                releasestatus,
+                releasetype,
+                releasecountry,
                 musicbrainz_albumstatus,
                 musicbrainz_albumtype
             FROM tracks 
@@ -311,16 +314,16 @@ def get_musicbrainz_tags_for_album(artist, album, db_path="/database/sptnr.db"):
         cursor.execute("""
             SELECT 
                 title, track_number,
-                musicbrainz_track_artistid,
+                musicbrainz_artistid,
                 musicbrainz_albumartistid,
                 musicbrainz_albumid,
                 musicbrainz_trackid,
                 musicbrainz_releasegroupid,
                 musicbrainz_releasetrackid,
                 musicbrainz_workid,
-                musicbrainz_releasestatus,
-                musicbrainz_releasetype,
-                musicbrainz_releasecountry
+                releasestatus,
+                releasetype,
+                releasecountry
             FROM tracks 
             WHERE artist = %s AND album = %s
             ORDER BY track_number
