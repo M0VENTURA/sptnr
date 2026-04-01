@@ -8750,7 +8750,7 @@ def api_artist_missing_releases():
     artist_mbid = None
     try:
         cursor.execute(f"""
-            SELECT MAX(musicbrainz_artist_id) AS mbid
+            SELECT MAX(COALESCE(NULLIF(musicbrainz_artist_id, ''), NULLIF(musicbrainz_artistid, ''))) AS mbid
             FROM tracks
             WHERE LOWER({artist_compare_expr}) = LOWER({placeholder})
         """, (artist,))
@@ -12824,6 +12824,7 @@ def _run_artist_scan_pipeline(artist_name: str, force: bool = False):
     Helper function to run the complete scan pipeline for an artist:
     1. Navidrome import (imports metadata from Navidrome)
     2. Popularity detection (Spotify, Last.fm, ListenBrainz) + Singles detection + Star rating
+    3. Essentia mood/genre scan (local ML scan for this artist)
     
     All steps log to unified_scan.log and Recent Scans page.
     This is used by artist scan, album rescan, and track rescan routes.
@@ -12885,7 +12886,7 @@ def _run_artist_scan_pipeline(artist_name: str, force: bool = False):
             # Skip Navidrome track import (tracks already imported via album artist)
             # But still fetch artist-level metadata (bio, images) from external APIs
             log_unified(f"Artist '{artist_name}' is a track artist (e.g., from Various Artists albums)")
-            log_unified(f"Step 1/2: Fetching artist metadata for track artist '{artist_name}'")
+            log_unified(f"Step 1/3: Fetching artist metadata for track artist '{artist_name}'")
             try:
                 from helpers.scan_helpers import fetch_artist_metadata
                 fetch_artist_metadata(artist_name, verbose=True)
@@ -12894,18 +12895,62 @@ def _run_artist_scan_pipeline(artist_name: str, force: bool = False):
                 log_unified(f"Warning: Artist metadata fetch not available: {e}")
             except Exception as e:
                 log_unified(f"Warning: Failed to fetch artist metadata: {e}")
-            log_unified(f"Step 2/2: Running popularity scan for track artist '{artist_name}' (force={force})")
+            log_unified(f"Step 2/3: Running popularity scan for track artist '{artist_name}' (force={force})")
             popularity_scan(verbose=True, force=force, artist_filter=artist_name)
         else:
             # Normal flow: artist_id found, run both steps
             # Step 1: Import metadata from Navidrome for this artist
-            log_unified(f"Step 1/2: Navidrome import for artist '{artist_name}' (force={force})")
+            log_unified(f"Step 1/3: Navidrome import for artist '{artist_name}' (force={force})")
             scan_artist_to_db(artist_name, artist_id, verbose=True, force=force)
 
             # Step 2: Run popularity scan for this artist (includes singles detection and star rating)
-            log_unified(f"Step 2/2: Running popularity scan for artist '{artist_name}' (force={force})")
+            log_unified(f"Step 2/3: Running popularity scan for artist '{artist_name}' (force={force})")
             popularity_scan(verbose=True, force=force, artist_filter=artist_name)
-        
+
+        # Step 3: Run Essentia mood/genre scan for this artist
+        log_unified(f"Step 3/3: Running Essentia scan for artist '{artist_name}' (force={force})")
+        try:
+            from essentia_mood_scan import run_essentia_mood_scan
+            from helpers.config_helpers import get_config
+            cfg = get_config()
+            essentia_cfg = cfg.get("essentia", {}) if isinstance(cfg, dict) else {}
+            script_path = essentia_cfg.get("script_path", "")
+            if not script_path:
+                log_unified(f"Essentia scan skipped: script_path not configured")
+            else:
+                models_dir = essentia_cfg.get("models_dir", "")
+                mood_threshold = float(essentia_cfg.get("mood_threshold", 0.005))
+                per_file_timeout = int(essentia_cfg.get("per_file_timeout", 300))
+                tag_genres = bool(essentia_cfg.get("tag_genres", False))
+                num_genres = int(essentia_cfg.get("num_genres", 3))
+                genre_threshold = float(essentia_cfg.get("genre_threshold", 15.0))
+                genre_format = essentia_cfg.get("genre_format", "parent_child")
+                tag_moods = bool(essentia_cfg.get("tag_moods", True))
+                parse_json_features = bool(essentia_cfg.get("parse_json_features", True))
+                delete_json_after_import = bool(essentia_cfg.get("delete_json_after_import", True))
+                json_output_dir = str(essentia_cfg.get("json_output_dir", "") or "").strip()
+                run_essentia_mood_scan(
+                    script_path=script_path,
+                    models_dir=models_dir,
+                    mood_threshold=mood_threshold,
+                    per_file_timeout=per_file_timeout,
+                    force=force,
+                    tag_genres=tag_genres,
+                    num_genres=num_genres,
+                    genre_threshold=genre_threshold,
+                    genre_format=genre_format,
+                    tag_moods=tag_moods,
+                    parse_json_features=parse_json_features,
+                    delete_json_after_import=delete_json_after_import,
+                    json_output_dir=json_output_dir,
+                    artist_filter=artist_name,
+                )
+                log_unified(f"Essentia scan complete for artist '{artist_name}'")
+        except ImportError:
+            log_unified(f"Essentia scan skipped: essentia_mood_scan module not available")
+        except Exception as e:
+            log_unified(f"Warning: Essentia scan failed for '{artist_name}': {e}")
+
         log_unified(f"✅ Scan complete for artist '{artist_name}'")
         
         # Save checkpoint for resume functionality
