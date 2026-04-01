@@ -74,6 +74,13 @@ _ALBUM_SUBTITLE_KEYWORDS_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Regex used by _strip_feat_from_album_artist() to remove "feat."/"ft."/"featuring"
+# and the featured artist(s) from album-artist tag values.
+_FEAT_SUFFIX_RE = re.compile(
+    r'\s+(?:feat\.?|ft\.?|featuring)\s+.*$',
+    re.IGNORECASE,
+)
+
 # Global state for tracking scan progress (used by /api/downloads/scan-progress)
 _scan_progress = {
     'scanning': False,
@@ -3449,8 +3456,8 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
         tag_metadata = {
             'title': title,
             'artist': artist,
-            'album_artist': queue_item_dict.get('album_artist') or artist,
-            'album': queue_item_dict.get('album') or 'Unknown Album',
+            'album_artist': _strip_feat_from_album_artist(queue_item_dict.get('album_artist') or artist),
+            'album': _strip_album_edition_for_tags(queue_item_dict.get('album') or 'Unknown Album'),
             'year': year or '',
             'track_number': queue_item_dict.get('track_number'),
             # Default: suppress disc tag until MusicBrainz confirms multi-disc
@@ -3527,7 +3534,7 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
                     # even if the queue item originally lacked a proper album_artist value.
                     mb_release_artist = mb_release.get('artist', '').strip()
                     if mb_release_artist:
-                        tag_metadata['album_artist'] = mb_release_artist
+                        tag_metadata['album_artist'] = _strip_feat_from_album_artist(mb_release_artist)
                         # Recompute the folder-level album_artist so the file is organised
                         # under the correct artist directory.
                         album_artist = _sanitize_path_component(
@@ -4792,8 +4799,10 @@ def check_downloads_folder():
                             stored_metadata = {
                                 'title': queue_item.get('title'),
                                 'artist': queue_item.get('artist'),
-                                'album_artist': queue_item.get('album_artist') or queue_item.get('artist'),
-                                'album': queue_item.get('album'),
+                                'album_artist': _strip_feat_from_album_artist(
+                                    queue_item.get('album_artist') or queue_item.get('artist') or ''
+                                ),
+                                'album': _strip_album_edition_for_tags(queue_item.get('album') or ''),
                                 'year': queue_item.get('year'),
                                 'track_number': queue_item.get('track_number'),
                                 'disc_number': queue_item.get('disc_number'),
@@ -6134,8 +6143,10 @@ def auto_discover_and_queue_files():
                                         stored_metadata = {
                                             'title': item_for_move.get('title'),
                                             'artist': item_for_move.get('artist'),
-                                            'album_artist': item_for_move.get('album_artist') or item_for_move.get('artist'),
-                                            'album': item_for_move.get('album'),
+                                            'album_artist': _strip_feat_from_album_artist(
+                                                item_for_move.get('album_artist') or item_for_move.get('artist') or ''
+                                            ),
+                                            'album': _strip_album_edition_for_tags(item_for_move.get('album') or ''),
                                             'year': item_for_move.get('year'),
                                             'track_number': item_for_move.get('track_number'),
                                             'disc_number': item_for_move.get('disc_number'),
@@ -7033,6 +7044,51 @@ def _normalize_album_for_dedup(title: str) -> str:
     # Collapse any remaining separator characters to a single space.
     t = re.sub(r'[\s\-_:]+', ' ', t).strip().lower()
     return t
+
+
+def _strip_album_edition_for_tags(title: str) -> str:
+    """Strip edition/subtitle suffixes from an album name for writing to file tags.
+
+    Same stripping logic as :func:`_normalize_album_for_dedup` but preserves the
+    original casing so that Navidrome displays the name correctly.
+
+    Examples::
+
+        "Abbey Road (Remastered)"               →  "Abbey Road"
+        "Dark Side of the Moon [Deluxe]"        →  "Dark Side of the Moon"
+        "Thriller - Deluxe Edition"             →  "Thriller"
+        "Some Album"                            →  "Some Album"  (unchanged)
+    """
+    if not title:
+        return title
+    t = title.strip()
+    prev = None
+    iterations = 0
+    while t != prev and iterations < 10:
+        prev = t
+        t = _ALBUM_BRACKET_SUFFIX_RE.sub("", t).strip()
+        iterations += 1
+    t = _ALBUM_SUBTITLE_KEYWORDS_RE.sub("", t).strip()
+    return t
+
+
+def _strip_feat_from_album_artist(artist: str) -> str:
+    """Return the primary artist by removing any 'feat.'/'ft.'/'featuring' suffix.
+
+    Used when writing the album-artist tag (TPE2/albumartist) so that featured
+    guest artists do not appear in the album-level grouping.  The full credit
+    string (including featured artists) is preserved in the track-artist tag.
+
+    Examples::
+
+        "Artist feat. Guest"      →  "Artist"
+        "Artist ft. Guest"        →  "Artist"
+        "Artist featuring Guest"  →  "Artist"
+        "Solo Artist"             →  "Solo Artist"  (unchanged)
+    """
+    if not artist:
+        return artist
+    return _FEAT_SUFFIX_RE.sub("", artist).strip()
 
 
 def _auto_match_large_unmatched_folders(downloads_dir, min_track_count=9):
