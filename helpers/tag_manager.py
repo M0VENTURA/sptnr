@@ -648,6 +648,8 @@ def _write_id3_tags(file_path: str, tags: Dict[str, Any]) -> bool:
                     audio.tags.add(WOAR(url=str(value)))
             elif field == "recordlabel":
                 _set_text_frame("TPUB", TPUB, value)
+            elif field == "isrc":
+                _set_text_frame("TSRC", TSRC, value)
             elif field == "replaygain_track_gain":
                 frame_key = "TXXX:replaygain_track_gain"
                 audio.tags.delall(frame_key)

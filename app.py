@@ -9,6 +9,8 @@ from helpers.db_utils import (
     ensure_mood_columns,
     ensure_essentia_feature_columns,
     ensure_navidrome_tag_columns,
+    ensure_spotify_metadata_columns,
+    ensure_popularity_freeze_columns,
     verify_album_artist_column,
 )
 from download_file_verification import ensure_verification_columns, ensure_queue_mbid_columns
@@ -632,6 +634,12 @@ ensure_essentia_feature_columns()
 
 # Ensure all Navidrome-mapped tag columns exist
 ensure_navidrome_tag_columns()
+
+# Ensure Spotify metadata columns (metadata_last_updated, audio features, etc.)
+ensure_spotify_metadata_columns()
+
+# Ensure popularity freeze tracking columns exist
+ensure_popularity_freeze_columns()
 
 # Ensure download file verification columns exist
 ensure_verification_columns()

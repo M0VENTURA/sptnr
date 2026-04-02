@@ -195,8 +195,14 @@ def apply_standout_config_overrides() -> None:
 
 apply_standout_config_overrides()
 
-DEFAULT_HIGH_CONF_OFFSET = 1.0        # High confidence: z-score >= 1.0 (loaded from config)
-DEFAULT_MEDIUM_CONF_THRESHOLD = 0.6   # Medium confidence: z-score >= 0.6 (loaded from config)
+# DEFAULT_HIGH_CONF_OFFSET and DEFAULT_MEDIUM_CONF_THRESHOLD were previously
+# defined as hardcoded literals.  They are now kept as backwards-compatible
+# aliases pointing to the same default values used by get_zscore_thresholds()
+# (which reads from config.yaml at runtime).  All internal callers that previously
+# used these constants already call get_zscore_thresholds() instead; these names
+# are preserved only for external code that may import them directly.
+DEFAULT_HIGH_CONF_OFFSET: float = 1.0    # default high z-score threshold — see get_zscore_thresholds()['high']
+DEFAULT_MEDIUM_CONF_THRESHOLD: float = 0.6  # default medium z-score threshold — see get_zscore_thresholds()['medium']
 DEFAULT_POPULARITY_MEAN = 50          # Default mean popularity if no valid scores available (0-100 scale)
 
 # --- End Config ---
@@ -5434,6 +5440,23 @@ def popularity_scan(
                                         f'Keeping existing popularity for older track with completed Last.fm data: {title} '
                                         f'(year: {row_get(track, "year")}, Last.fm listeners: {cached_lastfm_listeners})'
                                     )
+                                    # Persist freeze state so callers can distinguish frozen scores
+                                    # from live ones without recalculating eligibility.  Only write
+                                    # when the track isn't already marked frozen to avoid redundant
+                                    # disk I/O on every scan cycle.
+                                    if not row_get(track, 'popularity_frozen', False):
+                                        try:
+                                            cursor.execute(
+                                                f"UPDATE tracks SET popularity_frozen = TRUE, popularity_frozen_at = CURRENT_TIMESTAMP WHERE id = {placeholder}",
+                                                (track_id,),
+                                            )
+                                            conn.commit()
+                                        except Exception as _freeze_err:
+                                            log_debug(f"Could not persist freeze state for track {track_id}: {_freeze_err}")
+                                            try:
+                                                conn.rollback()
+                                            except Exception:
+                                                pass
                                     track_updates.append((
                                         cached_popularity,
                                         cached_spotify_score,
