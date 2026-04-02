@@ -14452,6 +14452,7 @@ def track_edit(track_id):
     musicbrainz_releasegroupid = request.form.get("musicbrainz_releasegroupid", "").strip() or None
     musicbrainz_releasetrackid = request.form.get("musicbrainz_releasetrackid", "").strip() or None
     musicbrainz_workid = request.form.get("musicbrainz_workid", "").strip() or None
+    musicbrainz_trackid = request.form.get("musicbrainz_trackid", "").strip() or None
     # ReplayGain
     replaygain_track_gain = request.form.get("replaygain_track_gain", "").strip() or None
     replaygain_track_peak = request.form.get("replaygain_track_peak", "").strip() or None
@@ -14522,6 +14523,7 @@ def track_edit(track_id):
                 musicbrainz_albumid = {placeholder}, musicbrainz_artistid = {placeholder},
                 musicbrainz_albumartistid = {placeholder}, musicbrainz_releasegroupid = {placeholder},
                 musicbrainz_releasetrackid = {placeholder}, musicbrainz_workid = {placeholder},
+                musicbrainz_trackid = {placeholder},
                 replaygain_track_gain = {placeholder}, replaygain_track_peak = {placeholder},
                 replaygain_album_gain = {placeholder}, replaygain_album_peak = {placeholder},
                 r128_track_gain = {placeholder}, r128_album_gain = {placeholder}
@@ -14555,6 +14557,7 @@ def track_edit(track_id):
               musicbrainz_albumid, musicbrainz_artistid,
               musicbrainz_albumartistid, musicbrainz_releasegroupid,
               musicbrainz_releasetrackid, musicbrainz_workid,
+              musicbrainz_trackid,
               replaygain_track_gain, replaygain_track_peak,
               replaygain_album_gain, replaygain_album_peak,
               r128_track_gain, r128_album_gain,
@@ -14758,6 +14761,8 @@ def track_edit(track_id):
                     tags_to_write["musicbrainz_releasetrackid"] = musicbrainz_releasetrackid
                 if musicbrainz_workid:
                     tags_to_write["musicbrainz_workid"] = musicbrainz_workid
+                if musicbrainz_trackid:
+                    tags_to_write["musicbrainz_trackid"] = musicbrainz_trackid
                 if replaygain_track_gain:
                     tags_to_write["replaygain_track_gain"] = replaygain_track_gain
                 if replaygain_track_peak:

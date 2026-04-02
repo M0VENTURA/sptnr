@@ -397,11 +397,17 @@ def update_file_metadata_with_albumart(file_path, metadata, cover_art_data=None,
             # album into phantom duplicates.
             _release_mbid = _get_mbid_from_metadata(metadata, 'release_mbid', 'musicbrainz_albumid')
             if _release_mbid:
-                audio.tags.setall('TXXX:MUSICBRAINZ ALBUM ID', [])
+                # Clear all known variant descriptions so no duplicate album ID frames remain.
+                for _desc in ('MUSICBRAINZ ALBUM ID', 'MusicBrainz Album Id',
+                              'musicbrainz_albumid', 'MUSICBRAINZ_ALBUMID'):
+                    audio.tags.setall(f'TXXX:{_desc}', [])
                 audio.tags.add(TXXX(encoding=3, desc='MUSICBRAINZ ALBUM ID', text=[_release_mbid]))
             _recording_mbid = _get_mbid_from_metadata(metadata, 'recording_mbid', 'musicbrainz_trackid')
             if _recording_mbid:
-                audio.tags.setall('TXXX:MUSICBRAINZ TRACK ID', [])
+                # Clear all known variant descriptions so no duplicate track ID frames remain.
+                for _desc in ('MUSICBRAINZ TRACK ID', 'MusicBrainz Track Id',
+                              'musicbrainz_trackid', 'MUSICBRAINZ_TRACKID'):
+                    audio.tags.setall(f'TXXX:{_desc}', [])
                 audio.tags.add(TXXX(encoding=3, desc='MUSICBRAINZ TRACK ID', text=[_recording_mbid]))
 
             # ISRC — write as the standard ID3 TSRC frame (only when a value is present)
