@@ -521,18 +521,26 @@ def _cleanup_sibling_downloads(queue_item, keep_path=None):
     keep_abs = os.path.abspath(keep_path) if keep_path else None
 
     try:
-        for fname in os.listdir(DOWNLOADS_DIR):
-            fpath = os.path.join(DOWNLOADS_DIR, fname)
-            if not os.path.isfile(fpath):
-                continue
-            if keep_abs and os.path.abspath(fpath) == keep_abs:
-                continue
-            if _filename_matches_queue_item(fname, queue_item):
-                try:
-                    os.remove(fpath)
-                    logger.info(f"[CLEANUP] Removed duplicate download: {fpath}")
-                except OSError as e:
-                    logger.warning(f"[CLEANUP] Could not remove {fpath}: {e}")
+        for root, _dirs, files in os.walk(DOWNLOADS_DIR):
+            for fname in files:
+                fpath = os.path.join(root, fname)
+                if keep_abs and os.path.abspath(fpath) == keep_abs:
+                    continue
+                rel_path = os.path.relpath(fpath, DOWNLOADS_DIR)
+                if _filename_matches_queue_item(rel_path, queue_item):
+                    try:
+                        os.remove(fpath)
+                        logger.info(f"[CLEANUP] Removed duplicate download: {fpath}")
+                        # Remove now-empty parent directories up to DOWNLOADS_DIR
+                        try:
+                            parent = os.path.dirname(fpath)
+                            while parent != DOWNLOADS_DIR and os.path.isdir(parent) and not os.listdir(parent):
+                                os.rmdir(parent)
+                                parent = os.path.dirname(parent)
+                        except OSError:
+                            pass
+                    except OSError as e:
+                        logger.warning(f"[CLEANUP] Could not remove {fpath}: {e}")
     except Exception as e:
         logger.warning(f"[CLEANUP] Error during sibling cleanup: {e}")
 
@@ -1161,7 +1169,7 @@ def search_and_download(queue_id, queue_item, client):
             # Remove any earlier duplicate downloads for the same track so we
             # don't accumulate stale files from previous retry attempts.
             try:
-                _cleanup_sibling_downloads(item=queue_item, keep_path=None)
+                _cleanup_sibling_downloads(queue_item=queue_item, keep_path=None)
             except Exception as cleanup_err:
                 logger.debug(f"Queue {queue_id}: Sibling cleanup skipped: {cleanup_err}")
             # Status already set to 'downloading' above
