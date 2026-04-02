@@ -26,6 +26,10 @@ _MB_HEADERS = {
 }
 _MB_RATE_LIMIT = 1.1  # seconds between requests per MusicBrainz policy
 
+# Matches a trailing "(X Cover)" annotation in a track title so it can be
+# stripped before querying MusicBrainz or checking against the original title.
+_COVER_SUFFIX_RE = re.compile(r'\s*\([^)]+\s+cover\)\s*$', re.IGNORECASE)
+
 
 class _MusicBrainzRestClient:
     """
@@ -499,8 +503,15 @@ class CoverDetector:
                         )
                         break
 
-                    # Look up original recording by this writer
-                    original = self._find_original_recording(info['title'], writer, album_artist=artist)
+                    # Look up original recording by this writer.
+                    # Strip any existing "(X Cover)" suffix from the title before
+                    # querying MusicBrainz — otherwise the full annotated title
+                    # (e.g. "Radioactive (Within Temptation Cover)") would be sent
+                    # as the search query, returning poor results and causing the
+                    # lookup to fail, which lets the Step 4 heuristic run and
+                    # incorrectly adopt the embedded cover hint as the original artist.
+                    _search_title = _COVER_SUFFIX_RE.sub('', info['title']).strip() or info['title']
+                    original = self._find_original_recording(_search_title, writer, album_artist=artist)
                     
                     if original:
                         # The MusicBrainz lookup resolved the "original" recording
@@ -569,14 +580,41 @@ class CoverDetector:
                 )
                 continue
 
+            # The hint from the title (e.g. "Within Temptation" in
+            # "Radioactive (Within Temptation Cover)") may itself be a cover
+            # artist rather than the true original.  If writer metadata is
+            # available for this track, attempt a MusicBrainz lookup to resolve
+            # the actual original artist before trusting the embedded hint.
+            resolved_original_artist = hint
+            resolved_original_year = None
+            resolved_confidence = 'low'
+            resolved_writer = ''
+            writers_for_track = (track_writers.get(track_id) or {}).get('writers', [])
+            if writers_for_track and base_title:
+                for wr in writers_for_track:
+                    if self._is_writer_same_as_artist(wr, artist):
+                        continue
+                    mb_original = self._find_original_recording(base_title, wr, album_artist=artist)
+                    if mb_original and not self._names_match(mb_original.get('artist', ''), artist):
+                        resolved_original_artist = mb_original['artist']
+                        resolved_original_year = mb_original.get('year')
+                        resolved_confidence = mb_original.get('confidence', 'medium')
+                        resolved_writer = wr
+                        logger.info(
+                            f"Heuristic hint '{hint}' overridden by writer lookup: "
+                            f"'{title}' originally by '{resolved_original_artist}' "
+                            f"({resolved_original_year or 'unknown year'})"
+                        )
+                        break
+
             result = {
                 'track_id': track_id,
                 'title': title,
                 'is_cover': True,
-                'original_artist': hint,
-                'original_year': None,
-                'writer': '',
-                'confidence': 'low'
+                'original_artist': resolved_original_artist,
+                'original_year': resolved_original_year,
+                'writer': resolved_writer,
+                'confidence': resolved_confidence
             }
             cover_results.append(result)
             seen_track_ids.add(track_id)
@@ -584,7 +622,7 @@ class CoverDetector:
             pending_cover_updates.append({
                 'track_id': track_id,
                 'title': title,
-                'original_artist': hint,
+                'original_artist': resolved_original_artist,
                 'file_path': track.get('file_path'),
                 'is_cover_reason': f"Heuristic detection: title/album hint ({hint})",
             })
