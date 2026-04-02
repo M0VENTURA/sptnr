@@ -274,15 +274,17 @@ def update_file_metadata(file_path, metadata):
 
             _release_mbid = (metadata.get('release_mbid') or '').strip()
             if _release_mbid:
-                for _desc in ('MUSICBRAINZ ALBUM ID', 'MusicBrainz Album Id',
-                              'musicbrainz_albumid', 'MUSICBRAINZ_ALBUMID'):
-                    audio.tags.setall(f'TXXX:{_desc}', [])
+                _del = [k for k in list(audio.tags.keys())
+                        if k.startswith('TXXX:') and k[5:].lower().replace(' ', '').replace('_', '') == 'musicbrainzalbumid']
+                for _k in _del:
+                    audio.tags.delall(_k)
                 audio.tags.add(TXXX(encoding=3, desc='MUSICBRAINZ ALBUM ID', text=[_release_mbid]))
             _recording_mbid = (metadata.get('recording_mbid') or '').strip()
             if _recording_mbid:
-                for _desc in ('MUSICBRAINZ TRACK ID', 'MusicBrainz Track Id',
-                              'musicbrainz_trackid', 'MUSICBRAINZ_TRACKID'):
-                    audio.tags.setall(f'TXXX:{_desc}', [])
+                _del = [k for k in list(audio.tags.keys())
+                        if k.startswith('TXXX:') and k[5:].lower().replace(' ', '').replace('_', '') == 'musicbrainztrackid']
+                for _k in _del:
+                    audio.tags.delall(_k)
                 audio.tags.add(TXXX(encoding=3, desc='MUSICBRAINZ TRACK ID', text=[_recording_mbid]))
 
             if cover_art_data:

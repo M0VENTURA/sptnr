@@ -728,6 +728,8 @@ def update_music_tags(file_path, queue_item):
             
             # Add MusicBrainz IDs — use the same canonical TXXX descriptions as the
             # other tag-writing code paths to avoid duplicate frames in the file.
+            # Note: audio.delete() above already wiped all pre-existing frames, so no
+            # variant-sweep is needed here before writing.
             if queue_item.get('release_mbid'):
                 audio.add(TXXX(encoding=3, desc='MUSICBRAINZ ALBUM ID', text=[queue_item['release_mbid']]))
             
