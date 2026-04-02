@@ -796,6 +796,15 @@ def detect_and_queue_missing_tracks(artist: str, album: str, album_tracks: list,
                     return remaining_local_entries.pop(idx)
             return None
 
+        def _title_matches_entry(entry, norm, norm_rec, norm_stripped):
+            if entry['norm_title'] == norm:
+                return True
+            if norm_rec and entry['norm_title'] == norm_rec:
+                return True
+            if norm_stripped and entry['norm_title'] == norm_stripped:
+                return True
+            return False
+
         # Find missing tracks
         missing_tracks = []
         for mb_track in mb_tracks:
@@ -809,6 +818,21 @@ def detect_and_queue_missing_tracks(artist: str, album: str, album_tracks: list,
             mb_normalized = mb_normalized.lower().strip()
             mb_normalized = re.sub(r'[^a-z0-9]+', ' ', mb_normalized)
             mb_normalized = ' '.join(mb_normalized.split())
+
+            # Feat-stripped variant: remove "feat.", "ft.", "featuring" suffixes
+            # so a library title "Until the End" matches MB "Until the End (feat. X)".
+            feat_stripped = re.sub(
+                r'\s*[\(\[](?:feat\.?|ft\.?|featuring|with)\b[^\)\]]*[\)\]]',
+                '', mb_title, flags=re.IGNORECASE,
+            )
+            feat_stripped = re.sub(r'\s+(?:feat\.?|ft\.?|featuring)\s+.+$', '', feat_stripped, flags=re.IGNORECASE)
+            feat_stripped = unicodedata.normalize("NFKD", feat_stripped)
+            feat_stripped = "".join(c for c in feat_stripped if not unicodedata.combining(c))
+            feat_stripped = feat_stripped.lower().strip()
+            feat_stripped = re.sub(r'[^a-z0-9]+', ' ', feat_stripped)
+            mb_normalized_stripped = ' '.join(feat_stripped.split())
+            if mb_normalized_stripped == mb_normalized:
+                mb_normalized_stripped = ''  # no change; skip extra check
 
             # Also normalise the canonical recording title (may differ from track
             # title for live releases where the track adds a venue suffix).
@@ -843,19 +867,13 @@ def detect_and_queue_missing_tracks(artist: str, album: str, album_tracks: list,
                     lambda entry: (
                         entry['disc_num'] == mb_disc_num_int
                         and entry['track_num'] == mb_track_num
-                        and (
-                            entry['norm_title'] == mb_normalized
-                            or (mb_normalized_recording and entry['norm_title'] == mb_normalized_recording)
-                        )
+                        and _title_matches_entry(entry, mb_normalized, mb_normalized_recording, mb_normalized_stripped)
                     )
                 )
 
             if matched_entry is None:
                 matched_entry = _pop_local_match(
-                    lambda entry: (
-                        entry['norm_title'] == mb_normalized
-                        or (mb_normalized_recording and entry['norm_title'] == mb_normalized_recording)
-                    )
+                    lambda entry: _title_matches_entry(entry, mb_normalized, mb_normalized_recording, mb_normalized_stripped)
                 )
 
             if matched_entry is None:

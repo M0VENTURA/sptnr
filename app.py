@@ -6470,7 +6470,22 @@ def api_album_missing_tracks():
                     return remaining_entries.pop(idx)
             return None
 
-        def _track_matches_title(entry, disc, norm, norm_rec):
+        def _strip_feat_from_title(title):
+            """Strip featured-artist notations from a title for fuzzy matching.
+
+            Handles patterns like:
+              "Until the End (feat. Elize Ryd)" -> "Until the End"
+              "Song feat. Artist"               -> "Song"
+              "Song ft. Artist"                 -> "Song"
+            """
+            t = re.sub(
+                r'\s*[\(\[](?:feat\.?|ft\.?|featuring|with)\b[^\)\]]*[\)\]]',
+                '', title, flags=re.IGNORECASE,
+            )
+            t = re.sub(r'\s+(?:feat\.?|ft\.?|featuring)\s+.+$', '', t, flags=re.IGNORECASE)
+            return t.strip()
+
+        def _track_matches_title(entry, disc, norm, norm_rec, norm_stripped=None):
             if entry["disc"] == disc and entry["norm_title"] == norm:
                 return True
             if norm_rec and entry["disc"] == disc and entry["norm_title"] == norm_rec:
@@ -6479,6 +6494,14 @@ def api_album_missing_tracks():
                 return True
             if norm_rec and entry["norm_title"] == norm_rec:
                 return True
+            # Try feat-stripped variant of the MB title so that a library entry
+            # stored without the featured artist (e.g. "Until the End") still
+            # matches an MB title like "Until the End (feat. Elize Ryd)".
+            if norm_stripped and norm_stripped != norm:
+                if entry["disc"] == disc and entry["norm_title"] == norm_stripped:
+                    return True
+                if entry["norm_title"] == norm_stripped:
+                    return True
             return False
 
         missing = []
@@ -6487,6 +6510,8 @@ def api_album_missing_tracks():
             t_track_num = mb_track.get("track_number")
             t_title = mb_track.get("title", "")
             t_norm = re.sub(r'\s+', ' ', t_title.lower().strip())
+            # Feat-stripped variant for matching against plain library titles.
+            t_norm_stripped = re.sub(r'\s+', ' ', _strip_feat_from_title(t_title).lower().strip())
             t_recording_mbid = (mb_track.get("recording_mbid") or "").strip()
 
             # Normalise the canonical recording title (shorter, no venue suffix)
@@ -6511,13 +6536,13 @@ def api_album_missing_tracks():
                         lambda entry: (
                             entry["disc"] == t_disc
                             and entry["track_num"] == t_track_num_int
-                            and _track_matches_title(entry, t_disc, t_norm, t_norm_recording)
+                            and _track_matches_title(entry, t_disc, t_norm, t_norm_recording, t_norm_stripped)
                         )
                     )
 
             if matched_entry is None:
                 matched_entry = _pop_matching_entry(
-                    lambda entry: _track_matches_title(entry, t_disc, t_norm, t_norm_recording)
+                    lambda entry: _track_matches_title(entry, t_disc, t_norm, t_norm_recording, t_norm_stripped)
                 )
 
             if matched_entry is None:
@@ -6656,6 +6681,12 @@ def api_album_title_mismatches():
                 return True
             cover_reason = str(track_row.get("is_cover_reason") or "").lower()
             if "cover" in cover_reason:
+                return True
+            # Also detect covers by title pattern, e.g. "Song (Artist Cover)" or
+            # "Song [Cover]".  This catches tracks on tribute albums that were not
+            # individually flagged in the database.
+            title = str(track_row.get("title") or "").strip()
+            if re.search(r'[\(\[][^\)\]]*\bcover\b[^\)\]]*[\)\]]', title, re.IGNORECASE):
                 return True
             return False
 
