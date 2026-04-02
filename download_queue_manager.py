@@ -1200,6 +1200,10 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                 'slskd_state': "TEXT",
                 'slskd_queue_position': "INTEGER",
                 'slskd_last_sync_at': "TEXT",
+                # Tracks the last time the status column changed value, useful
+                # for detecting stalled items (e.g. stuck in 'queued' for days).
+                # Backfilled with CURRENT_TIMESTAMP on first ADD COLUMN.
+                'status_changed_at': "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
             }
 
             for col, col_type in required_cols.items():
@@ -6263,7 +6267,7 @@ def auto_discover_and_queue_files():
                 cursor.execute(f"""
                     SELECT id, status FROM download_queue
                     WHERE import_group = {placeholder}
-                      AND status IN ('queued', 'searching', 'downloading', 'matched')
+                      AND status IN ('queued', 'searching', 'downloading')
                       AND (file_path IS NULL OR file_path = '')
                     LIMIT 1
                 """, (release_group,))
@@ -6280,7 +6284,7 @@ def auto_discover_and_queue_files():
                         cursor.execute(f"""
                             SELECT id, status, album, import_group FROM download_queue
                             WHERE LOWER(COALESCE(album_artist, artist, '')) = LOWER({placeholder})
-                              AND status IN ('queued', 'searching', 'downloading', 'matched')
+                              AND status IN ('queued', 'searching', 'downloading')
                               AND (file_path IS NULL OR file_path = '')
                         """, (eff_artist,))
                         for cand_row in cursor.fetchall():
@@ -8434,10 +8438,11 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
             return result
 
         # --- Check album completeness ---
-        # A track is "done" when it is imported, individually copied, or
+        # A track is "done" when it is imported, individually copied, already
+        # found in the collection/library (matched / in_collection), or
         # completed with a file ready to move.
         def _is_done(t):
-            if t['status'] == 'imported':
+            if t['status'] in ('imported', 'matched', 'in_collection'):
                 return True
             copied_individually = t.get('copied_individually')
             if copied_individually in (1, True, '1', 'true', 'True'):

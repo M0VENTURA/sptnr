@@ -606,6 +606,25 @@ def run_essentia_mood_scan(
     if not models_dir and os.path.isdir(_BUNDLED_MODELS_DIR):
         models_dir = _BUNDLED_MODELS_DIR
 
+    # Determine a version string that identifies the Essentia build used for
+    # this scan.  Stored in essentia_model_version on each updated track row so
+    # stale analyses from an older model version can be detected and re-run.
+    _essentia_scan_version: Optional[str] = None
+    try:
+        import essentia  # type: ignore[import]
+        _essentia_scan_version = getattr(essentia, "__version__", None)
+    except Exception:
+        pass
+    if not _essentia_scan_version:
+        # Fall back to the script's mtime as a proxy for "which version of the
+        # external script was used", formatted as an ISO date string.
+        try:
+            from datetime import datetime as _datetime, timezone as _tz
+            _mtime = os.path.getmtime(script_path)
+            _essentia_scan_version = "script-" + _datetime.fromtimestamp(_mtime, tz=_tz.utc).strftime("%Y%m%d")
+        except Exception:
+            _essentia_scan_version = "unknown"
+
     mood_threshold_pct = round(float(mood_threshold) * 100.0, 4)
 
     python_exec = sys.executable
@@ -866,6 +885,11 @@ def run_essentia_mood_scan(
 
         # Skip if file no longer exists.
         if not file_path or not os.path.isfile(file_path):
+            logger.debug(
+                "Essentia scan: skipping track %s — file not found at path %r",
+                track_id,
+                file_path,
+            )
             _write_progress(progress_file, {
                 "is_running": True,
                 "scan_type": "essentia_mood_scan",
@@ -1061,6 +1085,9 @@ def run_essentia_mood_scan(
 
         if has_feature_update or has_genre_update:
             set_clauses.append("essentia_last_updated = CURRENT_TIMESTAMP")
+            if _essentia_scan_version:
+                set_clauses.append(f"essentia_model_version = {placeholder}")
+                query_params.append(_essentia_scan_version)
 
         query_params.append(track_id)
 

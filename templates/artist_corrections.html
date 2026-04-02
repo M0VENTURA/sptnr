@@ -52,6 +52,9 @@
             {% if mbid_inconsistent_count %}
             <span class="badge bg-danger">{{ mbid_inconsistent_count }} album MBID conflicts</span>
             {% endif %}
+            {% if duplicate_album_count %}
+            <span class="badge bg-warning text-dark">{{ duplicate_album_count }} duplicate album split{{ 's' if duplicate_album_count != 1 else '' }}</span>
+            {% endif %}
             <span class="badge bg-secondary" id="missing-tracks-badge" style="display: none;">checking MB tracks…</span>
         </div>
     </div>
@@ -335,6 +338,69 @@
                                 {% if looks_multi_disc %}
                                 <div class="small text-danger mt-1">Manual review recommended (multi-disc)</div>
                                 {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Duplicate Album Splits Section -->
+    {% if duplicate_albums %}
+    <div class="card mb-4" id="duplicate-albums-section">
+        <div class="card-header">
+            <h5 class="mb-0">
+                <i class="bi bi-vinyl"></i> Duplicate Album Splits
+                <small class="text-muted ms-2 fw-normal">The same album appears under multiple names — merge them to restore the unified view</small>
+            </h5>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover mb-0 artist-corrections-table">
+                    <thead>
+                        <tr>
+                            <th>Detected names</th>
+                            <th class="text-center">Signal</th>
+                            <th>Canonical name to use</th>
+                            <th class="text-center">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for grp in duplicate_albums %}
+                        <tr id="dup-album-row-{{ loop.index }}">
+                            <td>
+                                {% for alb in grp.albums %}
+                                <div>
+                                    <a href="{{ url_for('album_detail', artist=artist_name, album=alb.album) }}">{{ alb.album }}</a>
+                                    <span class="badge bg-secondary ms-1">{{ alb.track_count }} track{{ 's' if alb.track_count != 1 else '' }}</span>
+                                    {% if alb.album_year %}<span class="text-muted small ms-1">{{ alb.album_year }}</span>{% endif %}
+                                    {% if alb.mb_mbid %}<code class="small ms-1 text-muted">{{ alb.mb_mbid[:8] }}…</code>{% endif %}
+                                </div>
+                                {% endfor %}
+                            </td>
+                            <td class="text-center">
+                                {% if grp.signal == 'mbid' %}
+                                <span class="badge bg-danger" title="Both entries share the same MusicBrainz album ID">Same MBID</span>
+                                {% else %}
+                                <span class="badge bg-warning text-dark" title="Names normalise to the same string after stripping edition suffixes">Similar name</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                <input type="text"
+                                       class="form-control form-control-sm"
+                                       id="dup-album-canonical-{{ loop.index }}"
+                                       value="{{ grp.canonical_name | e }}"
+                                       placeholder="Canonical album name">
+                            </td>
+                            <td class="text-center">
+                                <button class="btn btn-sm btn-outline-warning"
+                                        id="dup-album-btn-{{ loop.index }}"
+                                        onclick="mergeAlbums({{ loop.index }}, {{ grp.albums | map(attribute='album') | list | tojson | safe }})">
+                                    <i class="bi bi-union"></i> Merge
+                                </button>
                             </td>
                         </tr>
                         {% endfor %}
@@ -1100,6 +1166,41 @@ async function searchAndApplyAlbumMbid(artist, album, rowIndex) {
         await applyAlbumMbidCorrection(artist, album, rowIndex, selected.id);
     } catch (error) {
         alert(`MusicBrainz search failed: ${error.message}`);
+    }
+}
+
+async function mergeAlbums(rowIndex, sourceAlbums) {
+    const input = document.getElementById(`dup-album-canonical-${rowIndex}`);
+    const canonicalName = (input ? input.value : '').trim();
+    if (!canonicalName) {
+        alert('Please enter the canonical album name to merge into.');
+        return;
+    }
+    const albumList = sourceAlbums.map(a => `  • ${a}`).join('\n');
+    if (!confirm(`Merge the following into "${canonicalName}"?\n\n${albumList}\n\nThis updates the database and rewrites the album tag in each audio file so the fix persists after the next Navidrome rescan.`)) {
+        return;
+    }
+    const btn = document.getElementById(`dup-album-btn-${rowIndex}`);
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span> Merging…';
+    }
+    try {
+        const response = await fetch('/api/artist/corrections/merge-albums', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ artist: artistName, source_albums: sourceAlbums, canonical_name: canonicalName })
+        });
+        const result = await response.json();
+        if (!response.ok || !result.success) throw new Error(result.error || 'Failed to merge albums');
+        alert(`✓ ${result.message}`);
+        location.reload();
+    } catch (error) {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-union"></i> Merge';
+        }
+        alert(`Could not merge albums: ${error.message}`);
     }
 }
 

@@ -113,7 +113,48 @@ def _ensure_postgres_columns(conn):
         "copied_individually_at": "TEXT",
         "cover_art_url": "TEXT",
         "queue_folder": "TEXT",
+        # Tracks when the status column last changed value.  Populated
+        # automatically by the trg_dq_status_changed trigger so no UPDATE
+        # statement needs to be modified.  DEFAULT CURRENT_TIMESTAMP ensures
+        # existing rows get a value on the ALTER TABLE backfill.
+        "status_changed_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
     }
+
+    # Trigger: keep status_changed_at in sync whenever status changes.
+    # Using CREATE OR REPLACE so it is safe to run on every startup.
+    try:
+        cur.execute(
+            """
+            CREATE OR REPLACE FUNCTION fn_dq_status_changed_at()
+            RETURNS TRIGGER LANGUAGE plpgsql AS $$
+            BEGIN
+                IF NEW.status IS DISTINCT FROM OLD.status THEN
+                    NEW.status_changed_at = CURRENT_TIMESTAMP;
+                END IF;
+                RETURN NEW;
+            END;
+            $$
+            """
+        )
+        # DROP ... IF EXISTS + CREATE is the portable way to replace a trigger
+        # (unlike functions, triggers have no CREATE OR REPLACE in older PG).
+        cur.execute(
+            "DROP TRIGGER IF EXISTS trg_dq_status_changed_at ON download_queue"
+        )
+        cur.execute(
+            """
+            CREATE TRIGGER trg_dq_status_changed_at
+            BEFORE UPDATE ON download_queue
+            FOR EACH ROW EXECUTE FUNCTION fn_dq_status_changed_at()
+            """
+        )
+        conn.commit()
+    except Exception as trigger_err:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print(f"⚠ Could not create status_changed_at trigger: {trigger_err}")
 
     added = []
     for col, col_type in columns.items():

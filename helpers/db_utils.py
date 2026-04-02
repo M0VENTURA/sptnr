@@ -672,6 +672,9 @@ def ensure_essentia_feature_columns():
     columns_to_add = [
         ("danceability", "DOUBLE PRECISION"),
         ("essentia_last_updated", "TIMESTAMP"),
+        # Tracks which version of the Essentia external script / models produced
+        # the stored features.  Allows forced re-analysis when models are upgraded.
+        ("essentia_model_version", "TEXT"),
     ]
 
     try:
@@ -812,6 +815,12 @@ def ensure_navidrome_tag_columns():
         # Flag: set TRUE when this track belongs to an album with inconsistent
         # album-level tags (detected by the /correcting endpoint logic)
         ("needs_correcting", "BOOLEAN DEFAULT FALSE"),
+        # Navidrome genre fields: populated during Navidrome import and used
+        # throughout the app for genre aggregation and display.
+        # navidrome_genres: backslash-separated list of all genres (e.g. "Rock\Pop\Electronic")
+        # navidrome_genre: first/primary genre only
+        ("navidrome_genres", "TEXT"),
+        ("navidrome_genre", "TEXT"),
     ]
 
     try:
@@ -851,4 +860,147 @@ def ensure_navidrome_tag_columns():
         return False
     except Exception as e:
         logging.error(f"✗ Error ensuring Navidrome tag columns exist: {e}", exc_info=True)
+        return False
+
+
+def ensure_spotify_metadata_columns():
+    """Ensure Spotify metadata columns exist in the tracks table.
+
+    These columns are written by ``SpotifyMetadataFetcher.store_track_metadata()``
+    (spotify_metadata_fetcher.py).  Without this migration the UPDATE query in
+    that function would raise an UndefinedColumn error for any column that was
+    not present in the initial ``tracks`` schema.
+
+    Columns:
+    - ``metadata_last_updated`` — ISO timestamp of the last Spotify metadata refresh;
+      read back by ``should_refresh_metadata()`` to avoid redundant API calls.
+    - Audio feature columns (``spotify_tempo``, ``spotify_energy``, etc.)
+    - Extended Spotify columns not included in the initial Navidrome import INSERT.
+    """
+    import logging
+
+    columns_to_add = [
+        # Core refresh timestamp — read by should_refresh_metadata()
+        ("metadata_last_updated", "TIMESTAMP"),
+        # Extended Spotify track / album / artist columns
+        ("spotify_explicit", "INTEGER DEFAULT 0"),
+        ("spotify_album_id", "TEXT"),
+        ("spotify_album_label", "TEXT"),
+        ("spotify_artist_id", "TEXT"),
+        ("spotify_artist_genres", "TEXT"),
+        ("spotify_artist_popularity", "INTEGER"),
+        # Spotify audio features
+        ("spotify_tempo", "DOUBLE PRECISION"),
+        ("spotify_energy", "DOUBLE PRECISION"),
+        ("spotify_valence", "DOUBLE PRECISION"),
+        ("spotify_acousticness", "DOUBLE PRECISION"),
+        ("spotify_instrumentalness", "DOUBLE PRECISION"),
+        ("spotify_liveness", "DOUBLE PRECISION"),
+        ("spotify_speechiness", "DOUBLE PRECISION"),
+        ("spotify_loudness", "DOUBLE PRECISION"),
+        ("spotify_key", "INTEGER"),
+        ("spotify_mode", "INTEGER"),
+        ("spotify_time_signature", "INTEGER"),
+        # Derived / aggregated columns
+        ("special_tags", "TEXT"),
+        ("normalized_genres", "TEXT"),
+    ]
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        if not _table_exists(cursor, "tracks"):
+            logging.warning("Tracks table does not exist yet, skipping Spotify metadata columns migration")
+            conn.close()
+            return False
+
+        existing = _get_table_columns(cursor, "tracks")
+        missing = [(c, d) for c, d in columns_to_add if c not in existing]
+
+        if not missing:
+            logging.debug("Spotify metadata columns already present; skipping migration")
+            conn.close()
+            return True
+
+        for col_name, col_def in missing:
+            try:
+                cursor.execute(f"ALTER TABLE tracks ADD COLUMN IF NOT EXISTS {col_name} {col_def}")
+                conn.commit()
+                logging.info(f"✓ Added '{col_name}' column to tracks table")
+            except Exception as e:
+                conn.rollback()
+                logging.error(f"✗ Failed to add '{col_name}' column: {e}")
+
+        conn.close()
+        return True
+    except RuntimeError as e:
+        if is_transient_pg_startup_error(e):
+            logging.info(f"Skipping Spotify metadata columns migration while PostgreSQL starts: {e}")
+        else:
+            logging.warning(f"⚠ Skipping Spotify metadata columns migration: {e}")
+        return False
+    except Exception as e:
+        logging.error(f"✗ Error ensuring Spotify metadata columns exist: {e}", exc_info=True)
+        return False
+
+
+def ensure_popularity_freeze_columns():
+    """Ensure popularity-freeze tracking columns exist in the tracks table.
+
+    Without these columns the freeze/unfreeze state is computed on-the-fly on
+    every scan but never persisted, making it impossible to:
+    - tell in the UI which tracks have frozen scores,
+    - skip the freeze-eligibility check for known-frozen tracks,
+    - audit when a track's popularity was last frozen.
+
+    Columns added:
+    - ``popularity_frozen``    — BOOLEAN, True when the track's popularity is
+      currently skipping live API refreshes.
+    - ``popularity_frozen_at`` — TIMESTAMP, set whenever ``popularity_frozen``
+      transitions to True; NULL for tracks that have never been frozen.
+    """
+    import logging
+
+    columns_to_add = [
+        ("popularity_frozen", "BOOLEAN DEFAULT FALSE"),
+        ("popularity_frozen_at", "TIMESTAMP"),
+    ]
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        if not _table_exists(cursor, "tracks"):
+            logging.warning("Tracks table does not exist yet, skipping popularity freeze columns migration")
+            conn.close()
+            return False
+
+        existing = _get_table_columns(cursor, "tracks")
+        missing = [(c, d) for c, d in columns_to_add if c not in existing]
+
+        if not missing:
+            logging.debug("Popularity freeze columns already present; skipping migration")
+            conn.close()
+            return True
+
+        for col_name, col_def in missing:
+            try:
+                cursor.execute(f"ALTER TABLE tracks ADD COLUMN IF NOT EXISTS {col_name} {col_def}")
+                conn.commit()
+                logging.info(f"✓ Added '{col_name}' column to tracks table")
+            except Exception as e:
+                conn.rollback()
+                logging.error(f"✗ Failed to add '{col_name}' column: {e}")
+
+        conn.close()
+        return True
+    except RuntimeError as e:
+        if is_transient_pg_startup_error(e):
+            logging.info(f"Skipping popularity freeze columns migration while PostgreSQL starts: {e}")
+        else:
+            logging.warning(f"⚠ Skipping popularity freeze columns migration: {e}")
+        return False
+    except Exception as e:
+        logging.error(f"✗ Error ensuring popularity freeze columns exist: {e}", exc_info=True)
         return False

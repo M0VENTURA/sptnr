@@ -513,15 +513,46 @@ def _write_id3_tags(file_path: str, tags: Dict[str, Any]) -> bool:
                 if value is not None and str(value).strip():
                     audio.tags.add(COMM(encoding=3, lang="eng", desc="", text=[str(value)]))
             elif field == "mbid":
-                frame_key = "TXXX:MUSICBRAINZ TRACK ID"
-                audio.tags.delall(frame_key)
+                # Delete both the space-separated canonical frame AND the legacy
+                # underscore variant written by some older taggers/scripts so that
+                # only one authoritative value remains in the file.
+                audio.tags.delall("TXXX:MUSICBRAINZ TRACK ID")
+                audio.tags.delall("TXXX:MUSICBRAINZ_TRACKID")
                 if value is not None and str(value).strip():
                     audio.tags.add(TXXX(encoding=3, desc="MUSICBRAINZ TRACK ID", text=[str(value)]))
-            elif field == "musicbrainz_album_mbid":
-                frame_key = "TXXX:MUSICBRAINZ ALBUM ID"
-                audio.tags.delall(frame_key)
+            elif field in ("musicbrainz_album_mbid", "musicbrainz_albumid"):
+                # Delete both the space-separated canonical frame AND the legacy
+                # underscore variant written by some older taggers/scripts so that
+                # only one authoritative value remains in the file.
+                audio.tags.delall("TXXX:MUSICBRAINZ ALBUM ID")
+                audio.tags.delall("TXXX:MUSICBRAINZ_ALBUMID")
                 if value is not None and str(value).strip():
                     audio.tags.add(TXXX(encoding=3, desc="MUSICBRAINZ ALBUM ID", text=[str(value)]))
+            elif field == "musicbrainz_artistid":
+                audio.tags.delall("TXXX:MUSICBRAINZ ARTIST ID")
+                audio.tags.delall("TXXX:MUSICBRAINZ_ARTISTID")
+                if value is not None and str(value).strip():
+                    audio.tags.add(TXXX(encoding=3, desc="MUSICBRAINZ ARTIST ID", text=[str(value)]))
+            elif field == "musicbrainz_albumartistid":
+                audio.tags.delall("TXXX:MUSICBRAINZ ALBUM ARTIST ID")
+                audio.tags.delall("TXXX:MUSICBRAINZ_ALBUMARTISTID")
+                if value is not None and str(value).strip():
+                    audio.tags.add(TXXX(encoding=3, desc="MUSICBRAINZ ALBUM ARTIST ID", text=[str(value)]))
+            elif field == "musicbrainz_releasegroupid":
+                audio.tags.delall("TXXX:MUSICBRAINZ RELEASE GROUP ID")
+                audio.tags.delall("TXXX:MUSICBRAINZ_RELEASEGROUPID")
+                if value is not None and str(value).strip():
+                    audio.tags.add(TXXX(encoding=3, desc="MUSICBRAINZ RELEASE GROUP ID", text=[str(value)]))
+            elif field == "musicbrainz_releasetrackid":
+                audio.tags.delall("TXXX:MUSICBRAINZ RELEASE TRACK ID")
+                audio.tags.delall("TXXX:MUSICBRAINZ_RELEASETRACKID")
+                if value is not None and str(value).strip():
+                    audio.tags.add(TXXX(encoding=3, desc="MUSICBRAINZ RELEASE TRACK ID", text=[str(value)]))
+            elif field == "musicbrainz_workid":
+                audio.tags.delall("TXXX:MUSICBRAINZ WORK ID")
+                audio.tags.delall("TXXX:MUSICBRAINZ_WORKID")
+                if value is not None and str(value).strip():
+                    audio.tags.add(TXXX(encoding=3, desc="MUSICBRAINZ WORK ID", text=[str(value)]))
             elif field == "titlesort":
                 _set_text_frame("TSOT", TSOT, value)
             elif field == "albumsort":
@@ -648,6 +679,8 @@ def _write_id3_tags(file_path: str, tags: Dict[str, Any]) -> bool:
                     audio.tags.add(WOAR(url=str(value)))
             elif field == "recordlabel":
                 _set_text_frame("TPUB", TPUB, value)
+            elif field == "isrc":
+                _set_text_frame("TSRC", TSRC, value)
             elif field == "replaygain_track_gain":
                 frame_key = "TXXX:replaygain_track_gain"
                 audio.tags.delall(frame_key)
@@ -722,6 +755,15 @@ def _write_flac_tags(file_path: str, tags: Dict[str, Any]) -> bool:
             "comment": "comment",
             "mbid": "musicbrainz_trackid",
             "musicbrainz_album_mbid": "musicbrainz_albumid",
+            # Both musicbrainz_album_mbid and musicbrainz_albumid are column names used
+            # in different parts of the codebase for the same MBID; both map to the
+            # canonical Vorbis comment key so only one value is written to the file.
+            "musicbrainz_albumid": "musicbrainz_albumid",
+            "musicbrainz_artistid": "musicbrainz_artistid",
+            "musicbrainz_albumartistid": "musicbrainz_albumartistid",
+            "musicbrainz_releasegroupid": "musicbrainz_releasegroupid",
+            "musicbrainz_releasetrackid": "musicbrainz_releasetrackid",
+            "musicbrainz_workid": "musicbrainz_workid",
             # Sort keys
             "titlesort": "titlesort",
             "albumsort": "albumsort",
@@ -882,9 +924,12 @@ def sync_track_tags_to_file(track_id: str) -> bool:
         
         # Get file path and all tags in one query
         cursor.execute(f"""
-             SELECT id, title, album, artist, album_artist, albumartist, composer, 
-                   year, originalyear, track_number, disc_number, genres, 
-                 mood, bpm, danceability, comment, mbid, musicbrainz_album_mbid, file_path
+             SELECT id, title, album, artist, album_artist, albumartist, composer,
+                   year, originalyear, track_number, disc_number, genres,
+                 mood, bpm, danceability, comment, mbid, musicbrainz_album_mbid,
+                 musicbrainz_albumid, musicbrainz_artistid, musicbrainz_albumartistid,
+                 musicbrainz_releasegroupid, musicbrainz_releasetrackid, musicbrainz_workid,
+                 file_path
             FROM tracks 
             WHERE id = {placeholder}
         """, (track_id,))
@@ -898,7 +943,10 @@ def sync_track_tags_to_file(track_id: str) -> bool:
         result_fields = [
             'id', 'title', 'album', 'artist', 'album_artist', 'albumartist',
             'composer', 'year', 'originalyear', 'track_number', 'disc_number',
-            'genres', 'mood', 'bpm', 'danceability', 'comment', 'mbid', 'musicbrainz_album_mbid', 'file_path'
+            'genres', 'mood', 'bpm', 'danceability', 'comment', 'mbid', 'musicbrainz_album_mbid',
+            'musicbrainz_albumid', 'musicbrainz_artistid', 'musicbrainz_albumartistid',
+            'musicbrainz_releasegroupid', 'musicbrainz_releasetrackid', 'musicbrainz_workid',
+            'file_path',
         ]
 
         # Helper to read from dict-like and tuple-like cursor rows.
@@ -985,7 +1033,13 @@ def sync_track_tags_to_file(track_id: str) -> bool:
             'danceability': 'danceability',
             'comment': 'comment',
             'mbid': 'mbid',
-            'musicbrainz_album_mbid': 'musicbrainz_album_mbid'
+            'musicbrainz_album_mbid': 'musicbrainz_album_mbid',
+            'musicbrainz_albumid': 'musicbrainz_albumid',
+            'musicbrainz_artistid': 'musicbrainz_artistid',
+            'musicbrainz_albumartistid': 'musicbrainz_albumartistid',
+            'musicbrainz_releasegroupid': 'musicbrainz_releasegroupid',
+            'musicbrainz_releasetrackid': 'musicbrainz_releasetrackid',
+            'musicbrainz_workid': 'musicbrainz_workid',
         }
         
         # Extract values from result
