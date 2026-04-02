@@ -13146,6 +13146,8 @@ def _run_artist_scan_pipeline(artist_name: str, force: bool = False):
                 log_unified(f"Warning: Failed to fetch artist metadata: {e}")
             log_unified(f"Step 2/3: Running popularity scan for track artist '{artist_name}' (force={force})")
             popularity_scan(verbose=True, force=force, artist_filter=artist_name)
+            log_unified(f"Step 2b/3: Running metadata enrichment scan for track artist '{artist_name}'")
+            popularity_scan(verbose=True, force=force, artist_filter=artist_name, metadata_only=True)
         else:
             # Normal flow: artist_id found, run both steps
             # Step 1: Import metadata from Navidrome for this artist
@@ -13155,6 +13157,8 @@ def _run_artist_scan_pipeline(artist_name: str, force: bool = False):
             # Step 2: Run popularity scan for this artist (includes singles detection and star rating)
             log_unified(f"Step 2/3: Running popularity scan for artist '{artist_name}' (force={force})")
             popularity_scan(verbose=True, force=force, artist_filter=artist_name)
+            log_unified(f"Step 2b/3: Running metadata enrichment scan for artist '{artist_name}'")
+            popularity_scan(verbose=True, force=force, artist_filter=artist_name, metadata_only=True)
 
         # Step 3: Run Essentia mood/genre scan for this artist
         log_unified(f"Step 3/3: Running Essentia scan for artist '{artist_name}' (force={force})")
@@ -13451,6 +13455,8 @@ def _run_album_scan_pipeline(artist_name: str, album_name: str, force: bool = Fa
             log_unified(f"Skipping Navidrome import (Step 1/2) - album metadata already imported via album artist")
             log_unified(f"Step 2/2: Running popularity scan for album '{album_display}' (force={force})")
             popularity_scan(verbose=True, force=force, artist_filter=artist_name, album_filter=album_name)
+            log_unified(f"Step 2b/2: Running metadata enrichment scan for album '{album_display}'")
+            popularity_scan(verbose=True, force=force, artist_filter=artist_name, album_filter=album_name, metadata_only=True)
             
             # Step 3: Auto-detect and set album type
             log_unified(f"Step 3/3: Auto-detecting album type for '{album_display}'")
@@ -13464,6 +13470,8 @@ def _run_album_scan_pipeline(artist_name: str, album_name: str, force: bool = Fa
             # Step 2: Run popularity scan for this specific album (includes singles detection and star rating)
             log_unified(f"Step 2/2: Running popularity scan for album '{album_display}' (force={force})")
             popularity_scan(verbose=True, force=force, artist_filter=artist_name, album_filter=album_name)
+            log_unified(f"Step 2b/2: Running metadata enrichment scan for album '{album_display}'")
+            popularity_scan(verbose=True, force=force, artist_filter=artist_name, album_filter=album_name, metadata_only=True)
         
         # Step 3: Auto-detect and set album type based on singles detection
         log_unified(f"Step 3/3: Auto-detecting album type for '{album_display}'")
