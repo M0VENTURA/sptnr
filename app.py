@@ -31095,14 +31095,18 @@ def slskd_events():
 def api_get_smart_playlist(filename):
     """Load an existing Smart Playlist (.nsp file) for editing."""
     try:
-        # Only allow .nsp files, strip any extra path separators
+        # Restrict to a plain filename (no path separators) ending in .nsp
         filename = os.path.basename(filename)
         if not filename.endswith(".nsp"):
             return jsonify({"error": "Only .nsp files are supported"}), 400
 
         music_folder = os.environ.get("MUSIC_FOLDER", "/music")
-        playlists_dir = os.path.join(music_folder, "Playlists")
-        file_path = os.path.join(playlists_dir, filename)
+        playlists_dir = os.path.realpath(os.path.join(music_folder, "Playlists"))
+        file_path = os.path.realpath(os.path.join(playlists_dir, filename))
+
+        # Confirm the resolved path is strictly inside playlists_dir
+        if not file_path.startswith(playlists_dir + os.sep):
+            return jsonify({"error": "Invalid file name"}), 400
 
         if not os.path.exists(file_path):
             return jsonify({"error": f"Playlist file '{filename}' not found"}), 404
@@ -31118,7 +31122,7 @@ def api_get_smart_playlist(filename):
         })
     except Exception as e:
         logging.error(f"Error loading smart playlist '{filename}': {e}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Failed to load smart playlist"}), 500
 
 
 @app.route("/api/smartplaylist/create", methods=["POST"])
@@ -31147,11 +31151,13 @@ def api_create_smart_playlist():
         
         # Create playlists directory if it doesn't exist
         music_folder = os.environ.get("MUSIC_FOLDER", "/music")
-        playlists_dir = os.path.join(music_folder, "Playlists")
+        playlists_dir = os.path.realpath(os.path.join(music_folder, "Playlists"))
         os.makedirs(playlists_dir, exist_ok=True)
         
-        # Create file path
-        file_path = os.path.join(playlists_dir, f"{file_name}.nsp")
+        # Build and verify the file path to prevent any traversal
+        file_path = os.path.realpath(os.path.join(playlists_dir, f"{file_name}.nsp"))
+        if not file_path.startswith(playlists_dir + os.sep):
+            return jsonify({"error": "Invalid file name"}), 400
         
         # Check if file already exists (only block when not explicitly overwriting)
         already_exists = os.path.exists(file_path)
@@ -31176,7 +31182,7 @@ def api_create_smart_playlist():
     
     except Exception as e:
         logging.error(f"Error creating smart playlist: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Failed to save smart playlist"}), 500
 
 
 # ============================================================================
