@@ -326,19 +326,23 @@
   <!-- Smart Playlist Creator -->
   <div class="mb-4">
     <div class="card">
-      <div class="card-header">
+      <div class="card-header d-flex justify-content-between align-items-center">
         <h5 class="card-title mb-0">
           <i class="bi bi-sliders"></i> Create Smart Playlist (.nsp)
         </h5>
+        <a href="https://www.navidrome.org/docs/usage/features/smart-playlists/" target="_blank" rel="noopener noreferrer"
+           class="btn btn-sm btn-outline-info" title="Navidrome Smart Playlist docs">
+          <i class="bi bi-question-circle"></i> Docs
+        </a>
       </div>
       <div class="card-body">
         <p class="text-muted mb-4">
           Build a rule-based smart playlist saved as an <code>.nsp</code> file in your Navidrome playlists folder
-          (<code>$MUSIC_FOLDER/Playlists/</code>).
-          Navidrome will dynamically populate it based on the rules you define.
-          See <a href="https://www.navidrome.org/docs/usage/features/smart-playlists/" target="_blank" rel="noopener">Navidrome Smart Playlist docs</a> for details.
+          (<code>$MUSIC_FOLDER/Playlists/</code>). Navidrome will dynamically populate it based on the rules you define.
+          Supports 40+ fields, nested rule groups, and multi-field sorting.
         </p>
 
+        <!-- Playlist metadata -->
         <div class="row g-3 mb-4">
           <div class="col-12 col-md-6">
             <label for="nspPlaylistName" class="form-label">Playlist Name <span class="text-danger">*</span></label>
@@ -351,7 +355,7 @@
               <input type="text" id="nspFileName" class="form-control" placeholder="e.g., my_smart_mix">
               <span class="input-group-text">.nsp</span>
             </div>
-            <small class="text-muted">Alphanumeric, dashes, underscores, and spaces only</small>
+            <small class="text-muted">Letters, numbers, dashes, underscores, spaces</small>
           </div>
           <div class="col-12">
             <label for="nspComment" class="form-label">Description (optional)</label>
@@ -360,7 +364,7 @@
         </div>
 
         <!-- Match Type -->
-        <div class="mb-3 d-flex align-items-center gap-3">
+        <div class="mb-2 d-flex align-items-center gap-3 flex-wrap">
           <span class="fw-semibold">Match</span>
           <div class="btn-group" role="group">
             <input type="radio" class="btn-check" name="nspMatchType" id="nspMatchAll" value="all" checked>
@@ -372,41 +376,38 @@
         </div>
 
         <!-- Rules Container -->
-        <div id="nspRulesContainer" class="mb-3">
-          <!-- Rules are added dynamically -->
+        <div id="nspRulesContainer" class="mb-2">
+          <!-- Rules and nested groups are added dynamically -->
         </div>
 
-        <button type="button" class="btn btn-sm btn-outline-secondary mb-4" onclick="nspAddRule()">
-          <i class="bi bi-plus-circle"></i> Add Rule
-        </button>
+        <div class="d-flex gap-2 mb-4">
+          <button type="button" class="btn btn-sm btn-outline-secondary" onclick="nspAddRule()">
+            <i class="bi bi-plus-circle"></i> Add Rule
+          </button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" onclick="nspAddGroup()">
+            <i class="bi bi-diagram-3"></i> Add Rule Group
+          </button>
+        </div>
 
-        <!-- Sort & Limit -->
-        <div class="row g-3 mb-4">
-          <div class="col-12 col-md-6">
-            <label for="nspSort" class="form-label">Sort By</label>
-            <select id="nspSort" class="form-select">
-              <option value="random">Random</option>
-              <option value="title">Title (A→Z)</option>
-              <option value="-title">Title (Z→A)</option>
-              <option value="artist">Artist (A→Z)</option>
-              <option value="-artist">Artist (Z→A)</option>
-              <option value="album">Album (A→Z)</option>
-              <option value="-album">Album (Z→A)</option>
-              <option value="year">Year (oldest first)</option>
-              <option value="-year">Year (newest first)</option>
-              <option value="rating">Rating (lowest first)</option>
-              <option value="-rating">Rating (highest first)</option>
-              <option value="playCount">Play Count (lowest first)</option>
-              <option value="-playCount">Play Count (most played first)</option>
-              <option value="lastPlayed">Last Played (oldest first)</option>
-              <option value="-lastPlayed">Last Played (most recent first)</option>
-            </select>
+        <!-- Multi-field Sort -->
+        <div class="mb-4">
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <label class="form-label mb-0 fw-semibold">Sort Order</label>
+            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="nspAddSortRow()">
+              <i class="bi bi-plus-circle"></i> Add Sort Field
+            </button>
           </div>
-          <div class="col-12 col-md-6">
-            <label for="nspLimit" class="form-label">Limit (optional)</label>
-            <input type="number" id="nspLimit" class="form-control" placeholder="No limit" min="1" max="5000">
-            <small class="text-muted">Maximum number of tracks to include</small>
+          <div id="nspSortContainer">
+            <!-- Sort rows added dynamically -->
           </div>
+          <small class="text-muted">Multiple sort fields are combined (e.g. Artist ↑ then Year ↓). Leave empty for random.</small>
+        </div>
+
+        <!-- Limit -->
+        <div class="mb-4">
+          <label for="nspLimit" class="form-label fw-semibold">Track Limit (optional)</label>
+          <input type="number" id="nspLimit" class="form-control" style="max-width:200px" placeholder="No limit" min="1" max="9999">
+          <small class="text-muted">Maximum number of tracks to include</small>
         </div>
 
         <div class="d-flex gap-2 justify-content-end">
@@ -909,64 +910,161 @@
   // Smart Playlist (.nsp) Creator
   // ============================================================
 
-  const NSP_FIELDS = [
-    { value: 'title',       label: 'Title',           type: 'text' },
-    { value: 'artist',      label: 'Artist',          type: 'text' },
-    { value: 'albumArtist', label: 'Album Artist',    type: 'text' },
-    { value: 'album',       label: 'Album',           type: 'text' },
-    { value: 'genre',       label: 'Genre',           type: 'text' },
-    { value: 'year',        label: 'Year',            type: 'number' },
-    { value: 'rating',      label: 'Rating (1–5)',    type: 'number' },
-    { value: 'playCount',   label: 'Play Count',      type: 'number' },
-    { value: 'lastPlayed',  label: 'Last Played',     type: 'date' },
-    { value: 'loved',       label: 'Loved/Starred',   type: 'boolean' },
+  // Fields grouped by category. Values match Navidrome's query engine field names.
+  const NSP_FIELD_GROUPS = [
+    { label: 'Core Track Info', fields: [
+      { value: 'title',       label: 'Title',           type: 'text' },
+      { value: 'artist',      label: 'Artist',          type: 'text' },
+      { value: 'album',       label: 'Album',           type: 'text' },
+      { value: 'genre',       label: 'Genre',           type: 'text' },
+      { value: 'composer',    label: 'Composer',        type: 'text' },
+      { value: 'year',        label: 'Year',            type: 'number' },
+      { value: 'track',       label: 'Track Number',    type: 'number' },
+      { value: 'discnumber',  label: 'Disc Number',     type: 'number' },
+      { value: 'duration',    label: 'Duration (sec)',  type: 'number' },
+      { value: 'bpm',         label: 'BPM',             type: 'number' },
+    ]},
+    { label: 'Artists & People', fields: [
+      { value: 'albumartist',  label: 'Album Artist',   type: 'text' },
+      { value: 'albumartists', label: 'Album Artists',  type: 'text' },
+      { value: 'artists',      label: 'Artists (multi)',type: 'text' },
+      { value: 'conductor',    label: 'Conductor',      type: 'text' },
+      { value: 'lyricist',     label: 'Lyricist',       type: 'text' },
+      { value: 'producer',     label: 'Producer',       type: 'text' },
+      { value: 'remixer',      label: 'Remixer',        type: 'text' },
+    ]},
+    { label: 'Album Details', fields: [
+      { value: 'albumtype',      label: 'Album Type',       type: 'text' },
+      { value: 'releasetype',    label: 'Release Type',     type: 'text' },
+      { value: 'releasestatus',  label: 'Release Status',   type: 'text' },
+      { value: 'releasecountry', label: 'Release Country',  type: 'text' },
+      { value: 'compilation',    label: 'Compilation',      type: 'boolean' },
+      { value: 'catalognumber',  label: 'Catalog Number',   type: 'text' },
+      { value: 'recordlabel',    label: 'Record Label',     type: 'text' },
+      { value: 'originalyear',   label: 'Original Year',    type: 'number' },
+    ]},
+    { label: 'File & Quality', fields: [
+      { value: 'filetype',  label: 'File Type (flac/mp3…)', type: 'text' },
+      { value: 'bitrate',   label: 'Bitrate (kbps)',        type: 'number' },
+      { value: 'bitdepth',  label: 'Bit Depth',             type: 'number' },
+      { value: 'channels',  label: 'Channels',              type: 'number' },
+      { value: 'size',      label: 'File Size (bytes)',      type: 'number' },
+      { value: 'hascoverart', label: 'Has Cover Art',       type: 'boolean' },
+    ]},
+    { label: 'Listening & Favorites', fields: [
+      { value: 'rating',     label: 'Rating (0–5)',   type: 'number' },
+      { value: 'playcount',  label: 'Play Count',     type: 'number' },
+      { value: 'loved',      label: 'Loved / Starred', type: 'boolean' },
+      { value: 'lastplayed', label: 'Last Played',    type: 'date' },
+      { value: 'dateloved',  label: 'Date Loved',     type: 'date' },
+    ]},
+    { label: 'Dates', fields: [
+      { value: 'dateadded',    label: 'Date Added',      type: 'date' },
+      { value: 'datemodified', label: 'Date Modified',   type: 'date' },
+      { value: 'releasedate',  label: 'Release Date',    type: 'date' },
+    ]},
+    { label: 'Text Tags', fields: [
+      { value: 'comment',  label: 'Comment',  type: 'text' },
+      { value: 'lyrics',   label: 'Lyrics',   type: 'text' },
+      { value: 'mood',     label: 'Mood',     type: 'text' },
+      { value: 'language', label: 'Language', type: 'text' },
+      { value: 'key',      label: 'Musical Key', type: 'text' },
+      { value: 'subtitle', label: 'Subtitle', type: 'text' },
+    ]},
+    { label: 'Numeric Tags', fields: [
+      { value: 'replaygain_track_gain', label: 'ReplayGain Track Gain', type: 'number' },
+      { value: 'replaygain_album_gain', label: 'ReplayGain Album Gain', type: 'number' },
+      { value: 'r128_track_gain',       label: 'R128 Track Gain',       type: 'number' },
+      { value: 'r128_album_gain',       label: 'R128 Album Gain',       type: 'number' },
+    ]},
+    { label: 'Identifiers', fields: [
+      { value: 'isrc',     label: 'ISRC',          type: 'text' },
+      { value: 'barcode',  label: 'Barcode',        type: 'text' },
+      { value: 'asin',     label: 'Amazon ASIN',    type: 'text' },
+      { value: 'media',    label: 'Media Type',     type: 'text' },
+    ]},
   ];
+
+  // Flat field lookup
+  const NSP_FIELDS_FLAT = NSP_FIELD_GROUPS.flatMap(g => g.fields);
 
   const NSP_OPERATORS = {
     text: [
       { value: 'contains',    label: 'contains' },
       { value: 'notContains', label: 'does not contain' },
-      { value: 'is',          label: 'is (exact)' },
+      { value: 'is',          label: 'is (exact match)' },
       { value: 'isNot',       label: 'is not' },
       { value: 'startsWith',  label: 'begins with' },
       { value: 'endsWith',    label: 'ends with' },
     ],
     number: [
-      { value: 'is',   label: 'equals' },
-      { value: 'isNot',label: 'not equals' },
-      { value: 'gt',   label: 'greater than' },
-      { value: 'lt',   label: 'less than' },
-      { value: 'gte',  label: 'greater than or equal' },
-      { value: 'lte',  label: 'less than or equal' },
-      { value: 'inRange', label: 'in range' },
+      { value: 'is',          label: 'equals' },
+      { value: 'isNot',       label: 'not equals' },
+      { value: 'gt',          label: 'greater than' },
+      { value: 'lt',          label: 'less than' },
+      { value: 'gte',         label: 'greater than or equal' },
+      { value: 'lte',         label: 'less than or equal' },
+      { value: 'inTheRange',  label: 'is between (range)' },
     ],
     date: [
-      { value: 'after',   label: 'after' },
-      { value: 'before',  label: 'before' },
-      { value: 'inRange', label: 'in range' },
+      { value: 'after',        label: 'after' },
+      { value: 'before',       label: 'before' },
+      { value: 'is',           label: 'on date' },
+      { value: 'inTheRange',   label: 'is between (range)' },
+      { value: 'inTheLast',    label: 'in the last N days' },
+      { value: 'notInTheLast', label: 'not in the last N days' },
     ],
     boolean: [
       { value: 'is', label: 'is' },
     ],
   };
 
+  // Sort fields available in Navidrome
+  const NSP_SORT_FIELDS = [
+    { value: 'random',     label: 'Random' },
+    { value: 'title',      label: 'Title' },
+    { value: 'artist',     label: 'Artist' },
+    { value: 'albumartist',label: 'Album Artist' },
+    { value: 'album',      label: 'Album' },
+    { value: 'year',       label: 'Year' },
+    { value: 'rating',     label: 'Rating' },
+    { value: 'playcount',  label: 'Play Count' },
+    { value: 'lastplayed', label: 'Last Played' },
+    { value: 'dateadded',  label: 'Date Added' },
+    { value: 'duration',   label: 'Duration' },
+    { value: 'bitrate',    label: 'Bitrate' },
+    { value: 'genre',      label: 'Genre' },
+    { value: 'bpm',        label: 'BPM' },
+    { value: 'track',      label: 'Track Number' },
+    { value: 'discnumber', label: 'Disc Number' },
+    { value: 'size',       label: 'File Size' },
+  ];
+
   let nspRuleCounter = 0;
+  let nspSortCounter = 0;
+
+  function nspSanitizeFileName(name) {
+    return name.replace(/[^a-zA-Z0-9\-_]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+  }
 
   function nspAutoFillFileName(name) {
     const fileInput = document.getElementById('nspFileName');
     if (!fileInput._userEdited) {
-      fileInput.value = name.replace(/[^a-zA-Z0-9\-_]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+      fileInput.value = nspSanitizeFileName(name);
     }
   }
 
-  // Track manual edits on the file name input
-  document.addEventListener('DOMContentLoaded', () => {
-    const fi = document.getElementById('nspFileName');
-    if (fi) fi.addEventListener('input', () => { fi._userEdited = true; });
-  });
-
   function nspGetFieldMeta(fieldValue) {
-    return NSP_FIELDS.find(f => f.value === fieldValue) || NSP_FIELDS[0];
+    return NSP_FIELDS_FLAT.find(f => f.value === fieldValue) || NSP_FIELDS_FLAT[0];
+  }
+
+  function nspBuildFieldOptions(selectedVal) {
+    return NSP_FIELD_GROUPS.map(group => {
+      const opts = group.fields
+        .map(f => `<option value="${f.value}"${f.value === selectedVal ? ' selected' : ''}>${escapeHtml(f.label)}</option>`)
+        .join('');
+      return `<optgroup label="${escapeHtml(group.label)}">${opts}</optgroup>`;
+    }).join('');
   }
 
   function nspBuildOperatorOptions(fieldType, selectedOp) {
@@ -978,44 +1076,53 @@
   function nspBuildValueInput(fieldMeta, ruleId, currentValue) {
     const id = `nspValue_${ruleId}`;
     const id2 = `nspValue2_${ruleId}`;
-    const isRange = document.getElementById(`nspOp_${ruleId}`) &&
-                    document.getElementById(`nspOp_${ruleId}`).value === 'inRange';
+    const opEl = document.getElementById(`nspOp_${ruleId}`);
+    const op = opEl ? opEl.value : '';
+    const isRange = op === 'inTheRange';
+    const isDays = op === 'inTheLast' || op === 'notInTheLast';
 
     if (fieldMeta.type === 'boolean') {
       return `<select id="${id}" class="form-select form-select-sm">
-        <option value="true"${currentValue === 'true' ? ' selected' : ''}>Yes (Loved)</option>
+        <option value="true"${currentValue === 'true' ? ' selected' : ''}>Yes</option>
         <option value="false"${currentValue === 'false' ? ' selected' : ''}>No</option>
       </select>`;
     }
+    if (isDays) {
+      return `<div class="input-group input-group-sm">
+        <input type="number" id="${id}" class="form-control form-control-sm" min="1" placeholder="days" value="${escapeHtml(String(currentValue || ''))}">
+        <span class="input-group-text">days</span>
+      </div>`;
+    }
     if (fieldMeta.type === 'date') {
-      const range = isRange
+      const rangeHtml = isRange
         ? `<span class="input-group-text">to</span><input type="date" id="${id2}" class="form-control form-control-sm">`
         : '';
-      return `<input type="date" id="${id}" class="form-control form-control-sm">${range}`;
+      return `<input type="date" id="${id}" class="form-control form-control-sm">${rangeHtml}`;
     }
     if (fieldMeta.type === 'number') {
-      const range = isRange
+      const rangeHtml = isRange
         ? `<span class="input-group-text">to</span><input type="number" id="${id2}" class="form-control form-control-sm" min="0">`
         : '';
-      const step = fieldMeta.value === 'rating' ? ' min="1" max="5"' : ' min="0"';
-      return `<input type="number" id="${id}" class="form-control form-control-sm"${step} value="${escapeHtml(currentValue || '')}">${range}`;
+      const attrs = fieldMeta.value === 'rating' ? ' min="0" max="5"' : ' min="0"';
+      return `<input type="number" id="${id}" class="form-control form-control-sm"${attrs} value="${escapeHtml(currentValue || '')}">${rangeHtml}`;
     }
     return `<input type="text" id="${id}" class="form-control form-control-sm" value="${escapeHtml(currentValue || '')}">`;
   }
 
-  function nspAddRule(fieldVal, opVal, val) {
+  function nspAddRule(containerId, fieldVal, opVal, val) {
+    const container = document.getElementById(containerId || 'nspRulesContainer');
+    if (!container) return;
     const id = ++nspRuleCounter;
     const fieldMeta = nspGetFieldMeta(fieldVal || 'title');
     const opOptions = nspBuildOperatorOptions(fieldMeta.type, opVal || '');
-    const fieldOptions = NSP_FIELDS
-      .map(f => `<option value="${f.value}"${f.value === fieldMeta.value ? ' selected' : ''}>${escapeHtml(f.label)}</option>`)
-      .join('');
+    const fieldOptions = nspBuildFieldOptions(fieldMeta.value);
 
     const row = document.createElement('div');
     row.id = `nspRule_${id}`;
     row.className = 'row g-2 align-items-center mb-2 nsp-rule-row';
+    row.dataset.containerId = containerId || 'nspRulesContainer';
     row.innerHTML = `
-      <div class="col-12 col-md-3">
+      <div class="col-12 col-md-4">
         <select id="nspField_${id}" class="form-select form-select-sm" onchange="nspOnFieldChange(${id})">
           ${fieldOptions}
         </select>
@@ -1025,7 +1132,7 @@
           ${opOptions}
         </select>
       </div>
-      <div class="col-12 col-md-5 input-group input-group-sm" id="nspValueWrap_${id}">
+      <div class="col-12 col-md-4 input-group input-group-sm" id="nspValueWrap_${id}">
         ${nspBuildValueInput(fieldMeta, id, val)}
       </div>
       <div class="col-12 col-md-1 text-end">
@@ -1034,7 +1141,46 @@
         </button>
       </div>
     `;
-    document.getElementById('nspRulesContainer').appendChild(row);
+    container.appendChild(row);
+  }
+
+  // Add a nested rule group (ANY inside ALL, or ALL inside ANY)
+  function nspAddGroup(parentContainerId) {
+    const parentContainer = document.getElementById(parentContainerId || 'nspRulesContainer');
+    if (!parentContainer) return;
+    const groupId = ++nspRuleCounter;
+    const groupContainerId = `nspGroupRules_${groupId}`;
+
+    const groupEl = document.createElement('div');
+    groupEl.id = `nspRule_${groupId}`;
+    groupEl.className = 'nsp-rule-row border rounded p-2 mb-2';
+    groupEl.dataset.isGroup = 'true';
+    groupEl.dataset.containerId = parentContainerId || 'nspRulesContainer';
+    groupEl.innerHTML = `
+      <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
+        <i class="bi bi-diagram-3 text-muted"></i>
+        <span class="fw-semibold small">Rule Group — match</span>
+        <div class="btn-group btn-group-sm" role="group">
+          <input type="radio" class="btn-check" name="nspGroupMatch_${groupId}" id="nspGroupAll_${groupId}" value="all" checked>
+          <label class="btn btn-sm btn-outline-primary" for="nspGroupAll_${groupId}">ALL</label>
+          <input type="radio" class="btn-check" name="nspGroupMatch_${groupId}" id="nspGroupAny_${groupId}" value="any">
+          <label class="btn btn-sm btn-outline-primary" for="nspGroupAny_${groupId}">ANY</label>
+        </div>
+        <span class="text-muted small">of:</span>
+        <button type="button" class="btn btn-sm btn-outline-secondary ms-auto" onclick="nspRemoveRule(${groupId})" title="Remove group">
+          <i class="bi bi-trash"></i>
+        </button>
+      </div>
+      <div id="${groupContainerId}" class="ps-3"></div>
+      <div class="ps-3 mt-1 d-flex gap-2">
+        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="nspAddRule('${groupContainerId}')">
+          <i class="bi bi-plus-circle"></i> Add Rule
+        </button>
+      </div>
+    `;
+    parentContainer.appendChild(groupEl);
+    // Add an initial rule inside the group
+    nspAddRule(groupContainerId);
   }
 
   function nspOnFieldChange(id) {
@@ -1056,6 +1202,74 @@
     if (el) el.remove();
   }
 
+  // ---- Multi-sort builder ----
+  function nspAddSortRow(fieldVal, dirVal) {
+    const container = document.getElementById('nspSortContainer');
+    const id = ++nspSortCounter;
+    const fieldOptions = NSP_SORT_FIELDS
+      .map(f => `<option value="${f.value}"${f.value === (fieldVal || 'random') ? ' selected' : ''}>${escapeHtml(f.label)}</option>`)
+      .join('');
+
+    const row = document.createElement('div');
+    row.id = `nspSortRow_${id}`;
+    row.className = 'row g-2 align-items-center mb-2';
+    row.innerHTML = `
+      <div class="col-12 col-md-5">
+        <select id="nspSortField_${id}" class="form-select form-select-sm">
+          ${fieldOptions}
+        </select>
+      </div>
+      <div class="col-12 col-md-5">
+        <select id="nspSortDir_${id}" class="form-select form-select-sm">
+          <option value="asc"${(dirVal||'asc')==='asc' ? ' selected' : ''}>Ascending ↑</option>
+          <option value="desc"${dirVal==='desc' ? ' selected' : ''}>Descending ↓</option>
+        </select>
+      </div>
+      <div class="col-12 col-md-2 text-end">
+        <button type="button" class="btn btn-sm btn-outline-danger" onclick="nspRemoveSortRow(${id})" title="Remove sort">
+          <i class="bi bi-trash"></i>
+        </button>
+      </div>
+    `;
+    container.appendChild(row);
+  }
+
+  function nspRemoveSortRow(id) {
+    const el = document.getElementById(`nspSortRow_${id}`);
+    if (el) el.remove();
+  }
+
+  function nspBuildSortString() {
+    const rows = document.querySelectorAll('[id^="nspSortRow_"]');
+    if (rows.length === 0) return 'random';
+
+    const parts = [];
+    for (const row of rows) {
+      const idMatch = row.id.match(/nspSortRow_(\d+)/);
+      if (!idMatch) continue;
+      const id = idMatch[1];
+      const field = document.getElementById(`nspSortField_${id}`).value;
+      const dir = document.getElementById(`nspSortDir_${id}`).value;
+      if (field === 'random') return 'random';  // random overrides all
+      parts.push((dir === 'desc' ? '-' : '+') + field);
+    }
+    if (parts.length === 0) return 'random';
+    // Single field: keep prefix so nspBuildSortOrder can detect direction
+    // Multi-field: join with comma (Navidrome multi-sort format)
+    return parts.join(',');
+  }
+
+  function nspBuildSortOrder(sortStr) {
+    // For single-field sorts (no prefix comma), also set "order" if descending
+    if (!sortStr.includes(',') && sortStr !== 'random') {
+      const firstChar = sortStr[0];
+      if (firstChar === '-') return { sort: sortStr.slice(1), order: 'desc' };
+      if (firstChar === '+') return { sort: sortStr.slice(1) };
+    }
+    return { sort: sortStr };
+  }
+
+  // ---- Form reset ----
   function nspResetForm() {
     document.getElementById('nspPlaylistName').value = '';
     const fi = document.getElementById('nspFileName');
@@ -1063,19 +1277,20 @@
     fi._userEdited = false;
     document.getElementById('nspComment').value = '';
     document.getElementById('nspMatchAll').checked = true;
-    document.getElementById('nspSort').value = 'random';
-    document.getElementById('nspLimit').value = '';
     document.getElementById('nspRulesContainer').innerHTML = '';
+    document.getElementById('nspSortContainer').innerHTML = '';
+    document.getElementById('nspLimit').value = '';
     nspRuleCounter = 0;
+    nspSortCounter = 0;
+    nspAddRule();
   }
 
+  // ---- Value extraction ----
   function nspGetRuleValue(id, isRange) {
     const v1El = document.getElementById(`nspValue_${id}`);
     const v2El = document.getElementById(`nspValue2_${id}`);
     const v1 = v1El ? v1El.value.trim() : '';
-    if (isRange && v2El) {
-      return [v1, v2El.value.trim()];
-    }
+    if (isRange && v2El) return [v1, v2El.value.trim()];
     return v1;
   }
 
@@ -1085,55 +1300,90 @@
     return false;
   }
 
+  function nspExtractConditions(container) {
+    const conditions = [];
+    for (const child of container.children) {
+      if (!child.classList.contains('nsp-rule-row')) continue;
+
+      if (child.dataset.isGroup === 'true') {
+        // Nested group
+        const idMatch = child.id.match(/nspRule_(\d+)/);
+        if (!idMatch) continue;
+        const groupId = idMatch[1];
+        const groupMatchEl = document.querySelector(`input[name="nspGroupMatch_${groupId}"]:checked`);
+        const groupMatch = groupMatchEl ? groupMatchEl.value : 'all';
+        const groupContainerId = `nspGroupRules_${groupId}`;
+        const groupContainer = document.getElementById(groupContainerId);
+        if (!groupContainer) continue;
+        const nested = nspExtractConditions(groupContainer);
+        if (nested === null) return null;  // propagate validation error
+        conditions.push({ [groupMatch]: nested });
+        continue;
+      }
+
+      // Regular rule
+      const idMatch = child.id.match(/nspRule_(\d+)/);
+      if (!idMatch) continue;
+      const id = idMatch[1];
+      const field = document.getElementById(`nspField_${id}`).value;
+      const op = document.getElementById(`nspOp_${id}`).value;
+      const isRange = op === 'inTheRange';
+      const isDays = op === 'inTheLast' || op === 'notInTheLast';
+      const rawValue = nspGetRuleValue(id, isRange);
+
+      const fieldMeta = nspGetFieldMeta(field);
+      let value = rawValue;
+
+      if (isDays) {
+        value = rawValue === '' ? null : parseInt(rawValue, 10);
+      } else if (fieldMeta.type === 'number' && !isRange) {
+        value = rawValue === '' ? null : Number(rawValue);
+      } else if (fieldMeta.type === 'boolean') {
+        value = rawValue === 'true';
+      } else if (isRange && Array.isArray(rawValue)) {
+        value = fieldMeta.type === 'number'
+          ? rawValue.map(v => v === '' ? null : Number(v))
+          : rawValue;
+      }
+
+      if (nspIsInvalidRuleValue(value)) {
+        showToast(`Fill in the value for rule: ${field}.`, 'warning');
+        return null;
+      }
+
+      conditions.push({ [op]: { [field]: value } });
+    }
+    return conditions;
+  }
+
+  // ---- Save ----
   async function nspCreatePlaylist() {
     const name = document.getElementById('nspPlaylistName').value.trim();
     const fileName = document.getElementById('nspFileName').value.trim();
     const comment = document.getElementById('nspComment').value.trim();
     const matchType = document.querySelector('input[name="nspMatchType"]:checked').value;
-    const sort = document.getElementById('nspSort').value;
     const limitRaw = document.getElementById('nspLimit').value.trim();
 
     if (!name) { showToast('Playlist name is required.', 'warning'); return; }
     if (!fileName) { showToast('File name is required.', 'warning'); return; }
-    if (!/^[a-zA-Z0-9\-_ ]+$/.test(fileName)) {
+    if (nspSanitizeFileName(fileName) === '' || !/^[a-zA-Z0-9\-_ ]+$/.test(fileName)) {
       showToast('File name may only contain letters, numbers, dashes, underscores, and spaces.', 'warning');
       return;
     }
 
-    // Collect rules
-    const ruleRows = document.querySelectorAll('.nsp-rule-row');
-    if (ruleRows.length === 0) { showToast('Add at least one rule before saving.', 'warning'); return; }
-
-    const conditions = [];
-    for (const row of ruleRows) {
-      const idMatch = row.id.match(/nspRule_(\d+)/);
-      if (!idMatch) continue;
-      const id = idMatch[1];
-      const field = document.getElementById(`nspField_${id}`).value;
-      const op = document.getElementById(`nspOp_${id}`).value;
-      const isRange = op === 'inRange';
-      const rawValue = nspGetRuleValue(id, isRange);
-
-      let value = rawValue;
-      const fieldMeta = nspGetFieldMeta(field);
-      if (fieldMeta.type === 'number' && !isRange) {
-        value = rawValue === '' ? null : Number(rawValue);
-      } else if (fieldMeta.type === 'boolean') {
-        value = rawValue === 'true';
-      } else if (isRange && Array.isArray(rawValue) && fieldMeta.type === 'number') {
-        value = rawValue.map(v => v === '' ? null : Number(v));
-      }
-
-      if (nspIsInvalidRuleValue(value)) {
-        showToast(`Please fill in the value for all rules (field: ${field}).`, 'warning');
-        return;
-      }
-
-      conditions.push({ [op]: { [field]: value } });
+    const rulesContainer = document.getElementById('nspRulesContainer');
+    if (!rulesContainer.querySelector('.nsp-rule-row')) {
+      showToast('Add at least one rule before saving.', 'warning');
+      return;
     }
 
-    // Build NSP structure
-    const playlist = { name, [matchType]: conditions, sort };
+    const conditions = nspExtractConditions(rulesContainer);
+    if (conditions === null) return;  // validation error already shown
+
+    const sortStr = nspBuildSortString();
+    const sortObj = nspBuildSortOrder(sortStr);
+
+    const playlist = { name, [matchType]: conditions, ...sortObj };
     if (comment) playlist.comment = comment;
     if (limitRaw) playlist.limit = parseInt(limitRaw, 10);
 
@@ -1148,7 +1398,7 @@
         showToast('Failed to create smart playlist: ' + (result.error || resp.statusText), 'danger');
         return;
       }
-      showToast(`Smart playlist "${name}" saved as <code>${escapeHtml(result.file_name)}</code> in your playlists folder.`, 'success');
+      showToast(`Smart playlist "${escapeHtml(name)}" saved as <code>${escapeHtml(result.file_name)}</code>.`, 'success');
       nspResetForm();
     } catch (err) {
       console.error('Smart playlist creation error:', err);
@@ -1156,8 +1406,13 @@
     }
   }
 
-  // Add an initial rule row on page load
-  nspAddRule();
+  // Initialise on DOM ready: filename tracking + seed one rule and sort row
+  document.addEventListener('DOMContentLoaded', () => {
+    const fi = document.getElementById('nspFileName');
+    if (fi) fi.addEventListener('input', () => { fi._userEdited = true; });
+    nspAddRule();
+    nspAddSortRow('random', 'asc');
+  });
 </script>
 
 {% endblock %}
