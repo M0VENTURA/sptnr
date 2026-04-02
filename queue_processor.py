@@ -531,11 +531,12 @@ def _cleanup_sibling_downloads(queue_item, keep_path=None):
                     try:
                         os.remove(fpath)
                         logger.info(f"[CLEANUP] Removed duplicate download: {fpath}")
-                        # Remove the parent directory if it is now empty
+                        # Remove now-empty parent directories up to DOWNLOADS_DIR
                         try:
                             parent = os.path.dirname(fpath)
-                            if parent != DOWNLOADS_DIR and not os.listdir(parent):
+                            while parent != DOWNLOADS_DIR and os.path.isdir(parent) and not os.listdir(parent):
                                 os.rmdir(parent)
+                                parent = os.path.dirname(parent)
                         except OSError:
                             pass
                     except OSError as e:
