@@ -6686,13 +6686,34 @@ def api_album_title_mismatches():
             cover_reason = str(track_row.get("is_cover_reason") or "").lower()
             if "cover" in cover_reason:
                 return True
-            # Also detect covers by title pattern, e.g. "Song (Artist Cover)" or
-            # "Song [Cover]".  This catches tracks on tribute albums that were not
-            # individually flagged in the database.
+            # Detect covers by title pattern:
+            #   bracketed:  "Song (Artist Cover)", "Song [Cover]", "Song (Cover Version)"
+            #   bare word:  "Song - cover version", "Song cover", "Imagine (cover by X)"
             title = str(track_row.get("title") or "").strip()
-            if re.search(r'[\(\[][^\)\]]*\bcover\b[^\)\]]*[\)\]]', title, re.IGNORECASE):
+            if re.search(r'\bcover\b', title, re.IGNORECASE):
                 return True
             return False
+
+        def _strip_cover_notation(title: str) -> str:
+            """Remove cover-version annotations from a track title before comparison.
+
+            Handles patterns such as:
+              "Song (Cover Version)"  → "Song"
+              "Song [Cover by Artist]" → "Song"
+              "Song - cover version"  → "Song"
+              "Song (Originally by X)" → "Song"
+              "Song (Originally performed by X)" → "Song"
+            """
+            # Strip bracketed cover annotations, e.g. "(cover)", "(cover version)",
+            # "(cover by Artist)", "[cover]", "[originally by X]"
+            t = re.sub(r'[\(\[][^\)\]]*\bcover\b[^\)\]]*[\)\]]', '', title, flags=re.IGNORECASE)
+            t = re.sub(r'[\(\[][^\)\]]*\boriginally\b[^\)\]]*[\)\]]', '', t, flags=re.IGNORECASE)
+            # Strip trailing bare "- cover …" or "- cover version" phrases
+            t = re.sub(r'\s*[-–—]\s*cover\b.*$', '', t, flags=re.IGNORECASE)
+            # Strip trailing "cover version" / "cover" as a standalone suffix
+            t = re.sub(r'\s+cover\s+version\s*$', '', t, flags=re.IGNORECASE)
+            t = re.sub(r'\s+cover\s*$', '', t, flags=re.IGNORECASE)
+            return re.sub(r'\s+', ' ', t).strip()
 
         for t in library_rows:
             t_dict = dict(t) if hasattr(t, "keys") else {
@@ -6739,9 +6760,12 @@ def api_album_title_mismatches():
             mb_title = (mb_track.get("title") or "").strip()
             lib_title = (lib_track.get("title") or "").strip()
 
-            # Normalise for comparison: lowercase + collapse whitespace
+            # Normalise for comparison: lowercase + collapse whitespace.
+            # Strip any cover-version annotations from the library title so that
+            # e.g. "Imagine (Cover Version)" is not flagged as a mismatch against
+            # the MB title "Imagine".
             mb_title_norm = re.sub(r"\s+", " ", mb_title.lower())
-            lib_title_norm = re.sub(r"\s+", " ", lib_title.lower())
+            lib_title_norm = re.sub(r"\s+", " ", _strip_cover_notation(lib_title).lower())
 
             if mb_title_norm == lib_title_norm:
                 continue  # titles match — no mismatch
@@ -33258,14 +33282,87 @@ def api_track_musicbrainz_lookup():
         data = request.get_json()
         title = data.get("title", "")
         artist = data.get("artist", "")
-        
+        mbid = (data.get("mbid") or "").strip()
+
         if not title or not artist:
             return jsonify({"error": "Missing title or artist"}), 400
-        
+
+        import difflib
+        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
+
+        def _format_recording(rec, confidence_override=None):
+            rec_id = rec.get("id", "")
+            rec_title = rec.get("title", "")
+            rec_length = rec.get("length", 0)
+            artist_credit = rec.get("artist-credit", [])
+            rec_artist = artist_credit[0].get("name", "") if artist_credit else ""
+            releases = rec.get("releases", []) or []
+            release_list = [{"id": r.get("id", ""), "title": r.get("title", "")} for r in releases[:5]]
+            best_album = releases[0].get("title", "") if releases else ""
+            best_year = ""
+            for rel in releases:
+                rel_date = (rel.get("date") or "").strip()
+                if len(rel_date) >= 4 and rel_date[:4].isdigit():
+                    best_year = rel_date[:4]
+                    break
+            writer_names = []
+            for rel in rec.get("relations", []) or []:
+                rel_type = str(rel.get("type") or "").lower()
+                if rel_type in ("writer", "lyricist", "composer"):
+                    rel_artist = (rel.get("artist") or {}).get("name")
+                    if rel_artist and rel_artist not in writer_names:
+                        writer_names.append(rel_artist)
+                work = rel.get("work") or {}
+                for work_rel in work.get("relations", []) or []:
+                    work_rel_type = str(work_rel.get("type") or "").lower()
+                    if work_rel_type in ("writer", "lyricist", "composer"):
+                        work_artist = (work_rel.get("artist") or {}).get("name")
+                        if work_artist and work_artist not in writer_names:
+                            writer_names.append(work_artist)
+            if confidence_override is not None:
+                overall_confidence = confidence_override
+                title_similarity = confidence_override
+                artist_similarity = confidence_override
+            else:
+                title_similarity = difflib.SequenceMatcher(None, title.lower(), rec_title.lower()).ratio()
+                artist_similarity = difflib.SequenceMatcher(None, artist.lower(), rec_artist.lower()).ratio()
+                overall_confidence = title_similarity * 0.7 + artist_similarity * 0.3
+            return {
+                "mbid": rec_id,
+                "title": rec_title,
+                "artist": rec_artist,
+                "album": best_album,
+                "year": best_year,
+                "length": rec_length,
+                "releases": release_list,
+                "writers": writer_names,
+                "composer": ", ".join(writer_names) if writer_names else "",
+                "confidence": round(overall_confidence, 3),
+                "title_similarity": round(title_similarity, 3),
+                "artist_similarity": round(artist_similarity, 3),
+                "source": "musicbrainz",
+            }
+
+        # If the track already has an MBID, resolve it directly first so we
+        # always return a result even when the text search finds nothing.
+        direct_result = None
+        if mbid:
+            try:
+                direct_resp = requests.get(
+                    f"https://musicbrainz.org/ws/2/recording/{mbid}",
+                    params={"fmt": "json", "inc": "releases+artist-credits+work-rels+work-level-rels"},
+                    headers=headers,
+                    timeout=8,
+                )
+                if direct_resp.ok:
+                    direct_result = _format_recording(direct_resp.json(), confidence_override=1.0)
+                    logger.debug(f"MusicBrainz direct MBID lookup succeeded for {mbid}")
+            except Exception as mbid_err:
+                logger.debug(f"MusicBrainz direct MBID lookup failed for {mbid}: {mbid_err}")
+
         # Search MusicBrainz for recordings with retry
         query = f'recording:"{_escape_mb_phrase(title)}" AND artist:"{_escape_mb_phrase(artist)}"'
-        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
-        
+
         max_retries = 2
         for attempt in range(max_retries):
             try:
@@ -33278,79 +33375,24 @@ def api_track_musicbrainz_lookup():
                 resp.raise_for_status()
                 data = resp.json()
                 recordings = data.get("recordings", []) or []
-                
+
                 if not recordings:
+                    if direct_result:
+                        return jsonify({"results": [direct_result]}), 200
                     return jsonify({"results": [], "message": "No MusicBrainz track matches found"}), 200
                 
-                # Format results with similarity scores
-                import difflib
-                results = []
-                for rec in recordings:
-                    rec_id = rec.get("id", "")
-                    rec_title = rec.get("title", "")
-                    rec_length = rec.get("length", 0)  # in milliseconds
-                    
-                    # Get artist credit
-                    artist_credit = rec.get("artist-credit", [])
-                    rec_artist = artist_credit[0].get("name", "") if artist_credit else ""
-                    
-                    # Get releases (albums this appears on)
-                    releases = rec.get("releases", []) or []
-                    release_list = []
-                    for rel in releases[:5]:
-                        release_list.append({
-                            "id": rel.get("id", ""),
-                            "title": rel.get("title", "")
-                        })
+                # Format results using the shared helper
+                results = [_format_recording(rec) for rec in recordings]
 
-                    best_album = releases[0].get("title", "") if releases else ""
-                    best_year = ""
-                    for rel in releases:
-                        rel_date = (rel.get("date") or "").strip()
-                        if len(rel_date) >= 4 and rel_date[:4].isdigit():
-                            best_year = rel_date[:4]
-                            break
-
-                    writer_names = []
-                    for rel in rec.get("relations", []) or []:
-                        rel_type = str(rel.get("type") or "").lower()
-                        if rel_type in ("writer", "lyricist", "composer"):
-                            rel_artist = (rel.get("artist") or {}).get("name")
-                            if rel_artist and rel_artist not in writer_names:
-                                writer_names.append(rel_artist)
-
-                        work = rel.get("work") or {}
-                        for work_rel in work.get("relations", []) or []:
-                            work_rel_type = str(work_rel.get("type") or "").lower()
-                            if work_rel_type in ("writer", "lyricist", "composer"):
-                                work_artist = (work_rel.get("artist") or {}).get("name")
-                                if work_artist and work_artist not in writer_names:
-                                    writer_names.append(work_artist)
-                    
-                    # Calculate similarity scores
-                    title_similarity = difflib.SequenceMatcher(None, title.lower(), rec_title.lower()).ratio()
-                    artist_similarity = difflib.SequenceMatcher(None, artist.lower(), rec_artist.lower()).ratio()
-                    overall_confidence = (title_similarity * 0.7 + artist_similarity * 0.3)
-                    
-                    results.append({
-                        "mbid": rec_id,
-                        "title": rec_title,
-                        "artist": rec_artist,
-                        "album": best_album,
-                        "year": best_year,
-                        "length": rec_length,
-                        "releases": release_list,
-                        "writers": writer_names,
-                        "composer": ", ".join(writer_names) if writer_names else "",
-                        "confidence": round(overall_confidence, 3),
-                        "title_similarity": round(title_similarity, 3),
-                        "artist_similarity": round(artist_similarity, 3),
-                        "source": "musicbrainz"
-                    })
-                
                 # Sort by confidence
                 results.sort(key=lambda x: x["confidence"], reverse=True)
-                
+
+                # Merge direct MBID result as the definitive top entry when present,
+                # de-duplicating if the same MBID already appears in search results.
+                if direct_result:
+                    results = [r for r in results if r["mbid"] != direct_result["mbid"]]
+                    results.insert(0, direct_result)
+
                 return jsonify({"results": results[:10]}), 200
                 
             except requests.exceptions.Timeout:
@@ -33369,6 +33411,9 @@ def api_track_musicbrainz_lookup():
         
         # Log at warning level for transient network issues (not critical errors)
         logger.warning(f"MusicBrainz track lookup unavailable after retries for '{title}' by '{artist}'")
+        # If we at least resolved the track via direct MBID lookup, return that.
+        if direct_result:
+            return jsonify({"results": [direct_result]}), 200
         return jsonify({"error": "MusicBrainz connection failed. Try again later."}), 503
             
     except Exception as e:
