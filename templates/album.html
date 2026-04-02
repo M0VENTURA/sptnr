@@ -2177,16 +2177,105 @@
         banner.innerHTML = `<div class="alert alert-${escapeHtml(type)} d-flex align-items-center mb-2 py-2">${htmlContent}${dismissBtn}</div>`;
     }
 
+    function _injectMissingTrackRows(missingTracks, data) {
+        const albumArtist = {{ artist_name|tojson }};
+        const albumName = {{ album_name|tojson }};
+        const mbYear = escapeHtml(String(data.mb_year || ''));
+
+        for (const track of missingTracks) {
+            const safeTitle = escapeHtml(track.mb_title || '');
+            const safeArtist = escapeHtml(track.mb_artist || albumArtist);
+            const safeAlbumArtist = escapeHtml(albumArtist);
+            const safeAlbum = escapeHtml(albumName);
+            const safeTrackNum = escapeHtml(String(track.mb_track_number || ''));
+
+            const row = document.createElement('tr');
+            row.className = 'text-muted missing-track-row mb-missing-row';
+            row.style.opacity = '0.6';
+            row.innerHTML = `
+                <td></td>
+                <td class="fst-italic">${safeTrackNum || '?'}</td>
+                <td colspan="6" class="fst-italic">
+                    ${safeTitle}
+                    <span class="badge bg-warning text-dark ms-2" style="font-size: 0.65rem; vertical-align: middle;">Missing</span>
+                </td>
+                <td class="text-end">
+                    <div class="btn-group btn-group-sm">
+                        <button class="btn btn-outline-success queue-missing-btn"
+                            title="Add to download queue"
+                            data-artist="${safeArtist}"
+                            data-album-artist="${safeAlbumArtist}"
+                            data-title="${safeTitle}"
+                            data-album="${safeAlbum}"
+                            data-track-number="${safeTrackNum}"
+                            data-year="${mbYear}"
+                            data-release-id=""
+                            onclick="queueMissingTrack(this)">
+                            <i class="bi bi-download"></i>
+                        </button>
+                    </div>
+                </td>`;
+
+            // Find insertion position: after the closest preceding matched track row
+            const idx = data.comparison.indexOf(track);
+            let insertAfterRow = null;
+            for (let i = idx - 1; i >= 0; i--) {
+                const prev = data.comparison[i];
+                if (prev.matched && prev.library_track_id) {
+                    insertAfterRow = document.querySelector(`[data-track-id="${CSS.escape(String(prev.library_track_id))}"]`);
+                    if (insertAfterRow) break;
+                }
+            }
+
+            if (insertAfterRow) {
+                // Skip any update/missing rows already inserted after insertAfterRow
+                let next = insertAfterRow.nextElementSibling;
+                while (next && (next.classList.contains('mb-update-row') || next.classList.contains('mb-missing-row'))) {
+                    insertAfterRow = next;
+                    next = next.nextElementSibling;
+                }
+                insertAfterRow.insertAdjacentElement('afterend', row);
+            } else {
+                // No preceding matched track — insert before the first track row
+                const tbody = document.querySelector('.table-responsive table tbody');
+                if (tbody) {
+                    const firstTrackRow = tbody.querySelector('[data-track-id]');
+                    if (firstTrackRow) {
+                        firstTrackRow.insertAdjacentElement('beforebegin', row);
+                    } else {
+                        tbody.appendChild(row);
+                    }
+                }
+            }
+        }
+    }
+
     function _displayMBComparison(data) {
-        // Remove any stale update rows from a previous comparison
+        // Remove any stale update/missing rows from a previous comparison
         document.querySelectorAll('.mb-update-row').forEach(el => el.remove());
+        document.querySelectorAll('.mb-missing-row').forEach(el => el.remove());
 
         const needsUpdate = data.comparison.filter(c => c.needs_update && c.library_track_id);
+        const missingTracks = data.comparison.filter(c => !c.matched);
 
-        if (needsUpdate.length === 0) {
+        if (needsUpdate.length === 0 && missingTracks.length === 0) {
             _showMBCompareBanner(
                 `<i class="bi bi-check-circle-fill text-success me-2"></i>All ${escapeHtml(String(data.total_tracks))} tracks match MusicBrainz metadata — no updates needed.`,
                 'success',
+                true
+            );
+            return;
+        }
+
+        // Inject missing track rows into the table
+        if (missingTracks.length > 0) {
+            _injectMissingTrackRows(missingTracks, data);
+        }
+
+        if (needsUpdate.length === 0) {
+            _showMBCompareBanner(
+                `<i class="bi bi-exclamation-triangle-fill me-2"></i><strong>${escapeHtml(String(missingTracks.length))} of ${escapeHtml(String(data.total_tracks))} tracks</strong> are missing from the library.`,
+                'warning',
                 true
             );
             return;
@@ -2202,10 +2291,14 @@
             const tableResponsive = document.querySelector('.table-responsive');
             container.insertBefore(banner, tableResponsive);
         }
+        let bannerMsg = `<strong>${escapeHtml(String(needsUpdate.length))} of ${escapeHtml(String(data.total_tracks))} tracks</strong> have metadata that can be updated from MusicBrainz.`;
+        if (missingTracks.length > 0) {
+            bannerMsg += ` <strong>${escapeHtml(String(missingTracks.length))}</strong> ${missingTracks.length === 1 ? 'track is' : 'tracks are'} missing from the library.`;
+        }
         banner.innerHTML = `
             <div class="alert alert-warning d-flex align-items-center gap-2 mb-2 py-2 flex-wrap">
                 <i class="bi bi-exclamation-triangle-fill"></i>
-                <div><strong>${escapeHtml(String(needsUpdate.length))} of ${escapeHtml(String(data.total_tracks))} tracks</strong> have metadata that can be updated from MusicBrainz.</div>
+                <div>${bannerMsg}</div>
                 <button class="btn btn-warning btn-sm ms-auto" onclick="updateAllTracksFromMB()">
                     <i class="bi bi-arrow-repeat"></i> Update All
                 </button>
@@ -2376,6 +2469,7 @@
 
     function clearMBComparison() {
         document.querySelectorAll('.mb-update-row').forEach(el => el.remove());
+        document.querySelectorAll('.mb-missing-row').forEach(el => el.remove());
         const banner = document.getElementById('mb-compare-banner');
         if (banner) banner.remove();
         mbComparisonData = null;
