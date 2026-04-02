@@ -12988,6 +12988,26 @@ def album_detail(artist, album):
             db_album_name = first_track.get('album') or album
         
         conn.close()
+
+        # Fetch artist MBID for the album from tracks (used to pre-fill Edit Album form)
+        album_artist_mbid = None
+        try:
+            conn2 = get_db()
+            cursor2 = conn2.cursor()
+            placeholder2 = "%s"
+            cursor2.execute(
+                f"SELECT MAX(COALESCE(NULLIF(musicbrainz_artist_id, ''), NULLIF(musicbrainz_artistid, ''))) AS mbid"
+                f" FROM tracks"
+                f" WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder2}"
+                f" AND LOWER(COALESCE(album, '')) = LOWER({placeholder2})",
+                (db_artist_name, db_album_name),
+            )
+            _mbid_row = cursor2.fetchone()
+            if _mbid_row:
+                album_artist_mbid = (_mbid_row.get("mbid") if hasattr(_mbid_row, "get") else _mbid_row[0]) or None
+            conn2.close()
+        except Exception as _mbid_err:
+            logging.debug(f"Could not fetch artist MBID for album edit form: {_mbid_err}")
         
         # Compute genre sources for server-side rendering (from DB data populated during scans)
         # Genres are only fetched from external sources (Spotify, Last.fm, etc.) during the
@@ -13013,7 +13033,8 @@ def album_detail(artist, album):
                              genre_sources=genre_sources,
                              is_album_favourite=is_album_favourite,
                              qbit_config=qbit_config,
-                             slskd_config=slskd_config)
+                             slskd_config=slskd_config,
+                             album_artist_mbid=album_artist_mbid)
     except Exception as e:
         import traceback
         logging.error(f"Error loading album {artist}/{album}: {e}")
@@ -13471,6 +13492,7 @@ def album_edit(artist, album):
     
     album_mbid = request.form.get("album_mbid", "").strip() or None
     album_discogs_id = request.form.get("album_discogs_id", "").strip() or None
+    artist_mbid = request.form.get("artist_mbid", "").strip() or None
     album_genres = request.form.get("album_genres", "").strip()
     cover_art_url = request.form.get("cover_art_url", "").strip() or None
     
@@ -13534,6 +13556,11 @@ def album_edit(artist, album):
             update_fields.append(f"musicbrainz_album_mbid = {placeholder}")
             update_values.append(album_mbid)
 
+        # Update artist MBID if provided
+        if artist_mbid:
+            update_fields.append(f"musicbrainz_artist_id = {placeholder}")
+            update_values.append(artist_mbid)
+
         # Update album Discogs release ID if provided
         if album_discogs_id and discogs_album_column:
             update_fields.append(f"{discogs_album_column} = {placeholder}")
@@ -13558,7 +13585,8 @@ def album_edit(artist, album):
             # All field assignments should be in the format "column_name = <placeholder>"
             allowed_columns = {
                 'album', 'artist', 'album_artist', 'year', 'spotify_album_type',
-                'musicbrainz_album_mbid', 'discogs_album_id', 'discogs_release_id',
+                'musicbrainz_album_mbid', 'musicbrainz_artist_id',
+                'discogs_album_id', 'discogs_release_id',
                 'genres', 'composer', 'comment', 'cover_art_url'
             }
             for field in update_fields:
@@ -13714,6 +13742,8 @@ def album_edit(artist, album):
                                     tags_to_write["album_artist"] = album_artist
                                 if album_mbid:
                                     tags_to_write["musicbrainz_album_mbid"] = album_mbid
+                                if artist_mbid:
+                                    tags_to_write["musicbrainz_artistid"] = artist_mbid
                                 if cover_art_bytes:
                                     tags_to_write["cover_art_data"] = cover_art_bytes
                                     tags_to_write["cover_art_mime"] = cover_art_mime

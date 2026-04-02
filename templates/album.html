@@ -275,6 +275,12 @@
                                 <input type="text" class="form-control" id="album_discogs_id" name="album_discogs_id" value="{{ album_data.discogs_album_id or '' }}" placeholder="Discogs release ID">
                             </div>
                         </div>
+                        <div class="row g-2 mb-3">
+                            <div class="col-12 col-md-6">
+                                <label for="artist_mbid" class="form-label">MusicBrainz Artist ID</label>
+                                <input type="text" class="form-control" id="artist_mbid" name="artist_mbid" value="{{ album_artist_mbid or '' }}" placeholder="MusicBrainz artist MBID">
+                            </div>
+                        </div>
 
                         <div class="mb-3">
                             <label for="newAlbumGenreInput" class="form-label">Album Genres</label>
