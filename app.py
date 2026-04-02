@@ -5858,6 +5858,93 @@ def artist_corrections(name):
                 conn.rollback()
             except Exception:
                 pass
+
+        # Detect duplicate album entries for the same artist.
+        # Two albums are considered duplicates when either:
+        #   (a) they share the same non-null musicbrainz_album_mbid (strongest signal), or
+        #   (b) their names normalise to the same string after stripping common edition
+        #       suffixes like "(Remastered)", "[Deluxe]", "- Original Soundtrack", etc.
+        duplicate_albums = []
+        try:
+            cursor.execute(f"""
+                SELECT
+                    album,
+                    COUNT(*) AS track_count,
+                    MIN(year) AS album_year,
+                    MAX(musicbrainz_album_mbid) AS mb_mbid
+                FROM tracks
+                WHERE {artist_expr} = {placeholder}
+                  AND album IS NOT NULL AND TRIM(album) != ''
+                GROUP BY album
+                ORDER BY album
+            """, (artist_name,))
+            all_album_rows = []
+            for row in cursor.fetchall():
+                rd = dict(row) if hasattr(row, "keys") else {
+                    "album": row[0], "track_count": row[1],
+                    "album_year": row[2], "mb_mbid": row[3],
+                }
+                all_album_rows.append({
+                    "album": rd.get("album") or "",
+                    "track_count": int(rd.get("track_count") or 0),
+                    "album_year": rd.get("album_year"),
+                    "mb_mbid": (rd.get("mb_mbid") or "").strip(),
+                })
+
+            from download_queue_manager import _normalize_album_for_dedup
+
+            # Build groups keyed first by MBID, then by normalised name.
+            mbid_groups: dict = {}
+            for row in all_album_rows:
+                mb = row["mb_mbid"]
+                if mb:
+                    mbid_groups.setdefault(mb, []).append(row)
+
+            # Albums already grouped by MBID don't need a second normalised-name pass.
+            mbid_grouped_names = {
+                r["album"]
+                for rows in mbid_groups.values()
+                for r in rows
+                if len(rows) > 1
+            }
+
+            norm_groups: dict = {}
+            for row in all_album_rows:
+                if row["album"] in mbid_grouped_names:
+                    continue
+                norm = _normalize_album_for_dedup(row["album"])
+                if norm:
+                    norm_groups.setdefault(norm, []).append(row)
+
+            seen_album_sets: set = set()
+
+            def _add_dup_group(albums_in_group: list, signal: str) -> None:
+                if len(albums_in_group) < 2:
+                    return
+                key = tuple(sorted(a["album"] for a in albums_in_group))
+                if key in seen_album_sets:
+                    return
+                seen_album_sets.add(key)
+                # Sort so the album with the most tracks is offered as the default
+                # canonical name (it is likely the most complete entry).
+                sorted_albums = sorted(albums_in_group, key=lambda x: -(x.get("track_count") or 0))
+                duplicate_albums.append({
+                    "albums": sorted_albums,
+                    "canonical_name": sorted_albums[0]["album"],
+                    "signal": signal,
+                })
+
+            for _mb, rows in mbid_groups.items():
+                _add_dup_group(rows, "mbid")
+            for _norm, rows in norm_groups.items():
+                _add_dup_group(rows, "name")
+
+        except Exception as dup_alb_err:
+            logging.debug(f"[CORRECTIONS] Could not detect duplicate albums: {dup_alb_err}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
     finally:
         conn.close()
 
@@ -5869,10 +5956,12 @@ def artist_corrections(name):
         mb_albums=mb_albums,
         mbid_inconsistent_albums=mbid_inconsistent_albums,
         disc_inconsistent_albums=disc_inconsistent_albums,
+        duplicate_albums=duplicate_albums,
         duplicate_count=sum(max(int(d.get("duplicate_count") or 0) - 1, 0) for d in duplicate_groups),
         missing_count=len(missing_tracks),
         mbid_inconsistent_count=len(mbid_inconsistent_albums),
         disc_inconsistent_count=len(disc_inconsistent_albums),
+        duplicate_album_count=len(duplicate_albums),
     )
 
 
@@ -6149,6 +6238,94 @@ def api_artist_corrections_apply_album_mbid():
     except Exception as e:
         logging.error(f"[CORRECTIONS] Failed to apply album MBID correction: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/artist/corrections/merge-albums", methods=["POST"])
+def api_artist_corrections_merge_albums():
+    """Merge two or more split album entries into one canonical album name.
+
+    Updates every matching track in the database and rewrites the album tag in
+    each track's audio file so the fix survives a future Navidrome rescan.
+    """
+    try:
+        payload = request.get_json(silent=True) or {}
+        artist_name = str(payload.get("artist") or "").strip()
+        source_albums = payload.get("source_albums") or []
+        canonical_name = str(payload.get("canonical_name") or "").strip()
+
+        if not artist_name or not source_albums or not canonical_name:
+            return jsonify({"success": False, "error": "artist, source_albums, and canonical_name are required"}), 400
+
+        if not isinstance(source_albums, list):
+            source_albums = [source_albums]
+
+        # Only rename albums whose current name differs from the target.
+        albums_to_rename = [a for a in source_albums if a != canonical_name]
+        if not albums_to_rename:
+            return jsonify({"success": True, "rows_updated": 0, "files_updated": 0,
+                            "message": "Nothing to rename — all albums already use the canonical name"})
+
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = "%s"
+
+        artist_expr = "COALESCE(NULLIF(album_artist, ''), artist)"
+        placeholders_list = ", ".join([placeholder] * len(albums_to_rename))
+
+        # Collect tracks before updating so we have file paths for tag writes.
+        cursor.execute(
+            f"SELECT id, file_path FROM tracks WHERE {artist_expr} = {placeholder} AND album IN ({placeholders_list})",
+            [artist_name] + albums_to_rename,
+        )
+        track_rows = [dict(r) if hasattr(r, "keys") else {"id": r[0], "file_path": r[1]}
+                      for r in cursor.fetchall()]
+
+        if not track_rows:
+            conn.close()
+            return jsonify({"success": False, "error": "No tracks found for the specified source albums"}), 404
+
+        cursor.execute(
+            f"UPDATE tracks SET album = {placeholder} WHERE {artist_expr} = {placeholder} AND album IN ({placeholders_list})",
+            [canonical_name, artist_name] + albums_to_rename,
+        )
+        rows_updated = cursor.rowcount if cursor.rowcount and cursor.rowcount >= 0 else len(track_rows)
+        conn.commit()
+        conn.close()
+
+        # Rewrite the album tag in each audio file so Navidrome won't recreate
+        # the split on its next rescan.
+        files_updated = 0
+        files_skipped = 0
+        for row in track_rows:
+            file_path = str(row.get("file_path") or "").strip()
+            if not file_path or not os.path.exists(file_path):
+                files_skipped += 1
+                continue
+            try:
+                from helpers.tag_manager import write_tags_to_file
+                if write_tags_to_file(file_path, {"album": canonical_name}):
+                    files_updated += 1
+            except Exception as file_err:
+                logging.debug(f"[CORRECTIONS] Failed to write album tag for {file_path}: {file_err}")
+
+        logging.info(
+            f"[CORRECTIONS] merge-albums: artist='{artist_name}' merged {albums_to_rename} → '{canonical_name}' "
+            f"rows={rows_updated} files={files_updated} skipped={files_skipped}"
+        )
+        return jsonify({
+            "success": True,
+            "rows_updated": rows_updated,
+            "files_updated": files_updated,
+            "message": (
+                f"Merged {len(albums_to_rename)} album name(s) into \"{canonical_name}\" "
+                f"({rows_updated} track(s) updated, {files_updated} file(s) retagged)"
+            ),
+        })
+    except Exception as e:
+        logging.error(f"[CORRECTIONS] Failed to merge albums: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/album/library-tracks")
 def api_album_library_tracks():
     """Get all library tracks for a specific artist/album (for the match-missing-track modal)."""
