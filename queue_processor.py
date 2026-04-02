@@ -247,6 +247,39 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     if title_norm in basename_norm:
         score += 0.25
 
+    # Orphan-token penalty: tokens in the basename that cannot be explained by
+    # the artist, title, or album strongly suggest a *different* track is present.
+    # For example, title="Jailbreak" vs basename "Nervosa - Jailbreak - 01 -
+    # Endless Ambition.mp3" has two orphan tokens ("endless", "ambition") that
+    # are clearly a different track's title.  Apply a significant penalty only
+    # when the title match is ambiguous because all title tokens also appear in
+    # the album (so the title could just be the album folder name, not the track).
+    # Applied AFTER all other bonuses so the album-in-path reward cannot rescue
+    # a wrong-track candidate.
+    _AUDIO_EXT_TOKENS = {"mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "opus", "aiff"}
+    _ORPHAN_NUM_RE = re.compile(r'^\d{1,4}$')
+    explained_tokens = (
+        set(_tokenize_meaningful(artist_norm))
+        | set(_tokenize_meaningful(title_norm))
+        | set(_tokenize_meaningful(album_norm or ""))
+    )
+    orphan_tokens = [
+        t for t in basename_tokens
+        if t not in explained_tokens
+        and not _ORPHAN_NUM_RE.match(t)
+        and t not in title_variant_tokens
+        and t not in _AUDIO_EXT_TOKENS
+    ]
+    _orphan_penalty = 0.0
+    if len(orphan_tokens) >= 2:
+        title_token_set = set(title_tokens)
+        album_token_set = set(_tokenize_meaningful(album_norm or ""))
+        if title_token_set and title_token_set.issubset(album_token_set):
+            # Title tokens are all present in the album name, so the title being
+            # found in the basename is expected (album folder = track title) and
+            # provides no additional track-identity evidence.  Penalise heavily.
+            _orphan_penalty = 0.70
+
     # Album disambiguation: use full path so the folder name acts as evidence.
     if album_norm:
         album_tokens = _tokenize_meaningful(album_norm)
@@ -283,7 +316,12 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
         else:
             score -= 0.05
 
-    return max(0.0, min(1.0, score))
+    # Apply orphan-token penalty after all bonuses so the album-in-path reward
+    # cannot rescue a wrong-track candidate.  Cap the accumulated score first so
+    # the penalty is applied on a [0, 1] base, then floor at 0.
+    score = max(0.0, min(1.0, score) - _orphan_penalty)
+
+    return max(0.0, score)
 
 
 def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
@@ -356,6 +394,147 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
     return combined >= threshold
 
 
+def _filename_matches_queue_item(filename, queue_item):
+    """
+    Conservative filename/path fallback matcher.
+
+    Requires the track title to appear in the *basename* (not only in the
+    directory portion of the path) to avoid false positives when the album
+    folder name equals the song title.  If the title only appears in the
+    directory portion of the path the match would be a false positive.
+
+    The look-ahead ``(?!\\s*[a-z])`` rejects cases where the title is
+    immediately followed by bare alphabetic continuation words (e.g. "-1 intro"
+    must not match a queue item for "-1").
+    """
+    if not filename:
+        return False
+
+    artist_norm = _normalize_match_text(queue_item.get('artist'))
+    title_norm = _normalize_match_text(queue_item.get('title'))
+    if not artist_norm or not title_norm:
+        return False
+
+    # Normalise path separators so Windows-style paths work on Linux.
+    norm_path = filename.replace("\\", "/")
+    basename = os.path.basename(norm_path)
+    basename_norm = _normalize_match_text(basename)
+
+    # Gate: the title must be present in the basename as a complete phrase.
+    # A simple substring test would cause false positives when the album folder
+    # name equals the song title — the title would then appear in every file in
+    # that folder even though none of those files may be the title track.
+    # The look-ahead (?!\s*[a-z]) rejects the case where the title only appears in the directory portion
+    # of the path (e.g. album folder == track title) or is a prefix of a longer
+    # different title (e.g. "world so cold intro" must not match "world so cold").
+    # Apply on the raw lowercase basename to preserve special chars (e.g. "-1").
+    basename_lower = basename.lower()
+    raw_title = (queue_item.get('title') or '').lower()
+    basename_test = basename_norm  # normalised form used in test assertions
+    title_in_basename = bool(
+        raw_title
+        and re.search(re.escape(raw_title) + r'(?!\s*[a-z])', basename_lower)
+    )
+
+    if not title_in_basename:
+        # Fallback: allow if the full candidate score is high enough even
+        # without the whole-phrase title guard (e.g. unseparated filename
+        # "artist title album.flac" where the title is embedded mid-string).
+        score = _score_soulseek_candidate(norm_path, queue_item)
+        return score >= 0.60
+
+    title_tokens = _tokenize_meaningful(title_norm)
+    basename_tokens = set(_tokenize_meaningful(basename_norm))
+    title_variant_tokens = {
+        "acoustic", "demo", "edit", "instrumental", "intro", "live", "mix",
+        "radio", "remaster", "remastered", "remix", "version",
+    }
+
+    # Variant check: only when title has meaningful tokens — a plain queue
+    # title must not match a "(mix/live/…)" file, but when the title has no
+    # meaningful tokens (e.g. the special title "-1") the check is skipped
+    # because we cannot determine whether the queue item is itself a variant.
+    if title_tokens:
+        requested_variants = set(title_tokens) & title_variant_tokens
+        candidate_variants = basename_tokens & title_variant_tokens
+        if requested_variants or candidate_variants:
+            if not requested_variants or not candidate_variants:
+                return False
+            if requested_variants.isdisjoint(candidate_variants):
+                return False
+
+    # Orphan-token rejection for title==album ambiguity:
+    # When all title tokens also appear in the album name the title's presence
+    # in the basename could be from the album folder rather than the track.
+    # If 2+ tokens in the basename are unexplained by artist/title/album those
+    # are likely the actual track title, so reject this file.
+    album_norm = _normalize_match_text(queue_item.get('album'))
+    title_token_set = set(title_tokens)
+    album_token_set = set(_tokenize_meaningful(album_norm))
+    if title_token_set and title_token_set.issubset(album_token_set):
+        _AUDIO_EXT_TOKENS = {"mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "opus", "aiff"}
+        _ORPHAN_NUM_RE = re.compile(r'^\d{1,4}$')
+        explained = (
+            set(_tokenize_meaningful(artist_norm))
+            | title_token_set
+            | album_token_set
+        )
+        orphan = [
+            t for t in basename_tokens
+            if t not in explained
+            and not _ORPHAN_NUM_RE.match(t)
+            and t not in title_variant_tokens
+            and t not in _AUDIO_EXT_TOKENS
+        ]
+        if len(orphan) >= 2:
+            return False
+
+    # Confirm the artist is present somewhere in the full path (covers the
+    # common "Artist/Title.flac" folder layout) before granting a match.
+    path_norm = _normalize_match_text(norm_path)
+    if artist_norm in path_norm:
+        return True
+
+    # Artist not literally in path — use score as a final confirmation.
+    score = _score_soulseek_candidate(norm_path, queue_item)
+    return score >= 0.60
+
+
+def _cleanup_sibling_downloads(queue_item, keep_path=None):
+    """
+    Remove downloaded files that match the same artist+title as *queue_item*
+    but are NOT the file we want to keep (*keep_path*).
+
+    This prevents duplicate copies accumulating in DOWNLOADS_DIR when a
+    search is retried and a different peer's file is selected.
+    """
+    artist_norm = _normalize_match_text(queue_item.get('artist'))
+    title_norm = _normalize_match_text(queue_item.get('title'))
+    if not artist_norm or not title_norm:
+        return
+
+    if not os.path.isdir(DOWNLOADS_DIR):
+        return
+
+    keep_abs = os.path.abspath(keep_path) if keep_path else None
+
+    try:
+        for fname in os.listdir(DOWNLOADS_DIR):
+            fpath = os.path.join(DOWNLOADS_DIR, fname)
+            if not os.path.isfile(fpath):
+                continue
+            if keep_abs and os.path.abspath(fpath) == keep_abs:
+                continue
+            if _filename_matches_queue_item(fname, queue_item):
+                try:
+                    os.remove(fpath)
+                    logger.info(f"[CLEANUP] Removed duplicate download: {fpath}")
+                except OSError as e:
+                    logger.warning(f"[CLEANUP] Could not remove {fpath}: {e}")
+    except Exception as e:
+        logger.warning(f"[CLEANUP] Error during sibling cleanup: {e}")
+
+
 def _file_matches_queue_item(file_path, queue_item, relative_name=None):
     """Match a file to queue metadata, preferring tags and duration over filename alone."""
     metadata_state = _metadata_matches_queue_item(file_path, queue_item)
@@ -366,7 +545,7 @@ def _file_matches_queue_item(file_path, queue_item, relative_name=None):
     if metadata_state is True:
         return True, 'metadata'
 
-    if matches_queue_item(candidate_name, queue_item, file_path=file_path):
+    if _filename_matches_queue_item(candidate_name, queue_item):
         return True, 'filename'
 
     return False, 'filename'
@@ -977,6 +1156,12 @@ def search_and_download(queue_id, queue_item, client):
         if success:
             logger.info(f"Queue {queue_id}: Download queued successfully in slskd")
             logger.info(f"Queue {queue_id}: File will appear in {DOWNLOADS_DIR} when download completes")
+            # Remove any earlier duplicate downloads for the same track so we
+            # don't accumulate stale files from previous retry attempts.
+            try:
+                _cleanup_sibling_downloads(item=queue_item, keep_path=None)
+            except Exception as cleanup_err:
+                logger.debug(f"Queue {queue_id}: Sibling cleanup skipped: {cleanup_err}")
             # Status already set to 'downloading' above
             return True
         else:
