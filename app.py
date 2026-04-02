@@ -8147,7 +8147,8 @@ def artist_detail(name):
         tracks_genre_data = []
         try:
             cursor.execute(f"""
-                SELECT spotify_genres, lastfm_tags, listenbrainz_genres, discogs_genres, musicbrainz_genres
+                SELECT spotify_genres, lastfm_tags, listenbrainz_genres, discogs_genres,
+                       musicbrainz_genres, essentia_genres, navidrome_genres, mood
                 FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
             """, (name,))
             tracks_genre_data = [dict(row) for row in cursor.fetchall()]
@@ -14219,6 +14220,15 @@ def track_detail(track_id):
         
         # Convert Row to dict to ensure all columns are accessible
         track = dict(track)
+
+        # Get genre/tag sources for display BEFORE converting the raw JSON columns
+        # to plain strings below (the conversion would break parse_json_tags).
+        genre_sources = {}
+        try:
+            from genre_tag_aggregator import get_track_genres_summary
+            genre_sources = get_track_genres_summary(track)
+        except Exception as ge_err:
+            logging.debug(f"Could not get genre sources for track {track_id}: {ge_err}")
         
         # Parse genre fields - handle both JSON and comma-separated formats
         for genre_field in ['navidrome_genres', 'spotify_genres', 'lastfm_tags', 'discogs_genres', 'musicbrainz_genres']:
@@ -14293,14 +14303,6 @@ def track_detail(track_id):
         except Exception:
             track['single_sources_list'] = []
 
-        # Get genre/tag sources for display (from genre_tag_aggregator)
-        genre_sources = {}
-        try:
-            from genre_tag_aggregator import get_track_genres_summary
-            genre_sources = get_track_genres_summary(track)
-        except Exception as ge_err:
-            logging.debug(f"Could not get genre sources for track {track_id}: {ge_err}")
-        
         # Get recommended genres from other tracks with similar titles or artists
         recommended_genres = []
         artist_name = track.get('artist', '')

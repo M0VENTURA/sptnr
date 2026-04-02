@@ -62,6 +62,48 @@ def extract_tag_names(tags_list: list) -> list:
     return names
 
 
+def parse_delimited_tags(value) -> list:
+    """
+    Parse a semicolon, comma, or backslash-separated genre string into a list of
+    tag dicts with 'name' and 'count' keys.
+
+    Used for columns like ``essentia_genres`` (semicolon-separated) and
+    ``navidrome_genres`` (backslash-separated) that are stored as plain text rather
+    than JSON arrays.
+
+    Args:
+        value: Raw value from the database column (string or list).
+
+    Returns:
+        List of ``{"name": <tag>, "count": 1}`` dicts.
+    """
+    if not value:
+        return []
+
+    if isinstance(value, list):
+        items = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return []
+        # Normalise backslashes and semicolons to commas, then split.
+        text = text.replace("\\", ",").replace(";", ",")
+        items = text.split(",")
+
+    seen: set = set()
+    result = []
+    for item in items:
+        name = str(item).strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append({"name": name, "count": 1})
+    return result
+
+
 def get_track_genres_and_tags(track_dict: dict) -> Dict[str, list]:
     """
     Extract all genre/tag sources from a single track dictionary.
@@ -77,7 +119,8 @@ def get_track_genres_and_tags(track_dict: dict) -> Dict[str, list]:
             'discogs_genres': [{'name': 'Rock', ...}, ...],
             'spotify_genres': [{'name': 'rock', ...}, ...],
             'musicbrainz_genres': [...],
-            'essentia_genres': [...]
+            'essentia_genres': [...],
+            'navidrome_genres': [...]
         }
     """
     sources = {}
@@ -99,8 +142,19 @@ def get_track_genres_and_tags(track_dict: dict) -> Dict[str, list]:
     if track_dict.get("musicbrainz_genres"):
         sources["musicbrainz_genres"] = parse_json_tags(track_dict["musicbrainz_genres"])
 
+    # essentia_genres is stored as a semicolon-separated plain-text string by the
+    # Essentia scanner, not as JSON.  Use the delimiter-aware parser.
     if track_dict.get("essentia_genres"):
-        sources["essentia_genres"] = parse_json_tags(track_dict["essentia_genres"])
+        tags = parse_delimited_tags(track_dict["essentia_genres"])
+        if tags:
+            sources["essentia_genres"] = tags
+
+    # navidrome_genres is stored as a backslash-separated plain-text string from
+    # Navidrome imports.  Not JSON — use the delimiter-aware parser.
+    if track_dict.get("navidrome_genres"):
+        tags = parse_delimited_tags(track_dict["navidrome_genres"])
+        if tags:
+            sources["navidrome_genres"] = tags
 
     # Mood tags are stored in a dedicated column and can be JSON arrays,
     # semicolon-separated strings, or comma-separated strings.
