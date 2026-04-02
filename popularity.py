@@ -5010,6 +5010,7 @@ def popularity_scan(
                 # already have a writer but no MBID still get the MBID populated here.
                 writer_updates = []
                 mbid_updates = []
+                suggested_mbid_updates = []  # (suggested_mbid, confidence, track_id) for 0.60–0.95 matches
                 if metadata_enrichment_enabled and HAVE_MUSICBRAINZ:
                     log_info(f'Starting MusicBrainz writer/MBID backfill for album "{album}" ({len(album_tracks)} tracks)')
                     for track in album_tracks:
@@ -5051,6 +5052,7 @@ def popularity_scan(
 
                                 mb_writer_names = []
                                 found_recording_mbid = ""
+                                found_recording_confidence = 0.0
                                 for artist_candidate in artist_candidates:
                                     if mb_writer_names:
                                         break
@@ -5066,18 +5068,23 @@ def popularity_scan(
                                             title_candidate,
                                             artist_candidate
                                         )
-                                        mb_writer_names, found_recording_mbid = mb_lookup_result
+                                        mb_writer_names, found_recording_mbid, found_recording_confidence = mb_lookup_result
                                         if mb_writer_names:
                                             break
 
                                 log_debug(f'MusicBrainz returned {len(mb_writer_names) if mb_writer_names else 0} writer(s) for "{title}"')
 
-                                # Save recording MBID whenever the MusicBrainz search found one
-                                # and the track doesn't already have one stored.
+                                # Save recording MBID based on confidence:
+                                #   ≥0.95  → confirmed match, write directly to mbid
+                                #   ≥0.60  → possible match, store as suggested_mbid for review
                                 if found_recording_mbid and track_needs_mbid:
-                                    mbid_updates.append((found_recording_mbid, track_id))
-                                    track['mbid'] = found_recording_mbid
-                                    log_info(f'✅ MusicBrainz recording MBID backfill: "{title}" -> {found_recording_mbid}')
+                                    if found_recording_confidence >= 0.95:
+                                        mbid_updates.append((found_recording_mbid, track_id))
+                                        track['mbid'] = found_recording_mbid
+                                        log_info(f'✅ MusicBrainz recording MBID backfill (confidence={found_recording_confidence:.2f}): "{title}" -> {found_recording_mbid}')
+                                    elif found_recording_confidence >= 0.60:
+                                        suggested_mbid_updates.append((found_recording_mbid, round(found_recording_confidence, 2), track_id))
+                                        log_info(f'ℹ️ MusicBrainz MBID suggestion stored (confidence={found_recording_confidence:.2f}): "{title}" -> {found_recording_mbid}')
 
                                 # Only update writer if it was originally missing; don't overwrite existing data.
                                 if mb_writer_names and track_needs_writer:
@@ -5167,6 +5174,28 @@ def popularity_scan(
                         log_info(f"✅ Successfully committed {len(mbid_updates)} recording MBID backfill(s) for album '{album}'")
                     except Exception as e:
                         log_info(f"❌ Failed to batch update recording MBIDs: {e}")
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
+
+                # Store lower-confidence MBID suggestions (0.60–0.94) for user review.
+                if suggested_mbid_updates:
+                    log_info(f'💾 Committing {len(suggested_mbid_updates)} suggested MBID(s) for album "{album}"')
+                    try:
+                        _execute_tracks_batch_with_retry(
+                            conn,
+                            cursor,
+                            f"UPDATE tracks SET suggested_mbid = {placeholder}, suggested_mbid_confidence = {placeholder} "
+                            f"WHERE id = {placeholder} AND (mbid IS NULL OR TRIM(mbid) = '') "
+                            f"AND (suggested_mbid IS NULL OR TRIM(suggested_mbid) = '')",
+                            sorted(suggested_mbid_updates, key=lambda row: str(row[2])),
+                            f"suggested_mbid batch update for album {album}",
+                        )
+                        conn.commit()
+                        log_info(f"✅ Stored {len(suggested_mbid_updates)} MBID suggestion(s) for album '{album}'")
+                    except Exception as e:
+                        log_info(f"❌ Failed to store suggested MBIDs for album '{album}': {e}")
                         try:
                             conn.rollback()
                         except Exception:

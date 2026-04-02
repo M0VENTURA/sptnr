@@ -111,7 +111,7 @@ def fetch_writer_credits(title, artist):
         mb_client = MusicBrainzClient()
         
         # Fetch composer/writer/lyricist credits (also returns the recording MBID as a side-effect)
-        credits, _recording_mbid = mb_client.get_composers_for_track(title, artist)
+        credits, _recording_mbid, _confidence = mb_client.get_composers_for_track(title, artist)
         
         if not credits:
             return {}

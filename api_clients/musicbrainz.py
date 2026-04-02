@@ -1100,7 +1100,7 @@ class MusicBrainzClient:
         
         return False
     
-    def get_composers_for_track(self, title: str, artist: str) -> tuple[list[str], str]:
+    def get_composers_for_track(self, title: str, artist: str) -> tuple[list[str], str, float]:
         """
         Fetch composer(s) for a track from MusicBrainz.
         
@@ -1120,12 +1120,13 @@ class MusicBrainzClient:
             artist: Artist name
             
         Returns:
-            Tuple of (composers, recording_mbid) where composers is a list of composer
-            names and recording_mbid is the MusicBrainz recording UUID (empty string if
-            not found or on error).
+            Tuple of (composers, recording_mbid, confidence) where composers is a list of
+            composer names, recording_mbid is the MusicBrainz recording UUID (empty string
+            if not found or on error), and confidence is a 0.0–1.0 title-similarity score
+            (1.0 on exact match, 0.0 when nothing was found).
         """
         if not self.enabled:
-            return [], ""
+            return [], "", 0.0
         
         max_retries = 3
         retry_delay = 1.0
@@ -1155,11 +1156,15 @@ class MusicBrainzClient:
                 recordings = r.json().get("recordings", [])
                 
                 if not recordings:
-                    return [], ""
+                    return [], "", 0.0
                 
                 recording_mbid = recordings[0].get("id")
                 if not recording_mbid:
-                    return [], ""
+                    return [], "", 0.0
+
+                # Compute title-similarity confidence so callers can apply thresholds.
+                found_title = (recordings[0].get("title") or "").lower()
+                confidence = difflib.SequenceMatcher(None, title.lower(), found_title).ratio()
                 
                 # Step 2: Look up the recording by MBID with relationship includes.
                 # ``artist-rels``      – direct artist credits on the recording itself
@@ -1212,7 +1217,7 @@ class MusicBrainzClient:
                                 if work_target and work_target.get("name"):
                                     composers.append(work_target["name"])
                 
-                return list(dict.fromkeys(composers)), recording_mbid  # Remove duplicates while preserving order
+                return list(dict.fromkeys(composers)), recording_mbid, round(confidence, 3)
                 
             except (requests.exceptions.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
                 if attempt < max_retries - 1:
@@ -1221,12 +1226,12 @@ class MusicBrainzClient:
                     retry_delay *= 2
                 else:
                     logger.debug(f"MusicBrainz composer lookup failed for '{title}' by '{artist}' after {max_retries} retries: {e}")
-                    return [], ""
+                    return [], "", 0.0
             except Exception as e:
                 logger.debug(f"MusicBrainz composer lookup error for '{title}' by '{artist}': {e}")
-                return [], ""
+                return [], "", 0.0
         
-        return [], ""
+        return [], "", 0.0
 
 
 # Backward-compatible module functions
