@@ -98,12 +98,26 @@ DOWNLOADS_DIR = resolve_downloads_dir()
 # Enforce a floor between retries so unavailable tracks do not churn.
 MIN_RETRY_DELAY_MINUTES = 60
 
+# Maximum number of 1-second polling cycles when waiting for Soulseek search results.
+_SLSKD_SEARCH_POLL_ATTEMPTS = 45
+
+# Minimum candidate score for a Soulseek result to be accepted as a valid match.
+# Scores below this threshold trigger fallback queries (e.g. using album_artist).
+_SLSKD_MIN_ACCEPT_SCORE = 0.45
+
 # Shared constants for orphan-token detection used in both
 # _score_soulseek_candidate and _filename_matches_queue_item.
 _ORPHAN_AUDIO_EXT_TOKENS = frozenset(
     {"mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "opus", "aiff"}
 )
 _ORPHAN_NUM_RE = re.compile(r'^\d{1,4}$')
+
+# Strips "feat."/"ft."/"featuring" suffixes from artist strings when building
+# fallback search queries so that "KNEECAP feat. Fawzi" becomes "KNEECAP".
+_FEAT_SUFFIX_RE = re.compile(
+    r'\s+(?:feat\.?|ft\.?|featuring)\s+.*$',
+    re.IGNORECASE,
+)
 
 
 def _normalize_match_text(value):
@@ -211,6 +225,7 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     filename_norm = _normalize_match_text(filename)             # full path – album only
     basename_norm = _normalize_match_text(os.path.basename(filename))  # basename – artist/title
     artist_norm = _normalize_match_text(queue_item.get('artist'))
+    album_artist_norm = _normalize_match_text(queue_item.get('album_artist') or '')
     title_norm = _normalize_match_text(queue_item.get('title'))
     album_norm = _normalize_match_text(queue_item.get('album'))
     title_tokens = _tokenize_meaningful(title_norm)
@@ -240,7 +255,13 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
         title_token_ratio = 0.0
 
     # Require both core fields to be reasonably represented in the basename.
+    # When the track artist contains featured guests (e.g. "KNEECAP feat. Fawzi"),
+    # files are often tagged with the album artist only ("KNEECAP"), so also
+    # consider the album_artist similarity and take whichever is higher.
     artist_sim = SequenceMatcher(None, artist_norm, basename_norm).ratio()
+    if album_artist_norm and album_artist_norm != artist_norm:
+        album_artist_sim = SequenceMatcher(None, album_artist_norm, basename_norm).ratio()
+        artist_sim = max(artist_sim, album_artist_sim)
     title_sim = SequenceMatcher(None, title_norm, basename_norm).ratio()
     if artist_sim < 0.12 or title_sim < 0.12:
         return 0.0
@@ -249,7 +270,10 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     score += (0.22 * title_token_ratio)
 
     # Strongly prefer explicit artist/title phrases when present in the basename.
-    if artist_norm in basename_norm:
+    # Accept a match on album_artist as equivalent to a match on track artist so
+    # that files tagged "KNEECAP - Palestine" still receive the artist bonus when
+    # the queue item carries "KNEECAP feat. Fawzi" as the track artist.
+    if artist_norm in basename_norm or (album_artist_norm and album_artist_norm in basename_norm):
         score += 0.18
     if title_norm in basename_norm:
         score += 0.25
@@ -1031,6 +1055,143 @@ def check_track_exists_in_navidrome(queue_item):
     return False, ""
 
 
+def _build_fallback_search_queries(queue_item, primary_query):
+    """Build alternative search queries for tracks with featured artists.
+
+    When the primary search uses the full track artist (e.g. "KNEECAP feat. Fawzi
+    - Palestine"), files on Soulseek are often tagged with the album artist only
+    ("KNEECAP").  This helper returns fallback queries to try when the primary
+    search yields no usable match:
+
+    1. ``album_artist - title`` when album_artist differs from the track artist.
+    2. ``feat.-stripped track_artist - title`` when the track artist contains a
+       "feat." / "ft." / "featuring" clause.
+
+    Already-tried queries (i.e. ``primary_query``) and plain duplicates are
+    excluded from the returned list.
+    """
+    artist = str(queue_item.get('artist') or '').strip()
+    album_artist = str(queue_item.get('album_artist') or '').strip()
+    title = str(queue_item.get('title') or '').strip()
+
+    if not title:
+        return []
+
+    try:
+        from download_queue_manager import _sanitize_search_query_for_slskd
+    except ImportError:
+        logger.warning(
+            "_build_fallback_search_queries: could not import _sanitize_search_query_for_slskd "
+            "from download_queue_manager; using plain whitespace normalisation as fallback"
+        )
+        def _sanitize_search_query_for_slskd(q):  # type: ignore[misc]
+            return " ".join(q.split())
+
+    fallbacks = []
+
+    def _add(q):
+        if q and q != primary_query and q not in fallbacks:
+            fallbacks.append(q)
+
+    # Fallback 1: album artist (e.g. "KNEECAP - Palestine")
+    if album_artist and album_artist.lower() != artist.lower():
+        _add(_sanitize_search_query_for_slskd(f"{album_artist} - {title}"))
+
+    # Fallback 2: feat.-stripped track artist (e.g. "KNEECAP - Palestine")
+    feat_stripped = _FEAT_SUFFIX_RE.sub("", artist).strip()
+    if feat_stripped and feat_stripped.lower() != artist.lower():
+        _add(_sanitize_search_query_for_slskd(f"{feat_stripped} - {title}"))
+
+    return fallbacks
+
+
+def _run_soulseek_search(queue_id, query, queue_item, client):
+    """Submit a single Soulseek search and collect the best-scoring candidate.
+
+    Polls for up to 45 seconds and returns ``(best_result, best_score)`` where
+    *best_result* is a dict with keys ``username``, ``filename``, ``size``,
+    ``length``, and ``score``, or ``(None, 0.0)`` if no candidates were found
+    or the search could not be started.
+    """
+    MAX_POLL_ATTEMPTS = _SLSKD_SEARCH_POLL_ATTEMPTS
+
+    search_id = client.start_search(query)
+    if not search_id:
+        logger.warning(f"Queue {queue_id}: Failed to start search for '{query}'")
+        return None, 0.0
+
+    logger.info(
+        "Queue %s: slskd search submitted (search_id=%s) for query '%s'",
+        queue_id, search_id, query,
+    )
+
+    best_result = None
+    best_score = 0.0
+
+    for poll_attempt in range(MAX_POLL_ATTEMPTS):
+        time.sleep(1)
+        try:
+            responses, state, is_complete = client.get_search_results(search_id)
+            logger.debug(
+                f"Queue {queue_id}: Poll {poll_attempt+1}/{MAX_POLL_ATTEMPTS} - "
+                f"Got {len(responses)} responses, state={state}"
+            )
+
+            if responses:
+                for resp_idx, resp in enumerate(responses):
+                    if not (hasattr(resp, 'files') and resp.files and len(resp.files) > 0):
+                        logger.debug(
+                            f"Queue {queue_id}: Response {resp_idx} from "
+                            f"{getattr(resp, 'username', 'unknown')} has no files or empty files list"
+                        )
+                        continue
+
+                    logger.debug(
+                        f"Queue {queue_id}: Response {resp_idx} from {resp.username} "
+                        f"has {len(resp.files)} files"
+                    )
+                    for file_info in resp.files:
+                        filename = (
+                            getattr(file_info, 'filename', file_info.get('filename', ''))
+                            if isinstance(file_info, dict)
+                            else getattr(file_info, 'filename', '')
+                        )
+                        size = (
+                            getattr(file_info, 'size', file_info.get('size', 0))
+                            if isinstance(file_info, dict)
+                            else getattr(file_info, 'size', 0)
+                        )
+                        candidate_length = _extract_candidate_length_seconds(file_info)
+                        candidate_score = _score_soulseek_candidate(filename, queue_item, candidate_length)
+                        if candidate_score > best_score:
+                            best_score = candidate_score
+                            best_result = {
+                                "username": resp.username,
+                                "filename": filename,
+                                "size": size,
+                                "length": candidate_length,
+                                "score": candidate_score,
+                            }
+
+                # Exit early once we have a high-confidence match.
+                if best_result and best_score >= 0.72:
+                    logger.info(
+                        f"Queue {queue_id}: ✓ Found high-confidence match after {poll_attempt+1}s "
+                        f"(score={best_score:.2f})"
+                    )
+                    break
+
+            if is_complete and best_result:
+                logger.info(f"Queue {queue_id}: Search complete with results, stopping polling")
+                break
+
+        except Exception as e:
+            logger.warning(f"Queue {queue_id}: Error polling results (attempt {poll_attempt+1}): {e}")
+            logger.debug(traceback.format_exc())
+
+    return best_result, best_score
+
+
 def search_and_download(queue_id, queue_item, client):
     """Search Soulseek for queue item and download top result"""
     try:
@@ -1053,94 +1214,40 @@ def search_and_download(queue_id, queue_item, client):
 
         logger.info(f"Queue {queue_id}: Searching for '{search_query}'...")
         update_queue_status(queue_id, 'searching')
-        
-        # Start search
-        search_id = client.start_search(search_query)
-        if not search_id:
-            logger.warning(f"Queue {queue_id}: Failed to start search")
-            mark_failed(queue_id, "Failed to start Soulseek search", schedule_retry=True)
-            return False
-        logger.info(
-            "Queue %s: slskd search submitted (search_id=%s) for query '%s'",
-            queue_id,
-            search_id,
-            search_query,
-        )
-        
-        # Poll for results (up to MAX_POLL_ATTEMPTS seconds with 1 second intervals)
-        # Increased timeout to 45 seconds to handle slow Soulseek peer responses
-        MAX_POLL_ATTEMPTS = 45
-        best_result = None
-        best_score = 0.0
+
         poll_start_time = datetime.now()
-        
-        for poll_attempt in range(MAX_POLL_ATTEMPTS):
-            time.sleep(1)
-            
-            try:
-                responses, state, is_complete = client.get_search_results(search_id)
-                
-                logger.debug(f"Queue {queue_id}: Poll {poll_attempt+1}/{MAX_POLL_ATTEMPTS} - Got {len(responses)} responses, state={state}")
-                
-                if responses:
-                    # Score all available files and choose the strongest semantic match.
-                    for resp_idx, resp in enumerate(responses):
-                        if not (hasattr(resp, 'files') and resp.files and len(resp.files) > 0):
-                            logger.debug(
-                                f"Queue {queue_id}: Response {resp_idx} from "
-                                f"{getattr(resp, 'username', 'unknown')} has no files or empty files list"
-                            )
-                            continue
 
-                        logger.debug(f"Queue {queue_id}: Response {resp_idx} from {resp.username} has {len(resp.files)} files")
-                        for file_info in resp.files:
-                            filename = (
-                                getattr(file_info, 'filename', file_info.get('filename', ''))
-                                if isinstance(file_info, dict)
-                                else getattr(file_info, 'filename', '')
-                            )
-                            size = (
-                                getattr(file_info, 'size', file_info.get('size', 0))
-                                if isinstance(file_info, dict)
-                                else getattr(file_info, 'size', 0)
-                            )
-                            candidate_length = _extract_candidate_length_seconds(file_info)
+        # Primary search using the stored search_query (built from track artist).
+        best_result, best_score = _run_soulseek_search(queue_id, search_query, queue_item, client)
 
-                            candidate_score = _score_soulseek_candidate(filename, queue_item, candidate_length)
-                            if candidate_score > best_score:
-                                best_score = candidate_score
-                                best_result = {
-                                    "username": resp.username,
-                                    "filename": filename,
-                                    "size": size,
-                                    "length": candidate_length,
-                                    "score": candidate_score,
-                                }
-
-                    # If we already have a strong candidate, no need to keep polling.
-                    if best_result and best_score >= 0.72:
-                        logger.info(
-                            f"Queue {queue_id}: ✓ Found high-confidence match after {poll_attempt+1}s "
-                            f"(score={best_score:.2f})"
-                        )
-                        break
-                
-                # Exit early if search is complete and we have results
-                if is_complete and best_result:
-                    logger.info(f"Queue {queue_id}: Search complete with results, stopping polling")
+        # If the primary search found nothing useful, retry with fallback queries.
+        # This handles tracks where the track artist contains featured guests
+        # (e.g. "KNEECAP feat. Fawzi - Palestine") but Soulseek files are tagged
+        # with the album artist only ("KNEECAP - Palestine").
+        if not best_result or best_score < _SLSKD_MIN_ACCEPT_SCORE:
+            for fallback_query in _build_fallback_search_queries(queue_item, search_query):
+                logger.info(
+                    f"Queue {queue_id}: Primary search insufficient "
+                    f"(score={best_score:.2f}), trying fallback query '{fallback_query}'..."
+                )
+                fb_result, fb_score = _run_soulseek_search(queue_id, fallback_query, queue_item, client)
+                if fb_score > best_score:
+                    best_score = fb_score
+                    best_result = fb_result
+                if best_result and best_score >= _SLSKD_MIN_ACCEPT_SCORE:
+                    logger.info(
+                        f"Queue {queue_id}: Fallback query '{fallback_query}' "
+                        f"succeeded (score={best_score:.2f})"
+                    )
                     break
-                    
-            except Exception as e:
-                logger.warning(f"Queue {queue_id}: Error polling results (attempt {poll_attempt+1}): {e}")
-                logger.debug(traceback.format_exc())
-        
+
         if not best_result:
             elapsed = (datetime.now() - poll_start_time).total_seconds()
             logger.warning(f"Queue {queue_id}: ✗ No results found after {elapsed:.0f}s of polling")
             mark_failed(queue_id, f"No results found for '{search_query}'", schedule_retry=True, retry_delay_minutes=1440)
             return False
 
-        if best_score < 0.45:
+        if best_score < _SLSKD_MIN_ACCEPT_SCORE:
             elapsed = (datetime.now() - poll_start_time).total_seconds()
             logger.warning(
                 f"Queue {queue_id}: ✗ Results found but no safe match for '{search_query}' "
@@ -1153,16 +1260,16 @@ def search_and_download(queue_id, queue_item, client):
                 retry_delay_minutes=1440,
             )
             return False
-        
+
         # Download the result
         logger.info(
             f"Queue {queue_id}: Downloading '{best_result['filename']}' from "
             f"{best_result['username']} (score={best_score:.2f})..."
         )
         update_queue_status(queue_id, 'downloading', found_filename=best_result['filename'])
-        
+
         success = client.download_file(best_result['username'], best_result['filename'], best_result['size'])
-        
+
         if success:
             logger.info(f"Queue {queue_id}: Download queued successfully in slskd")
             logger.info(f"Queue {queue_id}: File will appear in {DOWNLOADS_DIR} when download completes")
@@ -1178,7 +1285,7 @@ def search_and_download(queue_id, queue_item, client):
             logger.error(f"Queue {queue_id}: Failed to queue download in slskd")
             mark_failed(queue_id, "Failed to queue Soulseek download", schedule_retry=True, retry_delay_minutes=15)
             return False
-            
+
     except Exception as e:
         logger.error(f"Queue {queue_id}: Error in search_and_download: {e}")
         logger.debug(traceback.format_exc())
