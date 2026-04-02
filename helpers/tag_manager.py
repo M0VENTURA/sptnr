@@ -461,6 +461,24 @@ def _write_id3_tags(file_path: str, tags: Dict[str, Any]) -> bool:
             audio.tags.delall(frame_id)
             audio.tags.add(frame_cls(encoding=3, text=[text]))
 
+        def _norm_txxx_desc(desc: str) -> str:
+            """Normalise a TXXX desc for comparison: lowercase, strip spaces/underscores/hyphens."""
+            return desc.lower().replace(' ', '').replace('_', '').replace('-', '')
+
+        def _clear_txxx_variants(normalized_target: str) -> None:
+            """Remove every TXXX frame whose normalised desc matches *normalized_target*.
+
+            This catches any capitalisation or separator variant written by Picard, beets,
+            older versions of this code, or third-party tools before we write the canonical
+            frame, ensuring exactly one value ends up in the file.
+            """
+            to_delete = [
+                key for key in list(audio.tags.keys())
+                if key.startswith('TXXX:') and _norm_txxx_desc(key[5:]) == normalized_target
+            ]
+            for key in to_delete:
+                audio.tags.delall(key)
+
         for field, value in tags.items():
             if field == "title":
                 _set_text_frame("TIT2", TIT2, value)
@@ -512,45 +530,33 @@ def _write_id3_tags(file_path: str, tags: Dict[str, Any]) -> bool:
                 audio.tags.delall("COMM")
                 if value is not None and str(value).strip():
                     audio.tags.add(COMM(encoding=3, lang="eng", desc="", text=[str(value)]))
-            elif field == "mbid":
-                # Delete both the space-separated canonical frame AND the legacy
-                # underscore variant written by some older taggers/scripts so that
-                # only one authoritative value remains in the file.
-                audio.tags.delall("TXXX:MUSICBRAINZ TRACK ID")
-                audio.tags.delall("TXXX:MUSICBRAINZ_TRACKID")
+            elif field in ("mbid", "musicbrainz_trackid"):
+                # Both field names refer to the recording UUID and map to the same TXXX frame.
+                _clear_txxx_variants('musicbrainztrackid')
                 if value is not None and str(value).strip():
                     audio.tags.add(TXXX(encoding=3, desc="MUSICBRAINZ TRACK ID", text=[str(value)]))
             elif field in ("musicbrainz_album_mbid", "musicbrainz_albumid"):
-                # Delete both the space-separated canonical frame AND the legacy
-                # underscore variant written by some older taggers/scripts so that
-                # only one authoritative value remains in the file.
-                audio.tags.delall("TXXX:MUSICBRAINZ ALBUM ID")
-                audio.tags.delall("TXXX:MUSICBRAINZ_ALBUMID")
+                _clear_txxx_variants('musicbrainzalbumid')
                 if value is not None and str(value).strip():
                     audio.tags.add(TXXX(encoding=3, desc="MUSICBRAINZ ALBUM ID", text=[str(value)]))
             elif field == "musicbrainz_artistid":
-                audio.tags.delall("TXXX:MUSICBRAINZ ARTIST ID")
-                audio.tags.delall("TXXX:MUSICBRAINZ_ARTISTID")
+                _clear_txxx_variants('musicbrainzartistid')
                 if value is not None and str(value).strip():
                     audio.tags.add(TXXX(encoding=3, desc="MUSICBRAINZ ARTIST ID", text=[str(value)]))
             elif field == "musicbrainz_albumartistid":
-                audio.tags.delall("TXXX:MUSICBRAINZ ALBUM ARTIST ID")
-                audio.tags.delall("TXXX:MUSICBRAINZ_ALBUMARTISTID")
+                _clear_txxx_variants('musicbrainzalbumartistid')
                 if value is not None and str(value).strip():
                     audio.tags.add(TXXX(encoding=3, desc="MUSICBRAINZ ALBUM ARTIST ID", text=[str(value)]))
             elif field == "musicbrainz_releasegroupid":
-                audio.tags.delall("TXXX:MUSICBRAINZ RELEASE GROUP ID")
-                audio.tags.delall("TXXX:MUSICBRAINZ_RELEASEGROUPID")
+                _clear_txxx_variants('musicbrainzreleasegroupid')
                 if value is not None and str(value).strip():
                     audio.tags.add(TXXX(encoding=3, desc="MUSICBRAINZ RELEASE GROUP ID", text=[str(value)]))
             elif field == "musicbrainz_releasetrackid":
-                audio.tags.delall("TXXX:MUSICBRAINZ RELEASE TRACK ID")
-                audio.tags.delall("TXXX:MUSICBRAINZ_RELEASETRACKID")
+                _clear_txxx_variants('musicbrainzreleasetrackid')
                 if value is not None and str(value).strip():
                     audio.tags.add(TXXX(encoding=3, desc="MUSICBRAINZ RELEASE TRACK ID", text=[str(value)]))
             elif field == "musicbrainz_workid":
-                audio.tags.delall("TXXX:MUSICBRAINZ WORK ID")
-                audio.tags.delall("TXXX:MUSICBRAINZ_WORKID")
+                _clear_txxx_variants('musicbrainzworkid')
                 if value is not None and str(value).strip():
                     audio.tags.add(TXXX(encoding=3, desc="MUSICBRAINZ WORK ID", text=[str(value)]))
             elif field == "titlesort":
@@ -754,6 +760,7 @@ def _write_flac_tags(file_path: str, tags: Dict[str, Any]) -> bool:
             "mood": "mood",
             "comment": "comment",
             "mbid": "musicbrainz_trackid",
+            "musicbrainz_trackid": "musicbrainz_trackid",
             "musicbrainz_album_mbid": "musicbrainz_albumid",
             # Both musicbrainz_album_mbid and musicbrainz_albumid are column names used
             # in different parts of the codebase for the same MBID; both map to the

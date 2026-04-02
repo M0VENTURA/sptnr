@@ -441,10 +441,16 @@ def _backfill_from_file_tags(file_path: str, extracted: dict) -> None:
         extracted["label"] = extracted["recordlabel"]
         backfilled.append("label")
 
-    # musicbrainz_album_mbid is an alias for musicbrainz_albumid in this codebase.
-    if not extracted.get("musicbrainz_album_mbid") and extracted.get("musicbrainz_albumid"):
-        extracted["musicbrainz_album_mbid"] = extracted["musicbrainz_albumid"]
-        backfilled.append("musicbrainz_album_mbid")
+    # musicbrainz_album_mbid is a legacy alias for musicbrainz_albumid — always keep them
+    # identical so the two DB columns never diverge regardless of which one the file backfill
+    # populated.
+    if extracted.get("musicbrainz_albumid"):
+        if extracted.get("musicbrainz_album_mbid") != extracted["musicbrainz_albumid"]:
+            extracted["musicbrainz_album_mbid"] = extracted["musicbrainz_albumid"]
+            backfilled.append("musicbrainz_album_mbid")
+    elif extracted.get("musicbrainz_album_mbid"):
+        extracted["musicbrainz_albumid"] = extracted["musicbrainz_album_mbid"]
+        backfilled.append("musicbrainz_albumid")
 
     if backfilled:
         logging.debug(
@@ -836,8 +842,13 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "single_sources": json.dumps([]),  # Serialize as JSON string
                     # ── MusicBrainz IDs ───────────────────────────────────────
                     "mbid": extracted.get("mbid", "") or "",
-                    "musicbrainz_album_mbid": extracted.get("musicbrainz_album_mbid", "") or "",
+                    # musicbrainz_albumid is the canonical release UUID column.
+                    # musicbrainz_album_mbid is a legacy alias — always derive it from
+                    # musicbrainz_albumid here so both DB columns are identical.
+                    # (_backfill_from_file_tags above has already synced them inside
+                    # `extracted`, so both reads land on the same value.)
                     "musicbrainz_albumid": extracted.get("musicbrainz_albumid", "") or "",
+                    "musicbrainz_album_mbid": extracted.get("musicbrainz_albumid", "") or "",
                     "musicbrainz_trackid": extracted.get("musicbrainz_trackid", "") or "",
                     "musicbrainz_releasegroupid": extracted.get("musicbrainz_releasegroupid", "") or "",
                     "musicbrainz_releasetrackid": extracted.get("musicbrainz_releasetrackid", "") or "",

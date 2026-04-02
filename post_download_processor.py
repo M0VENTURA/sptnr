@@ -397,11 +397,16 @@ def update_file_metadata_with_albumart(file_path, metadata, cover_art_data=None,
             # album into phantom duplicates.
             _release_mbid = _get_mbid_from_metadata(metadata, 'release_mbid', 'musicbrainz_albumid')
             if _release_mbid:
-                audio.tags.setall('TXXX:MUSICBRAINZ ALBUM ID', [])
+                # Clear every TXXX variant (any capitalisation/separator) so no duplicate frames remain.
+                for _k in [k for k in list(audio.tags.keys())
+                           if k.startswith('TXXX:') and k[5:].lower().replace(' ', '').replace('_', '') == 'musicbrainzalbumid']:
+                    audio.tags.delall(_k)
                 audio.tags.add(TXXX(encoding=3, desc='MUSICBRAINZ ALBUM ID', text=[_release_mbid]))
             _recording_mbid = _get_mbid_from_metadata(metadata, 'recording_mbid', 'musicbrainz_trackid')
             if _recording_mbid:
-                audio.tags.setall('TXXX:MUSICBRAINZ TRACK ID', [])
+                for _k in [k for k in list(audio.tags.keys())
+                           if k.startswith('TXXX:') and k[5:].lower().replace(' ', '').replace('_', '') == 'musicbrainztrackid']:
+                    audio.tags.delall(_k)
                 audio.tags.add(TXXX(encoding=3, desc='MUSICBRAINZ TRACK ID', text=[_recording_mbid]))
 
             # ISRC — write as the standard ID3 TSRC frame (only when a value is present)
