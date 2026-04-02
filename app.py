@@ -32431,6 +32431,10 @@ def api_album_musicbrainz_compare():
                 # Year differs?
                 if mb_year and str(mb_year) != str(lib_track.get("year") or ""):
                     diff_fields.append("year")
+                # MBID: flag if library is missing recording MBID but MB has one
+                lib_mbid = (lib_track.get("mbid") or "").strip()
+                if mb_recording_id and not lib_mbid:
+                    diff_fields.append("mbid")
 
                 entry["diff_fields"] = diff_fields
                 entry["needs_update"] = len(diff_fields) > 0

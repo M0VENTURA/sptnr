@@ -2230,6 +2230,9 @@
             if (trackComp.diff_fields.includes('year')) {
                 diffParts.push(`Year: ${escapeHtml(trackComp.library_year || '—')} → ${escapeHtml(String(trackComp.mb_year))}`);
             }
+            if (trackComp.diff_fields.includes('mbid')) {
+                diffParts.push(`MusicBrainz ID: <em>missing</em> → <strong>added</strong>`);
+            }
 
             const updateRow = document.createElement('tr');
             updateRow.className = 'mb-update-row';
@@ -3291,7 +3294,18 @@
         document.getElementById('editTrackConfidenceField').value = trackData.single_confidence || 'low';
         document.getElementById('editTrackAlbumArtistField').value = trackData.album_artist || '';
         document.getElementById('editTrackComposerField').value = trackData.composer || '';
-        document.getElementById('editTrackWriterField').value = trackData.writer || '';
+        (function() {
+            let writerVal = trackData.writer || '';
+            if (writerVal) {
+                try {
+                    const parsed = JSON.parse(writerVal);
+                    if (Array.isArray(parsed)) {
+                        writerVal = parsed.filter(w => w && typeof w === 'string' && w.trim()).join(', ');
+                    }
+                } catch (e) { /* keep original value */ }
+            }
+            document.getElementById('editTrackWriterField').value = writerVal;
+        })();
         document.getElementById('editTrackArrangerField').value = trackData.arranger || '';
         document.getElementById('editTrackMixerField').value = trackData.mixer || '';
         document.getElementById('editTrackProducerField').value = trackData.producer || '';
