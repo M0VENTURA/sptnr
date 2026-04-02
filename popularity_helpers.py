@@ -891,7 +891,7 @@ def _get_nav_client():
     config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
     try:
         with open(config_path, 'r') as f:
-            config = yaml.safe_load(f)
+            config = yaml.safe_load(f) or {}
         
         # Try multi-user config first
         nav_users = config.get('navidrome_users')
