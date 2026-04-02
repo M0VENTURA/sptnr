@@ -812,7 +812,15 @@ class CoverDetector:
             if not cover_work_ids:
                 return fast_path_result
 
-            search_title = title or seed_recording.get('title') or ''
+            # Prefer the canonical MusicBrainz title stored on the seed recording
+            # over the local file title.  Local titles often carry a "(X Cover)"
+            # suffix (e.g. "The Look (Eve St. Jones Cover)") which biases the
+            # search toward returning that cover artist's recordings instead of
+            # the true original.  Fall back to the local title with the cover
+            # suffix stripped so the query is always just the bare song title.
+            _stripped_title = _COVER_SUFFIX_RE.sub('', title or '').strip()
+            mb_title = seed_recording.get('title') or None
+            search_title = mb_title or _stripped_title or title or ''
             if not search_title:
                 return None
 
@@ -858,15 +866,26 @@ class CoverDetector:
                     continue
 
                 full_recording = details.get('recording', {})
-                recording_work_ids = self._extract_cover_work_ids(full_recording)
-                if not recording_work_ids:
-                    recording_work_ids = set(
-                        (rel.get('work') or {}).get('id')
-                        for rel in (full_recording.get('work-relation-list', []) or [])
-                        if (rel.get('work') or {}).get('id')
-                    )
 
-                if not (recording_work_ids & cover_work_ids):
+                # All work IDs linked to this recording (any performance type).
+                all_recording_work_ids = set(
+                    (rel.get('work') or {}).get('id')
+                    for rel in (full_recording.get('work-relation-list', []) or [])
+                    if (rel.get('work') or {}).get('id')
+                )
+
+                # Skip recordings not linked to the same work at all.
+                if not (all_recording_work_ids & cover_work_ids):
+                    continue
+
+                # Work IDs from cover-performance relations only.
+                recording_cover_work_ids = self._extract_cover_work_ids(full_recording)
+
+                # Skip recordings that are themselves cover performances of the
+                # same work — we want the true original, not another cover artist
+                # (e.g. Eve St. Jones also covered "The Look" from Roxette, so
+                # her recording shares the same work ID but is NOT the original).
+                if recording_cover_work_ids & cover_work_ids:
                     continue
 
                 artist_credit = full_recording.get('artist-credit', []) or recording.get('artist-credit', [])
