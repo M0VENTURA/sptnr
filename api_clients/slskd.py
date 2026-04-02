@@ -94,13 +94,16 @@ class SlskdClient:
         self.base_url = f"{self.web_url}/api/v0"
         self.headers = {"X-API-Key": api_key} if api_key else {}
     
-    def start_search(self, query: str, timeout: Optional[int] = None) -> Optional[str]:
+    def start_search(self, query: str, timeout: Optional[int] = None, max_attempts: int = 5) -> Optional[str]:
         """
         Start a new search on Soulseek.
         
         Args:
             query: Search query (e.g., "artist title")
             timeout: Request timeout (uses default_timeout if not specified)
+            max_attempts: Maximum number of attempts when slskd returns 429 (slot busy).
+                          Use a lower value (e.g. 3) for interactive/manual searches so the
+                          caller doesn't wait too long before surfacing an error.
             
         Returns:
             Search ID or None on failure
@@ -117,7 +120,6 @@ class SlskdClient:
 
             # slskd enforces a single concurrent search operation; gracefully
             # wait/retry when the API returns HTTP 429 for that condition.
-            max_attempts = 5
             for attempt in range(1, max_attempts + 1):
                 resp = self.session.post(url, json=data, headers=self.headers, timeout=timeout)
 

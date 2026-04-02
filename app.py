@@ -17800,7 +17800,10 @@ def slskd_search():
     
     try:
         client = SlskdClient(web_url, api_key, enabled=True)
-        search_id = client.start_search(query)
+        # Use a reduced timeout and fewer retry attempts for interactive searches so
+        # the browser does not time out waiting (~6s × 3 attempts + small waits ≈ 20s,
+        # comfortably within the 30-second frontend fetch timeout).
+        search_id = client.start_search(query, timeout=6, max_attempts=3)
         
         if not search_id:
             return jsonify({"error": "Failed to start search"}), 500
