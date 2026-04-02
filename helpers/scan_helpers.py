@@ -747,9 +747,9 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 log_album_scan(artist_name, album_name, 'navidrome', len(cached_ids_for_album), 'skipped')
                 continue
 
-            # Skip if Navidrome track IDs exactly match the DB (no additions/removals) even with
-            # force=True — the library hasn't changed so there is nothing to update.
-            if not album_needs_reimport and tracks and cached_ids_for_album:
+            # Skip if Navidrome track IDs exactly match the DB (no additions/removals).
+            # When force=True this check is bypassed so the user can explicitly re-import.
+            if not force and not album_needs_reimport and tracks and cached_ids_for_album:
                 navidrome_album_ids = {t.get("id") for t in tracks if t.get("id")}
                 if navidrome_album_ids and navidrome_album_ids == cached_ids_for_album:
                     logging.debug(f"Skipping unchanged album '{album_name}' ({len(cached_ids_for_album)} tracks, IDs match)")

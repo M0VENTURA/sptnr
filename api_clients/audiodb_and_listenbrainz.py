@@ -209,9 +209,14 @@ class ListenBrainzUserClient:
             if not isinstance(payload, dict):
                 payload = {}
 
-            rec_mbids = payload.get("recordings", [])  # List of MBID strings
-            if not isinstance(rec_mbids, list):
-                rec_mbids = []
+            # The CF recommendations endpoint returns a list of dicts:
+            # [{"recording_mbid": "...", "score": 0.9, ...}, ...]
+            rec_items = payload.get("recommendations", [])
+            if not isinstance(rec_items, list):
+                rec_items = []
+
+            # Extract plain MBID strings from the recommendation dicts
+            rec_mbids = [r.get("recording_mbid", "") for r in rec_items if isinstance(r, dict) and r.get("recording_mbid")]
 
             if not rec_mbids:
                 logger.warning(f"No CF recommendations from ListenBrainz for {username}")

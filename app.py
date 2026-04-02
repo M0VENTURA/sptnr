@@ -31091,13 +31091,52 @@ def slskd_events():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/smartplaylist/<path:filename>", methods=["GET"])
+def api_get_smart_playlist(filename):
+    """Load an existing Smart Playlist (.nsp file) for editing."""
+    try:
+        # Restrict to a plain filename (no path separators) ending in .nsp
+        filename = os.path.basename(filename)
+        if not filename.endswith(".nsp"):
+            return jsonify({"error": "Only .nsp files are supported"}), 400
+
+        music_folder = os.environ.get("MUSIC_FOLDER", "/music")
+        playlists_dir = os.path.realpath(os.path.join(music_folder, "Playlists"))
+        file_path = os.path.realpath(os.path.join(playlists_dir, filename))
+
+        # Confirm the resolved path is strictly inside playlists_dir
+        if not file_path.startswith(playlists_dir + os.sep):
+            return jsonify({"error": "Invalid file name"}), 400
+
+        if not os.path.exists(file_path):
+            return jsonify({"error": f"Playlist file '{filename}' not found"}), 404
+
+        with open(file_path, "r", encoding="utf-8") as f:
+            playlist_data = json.load(f)
+
+        # Return the raw NSP data together with the bare filename (without .nsp)
+        return jsonify({
+            "success": True,
+            "file_name": filename,
+            "playlist": playlist_data,
+        })
+    except Exception as e:
+        logging.error(f"Error loading smart playlist '{filename}': {e}")
+        return jsonify({"error": "Failed to load smart playlist"}), 500
+
+
 @app.route("/api/smartplaylist/create", methods=["POST"])
 def api_create_smart_playlist():
-    """Create a new Smart Playlist (.nsp file)"""
+    """Create or update a Smart Playlist (.nsp file).
+
+    Pass ``overwrite: true`` in the request body to allow overwriting an
+    existing file (used by the edit/update flow in the UI).
+    """
     try:
         data = request.get_json()
         file_name = data.get('fileName', '').strip()
         playlist_data = data.get('playlist', {})
+        overwrite = bool(data.get('overwrite', False))
         
         if not file_name:
             return jsonify({"error": "File name is required"}), 400
@@ -31112,34 +31151,38 @@ def api_create_smart_playlist():
         
         # Create playlists directory if it doesn't exist
         music_folder = os.environ.get("MUSIC_FOLDER", "/music")
-        playlists_dir = os.path.join(music_folder, "Playlists")
+        playlists_dir = os.path.realpath(os.path.join(music_folder, "Playlists"))
         os.makedirs(playlists_dir, exist_ok=True)
         
-        # Create file path
-        file_path = os.path.join(playlists_dir, f"{file_name}.nsp")
+        # Build and verify the file path to prevent any traversal
+        file_path = os.path.realpath(os.path.join(playlists_dir, f"{file_name}.nsp"))
+        if not file_path.startswith(playlists_dir + os.sep):
+            return jsonify({"error": "Invalid file name"}), 400
         
-        # Check if file already exists
-        if os.path.exists(file_path):
+        # Check if file already exists (only block when not explicitly overwriting)
+        already_exists = os.path.exists(file_path)
+        if already_exists and not overwrite:
             return jsonify({"error": f"Playlist file '{file_name}.nsp' already exists"}), 400
         
         # Write the playlist file
         try:
-            with open(file_path, 'w') as f:
-                json.dump(playlist_data, f, indent=2)
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(playlist_data, f, indent=2, ensure_ascii=False)
             
+            action = "updated" if already_exists else "created"
             return jsonify({
                 "success": True,
-                "message": f"Smart Playlist '{playlist_data.get('name')}' created successfully",
+                "message": f"Smart Playlist '{playlist_data.get('name')}' {action} successfully",
                 "file_path": file_path,
                 "file_name": f"{file_name}.nsp"
-            }), 201
+            }), 200 if already_exists else 201
         
         except IOError as e:
             return jsonify({"error": f"Failed to write playlist file: {str(e)}"}), 500
     
     except Exception as e:
         logging.error(f"Error creating smart playlist: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Failed to save smart playlist"}), 500
 
 
 # ============================================================================
