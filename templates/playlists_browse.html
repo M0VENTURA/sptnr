@@ -322,6 +322,104 @@
       </div>
     </div>
   </div>
+
+  <!-- Smart Playlist Creator -->
+  <div class="mb-4">
+    <div class="card">
+      <div class="card-header">
+        <h5 class="card-title mb-0">
+          <i class="bi bi-sliders"></i> Create Smart Playlist (.nsp)
+        </h5>
+      </div>
+      <div class="card-body">
+        <p class="text-muted mb-4">
+          Build a rule-based smart playlist saved as an <code>.nsp</code> file in your Navidrome playlists folder
+          (<code>$MUSIC_FOLDER/Playlists/</code>).
+          Navidrome will dynamically populate it based on the rules you define.
+          See <a href="https://www.navidrome.org/docs/usage/features/smart-playlists/" target="_blank" rel="noopener">Navidrome Smart Playlist docs</a> for details.
+        </p>
+
+        <div class="row g-3 mb-4">
+          <div class="col-12 col-md-6">
+            <label for="nspPlaylistName" class="form-label">Playlist Name <span class="text-danger">*</span></label>
+            <input type="text" id="nspPlaylistName" class="form-control" placeholder="e.g., My Smart Mix" required
+              oninput="nspAutoFillFileName(this.value)">
+          </div>
+          <div class="col-12 col-md-6">
+            <label for="nspFileName" class="form-label">File Name <span class="text-danger">*</span></label>
+            <div class="input-group">
+              <input type="text" id="nspFileName" class="form-control" placeholder="e.g., my_smart_mix">
+              <span class="input-group-text">.nsp</span>
+            </div>
+            <small class="text-muted">Alphanumeric, dashes, underscores, and spaces only</small>
+          </div>
+          <div class="col-12">
+            <label for="nspComment" class="form-label">Description (optional)</label>
+            <input type="text" id="nspComment" class="form-control" placeholder="Optional description for this playlist">
+          </div>
+        </div>
+
+        <!-- Match Type -->
+        <div class="mb-3 d-flex align-items-center gap-3">
+          <span class="fw-semibold">Match</span>
+          <div class="btn-group" role="group">
+            <input type="radio" class="btn-check" name="nspMatchType" id="nspMatchAll" value="all" checked>
+            <label class="btn btn-sm btn-outline-primary" for="nspMatchAll">ALL rules</label>
+            <input type="radio" class="btn-check" name="nspMatchType" id="nspMatchAny" value="any">
+            <label class="btn btn-sm btn-outline-primary" for="nspMatchAny">ANY rule</label>
+          </div>
+          <span class="text-muted small">of the following conditions:</span>
+        </div>
+
+        <!-- Rules Container -->
+        <div id="nspRulesContainer" class="mb-3">
+          <!-- Rules are added dynamically -->
+        </div>
+
+        <button type="button" class="btn btn-sm btn-outline-secondary mb-4" onclick="nspAddRule()">
+          <i class="bi bi-plus-circle"></i> Add Rule
+        </button>
+
+        <!-- Sort & Limit -->
+        <div class="row g-3 mb-4">
+          <div class="col-12 col-md-6">
+            <label for="nspSort" class="form-label">Sort By</label>
+            <select id="nspSort" class="form-select">
+              <option value="random">Random</option>
+              <option value="title">Title (A→Z)</option>
+              <option value="-title">Title (Z→A)</option>
+              <option value="artist">Artist (A→Z)</option>
+              <option value="-artist">Artist (Z→A)</option>
+              <option value="album">Album (A→Z)</option>
+              <option value="-album">Album (Z→A)</option>
+              <option value="year">Year (oldest first)</option>
+              <option value="-year">Year (newest first)</option>
+              <option value="rating">Rating (lowest first)</option>
+              <option value="-rating">Rating (highest first)</option>
+              <option value="playCount">Play Count (lowest first)</option>
+              <option value="-playCount">Play Count (most played first)</option>
+              <option value="lastPlayed">Last Played (oldest first)</option>
+              <option value="-lastPlayed">Last Played (most recent first)</option>
+            </select>
+          </div>
+          <div class="col-12 col-md-6">
+            <label for="nspLimit" class="form-label">Limit (optional)</label>
+            <input type="number" id="nspLimit" class="form-control" placeholder="No limit" min="1" max="5000">
+            <small class="text-muted">Maximum number of tracks to include</small>
+          </div>
+        </div>
+
+        <div class="d-flex gap-2 justify-content-end">
+          <button type="button" class="btn btn-outline-secondary" onclick="nspResetForm()">
+            <i class="bi bi-x-circle"></i> Clear
+          </button>
+          <button type="button" class="btn btn-primary" onclick="nspCreatePlaylist()">
+            <i class="bi bi-file-earmark-music"></i> Save Smart Playlist
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script src="{{ url_for('static', filename='js/playlist.js') }}"></script>
@@ -806,6 +904,260 @@
       showToast('ListenBrainz playlist failed: ' + error.message, 'danger');
     }
   }
+
+  // ============================================================
+  // Smart Playlist (.nsp) Creator
+  // ============================================================
+
+  const NSP_FIELDS = [
+    { value: 'title',       label: 'Title',           type: 'text' },
+    { value: 'artist',      label: 'Artist',          type: 'text' },
+    { value: 'albumArtist', label: 'Album Artist',    type: 'text' },
+    { value: 'album',       label: 'Album',           type: 'text' },
+    { value: 'genre',       label: 'Genre',           type: 'text' },
+    { value: 'year',        label: 'Year',            type: 'number' },
+    { value: 'rating',      label: 'Rating (1–5)',    type: 'number' },
+    { value: 'playCount',   label: 'Play Count',      type: 'number' },
+    { value: 'lastPlayed',  label: 'Last Played',     type: 'date' },
+    { value: 'loved',       label: 'Loved/Starred',   type: 'boolean' },
+  ];
+
+  const NSP_OPERATORS = {
+    text: [
+      { value: 'contains',    label: 'contains' },
+      { value: 'notContains', label: 'does not contain' },
+      { value: 'is',          label: 'is (exact)' },
+      { value: 'isNot',       label: 'is not' },
+      { value: 'startsWith',  label: 'begins with' },
+      { value: 'endsWith',    label: 'ends with' },
+    ],
+    number: [
+      { value: 'is',   label: 'equals' },
+      { value: 'isNot',label: 'not equals' },
+      { value: 'gt',   label: 'greater than' },
+      { value: 'lt',   label: 'less than' },
+      { value: 'gte',  label: 'greater than or equal' },
+      { value: 'lte',  label: 'less than or equal' },
+      { value: 'inRange', label: 'in range' },
+    ],
+    date: [
+      { value: 'after',   label: 'after' },
+      { value: 'before',  label: 'before' },
+      { value: 'inRange', label: 'in range' },
+    ],
+    boolean: [
+      { value: 'is', label: 'is' },
+    ],
+  };
+
+  let nspRuleCounter = 0;
+
+  function nspAutoFillFileName(name) {
+    const fileInput = document.getElementById('nspFileName');
+    if (!fileInput._userEdited) {
+      fileInput.value = name.replace(/[^a-zA-Z0-9\-_]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+    }
+  }
+
+  // Track manual edits on the file name input
+  document.addEventListener('DOMContentLoaded', () => {
+    const fi = document.getElementById('nspFileName');
+    if (fi) fi.addEventListener('input', () => { fi._userEdited = true; });
+  });
+
+  function nspGetFieldMeta(fieldValue) {
+    return NSP_FIELDS.find(f => f.value === fieldValue) || NSP_FIELDS[0];
+  }
+
+  function nspBuildOperatorOptions(fieldType, selectedOp) {
+    return (NSP_OPERATORS[fieldType] || NSP_OPERATORS.text)
+      .map(op => `<option value="${op.value}"${op.value === selectedOp ? ' selected' : ''}>${escapeHtml(op.label)}</option>`)
+      .join('');
+  }
+
+  function nspBuildValueInput(fieldMeta, ruleId, currentValue) {
+    const id = `nspValue_${ruleId}`;
+    const id2 = `nspValue2_${ruleId}`;
+    const isRange = document.getElementById(`nspOp_${ruleId}`) &&
+                    document.getElementById(`nspOp_${ruleId}`).value === 'inRange';
+
+    if (fieldMeta.type === 'boolean') {
+      return `<select id="${id}" class="form-select form-select-sm">
+        <option value="true"${currentValue === 'true' ? ' selected' : ''}>Yes (Loved)</option>
+        <option value="false"${currentValue === 'false' ? ' selected' : ''}>No</option>
+      </select>`;
+    }
+    if (fieldMeta.type === 'date') {
+      const range = isRange
+        ? `<span class="input-group-text">to</span><input type="date" id="${id2}" class="form-control form-control-sm">`
+        : '';
+      return `<input type="date" id="${id}" class="form-control form-control-sm">${range}`;
+    }
+    if (fieldMeta.type === 'number') {
+      const range = isRange
+        ? `<span class="input-group-text">to</span><input type="number" id="${id2}" class="form-control form-control-sm" min="0">`
+        : '';
+      const step = fieldMeta.value === 'rating' ? ' min="1" max="5"' : ' min="0"';
+      return `<input type="number" id="${id}" class="form-control form-control-sm"${step} value="${escapeHtml(currentValue || '')}">${range}`;
+    }
+    return `<input type="text" id="${id}" class="form-control form-control-sm" value="${escapeHtml(currentValue || '')}">`;
+  }
+
+  function nspAddRule(fieldVal, opVal, val) {
+    const id = ++nspRuleCounter;
+    const fieldMeta = nspGetFieldMeta(fieldVal || 'title');
+    const opOptions = nspBuildOperatorOptions(fieldMeta.type, opVal || '');
+    const fieldOptions = NSP_FIELDS
+      .map(f => `<option value="${f.value}"${f.value === fieldMeta.value ? ' selected' : ''}>${escapeHtml(f.label)}</option>`)
+      .join('');
+
+    const row = document.createElement('div');
+    row.id = `nspRule_${id}`;
+    row.className = 'row g-2 align-items-center mb-2 nsp-rule-row';
+    row.innerHTML = `
+      <div class="col-12 col-md-3">
+        <select id="nspField_${id}" class="form-select form-select-sm" onchange="nspOnFieldChange(${id})">
+          ${fieldOptions}
+        </select>
+      </div>
+      <div class="col-12 col-md-3">
+        <select id="nspOp_${id}" class="form-select form-select-sm" onchange="nspOnOpChange(${id})">
+          ${opOptions}
+        </select>
+      </div>
+      <div class="col-12 col-md-5 input-group input-group-sm" id="nspValueWrap_${id}">
+        ${nspBuildValueInput(fieldMeta, id, val)}
+      </div>
+      <div class="col-12 col-md-1 text-end">
+        <button type="button" class="btn btn-sm btn-outline-danger" onclick="nspRemoveRule(${id})" title="Remove rule">
+          <i class="bi bi-trash"></i>
+        </button>
+      </div>
+    `;
+    document.getElementById('nspRulesContainer').appendChild(row);
+  }
+
+  function nspOnFieldChange(id) {
+    const fieldVal = document.getElementById(`nspField_${id}`).value;
+    const fieldMeta = nspGetFieldMeta(fieldVal);
+    const opSel = document.getElementById(`nspOp_${id}`);
+    opSel.innerHTML = nspBuildOperatorOptions(fieldMeta.type, '');
+    nspOnOpChange(id);
+  }
+
+  function nspOnOpChange(id) {
+    const fieldVal = document.getElementById(`nspField_${id}`).value;
+    const fieldMeta = nspGetFieldMeta(fieldVal);
+    document.getElementById(`nspValueWrap_${id}`).innerHTML = nspBuildValueInput(fieldMeta, id, '');
+  }
+
+  function nspRemoveRule(id) {
+    const el = document.getElementById(`nspRule_${id}`);
+    if (el) el.remove();
+  }
+
+  function nspResetForm() {
+    document.getElementById('nspPlaylistName').value = '';
+    const fi = document.getElementById('nspFileName');
+    fi.value = '';
+    fi._userEdited = false;
+    document.getElementById('nspComment').value = '';
+    document.getElementById('nspMatchAll').checked = true;
+    document.getElementById('nspSort').value = 'random';
+    document.getElementById('nspLimit').value = '';
+    document.getElementById('nspRulesContainer').innerHTML = '';
+    nspRuleCounter = 0;
+  }
+
+  function nspGetRuleValue(id, isRange) {
+    const v1El = document.getElementById(`nspValue_${id}`);
+    const v2El = document.getElementById(`nspValue2_${id}`);
+    const v1 = v1El ? v1El.value.trim() : '';
+    if (isRange && v2El) {
+      return [v1, v2El.value.trim()];
+    }
+    return v1;
+  }
+
+  function nspIsInvalidRuleValue(value) {
+    if (value === null || value === '') return true;
+    if (Array.isArray(value) && value.some(v => v === null || v === '')) return true;
+    return false;
+  }
+
+  async function nspCreatePlaylist() {
+    const name = document.getElementById('nspPlaylistName').value.trim();
+    const fileName = document.getElementById('nspFileName').value.trim();
+    const comment = document.getElementById('nspComment').value.trim();
+    const matchType = document.querySelector('input[name="nspMatchType"]:checked').value;
+    const sort = document.getElementById('nspSort').value;
+    const limitRaw = document.getElementById('nspLimit').value.trim();
+
+    if (!name) { showToast('Playlist name is required.', 'warning'); return; }
+    if (!fileName) { showToast('File name is required.', 'warning'); return; }
+    if (!/^[a-zA-Z0-9\-_ ]+$/.test(fileName)) {
+      showToast('File name may only contain letters, numbers, dashes, underscores, and spaces.', 'warning');
+      return;
+    }
+
+    // Collect rules
+    const ruleRows = document.querySelectorAll('.nsp-rule-row');
+    if (ruleRows.length === 0) { showToast('Add at least one rule before saving.', 'warning'); return; }
+
+    const conditions = [];
+    for (const row of ruleRows) {
+      const idMatch = row.id.match(/nspRule_(\d+)/);
+      if (!idMatch) continue;
+      const id = idMatch[1];
+      const field = document.getElementById(`nspField_${id}`).value;
+      const op = document.getElementById(`nspOp_${id}`).value;
+      const isRange = op === 'inRange';
+      const rawValue = nspGetRuleValue(id, isRange);
+
+      let value = rawValue;
+      const fieldMeta = nspGetFieldMeta(field);
+      if (fieldMeta.type === 'number' && !isRange) {
+        value = rawValue === '' ? null : Number(rawValue);
+      } else if (fieldMeta.type === 'boolean') {
+        value = rawValue === 'true';
+      } else if (isRange && Array.isArray(rawValue) && fieldMeta.type === 'number') {
+        value = rawValue.map(v => v === '' ? null : Number(v));
+      }
+
+      if (nspIsInvalidRuleValue(value)) {
+        showToast(`Please fill in the value for all rules (field: ${field}).`, 'warning');
+        return;
+      }
+
+      conditions.push({ [op]: { [field]: value } });
+    }
+
+    // Build NSP structure
+    const playlist = { name, [matchType]: conditions, sort };
+    if (comment) playlist.comment = comment;
+    if (limitRaw) playlist.limit = parseInt(limitRaw, 10);
+
+    try {
+      const resp = await fetch('/api/smartplaylist/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileName, playlist })
+      });
+      const result = await resp.json();
+      if (!resp.ok || !result.success) {
+        showToast('Failed to create smart playlist: ' + (result.error || resp.statusText), 'danger');
+        return;
+      }
+      showToast(`Smart playlist "${name}" saved as <code>${escapeHtml(result.file_name)}</code> in your playlists folder.`, 'success');
+      nspResetForm();
+    } catch (err) {
+      console.error('Smart playlist creation error:', err);
+      showToast('Error creating smart playlist: ' + err.message, 'danger');
+    }
+  }
+
+  // Add an initial rule row on page load
+  nspAddRule();
 </script>
 
 {% endblock %}
