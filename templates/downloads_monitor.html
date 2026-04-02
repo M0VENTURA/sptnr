@@ -1233,7 +1233,7 @@ async function runSoulseekManualSearch() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ query }),
-    });
+    }, 60000);
 
     const searchId = startData.searchId;
     if (!searchId) {
