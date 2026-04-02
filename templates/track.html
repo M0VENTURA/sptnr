@@ -1139,6 +1139,12 @@
                             <div class="metadata-value monospace" style="font-size: 0.7rem;">{{ track.isrc }}</div>
                         </div>
                         {% endif %}
+                        {% if track.file_path %}
+                        <div class="metadata-row mt-2">
+                            <div class="metadata-label small">File Path</div>
+                            <div class="metadata-value monospace" style="font-size: 0.7rem; word-break: break-all;">{{ track.file_path }}</div>
+                        </div>
+                        {% endif %}
                     </div>
                 </div>
 
