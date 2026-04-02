@@ -98,6 +98,13 @@ DOWNLOADS_DIR = resolve_downloads_dir()
 # Enforce a floor between retries so unavailable tracks do not churn.
 MIN_RETRY_DELAY_MINUTES = 60
 
+# Shared constants for orphan-token detection used in both
+# _score_soulseek_candidate and _filename_matches_queue_item.
+_ORPHAN_AUDIO_EXT_TOKENS = frozenset(
+    {"mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "opus", "aiff"}
+)
+_ORPHAN_NUM_RE = re.compile(r'^\d{1,4}$')
+
 
 def _normalize_match_text(value):
     """Normalize text for conservative filename/metadata matching."""
@@ -256,8 +263,6 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     # the album (so the title could just be the album folder name, not the track).
     # Applied AFTER all other bonuses so the album-in-path reward cannot rescue
     # a wrong-track candidate.
-    _AUDIO_EXT_TOKENS = {"mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "opus", "aiff"}
-    _ORPHAN_NUM_RE = re.compile(r'^\d{1,4}$')
     explained_tokens = (
         set(_tokenize_meaningful(artist_norm))
         | set(_tokenize_meaningful(title_norm))
@@ -268,7 +273,7 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
         if t not in explained_tokens
         and not _ORPHAN_NUM_RE.match(t)
         and t not in title_variant_tokens
-        and t not in _AUDIO_EXT_TOKENS
+        and t not in _ORPHAN_AUDIO_EXT_TOKENS
     ]
     _orphan_penalty = 0.0
     if len(orphan_tokens) >= 2:
@@ -420,17 +425,16 @@ def _filename_matches_queue_item(filename, queue_item):
     basename = os.path.basename(norm_path)
     basename_norm = _normalize_match_text(basename)
 
-    # Gate: the title must be present in the basename as a complete phrase.
-    # A simple substring test would cause false positives when the album folder
-    # name equals the song title — the title would then appear in every file in
-    # that folder even though none of those files may be the title track.
-    # The look-ahead (?!\s*[a-z]) rejects the case where the title only appears in the directory portion
-    # of the path (e.g. album folder == track title) or is a prefix of a longer
-    # different title (e.g. "world so cold intro" must not match "world so cold").
-    # Apply on the raw lowercase basename to preserve special chars (e.g. "-1").
+    # Gate: using os.path.basename ensures the title is checked against the
+    # basename only — a match where the title only appears in the directory portion
+    # of the path would be a false positive (e.g. every file in an album folder
+    # named "Jailbreak" would match a queue item for the "Jailbreak" title track).
+    # The look-ahead (?!\s*[a-z]) additionally rejects cases where the title is a
+    # proper prefix of a longer title (e.g. "world so cold intro" must not match).
+    # Applied on the raw lowercase basename to preserve special chars (e.g. "-1").
     basename_lower = basename.lower()
     raw_title = (queue_item.get('title') or '').lower()
-    basename_test = basename_norm  # normalised form used in test assertions
+    basename_test = basename_norm  # retained for source-level test assertions
     title_in_basename = bool(
         raw_title
         and re.search(re.escape(raw_title) + r'(?!\s*[a-z])', basename_lower)
@@ -472,8 +476,6 @@ def _filename_matches_queue_item(filename, queue_item):
     title_token_set = set(title_tokens)
     album_token_set = set(_tokenize_meaningful(album_norm))
     if title_token_set and title_token_set.issubset(album_token_set):
-        _AUDIO_EXT_TOKENS = {"mp3", "flac", "wav", "ogg", "aac", "m4a", "wma", "opus", "aiff"}
-        _ORPHAN_NUM_RE = re.compile(r'^\d{1,4}$')
         explained = (
             set(_tokenize_meaningful(artist_norm))
             | title_token_set
@@ -484,7 +486,7 @@ def _filename_matches_queue_item(filename, queue_item):
             if t not in explained
             and not _ORPHAN_NUM_RE.match(t)
             and t not in title_variant_tokens
-            and t not in _AUDIO_EXT_TOKENS
+            and t not in _ORPHAN_AUDIO_EXT_TOKENS
         ]
         if len(orphan) >= 2:
             return False
