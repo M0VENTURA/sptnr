@@ -26,6 +26,10 @@ _MB_HEADERS = {
 }
 _MB_RATE_LIMIT = 1.1  # seconds between requests per MusicBrainz policy
 
+# Matches a trailing "(X Cover)" annotation in a track title so it can be
+# stripped before querying MusicBrainz or checking against the original title.
+_COVER_SUFFIX_RE = re.compile(r'\s*\([^)]+\s+cover\)\s*$', re.IGNORECASE)
+
 
 class _MusicBrainzRestClient:
     """
@@ -499,8 +503,15 @@ class CoverDetector:
                         )
                         break
 
-                    # Look up original recording by this writer
-                    original = self._find_original_recording(info['title'], writer, album_artist=artist)
+                    # Look up original recording by this writer.
+                    # Strip any existing "(X Cover)" suffix from the title before
+                    # querying MusicBrainz — otherwise the full annotated title
+                    # (e.g. "Radioactive (Within Temptation Cover)") would be sent
+                    # as the search query, returning poor results and causing the
+                    # lookup to fail, which lets the Step 4 heuristic run and
+                    # incorrectly adopt the embedded cover hint as the original artist.
+                    _search_title = _COVER_SUFFIX_RE.sub('', info['title']).strip() or info['title']
+                    original = self._find_original_recording(_search_title, writer, album_artist=artist)
                     
                     if original:
                         # The MusicBrainz lookup resolved the "original" recording
@@ -569,14 +580,41 @@ class CoverDetector:
                 )
                 continue
 
+            # The hint from the title (e.g. "Within Temptation" in
+            # "Radioactive (Within Temptation Cover)") may itself be a cover
+            # artist rather than the true original.  If writer metadata is
+            # available for this track, attempt a MusicBrainz lookup to resolve
+            # the actual original artist before trusting the embedded hint.
+            resolved_original_artist = hint
+            resolved_original_year = None
+            resolved_confidence = 'low'
+            resolved_writer = ''
+            writers_for_track = (track_writers.get(track_id) or {}).get('writers', [])
+            if writers_for_track and base_title:
+                for wr in writers_for_track:
+                    if self._is_writer_same_as_artist(wr, artist):
+                        continue
+                    mb_original = self._find_original_recording(base_title, wr, album_artist=artist)
+                    if mb_original and not self._names_match(mb_original.get('artist', ''), artist):
+                        resolved_original_artist = mb_original['artist']
+                        resolved_original_year = mb_original.get('year')
+                        resolved_confidence = mb_original.get('confidence', 'medium')
+                        resolved_writer = wr
+                        logger.info(
+                            f"Heuristic hint '{hint}' overridden by writer lookup: "
+                            f"'{title}' originally by '{resolved_original_artist}' "
+                            f"({resolved_original_year or 'unknown year'})"
+                        )
+                        break
+
             result = {
                 'track_id': track_id,
                 'title': title,
                 'is_cover': True,
-                'original_artist': hint,
-                'original_year': None,
-                'writer': '',
-                'confidence': 'low'
+                'original_artist': resolved_original_artist,
+                'original_year': resolved_original_year,
+                'writer': resolved_writer,
+                'confidence': resolved_confidence
             }
             cover_results.append(result)
             seen_track_ids.add(track_id)
@@ -584,7 +622,7 @@ class CoverDetector:
             pending_cover_updates.append({
                 'track_id': track_id,
                 'title': title,
-                'original_artist': hint,
+                'original_artist': resolved_original_artist,
                 'file_path': track.get('file_path'),
                 'is_cover_reason': f"Heuristic detection: title/album hint ({hint})",
             })
@@ -641,6 +679,7 @@ class CoverDetector:
            to a work with the "cover" performance attribute.  We then search for
            other recordings linked to the same work to find the original artist.
         """
+        fast_path_result = None
         try:
             mb = self._configure_mb_client()
 
@@ -681,6 +720,7 @@ class CoverDetector:
                             pass
                 return None
 
+            fast_path_orig_id = None
             for rel in seed_recording.get('recording-relation-list', []) or []:
                 if not isinstance(rel, dict):
                     continue
@@ -722,18 +762,55 @@ class CoverDetector:
                     "Cover detected via recording→recording link: '%s' originally by '%s' (%s)",
                     title, orig_artist, orig_year or 'unknown year',
                 )
-                return {
+                fast_path_result = {
                     'artist': orig_artist,
                     'year': orig_year,
                     'confidence': 'high',
                 }
+                fast_path_orig_id = orig_id
+                break
+
+            # If the fast path found a candidate, verify it is not itself a cover
+            # (e.g. BfMV → WT → Imagine Dragons chain).  When the linked recording
+            # has a "performance (cover)" work relation, follow the chain: override
+            # cover_work_ids with the intermediate's work IDs so the slow path below
+            # resolves the true original (the earliest recording of the same work).
+            # If the linked recording has no cover work relation it IS the original
+            # and we return it immediately.
+            cover_work_ids = set()
+            if fast_path_result and fast_path_orig_id:
+                try:
+                    chain_result = mb.get_recording_by_id(
+                        fast_path_orig_id, includes=['work-rels']
+                    )
+                    chain_recording = chain_result.get('recording', {})
+                    chained_cover_work_ids = self._extract_cover_work_ids(chain_recording)
+                    if chained_cover_work_ids:
+                        # The direct "original" is itself a cover; follow the work chain.
+                        logger.debug(
+                            "Fast-path 'original' '%s' is itself a cover; "
+                            "following work chain to find true original",
+                            fast_path_result['artist'],
+                        )
+                        cover_work_ids = chained_cover_work_ids
+                        # fast_path_result becomes the fallback if the slow path
+                        # finds nothing better.
+                    else:
+                        # No further cover chain — fast path result is the true original.
+                        return fast_path_result
+                except Exception:
+                    # Unable to inspect the chain; trust the fast path result.
+                    return fast_path_result
 
             # ------------------------------------------------------------------
             # Slow path: work-level "performance (cover)" relation.
+            # cover_work_ids may have been set above (chain follow) or comes from
+            # the seed recording's own cover performance relation.
             # ------------------------------------------------------------------
-            cover_work_ids = self._extract_cover_work_ids(seed_recording)
             if not cover_work_ids:
-                return None
+                cover_work_ids = self._extract_cover_work_ids(seed_recording)
+            if not cover_work_ids:
+                return fast_path_result
 
             search_title = title or seed_recording.get('title') or ''
             if not search_title:
@@ -834,10 +911,10 @@ class CoverDetector:
                             'confidence': 'high'
                         }
 
-            return earliest or earliest_unknown_year
+            return earliest or earliest_unknown_year or fast_path_result
         except Exception as e:
             logger.debug(f"Failed MB cover-relation detection for recording '{recording_mbid}': {e}")
-            return None
+            return fast_path_result
     
     def _get_track_writers(self, track: Dict) -> List[str]:
         """
