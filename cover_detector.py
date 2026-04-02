@@ -679,6 +679,7 @@ class CoverDetector:
            to a work with the "cover" performance attribute.  We then search for
            other recordings linked to the same work to find the original artist.
         """
+        fast_path_result = None
         try:
             mb = self._configure_mb_client()
 
@@ -719,6 +720,7 @@ class CoverDetector:
                             pass
                 return None
 
+            fast_path_orig_id = None
             for rel in seed_recording.get('recording-relation-list', []) or []:
                 if not isinstance(rel, dict):
                     continue
@@ -760,18 +762,55 @@ class CoverDetector:
                     "Cover detected via recording→recording link: '%s' originally by '%s' (%s)",
                     title, orig_artist, orig_year or 'unknown year',
                 )
-                return {
+                fast_path_result = {
                     'artist': orig_artist,
                     'year': orig_year,
                     'confidence': 'high',
                 }
+                fast_path_orig_id = orig_id
+                break
+
+            # If the fast path found a candidate, verify it is not itself a cover
+            # (e.g. BfMV → WT → Imagine Dragons chain).  When the linked recording
+            # has a "performance (cover)" work relation, follow the chain: override
+            # cover_work_ids with the intermediate's work IDs so the slow path below
+            # resolves the true original (the earliest recording of the same work).
+            # If the linked recording has no cover work relation it IS the original
+            # and we return it immediately.
+            cover_work_ids = set()
+            if fast_path_result and fast_path_orig_id:
+                try:
+                    chain_result = mb.get_recording_by_id(
+                        fast_path_orig_id, includes=['work-rels']
+                    )
+                    chain_recording = chain_result.get('recording', {})
+                    chained_cover_work_ids = self._extract_cover_work_ids(chain_recording)
+                    if chained_cover_work_ids:
+                        # The direct "original" is itself a cover; follow the work chain.
+                        logger.debug(
+                            "Fast-path 'original' '%s' is itself a cover; "
+                            "following work chain to find true original",
+                            fast_path_result['artist'],
+                        )
+                        cover_work_ids = chained_cover_work_ids
+                        # fast_path_result becomes the fallback if the slow path
+                        # finds nothing better.
+                    else:
+                        # No further cover chain — fast path result is the true original.
+                        return fast_path_result
+                except Exception:
+                    # Unable to inspect the chain; trust the fast path result.
+                    return fast_path_result
 
             # ------------------------------------------------------------------
             # Slow path: work-level "performance (cover)" relation.
+            # cover_work_ids may have been set above (chain follow) or comes from
+            # the seed recording's own cover performance relation.
             # ------------------------------------------------------------------
-            cover_work_ids = self._extract_cover_work_ids(seed_recording)
             if not cover_work_ids:
-                return None
+                cover_work_ids = self._extract_cover_work_ids(seed_recording)
+            if not cover_work_ids:
+                return fast_path_result
 
             search_title = title or seed_recording.get('title') or ''
             if not search_title:
@@ -872,10 +911,10 @@ class CoverDetector:
                             'confidence': 'high'
                         }
 
-            return earliest or earliest_unknown_year
+            return earliest or earliest_unknown_year or fast_path_result
         except Exception as e:
             logger.debug(f"Failed MB cover-relation detection for recording '{recording_mbid}': {e}")
-            return None
+            return fast_path_result
     
     def _get_track_writers(self, track: Dict) -> List[str]:
         """
