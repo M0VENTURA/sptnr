@@ -1243,23 +1243,25 @@ class LastFmClient:
         """Fetch recommended tracks from Last.fm.
         
         Note: Last.fm doesn't have a native 'user.getRecommendedTracks' endpoint.
-        This method uses user.getLovedTracks for personalized data, or chart.getTopTracks as a fallback.
+        This method uses user.getTopTracks for personalized data (most-played tracks),
+        or chart.getTopTracks as a fallback.
         
         Strategy:
-        1. Try user.getLovedTracks if username is available (user's loved/favorited tracks)
+        1. Try user.getTopTracks if username is available (user's most played tracks)
         2. Fall back to chart.getTopTracks (global top tracks)
         """
         recommended_tracks = {}
         
         try:
-            # Use user's loved tracks if username available (personalized), else global chart
+            # Use user's top tracks if username available (personalized), else global chart
             if self.username:
                 params = {
-                    "method": "user.getLovedTracks",
+                    "method": "user.getTopTracks",
                     "user": self.username,
                     "api_key": self.api_key,
                     "format": "json",
-                    "limit": 20
+                    "limit": 20,
+                    "period": "6month"
                 }
             else:
                 # Fall back to global chart if no username
@@ -1281,11 +1283,8 @@ class LastFmClient:
             )
             res.raise_for_status()
             
-            # Get the tracks
-            if self.username:
-                tracks = res.json().get("lovedtracks", {}).get("track", [])
-            else:
-                tracks = res.json().get("tracks", {}).get("track", [])
+            # Get the tracks - both user.getTopTracks and chart.getTopTracks use "toptracks"
+            tracks = res.json().get("toptracks", {}).get("track", [])
             
             for track in tracks:
                 track_name = track.get("name", "")

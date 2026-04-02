@@ -327,8 +327,8 @@
   <div class="mb-4">
     <div class="card">
       <div class="card-header d-flex justify-content-between align-items-center">
-        <h5 class="card-title mb-0">
-          <i class="bi bi-sliders"></i> Create Smart Playlist (.nsp)
+        <h5 class="card-title mb-0" id="nspCardTitle">
+          <i class="bi bi-sliders"></i> <span id="nspCardTitleText">Create Smart Playlist (.nsp)</span>
         </h5>
         <a href="https://www.navidrome.org/docs/usage/features/smart-playlists/" target="_blank" rel="noopener noreferrer"
            class="btn btn-sm btn-outline-info" title="Navidrome Smart Playlist docs">
@@ -341,6 +341,28 @@
           (<code>$MUSIC_FOLDER/Playlists/</code>). Navidrome will dynamically populate it based on the rules you define.
           Supports 40+ fields, nested rule groups, and multi-field sorting.
         </p>
+
+        <!-- Load existing NSP to edit -->
+        <div class="border rounded p-3 mb-4 bg-body-secondary" id="nspEditSection">
+          <div class="d-flex align-items-center gap-3 flex-wrap">
+            <label for="nspEditSelect" class="form-label mb-0 fw-semibold text-nowrap">
+              <i class="bi bi-folder2-open"></i> Edit existing .nsp:
+            </label>
+            <select id="nspEditSelect" class="form-select form-select-sm" style="max-width:340px">
+              <option value="">— select file to edit —</option>
+            </select>
+            <button type="button" class="btn btn-sm btn-outline-warning" onclick="nspLoadForEdit()" id="nspLoadEditBtn" disabled>
+              <i class="bi bi-pencil-square"></i> Load into editor
+            </button>
+            <button type="button" class="btn btn-sm btn-outline-secondary d-none" onclick="nspExitEditMode()" id="nspExitEditBtn">
+              <i class="bi bi-x-circle"></i> Cancel edit
+            </button>
+          </div>
+          <div id="nspEditBanner" class="alert alert-warning py-2 mt-2 mb-0 d-none">
+            <i class="bi bi-pencil-square me-1"></i>
+            Editing <strong id="nspEditBannerName"></strong> — saving will overwrite the file.
+          </div>
+        </div>
 
         <!-- Playlist metadata -->
         <div class="row g-3 mb-4">
@@ -414,8 +436,8 @@
           <button type="button" class="btn btn-outline-secondary" onclick="nspResetForm()">
             <i class="bi bi-x-circle"></i> Clear
           </button>
-          <button type="button" class="btn btn-primary" onclick="nspCreatePlaylist()">
-            <i class="bi bi-file-earmark-music"></i> Save Smart Playlist
+          <button type="button" class="btn btn-primary" id="nspSaveBtn" onclick="nspCreatePlaylist()">
+            <i class="bi bi-file-earmark-music"></i> <span id="nspSaveBtnLabel">Save Smart Playlist</span>
           </button>
         </div>
       </div>
@@ -1283,6 +1305,220 @@
     nspRuleCounter = 0;
     nspSortCounter = 0;
     nspAddRule();
+    nspExitEditMode();
+  }
+
+  // ---- NSP Edit Mode ----
+  let nspEditingFile = null;  // basename of the file currently being edited, e.g. "my_mix.nsp"
+
+  function nspExitEditMode() {
+    nspEditingFile = null;
+    const banner = document.getElementById('nspEditBanner');
+    if (banner) banner.classList.add('d-none');
+    const exitBtn = document.getElementById('nspExitEditBtn');
+    if (exitBtn) exitBtn.classList.add('d-none');
+    const label = document.getElementById('nspSaveBtnLabel');
+    if (label) label.textContent = 'Save Smart Playlist';
+    const titleText = document.getElementById('nspCardTitleText');
+    if (titleText) titleText.textContent = 'Create Smart Playlist (.nsp)';
+    const fi = document.getElementById('nspFileName');
+    if (fi) fi.readOnly = false;
+    const editSel = document.getElementById('nspEditSelect');
+    if (editSel) editSel.value = '';
+  }
+
+  async function nspPopulateEditSelect() {
+    const editSel = document.getElementById('nspEditSelect');
+    if (!editSel) return;
+    try {
+      const resp = await fetch('/api/playlist/list');
+      const data = await resp.json();
+      const nspPlaylists = (data.playlists || []).filter(p => p.type === 'smart-local');
+      editSel.innerHTML = '<option value="">— select file to edit —</option>';
+      nspPlaylists.forEach(p => {
+        const opt = document.createElement('option');
+        opt.value = p.id;  // basename like "my_mix.nsp"
+        opt.textContent = `${p.name} (${p.id})`;
+        editSel.appendChild(opt);
+      });
+      editSel.addEventListener('change', () => {
+        const btn = document.getElementById('nspLoadEditBtn');
+        if (btn) btn.disabled = !editSel.value;
+      });
+    } catch (e) {
+      console.warn('[NSP Edit] Could not load NSP file list:', e);
+    }
+  }
+
+  async function nspLoadForEdit() {
+    const editSel = document.getElementById('nspEditSelect');
+    const filename = editSel ? editSel.value.trim() : '';
+    if (!filename) { showToast('Select an .nsp file to edit first.', 'warning'); return; }
+
+    try {
+      const resp = await fetch(`/api/smartplaylist/${encodeURIComponent(filename)}`);
+      const result = await resp.json();
+      if (!resp.ok || !result.success) {
+        showToast('Failed to load NSP file: ' + (result.error || resp.statusText), 'danger');
+        return;
+      }
+
+      const pl = result.playlist || {};
+      const name = pl.name || '';
+      // Derive the bare filename (without .nsp) for the fileName field
+      const baseName = filename.replace(/\.nsp$/i, '');
+
+      // Fill the form fields
+      document.getElementById('nspPlaylistName').value = name;
+      const fi = document.getElementById('nspFileName');
+      fi.value = baseName;
+      fi._userEdited = true;
+      fi.readOnly = true;  // prevent accidental rename while editing
+      document.getElementById('nspComment').value = pl.comment || '';
+
+      // Match type
+      const matchType = pl.all !== undefined ? 'all' : (pl.any !== undefined ? 'any' : 'all');
+      const matchRadio = document.getElementById(matchType === 'any' ? 'nspMatchAny' : 'nspMatchAll');
+      if (matchRadio) matchRadio.checked = true;
+
+      // Limit
+      document.getElementById('nspLimit').value = pl.limit != null ? pl.limit : '';
+
+      // Rules
+      document.getElementById('nspRulesContainer').innerHTML = '';
+      nspRuleCounter = 0;
+      const conditions = pl[matchType] || [];
+      nspLoadConditions(conditions, 'nspRulesContainer');
+
+      // Sort
+      document.getElementById('nspSortContainer').innerHTML = '';
+      nspSortCounter = 0;
+      const sortRaw = pl.sort || 'random';
+      if (sortRaw && sortRaw !== 'random') {
+        sortRaw.split(',').forEach(part => {
+          const dir = part.startsWith('-') ? 'desc' : 'asc';
+          const field = part.replace(/^[+-]/, '');
+          nspAddSortRow(field, dir);
+        });
+      } else {
+        nspAddSortRow('random', 'asc');
+      }
+
+      // Enter edit mode
+      nspEditingFile = filename;
+      const banner = document.getElementById('nspEditBanner');
+      document.getElementById('nspEditBannerName').textContent = filename;
+      if (banner) banner.classList.remove('d-none');
+      const exitBtn = document.getElementById('nspExitEditBtn');
+      if (exitBtn) exitBtn.classList.remove('d-none');
+      const label = document.getElementById('nspSaveBtnLabel');
+      if (label) label.textContent = 'Update Smart Playlist';
+      const titleText = document.getElementById('nspCardTitleText');
+      if (titleText) titleText.textContent = 'Edit Smart Playlist (.nsp)';
+
+      // Scroll to builder
+      document.getElementById('nspPlaylistName').scrollIntoView({ behavior: 'smooth', block: 'center' });
+      showToast(`Loaded "${escapeHtml(name)}" for editing.`, 'info');
+    } catch (err) {
+      console.error('[NSP Edit] Load error:', err);
+      showToast('Error loading NSP file: ' + err.message, 'danger');
+    }
+  }
+
+  function nspLoadConditions(conditions, containerId) {
+    if (!Array.isArray(conditions)) return;
+    for (const cond of conditions) {
+      if (typeof cond !== 'object' || cond === null) continue;
+      // Nested group?
+      if (cond.all !== undefined || cond.any !== undefined) {
+        const groupMatch = cond.all !== undefined ? 'all' : 'any';
+        const groupId = ++nspRuleCounter;
+        const groupContainerId = `nspGroupRules_${groupId}`;
+        const container = document.getElementById(containerId);
+        if (!container) continue;
+        const groupEl = document.createElement('div');
+        groupEl.id = `nspRule_${groupId}`;
+        groupEl.className = 'nsp-rule-row border rounded p-2 mb-2';
+        groupEl.dataset.isGroup = 'true';
+        groupEl.dataset.containerId = containerId;
+        groupEl.innerHTML = `
+          <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
+            <i class="bi bi-diagram-3 text-muted"></i>
+            <span class="fw-semibold small">Rule Group — match</span>
+            <div class="btn-group btn-group-sm" role="group">
+              <input type="radio" class="btn-check" name="nspGroupMatch_${groupId}" id="nspGroupAll_${groupId}" value="all"${groupMatch==='all'?' checked':''}>
+              <label class="btn btn-sm btn-outline-primary" for="nspGroupAll_${groupId}">ALL</label>
+              <input type="radio" class="btn-check" name="nspGroupMatch_${groupId}" id="nspGroupAny_${groupId}" value="any"${groupMatch==='any'?' checked':''}>
+              <label class="btn btn-sm btn-outline-primary" for="nspGroupAny_${groupId}">ANY</label>
+            </div>
+            <span class="text-muted small">of:</span>
+            <button type="button" class="btn btn-sm btn-outline-secondary ms-auto" onclick="nspRemoveRule(${groupId})" title="Remove group">
+              <i class="bi bi-trash"></i>
+            </button>
+          </div>
+          <div id="${groupContainerId}" class="ps-3"></div>
+          <div class="ps-3 mt-1 d-flex gap-2">
+            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="nspAddRule('${groupContainerId}')">
+              <i class="bi bi-plus-circle"></i> Add Rule
+            </button>
+          </div>`;
+        container.appendChild(groupEl);
+        nspLoadConditions(cond[groupMatch] || [], groupContainerId);
+        continue;
+      }
+      // Simple rule: { op: { field: value } }
+      const opKey = Object.keys(cond)[0];
+      if (!opKey) continue;
+      const fieldObj = cond[opKey];
+      if (typeof fieldObj !== 'object' || fieldObj === null) continue;
+      const fieldKey = Object.keys(fieldObj)[0];
+      if (!fieldKey) continue;
+      const value = fieldObj[fieldKey];
+      nspAddRuleWithValue(containerId, fieldKey, opKey, value);
+    }
+  }
+
+  function nspAddRuleWithValue(containerId, fieldVal, opVal, value) {
+    const parentContainer = document.getElementById(containerId);
+    if (!parentContainer) return;
+    const id = ++nspRuleCounter;
+    const fieldMeta = nspGetFieldMeta(fieldVal);
+    const opOptions = nspBuildOperatorOptions(fieldMeta.type, opVal);
+
+    // Normalise value for HTML rendering:
+    // - boolean fields only: convert boolean to string so select comparison works
+    // - range arrays with at least one element: use first element (second is set post-append below)
+    let displayValue = value;
+    if (fieldMeta.type === 'boolean' && typeof value === 'boolean') displayValue = String(value);
+    else if (Array.isArray(value) && value.length > 0) displayValue = value[0] != null ? value[0] : '';
+    else if (Array.isArray(value)) displayValue = '';  // empty array → empty input
+
+    const ruleEl = document.createElement('div');
+    ruleEl.id = `nspRule_${id}`;
+    ruleEl.className = 'nsp-rule-row d-flex align-items-center gap-2 mb-2 flex-wrap';
+    ruleEl.dataset.isGroup = 'false';
+    ruleEl.dataset.containerId = containerId;
+
+    const fieldOptions = NSP_FIELDS_FLAT
+      .map(f => `<option value="${f.value}"${f.value===fieldVal?' selected':''}>${escapeHtml(f.label)}</option>`)
+      .join('');
+
+    ruleEl.innerHTML = `
+      <select id="nspField_${id}" class="form-select form-select-sm" style="max-width:180px" onchange="nspOnFieldChange(${id})">${fieldOptions}</select>
+      <select id="nspOp_${id}" class="form-select form-select-sm" style="max-width:160px" onchange="nspOnOpChange(${id})">${opOptions}</select>
+      <span id="nspValueWrap_${id}">${nspBuildValueInput(fieldMeta, id, displayValue)}</span>
+      <button type="button" class="btn btn-sm btn-outline-danger ms-auto" onclick="nspRemoveRule(${id})" title="Remove rule"><i class="bi bi-trash"></i></button>`;
+    parentContainer.appendChild(ruleEl);
+
+    // For range operators the second value input is rendered only after the
+    // op element exists in the DOM; rebuild the value wrap and fill both.
+    if (opVal === 'inTheRange' && Array.isArray(value)) {
+      nspOnOpChange(id);  // re-renders wrap with both inputs now op is in DOM
+      const v1El = document.getElementById(`nspValue_${id}`);
+      const v2El = document.getElementById(`nspValue2_${id}`);
+      if (v1El) v1El.value = value[0] != null ? value[0] : '';
+      if (v2El) v2El.value = value[1] != null ? value[1] : '';
+    }
   }
 
   // ---- Value extraction ----
@@ -1387,22 +1623,24 @@
     if (comment) playlist.comment = comment;
     if (limitRaw) playlist.limit = parseInt(limitRaw, 10);
 
+    const isEditing = !!nspEditingFile;
+
     try {
       const resp = await fetch('/api/smartplaylist/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fileName, playlist })
+        body: JSON.stringify({ fileName, playlist, overwrite: isEditing })
       });
       const result = await resp.json();
       if (!resp.ok || !result.success) {
-        showToast('Failed to create smart playlist: ' + (result.error || resp.statusText), 'danger');
+        showToast('Failed to save smart playlist: ' + (result.error || resp.statusText), 'danger');
         return;
       }
       showToast(`Smart playlist "${escapeHtml(name)}" saved as <code>${escapeHtml(result.file_name)}</code>.`, 'success');
       nspResetForm();
     } catch (err) {
-      console.error('Smart playlist creation error:', err);
-      showToast('Error creating smart playlist: ' + err.message, 'danger');
+      console.error('Smart playlist save error:', err);
+      showToast('Error saving smart playlist: ' + err.message, 'danger');
     }
   }
 
@@ -1412,6 +1650,7 @@
     if (fi) fi.addEventListener('input', () => { fi._userEdited = true; });
     nspAddRule();
     nspAddSortRow('random', 'asc');
+    nspPopulateEditSelect();
   });
 </script>
 
