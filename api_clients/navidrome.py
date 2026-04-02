@@ -648,8 +648,11 @@ class NavidromeClient:
             # tracks on an album is the most reliable way to prevent splits.
             # See: https://www.navidrome.org/docs/usage/library/tagging/
             "mbid": track.get("mbid", "") or "",
-            "musicbrainz_album_mbid": _get_tag_value("musicbrainz_album_mbid", "musicbrainz_albumid", "musicbrainz_releaseid", "release_mbid") or "",
-            "musicbrainz_albumid": _get_tag_value("musicbrainz_albumid", "musicbrainz_album_mbid", "musicbrainz_releaseid") or "",
+            # musicbrainz_albumid is the canonical release UUID.  musicbrainz_album_mbid is a
+            # legacy alias that must always equal musicbrainz_albumid — derive both from the
+            # same source so the two DB columns can never diverge.
+            "musicbrainz_albumid": _get_tag_value("musicbrainz_albumid", "musicbrainz_album_mbid", "musicbrainz_releaseid", "release_mbid") or "",
+            "musicbrainz_album_mbid": _get_tag_value("musicbrainz_albumid", "musicbrainz_album_mbid", "musicbrainz_releaseid", "release_mbid") or "",
             # Per Navidrome mappings.yaml:
             #   musicbrainz_recordingid → UFID frame (recording UUID)
             #   musicbrainz_trackid     → TXXX "musicbrainz release track id" (release track UUID)

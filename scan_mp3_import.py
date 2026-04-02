@@ -245,6 +245,7 @@ class MP3ImportScanner:
                             work = %s,
                             musicbrainz_trackid = %s,
                             musicbrainz_albumid = %s,
+                            musicbrainz_album_mbid = %s,
                             musicbrainz_artistid = %s,
                             musicbrainz_albumartistid = %s,
                             musicbrainz_releasegroupid = %s,
@@ -325,6 +326,7 @@ class MP3ImportScanner:
                         metadata.get('work'),
                         metadata.get('musicbrainz_trackid'),
                         metadata.get('musicbrainz_albumid'),
+                        metadata.get('musicbrainz_albumid'),  # musicbrainz_album_mbid mirrors musicbrainz_albumid
                         metadata.get('musicbrainz_artistid'),
                         metadata.get('musicbrainz_albumartistid'),
                         metadata.get('musicbrainz_releasegroupid'),
@@ -357,7 +359,7 @@ class MP3ImportScanner:
                          mixer, producer, performer, language, copyright,
                          recordlabel, label, releasetype, releasestatus,
                          releasecountry, media, isrc, work,
-                         musicbrainz_trackid, musicbrainz_albumid,
+                         musicbrainz_trackid, musicbrainz_albumid, musicbrainz_album_mbid,
                          musicbrainz_artistid, musicbrainz_albumartistid,
                          musicbrainz_releasegroupid, musicbrainz_releasetrackid,
                          musicbrainz_workid)
@@ -377,7 +379,7 @@ class MP3ImportScanner:
                                 %s, %s, %s, %s, %s,
                                 %s, %s, %s, %s,
                                 %s, %s, %s, %s,
-                                %s, %s,
+                                %s, %s, %s,
                                 %s, %s, %s, %s,
                                 %s)
                     """
@@ -456,6 +458,7 @@ class MP3ImportScanner:
                         metadata.get('work'),
                         metadata.get('musicbrainz_trackid'),
                         metadata.get('musicbrainz_albumid'),
+                        metadata.get('musicbrainz_albumid'),  # musicbrainz_album_mbid mirrors musicbrainz_albumid
                         metadata.get('musicbrainz_artistid'),
                         metadata.get('musicbrainz_albumartistid'),
                         metadata.get('musicbrainz_releasegroupid'),

@@ -80,7 +80,7 @@
         </div>
     </div>
 
-    {% set has_extended = track.musicbrainz_album_mbid or track.musicbrainz_trackid or track.musicbrainz_releasegroupid or track.musicbrainz_releasetrackid or track.musicbrainz_albumstatus or track.musicbrainz_albumtype or track.releasecountry or track.isrc or track.bpm or track.danceability %}
+    {% set has_extended = (track.musicbrainz_albumid or track.musicbrainz_album_mbid) or track.musicbrainz_trackid or track.musicbrainz_releasegroupid or track.musicbrainz_releasetrackid or track.musicbrainz_albumstatus or track.musicbrainz_albumtype or track.releasecountry or track.isrc or track.bpm or track.danceability %}
     {% if has_extended %}
     <div class="card mb-4" id="track-extended-tags-section">
         <div class="card-header">
@@ -88,10 +88,10 @@
         </div>
         <div class="card-body">
             <div class="row g-2">
-                {% if track.musicbrainz_album_mbid %}
+                {% if track.musicbrainz_albumid or track.musicbrainz_album_mbid %}
                 <div class="col-12 col-md-6">
                     <small class="text-muted d-block">MusicBrainz Album ID</small>
-                    <code>{{ track.musicbrainz_album_mbid }}</code>
+                    <code>{{ track.musicbrainz_albumid or track.musicbrainz_album_mbid }}</code>
                 </div>
                 {% endif %}
                 {% if track.musicbrainz_trackid %}

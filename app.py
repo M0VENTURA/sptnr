@@ -6191,6 +6191,10 @@ def api_artist_corrections_apply_album_mbid():
         if "musicbrainz_album_mbid" in columns:
             set_parts.append(f"musicbrainz_album_mbid = {placeholder}")
             params.append(album_mbid)
+            # Keep the canonical alias in sync.
+            if "musicbrainz_albumid" in columns:
+                set_parts.append(f"musicbrainz_albumid = {placeholder}")
+                params.append(album_mbid)
         elif "beets_album_mbid" in columns:
             set_parts.append(f"beets_album_mbid = {placeholder}")
             params.append(album_mbid)
@@ -6229,7 +6233,7 @@ def api_artist_corrections_apply_album_mbid():
             try:
                 from helpers.tag_manager import write_tags_to_file
 
-                tags_to_write = {"musicbrainz_album_mbid": album_mbid}
+                tags_to_write = {"musicbrainz_album_mbid": album_mbid, "musicbrainz_albumid": album_mbid}
                 if release_group_mbid:
                     tags_to_write["musicbrainz_releasegroupid"] = release_group_mbid
                 if write_tags_to_file(file_path, tags_to_write):
@@ -7759,13 +7763,15 @@ def api_track_match_missing():
             update_parts.append(f"track_number = {placeholder}")
             params.append(mb_track_number)
         if mb_release_id:
-            # Update musicbrainz_album_mbid if column exists
+            # Update musicbrainz_album_mbid and the canonical alias musicbrainz_albumid together.
             try:
                 conn2 = get_db()
                 c2 = conn2.cursor()
                 c2.execute(f"SELECT musicbrainz_album_mbid FROM tracks LIMIT 1")
                 conn2.close()
                 update_parts.append(f"musicbrainz_album_mbid = {placeholder}")
+                params.append(mb_release_id)
+                update_parts.append(f"musicbrainz_albumid = {placeholder}")
                 params.append(mb_release_id)
             except Exception:
                 pass
