@@ -1062,6 +1062,10 @@ def save_to_db(track_data):
         else:
             sanitized_data[key] = value
 
+    # Remove internal meta-flags that are never DB columns so they don't trigger
+    # the unknown-column warning below.
+    sanitized_data.pop('_navidrome_sync', None)
+
     # Drop keys for columns that are not present in the current DB schema.
     # This prevents optional/newer fields (for example release_year on older DBs)
     # from aborting the entire track save and poisoning the transaction.
