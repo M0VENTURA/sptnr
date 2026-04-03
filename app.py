@@ -5384,11 +5384,11 @@ def artists():
             tag_having_sql = " OR ".join(tag_having_parts)
             cursor.execute(f"""
                 SELECT
-                    {artist_expr} AS album_artist,
+                    effective_artist AS album_artist,
                     COUNT(*) AS inconsistent_album_count
                 FROM (
                     SELECT
-                        {artist_expr},
+                        {artist_expr} AS effective_artist,
                         album
                     FROM tracks
                     WHERE album IS NOT NULL
@@ -5397,7 +5397,7 @@ def artists():
                     HAVING COUNT(*) >= 2
                       AND ({tag_having_sql})
                 ) t
-                GROUP BY {artist_expr}
+                GROUP BY effective_artist
             """)
             for row in cursor.fetchall():
                 row_dict = dict(row)
