@@ -4025,8 +4025,8 @@ function mbRetrySearch() {
   const ctx = window.currentUpcomingReleaseContext;
   // Preserve the upcoming release context so the result can still be mapped back.
   const releaseId = ctx ? ctx.releaseId : null;
-  const fakeEvent = { preventDefault: () => {}, stopPropagation: () => {} };
-  searchMusicBrainzRelease(fakeEvent, retryArtist, retryAlbum, releaseId);
+  const mockEvent = { preventDefault: () => {}, stopPropagation: () => {} };
+  searchMusicBrainzRelease(mockEvent, retryArtist, retryAlbum, releaseId);
 }
 }
 
