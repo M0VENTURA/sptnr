@@ -4443,12 +4443,12 @@ pg_configured = True  # PostgreSQL is the only supported backend
 
 
 def _table_exists(cursor, table_name):
-    """Check whether a table exists in the current database."""
+    """Check whether a table exists in the current database schema."""
     cursor.execute(
         """
         SELECT EXISTS (
             SELECT 1 FROM information_schema.tables
-            WHERE table_schema = 'public' AND table_name = %s
+            WHERE table_schema = current_schema() AND table_name = %s
         )
         """,
         (table_name,)
@@ -4459,12 +4459,12 @@ def _table_exists(cursor, table_name):
     return bool(row[0]) if row else False
 
 def _get_table_columns(cursor, table_name):
-    """Return a set of column names for a table in PostgreSQL."""
+    """Return a set of column names for a table in the current PostgreSQL schema."""
     cursor.execute(
         """
         SELECT column_name
         FROM information_schema.columns
-        WHERE table_schema = 'public' AND table_name = %s
+        WHERE table_schema = current_schema() AND table_name = %s
         """,
         (table_name,)
     )
@@ -4489,7 +4489,7 @@ def _get_postgres_column_types(conn, table_name, column_names):
             """
             SELECT column_name, data_type
             FROM information_schema.columns
-            WHERE table_schema = 'public'
+            WHERE table_schema = current_schema()
               AND table_name = %s
               AND column_name = ANY(%s)
             """,
@@ -5018,8 +5018,13 @@ def artists():
             ORDER BY display_name
         """)
         artists_data = [dict(row) for row in cursor.fetchall()]
-    except:
+    except Exception as _artists_cte_err:
         # Fallback for databases without album_artist column
+        logging.debug(f"[artists] CTE query failed (possibly missing album_artist column), using artist-only fallback: {_artists_cte_err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         collate_nocase = ""
         cursor.execute(f"""
             SELECT 
