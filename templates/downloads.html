@@ -970,7 +970,25 @@
             </div>
             
             <div id="mbSearchError" class="alert alert-danger" style="display:none;"></div>
-            
+
+            <div id="mbSearchRetry" class="mt-2" style="display:none;">
+              <div class="d-flex gap-2 align-items-end flex-wrap">
+                <div class="flex-fill">
+                  <label for="mbRetryArtist" class="form-label form-label-sm mb-1">Artist</label>
+                  <input type="text" class="form-control form-control-sm" id="mbRetryArtist" placeholder="Artist name">
+                </div>
+                <div class="flex-fill">
+                  <label for="mbRetryAlbum" class="form-label form-label-sm mb-1">Album</label>
+                  <input type="text" class="form-control form-control-sm" id="mbRetryAlbum" placeholder="Album name">
+                </div>
+                <div class="flex-shrink-0">
+                  <button class="btn btn-sm btn-primary" onclick="mbRetrySearch()">
+                    <i class="bi bi-search"></i> Retry
+                  </button>
+                </div>
+              </div>
+            </div>
+
             <div id="mbSearchResults"></div>
           </div>
         </div>
@@ -3908,10 +3926,21 @@ async function searchMusicBrainzRelease(event, artist, album, upcomingReleaseId 
   document.getElementById('mbSearchAlbum').textContent = album;
   document.getElementById('mbSearchInfo').style.display = 'block';
   
-  // Show loading
+  // Show loading, hide retry/error
   document.getElementById('mbSearchStatus').style.display = 'block';
   document.getElementById('mbSearchError').style.display = 'none';
+  const retryEl = document.getElementById('mbSearchRetry');
+  if (retryEl) retryEl.style.display = 'none';
   document.getElementById('mbSearchResults').innerHTML = '';
+
+  const _showRetry = (a, b) => {
+    if (!retryEl) return;
+    const artistInput = document.getElementById('mbRetryArtist');
+    const albumInput  = document.getElementById('mbRetryAlbum');
+    if (artistInput) artistInput.value = a || '';
+    if (albumInput)  albumInput.value  = b || '';
+    retryEl.style.display = 'block';
+  };
   
   try {
     // First try MusicBrainz
@@ -3938,13 +3967,24 @@ async function searchMusicBrainzRelease(event, artist, album, upcomingReleaseId 
     document.getElementById('mbSearchStatus').innerHTML = 
       '<div class="spinner-border spinner-border-sm me-2"></div>Searching Discogs as fallback...';
     
-    const discogsResponse = await fetch('/api/upcoming-releases/search-discogs', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ artist: artist, album: album })
-    });
-    
-    const discogsData = await discogsResponse.json();
+    // Discogs is optional — if it is not configured or returns an error, treat it as
+    // "no Discogs results" rather than surfacing the configuration error to the user.
+    let discogsData = { success: false, results: [] };
+    try {
+      const discogsResponse = await fetch('/api/upcoming-releases/search-discogs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ artist: artist, album: album })
+      });
+      const discogsJson = await discogsResponse.json().catch(() => ({}));
+      if (discogsResponse.ok && discogsJson.success) {
+        discogsData = discogsJson;
+      } else {
+        console.warn('Discogs fallback skipped:', discogsJson.error || `HTTP ${discogsResponse.status}`);
+      }
+    } catch (discogsErr) {
+      console.warn('Discogs fallback fetch failed:', discogsErr.message);
+    }
     
     // Hide loading
     document.getElementById('mbSearchStatus').style.display = 'none';
@@ -3962,6 +4002,7 @@ async function searchMusicBrainzRelease(event, artist, album, upcomingReleaseId 
       document.getElementById('mbSearchError').textContent = 
         'No releases found on MusicBrainz or Discogs';
       document.getElementById('mbSearchError').style.display = 'block';
+      _showRetry(artist, album);
       return;
     }
     
@@ -3974,7 +4015,19 @@ async function searchMusicBrainzRelease(event, artist, album, upcomingReleaseId 
     document.getElementById('mbSearchError').textContent = 
       'Error searching: ' + error.message;
     document.getElementById('mbSearchError').style.display = 'block';
+    _showRetry(artist, album);
   }
+}
+
+function mbRetrySearch() {
+  const retryArtist = (document.getElementById('mbRetryArtist')?.value || '').trim();
+  const retryAlbum  = (document.getElementById('mbRetryAlbum')?.value  || '').trim();
+  const ctx = window.currentUpcomingReleaseContext;
+  // Preserve the upcoming release context so the result can still be mapped back.
+  const releaseId = ctx ? ctx.releaseId : null;
+  const fakeEvent = { preventDefault: () => {}, stopPropagation: () => {} };
+  searchMusicBrainzRelease(fakeEvent, retryArtist, retryAlbum, releaseId);
+}
 }
 
 function displayMusicBrainzResults(results) {
