@@ -6193,6 +6193,8 @@ def popularity_scan(
                                 covers_detected = cover_detector.detect_covers_for_album(album, artist, album_tracks_for_cover)
                                 covers_found_count = len(covers_detected or [])
                                 log_info(f'Cover detection complete for "{artist} - {album}": {covers_found_count} cover(s) detected')
+                                log_unified(f'Cover Detection - "{artist} - {album}": {covers_found_count} cover(s) detected')
+                                log_album_scan(artist, album, 'covers', covers_found_count, 'completed')
                         except Exception as cover_error:
                             log_debug(f'Cover detection failed in metadata-only mode for "{artist} - {album}": {cover_error}')
 
@@ -6782,6 +6784,9 @@ def popularity_scan(
                         else:
                             log_debug(f'No tracks found for cover detection in album "{artist} - {album}"')
                             covers_found_count = 0
+
+                        log_unified(f'Cover Detection - "{artist} - {album}": {covers_found_count} cover(s) detected')
+                        log_album_scan(artist, album, 'covers', covers_found_count, 'completed')
 
                     except Exception as e:
                         log_debug(f'Cover detection failed for album "{artist} - {album}": {e}')
