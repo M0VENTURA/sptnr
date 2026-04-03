@@ -5265,7 +5265,7 @@ def artists():
         # Query 5: Albums with mixed/competing musicbrainz_album_mbid values.
         cursor.execute(f"""
             SELECT
-                {artist_expr} AS display_name,
+                display_name,
                 COUNT(*) AS album_count
             FROM (
                 SELECT
@@ -5370,15 +5370,39 @@ def artists():
         except Exception:
             pass
 
-    # Build album tag inconsistency counts per artist (lightweight: count albums only)
+    # Build album tag inconsistency counts per artist using a single aggregated query.
+    # Avoids the N+1 query pattern of _get_album_tag_inconsistencies (which does a
+    # per-album detail query) — the /artists page only needs a per-artist count.
     album_tag_inconsistency_counts_by_artist: dict = {}
     try:
-        tag_inconsistencies = _get_album_tag_inconsistencies(conn)
-        for item in tag_inconsistencies:
-            aa = item.get('album_artist') or ''
-            album_tag_inconsistency_counts_by_artist[aa] = (
-                album_tag_inconsistency_counts_by_artist.get(aa, 0) + 1
-            )
+        tag_having_parts = [
+            f"COUNT(DISTINCT COALESCE(CAST({field} AS TEXT), '')) > 1"
+            for field, _ in ALBUM_CONSISTENCY_FIELDS
+            if (field != 'album_artist' or has_album_artist) and field in track_columns
+        ]
+        if tag_having_parts:
+            tag_having_sql = " OR ".join(tag_having_parts)
+            cursor.execute(f"""
+                SELECT
+                    {artist_expr} AS album_artist,
+                    COUNT(*) AS inconsistent_album_count
+                FROM (
+                    SELECT
+                        {artist_expr},
+                        album
+                    FROM tracks
+                    WHERE album IS NOT NULL
+                      AND TRIM(album) != ''
+                    GROUP BY {artist_expr}, album
+                    HAVING COUNT(*) >= 2
+                      AND ({tag_having_sql})
+                ) t
+                GROUP BY {artist_expr}
+            """)
+            for row in cursor.fetchall():
+                row_dict = dict(row)
+                aa = row_dict.get('album_artist') or ''
+                album_tag_inconsistency_counts_by_artist[aa] = int(row_dict.get('inconsistent_album_count') or 0)
     except Exception as tag_inc_err:
         logging.debug(f"Could not compute album tag inconsistency counts: {tag_inc_err}")
         try:
