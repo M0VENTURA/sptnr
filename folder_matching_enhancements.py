@@ -23,9 +23,11 @@ from helpers.db_utils import get_db_connection, _is_postgres_connection
 
 logger = logging.getLogger(__name__)
 
-# Per-process flags so schema-ensure helpers only run their DDL once.
-# Multiple gunicorn workers / background threads share the same process
-# memory, so a threading.Lock provides the intra-process synchronization.
+# Per-process flags so schema-ensure helpers only run their DDL once per
+# worker process.  threading.Lock synchronizes concurrent threads within a
+# single gunicorn worker.  Cross-process serialization (multiple workers) is
+# handled by the pg_advisory_lock in _ensure_download_queue_columns; these
+# flags are purely an intra-process fast-path to avoid redundant DDL calls.
 _fme_schema_checked = False
 _fme_schema_lock = threading.Lock()
 _fme_conflict_target_checked = False

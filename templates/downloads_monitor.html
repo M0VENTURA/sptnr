@@ -3619,7 +3619,7 @@ async function applyFolderQueueMusicBrainzMatch(queueIdsEnc, newArtistEnc, newAl
       `✅ Folder queue match update complete\n\n` +
       `Updated: ${updated}\n` +
       `Failed: ${failed}\n\n` +
-      `Next: choose which missing tracks to add from the matched release.`
+      `Next: match any unmatched release tracks to existing queue rows.`
     );
     await loadQueueStatus();
     await loadFolderGroups({ forceRender: true });
@@ -5430,20 +5430,21 @@ async function openImportMissingTracksModal(releaseMbid, queueIds, artist, album
       <div class="modal-dialog modal-xl">
         <div class="modal-content bg-dark text-light">
           <div class="modal-header border-secondary">
-            <h5 class="modal-title">Import Missing Tracks</h5>
+            <h5 class="modal-title">Match Unmatched Tracks</h5>
             <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
           </div>
           <div class="modal-body">
             <div class="small text-muted mb-2">MBID: <span class="text-info">${escapeHtml(releaseMbid)}</span></div>
             <div class="small text-muted mb-3">Queue Group: ${escapeHtml(artist || 'Unknown Artist')} - ${escapeHtml(album || 'Unknown Album')}</div>
-            <div id="importMissingTracksStatus" class="text-muted">Loading MusicBrainz tracklist...</div>
+            <div id="importMissingTracksStatus" class="text-muted">Loading MusicBrainz tracklist…</div>
+            <div class="small text-info mt-1 mb-0"><i class="bi bi-info-circle"></i> These tracks will be matched to existing queue rows — no new rows will be added.</div>
             <div id="importMissingTracksResults" class="mt-3"></div>
           </div>
           <div class="modal-footer border-secondary">
             <button type="button" class="btn btn-outline-light btn-sm" onclick="setAllMissingTracksSelection(true)">Select All</button>
             <button type="button" class="btn btn-outline-light btn-sm" onclick="setAllMissingTracksSelection(false)">Clear</button>
             <button type="button" class="btn btn-success" id="importMissingTracksSubmitBtn" onclick="importSelectedMissingTracks()" disabled>
-              <i class="bi bi-plus-circle"></i> Add Selected To Queue
+              <i class="bi bi-link-45deg"></i> Match Selected To Existing Queue
             </button>
           </div>
         </div>
@@ -5494,7 +5495,7 @@ function renderMissingTracksTable(missingTracks) {
   if (!container) return;
 
   if (!missingTracks || missingTracks.length === 0) {
-    container.innerHTML = '<div class="alert alert-info mb-0">No missing tracks found. This queue already includes the full MusicBrainz release tracklist.</div>';
+    container.innerHTML = '<div class="alert alert-info mb-0">All release tracks are already matched to queue rows.</div>';
     if (submitBtn) submitBtn.disabled = true;
     return;
   }
@@ -5554,7 +5555,7 @@ function updateMissingTracksSelectionState() {
   if (!submitBtn) return;
   const checked = document.querySelectorAll('#importMissingTracksResults .missing-track-select:checked').length;
   submitBtn.disabled = checked === 0;
-  submitBtn.innerHTML = `<i class="bi bi-plus-circle"></i> Add Selected To Queue (${checked})`;
+  submitBtn.innerHTML = `<i class="bi bi-link-45deg"></i> Match Selected To Existing Queue (${checked})`;
 }
 
 async function importSelectedMissingTracks() {
@@ -5584,15 +5585,15 @@ async function importSelectedMissingTracks() {
       })
     });
 
-    const overwrittenItems = (data.skipped_items || []).filter(i => i.overwritten);
-    const overwrittenCount = overwrittenItems.length;
-    const alreadyQueuedCount = (data.skipped_count || 0) - overwrittenCount;
-    let importMsg = `✅ Missing-track import complete\n\n` +
-      `Added: ${data.added_count || 0}\n` +
-      `Skipped (already queued): ${alreadyQueuedCount}\n`;
-    if (overwrittenCount > 0) {
-      const titles = overwrittenItems.map(i => `  • ${i.title} — ${i.artist}`).join('\n');
-      importMsg += `Overwritten (MBID match updated): ${overwrittenCount}\n${titles}\n`;
+    const noMatchItems = data.no_match_items || [];
+    let importMsg = `✅ Track matching complete\n\n` +
+      `Matched to existing queue rows: ${data.matched_count || 0}\n` +
+      `No existing row found: ${noMatchItems.length}\n`;
+    if (noMatchItems.length > 0) {
+      const titles = noMatchItems.slice(0, 5).map(i => `  • ${i.title} — ${i.artist}`).join('\n');
+      importMsg += titles;
+      if (noMatchItems.length > 5) importMsg += `\n  … and ${noMatchItems.length - 5} more`;
+      importMsg += '\n';
     }
     importMsg += `Failed: ${data.failed_count || 0}`;
     alert(importMsg);

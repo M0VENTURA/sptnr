@@ -1417,8 +1417,8 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
             logger.warning(f"Schema check failed: {e}")
             try:
                 conn.rollback()
-            except Exception:
-                pass
+            except Exception as rb_err:
+                logger.debug(f"Schema check rollback failed: {rb_err}")
         finally:
             # Always release the session-level advisory lock, regardless of
             # whether the DDL succeeded or failed.
@@ -1428,8 +1428,8 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                         "SELECT pg_advisory_unlock(hashtext('download_queue_schema_migration'))"
                     )
                     conn.commit()
-                except Exception:
-                    pass
+                except Exception as unlock_err:
+                    logger.debug(f"Advisory lock release failed: {unlock_err}")
 
 
 def execute_write_with_retry(cursor, conn, query, params=(), context="database write", max_retries=5, initial_delay=0.1):

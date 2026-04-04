@@ -28539,11 +28539,17 @@ def api_queue_missing_tracks():
 
 @app.route("/api/queue/import-missing-tracks", methods=["POST"])
 def api_queue_import_missing_tracks():
-    """Add selected missing MusicBrainz release tracks back into the download queue."""
+    """Match selected missing MusicBrainz release tracks to existing queue rows.
+
+    For each selected track, the endpoint searches the queue for an existing row
+    whose title fuzzy-matches the release track (same album/import-group context,
+    not yet matched to this release).  Matched rows are updated in-place with the
+    release MBID and track metadata.  No new rows are ever inserted.
+    """
     conn = None
     try:
         from folder_matching_enhancements import get_musicbrainz_release_metadata
-        from download_queue_manager import add_to_queue
+        from difflib import SequenceMatcher
 
         payload = request.get_json(force=True, silent=True) or {}
         release_mbid = (payload.get('release_mbid') or '').strip()
@@ -28589,7 +28595,7 @@ def api_queue_import_missing_tracks():
             ids_placeholders = ", ".join([placeholder] * len(queue_ids))
             cursor.execute(
                 f"""
-                SELECT id, artist, album, album_artist, source, import_group, import_type
+                SELECT artist, album, album_artist, import_group
                 FROM download_queue
                 WHERE id IN ({ids_placeholders})
                 ORDER BY id
@@ -28599,8 +28605,15 @@ def api_queue_import_missing_tracks():
             )
             reference = cursor.fetchone()
 
-        conn.close()
-        conn = None
+        ref_artist = (_row_get(reference, 'artist', 0, '') or '').strip() if reference else ''
+        ref_album = (_row_get(reference, 'album', 1, '') or '').strip() if reference else ''
+        ref_album_artist = (_row_get(reference, 'album_artist', 2, '') or '').strip() if reference else ''
+        ref_import_group = (_row_get(reference, 'import_group', 3, '') or '').strip() if reference else ''
+
+        release_title = (release_metadata.get('release_title') or ref_album or '').strip()
+        release_artist = (release_metadata.get('artist') or ref_album_artist or ref_artist or '').strip()
+        release_year = release_metadata.get('release_year') or None
+        import_group = ref_import_group or f"mbid_{release_mbid}"
 
         def _norm_text(value):
             return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", str(value or '').lower())).strip()
@@ -28613,22 +28626,44 @@ def api_queue_import_missing_tracks():
 
         selected_set = set(selected_keys)
 
-        ref_artist = (_row_get(reference, 'artist', 1, '') or '').strip() if reference else ''
-        ref_album = (_row_get(reference, 'album', 2, '') or '').strip() if reference else ''
-        ref_album_artist = (_row_get(reference, 'album_artist', 3, '') or '').strip() if reference else ''
-        ref_import_group = (_row_get(reference, 'import_group', 5, '') or '').strip() if reference else ''
-        ref_import_type = (_row_get(reference, 'import_type', 6, '') or 'album').strip() if reference else 'album'
+        # Collect candidate rows: same album OR same import-group, not yet fully
+        # matched to this release, not in a terminal state.
+        search_album = release_title or ref_album
+        cursor.execute(
+            f"""
+            SELECT id, title, track_number, disc_number, recording_mbid
+            FROM download_queue
+            WHERE (
+                      LOWER(COALESCE(NULLIF(album, ''), '')) = LOWER({placeholder})
+                      OR (import_group IS NOT NULL AND import_group = {placeholder})
+                  )
+              AND COALESCE(NULLIF(release_mbid, ''), NULLIF(release_id, '')) IS DISTINCT FROM {placeholder}
+              AND status NOT IN ('removed', 'cancelled', 'deleted', 'imported', 'in_collection')
+            """,
+            (search_album, import_group, release_mbid),
+        )
+        candidate_rows = cursor.fetchall() or []
 
-        release_title = (release_metadata.get('release_title') or ref_album or '').strip()
-        release_artist = (release_metadata.get('artist') or ref_album_artist or ref_artist or '').strip()
-        release_year = release_metadata.get('release_year') or None
-        import_group = ref_import_group or f"mbid_{release_mbid}"
+        # Build a pool of available candidates; each can be claimed at most once.
+        available = {}
+        for row in candidate_rows:
+            row_id = _row_get(row, 'id', 0, None)
+            if row_id:
+                available[row_id] = {
+                    'id': row_id,
+                    'title_norm': _norm_text(_row_get(row, 'title', 1, '')),
+                    'track_number': str(_row_get(row, 'track_number', 2, '') or '').strip(),
+                    'disc_number': str(_row_get(row, 'disc_number', 3, '') or '').strip(),
+                    'recording_mbid': str(_row_get(row, 'recording_mbid', 4, '') or '').strip(),
+                }
 
-        added_count = 0
-        skipped_count = 0
+        _TITLE_THRESHOLD = 0.6
+
+        matched_count = 0
+        no_match_count = 0
         failed_count = 0
-        imported_items = []
-        skipped_items = []
+        matched_items = []
+        no_match_items = []
         failed_items = []
 
         for track in release_tracks:
@@ -28637,66 +28672,103 @@ def api_queue_import_missing_tracks():
                 continue
 
             recording_mbid = (track.get('recording_mbid') or '').strip()
-            key = recording_mbid or _track_key(track.get('disc_number'), track.get('track_number'), title)
+            disc_number = track.get('disc_number')
+            track_number = track.get('track_number')
+            key = recording_mbid or _track_key(disc_number, track_number, title) or f"{disc_number or ''}:{track_number or ''}:{title}"
             if key not in selected_set:
                 continue
 
+            title_norm = _norm_text(title)
             track_artist = (track.get('artist') or release_artist or ref_artist or '').strip()
-            queue_item = add_to_queue(
-                artist=track_artist,
-                title=title,
-                album=release_title,
-                source='soulseek',
-                priority=5,
-                import_group=import_group,
-                import_type=ref_import_type or 'album',
-                track_number=track.get('track_number'),
-                album_artist=release_artist or track_artist,
-                year=release_year,
-                release_id=release_mbid,
-                release_source='musicbrainz',
-                duration=track.get('duration'),
-                disc_number=track.get('disc_number'),
-                release_mbid=release_mbid,
-                recording_mbid=recording_mbid,
-                isrc=track.get('isrc'),
-            )
 
-            if queue_item and queue_item.get('_queue_outcome') == 'added':
-                added_count += 1
-                imported_items.append({
-                    "queue_id": queue_item.get('id'),
+            # Score all remaining candidates and pick the best.
+            best_id = None
+            best_score = -1.0
+            for row_id, cand in available.items():
+                score = 0.0
+                if recording_mbid and cand['recording_mbid'] == recording_mbid:
+                    score = 1.0
+                else:
+                    if title_norm and cand['title_norm']:
+                        score = SequenceMatcher(None, title_norm, cand['title_norm']).ratio()
+                    # Boost when track number also agrees.
+                    if track_number and cand['track_number'] and str(track_number).strip() == cand['track_number']:
+                        score = min(1.0, score + 0.15)
+                if score > best_score:
+                    best_score = score
+                    best_id = row_id
+
+            if best_id is None or best_score < _TITLE_THRESHOLD:
+                no_match_count += 1
+                no_match_items.append({"title": title, "artist": track_artist})
+                continue
+
+            # Update the matched existing row.
+            try:
+                updates = {
+                    'release_mbid': release_mbid,
+                    'release_id': release_mbid,
+                    'release_source': 'musicbrainz',
+                    'import_group': import_group,
+                    'album_artist': release_artist or ref_album_artist or None,
+                    'album': release_title or None,
+                    'match_confidence': round(best_score, 3),
+                    'match_method': 'manual_mbid',
+                }
+                if release_year is not None:
+                    updates['release_year'] = release_year
+                if recording_mbid:
+                    updates['recording_mbid'] = recording_mbid
+                if title:
+                    updates['title'] = title
+                if track_artist:
+                    updates['artist'] = track_artist
+                if track_number:
+                    updates['track_number'] = str(track_number)
+                if disc_number:
+                    updates['disc_number'] = str(disc_number)
+
+                set_clause = ', '.join(f'{col} = {placeholder}' for col in updates)
+                params = list(updates.values()) + [best_id]
+                cursor.execute(
+                    f'UPDATE download_queue SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE id = {placeholder}',
+                    params,
+                )
+                conn.commit()
+
+                del available[best_id]  # prevent double-assignment
+                matched_count += 1
+                matched_items.append({
+                    "queue_id": best_id,
                     "title": title,
                     "artist": track_artist,
+                    "match_score": round(best_score, 3),
                 })
-            elif queue_item and queue_item.get('_queue_outcome') in {'duplicate', 'updated_existing'}:
-                skipped_count += 1
-                skipped_items.append({
-                    "existing_queue_id": queue_item.get('id'),
-                    "title": title,
-                    "artist": track_artist,
-                    "overwritten": queue_item.get('_queue_outcome') == 'updated_existing',
-                })
-            else:
+            except Exception as upd_err:
+                logging.warning(f"[MISSING_TRACKS] Failed to update queue row {best_id}: {upd_err}")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
                 failed_count += 1
-                failed_items.append({
-                    "title": title,
-                    "artist": track_artist,
-                })
+                failed_items.append({"title": title, "artist": track_artist})
+
+        conn.close()
+        conn = None
 
         return jsonify({
             "success": True,
             "release_mbid": release_mbid,
-            "added_count": added_count,
-            "skipped_count": skipped_count,
+            "matched_count": matched_count,
+            "no_match_count": no_match_count,
             "failed_count": failed_count,
-            "imported_items": imported_items,
-            "skipped_items": skipped_items,
+            "matched_items": matched_items,
+            "no_match_items": no_match_items,
             "failed_items": failed_items,
         })
 
     except Exception as e:
-        logging.error(f"Error importing missing queue tracks: {e}")
+        logging.error(f"Error matching missing queue tracks: {e}")
         if conn is not None:
             try:
                 conn.close()
