@@ -1307,6 +1307,14 @@
                             <input class="form-check-input" type="checkbox" id="editTrackIsCompilationField" name="is_compilation">
                             <label class="form-check-label" for="editTrackIsCompilationField">Is Compilation Track</label>
                         </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="editTrackIsLiveField" name="is_live">
+                            <label class="form-check-label" for="editTrackIsLiveField">Is Live</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="editTrackIsAcousticField" name="is_acoustic">
+                            <label class="form-check-label" for="editTrackIsAcousticField">Is Acoustic</label>
+                        </div>
                     </div>
                     
                     <!-- Comment -->
@@ -3415,6 +3423,8 @@
         document.getElementById('editTrackIsCoverField').checked = trackData.is_cover == 1;
         document.getElementById('editTrackAlternateTakeField').checked = trackData.alternate_take == 1;
         document.getElementById('editTrackIsCompilationField').checked = trackData.is_compilation == 1;
+        document.getElementById('editTrackIsLiveField').checked = trackData.is_live == 1;
+        document.getElementById('editTrackIsAcousticField').checked = trackData.is_acoustic == 1;
         document.getElementById('editTrackCommentField').value = trackData.comment || '';
         renderAlbumAdvancedTrackFields(trackData || {});
         
@@ -3581,6 +3591,8 @@
             is_cover: document.getElementById('editTrackIsCoverField').checked ? 1 : 0,
             alternate_take: document.getElementById('editTrackAlternateTakeField').checked ? 1 : 0,
             is_compilation: document.getElementById('editTrackIsCompilationField').checked ? 1 : 0,
+            is_live: document.getElementById('editTrackIsLiveField').checked ? 1 : 0,
+            is_acoustic: document.getElementById('editTrackIsAcousticField').checked ? 1 : 0,
             comment: document.getElementById('editTrackCommentField').value.trim() || null,
             sync_to_file: true
         };

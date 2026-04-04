@@ -525,6 +525,8 @@ def ensure_cover_columns():
         ("is_cover_reason", "TEXT"),
         ("original_cover_artist", "TEXT"),
         ("cover_manual_override", "BOOLEAN DEFAULT FALSE"),
+        ("is_live", "BIGINT DEFAULT 0"),
+        ("is_acoustic", "BIGINT DEFAULT 0"),
     ]
 
     try:

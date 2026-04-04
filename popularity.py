@@ -493,6 +493,25 @@ def is_live_or_alternate_album(album: str) -> bool:
     return any(re.search(pattern, album_lower) for pattern in live_patterns)
 
 
+def _detect_live_album_type(album: str, album_type_from_field: str = '') -> str:
+    """Determine whether a live/unplugged album is specifically acoustic or live.
+
+    Returns ``'acoustic'`` for unplugged/acoustic albums, ``'live'`` for everything
+    else that passes ``is_live_or_alternate_album``.  The acoustic check takes
+    priority because acoustic/unplugged versions differ more from the studio
+    recording than a typical live performance.
+    """
+    album_lower = (album or '').lower()
+    type_lower = (album_type_from_field or '').lower()
+
+    acoustic_patterns = [r'\bunplugged\b', r'\bacoustic\b']
+    if any(re.search(p, album_lower) for p in acoustic_patterns) or \
+       any(re.search(p, type_lower) for p in acoustic_patterns):
+        return 'acoustic'
+
+    return 'live'
+
+
 def is_live_or_unplugged_track_title(title: str) -> bool:
     """Return True when a track title clearly indicates a live/unplugged version."""
     if not title:
@@ -3629,7 +3648,8 @@ def popularity_scan(
             "SELECT id, artist, title, album, isrc, duration, spotify_album_type, track_number, mbid, year, "
             "spotify_popularity, spotify_score, lastfm_track_playcount, lastfm_ratio, last_spotify_lookup, "
             "popularity_score, album_artist, writer, spotify_genres, lastfm_tags, "
-            "listenbrainz_genres, discogs_genres, musicbrainz_genres, cover_art_url"
+            "listenbrainz_genres, discogs_genres, musicbrainz_genres, cover_art_url, "
+            "is_live, is_acoustic, is_cover"
         )
         where_clause = f" WHERE {' AND '.join(sql_conditions)}" if sql_conditions else ""
         sql = f"{select_clause} FROM tracks{where_clause} ORDER BY artist, album, title"
@@ -4889,33 +4909,66 @@ def popularity_scan(
                 else:
                     is_live_album = '+live' in album_type_from_field or is_live_or_alternate_album(album)
 
+                # Determine the specific live sub-type (live vs acoustic) for genre tagging.
+                album_live_genre = None  # Will be "Live" or "Acoustic" when set
+
                 if is_live_album:
-                    log_info(f'Detected live/unplugged album: "{album}"')
-                    log_info(f'Track lookups will include album context to avoid matching studio versions')
+                    _live_type = _detect_live_album_type(album, album_type_from_field)
+                    album_live_genre = "Acoustic" if _live_type == "acoustic" else "Live"
+
+                    log_info(f'Detected {_live_type} album: "{album}"')
+                    log_info(f'Track genre will be tagged as "{album_live_genre}" (no title rename)')
                     log_debug(f'Live album detection: album="{album}", album_type="{album_type_from_field}"')
 
-                    # Update all track titles in this album to add (Live) suffix if not already present
+                    # Tag each track's genre with "Live" or "Acoustic" instead of renaming the title.
+                    # Tracks that already carry the flag + genre combination are skipped.
                     live_tracks_updated = 0
                     for track in album_tracks:
                         track_id = track["id"]
-                        original_title = track["title"]
 
-                        # Only add (Live) suffix if it's not already there
-                        if not re.search(r'\(live\)', original_title, re.IGNORECASE):
-                            new_title = f"{original_title} (Live)"
-                            cursor.execute(f"""
-                                UPDATE tracks
-                                SET title = {placeholder}
-                                WHERE id = {placeholder}
-                            """, (new_title, track_id))
-                            live_tracks_updated += 1
-                            log_debug(f'Updated track title: "{original_title}" → "{new_title}"')
-                            # Update the track dict for use in rest of scan
-                            track["title"] = new_title
+                        # Skip tracks already confirmed: flag set AND genre already present.
+                        _is_live_flag = int(track.get('is_live') or 0)
+                        _is_acoustic_flag = int(track.get('is_acoustic') or 0)
+                        _mb_genres_raw = track.get('musicbrainz_genres') or ''
+                        try:
+                            _current_mb_genres = json.loads(_mb_genres_raw) if _mb_genres_raw and _mb_genres_raw != 'null' else []
+                        except (json.JSONDecodeError, TypeError):
+                            _current_mb_genres = []
+
+                        _already_tagged = (
+                            (album_live_genre == "Live" and _is_live_flag and "Live" in _current_mb_genres) or
+                            (album_live_genre == "Acoustic" and _is_acoustic_flag and "Acoustic" in _current_mb_genres)
+                        )
+                        if _already_tagged:
+                            log_debug(f'Skipping live/acoustic tag for track "{track.get("title", "")}": already confirmed')
+                            continue
+
+                        # Add genre tag
+                        if album_live_genre not in _current_mb_genres:
+                            _current_mb_genres.insert(0, album_live_genre)
+                        _new_mb_genres = json.dumps(_current_mb_genres)
+
+                        _is_live_val = 1 if album_live_genre == "Live" else _is_live_flag
+                        _is_acoustic_val = 1 if album_live_genre == "Acoustic" else _is_acoustic_flag
+
+                        cursor.execute(f"""
+                            UPDATE tracks
+                            SET is_live = {placeholder}, is_acoustic = {placeholder},
+                                musicbrainz_genres = {placeholder}
+                            WHERE id = {placeholder}
+                        """, (_is_live_val, _is_acoustic_val, _new_mb_genres, track_id))
+                        live_tracks_updated += 1
+
+                        # Update in-memory dict so subsequent per-track processing uses the new values.
+                        track['is_live'] = _is_live_val
+                        track['is_acoustic'] = _is_acoustic_val
+                        track['musicbrainz_genres'] = _new_mb_genres
+
+                        log_debug(f'Tagged track "{track.get("title", "")}" as {album_live_genre}')
 
                     if live_tracks_updated > 0:
                         conn.commit()
-                        log_info(f'Updated {live_tracks_updated} track title(s) to add (Live) suffix in album "{album}"')
+                        log_info(f'Tagged {live_tracks_updated} track(s) as "{album_live_genre}" in album "{album}"')
 
                 # Detect alternate takes for this album (tracks with parentheses matching base tracks)
                 album_tracks_list = list(album_tracks)
@@ -5874,6 +5927,21 @@ def popularity_scan(
                                 musicbrainz_genres = json.dumps(["Cover"])
                                 log_debug(f'Initialized genres with "Cover" for track: {title}')
 
+                        # Ensure "Live" or "Acoustic" genre is preserved in the batch update.
+                        # The in-memory track dict was already updated in the live-detection block
+                        # above, so album_live_genre will already be present in musicbrainz_genres
+                        # for newly-tagged tracks; this guard handles any edge case where the
+                        # genre may not yet have been written into the update tuple.
+                        if album_live_genre:
+                            try:
+                                mb_genres_list = json.loads(musicbrainz_genres) if musicbrainz_genres and musicbrainz_genres != 'null' else []
+                                if album_live_genre not in mb_genres_list:
+                                    mb_genres_list.insert(0, album_live_genre)
+                                    musicbrainz_genres = json.dumps(mb_genres_list)
+                                    log_debug(f'Ensured "{album_live_genre}" genre in batch update for track: {title}')
+                            except (json.JSONDecodeError, TypeError):
+                                musicbrainz_genres = json.dumps([album_live_genre])
+
                         current_track = track_rows_by_id.get(track_id, {})
                         proposed_values = {
                             'popularity_score': popularity_score,
@@ -6182,7 +6250,8 @@ def popularity_scan(
                         try:
                             log_info(f'Starting cover detection for album "{artist} - {album}" (metadata-only mode)')
                             cursor.execute(f"""
-                                SELECT id, title, artist, writer, mbid, file_path, musicbrainz_album_mbid
+                                SELECT id, title, artist, writer, mbid, file_path, musicbrainz_album_mbid,
+                                       is_cover, genres, musicbrainz_genres
                                 FROM tracks
                                 WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
                                 ORDER BY COALESCE(track_number, 0), title
@@ -6759,7 +6828,8 @@ def popularity_scan(
                         # Get all tracks for this album with metadata
                         # Note: Use COALESCE to handle album_artist grouping like singles detection does
                         cursor.execute(f"""
-                            SELECT id, title, artist, writer, mbid, file_path, musicbrainz_album_mbid
+                            SELECT id, title, artist, writer, mbid, file_path, musicbrainz_album_mbid,
+                                   is_cover, genres, musicbrainz_genres
                             FROM tracks
                             WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
                             ORDER BY COALESCE(track_number, 0), title

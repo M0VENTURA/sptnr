@@ -14539,6 +14539,8 @@ def track_edit(track_id):
     cover_manual_override = request.form.get("cover_manual_override") == "on"
     alternate_take = request.form.get("alternate_take") == "on"
     is_compilation = request.form.get("is_compilation") == "on"
+    is_live = request.form.get("is_live") == "on"
+    is_acoustic = request.form.get("is_acoustic") == "on"
 
     # Persist feature flags according to DB schema (BOOLEAN vs INTEGER/BIGINT).
     normalized_flags = _normalize_track_flag_payload(conn, {
@@ -14547,6 +14549,8 @@ def track_edit(track_id):
         'cover_manual_override': cover_manual_override,
         'alternate_take': alternate_take,
         'is_compilation': is_compilation,
+        'is_live': is_live,
+        'is_acoustic': is_acoustic,
         'single_manual_override': True,
     })
     is_single_db = normalized_flags.get('is_single')
@@ -14554,6 +14558,8 @@ def track_edit(track_id):
     cover_manual_override_db = normalized_flags.get('cover_manual_override')
     alternate_take_db = normalized_flags.get('alternate_take')
     is_compilation_db = normalized_flags.get('is_compilation')
+    is_live_db = normalized_flags.get('is_live')
+    is_acoustic_db = normalized_flags.get('is_acoustic')
     single_manual_override_db = normalized_flags.get('single_manual_override')
     
     # First, get the file path from database
@@ -14575,6 +14581,7 @@ def track_edit(track_id):
                 bpm = {placeholder}, bitrate = {placeholder}, sample_rate = {placeholder},
                 is_cover = {placeholder}, cover_manual_override = {placeholder},
                 alternate_take = {placeholder}, is_compilation = {placeholder},
+                is_live = {placeholder}, is_acoustic = {placeholder},
                 single_manual_override = {placeholder},
                 titlesort = {placeholder}, albumsort = {placeholder}, artistsort = {placeholder},
                 composersort = {placeholder}, albumartistsort = {placeholder}, lyricistsort = {placeholder},
@@ -14609,7 +14616,9 @@ def track_edit(track_id):
               track_number, disc_number, comment, isrc,
               bpm, bitrate, sample_rate,
               is_cover_db, cover_manual_override_db,
-              alternate_take_db, is_compilation_db, single_manual_override_db,
+              alternate_take_db, is_compilation_db,
+              is_live_db, is_acoustic_db,
+              single_manual_override_db,
               titlesort, albumsort, artistsort,
               composersort, albumartistsort, lyricistsort,
               artistssort, albumartistssort,
@@ -33667,7 +33676,9 @@ def api_track_update_metadata():
         "sample_rate": (optional)",
         "is_cover": 0 or 1 (optional)",
         "alternate_take": 0 or 1 (optional)",
-        "is_compilation": 0 or 1 (optional)"
+        "is_compilation": 0 or 1 (optional)",
+        "is_live": 0 or 1 (optional)",
+        "is_acoustic": 0 or 1 (optional)"
     }
     """
     conn = None
@@ -33711,7 +33722,7 @@ def api_track_update_metadata():
             'replaygain_album_peak', 'r128_track_gain', 'r128_album_gain'
         ]
         optional_int_fields = ['stars', 'disc_number', 'bpm', 'bitrate', 'sample_rate']
-        optional_bool_fields = ['is_single', 'is_cover', 'alternate_take', 'is_compilation']
+        optional_bool_fields = ['is_single', 'is_cover', 'alternate_take', 'is_compilation', 'is_live', 'is_acoustic']
         
         for field in optional_string_fields:
             if field in data and data[field] is not None:
