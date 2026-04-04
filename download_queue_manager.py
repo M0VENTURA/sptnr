@@ -1362,6 +1362,27 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                     "idx_download_queue_status_created",
                     "CREATE INDEX IF NOT EXISTS idx_download_queue_status_created ON download_queue (status, created_at DESC)",
                 ),
+                # Indexes for /api/queue/matched-releases: filters by release_source and
+                # groups by release_mbid/release_id to populate the "Current Queue Releases"
+                # modal. Without these the query does a full table scan on every modal open.
+                (
+                    "idx_download_queue_release_source",
+                    "CREATE INDEX IF NOT EXISTS idx_download_queue_release_source ON download_queue (release_source)",
+                ),
+                (
+                    "idx_download_queue_release_mbid",
+                    "CREATE INDEX IF NOT EXISTS idx_download_queue_release_mbid ON download_queue (release_mbid) WHERE release_mbid IS NOT NULL AND release_mbid <> ''",
+                ),
+                (
+                    "idx_download_queue_release_id",
+                    "CREATE INDEX IF NOT EXISTS idx_download_queue_release_id ON download_queue (release_id) WHERE release_id IS NOT NULL AND release_id <> ''",
+                ),
+                # Expression index for /api/queue/match-targets: filters by lower-cased
+                # artist and album to find candidate tracks to remap.
+                (
+                    "idx_download_queue_lower_artist_album",
+                    "CREATE INDEX IF NOT EXISTS idx_download_queue_lower_artist_album ON download_queue (LOWER(COALESCE(NULLIF(album_artist, ''), artist)), LOWER(COALESCE(NULLIF(album, ''), '')))",
+                ),
             ):
                 try:
                     cursor.execute(idx_ddl)
