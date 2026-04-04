@@ -6249,6 +6249,12 @@ def popularity_scan(
                 # --- End bulk tag lookup section ---
 
                 if metadata_only:
+                    if not (FORCE_RESCAN or force) and was_album_scanned(artist, album, 'metadata', album_skip_days):
+                        log_unified(f'Metadata Scan - Skipping album "{album}" (scanned within last {album_skip_days} days)')
+                        log_info(f'⏱️ Album "{artist} - {album}" was already scanned within {album_skip_days} days - METADATA SKIP')
+                        skipped_count += 1
+                        continue
+
                     covers_found_count = 0
                     if HAVE_COVER_DETECTOR:
                         try:
