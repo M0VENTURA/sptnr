@@ -462,6 +462,15 @@
         gap: 0.35rem;
     }
 
+    .badge-musicbrainz::before {
+        content: '';
+        width: 0.65rem;
+        height: 0.65rem;
+        background: #d45aa3;
+        clip-path: polygon(25% 5%, 75% 5%, 100% 50%, 75% 95%, 25% 95%, 0% 50%);
+        display: inline-block;
+    }
+
     .upcoming-source-chip {
         font-size: 0.72rem;
         padding: 0.2rem 0.45rem;
@@ -673,7 +682,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 : artistUrl;
             
             // Generate scan type badges
-            const badges = group.scan_types.map(st => {
+            const badges = group.scan_types.filter(st => st.type !== 'covers').map(st => {
                 let badgeHtml = `<span class="badge bg-secondary" title="${st.timestamp}">${st.type}</span>`;
                 if (st._inProgress) {
                     badgeHtml = '<span class="badge bg-primary"><span class="spinner-border spinner-border-sm me-1" style="width:.75em;height:.75em;"></span> Scanning…</span>';
