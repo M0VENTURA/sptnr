@@ -91,6 +91,11 @@
           <i class="bi bi-cpu"></i> <span class="d-none d-sm-inline">Essentia Scan</span>
         </button>
       </form>
+      <form action="{{ url_for('artist_update_metadata', name=artist_name) }}" method="post" class="d-flex align-items-center gap-2">
+        <button type="submit" class="btn btn-info" title="Force metadata update scan for this artist">
+          <i class="bi bi-tags"></i> <span class="d-none d-sm-inline">Update Metadata</span>
+        </button>
+      </form>
     </div>
   </div>
   {% endif %}
