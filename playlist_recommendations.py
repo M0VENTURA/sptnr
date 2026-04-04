@@ -140,6 +140,7 @@ class PlaylistRecommender:
     def _generate_genre_playlists(self) -> List[Dict]:
         """
         Generate playlists based on top genres from user's library.
+        Only includes 5-star tracks and excludes Christmas tracks.
         
         Returns:
             List of genre-based playlist recommendations
@@ -153,57 +154,77 @@ class PlaylistRecommender:
             conn = self.db if not callable(self.db) else self.db()
             cursor = conn.cursor()
             
-            # Get top genres from tracks in library
+            # Get top genres from 5-star tracks in library (excluding Christmas)
+            # The genres column is a delimited string; we look for the genre anywhere in it.
             cursor.execute("""
-                SELECT genre_display, COUNT(*) as count
+                SELECT genres, COUNT(*) as count
                 FROM tracks
-                WHERE genre_display IS NOT NULL AND genre_display != ''
-                GROUP BY genre_display
+                WHERE genres IS NOT NULL AND genres != ''
+                  AND COALESCE(stars, 0) = 5
+                  AND genres NOT ILIKE '%christmas%'
+                  AND genres NOT ILIKE '%xmas%'
+                  AND title NOT ILIKE '%christmas%'
+                  AND title NOT ILIKE '%xmas%'
+                GROUP BY genres
                 ORDER BY count DESC
-                LIMIT 10
+                LIMIT 20
             """)
             
-            genres = cursor.fetchall()
+            genre_rows = cursor.fetchall()
             
             if callable(self.db):
                 conn.close()
             
-            # Create playlist for each major genre
-            genre_icons = {
-                "rock": "🎸", "pop": "🎤", "metal": "🤘", "jazz": "🎷",
-                "classical": "🎼", "electronic": "🎛️", "hip-hop": "🎤", "rap": "🎤",
-                "indie": "🎵", "blues": "🎺", "country": "🤠", "folk": "🎸",
-                "ambient": "🌙", "electronic": "🎛️", "house": "🎧", "techno": "🎧"
-            }
-            
-            for row in genres:
-                genre_name = self._row_value(row, "genre_display", 0, "")
+            # Flatten to individual genre tokens and count them
+            from collections import Counter
+            import re
+            genre_counter: Counter = Counter()
+            for row in genre_rows:
+                genres_raw = self._row_value(row, "genres", 0, "")
                 count = self._row_value(row, "count", 1, 0)
                 try:
                     count = int(count or 0)
                 except Exception:
                     count = 0
+                if genres_raw:
+                    for token in re.split(r"[\\,;/]+", str(genres_raw)):
+                        token = token.strip()
+                        if token and token.lower() not in {"christmas", "xmas"}:
+                            genre_counter[token] += count
 
-                if genre_name and count >= 5:
-                    # Find icon that matches genre
-                    icon = "🎵"
-                    for key, val in genre_icons.items():
-                        if key.lower() in str(genre_name).lower():
-                            icon = val
-                            break
-                    
-                    # Get track IDs for this genre
-                    track_ids = self._get_track_ids_for_genre(genre_name)
-                    
-                    playlists.append({
-                        "name": f"{icon} {genre_name}",
-                        "description": f"Your collection of {genre_name} tracks ({len(track_ids)} songs)",
-                        "type": "genre",
-                        "genre": genre_name,
-                        "track_count": len(track_ids),
-                        "track_ids": track_ids,
-                        "icon": icon
-                    })
+            # Create playlist for each major genre
+            genre_icons = {
+                "rock": "🎸", "pop": "🎤", "metal": "🤘", "jazz": "🎷",
+                "classical": "🎼", "electronic": "🎛️", "hip-hop": "🎤", "rap": "🎤",
+                "indie": "🎵", "blues": "🎺", "country": "🤠", "folk": "🎸",
+                "ambient": "🌙", "house": "🎧", "techno": "🎧",
+            }
+            
+            for genre_name, count in genre_counter.most_common(10):
+                if count < 5:
+                    continue
+                # Find icon that matches genre
+                icon = "🎵"
+                for key, val in genre_icons.items():
+                    if key.lower() in genre_name.lower():
+                        icon = val
+                        break
+                
+                # Get 5-star track IDs for this genre (excluding Christmas)
+                track_ids = self._get_track_ids_for_genre(genre_name, five_star_only=True, exclude_christmas=True)
+                
+                if not track_ids:
+                    continue
+
+                playlists.append({
+                    "name": f"{icon} {genre_name}",
+                    "description": f"Your best {genre_name} tracks ({len(track_ids)} 5★ songs)",
+                    "type": "genre",
+                    "genre": genre_name,
+                    "track_count": len(track_ids),
+                    "track_ids": track_ids,
+                    "icon": icon
+                })
             
             return playlists[:5]
         except Exception as e:
@@ -212,10 +233,11 @@ class PlaylistRecommender:
     
     def _generate_mood_playlists(self) -> List[Dict]:
         """
-        Generate mood-based playlists (energetic, relaxing, etc.).
+        Generate mood-based playlists (energetic, relaxing, etc.) and
+        genre+mood combination playlists.
         
         Returns:
-            List of mood-based playlist recommendations
+            List of mood-based and genre+mood combination playlist recommendations
         """
         playlists = []
         
@@ -226,10 +248,10 @@ class PlaylistRecommender:
             conn = self.db if not callable(self.db) else self.db()
             cursor = conn.cursor()
             
-            # Define mood-to-rating mapping
+            # Define mood-to-rating mapping (5-star favourites only for top entries)
             moods = [
-                {"name": "⭐ Hidden Gems", "rating": (3, 4), "icon": "⭐", "description": "Your 3-4 star tracks"},
                 {"name": "🌟 Favorites", "rating": (5, 5), "icon": "🌟", "description": "Your 5-star masterpieces"},
+                {"name": "⭐ Hidden Gems", "rating": (3, 4), "icon": "⭐", "description": "Your 3-4 star tracks"},
                 {"name": "🎵 Classics", "rating": (4, 5), "icon": "🎵", "description": "High-rated timeless tracks"},
                 {"name": "🔥 High Energy", "rating": (3, 5), "icon": "🔥", "description": "All your highly-rated tracks"},
                 {"name": "💎 Gems", "rating": (2, 5), "icon": "💎", "description": "All rated tracks"},
@@ -252,7 +274,11 @@ class PlaylistRecommender:
                         "track_ids": track_ids,
                         "icon": mood["icon"]
                     })
-            
+
+            # Add top genre+mood combination playlists
+            genre_mood_combos = self._generate_genre_mood_combination_playlists(conn)
+            playlists.extend(genre_mood_combos)
+
             if callable(self.db):
                 conn.close()
             
@@ -260,7 +286,80 @@ class PlaylistRecommender:
         except Exception as e:
             logger.debug(f"Failed to generate mood playlists: {e}")
             return playlists
-    
+
+    def _generate_genre_mood_combination_playlists(self, conn=None) -> List[Dict]:
+        """
+        Generate playlists that combine top genres with complementary moods
+        (e.g. Metal + Epic, Punk + Energetic).
+        Only includes 5-star tracks, excludes Christmas.
+        """
+        import re
+        from collections import Counter
+
+        playlists = []
+        close_conn = False
+        try:
+            if conn is None:
+                conn = self.db if not callable(self.db) else self.db()
+                close_conn = True
+            cursor = conn.cursor()
+
+            # Pull genres and moods for 5-star non-Christmas tracks
+            cursor.execute("""
+                SELECT genres, mood
+                FROM tracks
+                WHERE COALESCE(stars, 0) = 5
+                  AND genres IS NOT NULL AND genres != ''
+                  AND mood IS NOT NULL AND mood != ''
+                  AND genres NOT ILIKE '%christmas%'
+                  AND genres NOT ILIKE '%xmas%'
+                  AND title NOT ILIKE '%christmas%'
+                  AND title NOT ILIKE '%xmas%'
+                LIMIT 5000
+            """)
+            rows = cursor.fetchall()
+
+            combo_counter: Counter = Counter()
+            for row in rows:
+                genres_raw = self._row_value(row, "genres", 0, "")
+                mood_raw = self._row_value(row, "mood", 1, "")
+                if not genres_raw or not mood_raw:
+                    continue
+                genre_tokens = [t.strip() for t in re.split(r"[\\,;/]+", str(genres_raw)) if t.strip()]
+                mood_tokens = [t.strip() for t in re.split(r"[;,]+", str(mood_raw)) if t.strip()]
+                # Only pair the primary genre and primary mood to keep combinations meaningful
+                if genre_tokens and mood_tokens:
+                    combo_counter[(genre_tokens[0], mood_tokens[0])] += 1
+
+            # Take top 5 combinations with at least 5 tracks
+            good_combos = [(g, m, c) for (g, m), c in combo_counter.most_common(10) if c >= 5]
+            for genre_name, mood_name, _ in good_combos[:5]:
+                track_ids = self._get_track_ids_for_genre_mood(genre_name, mood_name)
+                if len(track_ids) < 5:
+                    continue
+                playlists.append({
+                    "name": f"🎭 {genre_name} × {mood_name}",
+                    "description": f"5★ {genre_name} tracks with a {mood_name} feel ({len(track_ids)} songs)",
+                    "type": "genre_mood_combo",
+                    "genre": genre_name,
+                    "mood": mood_name,
+                    "track_count": len(track_ids),
+                    "track_ids": track_ids,
+                    "icon": "🎭",
+                })
+
+        except Exception as e:
+            logger.debug(f"Failed to generate genre+mood combination playlists: {e}")
+        finally:
+            if close_conn and conn:
+                try:
+                    if callable(self.db):
+                        conn.close()
+                except Exception:
+                    pass
+        return playlists
+
+
     def _generate_discovery_playlists(self) -> List[Dict]:
         """
         Generate discovery playlists (new music, underrated, etc.).
@@ -364,20 +463,31 @@ class PlaylistRecommender:
             logger.debug(f"Failed to get track IDs for artists: {e}")
             return []
     
-    def _get_track_ids_for_genre(self, genre: str) -> List[str]:
-        """Get track IDs for a specific genre."""
+    def _get_track_ids_for_genre(self, genre: str, five_star_only: bool = False, exclude_christmas: bool = False) -> List[str]:
+        """Get track IDs for a specific genre token found anywhere in the genres field."""
         if not self.db or not genre:
             return []
         
         try:
             conn = self.db if not callable(self.db) else self.db()
             cursor = conn.cursor()
-            
-            cursor.execute("""
-                SELECT id FROM tracks
-                WHERE genre_display = %s
-                LIMIT 200
-            """, (genre,))
+
+            conditions = ["genres ILIKE %s"]
+            params: List = [f"%{genre}%"]
+
+            if five_star_only:
+                conditions.append("COALESCE(stars, 0) = 5")
+            if exclude_christmas:
+                conditions.append("genres NOT ILIKE '%christmas%'")
+                conditions.append("genres NOT ILIKE '%xmas%'")
+                conditions.append("title NOT ILIKE '%christmas%'")
+                conditions.append("title NOT ILIKE '%xmas%'")
+
+            where_clause = " AND ".join(conditions)
+            cursor.execute(
+                f"SELECT id FROM tracks WHERE {where_clause} LIMIT 200",
+                params,
+            )
             
             track_ids = self._id_list(cursor.fetchall())
             
@@ -387,6 +497,35 @@ class PlaylistRecommender:
             return track_ids
         except Exception as e:
             logger.debug(f"Failed to get track IDs for genre {genre}: {e}")
+            return []
+
+    def _get_track_ids_for_genre_mood(self, genre: str, mood: str) -> List[str]:
+        """Get 5-star track IDs matching both a genre and a mood token."""
+        if not self.db or not genre or not mood:
+            return []
+        try:
+            conn = self.db if not callable(self.db) else self.db()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT id FROM tracks
+                WHERE genres ILIKE %s
+                  AND mood ILIKE %s
+                  AND COALESCE(stars, 0) = 5
+                  AND genres NOT ILIKE '%christmas%'
+                  AND genres NOT ILIKE '%xmas%'
+                  AND title NOT ILIKE '%christmas%'
+                  AND title NOT ILIKE '%xmas%'
+                LIMIT 200
+                """,
+                (f"%{genre}%", f"%{mood}%"),
+            )
+            track_ids = self._id_list(cursor.fetchall())
+            if callable(self.db):
+                conn.close()
+            return track_ids
+        except Exception as e:
+            logger.debug(f"Failed to get track IDs for genre+mood {genre}/{mood}: {e}")
             return []
     
     def _get_track_ids_for_rating(self, min_rating: int, max_rating: int) -> List[str]:

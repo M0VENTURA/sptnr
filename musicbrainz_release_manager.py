@@ -158,6 +158,25 @@ class MusicBrainzReleaseManager:
                     )
                 """)
 
+                # Ensure disc_number column exists on pre-existing tables that were
+                # created before the column was added to the schema definition.
+                try:
+                    if is_postgres_connection(conn):
+                        db_query.execute("""
+                            ALTER TABLE musicbrainz_release_tracks
+                            ADD COLUMN IF NOT EXISTS disc_number INTEGER
+                        """)
+                    else:
+                        # SQLite: check column existence before attempting to add it
+                        db_query.execute("PRAGMA table_info(musicbrainz_release_tracks)")
+                        existing_cols = {row[1] for row in (db_query.cursor.fetchall() if hasattr(db_query, 'cursor') else [])}
+                        if "disc_number" not in existing_cols:
+                            db_query.execute(
+                                "ALTER TABLE musicbrainz_release_tracks ADD COLUMN disc_number INTEGER"
+                            )
+                except Exception as alter_err:
+                    logger.debug(f"[SCHEMA] disc_number column check: {alter_err}")
+
                 db_query.execute("""
                     CREATE INDEX IF NOT EXISTS idx_mb_releases_status
                     ON musicbrainz_releases(status)

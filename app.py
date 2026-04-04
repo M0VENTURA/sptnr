@@ -1713,9 +1713,13 @@ def _write_progress_file(path: str, scan_type: str, is_running: bool, extra: dic
             }
 
             current_artist = payload.get("current_artist")
+            scan_is_starting = payload.get("status") == "starting"
             if current_artist:
                 marker_payload["current_artist"] = current_artist
-            elif existing_current_artist:
+            elif existing_current_artist and not scan_is_starting:
+                # Don't carry over the previous run's artist when a fresh scan begins –
+                # that caused the UI to keep showing the last artist from the previous
+                # cycle (e.g. "Stray Kids") until the new scan reached its first artist.
                 marker_payload["current_artist"] = existing_current_artist
 
             with open(marker_path, "w", encoding="utf-8") as marker_file:
