@@ -18605,7 +18605,7 @@ def slskd_queue_download():
         conn.close()
     except Exception as e:
         logging.error(f"[SLSKD_QUEUE_DOWNLOAD] DB check error: {e}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Database error checking queue item"}), 500
 
     web_url = slskd_config.get("web_url", "http://localhost:5030")
     api_key = slskd_config.get("api_key", "")
