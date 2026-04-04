@@ -559,6 +559,29 @@ def _normalize_slskd_query(value):
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
+
+def _clear_stale_slskd_searches(client, context="search"):
+    """
+    Delete any terminal-state searches from slskd before starting a new one.
+
+    slskd enforces a single concurrent search slot; a stale completed/timed-out
+    search that was never cleaned up will cause subsequent start_search() calls
+    to return HTTP 429 ("only one concurrent operation"), making every new search
+    appear to time out.  This helper is called just before every start_search()
+    regardless of whether the caller is interactive or a background thread.
+    """
+    _TERMINAL_STATES = {"Completed", "Cancelled", "TimedOut", "Errored", "Succeeded"}
+    try:
+        existing = client.list_searches(timeout=4)
+        for s in existing:
+            sid = s.get("id") or s.get("searchId") or s.get("Id")
+            state = (s.get("state") or s.get("State") or "")
+            if sid and state in _TERMINAL_STATES:
+                client.cancel_search(sid, timeout=4)
+                logging.info(f"[SLSKD] Cleared stale search {sid} (state={state}) before {context}")
+    except Exception as cleanup_err:
+        logging.warning(f"[SLSKD] Could not clear stale searches before {context}: {cleanup_err}")
+
 @app.template_filter('format_datetime')
 def format_datetime(value):
     """Format ISO datetime string to DD-MM-YY at HH:MM AM/PM"""
@@ -17922,22 +17945,7 @@ def slskd_search():
         plain_session = requests.Session()
         client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True)
 
-        # Before starting the search, delete any terminal-state searches still
-        # listed in slskd.  slskd enforces a single concurrent search slot; if a
-        # previous background search completed but wasn't cleaned up, it leaves the
-        # slot apparently "busy", causing the POST to return 429 even though no
-        # search is actively running.
-        _TERMINAL_STATES = {"Completed", "Cancelled", "TimedOut", "Errored", "Succeeded"}
-        try:
-            existing = client.list_searches(timeout=4)
-            for s in existing:
-                sid = s.get("id") or s.get("searchId") or s.get("Id")
-                state = (s.get("state") or s.get("State") or "")
-                if sid and state in _TERMINAL_STATES:
-                    client.cancel_search(sid, timeout=4)
-                    logging.info(f"[SLSKD] Cleared stale search {sid} (state={state}) before manual search")
-        except Exception as cleanup_err:
-            logging.warning(f"[SLSKD] Could not clear stale searches: {cleanup_err}")
+        _clear_stale_slskd_searches(client, context="manual search")
 
         # Use a short per-request timeout and few retries for interactive searches
         # so the browser gets a timely response even if slskd is temporarily busy.
@@ -17985,9 +17993,9 @@ def slskd_search_results(search_id):
         response_count = len(responses) if responses else 0
         logging.info(f"[SLSKD] search_id={search_id}, responses={response_count}, files={len(results)}, state={state}, complete={is_complete}")
         
-        if response_count == 0:
-            logging.warning(f"[SLSKD] Search {search_id} returned 0 responses - check if slskd service is reachable at {web_url}")
-        elif len(results) == 0:
+        if is_complete and response_count == 0:
+            logging.warning(f"[SLSKD] Search {search_id} completed with 0 responses - check if slskd service is reachable at {web_url}")
+        elif is_complete and len(results) == 0:
             logging.warning(f"[SLSKD] Search {search_id} got {response_count} responses but 0 files - peers may not have matching files")
         
         return jsonify({
@@ -18918,6 +18926,7 @@ def slskd_search_again():
     
     try:
         client = SlskdClient(web_url, api_key, enabled=True)
+        _clear_stale_slskd_searches(client, context="search-again")
         search_id = client.start_search(filename)
         
         if search_id:
@@ -19368,6 +19377,7 @@ def _initiate_slskd_download_bg(tracking_id, query):
         api_key = slskd_config.get("api_key", "")
         
         client = SlskdClient(web_url, api_key, enabled=True)
+        _clear_stale_slskd_searches(client, context="background search")
         search_id = client.start_search(query)
         
         if not search_id:
@@ -19547,6 +19557,7 @@ def _initiate_slskd_download(tracking_id, query, cursor, conn):
         api_key = slskd_config.get("api_key", "")
         
         client = SlskdClient(web_url, api_key, enabled=True)
+        _clear_stale_slskd_searches(client, context="background search")
         search_id = client.start_search(query)
         
         if not search_id:
