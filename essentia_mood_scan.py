@@ -44,6 +44,12 @@ except Exception:
     def _log_album_scan(*a, **kw):  # type: ignore[misc]
         pass
 
+try:
+    import psycopg2 as _psycopg2
+    _PG_OPERATIONAL_ERROR: Any = _psycopg2.OperationalError
+except ImportError:
+    _PG_OPERATIONAL_ERROR = None
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -739,7 +745,7 @@ def run_essentia_mood_scan(
                     _saved = json.load(_fp)
                 _saved_status = _saved.get("status", "")
                 _saved_checkpoint = (_saved.get("resume_from_artist") or "").strip()
-                if _saved_status not in ("complete", "completed", "error", "stopped") and _saved_checkpoint:
+                if _saved_status not in ("complete", "completed", "stopped") and _saved_checkpoint:
                     resume_from_artist = _saved_checkpoint
                     logger.info(
                         "Essentia auto-resume: continuing from checkpoint artist '%s'",
@@ -1131,14 +1137,34 @@ def run_essentia_mood_scan(
 
         query_params.append(track_id)
 
-        cursor.execute(
-            f"""
-            UPDATE tracks
-            SET {', '.join(set_clauses)}
-            WHERE id = {placeholder}
-            """,
-            tuple(query_params),
+        _update_query = (
+            f"UPDATE tracks SET {', '.join(set_clauses)} WHERE id = {placeholder}"
         )
+        _update_params = tuple(query_params)
+
+        # Execute the UPDATE, with a single reconnect+retry if PostgreSQL drops
+        # the connection mid-scan (e.g. server restart or idle timeout).
+        # conn/cursor are function-scoped variables; reassigning them here makes
+        # all subsequent loop iterations and the final commit/close use the
+        # fresh connection automatically.
+        try:
+            cursor.execute(_update_query, _update_params)
+        except Exception as _db_exc:
+            if not (_PG_OPERATIONAL_ERROR and isinstance(_db_exc, _PG_OPERATIONAL_ERROR)):
+                raise
+            logger.warning(
+                "Essentia scan: DB connection lost, reconnecting (track %s): %s",
+                track_id, _db_exc,
+            )
+            log_unified("Essentia Scan - DB connection lost, reconnecting…")
+            try:
+                conn.close()
+            except Exception:
+                pass
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            # Second attempt; let any error propagate naturally.
+            cursor.execute(_update_query, _update_params)
 
         if cursor.rowcount and cursor.rowcount > 0:
             updated_tracks += 1
