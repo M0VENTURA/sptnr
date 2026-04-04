@@ -4522,6 +4522,7 @@ def check_downloads_folder():
         List of newly completed items
     """
     lock_acquired = False
+    conn = None
     try:
         now = time.time()
         cache_age = now - _downloads_check_cache['timestamp']
@@ -5191,8 +5192,6 @@ def check_downloads_folder():
                         search_query,
                     )
 
-        conn.close()
-
         if completed_items:
             logger.info(f"Found {len(completed_items)} completed downloads")
 
@@ -5206,6 +5205,11 @@ def check_downloads_folder():
         logger.error(traceback.format_exc())
         return []
     finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
         if lock_acquired:
             try:
                 _downloads_check_lock.release()
@@ -6610,6 +6614,7 @@ def get_completed_queue(limit=50):
     Returns:
         List of completed/unmatched queue items
     """
+    conn = None
     try:
         conn = _get_postgres_conn_from_app_or_fallback()
         placeholder = "%s"
@@ -6624,14 +6629,17 @@ def get_completed_queue(limit=50):
 
         rows = cursor.fetchall()
         # RealDictCursor always returns dict-like objects (this function always uses PostgreSQL)
-        items = [{k: v for k, v in row.items()} for row in rows] if rows else []
-        conn.close()
-
-        return items
+        return [{k: v for k, v in row.items()} for row in rows] if rows else []
 
     except Exception as e:
         logger.error(f"Error getting completed queue: {e}")
         return []
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def cleanup_missing_files():

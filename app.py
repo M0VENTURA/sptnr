@@ -18560,13 +18560,9 @@ def slskd_download():
 def slskd_queue_download():
     """Initiate a Soulseek download that is linked to a specific download-queue item.
 
-    When the user selects a result from the manual Soulseek search modal next to a
-    queue row, this endpoint:
-
-    1. Enqueues the file in slskd.
-    2. Updates the queue item to status ``downloading`` with ``found_filename`` set.
-    3. Ensures the queue item has a ``queue_folder`` (creates it on disk) so the
-       queue processor can relocate the file there once slskd finishes.
+    Validates the request synchronously then fires the slskd enqueue and DB
+    update in a background thread so the response is returned immediately,
+    avoiding browser-side timeout errors when slskd is slow to respond.
 
     Request JSON::
 
@@ -18595,105 +18591,66 @@ def slskd_queue_download():
     if not username or not filename:
         return jsonify({"error": "username and filename are required"}), 400
 
-    conn = None
+    # Quick existence check so we can return 404 synchronously.
     try:
         conn = get_db()
         cursor = conn.cursor()
-        placeholder = "%s"
-
         cursor.execute(
-            f"SELECT * FROM download_queue WHERE id = {placeholder}",
+            f"SELECT id FROM download_queue WHERE id = %s",
             (queue_id,),
         )
-        row = cursor.fetchone()
-        if not row:
+        if not cursor.fetchone():
+            conn.close()
             return jsonify({"error": f"Queue item {queue_id} not found"}), 404
-
-        item = dict(row) if hasattr(row, 'keys') else {
-            desc[0]: row[i] for i, desc in enumerate(cursor.description)
-        }
-
-        # Compute / refresh the queue_folder for this item.
-        try:
-            from download_queue_manager import build_queue_album_folder
-            queue_folder = (item.get("queue_folder") or "").strip() or build_queue_album_folder(item)
-        except Exception:
-            queue_folder = None
-
-        # Create the folder on disk now so files can be moved into it immediately.
-        if queue_folder:
-            try:
-                os.makedirs(queue_folder, exist_ok=True)
-            except Exception as mkdir_err:
-                logging.warning(f"[QUEUE_FOLDER] Could not create folder '{queue_folder}': {mkdir_err}")
-
-        web_url = slskd_config.get("web_url", "http://localhost:5030")
-        api_key = slskd_config.get("api_key", "")
-        client = SlskdClient(web_url, api_key, enabled=True)
-        enqueue_result = client.enqueue_download_with_tracking(username=username, filename=filename, size=size)
-
-        if not enqueue_result.get("success"):
-            return jsonify({"error": "slskd failed to enqueue the download"}), 500
-
-        transfer_id = (enqueue_result.get("transfer_id") or "").strip() or None
-        transfer_username = (enqueue_result.get("username") or username).strip()
-        transfer_state = (enqueue_result.get("state") or "Requested").strip() or "Requested"
-        transfer_queue_position = enqueue_result.get("queue_position")
-
-        # Mark the queue item as downloading with the selected filename.
-        update_fields = {
-            "status": "downloading",
-            "found_filename": filename,
-        }
-        if queue_folder:
-            update_fields["queue_folder"] = queue_folder
-
-        cursor.execute(
-            f"""
-            UPDATE download_queue
-            SET status = {placeholder},
-                found_filename = {placeholder},
-                slskd_transfer_id = {placeholder},
-                slskd_username = {placeholder},
-                slskd_state = {placeholder},
-                slskd_queue_position = {placeholder},
-                slskd_last_sync_at = {placeholder},
-                queue_folder = {placeholder},
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = {placeholder}
-            """,
-            ("downloading", filename, transfer_id, transfer_username, transfer_state, transfer_queue_position, datetime.now().isoformat(), queue_folder, queue_id),
-        )
-        conn.commit()
-
-        logging.info(
-            f"[QUEUE_FOLDER] Queue {queue_id}: manual download started "
-            f"(file={filename!r}, folder={queue_folder!r})"
-        )
-        return jsonify({
-            "success": True,
-            "message": f"Download queued for {os.path.basename(filename)}",
-            "queue_folder": queue_folder,
-            "transfer_id": transfer_id,
-            "transfer_username": transfer_username,
-            "transfer_state": transfer_state,
-            "transfer_queue_position": transfer_queue_position,
-        })
-
+        conn.close()
     except Exception as e:
-        logging.error(f"[SLSKD_QUEUE_DOWNLOAD] Error: {e}")
-        if conn:
+        logging.error(f"[SLSKD_QUEUE_DOWNLOAD] DB check error: {e}")
+        return jsonify({"error": "Database error checking queue item"}), 500
+
+    web_url = slskd_config.get("web_url", "http://localhost:5030")
+    api_key = slskd_config.get("api_key", "")
+
+    def _background(q_id, uname, fname, sz, w_url, a_key):
+        try:
+            client = SlskdClient(w_url, a_key, enabled=True)
+            success = client.download_file(username=uname, filename=fname, size=sz)
+            if not success:
+                logging.error(f"[SLSKD_QUEUE_DOWNLOAD] slskd rejected download for queue {q_id}: {fname!r}")
+                return
+            conn2 = get_db()
             try:
-                conn.rollback()
-            except Exception:
-                pass
-        return jsonify({"error": str(e)}), 500
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
+                cur2 = conn2.cursor()
+                cur2.execute(
+                    """
+                    UPDATE download_queue
+                    SET status = %s,
+                        found_filename = %s,
+                        slskd_username = %s,
+                        slskd_state = %s,
+                        slskd_last_sync_at = %s,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                    """,
+                    ("downloading", fname, uname, "Requested", datetime.now().isoformat(), q_id),
+                )
+                conn2.commit()
+                logging.info(f"[SLSKD_QUEUE_DOWNLOAD] Queue {q_id}: download started for {fname!r}")
+            finally:
+                conn2.close()
+        except Exception as bg_err:
+            logging.error(f"[SLSKD_QUEUE_DOWNLOAD] Background error for queue {q_id}: {bg_err}")
+
+    t = threading.Thread(
+        target=_background,
+        args=(queue_id, username, filename, size, web_url, api_key),
+        daemon=True,
+    )
+    t.start()
+
+    return jsonify({
+        "success": True,
+        "message": f"Download queued for {os.path.basename(filename)}",
+    })
 
 
 def _normalize_slskd_filename(value):
