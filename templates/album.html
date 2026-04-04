@@ -607,6 +607,7 @@
                             data-title="{{ track.title|escapejs }}"
                             data-album="{{ track.album|escapejs }}"
                             data-track-number="{{ track.track_number or '' }}"
+                            data-disc-number="{{ track.disc_number or '' }}"
                             data-year="{{ track.year or '' }}"
                             data-release-id="{{ track.release_id or '' }}"
                             onclick="queueMissingTrack(this)">
@@ -2197,6 +2198,7 @@
             const safeAlbumArtist = escapeHtml(albumArtist);
             const safeAlbum = escapeHtml(albumName);
             const safeTrackNum = escapeHtml(String(track.mb_track_number || ''));
+            const safeDiscNum = escapeHtml(String(track.mb_disc_number || ''));
 
             const row = document.createElement('tr');
             row.className = 'text-muted missing-track-row mb-missing-row';
@@ -2217,6 +2219,7 @@
                             data-title="${safeTitle}"
                             data-album="${safeAlbum}"
                             data-track-number="${safeTrackNum}"
+                            data-disc-number="${safeDiscNum}"
                             data-year="${mbYear}"
                             data-release-id=""
                             onclick="queueMissingTrack(this)">
@@ -3928,6 +3931,7 @@
         const title = btn.dataset.title;
         const album = btn.dataset.album;
         const trackNumber = btn.dataset.trackNumber || null;
+        const discNumber = btn.dataset.discNumber || null;
         const year = btn.dataset.year || null;
         // Fall back to the album's currently-assigned MBID when the track row
         // doesn't carry one (e.g. the user just selected a new release via the
@@ -3951,8 +3955,12 @@
                     album: album,
                     album_artist: btn.dataset.albumArtist || null,
                     track_number: trackNumber,
+                    disc_number: discNumber,
                     year: year,
                     release_id: releaseId,
+                    // release_mbid fills a separate column used for MB-specific duplicate
+                    // detection and cross-source overwrite merge in add_to_queue.
+                    release_mbid: releaseId,
                     release_source: releaseId ? 'musicbrainz' : null,
                     source: 'soulseek'
                 })

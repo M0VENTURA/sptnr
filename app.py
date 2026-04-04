@@ -36193,13 +36193,16 @@ def api_search_musicbrainz_release():
 
                     media = release.get("media", [])
                     tracks_list = []
-                    for disc in media:
+                    for disc_idx, disc in enumerate(media, 1):
+                        disc_number = disc.get("position", disc_idx)
                         for t in disc.get("tracks", []):
                             recording = t.get("recording", {})
                             track_entry = {
                                 "title": recording.get("title", "Unknown"),
                                 "position": t.get("position", ""),
                                 "length": recording.get("length", 0),
+                                "disc_number": disc_number,
+                                "recording_mbid": recording.get("id", ""),
                             }
                             # Include per-track artist for compilation support
                             rec_credits = recording.get("artist-credit") or []
@@ -36320,13 +36323,16 @@ def api_search_musicbrainz_release():
 
                     media = release.get("media", [])
                     tracks = []
-                    for disc in media:
+                    for disc_idx, disc in enumerate(media, 1):
+                        disc_number = disc.get("position", disc_idx)
                         for track_row in disc.get("tracks", []):
                             recording = track_row.get("recording", {})
                             track_entry = {
                                 "title": recording.get("title", "Unknown"),
                                 "position": track_row.get("position", ""),
                                 "length": recording.get("length", 0),
+                                "disc_number": disc_number,
+                                "recording_mbid": recording.get("id", ""),
                             }
                             rec_credits = recording.get("artist-credit") or []
                             if rec_credits:
