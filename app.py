@@ -10031,7 +10031,13 @@ def api_cleanup_false_positive_missing():
 
 @app.route("/api/artist/bio")
 def api_artist_bio():
-    """Get artist biography from database cache only (fetched during scans, not real-time online)"""
+    """Get artist biography.
+
+    Primary source: the ``bio`` column in the local ``artists`` table (populated
+    during a popularity/scan run).  When that column is empty the endpoint falls
+    back to a live Wikidata/Wikipedia lookup and caches the result so subsequent
+    requests are served from the database.
+    """
     artist_name = request.args.get("name", "").strip()
     if not artist_name:
         return jsonify({"error": "Artist name required"}), 400
@@ -10041,39 +10047,60 @@ def api_artist_bio():
         cursor = conn.cursor()
         placeholder = "%s"
         
-        # Return cached biography from database only - no online calls
         cursor.execute(f"""
             SELECT bio, image_url
             FROM artists
             WHERE name = {placeholder}
         """, (artist_name,))
         artist_row = cursor.fetchone()
-        conn.close()
-        
-        if artist_row:
-            bio = artist_row['bio'] if artist_row['bio'] else ""
-            image_url = artist_row['image_url'] if artist_row['image_url'] else ""
-            
-            # Clean up the biography text (for old cached data with artist IDs)
-            if bio:
-                cleaned_bio = clean_discogs_biography(bio)
-            else:
-                cleaned_bio = ""
-            
-            logging.debug(f"[ARTIST BIO] Found bio for {artist_name}: {len(cleaned_bio)} chars")
+
+        bio = (artist_row['bio'] if artist_row and artist_row['bio'] else "").strip()
+        image_url = (artist_row['image_url'] if artist_row and artist_row['image_url'] else "").strip()
+
+        if bio:
+            conn.close()
+            logging.debug(f"[ARTIST BIO] DB hit for {artist_name}: {len(bio)} chars")
             return jsonify({
-                "bio": cleaned_bio,
+                "bio": clean_discogs_biography(bio),
                 "source": "Database (from scan)",
-                "image_url": image_url
+                "image_url": image_url,
             })
-        else:
-            # Artist not in database yet - return empty with helpful message
-            logging.info(f"[ARTIST BIO] No artist record for {artist_name} - run scan to populate")
+
+        # --- Wikidata / Wikipedia fallback ---
+        logging.info(f"[ARTIST BIO] No DB bio for {artist_name}, trying Wikidata")
+        try:
+            from api_clients.wikidata import get_artist_biography as _wikidata_bio
+            wikidata_bio = _wikidata_bio(artist_name)
+        except Exception as _wk_err:
+            logging.debug(f"[ARTIST BIO] Wikidata import/call failed: {_wk_err}")
+            wikidata_bio = None
+
+        if wikidata_bio:
+            # Cache in the artists table so future requests are instant
+            try:
+                cursor.execute(f"""
+                    INSERT INTO artists (id, name, bio)
+                    VALUES ({placeholder}, {placeholder}, {placeholder})
+                    ON CONFLICT (id) DO UPDATE SET bio = EXCLUDED.bio
+                """, (artist_name, artist_name, wikidata_bio))
+                conn.commit()
+            except Exception as _cache_err:
+                logging.debug(f"[ARTIST BIO] Failed to cache Wikidata bio: {_cache_err}")
+            conn.close()
+            logging.info(f"[ARTIST BIO] Wikidata bio for {artist_name}: {len(wikidata_bio)} chars")
             return jsonify({
-                "bio": "",
-                "source": "Not yet populated (run Scan Artist button to fetch)",
-                "image_url": ""
+                "bio": wikidata_bio,
+                "source": "Wikidata",
+                "image_url": image_url,
             })
+
+        conn.close()
+        logging.info(f"[ARTIST BIO] No bio found for {artist_name}")
+        return jsonify({
+            "bio": "",
+            "source": "Not yet populated (run Scan Artist button to fetch)",
+            "image_url": image_url,
+        })
         
     except Exception as e:
         logging.error(f"[ARTIST BIO] Error fetching bio for {artist_name}: {e}")
@@ -34223,6 +34250,12 @@ def playlists_create(playlist_type):
                          top_moods=top_moods,
                          spotify_enabled=spotify_enabled,
                          lastfm_enabled=lastfm_enabled)
+
+
+@app.route("/discover")
+def discover():
+    """Discovery page — surfaces recommendation_candidates as a browsable UI."""
+    return render_template("discover.html")
 
 
 @app.route("/playlists/import")
