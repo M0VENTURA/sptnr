@@ -1656,10 +1656,6 @@ def check_completed_downloads():
 
                 newly_completed.append(item)
 
-        if conn is not None:
-            conn.close()
-            conn = None
-
         for item in newly_completed:
             try:
                 from download_queue_manager import auto_move_completed_album
