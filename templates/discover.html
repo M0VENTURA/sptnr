@@ -187,10 +187,10 @@
   // Build a single recommendation card
   // ---------------------------------------------------------------------------
   function buildCard(sectionKey, index, playlist) {
-    const name       = escDiscover(playlist.name  || playlist.title || "Unnamed");
-    const desc       = escDiscover(playlist.description || "");
+    const rawName    = String(playlist.name  || playlist.title || "Unnamed");
+    const rawDesc    = String(playlist.description || "");
+    const rawIcon    = String(playlist.icon || "🎵");
     const trackCount = parseInt(playlist.track_count || playlist.tracks || 0, 10);
-    const icon       = escDiscover(playlist.icon || "🎵");
 
     // Map sectionKey to the type string the create endpoint expects
     const typeMap = {
@@ -201,44 +201,71 @@
     };
     const createType = typeMap[sectionKey] || sectionKey;
 
-    const col  = document.createElement("div");
+    const col = document.createElement("div");
     col.className = "col-12 col-sm-6 col-lg-4 col-xl-3";
 
-    col.innerHTML = `
-      <div class="card h-100 shadow-sm">
-        <div class="card-body d-flex flex-column">
-          <div class="d-flex align-items-start gap-2 mb-2">
-            <span style="font-size: 1.5rem; line-height: 1;">${icon}</span>
-            <div class="flex-grow-1 min-width-0">
-              <h6 class="card-title mb-1 text-truncate" title="${name}">${name}</h6>
-              ${desc ? `<p class="text-muted small mb-0">${desc}</p>` : ""}
-            </div>
-          </div>
-          <div class="mt-auto pt-2">
-            <div class="d-flex justify-content-between align-items-center mb-2">
-              <span class="badge bg-secondary">${trackCount} track${trackCount !== 1 ? "s" : ""}</span>
-            </div>
-            <button
-              class="btn btn-sm btn-outline-primary w-100"
-              onclick="createPlaylist('${createType}', ${index}, ${JSON.stringify(name)})"
-              data-key="${sectionKey}"
-              data-index="${index}">
-              <i class="bi bi-plus-circle me-1"></i>Save as Playlist
-            </button>
-          </div>
-        </div>
-      </div>
-    `;
+    // Card wrapper
+    const card    = document.createElement("div");
+    card.className = "card h-100 shadow-sm";
+    const body    = document.createElement("div");
+    body.className = "card-body d-flex flex-column";
+
+    // Icon + title row
+    const top = document.createElement("div");
+    top.className = "d-flex align-items-start gap-2 mb-2";
+
+    // Icon: use textContent so emoji are safe and no HTML injection is possible
+    const iconEl = document.createElement("span");
+    iconEl.style.cssText = "font-size:1.5rem;line-height:1;";
+    iconEl.textContent = rawIcon;
+    top.appendChild(iconEl);
+
+    const titleWrap = document.createElement("div");
+    titleWrap.className = "flex-grow-1 min-width-0";
+    const titleEl = document.createElement("h6");
+    titleEl.className = "card-title mb-1 text-truncate";
+    titleEl.title = rawName;
+    titleEl.textContent = rawName;
+    titleWrap.appendChild(titleEl);
+    if (rawDesc) {
+      const descEl = document.createElement("p");
+      descEl.className = "text-muted small mb-0";
+      descEl.textContent = rawDesc;
+      titleWrap.appendChild(descEl);
+    }
+    top.appendChild(titleWrap);
+    body.appendChild(top);
+
+    // Badge + button row
+    const footer = document.createElement("div");
+    footer.className = "mt-auto pt-2";
+    const badgeRow = document.createElement("div");
+    badgeRow.className = "d-flex justify-content-between align-items-center mb-2";
+    const badge = document.createElement("span");
+    badge.className = "badge bg-secondary";
+    badge.textContent = `${trackCount} track${trackCount !== 1 ? "s" : ""}`;
+    badgeRow.appendChild(badge);
+    footer.appendChild(badgeRow);
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn btn-sm btn-outline-primary w-100";
+    btn.dataset.key   = sectionKey;
+    btn.dataset.index = String(index);
+    btn.innerHTML = '<i class="bi bi-plus-circle me-1"></i>Save as Playlist';
+    btn.addEventListener("click", () => createPlaylist(createType, index, rawName, btn));
+    footer.appendChild(btn);
+
+    body.appendChild(footer);
+    card.appendChild(body);
+    col.appendChild(card);
     return col;
   }
 
   // ---------------------------------------------------------------------------
   // Create playlist from a recommendation
   // ---------------------------------------------------------------------------
-  async function createPlaylist(type, index, playlistName) {
-    const btn = document.querySelector(
-      `[data-key="${_typeToKey(type)}"][data-index="${index}"]`
-    );
+  async function createPlaylist(type, index, playlistName, btn) {
     if (btn) {
       btn.disabled = true;
       btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving…';
@@ -280,10 +307,6 @@
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
-  function _typeToKey(type) {
-    return { "similar-artists": "similar_artists", "top-genres": "top_genres", "mood": "mood_playlists", "discovery": "discovery" }[type] || type;
-  }
-
   function escDiscover(str) {
     return String(str)
       .replace(/&/g, "&amp;")
