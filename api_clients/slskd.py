@@ -733,6 +733,30 @@ class SlskdClient:
             if self._is_success_state(t.get("state"))
         ]
     
+    def list_searches(self, timeout: Optional[int] = None) -> list[dict]:
+        """
+        Return all searches known to slskd.
+
+        Returns:
+            List of search dicts from slskd (each has at least 'id' and 'state').
+            Returns an empty list on any error.
+        """
+        if not self.enabled:
+            return []
+
+        timeout = timeout or self.default_timeout
+
+        try:
+            url = f"{self.base_url}/searches"
+            resp = self.session.get(url, headers=self.headers, timeout=timeout)
+            if resp.status_code == 200:
+                return resp.json() or []
+            logger.warning(f"Slskd list searches failed: {resp.status_code} - {resp.text[:200]}")
+            return []
+        except Exception as e:
+            logger.error(f"Slskd list searches error: {e}")
+            return []
+
     def cancel_search(self, search_id: str, timeout: Optional[int] = None) -> bool:
         """
         Cancel an active search.
