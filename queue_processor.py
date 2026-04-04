@@ -1117,7 +1117,8 @@ def _build_fallback_search_queries(queue_item, primary_query):
     # word (e.g. "Pretty") broadens the token set while the scorer still
     # validates the full artist name against the candidate filename.
     effective_artist = feat_stripped if feat_stripped else artist
-    first_word = effective_artist.split()[0] if effective_artist.split() else ""
+    artist_words = effective_artist.split()
+    first_word = artist_words[0] if artist_words else ""
     if first_word and first_word.lower() != effective_artist.lower():
         _add(_sanitize_search_query_for_slskd(f"{first_word} - {title}"))
 
