@@ -1458,6 +1458,9 @@ def check_completed_downloads():
             WHERE status = 'downloading'
         """)
         downloading = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        conn = None
+
         if downloading:
             logger.debug(f"Checking {len(downloading)} items in 'downloading' status")
 
@@ -1653,7 +1656,9 @@ def check_completed_downloads():
 
                 newly_completed.append(item)
 
-        conn.close()
+        if conn is not None:
+            conn.close()
+            conn = None
 
         for item in newly_completed:
             try:
