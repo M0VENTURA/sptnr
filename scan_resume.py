@@ -250,12 +250,13 @@ def detect_interrupted_scan(scan_type: str = "navidrome") -> Optional[Dict]:
         log_debug("Scan is already complete; no resume needed")
         return None
 
-    # A progress file with status='starting' and no current_artist is a fresh
-    # scan that was just initiated (not an interrupted one).  Resuming it would
-    # restart from the beginning anyway, and doing so unconditionally on every
-    # boot would cause duplicate concurrent scans.
-    if progress.get('status') == 'starting' and not progress.get('current_artist'):
-        log_debug(f"Progress file shows scan in 'starting' state with no current artist; skipping auto-resume")
+    # A scan in 'starting' state was just initiated and has not yet processed
+    # any artists.  The resume marker may carry a stale current_artist from the
+    # previous run, making the scan look interrupted at that artist even though
+    # no work was done in the current run.  Skip auto-resume unconditionally so
+    # the next boot launches a clean scan rather than a spurious resume.
+    if progress.get('status') == 'starting':
+        log_debug("Progress file shows scan in 'starting' state; skipping auto-resume")
         return None
 
     # Check if progress is recent (within 24 hours)
