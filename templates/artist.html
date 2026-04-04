@@ -1283,7 +1283,7 @@
 
 <script>
 // Constants for slskd search polling
-const SLSKD_MAX_POLL_ATTEMPTS = 20;
+const SLSKD_MAX_POLL_ATTEMPTS = 60;
 const SLSKD_POLL_INTERVAL_MS = 2000;
 const BYTES_TO_MB = 1024 * 1024;
 
@@ -3531,7 +3531,7 @@ function downloadTrack(searchQuery, artist, title) {
 }
 
 function pollSlskdResultsForDownload(searchId, artist, title, btn, originalHTML, pollCount = 0) {
-  if (pollCount > 10) {
+  if (pollCount > 60) {
     // Timeout - try again or show manual search
     btn.disabled = false;
     btn.innerHTML = originalHTML;

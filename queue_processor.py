@@ -98,8 +98,10 @@ DOWNLOADS_DIR = resolve_downloads_dir()
 # Enforce a floor between retries so unavailable tracks do not churn.
 MIN_RETRY_DELAY_MINUTES = 60
 
-# Maximum number of 1-second polling cycles when waiting for Soulseek search results.
-_SLSKD_SEARCH_POLL_ATTEMPTS = 45
+# Maximum seconds to wait for a Soulseek search to complete.  Polling stops as
+# soon as slskd reports is_complete=True, so this is only a safety ceiling for
+# searches that never finish (e.g. slskd unreachable mid-search).
+_SLSKD_SEARCH_MAX_WAIT_SECONDS = 150
 
 # Minimum candidate score for a Soulseek result to be accepted as a valid match.
 # Scores below this threshold trigger fallback queries (e.g. using album_artist).
@@ -1134,13 +1136,17 @@ def _build_fallback_search_queries(queue_item, primary_query):
 def _run_soulseek_search(queue_id, query, queue_item, client):
     """Submit a single Soulseek search and collect the best-scoring candidate.
 
-    Polls for up to 45 seconds and returns ``(best_result, best_score)`` where
-    *best_result* is a dict with keys ``username``, ``filename``, ``size``,
-    ``length``, and ``score``, or ``(None, 0.0)`` if no candidates were found
-    or the search could not be started.
-    """
-    MAX_POLL_ATTEMPTS = _SLSKD_SEARCH_POLL_ATTEMPTS
+    Polls until slskd marks the search as complete (is_complete=True) or
+    _SLSKD_SEARCH_MAX_WAIT_SECONDS is reached, whichever comes first.  Stopping
+    as soon as is_complete=True means searches that run the full slskd timeout
+    (state='Completed, TimedOut') still have their results evaluated rather than
+    being abandoned mid-poll.
 
+    Returns ``(best_result, best_score)`` where *best_result* is a dict with
+    keys ``username``, ``filename``, ``size``, ``length``, and ``score``, or
+    ``(None, 0.0)`` if no candidates were found or the search could not be
+    started.
+    """
     search_id = client.start_search(query)
     if not search_id:
         logger.warning(f"Queue {queue_id}: Failed to start search for '{query}'")
@@ -1153,13 +1159,17 @@ def _run_soulseek_search(queue_id, query, queue_item, client):
 
     best_result = None
     best_score = 0.0
+    poll_deadline = time.monotonic() + _SLSKD_SEARCH_MAX_WAIT_SECONDS
+    poll_attempt = 0
 
-    for poll_attempt in range(MAX_POLL_ATTEMPTS):
+    while time.monotonic() < poll_deadline:
         time.sleep(1)
+        poll_attempt += 1
         try:
             responses, state, is_complete = client.get_search_results(search_id)
+            elapsed = int(time.monotonic() - (poll_deadline - _SLSKD_SEARCH_MAX_WAIT_SECONDS))
             logger.debug(
-                f"Queue {queue_id}: Poll {poll_attempt+1}/{MAX_POLL_ATTEMPTS} - "
+                f"Queue {queue_id}: Poll {poll_attempt} (+{elapsed}s) - "
                 f"Got {len(responses)} responses, state={state}"
             )
 
@@ -1202,17 +1212,23 @@ def _run_soulseek_search(queue_id, query, queue_item, client):
                 # Exit early once we have a high-confidence match.
                 if best_result and best_score >= 0.72:
                     logger.info(
-                        f"Queue {queue_id}: ✓ Found high-confidence match after {poll_attempt+1}s "
+                        f"Queue {queue_id}: ✓ Found high-confidence match after {poll_attempt}s "
                         f"(score={best_score:.2f})"
                     )
                     break
 
-            if is_complete and best_result:
-                logger.info(f"Queue {queue_id}: Search complete with results, stopping polling")
+            # Stop as soon as slskd says the search is finished (including
+            # 'Completed, TimedOut').  All results are already in *responses*
+            # at this point, so further polling is pointless.
+            if is_complete:
+                logger.info(
+                    f"Queue {queue_id}: Search complete (state={state}) after {poll_attempt}s, "
+                    f"stopping poll"
+                )
                 break
 
         except Exception as e:
-            logger.warning(f"Queue {queue_id}: Error polling results (attempt {poll_attempt+1}): {e}")
+            logger.warning(f"Queue {queue_id}: Error polling results (attempt {poll_attempt}): {e}")
             logger.debug(traceback.format_exc())
 
     return best_result, best_score
