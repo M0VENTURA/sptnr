@@ -18152,11 +18152,8 @@ def scan_combined():
                             logging.info("Restart requested: cleared combined checkpoint to start from beginning")
                         except Exception as checkpoint_err:
                             logging.warning(f"Restart requested but failed to clear combined checkpoint: {checkpoint_err}")
-                    
-                    # Build artist index
-                    artist_map = build_artist_index()
-                    artists = list(artist_map.items())
-                    # Sort artists: numbers/symbols first (as '#'), then A-Z, empty names at end
+
+                    # Sort helper defined once; reused across perpetual cycles.
                     def _combined_scan_sort_key(item):
                         name = item[0] if item[0] else ''
                         if not name:
@@ -18165,200 +18162,234 @@ def scan_combined():
                         if first_char in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ':
                             return (first_char, name.lower())
                         return ('#', name.lower())
-                    artists.sort(key=_combined_scan_sort_key)
-                    total = len(artists)
-                    
-                    # Determine force rescan based on mode
-                    force_rescan = (mode == 'force' or mode == 'resume_force')
-                    
-                    # Determine start index for resume mode using checkpoint file.
-                    # Fallback to scan_resume progress metadata when checkpoint file is missing.
-                    start_idx = 0
-                    if mode == 'resume' or mode == 'resume_force':
-                        last_scanned_artist = None
-                        if os.path.exists(checkpoint_path):
-                            try:
-                                with open(checkpoint_path, 'r') as f:
-                                    checkpoint = json.load(f)
-                                    last_scanned_artist = checkpoint.get("last_scanned_artist")
-                                if last_scanned_artist:
-                                    logging.info(f"Resume mode: Found last scanned artist '{last_scanned_artist}' in checkpoint")
-                                else:
-                                    logging.warning("Resume mode: Checkpoint exists but has no last_scanned_artist")
-                            except Exception as e:
-                                logging.warning(f"Resume mode: Error reading checkpoint: {e}")
 
-                        if not last_scanned_artist:
-                            try:
-                                from scan_resume import get_last_scanned_artist
-                                last_scanned_artist = get_last_scanned_artist(scan_type="combined", db_path=DB_PATH)
-                                if last_scanned_artist:
-                                    logging.info(f"Resume mode: Using progress fallback artist '{last_scanned_artist}'")
-                                else:
-                                    logging.warning("Resume mode: No fallback artist found in progress metadata")
-                            except Exception as resume_err:
-                                logging.warning(f"Resume mode: Could not read fallback progress metadata: {resume_err}")
+                    _perpetual_cycle = 0
+                    while True:
+                        _perpetual_cycle += 1
 
-                        if last_scanned_artist:
-                            for idx, (artist_name, _) in enumerate(artists):
-                                if artist_name == last_scanned_artist:
-                                    start_idx = idx  # Start from this artist (rescan it completely)
-                                    logging.info(f"Resuming combined scan from artist index {start_idx} ('{last_scanned_artist}')")
-                                    break
-                            else:
-                                logging.warning(f"Resume mode: Artist '{last_scanned_artist}' not found in current artist index; starting from beginning")
+                        # Build (or refresh) the artist index at the start of each cycle so
+                        # newly-added artists are picked up in perpetual runs.
+                        artist_map = build_artist_index()
+                        artists = list(artist_map.items())
+                        artists.sort(key=_combined_scan_sort_key)
+                        total = len(artists)
+
+                        # First cycle honours the original mode (resume/force/all).
+                        # Subsequent perpetual cycles always do a non-forced full pass.
+                        if _perpetual_cycle == 1:
+                            force_rescan = (mode == 'force' or mode == 'resume_force')
                         else:
-                            logging.warning("Resume mode: No checkpoint/progress artist found, starting from beginning")
+                            force_rescan = False
+
+                        # Determine start index: only apply resume logic on the first cycle.
+                        start_idx = 0
+                        if _perpetual_cycle == 1 and (mode == 'resume' or mode == 'resume_force'):
+                            last_scanned_artist = None
+                            if os.path.exists(checkpoint_path):
+                                try:
+                                    with open(checkpoint_path, 'r') as f:
+                                        checkpoint = json.load(f)
+                                        last_scanned_artist = checkpoint.get("last_scanned_artist")
+                                    if last_scanned_artist:
+                                        logging.info(f"Resume mode: Found last scanned artist '{last_scanned_artist}' in checkpoint")
+                                    else:
+                                        logging.warning("Resume mode: Checkpoint exists but has no last_scanned_artist")
+                                except Exception as e:
+                                    logging.warning(f"Resume mode: Error reading checkpoint: {e}")
+
+                            if not last_scanned_artist:
+                                try:
+                                    from scan_resume import get_last_scanned_artist
+                                    last_scanned_artist = get_last_scanned_artist(scan_type="combined", db_path=DB_PATH)
+                                    if last_scanned_artist:
+                                        logging.info(f"Resume mode: Using progress fallback artist '{last_scanned_artist}'")
+                                    else:
+                                        logging.warning("Resume mode: No fallback artist found in progress metadata")
+                                except Exception as resume_err:
+                                    logging.warning(f"Resume mode: Could not read fallback progress metadata: {resume_err}")
+
+                            if last_scanned_artist:
+                                for idx, (artist_name, _) in enumerate(artists):
+                                    if artist_name == last_scanned_artist:
+                                        start_idx = idx  # Start from this artist (rescan it completely)
+                                        logging.info(f"Resuming combined scan from artist index {start_idx} ('{last_scanned_artist}')")
+                                        break
+                                else:
+                                    logging.warning(f"Resume mode: Artist '{last_scanned_artist}' not found in current artist index; starting from beginning")
+                            else:
+                                logging.warning("Resume mode: No checkpoint/progress artist found, starting from beginning")
+
+                        # Process each artist sequentially
+                        for idx, (artist_name, info) in enumerate(artists[start_idx:], start=start_idx+1):
+                            # Check if scan should stop
+                            with scan_lock:
+                                stop_requested = scan_process_combined is None or _is_stop_requested_from_progress(combined_progress_file)
+                                if stop_requested:
+                                    logging.info("Combined scan stop signal received, exiting gracefully")
+                                    # Preserve checkpoint for potential resume
+                                    _write_progress_with_current_artist(combined_progress_file, "combined_scan", False, {"status": "stopped", "exit_code": 0})
+                                    return
+                        
+                            artist_id = info.get("id")
+                        
+                            logging.info(f"[{idx}/{total}] Processing artist: {artist_name}")
+                        
+                            # Update combined progress immediately so the dashboard shows the
+                            # current artist before the (potentially slow) Navidrome import runs.
+                            # This also ensures the combined_scan progress file stays current
+                            # throughout the navidrome step (scan_artist_to_db is told to write
+                            # here instead of navidrome_scan_progress.json).
+                            _write_progress_file(combined_progress_file, "combined_scan", True, {
+                                "status": "running",
+                                "current_artist": artist_name,
+                                "processed_artists": idx,
+                                "total_artists": total,
+                                "percent_complete": int((idx / total) * 100),
+                                "last_updated": datetime.now().isoformat(),
+                            })
+
+                            # Step 1: Navidrome import for this artist
+                            # Note: filter_missing is always False because we process each artist explicitly
+                            # The combined scan handles all artists in sequence, unlike bulk scans
+                            logging.info(f"  → Navidrome import for {artist_name}")
+                            try:
+                                scan_artist_to_db(
+                                    artist_name, 
+                                    artist_id, 
+                                    verbose=False, 
+                                    force=force_rescan,
+                                    filter_missing=False,  # Combined scan processes all artists explicitly
+                                    processed_artists=idx, 
+                                    total_artists=total,
+                                    progress_file=combined_progress_file,
+                                    progress_scan_type="combined_scan",
+                                )
+                            except Exception as e:
+                                logging.error(f"Error in Navidrome import for {artist_name}: {e}")
+                                # Continue with next steps even if Navidrome import fails
+                        
+                            # Step 2: Metadata lookup stage for this artist
+                            logging.info(f"  → Metadata lookup scan for {artist_name}")
+                            try:
+                                completed = scan_popularity_func(
+                                    verbose=False, 
+                                    force=force_rescan,
+                                    artist_filter=artist_name,
+                                    metadata_only=True,
+                                    stop_progress_file=combined_progress_file,
+                                    caller_scan_type="combined_scan",
+                                )
+                                if completed is False:
+                                    logging.info(f"Combined scan stop detected during metadata step for {artist_name}")
+                                    _write_progress_with_current_artist(combined_progress_file, "combined_scan", False, {"status": "stopped", "exit_code": 0})
+                                    return
+                            except Exception as e:
+                                logging.error(f"Error in metadata lookup scan for {artist_name}: {e}")
+
+                            # Step 3: Popularity-only scan for this artist
+                            logging.info(f"  → Popularity scan for {artist_name}")
+                            try:
+                                completed = scan_popularity_func(
+                                    verbose=False,
+                                    force=force_rescan,
+                                    artist_filter=artist_name,
+                                    popularity_only=True,
+                                    stop_progress_file=combined_progress_file,
+                                    caller_scan_type="combined_scan",
+                                )
+                                if completed is False:
+                                    logging.info(f"Combined scan stop detected during popularity stage for {artist_name}")
+                                    _write_progress_with_current_artist(combined_progress_file, "combined_scan", False, {"status": "stopped", "exit_code": 0})
+                                    return
+                            except Exception as e:
+                                logging.error(f"Error in popularity-only scan for {artist_name}: {e}")
+
+                            # Step 4: Singles-only scan for this artist
+                            logging.info(f"  → Singles scan for {artist_name}")
+                            try:
+                                completed = scan_popularity_func(
+                                    verbose=False,
+                                    force=force_rescan,
+                                    artist_filter=artist_name,
+                                    singles_only=True,
+                                    stop_progress_file=combined_progress_file,
+                                    caller_scan_type="combined_scan",
+                                )
+                                if completed is False:
+                                    logging.info(f"Combined scan stop detected during singles stage for {artist_name}")
+                                    _write_progress_with_current_artist(combined_progress_file, "combined_scan", False, {"status": "stopped", "exit_code": 0})
+                                    return
+                            except Exception as e:
+                                logging.error(f"Error in singles-only scan for {artist_name}: {e}")
+
+                            # Step 5: Mood scan for this artist
+                            logging.info(f"  → Mood scan for {artist_name}")
+                            try:
+                                cfg = get_config()
+                                essentia_cfg = cfg.get("essentia", {}) if isinstance(cfg, dict) else {}
+                                mood_result = run_essentia_mood_scan(
+                                    script_path=essentia_cfg.get("script_path", ""),
+                                    models_dir=essentia_cfg.get("models_dir", ""),
+                                    mood_threshold=float(essentia_cfg.get("mood_threshold", 0.005)),
+                                    per_file_timeout=int(essentia_cfg.get("per_file_timeout", 300)),
+                                    force=force_rescan,
+                                    progress_file="",  # Don't share the standalone essentia progress file –
+                                                       # a user stop of the standalone scan must not abort
+                                                       # the combined scan's per-artist essentia step.
+                                    tag_genres=bool(essentia_cfg.get("tag_genres", False)),
+                                    num_genres=int(essentia_cfg.get("num_genres", 3)),
+                                    genre_threshold=float(essentia_cfg.get("genre_threshold", 15.0)),
+                                    genre_format=essentia_cfg.get("genre_format", "parent_child"),
+                                    tag_moods=bool(essentia_cfg.get("tag_moods", True)),
+                                    parse_json_features=bool(essentia_cfg.get("parse_json_features", True)),
+                                    delete_json_after_import=bool(essentia_cfg.get("delete_json_after_import", True)),
+                                    json_output_dir=str(essentia_cfg.get("json_output_dir", "") or "").strip(),
+                                    artist_filter=artist_name,
+                                    cpu_nice=int(essentia_cfg.get("cpu_nice", 10)),
+                                    inter_file_delay=float(essentia_cfg.get("inter_file_delay", 0.0)),
+                                )
+                                if mood_result.get("stopped"):
+                                    logging.info(f"Combined scan stop detected during mood stage for {artist_name}")
+                                    _write_progress_with_current_artist(combined_progress_file, "combined_scan", False, {"status": "stopped", "exit_code": 0})
+                                    return
+                                if mood_result.get("error"):
+                                    logging.error(f"Error in mood scan for {artist_name}: {mood_result.get('error')}")
+                            except Exception as e:
+                                logging.error(f"Error in mood scan for {artist_name}: {e}")
+                        
+                            # Update checkpoint with the last scanned artist
+                            try:
+                                with open(checkpoint_path, 'w') as f:
+                                    json.dump({"last_scanned_artist": artist_name}, f)
+                            except Exception as e:
+                                logging.warning(f"Error saving combined scan checkpoint: {e}")
                     
-                    # Process each artist sequentially
-                    for idx, (artist_name, info) in enumerate(artists[start_idx:], start=start_idx+1):
-                        # Check if scan should stop
-                        with scan_lock:
-                            stop_requested = scan_process_combined is None or _is_stop_requested_from_progress(combined_progress_file)
-                            if stop_requested:
-                                logging.info("Combined scan stop signal received, exiting gracefully")
-                                # Preserve checkpoint for potential resume
-                                _write_progress_with_current_artist(combined_progress_file, "combined_scan", False, {"status": "stopped", "exit_code": 0})
-                                return
-                        
-                        artist_id = info.get("id")
-                        
-                        logging.info(f"[{idx}/{total}] Processing artist: {artist_name}")
-                        
-                        # Update combined progress immediately so the dashboard shows the
-                        # current artist before the (potentially slow) Navidrome import runs.
-                        # This also ensures the combined_scan progress file stays current
-                        # throughout the navidrome step (scan_artist_to_db is told to write
-                        # here instead of navidrome_scan_progress.json).
-                        _write_progress_file(combined_progress_file, "combined_scan", True, {
-                            "status": "running",
-                            "current_artist": artist_name,
-                            "processed_artists": idx,
-                            "total_artists": total,
-                            "percent_complete": int((idx / total) * 100),
-                            "last_updated": datetime.now().isoformat(),
-                        })
+                        # Cycle complete: clear checkpoint.
+                        if os.path.exists(checkpoint_path):
+                            os.remove(checkpoint_path)
 
-                        # Step 1: Navidrome import for this artist
-                        # Note: filter_missing is always False because we process each artist explicitly
-                        # The combined scan handles all artists in sequence, unlike bulk scans
-                        logging.info(f"  → Navidrome import for {artist_name}")
-                        try:
-                            scan_artist_to_db(
-                                artist_name, 
-                                artist_id, 
-                                verbose=False, 
-                                force=force_rescan,
-                                filter_missing=False,  # Combined scan processes all artists explicitly
-                                processed_artists=idx, 
-                                total_artists=total,
-                                progress_file=combined_progress_file,
-                                progress_scan_type="combined_scan",
-                            )
-                        except Exception as e:
-                            logging.error(f"Error in Navidrome import for {artist_name}: {e}")
-                            # Continue with next steps even if Navidrome import fails
-                        
-                        # Step 2: Metadata lookup stage for this artist
-                        logging.info(f"  → Metadata lookup scan for {artist_name}")
-                        try:
-                            completed = scan_popularity_func(
-                                verbose=False, 
-                                force=force_rescan,
-                                artist_filter=artist_name,
-                                metadata_only=True,
-                                stop_progress_file=combined_progress_file,
-                                caller_scan_type="combined_scan",
-                            )
-                            if completed is False:
-                                logging.info(f"Combined scan stop detected during metadata step for {artist_name}")
-                                _write_progress_with_current_artist(combined_progress_file, "combined_scan", False, {"status": "stopped", "exit_code": 0})
-                                return
-                        except Exception as e:
-                            logging.error(f"Error in metadata lookup scan for {artist_name}: {e}")
+                        # Check whether perpetual mode is still enabled before looping.
+                        _cfg_perp = get_config()
+                        _perpetual_enabled = bool((_cfg_perp.get("features") or {}).get("perpetual", False))
 
-                        # Step 3: Popularity-only scan for this artist
-                        logging.info(f"  → Popularity scan for {artist_name}")
-                        try:
-                            completed = scan_popularity_func(
-                                verbose=False,
-                                force=force_rescan,
-                                artist_filter=artist_name,
-                                popularity_only=True,
-                                stop_progress_file=combined_progress_file,
-                                caller_scan_type="combined_scan",
+                        if _perpetual_enabled:
+                            logging.info(
+                                f"[COMBINED_PERPETUAL] Cycle {_perpetual_cycle} complete; "
+                                "perpetual mode enabled – restarting from beginning"
                             )
-                            if completed is False:
-                                logging.info(f"Combined scan stop detected during popularity stage for {artist_name}")
-                                _write_progress_with_current_artist(combined_progress_file, "combined_scan", False, {"status": "stopped", "exit_code": 0})
-                                return
-                        except Exception as e:
-                            logging.error(f"Error in popularity-only scan for {artist_name}: {e}")
+                            # Check for a stop request before starting the next cycle.
+                            with scan_lock:
+                                if scan_process_combined is None or _is_stop_requested_from_progress(combined_progress_file):
+                                    _write_progress_with_current_artist(combined_progress_file, "combined_scan", False, {"status": "stopped", "exit_code": 0})
+                                    break
+                            # Don't write "complete" – keep the scan visible as running so
+                            # a server restart will resume it rather than skip it.
+                            continue
 
-                        # Step 4: Singles-only scan for this artist
-                        logging.info(f"  → Singles scan for {artist_name}")
-                        try:
-                            completed = scan_popularity_func(
-                                verbose=False,
-                                force=force_rescan,
-                                artist_filter=artist_name,
-                                singles_only=True,
-                                stop_progress_file=combined_progress_file,
-                                caller_scan_type="combined_scan",
-                            )
-                            if completed is False:
-                                logging.info(f"Combined scan stop detected during singles stage for {artist_name}")
-                                _write_progress_with_current_artist(combined_progress_file, "combined_scan", False, {"status": "stopped", "exit_code": 0})
-                                return
-                        except Exception as e:
-                            logging.error(f"Error in singles-only scan for {artist_name}: {e}")
-
-                        # Step 5: Mood scan for this artist
-                        logging.info(f"  → Mood scan for {artist_name}")
-                        try:
-                            cfg = get_config()
-                            essentia_cfg = cfg.get("essentia", {}) if isinstance(cfg, dict) else {}
-                            mood_result = run_essentia_mood_scan(
-                                script_path=essentia_cfg.get("script_path", ""),
-                                models_dir=essentia_cfg.get("models_dir", ""),
-                                mood_threshold=float(essentia_cfg.get("mood_threshold", 0.005)),
-                                per_file_timeout=int(essentia_cfg.get("per_file_timeout", 300)),
-                                force=force_rescan,
-                                progress_file=os.path.join(os.path.dirname(DB_PATH), "essentia_mood_scan_progress.json"),
-                                tag_genres=bool(essentia_cfg.get("tag_genres", False)),
-                                num_genres=int(essentia_cfg.get("num_genres", 3)),
-                                genre_threshold=float(essentia_cfg.get("genre_threshold", 15.0)),
-                                genre_format=essentia_cfg.get("genre_format", "parent_child"),
-                                tag_moods=bool(essentia_cfg.get("tag_moods", True)),
-                                parse_json_features=bool(essentia_cfg.get("parse_json_features", True)),
-                                delete_json_after_import=bool(essentia_cfg.get("delete_json_after_import", True)),
-                                json_output_dir=str(essentia_cfg.get("json_output_dir", "") or "").strip(),
-                                artist_filter=artist_name,
-                                cpu_nice=int(essentia_cfg.get("cpu_nice", 10)),
-                                inter_file_delay=float(essentia_cfg.get("inter_file_delay", 0.0)),
-                            )
-                            if mood_result.get("stopped"):
-                                logging.info(f"Combined scan stop detected during mood stage for {artist_name}")
-                                _write_progress_with_current_artist(combined_progress_file, "combined_scan", False, {"status": "stopped", "exit_code": 0})
-                                return
-                            if mood_result.get("error"):
-                                logging.error(f"Error in mood scan for {artist_name}: {mood_result.get('error')}")
-                        except Exception as e:
-                            logging.error(f"Error in mood scan for {artist_name}: {e}")
-                        
-                        # Update checkpoint with the last scanned artist
-                        try:
-                            with open(checkpoint_path, 'w') as f:
-                                json.dump({"last_scanned_artist": artist_name}, f)
-                        except Exception as e:
-                            logging.warning(f"Error saving combined scan checkpoint: {e}")
-                    
-                    # Clear checkpoint when scan completes successfully
-                    if os.path.exists(checkpoint_path):
-                        os.remove(checkpoint_path)
-                    
-                    _write_progress_with_current_artist(combined_progress_file, "combined_scan", False, {"status": "complete", "exit_code": 0})
-                    logging.info("Combined scan completed successfully")
+                        # Non-perpetual mode: write completion and exit the loop.
+                        _write_progress_with_current_artist(combined_progress_file, "combined_scan", False, {"status": "complete", "exit_code": 0})
+                        logging.info("Combined scan completed successfully")
+                        break
                 except Exception as e:
                     logging.error(f"Error in combined scan: {e}", exc_info=True)
                     # Keep checkpoint on error so reboot resume can continue from the last saved artist.
