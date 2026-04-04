@@ -1847,7 +1847,7 @@ def maybe_check_missing_moved_files(now_ts, last_run_ts, interval_seconds=300):
     return now_ts
 
 
-def maybe_check_failed_slskd_downloads(now_ts, last_run_ts, interval_seconds=300):
+def check_failed_slskd_downloads(now_ts, last_run_ts, interval_seconds=300):
     """
     Periodically query slskd for failed/stalled transfers, cancel them via the
     slskd API (remove=True), and mark the matching queue items for retry.
@@ -1979,7 +1979,7 @@ def run_processor(interval=30):
                 last_mb_finalize_ts = maybe_finalize_musicbrainz_releases(now_ts, last_mb_finalize_ts)
                 last_verify_ts = maybe_check_missing_moved_files(now_ts, last_verify_ts)
                 last_stale_cleanup_ts = maybe_cleanup_stale_downloads(now_ts, last_stale_cleanup_ts)
-                last_slskd_retry_ts = maybe_check_failed_slskd_downloads(now_ts, last_slskd_retry_ts)
+                last_slskd_retry_ts = check_failed_slskd_downloads(now_ts, last_slskd_retry_ts)
                 last_slskd_clear_ts = maybe_clear_slskd_completed_downloads(now_ts, last_slskd_clear_ts)
                 
                 processed = process_queue(client)
