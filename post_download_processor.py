@@ -223,7 +223,7 @@ def fetch_musicbrainz_release_metadata(release_id):
                     retry_delay *= 2
                 else:
                     raise
-        return None  # unreachable but satisfies linters
+        return None  # only reached when max_retries == 0
 
     try:
         from api_clients.musicbrainz import _USER_AGENT
