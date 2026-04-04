@@ -1777,6 +1777,18 @@ def _log_scan_session_complete(scan_type: str, artist_count: int = 0):
         logging.debug(f"_log_scan_session_complete({scan_type}): {_e}")
 
 
+def _scan_phase_ran_recently(phase: str, days: int = 14) -> bool:
+    """Return True if *phase* (e.g. 'metadata', 'popularity', 'singles') completed
+    a full scan session within the last *days* days.  Used by the Popularity and
+    Singles scan to skip phases that have already run recently."""
+    try:
+        from scan_history import was_album_scanned
+        return was_album_scanned('_SCAN_SESSION_', phase, phase, days_threshold=days)
+    except Exception as _e:
+        logging.debug(f"_scan_phase_ran_recently({phase}): {_e}")
+        return False
+
+
 def _is_stop_requested_from_progress(path: str) -> bool:
     """Return True when a progress file indicates a user-requested stop."""
     try:
