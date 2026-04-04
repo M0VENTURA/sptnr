@@ -1714,20 +1714,25 @@ def _write_progress_with_current_artist(path: str, scan_type: str, is_running: b
         is_running: Whether scan is currently running
         extra: Additional data to include in progress file
     """
-    # Try to preserve current_artist from existing progress file
+    # Try to preserve current_artist and resume_from_artist from existing progress file
     current_artist = None
+    resume_from_artist = None
     try:
         with open(path, 'r') as f:
             existing_progress = json.load(f)
             current_artist = existing_progress.get('current_artist')
+            resume_from_artist = existing_progress.get('resume_from_artist')
     except (FileNotFoundError, json.JSONDecodeError, KeyError):
         pass  # File doesn't exist or is invalid, that's okay
     
-    # Add current_artist to extra data if it exists
-    if current_artist:
+    # Preserve current_artist and resume_from_artist in extra data if they exist
+    if current_artist or resume_from_artist:
         if extra is None:
             extra = {}
-        extra['current_artist'] = current_artist
+        if current_artist:
+            extra['current_artist'] = current_artist
+        if resume_from_artist:
+            extra.setdefault('resume_from_artist', resume_from_artist)
     
     # Write the progress file with preserved current_artist
     _write_progress_file(path, scan_type, is_running, extra)
