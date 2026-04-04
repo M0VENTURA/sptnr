@@ -3249,9 +3249,13 @@ def _try_claim_for_move(queue_id, expected_status):
     finally:
         if conn is not None:
             try:
-                conn.close()
+                conn.rollback()
             except Exception:
                 pass
+            try:
+                conn.close()
+            except Exception as _close_err:
+                logger.debug(f"[MOVE_CLAIM] Error closing connection for queue {queue_id}: {_close_err}")
 
 
 def _release_move_claim(queue_id, restore_status='completed', file_path=None):
@@ -3519,8 +3523,8 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
                 finally:
                     try:
                         _pre_conn.close()
-                    except Exception:
-                        pass
+                    except Exception as _close_err:
+                        logger.debug(f"[MOVE] Queue {_pre_queue_id}: error closing pre-conn: {_close_err}")
                 if _db_row:
                     def _dr(key):
                         return (_db_row.get(key) if hasattr(_db_row, 'get') else None) or None
@@ -3797,8 +3801,8 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
                 finally:
                     try:
                         _fp_conn.close()
-                    except Exception:
-                        pass
+                    except Exception as _close_err:
+                        logger.debug(f"[MOVE] Queue {_move_queue_id}: error closing fp-conn: {_close_err}")
                 logger.debug(
                     f"[MOVE] Queue {_move_queue_id}: tracks record file_path promoted to {final_target}"
                 )
