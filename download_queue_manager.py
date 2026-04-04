@@ -1142,6 +1142,25 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
         if not is_pg:
             raise RuntimeError("download_queue schema ensure requires PostgreSQL connection")
 
+        # Acquire a session-level advisory lock so only one worker/process runs
+        # the full DDL at a time.  Other workers wait here WITHOUT holding any
+        # table-level lock, which prevents the classic PostgreSQL lock-cascade:
+        #   Worker A: CREATE INDEX (ShareLock) → Worker B: ALTER TABLE waiting
+        #   (AccessExclusiveLock) → Worker C: SELECT blocked behind B.
+        # Using session-level (not xact-level) so the lock survives the multiple
+        # individual conn.commit() calls made below for each DDL statement.
+        # If advisory locks are unavailable the intra-process _queue_schema_lock
+        # above still prevents duplicate work within a single process; we fall
+        # through gracefully rather than refusing to start.
+        _adv_lock_acquired = False
+        try:
+            cursor.execute(
+                "SELECT pg_advisory_lock(hashtext('download_queue_schema_migration'))"
+            )
+            _adv_lock_acquired = True
+        except Exception as _adv_err:
+            logger.debug(f"Schema migration advisory lock unavailable: {_adv_err}")
+
         try:
             try:
                 conn.rollback()
@@ -1398,8 +1417,19 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
             logger.warning(f"Schema check failed: {e}")
             try:
                 conn.rollback()
-            except:
+            except Exception:
                 pass
+        finally:
+            # Always release the session-level advisory lock, regardless of
+            # whether the DDL succeeded or failed.
+            if _adv_lock_acquired:
+                try:
+                    cursor.execute(
+                        "SELECT pg_advisory_unlock(hashtext('download_queue_schema_migration'))"
+                    )
+                    conn.commit()
+                except Exception:
+                    pass
 
 
 def execute_write_with_retry(cursor, conn, query, params=(), context="database write", max_retries=5, initial_delay=0.1):

@@ -13,6 +13,7 @@ import os
 import logging
 import requests
 import time
+import threading
 from typing import Dict, List, Tuple, Optional, Any
 from difflib import SequenceMatcher
 from database_abstraction import DatabaseQuery
@@ -21,6 +22,14 @@ from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
 from helpers.db_utils import get_db_connection, _is_postgres_connection
 
 logger = logging.getLogger(__name__)
+
+# Per-process flags so schema-ensure helpers only run their DDL once.
+# Multiple gunicorn workers / background threads share the same process
+# memory, so a threading.Lock provides the intra-process synchronization.
+_fme_schema_checked = False
+_fme_schema_lock = threading.Lock()
+_fme_conflict_target_checked = False
+_fme_conflict_target_lock = threading.Lock()
 
 
 def _row_get(row, key, index=None, default=None):
@@ -60,63 +69,77 @@ def _get_table_columns(cursor, table_name: str) -> set:
 
 
 def _ensure_release_track_cache_columns(cursor) -> None:
-    required_columns = {
-        'disc_number': 'INTEGER',
-        'recording_title': 'TEXT',
-        'recording_mbid': 'TEXT',
-    }
-    existing_columns = _get_table_columns(cursor, 'musicbrainz_release_tracks')
-    for column_name, column_type in required_columns.items():
-        if column_name in existing_columns:
-            continue
-        cursor.execute(f"ALTER TABLE musicbrainz_release_tracks ADD COLUMN {column_name} {column_type}")
+    global _fme_schema_checked
+    if _fme_schema_checked:
+        return
+    with _fme_schema_lock:
+        if _fme_schema_checked:
+            return
+        required_columns = {
+            'disc_number': 'INTEGER',
+            'recording_title': 'TEXT',
+            'recording_mbid': 'TEXT',
+        }
+        existing_columns = _get_table_columns(cursor, 'musicbrainz_release_tracks')
+        for column_name, column_type in required_columns.items():
+            if column_name in existing_columns:
+                continue
+            cursor.execute(f"ALTER TABLE musicbrainz_release_tracks ADD COLUMN {column_name} {column_type}")
+        _fme_schema_checked = True
 
 
 def _ensure_musicbrainz_release_conflict_target(cursor) -> None:
-    # Serialize this schema fix across workers to avoid DDL races on restart.
-    cursor.execute("SELECT pg_advisory_xact_lock(hashtext('uq_musicbrainz_releases_release_id'))")
-
-    cursor.execute(
-        """
-        SELECT EXISTS (
-            SELECT 1
-            FROM pg_indexes
-            WHERE schemaname = current_schema()
-              AND tablename = 'musicbrainz_releases'
-              AND indexdef ILIKE 'CREATE UNIQUE INDEX% (release_id)%'
-        )
-        """
-    )
-    exists_row = cursor.fetchone()
-    has_unique = bool(exists_row and exists_row[0])
-    if has_unique:
+    global _fme_conflict_target_checked
+    if _fme_conflict_target_checked:
         return
+    with _fme_conflict_target_lock:
+        if _fme_conflict_target_checked:
+            return
 
-    # If legacy rows contain duplicates, keep the newest row per release_id first.
-    cursor.execute(
-        """
-        WITH ranked AS (
-            SELECT id,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY release_id
-                       ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST, id DESC
-                   ) AS rn
-            FROM musicbrainz_releases
-            WHERE release_id IS NOT NULL
+        # Serialize this schema fix across workers to avoid DDL races on restart.
+        cursor.execute("SELECT pg_advisory_xact_lock(hashtext('uq_musicbrainz_releases_release_id'))")
+
+        cursor.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_indexes
+                WHERE schemaname = current_schema()
+                  AND tablename = 'musicbrainz_releases'
+                  AND indexdef ILIKE 'CREATE UNIQUE INDEX% (release_id)%'
+            )
+            """
         )
-        DELETE FROM musicbrainz_releases m
-        USING ranked r
-        WHERE m.id = r.id
-          AND r.rn > 1
-        """
-    )
+        exists_row = cursor.fetchone()
+        has_unique = bool(exists_row and exists_row[0])
+        if not has_unique:
+            # If legacy rows contain duplicates, keep the newest row per release_id first.
+            cursor.execute(
+                """
+                WITH ranked AS (
+                    SELECT id,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY release_id
+                               ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST, id DESC
+                           ) AS rn
+                    FROM musicbrainz_releases
+                    WHERE release_id IS NOT NULL
+                )
+                DELETE FROM musicbrainz_releases m
+                USING ranked r
+                WHERE m.id = r.id
+                  AND r.rn > 1
+                """
+            )
 
-    cursor.execute(
-        """
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_musicbrainz_releases_release_id
-        ON musicbrainz_releases (release_id)
-        """
-    )
+            cursor.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_musicbrainz_releases_release_id
+                ON musicbrainz_releases (release_id)
+                """
+            )
+
+        _fme_conflict_target_checked = True
 
 
 def _get_cached_musicbrainz_release_metadata(release_id: str) -> Optional[Dict[str, Any]]:
