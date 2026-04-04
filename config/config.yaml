@@ -193,6 +193,8 @@ essentia:
   parse_json_features: true  # Import BPM/danceability from Essentia JSON sidecars when present
   delete_json_after_import: true  # Remove Essentia sidecar JSON after successful import
   json_output_dir: ""  # Optional override for where Essentia writes JSON sidecars
+  cpu_nice: 10  # Unix nice(1) increment for per-file subprocesses (0=normal priority, higher values=lower priority, max 19). Prevents the scan from consuming excessive CPU.
+  inter_file_delay: 0.0  # Extra seconds to sleep between files (additional throttle on very constrained hardware; 0 = off)
 
 # Upcoming Releases Sources — Wikipedia pages scraped for upcoming album release data.
 # The source key must contain a 4-digit year (e.g. 2026_rock) for date parsing.

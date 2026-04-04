@@ -13236,6 +13236,8 @@ def _run_artist_scan_pipeline(artist_name: str, force: bool = False):
                 parse_json_features = bool(essentia_cfg.get("parse_json_features", True))
                 delete_json_after_import = bool(essentia_cfg.get("delete_json_after_import", True))
                 json_output_dir = str(essentia_cfg.get("json_output_dir", "") or "").strip()
+                cpu_nice = int(essentia_cfg.get("cpu_nice", 10))
+                inter_file_delay = float(essentia_cfg.get("inter_file_delay", 0.0))
                 run_essentia_mood_scan(
                     script_path=script_path,
                     models_dir=models_dir,
@@ -13251,6 +13253,8 @@ def _run_artist_scan_pipeline(artist_name: str, force: bool = False):
                     delete_json_after_import=delete_json_after_import,
                     json_output_dir=json_output_dir,
                     artist_filter=artist_name,
+                    cpu_nice=cpu_nice,
+                    inter_file_delay=inter_file_delay,
                 )
                 log_unified(f"Essentia scan complete for artist '{artist_name}'")
         except ImportError:
@@ -15402,6 +15406,8 @@ def scan_essentia_mood():
                     parse_json_features = bool(essentia_cfg.get("parse_json_features", True))
                     delete_json_after_import = bool(essentia_cfg.get("delete_json_after_import", True))
                     json_output_dir = str(essentia_cfg.get("json_output_dir", "") or "").strip()
+                    cpu_nice = int(essentia_cfg.get("cpu_nice", 10))
+                    inter_file_delay = float(essentia_cfg.get("inter_file_delay", 0.0))
 
                     result = run_essentia_mood_scan(
                         script_path=script_path,
@@ -15422,6 +15428,8 @@ def scan_essentia_mood():
                         album_filter=_album_filter,
                         track_id_filter=_track_id_filter,
                         resume_from_artist=resume_from_artist,
+                        cpu_nice=cpu_nice,
+                        inter_file_delay=inter_file_delay,
                     )
                     if result.get("stopped"):
                         _write_progress_with_current_artist(
@@ -18317,6 +18325,8 @@ def scan_combined():
                                 delete_json_after_import=bool(essentia_cfg.get("delete_json_after_import", True)),
                                 json_output_dir=str(essentia_cfg.get("json_output_dir", "") or "").strip(),
                                 artist_filter=artist_name,
+                                cpu_nice=int(essentia_cfg.get("cpu_nice", 10)),
+                                inter_file_delay=float(essentia_cfg.get("inter_file_delay", 0.0)),
                             )
                             if mood_result.get("stopped"):
                                 logging.info(f"Combined scan stop detected during mood stage for {artist_name}")

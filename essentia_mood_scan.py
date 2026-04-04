@@ -30,6 +30,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -497,6 +498,8 @@ def run_essentia_mood_scan(
     album_filter: str = "",
     track_id_filter: str = "",
     resume_from_artist: str = "",
+    cpu_nice: int = 10,
+    inter_file_delay: float = 0.0,
 ) -> Dict[str, Any]:
     """Run Essentia-based mood/genre detection on tracks with a local file path.
 
@@ -551,6 +554,16 @@ def run_essentia_mood_scan(
         *artist_filter* when both are provided).
     track_id_filter:
         If non-empty, restrict the scan to the single track with this ID.
+    cpu_nice:
+        Unix process-priority increment passed to ``nice -n`` for each
+        per-file subprocess (0 = normal priority, 19 = lowest).  Has no
+        effect on Windows.  Defaults to 10 so the scan yields to
+        interactive processes.
+    inter_file_delay:
+        Seconds to sleep between consecutive file-processing subprocesses.
+        Use this as a throttle on very constrained hardware where even a
+        low-nice process causes noticeable latency.  Defaults to 0.0
+        (no extra delay).
     """
     # ------------------------------------------------------------------
     # Validate script_path early so we surface a clear error.
@@ -609,6 +622,11 @@ def run_essentia_mood_scan(
     # Determine a version string that identifies the Essentia build used for
     # this scan.  Stored in essentia_model_version on each updated track row so
     # stale analyses from an older model version can be detected and re-run.
+    # Suppress TensorFlow CUDA initialization warnings in the main process
+    # before importing essentia (essentia-tensorflow pulls in TF, which tries
+    # to dlopen libcudart on import even on CPU-only hosts).
+    os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
+    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
     _essentia_scan_version: Optional[str] = None
     try:
         import essentia  # type: ignore[import]
@@ -627,8 +645,17 @@ def run_essentia_mood_scan(
 
     mood_threshold_pct = round(float(mood_threshold) * 100.0, 4)
 
+    # Build the CPU-throttling prefix for per-file subprocesses.
+    # ``nice -n N`` lowers the OS scheduling priority so the scan yields to
+    # interactive processes.  Only supported on Unix; silently skipped on
+    # Windows or when cpu_nice is 0.
+    _nice_prefix: List[str] = []
+    _cpu_nice = int(cpu_nice)
+    if _cpu_nice != 0 and sys.platform != "win32":
+        _nice_prefix = ["nice", "-n", str(max(-20, min(19, _cpu_nice)))]
+
     python_exec = sys.executable
-    base_cmd: List[str] = [
+    base_cmd: List[str] = _nice_prefix + [
         python_exec, script_path,
         "--auto",
         "--single-file",
@@ -900,6 +927,7 @@ def run_essentia_mood_scan(
                 "updated_tracks": updated_tracks,
                 "synced_files": synced_files,
                 "current_artist": current_artist,
+                "resume_from_artist": current_artist,
             })
             continue
 
@@ -921,7 +949,7 @@ def run_essentia_mood_scan(
         # empty string hides all GPUs from TF; TF_CPP_MIN_LOG_LEVEL=3
         # suppresses the C++ "Could not load dynamic library" messages.
         _subprocess_env = os.environ.copy()
-        _subprocess_env.setdefault("CUDA_VISIBLE_DEVICES", "")
+        _subprocess_env.setdefault("CUDA_VISIBLE_DEVICES", "-1")
         _subprocess_env.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
         try:
             result = subprocess.run(
@@ -970,7 +998,10 @@ def run_essentia_mood_scan(
                         "updated_tracks": updated_tracks,
                         "synced_files": synced_files,
                         "current_artist": current_artist,
+                        "resume_from_artist": current_artist,
                     })
+                    if inter_file_delay > 0:
+                        time.sleep(inter_file_delay)
                     continue
         except subprocess.TimeoutExpired:
             logger.warning("Essentia script timed out for %s", file_path)
@@ -988,7 +1019,10 @@ def run_essentia_mood_scan(
                 "updated_tracks": updated_tracks,
                 "synced_files": synced_files,
                 "current_artist": current_artist,
+                "resume_from_artist": current_artist,
             })
+            if inter_file_delay > 0:
+                time.sleep(inter_file_delay)
             continue
         except Exception as exc:
             logger.warning("Error running Essentia script for %s: %s", file_path, exc)
@@ -1006,7 +1040,10 @@ def run_essentia_mood_scan(
                 "updated_tracks": updated_tracks,
                 "synced_files": synced_files,
                 "current_artist": current_artist,
+                "resume_from_artist": current_artist,
             })
+            if inter_file_delay > 0:
+                time.sleep(inter_file_delay)
             continue
 
         # ------------------------------------------------------------------
@@ -1053,7 +1090,10 @@ def run_essentia_mood_scan(
                 "updated_tracks": updated_tracks,
                 "synced_files": synced_files,
                 "current_artist": current_artist,
+                "resume_from_artist": current_artist,
             })
+            if inter_file_delay > 0:
+                time.sleep(inter_file_delay)
             continue
 
         # ------------------------------------------------------------------
@@ -1156,7 +1196,10 @@ def run_essentia_mood_scan(
             "updated_tracks": updated_tracks,
             "synced_files": synced_files,
             "current_artist": current_artist,
+            "resume_from_artist": current_artist,
         })
+        if inter_file_delay > 0:
+            time.sleep(inter_file_delay)
 
     if current_album is not None and _album_scan_count > 0:
         _log_album_scan(

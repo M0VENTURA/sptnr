@@ -1847,6 +1847,75 @@ def maybe_check_missing_moved_files(now_ts, last_run_ts, interval_seconds=300):
     return now_ts
 
 
+def check_failed_slskd_downloads(now_ts, last_run_ts, interval_seconds=300):
+    """
+    Periodically query slskd for failed/stalled transfers, cancel them via the
+    slskd API (remove=True), and mark the matching queue items for retry.
+    Delegates to download_queue_manager.check_and_remove_failed_downloads().
+    Runs every 5 minutes by default.
+
+    Args:
+        now_ts: Current timestamp
+        last_run_ts: Timestamp of last run
+        interval_seconds: Interval between checks (default 300 seconds = 5 minutes)
+
+    Returns:
+        Updated last-run timestamp
+    """
+    if last_run_ts is not None and (now_ts - last_run_ts) < interval_seconds:
+        return last_run_ts
+
+    try:
+        from download_queue_manager import check_and_remove_failed_downloads
+        stats = check_and_remove_failed_downloads()
+        failed = stats.get('failed_detected', 0)
+        retried = stats.get('retry_scheduled', 0)
+        if failed > 0:
+            logger.info(
+                f"[SLSKD-RETRY] Detected {failed} failed transfer(s), scheduled {retried} for retry"
+            )
+        else:
+            logger.debug("[SLSKD-RETRY] No failed transfers detected")
+    except Exception as e:
+        logger.error(f"[SLSKD-RETRY] Error checking failed slskd downloads: {e}")
+
+    return now_ts
+
+
+def maybe_clear_slskd_completed_downloads(now_ts, last_run_ts, interval_seconds=1800):
+    """
+    Periodically clear all terminal-state (completed/cancelled/errored) entries
+    from slskd's transfer list using DELETE /transfers/downloads/all/completed.
+    Prevents the slskd UI from accumulating stale completed entries.
+    Runs every 30 minutes by default.
+
+    Args:
+        now_ts: Current timestamp
+        last_run_ts: Timestamp of last run
+        interval_seconds: Interval between clears (default 1800 seconds = 30 minutes)
+
+    Returns:
+        Updated last-run timestamp
+    """
+    if last_run_ts is not None and (now_ts - last_run_ts) < interval_seconds:
+        return last_run_ts
+
+    try:
+        client = get_slskd_client()
+        if client and client.enabled:
+            cleared = client.clear_completed_downloads()
+            if cleared:
+                logger.info("[SLSKD-CLEAR] Cleared completed download entries from slskd")
+            else:
+                logger.debug("[SLSKD-CLEAR] clear_completed_downloads returned False (may be empty or unavailable)")
+        else:
+            logger.debug("[SLSKD-CLEAR] slskd client not available, skipping completed-transfer clear")
+    except Exception as e:
+        logger.error(f"[SLSKD-CLEAR] Error clearing slskd completed downloads: {e}")
+
+    return now_ts
+
+
 def maybe_cleanup_stale_downloads(now_ts, last_run_ts, interval_seconds=3600):
     """
     Periodically delete files in the downloads folder that are outside the 'torrents'
@@ -1895,6 +1964,8 @@ def run_processor(interval=30):
     last_mb_finalize_ts = None
     last_verify_ts = None
     last_stale_cleanup_ts = None
+    last_slskd_retry_ts = None
+    last_slskd_clear_ts = None
 
     try:
         while True:
@@ -1908,6 +1979,8 @@ def run_processor(interval=30):
                 last_mb_finalize_ts = maybe_finalize_musicbrainz_releases(now_ts, last_mb_finalize_ts)
                 last_verify_ts = maybe_check_missing_moved_files(now_ts, last_verify_ts)
                 last_stale_cleanup_ts = maybe_cleanup_stale_downloads(now_ts, last_stale_cleanup_ts)
+                last_slskd_retry_ts = check_failed_slskd_downloads(now_ts, last_slskd_retry_ts)
+                last_slskd_clear_ts = maybe_clear_slskd_completed_downloads(now_ts, last_slskd_clear_ts)
                 
                 processed = process_queue(client)
                 

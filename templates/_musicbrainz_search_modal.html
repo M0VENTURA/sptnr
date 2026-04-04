@@ -22,7 +22,25 @@
         </div>
         
         <div id="mbSearchError" class="alert alert-danger" style="display:none;"></div>
-        
+
+        <div id="mbSearchRetry" class="mt-2" style="display:none;">
+          <div class="d-flex gap-2 align-items-end flex-wrap">
+            <div class="flex-fill">
+              <label for="mbRetryArtist" class="form-label form-label-sm mb-1">Artist</label>
+              <input type="text" class="form-control form-control-sm" id="mbRetryArtist" placeholder="Artist name">
+            </div>
+            <div class="flex-fill">
+              <label for="mbRetryAlbum" class="form-label form-label-sm mb-1">Album</label>
+              <input type="text" class="form-control form-control-sm" id="mbRetryAlbum" placeholder="Album name">
+            </div>
+            <div class="flex-shrink-0">
+              <button class="btn btn-sm btn-primary" onclick="mbRetrySearch()">
+                <i class="bi bi-search"></i> Retry
+              </button>
+            </div>
+          </div>
+        </div>
+
         <div id="mbSearchResults"></div>
       </div>
     </div>
