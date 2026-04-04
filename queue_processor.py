@@ -1458,6 +1458,9 @@ def check_completed_downloads():
             WHERE status = 'downloading'
         """)
         downloading = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        conn = None
+
         if downloading:
             logger.debug(f"Checking {len(downloading)} items in 'downloading' status")
 
@@ -1652,8 +1655,6 @@ def check_completed_downloads():
                     logger.warning(f"[AUTO_MOVE] Queue {item_id}: move error: {move_err}")
 
                 newly_completed.append(item)
-
-        conn.close()
 
         for item in newly_completed:
             try:
@@ -1990,6 +1991,37 @@ def maybe_cleanup_stale_downloads(now_ts, last_run_ts, interval_seconds=3600):
     return now_ts
 
 
+def maybe_check_downloads_folder(now_ts, last_run_ts, interval_seconds=90):
+    """Periodically call check_downloads_folder() from the background processor.
+
+    This ensures that files already present in the downloads directory (e.g.
+    manually placed files or files downloaded via a path not tracked by slskd)
+    are automatically matched to queue items in 'queued'/'searching'/'downloading'
+    status without requiring the user to open the queue status page.
+
+    check_downloads_folder() has its own internal rate-limit cache
+    (_DOWNLOADS_CHECK_MIN_INTERVAL_SECONDS = 60) so calling it more frequently
+    than interval_seconds is harmless — it will return cached data.
+    """
+    if last_run_ts is not None and (now_ts - last_run_ts) < interval_seconds:
+        return last_run_ts
+
+    try:
+        from download_queue_manager import check_downloads_folder
+        completed = check_downloads_folder()
+        if completed:
+            logger.info(
+                "[DOWNLOADS-FOLDER] Matched %d file(s) to queue items",
+                len(completed),
+            )
+        else:
+            logger.debug("[DOWNLOADS-FOLDER] No new matches found")
+    except Exception as e:
+        logger.error(f"[DOWNLOADS-FOLDER] Error during downloads folder check: {e}")
+
+    return now_ts
+
+
 def run_processor(interval=30):
     """Run queue processor loop"""
     logger.info("=== Queue Processor Started ===")
@@ -2008,6 +2040,7 @@ def run_processor(interval=30):
     last_stale_cleanup_ts = None
     last_slskd_retry_ts = None
     last_slskd_clear_ts = None
+    last_downloads_folder_ts = None
 
     try:
         while True:
@@ -2023,6 +2056,7 @@ def run_processor(interval=30):
                 last_stale_cleanup_ts = maybe_cleanup_stale_downloads(now_ts, last_stale_cleanup_ts)
                 last_slskd_retry_ts = check_failed_slskd_downloads(now_ts, last_slskd_retry_ts)
                 last_slskd_clear_ts = maybe_clear_slskd_completed_downloads(now_ts, last_slskd_clear_ts)
+                last_downloads_folder_ts = maybe_check_downloads_folder(now_ts, last_downloads_folder_ts)
                 
                 processed = process_queue(client)
                 
