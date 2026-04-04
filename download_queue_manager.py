@@ -3230,6 +3230,7 @@ def _try_claim_for_move(queue_id, expected_status):
     Returns True if this caller successfully claimed the item, False if someone
     else already claimed or moved it.
     """
+    conn = None
     try:
         conn = _get_postgres_conn_from_app_or_fallback()
         placeholder = "%s"
@@ -3241,11 +3242,16 @@ def _try_claim_for_move(queue_id, expected_status):
         )
         rowcount = cursor.rowcount
         conn.commit()
-        conn.close()
         return rowcount > 0
     except Exception as e:
         logger.warning(f"[MOVE_CLAIM] Could not claim queue {queue_id} (expected={expected_status}): {e}")
         return False
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def _release_move_claim(queue_id, restore_status='completed', file_path=None):
@@ -3501,15 +3507,20 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
         if _pre_queue_id:
             try:
                 _pre_conn = get_db()
-                _pre_cur = _pre_conn.cursor()
-                _pre_cur.execute(
-                    "SELECT isrc, writer, musicbrainz_albumid, musicbrainz_trackid,"
-                    "       musicbrainz_releasegroupid"
-                    " FROM tracks WHERE file_path = %s",
-                    (f"__queued_for_download__queue_id_{_pre_queue_id}",),
-                )
-                _db_row = _pre_cur.fetchone()
-                _pre_conn.close()
+                try:
+                    _pre_cur = _pre_conn.cursor()
+                    _pre_cur.execute(
+                        "SELECT isrc, writer, musicbrainz_albumid, musicbrainz_trackid,"
+                        "       musicbrainz_releasegroupid"
+                        " FROM tracks WHERE file_path = %s",
+                        (f"__queued_for_download__queue_id_{_pre_queue_id}",),
+                    )
+                    _db_row = _pre_cur.fetchone()
+                finally:
+                    try:
+                        _pre_conn.close()
+                    except Exception:
+                        pass
                 if _db_row:
                     def _dr(key):
                         return (_db_row.get(key) if hasattr(_db_row, 'get') else None) or None
@@ -3773,16 +3784,21 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
         if _move_queue_id and final_target:
             try:
                 _fp_conn = get_db()
-                _fp_cur = _fp_conn.cursor()
-                _fp_cur.execute(
-                    "UPDATE tracks SET file_path = %s WHERE file_path = %s",
-                    (
-                        final_target,
-                        f"__queued_for_download__queue_id_{_move_queue_id}",
-                    ),
-                )
-                _fp_conn.commit()
-                _fp_conn.close()
+                try:
+                    _fp_cur = _fp_conn.cursor()
+                    _fp_cur.execute(
+                        "UPDATE tracks SET file_path = %s WHERE file_path = %s",
+                        (
+                            final_target,
+                            f"__queued_for_download__queue_id_{_move_queue_id}",
+                        ),
+                    )
+                    _fp_conn.commit()
+                finally:
+                    try:
+                        _fp_conn.close()
+                    except Exception:
+                        pass
                 logger.debug(
                     f"[MOVE] Queue {_move_queue_id}: tracks record file_path promoted to {final_target}"
                 )

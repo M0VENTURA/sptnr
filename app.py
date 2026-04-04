@@ -27913,14 +27913,16 @@ def _perform_queue_move_to_music(queue_id):
             }, 400
 
         conn2 = get_db()
-        placeholder_conn2 = "%s"
-        cursor2 = conn2.cursor()
-        cursor2.execute(f"SELECT * FROM download_queue WHERE id = {placeholder_conn2}", (queue_id,))
-        queue_item = cursor2.fetchone()
-        if queue_item and not isinstance(queue_item, dict):
-            column_names = [col[0] for col in cursor2.description]
-            queue_item = dict(zip(column_names, queue_item))
-        conn2.close()
+        try:
+            placeholder_conn2 = "%s"
+            cursor2 = conn2.cursor()
+            cursor2.execute(f"SELECT * FROM download_queue WHERE id = {placeholder_conn2}", (queue_id,))
+            queue_item = cursor2.fetchone()
+            if queue_item and not isinstance(queue_item, dict):
+                column_names = [col[0] for col in cursor2.description]
+                queue_item = dict(zip(column_names, queue_item))
+        finally:
+            conn2.close()
 
         if not queue_item:
             return {"success": False, "error": "Queue item not found"}, 404
