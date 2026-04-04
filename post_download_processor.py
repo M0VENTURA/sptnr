@@ -23,6 +23,13 @@ import requests
 from pathlib import Path
 from datetime import datetime
 
+# Rate limiter for MusicBrainz (1 req/s enforced by MB)
+try:
+    from helpers.api_rate_limiter import get_rate_limiter as _get_rate_limiter
+    _mb_rate_limiter = _get_rate_limiter()
+except Exception:
+    _mb_rate_limiter = None
+
 # Database imports
 try:
     import psycopg2
@@ -180,6 +187,44 @@ def fetch_musicbrainz_release_metadata(release_id):
             - cover_art: Binary image data or None
             - tracks: List of dicts with track info including disc/track numbers
     """
+    def _mb_request(url, headers, params=None, max_retries=3):
+        """Make a single MusicBrainz GET request with rate limiting and exponential backoff."""
+        retry_delay = 1.0
+        for attempt in range(max_retries):
+            # Enforce MB's 1-request-per-second rule before every attempt
+            if _mb_rate_limiter:
+                _mb_rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
+                _mb_rate_limiter.record_musicbrainz_request()
+            else:
+                time.sleep(1.0)
+            try:
+                response = requests.get(url, headers=headers, params=params, timeout=10)
+                if response.status_code in (429, 503, 504):
+                    if attempt < max_retries - 1:
+                        logger.debug(
+                            f"[MB_METADATA] HTTP {response.status_code} for {url!r}, "
+                            f"retrying in {retry_delay:.1f}s (attempt {attempt + 1}/{max_retries})"
+                        )
+                        time.sleep(retry_delay)
+                        retry_delay *= 2
+                        continue
+                    response.raise_for_status()
+                return response
+            except requests.exceptions.HTTPError:
+                raise
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError,
+                    requests.exceptions.SSLError) as e:
+                if attempt < max_retries - 1:
+                    logger.debug(
+                        f"[MB_METADATA] {type(e).__name__} for {url!r}, "
+                        f"retrying in {retry_delay:.1f}s (attempt {attempt + 1}/{max_retries})"
+                    )
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    raise
+        return None  # only reached when max_retries == 0
+
     try:
         from api_clients.musicbrainz import _USER_AGENT
         
@@ -191,9 +236,10 @@ def fetch_musicbrainz_release_metadata(release_id):
         # ------------------------------------------------------------------
         # Step 1: Try direct release lookup (release MBID path)
         # ------------------------------------------------------------------
-        mb_url = f"https://musicbrainz.org/ws/2/release/{release_id}?inc=recordings+artist-credits+release-groups&fmt=json"
-        
-        response = requests.get(mb_url, headers=headers, timeout=10)
+        mb_url = f"https://musicbrainz.org/ws/2/release/{release_id}"
+        mb_params = {"inc": "recordings+artist-credits+release-groups", "fmt": "json"}
+
+        response = _mb_request(mb_url, headers, params=mb_params)
 
         if response.status_code == 404:
             # The stored MBID is likely a release group MBID (e.g. compilation albums
@@ -210,8 +256,7 @@ def fetch_musicbrainz_release_metadata(release_id):
                 "inc": "recordings+artist-credits+release-groups",
                 "limit": 1,
             }
-            time.sleep(1)  # Respect MusicBrainz rate limit between requests
-            response = requests.get(browse_url, headers=headers, params=browse_params, timeout=10)
+            response = _mb_request(browse_url, headers, params=browse_params)
             response.raise_for_status()
             browse_data = response.json()
             releases = browse_data.get("releases", [])
