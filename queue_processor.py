@@ -1068,11 +1068,13 @@ def _build_fallback_search_queries(queue_item, primary_query):
     1. ``album_artist - title`` when album_artist differs from the track artist.
     2. ``feat.-stripped track_artist - title`` when the track artist contains a
        "feat." / "ft." / "featuring" clause.
-    3. ``first_word_of_artist - title`` for multi-word artists where Soulseek's
-       all-tokens-required matching causes zero results (e.g. "Pretty Reckless -
-       I Am Death" → "Pretty - I Am Death").  Soulseek requires every token in
-       the query to appear in the filename, so a shorter artist prefix broadens
-       the match while the candidate-scoring step still enforces artist similarity.
+    3. ``first_meaningful_word_of_artist - title`` for multi-word artists where
+       Soulseek's all-tokens-required matching causes zero results (e.g.
+       "The Pretty Reckless - Heaven Knows" → "Pretty - Heaven Knows").
+       Common articles ("The", "A", "An") are skipped so they don't become
+       the search token.  Soulseek requires every token in the query to appear
+       in the filename, so a shorter artist prefix broadens the match while
+       the candidate-scoring step still enforces artist similarity.
     4. ``title`` only, as a last resort for cases where the artist token(s) are
        entirely absent from shared filenames.  The scoring system enforces a
        minimum artist-similarity threshold so false positives remain unlikely.
@@ -1112,15 +1114,25 @@ def _build_fallback_search_queries(queue_item, primary_query):
     if feat_stripped and feat_stripped.lower() != artist.lower():
         _add(_sanitize_search_query_for_slskd(f"{feat_stripped} - {title}"))
 
-    # Fallback 3: first word of artist + title for multi-word artists.
+    # Fallback 3: first meaningful word of artist + title for multi-word artists.
     # Soulseek requires ALL query tokens to be present in a filename, so a
     # long artist name like "Pretty Reckless" can produce zero results when
     # "reckless" is absent from most shared filenames.  Using only the first
-    # word (e.g. "Pretty") broadens the token set while the scorer still
-    # validates the full artist name against the candidate filename.
+    # meaningful word (e.g. "Pretty") broadens the token set while the scorer
+    # still validates the full artist name against the candidate filename.
+    # If the first word is a common article ("The", "A", "An") it is skipped
+    # so that "The Pretty Reckless" uses "Pretty" rather than "The".
+    _ARTICLE_WORDS = {"the", "a", "an"}
     effective_artist = feat_stripped if feat_stripped else artist
     artist_words = effective_artist.split()
-    first_word = artist_words[0] if artist_words else ""
+    # Find the first non-article word
+    first_word = ""
+    for _w in artist_words:
+        if _w.lower() not in _ARTICLE_WORDS:
+            first_word = _w
+            break
+    if not first_word and artist_words:
+        first_word = artist_words[0]  # fallback: use first word even if it's an article
     if first_word and first_word.lower() != effective_artist.lower():
         _add(_sanitize_search_query_for_slskd(f"{first_word} - {title}"))
 

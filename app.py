@@ -1713,9 +1713,13 @@ def _write_progress_file(path: str, scan_type: str, is_running: bool, extra: dic
             }
 
             current_artist = payload.get("current_artist")
+            scan_is_starting = payload.get("status") == "starting"
             if current_artist:
                 marker_payload["current_artist"] = current_artist
-            elif existing_current_artist:
+            elif existing_current_artist and not scan_is_starting:
+                # Don't carry over the previous run's artist when a fresh scan begins –
+                # that caused the UI to keep showing the last artist from the previous
+                # cycle (e.g. "Stray Kids") until the new scan reached its first artist.
                 marker_payload["current_artist"] = existing_current_artist
 
             with open(marker_path, "w", encoding="utf-8") as marker_file:
@@ -1771,6 +1775,18 @@ def _log_scan_session_complete(scan_type: str, artist_count: int = 0):
         log_album_scan('_SCAN_SESSION_', label, scan_type, artist_count, 'completed', source='session_complete')
     except Exception as _e:
         logging.debug(f"_log_scan_session_complete({scan_type}): {_e}")
+
+
+def _scan_phase_ran_recently(phase: str, days: int = 14) -> bool:
+    """Return True if *phase* (e.g. 'metadata', 'popularity', 'singles') completed
+    a full scan session within the last *days* days.  Used by the Popularity and
+    Singles scan to skip phases that have already run recently."""
+    try:
+        from scan_history import was_album_scanned
+        return was_album_scanned('_SCAN_SESSION_', phase, phase, days_threshold=days)
+    except Exception as _e:
+        logging.debug(f"_scan_phase_ran_recently({phase}): {_e}")
+        return False
 
 
 def _is_stop_requested_from_progress(path: str) -> bool:
@@ -4846,9 +4862,10 @@ def dashboard():
 
 
 def _get_genre_mood_analytics(top_n: int = 50):
-    """Aggregate top genres and moods from track metadata."""
+    """Aggregate top genres, moods, and genre+mood combinations from track metadata."""
     genre_counter = Counter()
     mood_counter = Counter()
+    combo_counter = Counter()
     conn = None
 
     try:
@@ -4868,23 +4885,35 @@ def _get_genre_mood_analytics(top_n: int = 50):
                 genres_raw = row[0] if len(row) > 0 else None
                 mood_raw = row[1] if len(row) > 1 else None
 
+            genre_tokens = []
             if genres_raw:
                 tokens = re.split(r"[\\,;/]+", str(genres_raw))
                 for token in tokens:
                     genre = token.strip()
                     if genre:
                         genre_counter[genre] += 1
+                        genre_tokens.append(genre)
 
+            mood_tokens = []
             if mood_raw:
                 tokens = re.split(r"[;]+", str(mood_raw))
                 for token in tokens:
                     mood = token.strip()
                     if mood:
                         mood_counter[mood] += 1
+                        mood_tokens.append(mood)
+
+            # Build genre+mood combination from primary genre and primary mood
+            if genre_tokens and mood_tokens:
+                combo_counter[(genre_tokens[0], mood_tokens[0])] += 1
 
         genres = [{"name": name, "count": count} for name, count in genre_counter.most_common(top_n)]
         moods = [{"name": name, "count": count} for name, count in mood_counter.most_common(top_n)]
-        return genres, moods
+        combos = [
+            {"genre": g, "mood": m, "count": c, "name": f"{g} × {m}"}
+            for (g, m), c in combo_counter.most_common(top_n)
+        ]
+        return genres, moods, combos
     finally:
         try:
             if conn:
@@ -4896,21 +4925,21 @@ def _get_genre_mood_analytics(top_n: int = 50):
 @app.route("/analytics/genres-moods")
 def analytics_genres_moods_page():
     """Genres/Moods analytics page with top-50 bar charts."""
-    genres, moods = _get_genre_mood_analytics(top_n=50)
-    return render_template("genres_moods_analytics.html", top_genres=genres, top_moods=moods)
+    genres, moods, combos = _get_genre_mood_analytics(top_n=50)
+    return render_template("genres_moods_analytics.html", top_genres=genres, top_moods=moods, top_combos=combos)
 
 
 @app.route("/api/analytics/genres-moods")
 def api_analytics_genres_moods():
-    """Return top genres and moods for analytics visualizations."""
+    """Return top genres, moods, and genre+mood combinations for analytics visualizations."""
     try:
         limit = request.args.get("limit", 50, type=int)
         limit = max(1, min(limit, 100))
-        genres, moods = _get_genre_mood_analytics(top_n=limit)
-        return jsonify({"genres": genres, "moods": moods})
+        genres, moods, combos = _get_genre_mood_analytics(top_n=limit)
+        return jsonify({"genres": genres, "moods": moods, "combos": combos})
     except Exception as e:
         logging.error(f"Failed to fetch genres/moods analytics: {e}")
-        return jsonify({"genres": [], "moods": [], "error": str(e)}), 500
+        return jsonify({"genres": [], "moods": [], "combos": [], "error": str(e)}), 500
 
 
 def convert_row_to_json_serializable(obj):
@@ -5171,15 +5200,7 @@ def artists():
                     album IS NULL OR TRIM(album) = '' OR
                     track_number IS NULL OR TRIM(CAST(track_number AS TEXT)) = '' OR
                     CAST(COALESCE(NULLIF(TRIM(CAST(track_number AS TEXT)), ''), '0') AS INTEGER) <= 0 OR
-                    duration IS NULL OR CAST(duration AS DOUBLE PRECISION) <= 0 OR
-                    (
-                        year IS NOT NULL AND TRIM(CAST(year AS TEXT)) != '' AND
-                        (
-                            CAST(COALESCE(NULLIF(TRIM(CAST(year AS TEXT)), ''), '0') AS INTEGER) < 1900 OR
-                            CAST(COALESCE(NULLIF(TRIM(CAST(year AS TEXT)), ''), '0') AS INTEGER) > 2100
-                        )
-                    ) OR
-                    ((mbid IS NULL OR TRIM(mbid) = '') AND (suggested_mbid IS NULL OR TRIM(suggested_mbid) = ''))
+                    duration IS NULL OR CAST(duration AS DOUBLE PRECISION) <= 0
                   )
                         GROUP BY {artist_expr}
                 """)
@@ -5438,6 +5459,47 @@ def artists():
         except Exception:
             pass
 
+    # Build missing-tracks-in-album counts per artist.
+    # Detects albums where track_number gaps exist (max track_number per disc > count
+    # of distinct track numbers on that disc), indicating one or more tracks are absent
+    # from the library.  This is a "major" issue the user should be alerted to.
+    missing_tracks_counts_by_artist: dict = {}
+    try:
+        cursor.execute(f"""
+            SELECT
+                display_name,
+                COUNT(DISTINCT album) AS album_count
+            FROM (
+                SELECT
+                    {artist_expr} AS display_name,
+                    album,
+                    COALESCE(CAST(disc_number AS TEXT), '1') AS disc,
+                    MAX(CAST(track_number AS INTEGER)) AS max_track,
+                    COUNT(DISTINCT CAST(track_number AS INTEGER)) AS distinct_tracks
+                FROM tracks
+                WHERE {artist_expr} IS NOT NULL
+                  AND TRIM({artist_expr}) != ''
+                  AND album IS NOT NULL
+                  AND TRIM(album) != ''
+                  AND track_number IS NOT NULL
+                  AND TRIM(CAST(track_number AS TEXT)) != ''
+                  AND CAST(COALESCE(NULLIF(TRIM(CAST(track_number AS TEXT)), ''), '0') AS INTEGER) > 0
+                GROUP BY {artist_expr}, album, COALESCE(CAST(disc_number AS TEXT), '1')
+                HAVING MAX(CAST(track_number AS INTEGER)) > COUNT(DISTINCT CAST(track_number AS INTEGER))
+                   AND COUNT(DISTINCT CAST(track_number AS INTEGER)) >= 3
+            ) gap_albums
+            GROUP BY display_name
+        """)
+        for row in cursor.fetchall():
+            row_dict = dict(row)
+            missing_tracks_counts_by_artist[row_dict.get("display_name", "")] = int(row_dict.get("album_count") or 0)
+    except Exception as mt_err:
+        logging.debug(f"Could not compute missing-tracks counts: {mt_err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
     for artist_row in artists_data:
         display_name = artist_row.get("display_name", "")
         duplicate_count = duplicate_counts_by_artist.get(display_name, 0)
@@ -5446,24 +5508,28 @@ def artists():
         disc_inconsistent_count = disc_inconsistent_counts_by_artist.get(display_name, 0)
         mbid_inconsistent_count = mbid_inconsistent_counts_by_artist.get(display_name, 0)
         extra_album_artist_count = extra_album_artist_counts_by_artist.get(display_name, 0)
-        mbid_inconsistent_count = mbid_inconsistent_counts_by_artist.get(display_name, 0)
         album_tag_inconsistency_count = album_tag_inconsistency_counts_by_artist.get(display_name, 0)
+        missing_tracks_count = missing_tracks_counts_by_artist.get(display_name, 0)
         artist_row["duplicate_track_count"] = duplicate_count
         artist_row["missing_track_count"] = missing_count
         artist_row["duplicate_artist_count"] = duplicate_artist_count
         artist_row["disc_inconsistent_count"] = disc_inconsistent_count
         artist_row["mbid_inconsistent_count"] = mbid_inconsistent_count
         artist_row["extra_album_artist_count"] = extra_album_artist_count
-        artist_row["mbid_inconsistent_count"] = mbid_inconsistent_count
         artist_row["album_tag_inconsistency_count"] = album_tag_inconsistency_count
+        artist_row["missing_tracks_count"] = missing_tracks_count
+        # Only flag major issues that require user action:
+        #   1. True duplicate tracks in the same album
+        #   2. Inconsistent disc numbers within an album
+        #   3. Multiple conflicting album MBIDs on a single album
+        #   4. Track-number gaps in an album (one or more tracks missing from library)
+        # Minor issues (missing MBID, tag inconsistencies, duplicate-artist-name
+        # variants) are intentionally excluded to reduce noise.
         artist_row["needs_correction"] = (
-            duplicate_count + missing_count
-            + (1 if duplicate_artist_count > 0 else 0)
-            + (1 if extra_album_artist_count > 0 else 0)
-            + mbid_inconsistent_count
+            duplicate_count
             + disc_inconsistent_count
             + mbid_inconsistent_count
-            + album_tag_inconsistency_count
+            + missing_tracks_count
         ) > 0
     
     conn.close()
@@ -15293,22 +15359,74 @@ def scan_popularity_route():
                             logging.info("Singles scan completed successfully")
                             _log_scan_session_complete("singles")
                     else:
-                        logging.info(f"Starting popularity-only scan in background (force={force_rescan}, filter_missing={filter_missing}, resume_from={resume_from_artist})")
-                        completed = scan_popularity_func(
-                            verbose=False,
-                            force=force_rescan,
-                            filter_missing=filter_missing,
-                            popularity_only=True,
-                            resume_from=resume_from_artist,
-                            stop_progress_file=popularity_progress_file
-                        )
-                        if completed is False:
-                            _write_progress_with_current_artist(popularity_progress_file, "popularity_scan", False, {"status": "stopped", "exit_code": 0})
-                            logging.info("Popularity scan stopped by user request")
+                        # Popularity and Singles Scan — three sequential phases, each with
+                        # its own 2-week cooldown (when not forced).  If a phase ran recently
+                        # it is skipped but the next phase still runs.
+                        _PHASE_COOLDOWN_DAYS = 14
+
+                        # Phase 1: metadata lookup
+                        run_meta = force_rescan or not _scan_phase_ran_recently("metadata", _PHASE_COOLDOWN_DAYS)
+                        if run_meta:
+                            logging.info(f"Phase 1/3: metadata lookup (force={force_rescan})")
+                            meta_completed = scan_popularity_func(
+                                verbose=False,
+                                force=force_rescan,
+                                metadata_only=True,
+                                stop_progress_file=popularity_progress_file
+                            )
+                            if meta_completed is False:
+                                _write_progress_with_current_artist(popularity_progress_file, "popularity_scan", False, {"status": "stopped", "exit_code": 0})
+                                logging.info("Popularity scan stopped during metadata phase")
+                                return
+                            _log_scan_session_complete("metadata")
+                            try:
+                                _run_daily_missing_releases_scan()
+                            except Exception as _mre:
+                                logging.warning(f"Missing releases refresh failed after metadata phase: {_mre}")
                         else:
-                            _write_progress_with_current_artist(popularity_progress_file, "popularity_scan", False, {"status": "complete", "exit_code": 0})
-                            logging.info("Popularity-only scan completed successfully")
+                            logging.info(f"Phase 1/3: metadata lookup skipped (ran within last {_PHASE_COOLDOWN_DAYS} days)")
+
+                        # Phase 2: popularity scoring
+                        run_pop = force_rescan or not _scan_phase_ran_recently("popularity", _PHASE_COOLDOWN_DAYS)
+                        if run_pop:
+                            logging.info(f"Phase 2/3: popularity scoring (force={force_rescan})")
+                            pop_completed = scan_popularity_func(
+                                verbose=False,
+                                force=force_rescan,
+                                filter_missing=filter_missing,
+                                popularity_only=True,
+                                resume_from=resume_from_artist,
+                                stop_progress_file=popularity_progress_file
+                            )
+                            if pop_completed is False:
+                                _write_progress_with_current_artist(popularity_progress_file, "popularity_scan", False, {"status": "stopped", "exit_code": 0})
+                                logging.info("Popularity scan stopped during popularity phase")
+                                return
                             _log_scan_session_complete("popularity")
+                        else:
+                            logging.info(f"Phase 2/3: popularity scoring skipped (ran within last {_PHASE_COOLDOWN_DAYS} days)")
+
+                        # Phase 3: singles detection + star assignment
+                        run_singles = force_rescan or not _scan_phase_ran_recently("singles", _PHASE_COOLDOWN_DAYS)
+                        if run_singles:
+                            logging.info(f"Phase 3/3: singles detection (force={force_rescan})")
+                            singles_completed = scan_popularity_func(
+                                verbose=False,
+                                force=force_rescan,
+                                singles_only=True,
+                                resume_from=resume_from_artist,
+                                stop_progress_file=popularity_progress_file
+                            )
+                            if singles_completed is False:
+                                _write_progress_with_current_artist(popularity_progress_file, "popularity_scan", False, {"status": "stopped", "exit_code": 0})
+                                logging.info("Popularity scan stopped during singles phase")
+                                return
+                            _log_scan_session_complete("singles")
+                        else:
+                            logging.info(f"Phase 3/3: singles detection skipped (ran within last {_PHASE_COOLDOWN_DAYS} days)")
+
+                        _write_progress_with_current_artist(popularity_progress_file, "popularity_scan", False, {"status": "complete", "exit_code": 0})
+                        logging.info("Popularity and Singles scan (all phases) completed")
                 except Exception as e:
                     logging.error(f"Error in popularity scan: {e}", exc_info=True)
                     if metadata_only:
@@ -15331,8 +15449,8 @@ def scan_popularity_route():
                 flash("✅ Metadata lookup scan started (metadata + cover detection only)", "success")
             else:
                 mode_desc = {
-                    'all': 'Popularity Only',
-                    'force': 'Popularity Only (Forced)',
+                    'all': 'Metadata + Popularity + Singles',
+                    'force': 'Metadata + Popularity + Singles (Forced)',
                     'missing': 'Missing Only',
                     'metadata': 'Metadata + Cover Detection Only',
                     'metadata_force': 'Metadata + Cover Detection (Forced)',
@@ -15341,7 +15459,7 @@ def scan_popularity_route():
                     'singles_resume_force': 'Singles Resume (Forced)',
                     'resume': 'Resume from Last',
                     'resume_force': 'Resume (Forced)'
-                }.get(mode, 'Popularity Only')
+                }.get(mode, 'Metadata + Popularity + Singles')
                 flash(f"✅ Popularity scan started ({mode_desc} scan)", "success")
             logging.info("Popularity scan thread started successfully")
         except Exception as e:

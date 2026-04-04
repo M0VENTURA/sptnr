@@ -25,12 +25,32 @@
         </div>
         <div class="card-body">
           <div class="row g-3">
-            <div class="col-12">
-              <label for="browsePlaylistSelect" class="form-label">All Playlists</label>
+            <div class="col-12 col-md-4">
+              <label for="essentialPlaylistSelect" class="form-label fw-semibold">
+                <i class="bi bi-star-fill text-warning"></i> Essential Playlists
+              </label>
+              <select id="essentialPlaylistSelect" class="form-select">
+                <option value="">Select an Essential playlist...</option>
+              </select>
+              <small class="text-muted">Playlists starting with "Essential"</small>
+            </div>
+            <div class="col-12 col-md-4">
+              <label for="topPlaylistSelect" class="form-label fw-semibold">
+                <i class="bi bi-bar-chart-fill text-primary"></i> Top Genre Playlists
+              </label>
+              <select id="topPlaylistSelect" class="form-select">
+                <option value="">Select a Top playlist...</option>
+              </select>
+              <small class="text-muted">Playlists starting with "Top"</small>
+            </div>
+            <div class="col-12 col-md-4">
+              <label for="browsePlaylistSelect" class="form-label fw-semibold">
+                <i class="bi bi-music-note-list"></i> Other Playlists
+              </label>
               <select id="browsePlaylistSelect" class="form-select">
                 <option value="">Select a playlist...</option>
               </select>
-              <small class="text-muted">Smart and regular playlists in one list</small>
+              <small class="text-muted">All other playlists</small>
             </div>
           </div>
         </div>
@@ -552,14 +572,19 @@
   const EXPORT_POLL_INTERVAL_MS = 2000;
 
   async function exportToExternal() {
-    const browseSelect = document.getElementById('browsePlaylistSelect');
-    const playlistId = (window.currentPlaylistId || (browseSelect && browseSelect.value) || '').trim();
-    const selected = browseSelect && browseSelect.selectedIndex >= 0
-      ? browseSelect.options[browseSelect.selectedIndex]
-      : null;
+    // Read playlist id from whichever of the three bucket selects has a value
+    function _activeSelectValue() {
+      for (const id of ['essentialPlaylistSelect', 'topPlaylistSelect', 'browsePlaylistSelect']) {
+        const el = document.getElementById(id);
+        if (el && el.value) return { value: el.value, text: el.options[el.selectedIndex]?.textContent || '' };
+      }
+      return null;
+    }
+    const activeSelect = _activeSelectValue();
+    const playlistId = (window.currentPlaylistId || (activeSelect && activeSelect.value) || '').trim();
     const playlistName = (
       (window.currentPlaylistData && window.currentPlaylistData.name)
-      || (selected && selected.textContent)
+      || (activeSelect && activeSelect.text)
       || 'playlist'
     );
 
