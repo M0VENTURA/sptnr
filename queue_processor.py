@@ -1066,6 +1066,14 @@ def _build_fallback_search_queries(queue_item, primary_query):
     1. ``album_artist - title`` when album_artist differs from the track artist.
     2. ``feat.-stripped track_artist - title`` when the track artist contains a
        "feat." / "ft." / "featuring" clause.
+    3. ``first_word_of_artist - title`` for multi-word artists where Soulseek's
+       all-tokens-required matching causes zero results (e.g. "Pretty Reckless -
+       I Am Death" → "Pretty - I Am Death").  Soulseek requires every token in
+       the query to appear in the filename, so a shorter artist prefix broadens
+       the match while the candidate-scoring step still enforces artist similarity.
+    4. ``title`` only, as a last resort for cases where the artist token(s) are
+       entirely absent from shared filenames.  The scoring system enforces a
+       minimum artist-similarity threshold so false positives remain unlikely.
 
     Already-tried queries (i.e. ``primary_query``) and plain duplicates are
     excluded from the returned list.
@@ -1101,6 +1109,23 @@ def _build_fallback_search_queries(queue_item, primary_query):
     feat_stripped = _FEAT_SUFFIX_RE.sub("", artist).strip()
     if feat_stripped and feat_stripped.lower() != artist.lower():
         _add(_sanitize_search_query_for_slskd(f"{feat_stripped} - {title}"))
+
+    # Fallback 3: first word of artist + title for multi-word artists.
+    # Soulseek requires ALL query tokens to be present in a filename, so a
+    # long artist name like "Pretty Reckless" can produce zero results when
+    # "reckless" is absent from most shared filenames.  Using only the first
+    # word (e.g. "Pretty") broadens the token set while the scorer still
+    # validates the full artist name against the candidate filename.
+    effective_artist = feat_stripped if feat_stripped else artist
+    first_word = effective_artist.split()[0] if effective_artist.split() else ""
+    if first_word and first_word.lower() != effective_artist.lower():
+        _add(_sanitize_search_query_for_slskd(f"{first_word} - {title}"))
+
+    # Fallback 4: title only.  Used when even a partial artist token blocks
+    # results (e.g. the artist name is not present in any shared filename at
+    # all).  The candidate scorer still requires minimum artist similarity so
+    # unrelated tracks are rejected.
+    _add(_sanitize_search_query_for_slskd(title))
 
     return fallbacks
 
