@@ -17908,14 +17908,38 @@ def slskd_search():
     api_key = slskd_config.get("api_key", "")
     
     try:
-        client = SlskdClient(web_url, api_key, enabled=True)
-        # Use a reduced timeout and fewer retry attempts for interactive searches so
-        # the browser does not time out waiting (~6s × 3 attempts + small waits ≈ 20s,
-        # comfortably within the 30-second frontend fetch timeout).
+        # Use a plain session with no automatic retries for interactive searches.
+        # The shared api_clients session retries 429 responses up to 3 times with
+        # exponential backoff (1s+2s+4s per attempt), which turns a fast 429 into
+        # a ~31s wait per start_search attempt.  With max_attempts=3 that can exceed
+        # the 60s browser timeout.  A plain session returns 429 immediately so the
+        # manual retry loop in start_search() controls the cadence instead.
+        plain_session = requests.Session()
+        client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True)
+
+        # Before starting the search, delete any terminal-state searches still
+        # listed in slskd.  slskd enforces a single concurrent search slot; if a
+        # previous background search completed but wasn't cleaned up, it leaves the
+        # slot apparently "busy", causing the POST to return 429 even though no
+        # search is actively running.
+        _TERMINAL_STATES = {"Completed", "Cancelled", "TimedOut", "Errored", "Succeeded"}
+        try:
+            existing = client.list_searches(timeout=4)
+            for s in existing:
+                sid = s.get("id") or s.get("searchId") or s.get("Id")
+                state = (s.get("state") or s.get("State") or "")
+                if sid and state in _TERMINAL_STATES:
+                    client.cancel_search(sid, timeout=4)
+                    logging.info(f"[SLSKD] Cleared stale search {sid} (state={state}) before manual search")
+        except Exception as cleanup_err:
+            logging.warning(f"[SLSKD] Could not clear stale searches: {cleanup_err}")
+
+        # Use a short per-request timeout and few retries for interactive searches
+        # so the browser gets a timely response even if slskd is temporarily busy.
         search_id = client.start_search(query, timeout=6, max_attempts=3)
         
         if not search_id:
-            return jsonify({"error": "Failed to start search"}), 500
+            return jsonify({"error": "Failed to start search — slskd search slot may be busy. Try again in a moment."}), 500
         
         return jsonify({"searchId": search_id, "status": "searching"})
     except Exception as e:
