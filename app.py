@@ -4850,9 +4850,10 @@ def dashboard():
 
 
 def _get_genre_mood_analytics(top_n: int = 50):
-    """Aggregate top genres and moods from track metadata."""
+    """Aggregate top genres, moods, and genre+mood combinations from track metadata."""
     genre_counter = Counter()
     mood_counter = Counter()
+    combo_counter = Counter()
     conn = None
 
     try:
@@ -4872,23 +4873,35 @@ def _get_genre_mood_analytics(top_n: int = 50):
                 genres_raw = row[0] if len(row) > 0 else None
                 mood_raw = row[1] if len(row) > 1 else None
 
+            genre_tokens = []
             if genres_raw:
                 tokens = re.split(r"[\\,;/]+", str(genres_raw))
                 for token in tokens:
                     genre = token.strip()
                     if genre:
                         genre_counter[genre] += 1
+                        genre_tokens.append(genre)
 
+            mood_tokens = []
             if mood_raw:
                 tokens = re.split(r"[;]+", str(mood_raw))
                 for token in tokens:
                     mood = token.strip()
                     if mood:
                         mood_counter[mood] += 1
+                        mood_tokens.append(mood)
+
+            # Build genre+mood combination from primary genre and primary mood
+            if genre_tokens and mood_tokens:
+                combo_counter[(genre_tokens[0], mood_tokens[0])] += 1
 
         genres = [{"name": name, "count": count} for name, count in genre_counter.most_common(top_n)]
         moods = [{"name": name, "count": count} for name, count in mood_counter.most_common(top_n)]
-        return genres, moods
+        combos = [
+            {"genre": g, "mood": m, "count": c, "name": f"{g} × {m}"}
+            for (g, m), c in combo_counter.most_common(top_n)
+        ]
+        return genres, moods, combos
     finally:
         try:
             if conn:
@@ -4900,21 +4913,21 @@ def _get_genre_mood_analytics(top_n: int = 50):
 @app.route("/analytics/genres-moods")
 def analytics_genres_moods_page():
     """Genres/Moods analytics page with top-50 bar charts."""
-    genres, moods = _get_genre_mood_analytics(top_n=50)
-    return render_template("genres_moods_analytics.html", top_genres=genres, top_moods=moods)
+    genres, moods, combos = _get_genre_mood_analytics(top_n=50)
+    return render_template("genres_moods_analytics.html", top_genres=genres, top_moods=moods, top_combos=combos)
 
 
 @app.route("/api/analytics/genres-moods")
 def api_analytics_genres_moods():
-    """Return top genres and moods for analytics visualizations."""
+    """Return top genres, moods, and genre+mood combinations for analytics visualizations."""
     try:
         limit = request.args.get("limit", 50, type=int)
         limit = max(1, min(limit, 100))
-        genres, moods = _get_genre_mood_analytics(top_n=limit)
-        return jsonify({"genres": genres, "moods": moods})
+        genres, moods, combos = _get_genre_mood_analytics(top_n=limit)
+        return jsonify({"genres": genres, "moods": moods, "combos": combos})
     except Exception as e:
         logging.error(f"Failed to fetch genres/moods analytics: {e}")
-        return jsonify({"genres": [], "moods": [], "error": str(e)}), 500
+        return jsonify({"genres": [], "moods": [], "combos": [], "error": str(e)}), 500
 
 
 def convert_row_to_json_serializable(obj):
@@ -15297,12 +15310,29 @@ def scan_popularity_route():
                             logging.info("Singles scan completed successfully")
                             _log_scan_session_complete("singles")
                     else:
-                        logging.info(f"Starting popularity-only scan in background (force={force_rescan}, filter_missing={filter_missing}, resume_from={resume_from_artist})")
+                        # Step 1: run metadata lookup first so that any tracks that
+                        # haven't had a metadata scan yet get enriched before popularity
+                        # scoring.  The metadata scan has its own per-track cooldown so
+                        # recently-scanned tracks are skipped automatically.
+                        logging.info(f"Starting metadata lookup phase of popularity scan (force={force_rescan})")
+                        meta_completed = scan_popularity_func(
+                            verbose=False,
+                            force=force_rescan,
+                            metadata_only=True,
+                            stop_progress_file=popularity_progress_file
+                        )
+                        if meta_completed is False:
+                            _write_progress_with_current_artist(popularity_progress_file, "popularity_scan", False, {"status": "stopped", "exit_code": 0})
+                            logging.info("Popularity scan stopped by user request during metadata phase")
+                            return
+                        logging.info("Metadata phase complete; proceeding to popularity + singles scan")
+
+                        # Step 2: run the full popularity + singles scan
+                        logging.info(f"Starting popularity+singles scan in background (force={force_rescan}, filter_missing={filter_missing}, resume_from={resume_from_artist})")
                         completed = scan_popularity_func(
                             verbose=False,
                             force=force_rescan,
                             filter_missing=filter_missing,
-                            popularity_only=True,
                             resume_from=resume_from_artist,
                             stop_progress_file=popularity_progress_file
                         )
@@ -15311,7 +15341,7 @@ def scan_popularity_route():
                             logging.info("Popularity scan stopped by user request")
                         else:
                             _write_progress_with_current_artist(popularity_progress_file, "popularity_scan", False, {"status": "complete", "exit_code": 0})
-                            logging.info("Popularity-only scan completed successfully")
+                            logging.info("Popularity + singles scan completed successfully")
                             _log_scan_session_complete("popularity")
                 except Exception as e:
                     logging.error(f"Error in popularity scan: {e}", exc_info=True)
@@ -15335,8 +15365,8 @@ def scan_popularity_route():
                 flash("✅ Metadata lookup scan started (metadata + cover detection only)", "success")
             else:
                 mode_desc = {
-                    'all': 'Popularity Only',
-                    'force': 'Popularity Only (Forced)',
+                    'all': 'Metadata + Popularity + Singles',
+                    'force': 'Metadata + Popularity + Singles (Forced)',
                     'missing': 'Missing Only',
                     'metadata': 'Metadata + Cover Detection Only',
                     'metadata_force': 'Metadata + Cover Detection (Forced)',
@@ -15345,7 +15375,7 @@ def scan_popularity_route():
                     'singles_resume_force': 'Singles Resume (Forced)',
                     'resume': 'Resume from Last',
                     'resume_force': 'Resume (Forced)'
-                }.get(mode, 'Popularity Only')
+                }.get(mode, 'Metadata + Popularity + Singles')
                 flash(f"✅ Popularity scan started ({mode_desc} scan)", "success")
             logging.info("Popularity scan thread started successfully")
         except Exception as e:

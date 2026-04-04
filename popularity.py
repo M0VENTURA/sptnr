@@ -1495,8 +1495,12 @@ def get_top_genres_with_navidrome(sources, nav_genres, title="", album=""):
     # Apply contextual boosts
     if "live" in title.lower() or "live" in album.lower():
         genre_scores["live"] += 0.5
-    if any(word in title.lower() or word in album.lower() for word in ["christmas", "xmas"]):
-        genre_scores["christmas"] += 0.5
+    # Christmas detection: strong boost so the genre reliably surfaces at the top
+    _christmas_keywords = ["christmas", "xmas", "yuletide", "holiday season", "jingle bells",
+                           "silent night", "deck the halls", "winter wonderland", "feliz navidad",
+                           "rudolph", "santa claus", "sleigh bells"]
+    if any(word in title.lower() or word in album.lower() for word in _christmas_keywords):
+        genre_scores["christmas"] += 2.0  # boosted from 0.5 so it reliably appears first
 
     # Sort by weighted score
     sorted_genres = sorted(genre_scores.items(), key=lambda x: x[1], reverse=True)
@@ -5945,6 +5949,25 @@ def popularity_scan(
                                     log_debug(f'Ensured "{album_live_genre}" genre in batch update for track: {title}')
                             except (json.JSONDecodeError, TypeError):
                                 musicbrainz_genres = json.dumps([album_live_genre])
+
+                        # Inject "Christmas" genre when the title or album clearly signals a
+                        # Christmas track, mirroring how "Live" / "Acoustic" are handled.
+                        _xmas_keywords = ["christmas", "xmas", "yuletide", "holiday season",
+                                          "jingle bells", "silent night", "deck the halls",
+                                          "winter wonderland", "feliz navidad", "rudolph",
+                                          "santa claus", "sleigh bells"]
+                        _title_lower = str(title or "").lower()
+                        _album_lower = str(album or "").lower()
+                        _is_christmas = any(w in _title_lower or w in _album_lower for w in _xmas_keywords)
+                        if _is_christmas:
+                            try:
+                                mb_genres_list = json.loads(musicbrainz_genres) if musicbrainz_genres and musicbrainz_genres != 'null' else []
+                                if "Christmas" not in mb_genres_list:
+                                    mb_genres_list.insert(0, "Christmas")
+                                    musicbrainz_genres = json.dumps(mb_genres_list)
+                                    log_debug(f'Added "Christmas" genre to track: {title}')
+                            except (json.JSONDecodeError, TypeError):
+                                musicbrainz_genres = json.dumps(["Christmas"])
 
                         current_track = track_rows_by_id.get(track_id, {})
                         proposed_values = {
