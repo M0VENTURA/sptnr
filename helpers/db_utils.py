@@ -525,6 +525,8 @@ def ensure_cover_columns():
         ("is_cover_reason", "TEXT"),
         ("original_cover_artist", "TEXT"),
         ("cover_manual_override", "BOOLEAN DEFAULT FALSE"),
+        ("is_live", "BIGINT DEFAULT 0"),
+        ("is_acoustic", "BIGINT DEFAULT 0"),
     ]
 
     try:
@@ -553,6 +555,21 @@ def ensure_cover_columns():
                         logging.error(f"✗ Failed to add '{col_name}' column: {e}")
             else:
                 logging.debug(f"✓ Column '{col_name}' already exists in tracks table")
+
+        # Index to speed up the artist-key lookup used by /api/upcoming-releases and
+        # other hot paths that filter/group tracks by effective artist name.  Without
+        # this index the query does a full sequential scan of the tracks table, which
+        # on large libraries takes long enough that HTTP clients abort mid-response,
+        # producing PostgreSQL "broken pipe / connection to client lost" FATALs.
+        try:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tracks_artist_key "
+                "ON tracks (LOWER(COALESCE(NULLIF(album_artist, ''), artist)))"
+            )
+            conn.commit()
+            logging.debug("✓ Index idx_tracks_artist_key ensured on tracks table")
+        except Exception as e:
+            logging.warning(f"⚠ Could not create idx_tracks_artist_key: {e}")
 
         conn.close()
         return True

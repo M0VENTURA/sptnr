@@ -380,7 +380,25 @@ class CoverDetector:
         for track in tracks:
             track.setdefault('album', album)
             track.setdefault('album_artist', artist)
-        
+
+        # Step 0: Skip tracks that already have all three confirmation signals
+        # (is_cover flag + genre contains "cover" + title ends with "Artist Cover").
+        # These have been fully processed in a prior scan; re-running would be redundant.
+        cover_results = []
+        seen_track_ids = set()  # Avoid processing same track twice
+        pending_cover_updates = []
+
+        for track in tracks:
+            track_id = track.get('id')
+            if not track_id:
+                continue
+            if self._is_already_confirmed_cover(track):
+                seen_track_ids.add(track_id)
+                logger.info(
+                    f"Skipping '{track.get('title', '')}': already confirmed cover "
+                    f"(is_cover flag + genre + title annotation all present)"
+                )
+
         # Step 1: Collect writer information for all tracks
         track_writers = {}
         for track in tracks:
@@ -402,10 +420,6 @@ class CoverDetector:
             logger.info(f"  → To enable cover detection, ensure 'writer' field is populated from metadata sources during import")
             logger.info(f"  → Writer field should contain the original songwriter/composer name")
         
-        cover_results = []
-        seen_track_ids = set()  # Avoid processing same track twice
-        pending_cover_updates = []
-
         # Step 2: Primary detection via MusicBrainz "cover recording of" relation.
         # This is the canonical signal shown in the MB UI and should take precedence.
         for track in tracks:
@@ -468,9 +482,54 @@ class CoverDetector:
 
         # Step 3: Fallback detection from writer/lyricist mismatch + earliest recording lookup.
         # Any track whose writer/lyricist differs from the album artist is a candidate.
+        #
+        # Pre-flight: check writer coverage to avoid wasting API calls on artists whose
+        # library has sparse writer metadata.  If fewer than 10 % of tracks carry writer
+        # credits the data is too incomplete to trust, so skip writer-based detection.
+        #
+        # For compilation albums ("Various Artists" etc.) each track has its own credited
+        # artist, so the coverage check is done per-track-artist rather than album-wide.
+        _COMPILATION_ARTIST_NAMES = frozenset({
+            'various artists', 'various artists -', 'various', 'compilation', 'soundtrack',
+        })
+        _is_compilation_artist = artist.lower() in _COMPILATION_ARTIST_NAMES
+
+        # For non-compilation albums: compute album-artist coverage once and bail early.
+        _writer_skip_all = False
+        if not _is_compilation_artist and track_writers:
+            coverage = self._writer_coverage_for_artist(artist)
+            if coverage < 0.10:
+                logger.info(
+                    f"Writer coverage for '{artist}' is {coverage:.1%} (<10 %) — "
+                    f"skipping writer-based cover detection for album '{album}'"
+                )
+                _writer_skip_all = True
+
+        # For compilation albums: cache per-track-artist coverage to avoid repeat queries.
+        _track_artist_coverage_cache: Dict[str, float] = {}
+
         for track_id, info in track_writers.items():
             if track_id in seen_track_ids:
                 continue
+
+            # Writer coverage gate (album-level already checked above for non-compilations).
+            if _writer_skip_all:
+                break
+
+            if _is_compilation_artist:
+                track_artist = info.get('track_artist', '') or ''
+                if track_artist not in _track_artist_coverage_cache:
+                    _track_artist_coverage_cache[track_artist] = self._writer_coverage_for_artist(
+                        track_artist
+                    )
+                if _track_artist_coverage_cache[track_artist] < 0.10:
+                    logger.info(
+                        f"Writer coverage for track artist '{track_artist}' is "
+                        f"{_track_artist_coverage_cache[track_artist]:.1%} (<10 %) — "
+                        f"skipping writer-based detection for '{info['title']}'"
+                    )
+                    continue
+
             for writer in info['writers']:
                 # Check if writer is different from album artist
                 if not self._is_writer_same_as_artist(writer, artist):
@@ -1362,6 +1421,105 @@ class CoverDetector:
                         f"({count}/{min_count} tracks) — not a cover indicator"
                     )
                     return True
+        return False
+
+    def _writer_coverage_for_artist(self, artist: str) -> float:
+        """Return fraction (0.0–1.0) of tracks by *artist* that have a non-null writer field.
+
+        Used as a pre-flight gate: if fewer than 10 % of tracks by this artist carry
+        writer credits the data is too sparse to use for cover detection, so the
+        writer-based detection step is skipped.
+
+        Returns 1.0 (assume full coverage) when the check cannot be performed.
+        """
+        if not self.db_conn or not artist:
+            return 1.0
+
+        try:
+            cursor = self.db_conn.cursor()
+            cursor.execute(
+                f"""
+                SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE
+                        WHEN writer IS NOT NULL
+                             AND TRIM(CAST(writer AS TEXT)) NOT IN ('', '[]', 'null', 'None')
+                        THEN 1 ELSE 0 END) AS with_writer
+                FROM tracks
+                WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER({self.placeholder})
+                """,
+                (artist,),
+            )
+            row = cursor.fetchone()
+            if row:
+                total = int(self._row_value(row, 'total', index=0, default=0) or 0)
+                with_writer = int(self._row_value(row, 'with_writer', index=1, default=0) or 0)
+                if total == 0:
+                    return 1.0
+                return float(with_writer) / float(total)
+        except Exception as exc:
+            logger.debug(
+                f"[CoverDetector] _writer_coverage_for_artist query failed for {artist!r}: {exc}"
+            )
+        return 1.0
+
+    def _is_already_confirmed_cover(self, track: Dict) -> bool:
+        """Return True when a track already has all three confirmation signals and can be skipped.
+
+        The three signals are:
+        1. ``is_cover`` flag is set to a truthy value.
+        2. A genre field (``genres`` or ``musicbrainz_genres``) contains "cover" as a genre.
+        3. The track title ends with an "(Artist Cover)" annotation pattern.
+
+        When all three are present the track has already been fully processed and
+        re-running cover detection would be redundant.
+        """
+        # Condition 1: is_cover flag
+        is_cover_val = track.get('is_cover')
+        if is_cover_val in (None, 0, False, '0', '', 'false', 'no'):
+            return False
+        if isinstance(is_cover_val, str) and is_cover_val.strip().lower() in ('0', 'false', 'no', ''):
+            return False
+
+        # Condition 3 (cheapest remaining check): title ends with "(Artist Cover)" pattern.
+        # Use \s* (zero-or-more) rather than \s+ to tolerate titles like "(ArtistCover)".
+        title = track.get('title', '')
+        if not re.search(r'\([^)]+\s*cover\)\s*$', title, re.IGNORECASE):
+            return False
+
+        # Condition 2: genre field contains "cover" as a genre value (JSON-aware).
+        def _has_cover_genre(raw: str) -> bool:
+            if not raw:
+                return False
+            # Try parsing as a JSON array first (e.g. musicbrainz_genres)
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    return any(str(g).lower() == 'cover' for g in parsed)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+            # Fall back to substring search on plain text genres (e.g. backslash-separated)
+            return 'cover' in raw.lower()
+
+        if _has_cover_genre(track.get('genres') or '') or _has_cover_genre(track.get('musicbrainz_genres') or ''):
+            return True
+
+        # Fallback: query the DB if genre fields were not included in the track dict
+        if self.db_conn:
+            try:
+                cursor = self.db_conn.cursor()
+                cursor.execute(
+                    f"SELECT genres, musicbrainz_genres FROM tracks WHERE id = {self.placeholder}",
+                    (track.get('id'),),
+                )
+                row = cursor.fetchone()
+                if row:
+                    if _has_cover_genre(self._row_value(row, 'genres', index=0, default='') or '') or \
+                       _has_cover_genre(self._row_value(row, 'musicbrainz_genres', index=1, default='') or ''):
+                        return True
+            except Exception:
+                pass
+
         return False
 
     def _find_original_recording(self, title: str, writer: str, album_artist: Optional[str] = None) -> Optional[Dict]:

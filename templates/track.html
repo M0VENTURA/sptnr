@@ -315,6 +315,20 @@
                             </label>
                         </div>
 
+                        <div class="mb-3 form-check">
+                            <input type="checkbox" class="form-check-input" id="is_live" name="is_live" {% if track.is_live == 1 %}checked{% endif %}>
+                            <label class="form-check-label" for="is_live">
+                                <i class="bi bi-mic"></i> Is Live
+                            </label>
+                        </div>
+
+                        <div class="mb-3 form-check">
+                            <input type="checkbox" class="form-check-input" id="is_acoustic" name="is_acoustic" {% if track.is_acoustic == 1 %}checked{% endif %}>
+                            <label class="form-check-label" for="is_acoustic">
+                                <i class="bi bi-music-note"></i> Is Acoustic
+                            </label>
+                        </div>
+
                         <hr class="my-4">
 
                         <h6 class="text-muted mb-3">Technical Details</h6>
