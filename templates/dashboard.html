@@ -682,7 +682,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 : artistUrl;
             
             // Generate scan type badges
-            const badges = group.scan_types.map(st => {
+            const badges = group.scan_types.filter(st => st.type !== 'covers').map(st => {
                 let badgeHtml = `<span class="badge bg-secondary" title="${st.timestamp}">${st.type}</span>`;
                 if (st._inProgress) {
                     badgeHtml = '<span class="badge bg-primary"><span class="spinner-border spinner-border-sm me-1" style="width:.75em;height:.75em;"></span> Scanning…</span>';

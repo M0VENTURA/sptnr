@@ -14246,6 +14246,35 @@ def album_rescan(artist, album):
     return redirect(url_for("album_detail", artist=artist, album=album))
 
 
+@app.route("/album/<path:artist>/<path:album>/update-metadata", methods=["POST"])
+def album_update_metadata(artist, album):
+    """Trigger a forced metadata-only update scan for a specific album."""
+    from urllib.parse import unquote
+    artist = unquote(artist)
+    album = unquote(album)
+
+    def _run():
+        popularity_scan(verbose=True, force=True, artist_filter=artist, album_filter=album, metadata_only=True)
+
+    threading.Thread(target=_run, daemon=True).start()
+    flash(f"Metadata update started for album '{album}' by {artist}", "info")
+    return redirect(url_for("album_detail", artist=artist, album=album))
+
+
+@app.route("/artist/<path:name>/update-metadata", methods=["POST"])
+def artist_update_metadata(name):
+    """Trigger a forced metadata-only update scan for a specific artist."""
+    from urllib.parse import unquote
+    name = unquote(name)
+
+    def _run():
+        popularity_scan(verbose=True, force=True, artist_filter=name, metadata_only=True)
+
+    threading.Thread(target=_run, daemon=True).start()
+    flash(f"Metadata update started for artist '{name}'", "info")
+    return redirect(url_for("artist_detail", name=name))
+
+
 @app.route("/track/<path:artist>/<path:album>/<path:track_id>/rescan", methods=["POST"])
 def scan_track_rescan(artist, album, track_id):
     """Trigger per-track rescan: Navidrome fetch -> popularity -> single detection."""
