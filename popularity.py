@@ -4935,21 +4935,25 @@ def popularity_scan(
                         except (json.JSONDecodeError, TypeError):
                             _current_mb_genres = []
 
+                        # Case-insensitive check so previously stored 'live'/'Live' both match.
+                        _current_mb_genres_lower = [str(g).lower() for g in _current_mb_genres]
                         _already_tagged = (
-                            (album_live_genre == "Live" and _is_live_flag and "Live" in _current_mb_genres) or
-                            (album_live_genre == "Acoustic" and _is_acoustic_flag and "Acoustic" in _current_mb_genres)
+                            (album_live_genre == "Live" and _is_live_flag and "live" in _current_mb_genres_lower) or
+                            (album_live_genre == "Acoustic" and _is_acoustic_flag and "acoustic" in _current_mb_genres_lower)
                         )
                         if _already_tagged:
                             log_debug(f'Skipping live/acoustic tag for track "{track.get("title", "")}": already confirmed')
                             continue
 
-                        # Add genre tag
-                        if album_live_genre not in _current_mb_genres:
+                        # Add genre tag (only when the canonical capitalised form is not present).
+                        if album_live_genre.lower() not in _current_mb_genres_lower:
                             _current_mb_genres.insert(0, album_live_genre)
                         _new_mb_genres = json.dumps(_current_mb_genres)
 
-                        _is_live_val = 1 if album_live_genre == "Live" else _is_live_flag
-                        _is_acoustic_val = 1 if album_live_genre == "Acoustic" else _is_acoustic_flag
+                        # Set the correct flag; the other flag is explicitly left at 0 so a
+                        # track can never be simultaneously marked as both live and acoustic.
+                        _is_live_val = 1 if album_live_genre == "Live" else 0
+                        _is_acoustic_val = 1 if album_live_genre == "Acoustic" else 0
 
                         cursor.execute(f"""
                             UPDATE tracks

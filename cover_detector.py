@@ -1468,7 +1468,7 @@ class CoverDetector:
 
         The three signals are:
         1. ``is_cover`` flag is set to a truthy value.
-        2. A genre field (``genres`` or ``musicbrainz_genres``) contains the word "cover".
+        2. A genre field (``genres`` or ``musicbrainz_genres``) contains "cover" as a genre.
         3. The track title ends with an "(Artist Cover)" annotation pattern.
 
         When all three are present the track has already been fully processed and
@@ -1481,16 +1481,27 @@ class CoverDetector:
         if isinstance(is_cover_val, str) and is_cover_val.strip().lower() in ('0', 'false', 'no', ''):
             return False
 
-        # Condition 3 (cheapest remaining check): title ends with "(Artist Cover)" pattern
+        # Condition 3 (cheapest remaining check): title ends with "(Artist Cover)" pattern.
+        # Use \s* (zero-or-more) rather than \s+ to tolerate titles like "(ArtistCover)".
         title = track.get('title', '')
-        if not re.search(r'\([^)]+\s+cover\)\s*$', title, re.IGNORECASE):
+        if not re.search(r'\([^)]+\s*cover\)\s*$', title, re.IGNORECASE):
             return False
 
-        # Condition 2: genre field contains "cover"
-        genres_str = (
-            (track.get('genres') or '') + ' ' + (track.get('musicbrainz_genres') or '')
-        ).lower()
-        if 'cover' in genres_str:
+        # Condition 2: genre field contains "cover" as a genre value (JSON-aware).
+        def _has_cover_genre(raw: str) -> bool:
+            if not raw:
+                return False
+            # Try parsing as a JSON array first (e.g. musicbrainz_genres)
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    return any(str(g).lower() == 'cover' for g in parsed)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+            # Fall back to substring search on plain text genres (e.g. backslash-separated)
+            return 'cover' in raw.lower()
+
+        if _has_cover_genre(track.get('genres') or '') or _has_cover_genre(track.get('musicbrainz_genres') or ''):
             return True
 
         # Fallback: query the DB if genre fields were not included in the track dict
@@ -1503,11 +1514,8 @@ class CoverDetector:
                 )
                 row = cursor.fetchone()
                 if row:
-                    db_genres = (
-                        (self._row_value(row, 'genres', index=0, default='') or '') + ' ' +
-                        (self._row_value(row, 'musicbrainz_genres', index=1, default='') or '')
-                    ).lower()
-                    if 'cover' in db_genres:
+                    if _has_cover_genre(self._row_value(row, 'genres', index=0, default='') or '') or \
+                       _has_cover_genre(self._row_value(row, 'musicbrainz_genres', index=1, default='') or ''):
                         return True
             except Exception:
                 pass
