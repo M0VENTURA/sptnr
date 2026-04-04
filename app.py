@@ -18262,10 +18262,24 @@ def scan_combined():
 
                         # Build (or refresh) the artist index at the start of each cycle so
                         # newly-added artists are picked up in perpetual runs.
-                        artist_map = build_artist_index()
-                        artists = list(artist_map.items())
-                        artists.sort(key=_combined_scan_sort_key)
-                        total = len(artists)
+                        try:
+                            artist_map = build_artist_index()
+                            artists = list(artist_map.items())
+                            artists.sort(key=_combined_scan_sort_key)
+                            total = len(artists)
+                        except Exception as _idx_err:
+                            logging.error(
+                                f"[COMBINED_PERPETUAL] Error building artist index in cycle "
+                                f"{_perpetual_cycle}: {_idx_err}",
+                                exc_info=True,
+                            )
+                            # Check for a stop request before sleeping and retrying.
+                            with scan_lock:
+                                if scan_process_combined is None or _is_stop_requested_from_progress(combined_progress_file):
+                                    _write_progress_with_current_artist(combined_progress_file, "combined_scan", False, {"status": "stopped", "exit_code": 0})
+                                    break
+                            time.sleep(60)
+                            continue
 
                         # First cycle honours the original mode (resume/force/all).
                         # Subsequent perpetual cycles always do a non-forced full pass.
@@ -18458,12 +18472,22 @@ def scan_combined():
                                 logging.warning(f"Error saving combined scan checkpoint: {e}")
                     
                         # Cycle complete: clear checkpoint.
-                        if os.path.exists(checkpoint_path):
-                            os.remove(checkpoint_path)
+                        try:
+                            if os.path.exists(checkpoint_path):
+                                os.remove(checkpoint_path)
+                        except Exception as _ck_err:
+                            logging.warning(f"Error clearing combined scan checkpoint: {_ck_err}")
 
                         # Check whether perpetual mode is still enabled before looping.
-                        _cfg_perp = get_config()
-                        _perpetual_enabled = bool((_cfg_perp.get("features") or {}).get("perpetual", False))
+                        try:
+                            _cfg_perp = get_config()
+                            _perpetual_enabled = bool((_cfg_perp.get("features") or {}).get("perpetual", False))
+                        except Exception as _cfg_err:
+                            logging.warning(
+                                f"[COMBINED_PERPETUAL] Error reading config for perpetual check: {_cfg_err}; "
+                                "assuming perpetual mode is still enabled"
+                            )
+                            _perpetual_enabled = True
 
                         if _perpetual_enabled:
                             logging.info(
