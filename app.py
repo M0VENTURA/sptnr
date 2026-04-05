@@ -2874,6 +2874,18 @@ def _run_daily_musicbrainz_collection_release_refresh():
                     auto_queue_err,
                 )
 
+            # Commit after each artist so the DB transaction is not held open across
+            # the MusicBrainz HTTP call and rate-limit sleep for the next artist.
+            # Without this, the connection sits idle-in-transaction for the full
+            # duration of the loop (up to 500 artists × ~1s each), which exceeds
+            # idle_in_transaction_session_timeout and causes PostgreSQL to terminate
+            # the connection with "terminating connection due to idle-in-transaction
+            # timeout".
+            try:
+                conn.commit()
+            except Exception as commit_err:
+                logging.warning("[UPCOMING_MB_DAILY] Per-artist commit failed: %s", commit_err)
+
             # Respect MusicBrainz API pacing
             time.sleep(1.0)
 
