@@ -90,6 +90,7 @@ function setupBrowsePageListeners() {
     if (!this.value) return;
     const selectedOption = this.options[this.selectedIndex];
     const playlistType = selectedOption?.dataset?.playlistType || 'regular';
+    const playlistName = (selectedOption?.textContent || '').trim();
     // Clear the other bucket selects so only one shows as selected
     ['essentialPlaylistSelect', 'topPlaylistSelect', 'browsePlaylistSelect'].forEach(id => {
       if (id !== this.id) {
@@ -99,6 +100,12 @@ function setupBrowsePageListeners() {
     });
     loadNavidromePlaylistDetail(this.value, playlistType);
     loadPlaylistForDownload(this.value);
+    // Load into the appropriate editor based on playlist type
+    if (playlistType === 'smart' && typeof loadBrowseSmartPlaylistIntoEditor === 'function') {
+      loadBrowseSmartPlaylistIntoEditor(playlistName);
+    } else if (playlistType === 'regular' && typeof loadBrowseRegularPlaylistIntoEditor === 'function') {
+      loadBrowseRegularPlaylistIntoEditor(this.value, playlistName);
+    }
   }
 
   try {
