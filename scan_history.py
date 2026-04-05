@@ -7,6 +7,7 @@ Tracks individual album scans across different scan types (Navidrome, Popularity
 import logging
 from datetime import datetime
 import os
+import random
 import time
 from helpers.db_utils import get_db_connection, _is_postgres_connection, is_postgres_configured
 
@@ -14,6 +15,11 @@ from helpers.db_utils import get_db_connection, _is_postgres_connection, is_post
 # don't query information_schema on every call.  Reset to False if the process
 # reconnects to a fresh database.
 _scan_history_source_column_ensured = False
+
+# Module-level flag: True once the full schema setup (CREATE TABLE + indexes) has
+# been committed in this process.  Avoids running DDL inside the same transaction
+# as INSERT, which causes ShareLock/RowExclusiveLock deadlocks under concurrent load.
+_scan_history_schema_ensured = False
 _recent_scans_cache = []
 _recent_scans_last_ok_ts = 0.0
 _recent_scans_last_error_log_ts = 0.0
@@ -108,10 +114,132 @@ def _table_exists(cursor, table_name: str) -> bool:
     return bool(row[0]) if row else False
 
 
+def _ensure_scan_history_schema():
+    """
+    Create the scan_history table, indexes, and any missing columns in a dedicated
+    committed transaction.  Using a separate transaction prevents the DDL locks
+    (ShareLock from CREATE INDEX, AccessExclusiveLock from ALTER TABLE) from
+    co-existing with the RowExclusiveLock taken by the INSERT in log_album_scan.
+    When multiple workers run concurrently, mixing those lock types in the same
+    transaction causes deadlocks.
+
+    A module-level flag ensures the DDL is only issued once per process lifetime.
+    """
+    global _scan_history_schema_ensured, _scan_history_source_column_ensured
+    if _scan_history_schema_ensured:
+        return
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS scan_history (
+                id BIGSERIAL PRIMARY KEY,
+                artist TEXT NOT NULL,
+                album TEXT NOT NULL,
+                scan_type TEXT NOT NULL,
+                scan_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                tracks_processed INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'completed',
+                source TEXT DEFAULT ''
+            )
+            """
+        )
+
+        # Self-heal legacy PostgreSQL schemas where `id` exists but has no default.
+        cursor.execute(
+            """
+            SELECT column_default
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = 'scan_history'
+              AND column_name = 'id'
+            """
+        )
+        default_row = cursor.fetchone()
+        if isinstance(default_row, dict):
+            id_default = default_row.get("column_default")
+        else:
+            id_default = default_row[0] if default_row else None
+
+        if not id_default:
+            cursor.execute("CREATE SEQUENCE IF NOT EXISTS scan_history_id_seq")
+            cursor.execute("SELECT COALESCE(MAX(id), 0) AS max_id FROM scan_history")
+            max_id_row = cursor.fetchone()
+            if isinstance(max_id_row, dict):
+                max_id = int(max_id_row.get("max_id") or 0)
+            else:
+                max_id = int(max_id_row[0] if max_id_row else 0)
+
+            cursor.execute("SELECT setval('scan_history_id_seq', %s, %s)", (max_id, max_id > 0))
+            cursor.execute(
+                """
+                ALTER TABLE scan_history
+                ALTER COLUMN id SET DEFAULT nextval('scan_history_id_seq')
+                """
+            )
+            cursor.execute("ALTER SEQUENCE scan_history_id_seq OWNED BY scan_history.id")
+            logging.info("scan_history.id default was missing; attached scan_history_id_seq")
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_scan_history_timestamp
+            ON scan_history(scan_timestamp DESC)
+        """)
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_scan_history_artist_album
+            ON scan_history(artist, album)
+        """)
+
+        # Self-heal: add source column if missing from older schema.
+        if not _scan_history_source_column_ensured:
+            cursor.execute(
+                """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = 'scan_history'
+                  AND column_name = 'source'
+                """
+            )
+            if cursor.fetchone():
+                _scan_history_source_column_ensured = True
+            else:
+                try:
+                    cursor.execute(
+                        "ALTER TABLE scan_history ADD COLUMN IF NOT EXISTS source TEXT DEFAULT ''"
+                    )
+                    _scan_history_source_column_ensured = True
+                except Exception as col_exc:
+                    err_msg = str(col_exc).lower()
+                    if "already exists" not in err_msg and "duplicate" not in err_msg:
+                        logging.warning(f"Unexpected error adding source column to scan_history: {col_exc}")
+                    # Otherwise: added concurrently by another worker
+
+        conn.commit()
+        _scan_history_schema_ensured = True
+    except Exception as e:
+        logging.warning(f"scan_history schema setup failed (will retry next call): {e}")
+        try:
+            if conn:
+                conn.rollback()
+        except Exception:
+            pass
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
 def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: int = 0, status: str = "completed", source: str = ""):
     """
-    Log an album scan to the scan_history table with retry logic for database locks.
-    
+    Log an album scan to the scan_history table with retry logic for deadlocks and
+    transient database errors.
+
     Args:
         artist: Artist name
         album: Album name
@@ -121,121 +249,67 @@ def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: in
         source: Optional source information (e.g., which APIs were used for detection)
     """
     logging.info(f"log_album_scan called: artist='{artist}', album='{album}', type={scan_type}, tracks={tracks_processed}, status={status}")
-    
+
+    # Ensure schema is ready in its own committed transaction before we INSERT.
+    # Keeping DDL and DML in separate transactions eliminates the ShareLock /
+    # RowExclusiveLock deadlock that occurs when many workers call this concurrently.
+    _ensure_scan_history_schema()
+
     max_retries = 3
-    retry_delay = 0.5  # Start with 500ms delay
-    
+    retry_delay = 0.5  # seconds; doubled on each retry
+
     for attempt in range(max_retries):
+        conn = None
         try:
             conn = get_db_connection()
-            placeholder = "%s"
             cursor = conn.cursor()
-            
-            # Create table if it doesn't exist
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS scan_history (
-                    id BIGSERIAL PRIMARY KEY,
-                    artist TEXT NOT NULL,
-                    album TEXT NOT NULL,
-                    scan_type TEXT NOT NULL,
-                    scan_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    tracks_processed INTEGER DEFAULT 0,
-                    status TEXT DEFAULT 'completed',
-                    source TEXT DEFAULT ''
-                )
-                """
-            )
-
-            # Self-heal legacy PostgreSQL schemas where `id` exists but has no default.
-            cursor.execute(
-                """
-                SELECT column_default
-                FROM information_schema.columns
-                WHERE table_schema = current_schema()
-                  AND table_name = 'scan_history'
-                  AND column_name = 'id'
-                """
-            )
-            default_row = cursor.fetchone()
-            if isinstance(default_row, dict):
-                id_default = default_row.get("column_default")
-            else:
-                id_default = default_row[0] if default_row else None
-
-            if not id_default:
-                cursor.execute("CREATE SEQUENCE IF NOT EXISTS scan_history_id_seq")
-                cursor.execute("SELECT COALESCE(MAX(id), 0) AS max_id FROM scan_history")
-                max_id_row = cursor.fetchone()
-                if isinstance(max_id_row, dict):
-                    max_id = int(max_id_row.get("max_id") or 0)
-                else:
-                    max_id = int(max_id_row[0] if max_id_row else 0)
-
-                cursor.execute("SELECT setval('scan_history_id_seq', %s, %s)", (max_id, max_id > 0))
-                cursor.execute(
-                    """
-                    ALTER TABLE scan_history
-                    ALTER COLUMN id SET DEFAULT nextval('scan_history_id_seq')
-                    """
-                )
-                cursor.execute("ALTER SEQUENCE scan_history_id_seq OWNED BY scan_history.id")
-                logging.info("scan_history.id default was missing; attached scan_history_id_seq")
-            
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_scan_history_timestamp 
-                ON scan_history(scan_timestamp DESC)
-            """)
-            
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_scan_history_artist_album 
-                ON scan_history(artist, album)
-            """)
-
-            # Self-heal: add source column if missing from older schema.
-            # Use a module-level flag so information_schema is only queried once
-            # per process lifetime — avoids AccessExclusiveLock deadlocks when
-            # many workers call log_album_scan concurrently on PostgreSQL.
-            global _scan_history_source_column_ensured
-            if not _scan_history_source_column_ensured:
-                cursor.execute(
-                    """
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_schema = current_schema()
-                      AND table_name = 'scan_history'
-                      AND column_name = 'source'
-                    """
-                )
-                if cursor.fetchone():
-                    _scan_history_source_column_ensured = True
-                else:
-                    try:
-                        cursor.execute(
-                            "ALTER TABLE scan_history ADD COLUMN IF NOT EXISTS source TEXT DEFAULT ''"
-                        )
-                        _scan_history_source_column_ensured = True
-                    except Exception:
-                        pass  # Added concurrently by another worker
 
             # Insert scan record with explicit timestamp so legacy schemas lacking
             # scan_timestamp defaults still produce valid dashboard times.
             scan_timestamp = datetime.utcnow().isoformat() + "Z"
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT INTO scan_history (artist, album, scan_type, scan_timestamp, tracks_processed, status, source)
-                VALUES ({}, {}, {}, {}, {}, {}, {})
-            """.format(placeholder, placeholder, placeholder, placeholder, placeholder, placeholder, placeholder),
-            (artist, album, scan_type, scan_timestamp, tracks_processed, status, source))
-            
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (artist, album, scan_type, scan_timestamp, tracks_processed, status, source),
+            )
+
             conn.commit()
-            conn.close()
-            
             logging.info(f"Successfully logged {scan_type} scan for '{artist}' - '{album}' to scan_history")
-            return  # Success, exit function
-            
+            return  # Success
+
         except Exception as e:
-            logging.error(f"Error logging album scan for '{artist}' - '{album}': {e}")
-            logging.error(f"DB target={_db_target_description()}")
-            return
+            try:
+                if conn:
+                    conn.rollback()
+            except Exception:
+                pass
+
+            err_str = str(e).lower()
+            is_deadlock = "deadlock" in err_str
+            is_transient = _is_transient_db_error(e)
+
+            if attempt < max_retries - 1 and (is_deadlock or is_transient):
+                jitter = random.uniform(0, retry_delay * 0.5)
+                sleep_time = retry_delay + jitter
+                logging.warning(
+                    f"log_album_scan retrying (attempt {attempt + 2}/{max_retries}) "
+                    f"after {'deadlock' if is_deadlock else 'transient error'} "
+                    f"for '{artist}' - '{album}': {e}; sleeping {sleep_time:.2f}s"
+                )
+                time.sleep(sleep_time)
+                retry_delay *= 2
+            else:
+                logging.error(f"Error logging album scan for '{artist}' - '{album}': {e}")
+                logging.error(f"DB target={_db_target_description()}")
+                return
+        finally:
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
 
 def was_album_scanned(artist: str, album: str, scan_type: str, days_threshold: int = None) -> bool:
     """
