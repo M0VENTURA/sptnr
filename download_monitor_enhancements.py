@@ -42,13 +42,6 @@ def get_db():
     return conn
 
 
-def _is_postgres_connection(conn):
-    try:
-        return hasattr(conn, "get_dsn_parameters")
-    except Exception:
-        return False
-
-
 def _placeholder(conn):
     return "%s"
 
@@ -177,7 +170,6 @@ def search_and_update_musicbrainz(queue_id, artist, title, album):
         # Open DB connection before fallback chain so we can reuse stored art URLs.
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
         ph = _placeholder(conn)
 
         # Album art fallback chain:
@@ -364,8 +356,7 @@ def move_to_music_collection(queue_id):
     """
     try:
         conn = get_db()
-        is_pg = _is_postgres_connection(conn)
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) if is_pg else conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         ph = _placeholder(conn)
         
         # Get queue item then release the connection immediately so it is not
