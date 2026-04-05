@@ -2118,7 +2118,8 @@ function buildQueueTrackStatusDetail(track, group) {
     discovered: 'Discovered in downloads and pending review.',
     pending_match: 'Pending metadata match selection.',
     copy_recommended: 'Found on a different album locally – copy recommended.',
-    failed: 'Processing failed; retry is available.'
+    failed: 'Processing failed; retry is available.',
+    moving: 'File is being moved to the music library.'
   };
 
   const parts = [];
@@ -2260,7 +2261,8 @@ async function loadFolderGroups(options = {}) {
       'unmatched', 'queried', 'in_collection',
       'discovered', 'pending_match',
       'copy_recommended',
-      'failed'
+      'failed',
+      'moving'
     ];
     const queueItemsToShow = queue.filter(item => queueStatusesToShowInline.includes(item.status));
     
@@ -4523,10 +4525,9 @@ async function organizeFile(queueId) {
 
 async function retryQueueItem(queueId) {
   try {
-    const data = await fetchJsonOrThrow(`/api/queue/${queueId}/update`, {
+    const data = await fetchJsonOrThrow(`/api/queue/${queueId}/requeue`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'queued' })
+      headers: { 'Content-Type': 'application/json' }
     });
     
     if (data.success) {

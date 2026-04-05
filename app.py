@@ -2201,6 +2201,7 @@ def api_queue_requeue_item(queue_id):
             SET status = {placeholder},
                 failure_reason = NULL,
                 retry_count = 0,
+                next_retry_at = NULL,
                 updated_at = CURRENT_TIMESTAMP
         """
         update_params = ['queued']

@@ -16,6 +16,7 @@ ACTIVE_QUEUE_STATUSES = (
     'unmatched',
     'queried',
     'copy_recommended',
+    'moving',
 )
 ACTIVE_QUEUE_STATUS_SQL = ", ".join(f"'{s}'" for s in ACTIVE_QUEUE_STATUSES)
 
