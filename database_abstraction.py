@@ -2,6 +2,13 @@
 
 from typing import Any, Dict, List, Optional, Union
 
+try:
+    import psycopg2
+    import psycopg2.extensions as _psycopg2_ext
+except ImportError:
+    psycopg2 = None  # type: ignore
+    _psycopg2_ext = None  # type: ignore
+
 
 def normalize_parameter_marker(query: str, is_postgres: bool) -> str:
     """Normalize parameter markers to PostgreSQL style (%s)."""
@@ -132,7 +139,7 @@ def get_column_names(cursor: Any, table_name: str, is_postgres: bool = True) -> 
 
 def is_postgres_connection(conn: Any) -> bool:
     """
-    Detect if connection is PostgreSQL or SQLite.
+    Detect if the connection is a live psycopg2 PostgreSQL connection.
 
     Handles the _AutoRollbackPGConnection wrapper returned by get_db_connection()
     by unwrapping to the underlying psycopg2 connection before checking.
@@ -141,14 +148,15 @@ def is_postgres_connection(conn: Any) -> bool:
         conn: Database connection object
     
     Returns:
-        True if PostgreSQL, False if SQLite
+        True if PostgreSQL (psycopg2), False otherwise
     """
     try:
-        import psycopg2
+        if _psycopg2_ext is None:
+            return False
         # Unwrap _AutoRollbackPGConnection (or any single-level wrapper with _conn)
         underlying = getattr(conn, "_conn", conn)
-        return isinstance(underlying, psycopg2.extensions.connection)
-    except (ImportError, AttributeError, Exception):
+        return isinstance(underlying, _psycopg2_ext.connection)
+    except Exception:
         return False
 
 
