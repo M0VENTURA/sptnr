@@ -3666,22 +3666,12 @@ async function matchFolderGroupWithMusicBrainz(clickEvent, folderPath, artist, a
       alert('❌ No matches found for: ' + searchTerm + '\n\nTried MusicBrainz and Discogs');
       if (btn) {
         btn.disabled = false;
-        btn.innerHTML = manualQuery ? '<i class="bi bi-search"></i> Search' : '<i class="bi bi-disc"></i> Auto Apply';
+        btn.innerHTML = '<i class="bi bi-search"></i> Match';
       }
       return;
     }
 
-    if (!manualQuery) {
-      // Auto flow: apply closest candidate immediately, then allow per-track overrides in UI.
-      const bestCandidate = chooseBestReleaseCandidate(data.candidates, artist, album, tracks) || data.candidates[0];
-      const folderPathEnc = encodeInlineArg(folderPath);
-      const candidateEnc = encodeInlineArg(bestCandidate);
-      const tracksEnc = encodeInlineArg(tracks);
-      await stageFolderMatch(folderPathEnc, candidateEnc, tracksEnc);
-      return;
-    }
-
-    // Manual search flow: still let user choose from candidate list.
+    // Show candidates modal so the user can pick the correct release.
     showMusicBrainzMatchModal(folderPath, artist, album, tracks, data.candidates);
     await showReleaseTracksComparison(folderPath, artist, album, tracks, data.candidates);
     
@@ -3691,7 +3681,7 @@ async function matchFolderGroupWithMusicBrainz(clickEvent, folderPath, artist, a
   } finally {
     if (btn) {
       btn.disabled = false;
-      btn.innerHTML = manualQuery ? '<i class="bi bi-search"></i> Search' : '<i class="bi bi-disc"></i> Auto Apply';
+      btn.innerHTML = '<i class="bi bi-search"></i> Match';
     }
   }
 }
