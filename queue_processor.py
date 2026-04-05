@@ -1823,7 +1823,7 @@ def _load_auto_discovery_settings():
     return enabled, interval_seconds
 
 
-def maybe_auto_discover_files(now_ts, last_run_ts):
+def auto_discover_files(now_ts, last_run_ts):
     """Run background auto-discovery on interval and return updated last-run timestamp."""
     enabled, interval_seconds = _load_auto_discovery_settings()
     if not enabled:
@@ -1852,7 +1852,7 @@ def maybe_auto_discover_files(now_ts, last_run_ts):
     return now_ts
 
 
-def maybe_check_musicbrainz_files(now_ts, last_run_ts, interval_seconds=30):
+def check_musicbrainz_files(now_ts, last_run_ts, interval_seconds=30):
     """
     Run MusicBrainz file matching on interval and return updated last-run timestamp.
     Checks for new files matching active releases every 30 seconds.
@@ -1878,7 +1878,7 @@ def maybe_check_musicbrainz_files(now_ts, last_run_ts, interval_seconds=30):
     return now_ts
 
 
-def maybe_finalize_musicbrainz_releases(now_ts, last_run_ts, interval_seconds=60):
+def finalize_musicbrainz_releases(now_ts, last_run_ts, interval_seconds=60):
     """
     Run MusicBrainz release finalization on interval and return updated last-run timestamp.
     Finalizes releases when all tracks are discovered (every 60 seconds).
@@ -1904,7 +1904,7 @@ def maybe_finalize_musicbrainz_releases(now_ts, last_run_ts, interval_seconds=60
     return now_ts
 
 
-def maybe_check_missing_moved_files(now_ts, last_run_ts, interval_seconds=300):
+def check_missing_moved_files(now_ts, last_run_ts, interval_seconds=300):
     """
     Periodically check for files that were moved to /music but have since disappeared.
     Requeues them for retry. Runs every 5 minutes by default.
@@ -1977,7 +1977,7 @@ def check_failed_slskd_downloads(now_ts, last_run_ts, interval_seconds=300):
     return now_ts
 
 
-def maybe_clear_slskd_completed_downloads(now_ts, last_run_ts, interval_seconds=1800):
+def clear_slskd_completed_downloads(now_ts, last_run_ts, interval_seconds=1800):
     """
     Periodically clear all terminal-state (completed/cancelled/errored) entries
     from slskd's transfer list using DELETE /transfers/downloads/all/completed.
@@ -2011,7 +2011,7 @@ def maybe_clear_slskd_completed_downloads(now_ts, last_run_ts, interval_seconds=
     return now_ts
 
 
-def maybe_cleanup_stale_downloads(now_ts, last_run_ts, interval_seconds=3600):
+def cleanup_stale_downloads(now_ts, last_run_ts, interval_seconds=3600):
     """
     Periodically delete files in the downloads folder that are outside the 'torrents'
     subfolder and older than 24 hours.  Runs every hour by default as a safety net
@@ -2043,7 +2043,7 @@ def maybe_cleanup_stale_downloads(now_ts, last_run_ts, interval_seconds=3600):
     return now_ts
 
 
-def maybe_check_downloads_folder(now_ts, last_run_ts, interval_seconds=90):
+def check_downloads_folder(now_ts, last_run_ts, interval_seconds=90):
     """Periodically call check_downloads_folder() from the background processor.
 
     This ensures that files already present in the downloads directory (e.g.
@@ -2059,8 +2059,8 @@ def maybe_check_downloads_folder(now_ts, last_run_ts, interval_seconds=90):
         return last_run_ts
 
     try:
-        from download_queue_manager import check_downloads_folder
-        completed = check_downloads_folder()
+        from download_queue_manager import check_downloads_folder as _dqm_check_downloads_folder
+        completed = _dqm_check_downloads_folder()
         if completed:
             logger.info(
                 "[DOWNLOADS-FOLDER] Matched %d file(s) to queue items",
@@ -2074,7 +2074,7 @@ def maybe_check_downloads_folder(now_ts, last_run_ts, interval_seconds=90):
     return now_ts
 
 
-def maybe_trigger_navidrome_scan_for_new_imports(now_ts, last_run_ts, interval_seconds=300):
+def trigger_navidrome_scan_for_new_imports(now_ts, last_run_ts, interval_seconds=300):
     """Periodic safety-net: trigger a Navidrome scan when new imports are detected.
 
     Runs every *interval_seconds* (default 5 min).  It looks for download_queue
@@ -2125,7 +2125,7 @@ def maybe_trigger_navidrome_scan_for_new_imports(now_ts, last_run_ts, interval_s
         else:
             logger.debug("[NAVIDROME-SCAN] No new imports since last check, scan not needed")
     except Exception as e:
-        logger.error(f"[NAVIDROME-SCAN] Error in maybe_trigger_navidrome_scan_for_new_imports: {e}")
+        logger.error(f"[NAVIDROME-SCAN] Error in trigger_navidrome_scan_for_new_imports: {e}")
 
     return now_ts
 
@@ -2158,15 +2158,15 @@ def run_processor(interval=30):
                 logger.debug(f"--- Loop {loop_count} ---")
 
                 now_ts = time.time()
-                last_auto_discover_ts = maybe_auto_discover_files(now_ts, last_auto_discover_ts)
-                last_mb_check_ts = maybe_check_musicbrainz_files(now_ts, last_mb_check_ts)
-                last_mb_finalize_ts = maybe_finalize_musicbrainz_releases(now_ts, last_mb_finalize_ts)
-                last_verify_ts = maybe_check_missing_moved_files(now_ts, last_verify_ts)
-                last_stale_cleanup_ts = maybe_cleanup_stale_downloads(now_ts, last_stale_cleanup_ts)
+                last_auto_discover_ts = auto_discover_files(now_ts, last_auto_discover_ts)
+                last_mb_check_ts = check_musicbrainz_files(now_ts, last_mb_check_ts)
+                last_mb_finalize_ts = finalize_musicbrainz_releases(now_ts, last_mb_finalize_ts)
+                last_verify_ts = check_missing_moved_files(now_ts, last_verify_ts)
+                last_stale_cleanup_ts = cleanup_stale_downloads(now_ts, last_stale_cleanup_ts)
                 last_slskd_retry_ts = check_failed_slskd_downloads(now_ts, last_slskd_retry_ts)
-                last_slskd_clear_ts = maybe_clear_slskd_completed_downloads(now_ts, last_slskd_clear_ts)
-                last_downloads_folder_ts = maybe_check_downloads_folder(now_ts, last_downloads_folder_ts)
-                last_navidrome_scan_ts = maybe_trigger_navidrome_scan_for_new_imports(now_ts, last_navidrome_scan_ts)
+                last_slskd_clear_ts = clear_slskd_completed_downloads(now_ts, last_slskd_clear_ts)
+                last_downloads_folder_ts = check_downloads_folder(now_ts, last_downloads_folder_ts)
+                last_navidrome_scan_ts = trigger_navidrome_scan_for_new_imports(now_ts, last_navidrome_scan_ts)
                 
                 processed = process_queue(client)
                 
