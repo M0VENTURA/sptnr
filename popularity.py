@@ -7453,6 +7453,11 @@ def popularity_scan(
                     # Tag 5-star high/user-confidence singles
                     if five_star_singles_to_tag:
                         single_true_value = True
+                        _execute_tracks_batch_with_retry(
+                            conn,
+                            cursor,
+                            f"""UPDATE tracks SET is_single = {placeholder} WHERE id = {placeholder}""",
+                            [(single_true_value, track_id) for track_id in sorted(five_star_singles_to_tag, key=lambda v: str(v))],
                             f"5-star single tag batch update for album {album}",
                         )
                         log_info(f"Tagged {len(five_star_singles_to_tag)} 5-star track(s) as singles (high/user confidence)")
