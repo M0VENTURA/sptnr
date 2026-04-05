@@ -3258,6 +3258,7 @@ def _try_claim_for_move(queue_id, expected_status):
     else already claimed or moved it.
     """
     conn = None
+    _committed = False
     try:
         conn = _get_postgres_conn_from_app_or_fallback()
         placeholder = "%s"
@@ -3269,16 +3270,18 @@ def _try_claim_for_move(queue_id, expected_status):
         )
         rowcount = cursor.rowcount
         conn.commit()
+        _committed = True
         return rowcount > 0
     except Exception as e:
         logger.warning(f"[MOVE_CLAIM] Could not claim queue {queue_id} (expected={expected_status}): {e}")
         return False
     finally:
         if conn is not None:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
+            if not _committed:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
             try:
                 conn.close()
             except Exception as _close_err:
@@ -4693,6 +4696,12 @@ def check_downloads_folder():
         for _fi in downloads_files:
             _folder_files_map.setdefault(os.path.dirname(_fi['full_path']), []).append(_fi)
 
+        # Track sibling full_paths and filenames inserted during this pass so
+        # that a second queue_item from the same album folder does not see those
+        # freshly-added siblings as unqueued and create duplicates.
+        _sibling_queued_paths: set = set()
+        _sibling_queued_fns: set = set()
+
         # Try to match files to queue items
         for queue_item in queue_items:
             import shutil
@@ -5013,6 +5022,10 @@ def check_downloads_folder():
                         if fi['full_path'] != match_path
                         and fi['full_path'] not in _queued_paths
                         and fi['filename'] not in _queued_fns
+                        # Also exclude siblings inserted in earlier iterations of
+                        # this same pass (queue_items is not updated mid-loop).
+                        and fi['full_path'] not in _sibling_queued_paths
+                        and fi['filename'] not in _sibling_queued_fns
                     ]
                     if unqueued_siblings:
                         logger.info(
@@ -5105,6 +5118,10 @@ def check_downloads_folder():
                                     ),
                                 )
                                 conn.commit()
+                                # Track the newly inserted sibling so later
+                                # queue_items in this pass don't re-insert it.
+                                _sibling_queued_paths.add(sib['full_path'])
+                                _sibling_queued_fns.add(sib['filename'])
                                 logger.info(
                                     f"[FOLDER_CHECK] Added sibling "
                                     f"'{sib['filename']}' as discovered entry "
