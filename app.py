@@ -2874,6 +2874,18 @@ def _run_daily_musicbrainz_collection_release_refresh():
                     auto_queue_err,
                 )
 
+            # Commit after each artist so the DB transaction is not held open across
+            # the MusicBrainz HTTP call and rate-limit sleep for the next artist.
+            # Without this, the connection sits idle-in-transaction for the full
+            # duration of the loop (up to 500 artists × ~1s each), which exceeds
+            # idle_in_transaction_session_timeout and causes PostgreSQL to terminate
+            # the connection with "terminating connection due to idle-in-transaction
+            # timeout".
+            try:
+                conn.commit()
+            except Exception as commit_err:
+                logging.warning("[UPCOMING_MB_DAILY] Per-artist commit failed: %s", commit_err)
+
             # Respect MusicBrainz API pacing
             time.sleep(1.0)
 
@@ -18068,12 +18080,21 @@ def slskd_search():
         plain_session = requests.Session()
         client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True)
 
-        _clear_stale_slskd_searches(client, context="manual search")
+        # Optimistic fast path: attempt the search without pre-emptive cleanup.
+        # When slskd has no active searches (the common interactive case), this
+        # returns immediately (<1s).  Pre-emptively calling _clear_stale_slskd_searches
+        # before every search issues a DELETE for every accumulated completed search
+        # (each with a 4s timeout); with even 15 stale background-search entries that
+        # path can exceed the 60s browser timeout *before* the POST to slskd is sent —
+        # which is why users observe "Request timed out" even when slskd appears idle.
+        search_id = client.start_search(query, timeout=6, max_attempts=1)
 
-        # Use a short per-request timeout and few retries for interactive searches
-        # so the browser gets a timely response even if slskd is temporarily busy.
-        search_id = client.start_search(query, timeout=6, max_attempts=3)
-        
+        if search_id is None:
+            # First attempt failed (likely 429 due to a stale/blocking search).
+            # Run the stale-search cleanup once and retry with a few more attempts.
+            _clear_stale_slskd_searches(client, context="manual search")
+            search_id = client.start_search(query, timeout=6, max_attempts=3)
+
         if not search_id:
             return jsonify({"error": "Failed to start search — slskd search slot may be busy. Try again in a moment."}), 500
         
