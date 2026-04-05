@@ -782,6 +782,12 @@ def run_essentia_mood_scan(
         tuple(params),
     )
     rows = cursor.fetchall() or []
+    # Close the SELECT transaction immediately so the connection transitions to
+    # "idle" (not "idle in transaction") before the per-file Essentia
+    # subprocesses start.  Each subprocess can take up to per_file_timeout
+    # seconds; with idle_in_transaction_session_timeout=60s the connection
+    # would otherwise be killed long before the first UPDATE is issued.
+    conn.commit()
 
     # Collect distinct artist keys for progress reporting.
     artists: List[str] = []

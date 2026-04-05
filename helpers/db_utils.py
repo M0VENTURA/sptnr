@@ -202,6 +202,10 @@ def get_db_connection() -> "_AutoRollbackPGConnection":
                 pg_dsn,
                 cursor_factory=psycopg2.extras.RealDictCursor,
                 connect_timeout=10,
+                keepalives=1,
+                keepalives_idle=60,
+                keepalives_interval=10,
+                keepalives_count=5,
                 **({"options": options} if options else {}),
             )
             logging.debug(
@@ -217,6 +221,10 @@ def get_db_connection() -> "_AutoRollbackPGConnection":
                 dbname=pg_database,
                 cursor_factory=psycopg2.extras.RealDictCursor,
                 connect_timeout=10,
+                keepalives=1,
+                keepalives_idle=60,
+                keepalives_interval=10,
+                keepalives_count=5,
                 **({"options": options} if options else {}),
             )
             logging.debug("Connected to PostgreSQL: %s/%s", pg_host, pg_database)
