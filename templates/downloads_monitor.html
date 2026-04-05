@@ -3764,19 +3764,19 @@ function showMusicBrainzMatchModal(folderPath, artist, album, tracks, candidates
 
   let candidatesHtml = '';
   candidates.forEach((candidate) => {
-    const date = candidate.date ? ` (${candidate.date.split('-')[0]})` : '';
-    const country = candidate.country ? ` - ${candidate.country}` : '';
+    const date = candidate.date ? ` (${escapeHtml(candidate.date.split('-')[0])})` : '';
+    const country = candidate.country ? ` - ${escapeHtml(candidate.country)}` : '';
     const source = candidate.source || 'musicbrainz';
     const sourceBadge = source === 'discogs' ? '<span class="badge bg-info ms-2">Discogs</span>' : '';
-    const trackInfo = candidate.track_count ? `${candidate.track_count} tracks` : 'Release';
+    const trackInfo = candidate.track_count ? `${escapeHtml(String(candidate.track_count))} tracks` : 'Release';
     
     const candidateEnc = encodeInlineArg(candidate);
     
     candidatesHtml += `
               <button type="button" class="list-group-item list-group-item-action" 
                       onclick="stageFolderMatch('${folderPathEnc}', '${candidateEnc}', '${tracksEnc}')">
-                <div><strong>${candidate.title}</strong>${date}${country}${sourceBadge}</div>
-                <small class="text-muted">${candidate.artist} • ${trackInfo}</small>
+                <div><strong>${escapeHtml(candidate.title)}</strong>${date}${country}${sourceBadge}</div>
+                <small class="text-muted">${escapeHtml(candidate.artist)} • ${trackInfo}</small>
               </button>`;
   });
 
@@ -3831,9 +3831,10 @@ async function loadMbMatchModalQueueReleases(folderPath, artist, album, tracks) 
 
   const folderPathEnc = encodeInlineArg(folderPath);
   const tracksEnc = encodeInlineArg(tracks);
+  const MAX_QUEUE_RELEASES = 80;
 
   try {
-    const apiUrl = `/api/queue/matched-releases?artist=${encodeURIComponent(artist || '')}&album=${encodeURIComponent(album || '')}&limit=80`;
+    const apiUrl = `/api/queue/matched-releases?artist=${encodeURIComponent(artist || '')}&album=${encodeURIComponent(album || '')}&limit=${MAX_QUEUE_RELEASES}`;
     const data = await fetchJsonOrThrow(apiUrl);
     const releases = data.releases || [];
 
