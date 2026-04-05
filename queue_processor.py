@@ -930,6 +930,40 @@ def _build_subsonic_auth_params(username, password):
     }
 
 
+def _trigger_navidrome_scan():
+    """Fire a Navidrome library startScan via the Subsonic API.
+
+    Called after a track is successfully auto-moved to /music so Navidrome
+    immediately picks up the new file rather than waiting for its next
+    scheduled full scan.
+
+    Returns True if the scan was triggered successfully, False otherwise.
+    """
+    base_url, username, password = _get_navidrome_config()
+    if not base_url:
+        logger.debug("[NAVIDROME-SCAN] Navidrome not configured — skipping scan trigger")
+        return False
+    try:
+        params = _build_subsonic_auth_params(username, password)
+        url = f"{base_url}/rest/startScan"
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        result = resp.json()
+        if result.get("subsonic-response", {}).get("status") == "ok":
+            logger.info("[NAVIDROME-SCAN] ✅ Navidrome library scan triggered")
+            return True
+        error = result.get("subsonic-response", {}).get("error", {}) or {}
+        err_code = error.get("code") if isinstance(error, dict) else None
+        err_msg = error.get("message") if isinstance(error, dict) else None
+        logger.warning(
+            f"[NAVIDROME-SCAN] Scan request returned non-ok status: code={err_code} message={err_msg}"
+        )
+        return False
+    except Exception as e:
+        logger.warning(f"[NAVIDROME-SCAN] Could not trigger Navidrome scan: {e}")
+        return False
+
+
 def check_track_exists_in_db(queue_item):
     """
     Check if a track matching the queue item already exists in the local tracks database.
@@ -1477,6 +1511,7 @@ def check_completed_downloads():
             logger.debug(f"Checking {len(downloading)} items in 'downloading' status")
 
         newly_completed = []
+        scan_needed = False
         for item in downloading:
             match_found = None
             match_meta_state = None
@@ -1652,6 +1687,7 @@ def check_completed_downloads():
                                 copied_individually_at=datetime.now().isoformat()
                             )
                             logger.info(f"[AUTO_MOVE] Queue {item_id}: verified and imported to {target_path}")
+                            scan_needed = True
                         else:
                             logger.warning(
                                 f"[AUTO_MOVE] Queue {item_id}: verification FAILED "
@@ -1684,6 +1720,10 @@ def check_completed_downloads():
                     )
             except Exception as auto_err:
                 logger.warning(f"[AUTO_MOVE] Error triggering auto-move for queue {item['id']}: {auto_err}")
+
+        if scan_needed:
+            if not _trigger_navidrome_scan():
+                logger.warning("[NAVIDROME-SCAN] Imports occurred but scan trigger failed — safety-net will retry")
 
     except Exception as e:
         logger.error(f"Error checking completed downloads: {e}")
@@ -1783,7 +1823,7 @@ def _load_auto_discovery_settings():
     return enabled, interval_seconds
 
 
-def maybe_auto_discover_files(now_ts, last_run_ts):
+def auto_discover_files(now_ts, last_run_ts):
     """Run background auto-discovery on interval and return updated last-run timestamp."""
     enabled, interval_seconds = _load_auto_discovery_settings()
     if not enabled:
@@ -1812,7 +1852,7 @@ def maybe_auto_discover_files(now_ts, last_run_ts):
     return now_ts
 
 
-def maybe_check_musicbrainz_files(now_ts, last_run_ts, interval_seconds=30):
+def check_musicbrainz_files(now_ts, last_run_ts, interval_seconds=30):
     """
     Run MusicBrainz file matching on interval and return updated last-run timestamp.
     Checks for new files matching active releases every 30 seconds.
@@ -1838,7 +1878,7 @@ def maybe_check_musicbrainz_files(now_ts, last_run_ts, interval_seconds=30):
     return now_ts
 
 
-def maybe_finalize_musicbrainz_releases(now_ts, last_run_ts, interval_seconds=60):
+def finalize_musicbrainz_releases(now_ts, last_run_ts, interval_seconds=60):
     """
     Run MusicBrainz release finalization on interval and return updated last-run timestamp.
     Finalizes releases when all tracks are discovered (every 60 seconds).
@@ -1864,7 +1904,7 @@ def maybe_finalize_musicbrainz_releases(now_ts, last_run_ts, interval_seconds=60
     return now_ts
 
 
-def maybe_check_missing_moved_files(now_ts, last_run_ts, interval_seconds=300):
+def check_missing_moved_files(now_ts, last_run_ts, interval_seconds=300):
     """
     Periodically check for files that were moved to /music but have since disappeared.
     Requeues them for retry. Runs every 5 minutes by default.
@@ -1937,7 +1977,7 @@ def check_failed_slskd_downloads(now_ts, last_run_ts, interval_seconds=300):
     return now_ts
 
 
-def maybe_clear_slskd_completed_downloads(now_ts, last_run_ts, interval_seconds=1800):
+def clear_slskd_completed_downloads(now_ts, last_run_ts, interval_seconds=1800):
     """
     Periodically clear all terminal-state (completed/cancelled/errored) entries
     from slskd's transfer list using DELETE /transfers/downloads/all/completed.
@@ -1971,7 +2011,7 @@ def maybe_clear_slskd_completed_downloads(now_ts, last_run_ts, interval_seconds=
     return now_ts
 
 
-def maybe_cleanup_stale_downloads(now_ts, last_run_ts, interval_seconds=3600):
+def cleanup_stale_downloads(now_ts, last_run_ts, interval_seconds=3600):
     """
     Periodically delete files in the downloads folder that are outside the 'torrents'
     subfolder and older than 24 hours.  Runs every hour by default as a safety net
@@ -2003,7 +2043,7 @@ def maybe_cleanup_stale_downloads(now_ts, last_run_ts, interval_seconds=3600):
     return now_ts
 
 
-def maybe_check_downloads_folder(now_ts, last_run_ts, interval_seconds=90):
+def check_downloads_folder(now_ts, last_run_ts, interval_seconds=90):
     """Periodically call check_downloads_folder() from the background processor.
 
     This ensures that files already present in the downloads directory (e.g.
@@ -2019,8 +2059,8 @@ def maybe_check_downloads_folder(now_ts, last_run_ts, interval_seconds=90):
         return last_run_ts
 
     try:
-        from download_queue_manager import check_downloads_folder
-        completed = check_downloads_folder()
+        from download_queue_manager import check_downloads_folder as _dqm_check_downloads_folder
+        completed = _dqm_check_downloads_folder()
         if completed:
             logger.info(
                 "[DOWNLOADS-FOLDER] Matched %d file(s) to queue items",
@@ -2030,6 +2070,62 @@ def maybe_check_downloads_folder(now_ts, last_run_ts, interval_seconds=90):
             logger.debug("[DOWNLOADS-FOLDER] No new matches found")
     except Exception as e:
         logger.error(f"[DOWNLOADS-FOLDER] Error during downloads folder check: {e}")
+
+    return now_ts
+
+
+def trigger_navidrome_scan_for_new_imports(now_ts, last_run_ts, interval_seconds=300):
+    """Periodic safety-net: trigger a Navidrome scan when new imports are detected.
+
+    Runs every *interval_seconds* (default 5 min).  It looks for download_queue
+    rows that were moved to the music directory since the previous check.  When
+    any are found, _trigger_navidrome_scan() is called so Navidrome indexes the
+    new files even if the per-item trigger in check_completed_downloads() was
+    skipped (e.g. the file was imported via another path).
+
+    Args:
+        now_ts: Current timestamp (time.time())
+        last_run_ts: Timestamp returned by the previous call, or None
+        interval_seconds: Minimum seconds between checks (default 300)
+
+    Returns:
+        Updated last-run timestamp
+    """
+    if last_run_ts is not None and (now_ts - last_run_ts) < interval_seconds:
+        return last_run_ts
+
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = _get_placeholder(conn)
+
+        if last_run_ts is not None:
+            cutoff = datetime.fromtimestamp(last_run_ts)
+        else:
+            cutoff = datetime.now() - timedelta(seconds=interval_seconds)
+
+        cursor.execute(
+            f"""
+            SELECT COUNT(*) FROM download_queue
+            WHERE status = 'imported'
+              AND copied_individually_at >= {placeholder}
+            """,
+            (cutoff.isoformat(),),
+        )
+        row = cursor.fetchone()
+        count = int(row[0] if row else 0)
+        conn.close()
+
+        if count > 0:
+            logger.info(
+                f"[NAVIDROME-SCAN] {count} import(s) detected since last check "
+                f"— triggering safety-net scan"
+            )
+            _trigger_navidrome_scan()
+        else:
+            logger.debug("[NAVIDROME-SCAN] No new imports since last check, scan not needed")
+    except Exception as e:
+        logger.error(f"[NAVIDROME-SCAN] Error in trigger_navidrome_scan_for_new_imports: {e}")
 
     return now_ts
 
@@ -2053,6 +2149,7 @@ def run_processor(interval=30):
     last_slskd_retry_ts = None
     last_slskd_clear_ts = None
     last_downloads_folder_ts = None
+    last_navidrome_scan_ts = None
 
     try:
         while True:
@@ -2061,14 +2158,15 @@ def run_processor(interval=30):
                 logger.debug(f"--- Loop {loop_count} ---")
 
                 now_ts = time.time()
-                last_auto_discover_ts = maybe_auto_discover_files(now_ts, last_auto_discover_ts)
-                last_mb_check_ts = maybe_check_musicbrainz_files(now_ts, last_mb_check_ts)
-                last_mb_finalize_ts = maybe_finalize_musicbrainz_releases(now_ts, last_mb_finalize_ts)
-                last_verify_ts = maybe_check_missing_moved_files(now_ts, last_verify_ts)
-                last_stale_cleanup_ts = maybe_cleanup_stale_downloads(now_ts, last_stale_cleanup_ts)
+                last_auto_discover_ts = auto_discover_files(now_ts, last_auto_discover_ts)
+                last_mb_check_ts = check_musicbrainz_files(now_ts, last_mb_check_ts)
+                last_mb_finalize_ts = finalize_musicbrainz_releases(now_ts, last_mb_finalize_ts)
+                last_verify_ts = check_missing_moved_files(now_ts, last_verify_ts)
+                last_stale_cleanup_ts = cleanup_stale_downloads(now_ts, last_stale_cleanup_ts)
                 last_slskd_retry_ts = check_failed_slskd_downloads(now_ts, last_slskd_retry_ts)
-                last_slskd_clear_ts = maybe_clear_slskd_completed_downloads(now_ts, last_slskd_clear_ts)
-                last_downloads_folder_ts = maybe_check_downloads_folder(now_ts, last_downloads_folder_ts)
+                last_slskd_clear_ts = clear_slskd_completed_downloads(now_ts, last_slskd_clear_ts)
+                last_downloads_folder_ts = check_downloads_folder(now_ts, last_downloads_folder_ts)
+                last_navidrome_scan_ts = trigger_navidrome_scan_for_new_imports(now_ts, last_navidrome_scan_ts)
                 
                 processed = process_queue(client)
                 
