@@ -1335,6 +1335,7 @@
 
   // ---- NSP Edit Mode ----
   let nspEditingFile = null;  // basename of the file currently being edited, e.g. "my_mix.nsp"
+  let _cachedNspFiles = [];  // NSP file list cached from nspPopulateEditSelect
 
   function nspExitEditMode() {
     nspEditingFile = null;
@@ -1352,13 +1353,69 @@
     if (editSel) editSel.value = '';
   }
 
-  async function nspPopulateEditSelect() {
+  // Called from browse playlist dropdowns when a smart playlist is selected.
+  // Finds the matching .nsp file by name and loads it into the NSP editor.
+  function loadBrowseSmartPlaylistIntoEditor(playlistName) {
+    const match = _cachedNspFiles.find(
+      f => (f.name || '').toLowerCase() === (playlistName || '').toLowerCase()
+    );
+    if (!match) {
+      showToast(`No .nsp file found matching "${escapeHtml(playlistName)}"`, 'warning');
+      return;
+    }
+    const editSel = document.getElementById('nspEditSelect');
+    if (editSel) {
+      editSel.value = match.id;
+      editSel.dispatchEvent(new Event('change'));
+    }
+    nspLoadForEdit();
+  }
+
+  // Called from browse playlist dropdowns when a regular playlist is selected.
+  // Fetches the playlist's tracks and loads them into the custom playlist editor.
+  async function loadBrowseRegularPlaylistIntoEditor(playlistId, playlistName) {
+    try {
+      const resp = await fetch(`/api/navidrome/playlist/${encodeURIComponent(playlistId)}`);
+      const data = await resp.json();
+      if (!resp.ok) {
+        showToast('Could not load playlist: ' + (data.error || resp.statusText), 'warning');
+        return;
+      }
+
+      const nameInput = document.getElementById('customPlaylistName');
+      if (nameInput) nameInput.value = data.name || playlistName || '';
+
+      const descInput = document.getElementById('customPlaylistDesc');
+      if (descInput) descInput.value = data.comment || '';
+
+      if (Array.isArray(data.tracks) && data.tracks.length > 0) {
+        selectedSongs = data.tracks.map(t => ({
+          id: t.id,
+          title: t.title || 'Unknown',
+          artist: t.artist || 'Unknown',
+          album: t.album || ''
+        }));
+        if (typeof updateSelectedSongsList === 'function') updateSelectedSongsList();
+      }
+
+      const form = document.getElementById('customPlaylistForm');
+      if (form) form.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+      showToast(`Loaded "${escapeHtml(data.name || playlistName)}" into the playlist editor.`, 'info');
+    } catch (e) {
+      console.error('[Browse] Error loading playlist into editor:', e);
+      showToast('Error loading playlist: ' + e.message, 'danger');
+    }
+  }
+
+
     const editSel = document.getElementById('nspEditSelect');
     if (!editSel) return;
     try {
       const resp = await fetch('/api/playlist/list');
       const data = await resp.json();
       const nspPlaylists = (data.playlists || []).filter(p => p.type === 'smart-local');
+      _cachedNspFiles = nspPlaylists;
       editSel.innerHTML = '<option value="">— select file to edit —</option>';
       nspPlaylists.forEach(p => {
         const opt = document.createElement('option');
