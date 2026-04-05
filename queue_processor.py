@@ -629,6 +629,7 @@ def get_slskd_client():
 
 def cleanup_stuck_searching_items():
     """Detect and mark as failed any items stuck in 'searching' for too long"""
+    conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
@@ -661,15 +662,18 @@ def cleanup_stuck_searching_items():
                     retry_delay_minutes=15
                 )
         
-        conn.close()
         return len(stuck_items)
         
     except Exception as e:
         logger.error(f"Error cleaning up stuck searching items: {e}")
         return 0
+    finally:
+        if conn:
+            conn.close()
 
 def get_queued_items(limit=None):
     """Get items ready to process (queued or scheduled for retry)"""
+    conn = None
     try:
         # First, clean up any items stuck in 'searching' state
         cleanup_stuck_searching_items()
@@ -758,16 +762,19 @@ def get_queued_items(limit=None):
             cursor.execute(base_query, (now,))
         
         items = [dict(row) for row in cursor.fetchall()]
-        conn.close()
         
         return items
         
     except Exception as e:
         logger.error(f"Error getting queued items: {e}")
         return []
+    finally:
+        if conn:
+            conn.close()
 
 def update_queue_status(queue_id, status, **kwargs):
     """Update queue item status"""
+    conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
@@ -789,7 +796,6 @@ def update_queue_status(queue_id, status, **kwargs):
         query = f"UPDATE download_queue SET {', '.join(updates)} WHERE id = {placeholder}"
         cursor.execute(query, params)
         conn.commit()
-        conn.close()
         
         logger.info(f"Updated queue {queue_id} to status: {status}")
         return True
@@ -797,9 +803,13 @@ def update_queue_status(queue_id, status, **kwargs):
     except Exception as e:
         logger.error(f"Error updating queue status: {e}")
         return False
+    finally:
+        if conn:
+            conn.close()
 
 def increment_retry_count(queue_id, retry_delay_minutes=60):
     """Increment retry count and schedule next retry"""
+    conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
@@ -812,7 +822,6 @@ def increment_retry_count(queue_id, retry_delay_minutes=60):
         
         row = cursor.fetchone()
         if not row:
-            conn.close()
             return False
         
         retry_count = (row['retry_count'] or 0) + 1
@@ -827,7 +836,6 @@ def increment_retry_count(queue_id, retry_delay_minutes=60):
         """, (retry_count, next_retry.isoformat(), queue_id))
         
         conn.commit()
-        conn.close()
         
         logger.info(
             f"Queue {queue_id}: retry count now {retry_count}, "
@@ -838,9 +846,13 @@ def increment_retry_count(queue_id, retry_delay_minutes=60):
     except Exception as e:
         logger.error(f"Error incrementing retry count: {e}")
         return False
+    finally:
+        if conn:
+            conn.close()
 
 def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=60):
     """Mark queue item as failed, optionally scheduling retry"""
+    conn = None
     try:
         from app import get_db as app_get_db
         conn = app_get_db()
@@ -852,7 +864,6 @@ def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=60):
         row = cursor.fetchone()
         
         if not row:
-            conn.close()
             return False
         
         retry_count = (row['retry_count'] or 0) + 1
@@ -879,13 +890,15 @@ def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=60):
         """, (new_status, retry_count, reason, next_retry.isoformat() if next_retry else None, queue_id))
         
         conn.commit()
-        conn.close()
         
         return schedule_retry  # Return whether retry was scheduled
         
     except Exception as e:
         logger.error(f"Error marking queue item as failed: {e}")
         return False
+    finally:
+        if conn:
+            conn.close()
 
 def _get_navidrome_config():
     """Load Navidrome credentials from config file, supporting both navidrome_users list and legacy navidrome block."""
@@ -978,6 +991,7 @@ def check_track_exists_in_db(queue_item):
     if not artist or not title:
         return False, ""
 
+    conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
@@ -1014,7 +1028,6 @@ def check_track_exists_in_db(queue_item):
             )
 
         row = cursor.fetchone()
-        conn.close()
 
         if row:
             track_id = row["id"] if hasattr(row, "keys") else (row[0] if row else None)
@@ -1023,6 +1036,9 @@ def check_track_exists_in_db(queue_item):
 
     except Exception as e:
         logger.debug(f"DB existence check error for '{artist} - {title}': {e}")
+    finally:
+        if conn:
+            conn.close()
 
     return False, ""
 
@@ -1389,6 +1405,7 @@ def check_completed_downloads():
     Fallback: Walk DOWNLOADS_DIR for audio files when slskd is unavailable or
               returns no localFilePath.
     """
+    conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
@@ -1727,6 +1744,9 @@ def check_completed_downloads():
 
     except Exception as e:
         logger.error(f"Error checking completed downloads: {e}")
+    finally:
+        if conn:
+            conn.close()
 
 def matches_queue_item(filename, queue_item, file_path=None):
     """Conservative filename/path fallback matcher when metadata is unavailable."""
