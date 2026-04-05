@@ -952,8 +952,12 @@ def _trigger_navidrome_scan():
         if result.get("subsonic-response", {}).get("status") == "ok":
             logger.info("[NAVIDROME-SCAN] ✅ Navidrome library scan triggered")
             return True
-        error = result.get("subsonic-response", {}).get("error", {})
-        logger.warning(f"[NAVIDROME-SCAN] Scan request returned non-ok status: {error}")
+        error = result.get("subsonic-response", {}).get("error", {}) or {}
+        err_code = error.get("code") if isinstance(error, dict) else None
+        err_msg = error.get("message") if isinstance(error, dict) else None
+        logger.warning(
+            f"[NAVIDROME-SCAN] Scan request returned non-ok status: code={err_code} message={err_msg}"
+        )
         return False
     except Exception as e:
         logger.warning(f"[NAVIDROME-SCAN] Could not trigger Navidrome scan: {e}")
@@ -1718,7 +1722,8 @@ def check_completed_downloads():
                 logger.warning(f"[AUTO_MOVE] Error triggering auto-move for queue {item['id']}: {auto_err}")
 
         if scan_needed:
-            _trigger_navidrome_scan()
+            if not _trigger_navidrome_scan():
+                logger.warning("[NAVIDROME-SCAN] Imports occurred but scan trigger failed — safety-net will retry")
 
     except Exception as e:
         logger.error(f"Error checking completed downloads: {e}")
