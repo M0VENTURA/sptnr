@@ -448,9 +448,6 @@ def _refresh_listenbrainz_playlists_for_completed_queue_item(conn, queue_item):
         len(impacted),
     )
     return updated_count
-    
-    # Also log to file
-    logger.info(f"[QUEUE_EVENT] {event_type}: {message}" + (f" (item_id={item_id})" if item_id else ""))
 
 def get_queue_events(limit=50, event_type=None):
     """Get recent queue events for UI display.

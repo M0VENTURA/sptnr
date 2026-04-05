@@ -479,10 +479,10 @@ def mark_download_as_failed(file_path, failure_reason):
         
         cursor.execute("""
             UPDATE download_queue 
-            SET status = 'incomplete',
+            SET status = 'failed',
                 retry_count = retry_count + 1,
                 failure_reason = %s,
-                last_retry_at = %s,
+                last_failure_time = %s,
                 next_retry_at = %s,
                 updated_at = %s
             WHERE file_path = %s
