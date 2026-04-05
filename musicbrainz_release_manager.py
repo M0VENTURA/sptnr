@@ -168,6 +168,24 @@ class MusicBrainzReleaseManager:
                 except Exception as alter_err:
                     logger.debug(f"[SCHEMA] disc_number column check: {alter_err}")
 
+                # Ensure recording_title and recording_mbid columns exist on
+                # pre-existing tables created before these columns were added.
+                try:
+                    db_query.execute("""
+                        ALTER TABLE musicbrainz_release_tracks
+                        ADD COLUMN IF NOT EXISTS recording_title TEXT
+                    """)
+                except Exception as alter_err:
+                    logger.debug(f"[SCHEMA] recording_title column check: {alter_err}")
+
+                try:
+                    db_query.execute("""
+                        ALTER TABLE musicbrainz_release_tracks
+                        ADD COLUMN IF NOT EXISTS recording_mbid TEXT
+                    """)
+                except Exception as alter_err:
+                    logger.debug(f"[SCHEMA] recording_mbid column check: {alter_err}")
+
                 db_query.execute("""
                     CREATE INDEX IF NOT EXISTS idx_mb_releases_status
                     ON musicbrainz_releases(status)
