@@ -3759,7 +3759,28 @@ async function executeManualSearch(event, folderPath, artist, album, tracks) {
 
 function showMusicBrainzMatchModal(folderPath, artist, album, tracks, candidates) {
   // Display MusicBrainz/Discogs candidates in a modal for user selection.
-  let html = `
+  const folderPathEnc = encodeInlineArg(folderPath);
+  const tracksEnc = encodeInlineArg(tracks);
+
+  let candidatesHtml = '';
+  candidates.forEach((candidate) => {
+    const date = candidate.date ? ` (${escapeHtml(candidate.date.split('-')[0])})` : '';
+    const country = candidate.country ? ` - ${escapeHtml(candidate.country)}` : '';
+    const source = candidate.source || 'musicbrainz';
+    const sourceBadge = source === 'discogs' ? '<span class="badge bg-info ms-2">Discogs</span>' : '';
+    const trackInfo = candidate.track_count ? `${escapeHtml(String(candidate.track_count))} tracks` : 'Release';
+    
+    const candidateEnc = encodeInlineArg(candidate);
+    
+    candidatesHtml += `
+              <button type="button" class="list-group-item list-group-item-action" 
+                      onclick="stageFolderMatch('${folderPathEnc}', '${candidateEnc}', '${tracksEnc}')">
+                <div><strong>${escapeHtml(candidate.title)}</strong>${date}${country}${sourceBadge}</div>
+                <small class="text-muted">${escapeHtml(candidate.artist)} • ${trackInfo}</small>
+              </button>`;
+  });
+
+  const html = `
     <div class="modal fade" id="mbMatchModal" tabindex="-1">
       <div class="modal-dialog modal-lg">
         <div class="modal-content">
@@ -3768,29 +3789,18 @@ function showMusicBrainzMatchModal(folderPath, artist, album, tracks, candidates
             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
           </div>
           <div class="modal-body">
-            <p class="mb-3"><strong>${artist}</strong> - <strong>${album}</strong></p>
-            <div class="list-group">`;
-  
-  candidates.forEach((candidate, idx) => {
-    const date = candidate.date ? ` (${candidate.date.split('-')[0]})` : '';
-    const country = candidate.country ? ` - ${candidate.country}` : '';
-    const source = candidate.source || 'musicbrainz';
-    const sourceBadge = source === 'discogs' ? '<span class="badge bg-info ms-2">Discogs</span>' : '';
-    const trackInfo = candidate.track_count ? `${candidate.track_count} tracks` : 'Release';
-    
-    const folderPathEnc = encodeInlineArg(folderPath);
-    const candidateEnc = encodeInlineArg(candidate);
-    const tracksEnc = encodeInlineArg(tracks);
-    
-    html += `
-              <button type="button" class="list-group-item list-group-item-action" 
-                      onclick="stageFolderMatch('${folderPathEnc}', '${candidateEnc}', '${tracksEnc}')">
-                <div><strong>${candidate.title}</strong>${date}${country}${sourceBadge}</div>
-                <small class="text-muted">${candidate.artist} • ${trackInfo}</small>
-              </button>`;
-  });
-  
-  html += `
+            <p class="mb-3"><strong>${escapeHtml(artist)}</strong> - <strong>${escapeHtml(album)}</strong></p>
+
+            <div class="mb-3">
+              <h6 class="mb-2"><i class="bi bi-collection"></i> Active Queue Releases</h6>
+              <div id="mbMatchModalQueueReleases">
+                <div class="text-muted small"><span class="spinner-border spinner-border-sm me-1"></span>Loading active queue releases…</div>
+              </div>
+            </div>
+
+            <h6 class="mb-2"><i class="bi bi-globe"></i> Online Search Results</h6>
+            <div class="list-group">
+              ${candidatesHtml}
             </div>
           </div>
           <div class="modal-footer">
@@ -3810,6 +3820,61 @@ function showMusicBrainzMatchModal(folderPath, artist, album, tracks, candidates
   // Show modal
   const modal = new bootstrap.Modal(document.getElementById('mbMatchModal'));
   modal.show();
+
+  // Load active queue releases asynchronously
+  loadMbMatchModalQueueReleases(folderPath, artist, album, tracks);
+}
+
+async function loadMbMatchModalQueueReleases(folderPath, artist, album, tracks) {
+  const container = document.getElementById('mbMatchModalQueueReleases');
+  if (!container) return;
+
+  const folderPathEnc = encodeInlineArg(folderPath);
+  const tracksEnc = encodeInlineArg(tracks);
+  const MAX_QUEUE_RELEASES = 80;
+
+  try {
+    const apiUrl = `/api/queue/matched-releases?artist=${encodeURIComponent(artist || '')}&album=${encodeURIComponent(album || '')}&limit=${MAX_QUEUE_RELEASES}`;
+    const data = await fetchJsonOrThrow(apiUrl);
+    const releases = data.releases || [];
+
+    if (!releases.length) {
+      container.innerHTML = '<div class="text-muted small">No active queue releases found for this artist / album.</div>';
+      return;
+    }
+
+    const rows = releases.map(rel => {
+      const relArtist = rel.artist || '';
+      const relAlbum = rel.album || '';
+      const relMbid = rel.mbid || '';
+      const relYear = rel.year ? ` (${rel.year})` : '';
+      const relCount = rel.track_count ? `${rel.track_count} tracks` : 'Release';
+
+      // Build a candidate object matching the shape expected by stageFolderMatch
+      const candidate = {
+        id: relMbid,
+        title: relAlbum,
+        artist: relArtist,
+        date: rel.year ? String(rel.year) : '',
+        country: '',
+        track_count: rel.track_count || 0,
+        source: 'musicbrainz',
+      };
+      const candidateEnc = encodeInlineArg(candidate);
+
+      return `
+        <button type="button" class="list-group-item list-group-item-action"
+                onclick="stageFolderMatch('${folderPathEnc}', '${candidateEnc}', '${tracksEnc}')">
+          <div><strong>${escapeHtml(relAlbum)}</strong>${escapeHtml(relYear)} <span class="badge bg-success ms-1">Queue</span></div>
+          <small class="text-muted">${escapeHtml(relArtist)} • ${escapeHtml(relCount)} • <span class="font-monospace">${escapeHtml(relMbid)}</span></small>
+        </button>`;
+    }).join('');
+
+    container.innerHTML = `<div class="list-group">${rows}</div>`;
+  } catch (error) {
+    console.error('Error loading active queue releases for match modal:', error);
+    container.innerHTML = '<div class="text-muted small">Could not load active queue releases.</div>';
+  }
 }
 
 async function showAutoMatchSuggestion(event, folderPath, artist, album, tracks) {
