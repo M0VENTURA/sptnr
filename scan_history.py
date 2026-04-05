@@ -212,8 +212,11 @@ def _ensure_scan_history_schema():
                         "ALTER TABLE scan_history ADD COLUMN IF NOT EXISTS source TEXT DEFAULT ''"
                     )
                     _scan_history_source_column_ensured = True
-                except Exception:
-                    pass  # Added concurrently by another worker
+                except Exception as col_exc:
+                    err_msg = str(col_exc).lower()
+                    if "already exists" not in err_msg and "duplicate" not in err_msg:
+                        logging.warning(f"Unexpected error adding source column to scan_history: {col_exc}")
+                    # Otherwise: added concurrently by another worker
 
         conn.commit()
         _scan_history_schema_ensured = True
@@ -288,7 +291,7 @@ def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: in
             is_transient = _is_transient_db_error(e)
 
             if attempt < max_retries - 1 and (is_deadlock or is_transient):
-                jitter = random.uniform(0, retry_delay)
+                jitter = random.uniform(0, retry_delay * 0.5)
                 sleep_time = retry_delay + jitter
                 logging.warning(
                     f"log_album_scan retrying (attempt {attempt + 2}/{max_retries}) "
