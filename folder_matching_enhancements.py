@@ -19,7 +19,7 @@ from difflib import SequenceMatcher
 from database_abstraction import DatabaseQuery
 from api_clients import session as _shared_session
 from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
-from helpers.db_utils import get_db_connection, _is_postgres_connection
+from helpers.db_utils import get_db_connection
 
 logger = logging.getLogger(__name__)
 
@@ -149,7 +149,6 @@ def _get_cached_musicbrainz_release_metadata(release_id: str) -> Optional[Dict[s
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
         placeholder = "%s"
 
         _ensure_release_track_cache_columns(cursor)
@@ -242,7 +241,6 @@ def _cache_musicbrainz_release_metadata(release_id: str, metadata: Dict[str, Any
 
         conn = get_db_connection()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
         placeholder = "%s"
 
         _ensure_release_track_cache_columns(cursor)

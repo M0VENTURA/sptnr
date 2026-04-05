@@ -15,7 +15,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from api_clients.spotify import SpotifyClient
-from database_abstraction import is_postgres_connection
 from helpers.genre_detector import detect_special_tags, normalize_genres
 
 logger = logging.getLogger(__name__)
@@ -233,7 +232,7 @@ class SpotifyMetadataFetcher:
             True if metadata should be refreshed
         """
         cursor = self.conn.cursor()
-        placeholder = "%s" if is_postgres_connection(self.conn) else "%s"
+        placeholder = "%s"
         cursor.execute(
             f"SELECT metadata_last_updated FROM tracks WHERE id = {placeholder}",
             (db_track_id,)
@@ -360,7 +359,7 @@ class SpotifyMetadataFetcher:
         }
         
         # Build SQL query
-        placeholder = "%s" if is_postgres_connection(self.conn) else "%s"
+        placeholder = "%s"
         set_clause = ", ".join([f"{k} = {placeholder}" for k in updates.keys()])
         values = list(updates.values()) + [db_track_id]
         

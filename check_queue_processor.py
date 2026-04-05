@@ -52,11 +52,10 @@ def check_queue():
     print()
     
     try:
-        from app import get_db, _is_postgres_connection
+        from app import get_db
         
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
         
         # Count by status
         cursor.execute("""

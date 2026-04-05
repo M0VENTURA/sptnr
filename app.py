@@ -2072,7 +2072,6 @@ listenbrainz_createdfor_scheduler = {
 }
 listenbrainz_createdfor_scheduler_lock = threading.Lock()
 _startup_leader_lock_conn = None
-_startup_leader_lock_file_fd = None
 
 
 def _acquire_startup_leader_lock() -> bool:
@@ -2081,45 +2080,27 @@ def _acquire_startup_leader_lock() -> bool:
     In production we run under gunicorn with multiple workers. Without a leader lock,
     each worker starts the same periodic jobs, creating contention and request stalls.
     """
-    global _startup_leader_lock_conn, _startup_leader_lock_file_fd
+    global _startup_leader_lock_conn
 
-    # PostgreSQL path: advisory lock tied to this connection's lifetime.
+    # PostgreSQL advisory lock tied to this connection's lifetime.
     try:
         conn = get_db()
-        if _is_postgres_connection(conn):
-            cursor = conn.cursor()
-            lock_key = 915317499  # app-specific startup leader lock
-            cursor.execute("SELECT pg_try_advisory_lock(%s) AS acquired", (lock_key,))
-            row = cursor.fetchone()
-            acquired = bool(_row_get(row, 'acquired', 0))
+        cursor = conn.cursor()
+        lock_key = 915317499  # app-specific startup leader lock
+        cursor.execute("SELECT pg_try_advisory_lock(%s) AS acquired", (lock_key,))
+        row = cursor.fetchone()
+        acquired = bool(_row_get(row, 'acquired', 0))
 
-            if acquired:
-                _startup_leader_lock_conn = conn  # keep alive to hold lock
-                logging.info("[BOOT] Startup leader lock acquired in this worker")
-                return True
+        if acquired:
+            _startup_leader_lock_conn = conn  # keep alive to hold lock
+            logging.info("[BOOT] Startup leader lock acquired in this worker")
+            return True
 
-            conn.close()
-            logging.debug("[BOOT] Startup leader lock already held by another worker")
-            return False
-
-        # Not PostgreSQL; close and continue to file-lock fallback.
         conn.close()
+        logging.debug("[BOOT] Startup leader lock already held by another worker")
+        return False
     except Exception as lock_err:
         logging.debug(f"[BOOT] PostgreSQL leader lock unavailable: {lock_err}")
-
-    # Fallback for SQLite/non-PG: best-effort lock file.
-    try:
-        lock_path = "/tmp/sptnr_startup_leader.lock"
-        _startup_leader_lock_file_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.write(_startup_leader_lock_file_fd, str(os.getpid()).encode("ascii", "ignore"))
-        logging.info("[BOOT] Startup lock file acquired in this worker")
-        return True
-    except FileExistsError:
-        logging.debug("[BOOT] Startup lock file already exists; skipping background schedulers")
-        return False
-    except Exception as lock_file_err:
-        # Fail-open for environments where lock file cannot be created.
-        logging.warning(f"[BOOT] Could not create startup lock file, enabling schedulers here: {lock_file_err}")
         return True
 
 
@@ -4564,9 +4545,6 @@ def _normalize_track_flag_payload(conn, flag_values):
     """
     if not flag_values:
         return {}
-
-    if not _is_postgres_connection(conn):
-        return {k: int(bool(v)) for k, v in flag_values.items()}
 
     column_types = _get_postgres_column_types(conn, 'tracks', flag_values.keys())
     normalized = {}
@@ -10276,9 +10254,6 @@ def _is_bookmarks_null_id_error(error):
 
 def _repair_postgres_bookmarks_id_default(conn):
     """Ensure PostgreSQL bookmarks.id has a working sequence-backed default."""
-    if not _is_postgres_connection(conn):
-        return False
-
     cursor = conn.cursor()
     cursor.execute("CREATE SEQUENCE IF NOT EXISTS bookmarks_id_seq")
     cursor.execute(
@@ -10303,7 +10278,7 @@ def _insert_bookmark_resilient(conn, query, params):
         cursor.execute(query, params)
         return cursor
     except Exception as insert_err:
-        if _is_postgres_connection(conn) and _is_bookmarks_null_id_error(insert_err):
+        if _is_bookmarks_null_id_error(insert_err):
             logging.warning("[BOOKMARKS] Detected missing bookmarks.id default; attempting auto-repair")
             conn.rollback()
             _repair_postgres_bookmarks_id_default(conn)
@@ -16622,13 +16597,15 @@ def api_bookmarks():
             if not bookmark_type or not name:
                 return jsonify({"success": False, "error": "Missing required fields"}), 400
             
-            _insert_bookmark_resilient(conn, f"""
+            insert_cursor = _insert_bookmark_resilient(conn, f"""
                 INSERT INTO bookmarks (type, name, artist, album, track_id)
                 VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
                 ON CONFLICT DO NOTHING
+                RETURNING id
             """, (bookmark_type, name, artist, album, track_id))
             conn.commit()
-            bookmark_id = cursor.lastrowid if hasattr(cursor, 'lastrowid') else None
+            insert_row = insert_cursor.fetchone() if insert_cursor else None
+            bookmark_id = _row_get(insert_row, 'id', 0)
             conn.close()
             
             return jsonify({"success": True, "id": bookmark_id, "message": "Bookmark added"})
@@ -20266,22 +20243,14 @@ def api_create_playlist_download_session():
             cursor = conn.cursor()
             placeholder = "%s"
             
-            if _is_postgres_connection(conn):
-                cursor.execute(f"""
-                    INSERT INTO playlist_download_sessions 
-                    (session_name, user, status, total_tracks, priority_queue, created_at, updated_at)
-                    VALUES ({placeholder}, {placeholder}, 'in_progress', {placeholder}, {placeholder}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                    RETURNING id
-                """, (session_name, current_user, total_tracks, 1 if priority_queue else 0))
-                session_row = cursor.fetchone()
-                session_id = _row_get(session_row, 'id', 0)
-            else:
-                cursor.execute(f"""
-                    INSERT INTO playlist_download_sessions 
-                    (session_name, user, status, total_tracks, priority_queue, created_at, updated_at)
-                    VALUES ({placeholder}, {placeholder}, 'in_progress', {placeholder}, {placeholder}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                """, (session_name, current_user, total_tracks, 1 if priority_queue else 0))
-                session_id = cursor.lastrowid
+            cursor.execute(f"""
+                INSERT INTO playlist_download_sessions 
+                (session_name, user, status, total_tracks, priority_queue, created_at, updated_at)
+                VALUES ({placeholder}, {placeholder}, 'in_progress', {placeholder}, {placeholder}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                RETURNING id
+            """, (session_name, current_user, total_tracks, 1 if priority_queue else 0))
+            session_row = cursor.fetchone()
+            session_id = _row_get(session_row, 'id', 0)
             conn.commit()
             conn.close()
             
@@ -20941,7 +20910,6 @@ def api_search_for_release_match():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
         placeholder = "%s"
         
         request_data = request.get_json(silent=True) or {}
@@ -21036,7 +21004,6 @@ def api_link_queue_to_release():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
         placeholder = "%s"
         
         request_data = request.get_json(silent=True) or {}
@@ -21122,7 +21089,6 @@ def api_release_apply_queue_match(release_id):
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
         placeholder = "%s"
         
         request_data = request.get_json(silent=True) or {}
@@ -21202,7 +21168,6 @@ def api_release_search_queue_matches(release_id):
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
         placeholder = "%s"
         
         # Get release info
@@ -26519,7 +26484,6 @@ def api_queue_verify_and_prune():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        is_pg = _is_postgres_connection(conn)
         placeholder = "%s"
 
         request_data = request.get_json(silent=True) or {}
@@ -34594,7 +34558,6 @@ def api_playlist_load():
             conn = get_db()
             cursor = conn.cursor()
             placeholder = get_placeholder(conn)
-            is_pg = _is_postgres_connection(conn)
         except Exception as db_err:
             logging.warning(f"Could not initialize DB for playlist path lookup: {db_err}")
             conn = None
@@ -34663,10 +34626,7 @@ def api_playlist_load():
                     
                     # Strategy 3: Try title + artist match (with album as secondary sort)
                     if not db_file_path and title and artist:
-                        if is_pg:
-                            order_clause = f"CASE WHEN LOWER(album) = LOWER({placeholder}) THEN 0 ELSE 1 END, last_scanned DESC NULLS LAST"
-                        else:
-                            order_clause = f"CASE WHEN LOWER(album) = LOWER({placeholder}) THEN 0 ELSE 1 END, last_scanned DESC"
+                        order_clause = f"CASE WHEN LOWER(album) = LOWER({placeholder}) THEN 0 ELSE 1 END, last_scanned DESC NULLS LAST"
                         
                         cursor.execute(
                             f"""

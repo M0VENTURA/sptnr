@@ -32,7 +32,7 @@ from api_clients import session, timeout_safe_session
 from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
 from helpers.helpers import find_matching_spotify_single, strip_cover_attribution, strip_parentheses as _strip_parentheses_unified
 from helpers.matching_utils import normalize_album, strip_search_parentheses
-from database_abstraction import DatabaseQuery, is_postgres_connection
+from database_abstraction import DatabaseQuery
 
 # Import centralized logging
 from helpers.logging_config import setup_logging, log_unified, log_info, log_debug
@@ -1266,7 +1266,7 @@ def calculate_artist_popularity_stats(artist_name: str, conn: object) -> dict:
         }
     except Exception as e:
         try:
-            if conn is not None and is_postgres_connection(conn):
+            if conn is not None:
                 conn.rollback()
         except Exception:
             pass
@@ -2851,7 +2851,7 @@ def detect_single_for_track(
             conn.close()
         except Exception as e:
             try:
-                if conn is not None and is_postgres_connection(conn):
+                if conn is not None:
                     conn.rollback()
             except Exception:
                 pass
@@ -7452,7 +7452,7 @@ def popularity_scan(
 
                     # Tag 5-star high/user-confidence singles
                     if five_star_singles_to_tag:
-                        single_true_value = True if is_postgres_connection(conn) else 1
+                        single_true_value = True
                         _execute_tracks_batch_with_retry(
                             conn,
                             cursor,
@@ -7465,7 +7465,7 @@ def popularity_scan(
 
                     # Upgrade is_single flag for medium confidence tracks with 2+ sources
                     if single_upgrades:
-                        single_true_value = True if is_postgres_connection(conn) else 1
+                        single_true_value = True
                         _execute_tracks_batch_with_retry(
                             conn,
                             cursor,
@@ -7478,7 +7478,7 @@ def popularity_scan(
 
                     # Enforce downgrade rule for medium confidence tracks that fail the z-score/source gate.
                     if single_downgrades:
-                        single_false_value = False if is_postgres_connection(conn) else 0
+                        single_false_value = False
                         _execute_tracks_batch_with_retry(
                             conn,
                             cursor,
