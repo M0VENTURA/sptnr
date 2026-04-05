@@ -133,6 +133,9 @@ def get_column_names(cursor: Any, table_name: str, is_postgres: bool = True) -> 
 def is_postgres_connection(conn: Any) -> bool:
     """
     Detect if connection is PostgreSQL or SQLite.
+
+    Handles the _AutoRollbackPGConnection wrapper returned by get_db_connection()
+    by unwrapping to the underlying psycopg2 connection before checking.
     
     Args:
         conn: Database connection object
@@ -141,8 +144,11 @@ def is_postgres_connection(conn: Any) -> bool:
         True if PostgreSQL, False if SQLite
     """
     try:
-        return bool(hasattr(conn, 'cursor') and conn.__class__.__name__ == 'connection')
-    except Exception:
+        import psycopg2
+        # Unwrap _AutoRollbackPGConnection (or any single-level wrapper with _conn)
+        underlying = getattr(conn, "_conn", conn)
+        return isinstance(underlying, psycopg2.extensions.connection)
+    except (ImportError, AttributeError, Exception):
         return False
 
 
