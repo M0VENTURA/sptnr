@@ -36619,61 +36619,25 @@ def api_search_musicbrainz_release():
                         ):
                             continue
 
-                time.sleep(1)
+                rg_credits = rg.get("artist-credit", []) or []
+                result_artist = _build_artist_credit_string(rg_credits) or artist
 
-                try:
-                    browse_url = "https://musicbrainz.org/ws/2/release"
-                    browse_params = {
-                        "fmt": "json",
-                        "release-group": rg_id,
-                        "inc": "recordings+artist-credits",
-                        "limit": 1,
-                    }
-                    browse_response = requests.get(browse_url, headers=headers, params=browse_params, timeout=15)
-                    browse_response.raise_for_status()
-                    browse_data = browse_response.json()
-
-                    releases = browse_data.get("releases", [])
-                    if not releases:
-                        continue
-
-                    release = releases[0]
-                    release_id = release.get("id", "")
-                    release_date = release.get("date", "")
-
-                    media = release.get("media", [])
-                    tracks = []
-                    for disc in media:
-                        for track in disc.get("tracks", []):
-                            recording = track.get("recording", {})
-                            track_entry = {
-                                "title": recording.get("title", "Unknown"),
-                                "position": track.get("position", ""),
-                                "length": recording.get("length", 0),
-                            }
-                            rec_credits = recording.get("artist-credit") or []
-                            if rec_credits:
-                                track_entry["artist"] = _build_artist_credit_string(rec_credits)
-                            tracks.append(track_entry)
-
-                    rg_credits = rg.get("artist-credit", []) or []
-                    result_artist = _build_artist_credit_string(rg_credits) or artist
-
-                    results.append({
-                        "release_group_id": rg_id,
-                        "release_id": release_id,
-                        "title": rg_title,
-                        "artist": result_artist,
-                        "type": rg_type,
-                        "date": first_release_date or release_date,
-                        "year": (first_release_date or release_date)[:4],
-                        "track_count": len(tracks),
-                        "tracks": tracks
-                    })
-
-                except Exception as e:
-                    logging.warning(f"Error fetching tracks for release group {rg_id}: {e}")
-                    continue
+                # Return release-group metadata without fetching tracks upfront.
+                # The frontend will lazy-load tracks via /api/upcoming-releases/release-group-tracks
+                # when the user expands the accordion item, avoiding N×1-sec serial HTTP requests
+                # that previously caused gunicorn worker timeouts for prolific artists.
+                results.append({
+                    "release_group_id": rg_id,
+                    "release_id": None,
+                    "title": rg_title,
+                    "artist": result_artist,
+                    "type": rg_type,
+                    "date": first_release_date,
+                    "year": first_release_date[:4] if first_release_date else "",
+                    "track_count": 0,
+                    "tracks": [],
+                    "tracks_deferred": True,
+                })
         
         return jsonify({
             "success": True,
@@ -36687,6 +36651,76 @@ def api_search_musicbrainz_release():
     except Exception as e:
         logging.error(f"Error searching MusicBrainz: {str(e)}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/upcoming-releases/release-group-tracks", methods=["GET"])
+def api_get_release_group_tracks():
+    """Fetch the track listing for the first release in a MusicBrainz release group.
+
+    Used by the frontend to lazy-load tracks when a user expands an accordion
+    item returned by the artist-only search path (which returns release-group
+    metadata without tracks to avoid N×1-sec serial HTTP requests that would
+    cause gunicorn worker timeouts for prolific artists).
+    """
+    try:
+        rg_id = request.args.get("rg_id", "").strip()
+        if not rg_id:
+            return jsonify({"error": "rg_id is required"}), 400
+
+        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
+        response = requests.get(
+            "https://musicbrainz.org/ws/2/release",
+            params={
+                "fmt": "json",
+                "release-group": rg_id,
+                "inc": "recordings+artist-credits",
+                "limit": 1,
+            },
+            headers=headers,
+            timeout=15,
+        )
+        response.raise_for_status()
+        browse_data = response.json() or {}
+
+        releases = browse_data.get("releases", [])
+        if not releases:
+            return jsonify({"success": True, "tracks": [], "track_count": 0, "release_id": None})
+
+        release = releases[0]
+        release_id = release.get("id", "")
+
+        media = release.get("media", [])
+        tracks = []
+        for disc_idx, disc in enumerate(media, 1):
+            disc_number = disc.get("position", disc_idx)
+            for track_row in disc.get("tracks", []):
+                recording = track_row.get("recording", {})
+                track_entry = {
+                    "title": recording.get("title", "Unknown"),
+                    "position": track_row.get("position", ""),
+                    "length": recording.get("length", 0),
+                    "disc_number": disc_number,
+                    "recording_mbid": recording.get("id", ""),
+                }
+                rec_credits = recording.get("artist-credit") or []
+                if rec_credits:
+                    track_entry["artist"] = _build_artist_credit_string(rec_credits)
+                tracks.append(track_entry)
+
+        return jsonify({
+            "success": True,
+            "tracks": tracks,
+            "track_count": len(tracks),
+            "release_id": release_id,
+        })
+
+    except requests.exceptions.HTTPError as e:
+        logging.error(f"[MB_TRACKS] HTTP error fetching release group {request.args.get('rg_id')}: {e}")
+        status = e.response.status_code if hasattr(e, 'response') and e.response is not None else 0
+        return jsonify({"error": f"MusicBrainz API error: {status or 'unknown'}"}), 500
+    except Exception as e:
+        logging.error(f"[MB_TRACKS] Error fetching release group tracks: {e}")
+        return jsonify({"error": "Failed to fetch tracks"}), 500
 
 
 @app.route("/api/upcoming-releases/search-discogs", methods=["POST"])
