@@ -16,6 +16,10 @@ ACTIVE_QUEUE_STATUSES = (
     'unmatched',
     'queried',
     'copy_recommended',
+    # 'moving' is the atomic in-flight state used by _try_claim_for_move().
+    # Including it here ensures add_to_queue() treats a mid-move item as an
+    # existing duplicate and will not create a second queue entry for it.
+    'moving',
 )
 ACTIVE_QUEUE_STATUS_SQL = ", ".join(f"'{s}'" for s in ACTIVE_QUEUE_STATUSES)
 

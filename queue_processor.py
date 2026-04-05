@@ -401,6 +401,13 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
         False: metadata exists but mismatches queue item
         None: metadata unavailable; caller may fallback to filename matching
     """
+    _FIELD_MIN = 0.55
+    _PREFIX_TITLE_MIN = 0.9
+    _TITLE_VARIANT_TOKENS = {
+        "acoustic", "demo", "edit", "instrumental", "intro", "live",
+        "mix", "radio", "remaster", "remastered", "remix", "version",
+    }
+
     try:
         metadata = read_mp3_metadata(file_path) or {}
     except Exception:
@@ -408,6 +415,7 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
 
     file_artist = (metadata.get('artist') or '').strip()
     file_title = (metadata.get('title') or '').strip()
+    file_album = (metadata.get('album') or '').strip()
     audio = None
 
     # read_mp3_metadata only handles MP3 ID3 tags. For FLAC, OGG, M4A and other
@@ -424,6 +432,9 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
                 file_title = file_title or _extract_tag_value(
                     tags, ('title', 'TITLE', 'TIT2', '\xa9nam')
                 )
+                file_album = file_album or _extract_tag_value(
+                    tags, ('album', 'ALBUM', 'TALB', '\xa9alb')
+                )
         except Exception:
             pass
 
@@ -431,24 +442,46 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
         return None
 
     queue_artist = (queue_item.get('artist') or '').strip()
+    queue_album_artist = (queue_item.get('album_artist') or '').strip()
     queue_title = (queue_item.get('title') or '').strip()
     if not queue_artist or not queue_title:
         return None
 
-    artist_score = SequenceMatcher(
-        None,
-        _normalize_match_text(file_artist),
-        _normalize_match_text(queue_artist),
-    ).ratio()
-    title_score = SequenceMatcher(
-        None,
-        _normalize_match_text(file_title),
-        _normalize_match_text(queue_title),
-    ).ratio()
+    def _sim(a, b):
+        if not a or not b:
+            return 0.0
+        return SequenceMatcher(None, _normalize_match_text(a), _normalize_match_text(b)).ratio()
+
+    # Use album_artist as an additional artist candidate (e.g. "Various Artists").
+    artist_candidates = [queue_artist]
+    if queue_album_artist and queue_album_artist.lower() != queue_artist.lower():
+        artist_candidates.append(queue_album_artist)
+    artist_score = max((_sim(file_artist, cand) for cand in artist_candidates if cand), default=0.0)
+    title_score = _sim(file_title, queue_title)
 
     # Require both core fields to be reasonably close to avoid false-positive imports.
-    if artist_score < 0.55 or title_score < 0.55:
+    if artist_score < _FIELD_MIN or title_score < _FIELD_MIN:
         return False
+
+    # Variant check: a plain queue title must not match a "(live/remix/…)" file.
+    def _variant_tokens(s):
+        tokens = set(re.sub(r"[^a-z0-9]+", " ", (s or '').lower()).split())
+        return tokens & _TITLE_VARIANT_TOKENS
+
+    expected_variants = _variant_tokens(queue_title)
+    candidate_variants = _variant_tokens(file_title)
+    if expected_variants or candidate_variants:
+        if not expected_variants or not candidate_variants:
+            return False
+        if expected_variants.isdisjoint(candidate_variants):
+            return False
+
+    # Prefix-title protection: "World So Cold" must not match "World So Cold Intro".
+    _title_a = file_title.lower().strip()
+    _title_b = queue_title.lower().strip()
+    if _title_a != _title_b and (_title_a.startswith(_title_b) or _title_b.startswith(_title_a)):
+        if title_score < _PREFIX_TITLE_MIN:
+            return False
 
     expected_duration = _normalize_duration_seconds(queue_item.get('duration'))
     file_duration = None
@@ -459,6 +492,12 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
             return False
 
     combined = (artist_score + title_score) / 2
+
+    # Album similarity gives a small boost when available.
+    album_score = _sim(file_album, queue_item.get('album'))
+    if album_score > 0:
+        combined = (combined * 2 + album_score) / 3
+
     return combined >= threshold
 
 
@@ -708,12 +747,72 @@ def cleanup_stuck_searching_items():
         if conn:
             conn.close()
 
+
+def cleanup_stuck_moving_items():
+    """Detect and recover any items stuck in 'moving' for too long.
+
+    If a process crashes while a queue item is in the atomic 'moving' state,
+    the item stays stuck forever — invisible to deduplication and never
+    retried.  This function resets such items back to 'completed' so the
+    auto-move logic can attempt the move again on the next pass.
+
+    Items are considered stuck when they have been in 'moving' status for
+    more than 10 minutes.
+    """
+    conn = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = _get_placeholder(conn)
+
+        stuck_threshold = (datetime.now() - timedelta(minutes=10)).isoformat()
+
+        cursor.execute(
+            """
+            SELECT id, artist, title, updated_at FROM download_queue
+            WHERE status = 'moving'
+            AND updated_at < {placeholder}
+            """.format(placeholder=placeholder),
+            (stuck_threshold,),
+        )
+        stuck_items = cursor.fetchall()
+
+        if stuck_items:
+            logger.warning(
+                f"Found {len(stuck_items)} item(s) stuck in 'moving' status, restoring to 'completed'..."
+            )
+            for item in stuck_items:
+                item_id = item['id'] if isinstance(item, dict) else item[0]
+                logger.warning(
+                    f"Queue {item_id}: Detected stuck 'moving' state "
+                    f"({(item.get('artist') if isinstance(item, dict) else item[1])} - "
+                    f"{(item.get('title') if isinstance(item, dict) else item[2])}), "
+                    f"restoring to 'completed' for retry"
+                )
+                try:
+                    from download_queue_manager import _release_move_claim
+                    _release_move_claim(item_id, restore_status='completed')
+                except Exception as release_err:
+                    logger.error(
+                        f"Queue {item_id}: Could not release stuck 'moving' claim: {release_err}"
+                    )
+
+        return len(stuck_items)
+
+    except Exception as e:
+        logger.error(f"Error cleaning up stuck moving items: {e}")
+        return 0
+    finally:
+        if conn:
+            conn.close()
+
 def get_queued_items(limit=None):
     """Get items ready to process (queued or scheduled for retry)"""
     conn = None
     try:
-        # First, clean up any items stuck in 'searching' state
+        # First, clean up any items stuck in 'searching' or 'moving' state
         cleanup_stuck_searching_items()
+        cleanup_stuck_moving_items()
         
         conn = get_db()
         cursor = conn.cursor()
@@ -1578,6 +1677,12 @@ def check_completed_downloads():
                   AND found_filename <> ''
                   AND status NOT IN ('downloading', 'queued', 'failed', 'searching')
             """)
+            # NOTE: statuses excluded above are those where found_filename may be
+            # set but ownership has not yet been confirmed (still hunting/in-flight
+            # or needs a retry).  All other statuses — including 'moving',
+            # 'completed', and 'imported' — represent confirmed ownership and are
+            # intentionally included in claimed_files so fuzzy matching cannot
+            # reassign those files to a different queue item.
             for row in cursor.fetchall():
                 fn = (row.get('found_filename') if isinstance(row, dict) else row[0]) or ''
                 if fn:
@@ -1732,19 +1837,41 @@ def check_completed_downloads():
                 file_path = os.path.join(DOWNLOADS_DIR, match_found)
                 if match_meta_state == 'metadata':
                     logger.info(
-                        f"Queue {item_id}: matched file '{match_found}' by metadata — marking as completed"
+                        f"Queue {item_id}: matched file '{match_found}' by metadata — claiming for move"
                     )
                 else:
                     logger.info(
-                        f"Queue {item_id}: matched file '{match_found}' by filename/path — marking as completed"
+                        f"Queue {item_id}: matched file '{match_found}' by filename/path — claiming for move"
                     )
-                update_queue_status(item_id, 'completed', file_path=file_path, found_filename=match_found)
+
+                # Atomically transition from 'downloading' → 'moving' so that a
+                # concurrent caller (e.g. UI button) cannot also attempt to move
+                # this file.  If the claim fails the other caller already owns
+                # it; skip this item to avoid a double-move.
+                try:
+                    from download_queue_manager import (
+                        _try_claim_for_move,
+                        _release_move_claim,
+                        move_single_track_to_music_dir,
+                        update_queue_item,
+                    )
+                    from download_file_verification import verify_file_in_music, mark_queue_item_moved
+                except ImportError as _imp_err:
+                    logger.error(f"Queue {item_id}: import error for move helpers: {_imp_err}")
+                    continue
+
+                claimed = _try_claim_for_move(item_id, 'downloading')
+                if not claimed:
+                    logger.info(
+                        f"Queue {item_id}: move already claimed by another process — skipping"
+                    )
+                    continue
+
+                # Also persist found_filename now that we've claimed the item.
+                update_queue_item(item_id, found_filename=match_found, file_path=file_path)
 
                 # Immediately move the file to /music
                 try:
-                    from download_queue_manager import move_single_track_to_music_dir, update_queue_item
-                    from download_file_verification import verify_file_in_music, mark_queue_item_moved
-
                     # Extract duration from the downloaded file and persist it when the
                     # queue item has no duration yet (e.g. it was added without MusicBrainz
                     # metadata). MutagenFile may be None when mutagen is not installed.
@@ -1779,18 +1906,25 @@ def check_completed_downloads():
                             logger.info(f"[AUTO_MOVE] Queue {item_id}: verified and imported to {target_path}")
                             scan_needed = True
                         else:
+                            # File is physically in /music already; use 'imported'
+                            # so the record reflects its actual on-disk location.
                             logger.warning(
                                 f"[AUTO_MOVE] Queue {item_id}: verification FAILED "
-                                f"({verify_result.get('error')}), marking back to 'completed'"
+                                f"({verify_result.get('error')}), marking as 'imported' at {target_path}"
                             )
-                            update_queue_item(item_id, status='completed', music_file_path=target_path)
+                            update_queue_item(item_id, status='imported', music_file_path=target_path)
                     else:
                         logger.warning(
                             f"[AUTO_MOVE] Queue {item_id}: could not move "
-                            f"({move_result.get('error')}), keeping as 'completed'"
+                            f"({move_result.get('error')}), releasing claim back to 'completed'"
                         )
+                        _release_move_claim(item_id, restore_status='completed', file_path=file_path)
                 except Exception as move_err:
                     logger.warning(f"[AUTO_MOVE] Queue {item_id}: move error: {move_err}")
+                    try:
+                        _release_move_claim(item_id, restore_status='completed', file_path=file_path)
+                    except Exception:
+                        pass
 
                 newly_completed.append(item)
 
