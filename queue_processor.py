@@ -212,6 +212,43 @@ def _extract_audio_file_duration_seconds(file_path):
     return None
 
 
+def _candidate_extension_allowed(filename: str) -> bool:
+    """Return True if the file extension is permitted by the configured format filter.
+
+    When the format filter is disabled or has no priorities configured, all
+    extensions are accepted.  When priorities are configured with
+    ``reject_others=True``, only files whose extension matches one of the
+    listed priority formats are accepted.  This lets the configured
+    flac/mp3-only preference take effect before a candidate is scored so that
+    m4a (and other non-preferred formats) are never selected during search.
+    """
+    try:
+        from download_queue_manager import _load_format_bitrate_config
+        config = _load_format_bitrate_config()
+    except Exception as exc:
+        logger.debug(f"_candidate_extension_allowed: could not load format config: {exc}")
+        return True
+
+    if not config.get('enabled') or not config.get('priorities'):
+        return True
+
+    ext = os.path.splitext(filename)[1].lower().lstrip('.')
+    if not ext:
+        return True
+
+    allowed_formats = {
+        str(p.get('format', '')).lower()
+        for p in config['priorities']
+        if isinstance(p, dict) and p.get('format')
+    }
+
+    if ext in allowed_formats:
+        return True
+
+    # Extension not in any configured priority — reject only when reject_others=True
+    return not config.get('reject_others', False)
+
+
 def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     """
     Score a Soulseek candidate path/name against queue metadata.
@@ -1254,6 +1291,15 @@ def _run_soulseek_search(queue_id, query, queue_item, client):
                             if isinstance(file_info, dict)
                             else getattr(file_info, 'filename', '')
                         )
+                        # Skip candidates whose format is excluded by the configured
+                        # quality filter (e.g. reject m4a when only flac/mp3 are
+                        # listed as priorities with reject_others=True).
+                        if not _candidate_extension_allowed(filename):
+                            logger.debug(
+                                f"Queue {queue_id}: Skipping {os.path.basename(filename)} "
+                                f"— format not in configured priorities"
+                            )
+                            continue
                         size = (
                             getattr(file_info, 'size', file_info.get('size', 0))
                             if isinstance(file_info, dict)
@@ -1478,12 +1524,39 @@ def check_completed_downloads():
         # ------------------------------------------------------------------
         # Filesystem walk (fallback / supplement)
         # ------------------------------------------------------------------
+        # Determine which audio extensions to accept.  When the format filter
+        # is enabled with reject_others=True only include extensions that match
+        # a configured priority so that files already downloaded in a disallowed
+        # format (e.g. m4a when only flac/mp3 are configured) are not
+        # inadvertently matched to queue items.
+        _all_audio_exts = ('.mp3', '.flac', '.m4a', '.ogg', '.wav', '.aac')
+        try:
+            from download_queue_manager import _load_format_bitrate_config as _dqm_load_fmt_cfg
+            _fmt_cfg = _dqm_load_fmt_cfg()
+        except Exception as exc:
+            logger.debug(f"check_completed_downloads: could not load format config: {exc}")
+            _fmt_cfg = {'enabled': False, 'priorities': [], 'reject_others': False}
+
+        if _fmt_cfg.get('enabled') and _fmt_cfg.get('priorities') and _fmt_cfg.get('reject_others'):
+            _allowed_exts = tuple(
+                '.' + str(p.get('format', '')).lower()
+                for p in _fmt_cfg['priorities']
+                if isinstance(p, dict) and p.get('format')
+            )
+            # If no valid format strings were found in priorities fall back to
+            # the full set so the walk still finds something (misconfiguration
+            # should not silently suppress all completion checks).
+            if not _allowed_exts:
+                _allowed_exts = _all_audio_exts
+        else:
+            _allowed_exts = _all_audio_exts
+
         fs_files: list[str] = []
         if os.path.isdir(DOWNLOADS_DIR):
             try:
                 for root, _, root_files in os.walk(DOWNLOADS_DIR):
                     for f in root_files:
-                        if f.lower().endswith(('.mp3', '.flac', '.m4a')):
+                        if f.lower().endswith(_allowed_exts):
                             fs_files.append(os.path.relpath(os.path.join(root, f), DOWNLOADS_DIR))
                 if fs_files:
                     logger.debug(f"Filesystem walk: {len(fs_files)} audio files in {DOWNLOADS_DIR}")
