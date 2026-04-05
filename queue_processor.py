@@ -759,6 +759,7 @@ def cleanup_stuck_moving_items():
     Items are considered stuck when they have been in 'moving' status for
     more than 10 minutes.
     """
+    from download_queue_manager import _release_move_claim
     conn = None
     try:
         conn = get_db()
@@ -790,7 +791,6 @@ def cleanup_stuck_moving_items():
                     f"restoring to 'completed' for retry"
                 )
                 try:
-                    from download_queue_manager import _release_move_claim
                     _release_move_claim(item_id, restore_status='completed')
                 except Exception as release_err:
                     logger.error(
@@ -1707,6 +1707,21 @@ def check_completed_downloads():
 
         newly_completed = []
         scan_needed = False
+
+        # Import move/verify helpers once, outside the per-item loop.
+        try:
+            from download_queue_manager import (
+                _try_claim_for_move,
+                _release_move_claim,
+                move_single_track_to_music_dir,
+                update_queue_item,
+            )
+            from download_file_verification import verify_file_in_music, mark_queue_item_moved
+            _move_helpers_available = True
+        except ImportError as _imp_err:
+            logger.error(f"[AUTO_MOVE] Could not import move helpers: {_imp_err}")
+            _move_helpers_available = False
+
         for item in downloading:
             match_found = None
             match_meta_state = None
@@ -1844,22 +1859,16 @@ def check_completed_downloads():
                         f"Queue {item_id}: matched file '{match_found}' by filename/path — claiming for move"
                     )
 
+                if not _move_helpers_available:
+                    logger.error(f"Queue {item_id}: move helpers unavailable, skipping auto-move")
+                    update_queue_status(item_id, 'completed', file_path=file_path, found_filename=match_found)
+                    newly_completed.append(item)
+                    continue
+
                 # Atomically transition from 'downloading' → 'moving' so that a
                 # concurrent caller (e.g. UI button) cannot also attempt to move
                 # this file.  If the claim fails the other caller already owns
                 # it; skip this item to avoid a double-move.
-                try:
-                    from download_queue_manager import (
-                        _try_claim_for_move,
-                        _release_move_claim,
-                        move_single_track_to_music_dir,
-                        update_queue_item,
-                    )
-                    from download_file_verification import verify_file_in_music, mark_queue_item_moved
-                except ImportError as _imp_err:
-                    logger.error(f"Queue {item_id}: import error for move helpers: {_imp_err}")
-                    continue
-
                 claimed = _try_claim_for_move(item_id, 'downloading')
                 if not claimed:
                     logger.info(
