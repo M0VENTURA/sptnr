@@ -930,6 +930,36 @@ def _build_subsonic_auth_params(username, password):
     }
 
 
+def _trigger_navidrome_scan():
+    """Fire a Navidrome library startScan via the Subsonic API.
+
+    Called after a track is successfully auto-moved to /music so Navidrome
+    immediately picks up the new file rather than waiting for its next
+    scheduled full scan.
+
+    Returns True if the scan was triggered successfully, False otherwise.
+    """
+    base_url, username, password = _get_navidrome_config()
+    if not base_url:
+        logger.debug("[NAVIDROME-SCAN] Navidrome not configured — skipping scan trigger")
+        return False
+    try:
+        params = _build_subsonic_auth_params(username, password)
+        url = f"{base_url}/rest/startScan"
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        result = resp.json()
+        if result.get("subsonic-response", {}).get("status") == "ok":
+            logger.info("[NAVIDROME-SCAN] ✅ Navidrome library scan triggered")
+            return True
+        error = result.get("subsonic-response", {}).get("error", {})
+        logger.warning(f"[NAVIDROME-SCAN] Scan request returned non-ok status: {error}")
+        return False
+    except Exception as e:
+        logger.warning(f"[NAVIDROME-SCAN] Could not trigger Navidrome scan: {e}")
+        return False
+
+
 def check_track_exists_in_db(queue_item):
     """
     Check if a track matching the queue item already exists in the local tracks database.
@@ -1477,6 +1507,7 @@ def check_completed_downloads():
             logger.debug(f"Checking {len(downloading)} items in 'downloading' status")
 
         newly_completed = []
+        scan_needed = False
         for item in downloading:
             match_found = None
             match_meta_state = None
@@ -1652,6 +1683,7 @@ def check_completed_downloads():
                                 copied_individually_at=datetime.now().isoformat()
                             )
                             logger.info(f"[AUTO_MOVE] Queue {item_id}: verified and imported to {target_path}")
+                            scan_needed = True
                         else:
                             logger.warning(
                                 f"[AUTO_MOVE] Queue {item_id}: verification FAILED "
@@ -1684,6 +1716,9 @@ def check_completed_downloads():
                     )
             except Exception as auto_err:
                 logger.warning(f"[AUTO_MOVE] Error triggering auto-move for queue {item['id']}: {auto_err}")
+
+        if scan_needed:
+            _trigger_navidrome_scan()
 
     except Exception as e:
         logger.error(f"Error checking completed downloads: {e}")
@@ -2034,6 +2069,62 @@ def maybe_check_downloads_folder(now_ts, last_run_ts, interval_seconds=90):
     return now_ts
 
 
+def maybe_trigger_navidrome_scan_for_new_imports(now_ts, last_run_ts, interval_seconds=300):
+    """Periodic safety-net: trigger a Navidrome scan when new imports are detected.
+
+    Runs every *interval_seconds* (default 5 min).  It looks for download_queue
+    rows that were moved to the music directory since the previous check.  When
+    any are found, _trigger_navidrome_scan() is called so Navidrome indexes the
+    new files even if the per-item trigger in check_completed_downloads() was
+    skipped (e.g. the file was imported via another path).
+
+    Args:
+        now_ts: Current timestamp (time.time())
+        last_run_ts: Timestamp returned by the previous call, or None
+        interval_seconds: Minimum seconds between checks (default 300)
+
+    Returns:
+        Updated last-run timestamp
+    """
+    if last_run_ts is not None and (now_ts - last_run_ts) < interval_seconds:
+        return last_run_ts
+
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = _get_placeholder(conn)
+
+        if last_run_ts is not None:
+            cutoff = datetime.fromtimestamp(last_run_ts)
+        else:
+            cutoff = datetime.now() - timedelta(seconds=interval_seconds)
+
+        cursor.execute(
+            f"""
+            SELECT COUNT(*) FROM download_queue
+            WHERE status = 'imported'
+              AND copied_individually_at >= {placeholder}
+            """,
+            (cutoff.isoformat(),),
+        )
+        row = cursor.fetchone()
+        count = int(row[0] if row else 0)
+        conn.close()
+
+        if count > 0:
+            logger.info(
+                f"[NAVIDROME-SCAN] {count} import(s) detected since last check "
+                f"— triggering safety-net scan"
+            )
+            _trigger_navidrome_scan()
+        else:
+            logger.debug("[NAVIDROME-SCAN] No new imports since last check, scan not needed")
+    except Exception as e:
+        logger.error(f"[NAVIDROME-SCAN] Error in maybe_trigger_navidrome_scan_for_new_imports: {e}")
+
+    return now_ts
+
+
 def run_processor(interval=30):
     """Run queue processor loop"""
     logger.info("=== Queue Processor Started ===")
@@ -2053,6 +2144,7 @@ def run_processor(interval=30):
     last_slskd_retry_ts = None
     last_slskd_clear_ts = None
     last_downloads_folder_ts = None
+    last_navidrome_scan_ts = None
 
     try:
         while True:
@@ -2069,6 +2161,7 @@ def run_processor(interval=30):
                 last_slskd_retry_ts = check_failed_slskd_downloads(now_ts, last_slskd_retry_ts)
                 last_slskd_clear_ts = maybe_clear_slskd_completed_downloads(now_ts, last_slskd_clear_ts)
                 last_downloads_folder_ts = maybe_check_downloads_folder(now_ts, last_downloads_folder_ts)
+                last_navidrome_scan_ts = maybe_trigger_navidrome_scan_for_new_imports(now_ts, last_navidrome_scan_ts)
                 
                 processed = process_queue(client)
                 
