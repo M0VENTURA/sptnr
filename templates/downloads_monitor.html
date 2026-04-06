@@ -4595,14 +4595,19 @@ async function retryQueueItem(queueId) {
   }
 }
 
-async function _pollMoveToMusicTask(taskId, queueId, timeoutMs = 180000) {
+async function _pollMoveToMusicTask(taskId, queueId, timeoutMs = 300000) {
   const start = Date.now();
-  const pollIntervalMs = 1000;
+  const pollIntervalMs = 2000;
 
   while (Date.now() - start < timeoutMs) {
-    const task = await fetchJsonOrThrow(`/api/queue/move-to-music/status/${taskId}?queue_id=${encodeURIComponent(queueId)}`, {}, 60000);
-    if (task.status === 'completed' || task.status === 'failed') {
-      return task;
+    try {
+      const task = await fetchJsonOrThrow(`/api/queue/move-to-music/status/${taskId}?queue_id=${encodeURIComponent(queueId)}`, {}, 120000);
+      if (task.status === 'completed' || task.status === 'failed') {
+        return task;
+      }
+    } catch (pollErr) {
+      // Server may be under load — log and retry rather than aborting the whole operation.
+      console.warn('[MOVE_POLL] Status check slow/failed, retrying:', pollErr.message);
     }
     await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
   }
