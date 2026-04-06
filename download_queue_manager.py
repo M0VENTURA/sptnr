@@ -8527,8 +8527,13 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
             col_names = [d[0] for d in (cursor.description or [])]
             tracks = [dict(zip(col_names, row)) for row in rows]
 
+        # Close the DB connection immediately after the read phase so it is
+        # not held idle-in-transaction during the metadata lookups, FLAC
+        # conversions, and file-transfer operations that follow.
+        conn.close()
+        conn = None
+
         if not tracks:
-            conn.close()
             result['error'] = "No tracks found for this album"
             return result
 
@@ -8551,7 +8556,6 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
 
         if not all_done:
             # Album not yet complete – nothing to auto-move
-            conn.close()
             return result
 
         result['album_complete'] = True
@@ -8736,19 +8740,29 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
                 if not transfer_result.get('success'):
                     raise RuntimeError(transfer_result.get('error') or 'transfer failed')
                 final_dest = transfer_result.get('target_path') or dest
-                cursor.execute(
-                    f"""
-                    UPDATE download_queue
-                    SET status = 'imported',
-                        file_path = {placeholder},
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE id = {placeholder}
-                    """,
-                    (final_dest, track['id'])
-                )
-                # Commit after each individual track move so the connection is not
-                # held idle-in-transaction for the entire multi-file album loop.
-                conn.commit()
+                # Open a fresh connection only for the write, commit, then close
+                # immediately so no transaction is held during file-I/O.
+                _update_conn = _get_postgres_conn_from_app_or_fallback()
+                if _update_conn is None:
+                    raise RuntimeError("Could not acquire DB connection for status update")
+                try:
+                    _update_cur = _update_conn.cursor()
+                    _update_cur.execute(
+                        """
+                        UPDATE download_queue
+                        SET status = 'imported',
+                            file_path = %s,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = %s
+                        """,
+                        (final_dest, track['id'])
+                    )
+                    _update_conn.commit()
+                finally:
+                    try:
+                        _update_conn.close()
+                    except Exception as _close_err:
+                        logger.warning(f"[AUTO_MOVE] Could not close update connection: {_close_err}")
                 result['moved'] += 1
                 logger.info(
                     f"[AUTO_MOVE] Moved {filename} → {final_dest} "
@@ -8756,13 +8770,7 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
                 )
             except Exception as move_err:
                 logger.error(f"[AUTO_MOVE] Failed to move {src}: {move_err}")
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
                 result['skipped'] += 1
-
-        conn.close()
 
         if result['moved'] > 0:
             try:
