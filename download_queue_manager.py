@@ -6304,11 +6304,11 @@ def auto_discover_and_queue_files():
                                             artist=matched_pending.get('artist'),
                                             album=matched_pending.get('album'),
                                         )
-                                        if _sibling_result.get('moved', 0) > 0:
+                                        if _sibling_result and _sibling_result.get('moved', 0) > 0:
                                             logger.info(
                                                 f"[AUTO-DISCOVER] Swept up "
                                                 f"{_sibling_result['moved']} sibling track(s) "
-                                                f"for album: {artist} – "
+                                                f"for album: {artist} - "
                                                 f"{matched_pending.get('album')}"
                                             )
                                     except Exception as _sibling_err:
