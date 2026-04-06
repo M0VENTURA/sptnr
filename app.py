@@ -706,6 +706,9 @@ def _is_pg_startup_unavailable_error(error) -> bool:
         "server closed the connection unexpectedly",
         "startup backoff active",
         "temporarily unavailable",
+        "could not translate host name",
+        "name or service not known",
+        "temporary failure in name resolution",
     )
     return any(marker in message for marker in markers)
 
