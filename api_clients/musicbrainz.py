@@ -431,6 +431,10 @@ class MusicBrainzClient:
         
         This is more comprehensive than name-based search as it queries all releases
         by that specific artist, avoiding disambiguation and name variation issues.
+
+        Uses an in-memory per-scan cache keyed by artist MBID so that multiple tracks
+        for the same artist share a single API response (the full singles list is fetched
+        once and reused for every subsequent lookup within the same process lifetime).
         
         Args:
             title: Track title
@@ -441,94 +445,90 @@ class MusicBrainzClient:
         """
         if not self.enabled or not artist_mbid:
             return False
-        
+
+        # In-memory per-scan artist singles cache: maps artist_mbid → frozenset of
+        # (base_title_lower, versions_frozenset) tuples so every track for the same
+        # artist reuses the same API response.
+        if not hasattr(self, '_artist_singles_cache'):
+            self._artist_singles_cache = {}  # artist_mbid -> list[release-group dicts] or None
+
         # Extract version information from the track title
         base_title, track_versions = _extract_version_info(title)
-        
-        max_retries = 3
-        retry_delay = 1.0
-        for attempt in range(max_retries):
-            try:
-                # Use rate limiter to enforce proper delays between requests
-                if _rate_limiter:
-                    _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
-                    _rate_limiter.record_musicbrainz_request()
-                else:
-                    # Fallback to simple delay if rate limiter not available
-                    time.sleep(1.0)
-                
-                # Query release-groups by artist MBID
-                # This returns all release groups by this artist
-                params = {
-                    "artist": artist_mbid,
-                    "primarytype": "Single",
-                    "fmt": "json",
-                    "limit": 50  # Get more results per page for comprehensive search
-                }
-                
-                if attempt == 0:
-                    logger.debug(f"MusicBrainz is_single_by_artist_mbid: artist={artist_mbid}, looking for '{title}'")
-                
-                res = self.session.get(
-                    f"{self.base_url}release-group/",
-                    params=params,
-                    headers=self.headers,
-                    timeout=(5, 10)  # (connect_timeout, read_timeout)
-                )
-                
-                res.raise_for_status()
-                rgs = res.json().get("release-groups", [])
-                
-                logger.debug(f"MusicBrainz found {len(rgs)} singles by artist {artist_mbid}")
-                
-                # Check if any result matches the track title
-                for rg in rgs:
-                    rg_title = rg.get("title", "")
-                    rg_base_title, rg_versions = _extract_version_info(rg_title)
-                    
-                    # Match if:
-                    # 1. Base titles match exactly (case-insensitive)
-                    # 2. AND version keywords match (both live, both acoustic, or both studio)
-                    if base_title.lower() == rg_base_title.lower() and track_versions == rg_versions:
-                        logger.debug(f"MusicBrainz single by MBID: '{title}' matched '{rg_title}' (artist MBID: {artist_mbid})")
-                        return True
-                
-                # No matching single found
-                logger.debug(f"MusicBrainz: No matching single found for '{title}' using artist MBID: {artist_mbid}")
-                return False
-                
-            except requests.exceptions.HTTPError as e:
-                status_code = e.response.status_code if getattr(e, "response", None) is not None else None
-                if status_code in (429, 503, 504):
-                    if attempt < max_retries - 1:
-                        logger.debug(
-                            f"MusicBrainz is_single_by_artist_mbid attempt {attempt+1}/{max_retries} got HTTP {status_code}, "
-                            f"retrying in {retry_delay}s..."
-                        )
+
+        # Use cached release-group list if available; fetch on first access for this MBID.
+        if artist_mbid not in self._artist_singles_cache:
+            max_retries = 3
+            retry_delay = 1.0
+            fetched_rgs = None
+            for attempt in range(max_retries):
+                try:
+                    if _rate_limiter:
+                        _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
+                        _rate_limiter.record_musicbrainz_request()
+                    else:
+                        time.sleep(1.0)
+
+                    params = {
+                        "artist": artist_mbid,
+                        "primarytype": "Single",
+                        "fmt": "json",
+                        "limit": 50,
+                    }
+                    if attempt == 0:
+                        logger.debug(f"MusicBrainz is_single_by_artist_mbid: fetching singles list for artist={artist_mbid}")
+
+                    res = self.session.get(
+                        f"{self.base_url}release-group/",
+                        params=params,
+                        headers=self.headers,
+                        timeout=(5, 10),
+                    )
+                    res.raise_for_status()
+                    fetched_rgs = res.json().get("release-groups", [])
+                    logger.debug(f"MusicBrainz: cached {len(fetched_rgs)} singles for artist {artist_mbid}")
+                    break
+                except requests.exceptions.HTTPError as e:
+                    status_code = e.response.status_code if getattr(e, "response", None) is not None else None
+                    if status_code in (429, 503, 504) and attempt < max_retries - 1:
                         time.sleep(retry_delay)
                         retry_delay *= 2
                         continue
-                    logger.info(
-                        f"MusicBrainz is_single_by_artist_mbid temporarily unavailable for '{title}' "
-                        f"(MBID: {artist_mbid}) after {max_retries} attempts (HTTP {status_code})"
-                    )
-                    return False
-                logger.warning(f"MusicBrainz is_single_by_artist_mbid HTTP error for '{title}' (artist MBID: {artist_mbid}): {e}")
-                return False
+                    logger.info(f"MusicBrainz is_single_by_artist_mbid cache-fetch failed (HTTP {status_code}) for artist {artist_mbid}")
+                    break
+                except (requests.exceptions.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                        retry_delay *= 2
+                    else:
+                        logger.info(f"MusicBrainz is_single_by_artist_mbid cache-fetch unavailable for artist {artist_mbid}: {type(e).__name__}")
+                    break
+                except Exception as e:
+                    logger.warning(f"MusicBrainz is_single_by_artist_mbid cache-fetch error for artist {artist_mbid}: {e}")
+                    break
+            # Use None sentinel for "fetch failed" (distinguishes from an empty result list
+            # which means "artist has no singles") so transient failures allow a retry next scan.
+            self._artist_singles_cache[artist_mbid] = fetched_rgs  # fetched_rgs is None on all-attempt failure
 
-            except (requests.exceptions.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
-                error_type = type(e).__name__
-                if attempt < max_retries - 1:
-                    logger.debug(f"MusicBrainz is_single_by_artist_mbid attempt {attempt+1}/{max_retries} failed: {error_type}, retrying in {retry_delay}s...")
-                    time.sleep(retry_delay)
-                    retry_delay *= 2
-                else:
-                    logger.info(f"MusicBrainz is_single_by_artist_mbid unavailable for '{title}' (MBID: {artist_mbid}) after {max_retries} attempts: {error_type}")
-                    return False
-            except Exception as e:
-                logger.warning(f"MusicBrainz is_single_by_artist_mbid error for '{title}' (artist MBID: {artist_mbid}): {e}")
-                return False
-    
+        rgs = self._artist_singles_cache[artist_mbid]
+        if rgs is None:
+            # Fetch failed (transient error); fall back to the name-based is_single() path
+            logger.debug(f"MusicBrainz: Cache-fetch failed for artist MBID {artist_mbid}; returning False for '{title}' (will retry next scan run)")
+            return False
+        if not rgs:
+            logger.debug(f"MusicBrainz: Artist MBID {artist_mbid} has no singles in MB; returning False for '{title}'")
+            return False
+
+        logger.debug(f"MusicBrainz: Checking {len(rgs)} cached singles for '{title}' (artist MBID: {artist_mbid})")
+        for rg in rgs:
+            rg_title = rg.get("title", "")
+            rg_base_title, rg_versions = _extract_version_info(rg_title)
+            if base_title.lower() == rg_base_title.lower() and track_versions == rg_versions:
+                logger.debug(f"MusicBrainz single by MBID (cached): '{title}' matched '{rg_title}'")
+                return True
+
+        logger.debug(f"MusicBrainz: No matching single found for '{title}' in cached list (artist MBID: {artist_mbid})")
+        return False
+
     def get_genres(self, title: str, artist: str) -> list[str]:
         """
         Fetch tags/genres from MusicBrainz with explicit includes on recordings.

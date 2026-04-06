@@ -106,13 +106,20 @@ class DiscogsArtistSinglesCache:
                     original_title TEXT,
                     release_id INTEGER,
                     release_year INTEGER,
-                    is_official BOOLEAN DEFAULT 1,
-                    is_promo BOOLEAN DEFAULT 0,
+                    is_official BOOLEAN DEFAULT TRUE,
+                    is_promo BOOLEAN DEFAULT FALSE,
+                    is_single BOOLEAN NOT NULL DEFAULT TRUE,
                     cached_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(artist, normalized_title)
                 )
             """)
-            
+
+            # Add is_single column to existing installations that pre-date this column
+            try:
+                cursor.execute("ALTER TABLE discogs_singles_cache ADD COLUMN IF NOT EXISTS is_single BOOLEAN NOT NULL DEFAULT TRUE")
+            except Exception:
+                pass  # Column already exists
+
             # Create index for fast lookups
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_discogs_singles_artist
@@ -284,7 +291,76 @@ class DiscogsArtistSinglesCache:
         except Exception as e:
             logger.error(f"Error adding tracks to cache: {e}")
             return 0
-    
+
+    def get_cached_result(self, artist: str, normalized_title: str, ttl_hours: int = 168) -> Optional[bool]:
+        """
+        Get a cached single-detection result for a specific (artist, title) pair.
+
+        Returns:
+            True  — track was confirmed as a Discogs single/EP
+            False — track was checked and confirmed NOT a Discogs single/EP
+            None  — no cached result (not yet checked, or cache expired)
+        """
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(f"""
+                SELECT is_single, cached_at
+                FROM discogs_singles_cache
+                WHERE artist = {self.placeholder} AND normalized_title = {self.placeholder}
+            """, (artist, normalized_title))
+            row = cursor.fetchone()
+            conn.close()
+            if not row:
+                return None
+            cached_at = row[1] if not isinstance(row, dict) else row.get('cached_at')
+            if cached_at:
+                # Normalise to a naive UTC datetime for age comparison
+                if isinstance(cached_at, str):
+                    cached_at = datetime.fromisoformat(cached_at.replace('Z', '+00:00'))
+                if hasattr(cached_at, 'tzinfo') and cached_at.tzinfo is not None:
+                    # Convert aware datetime to naive UTC
+                    import calendar
+                    cached_at = datetime.utcfromtimestamp(calendar.timegm(cached_at.utctimetuple()))
+                if (datetime.utcnow() - cached_at) > timedelta(hours=ttl_hours):
+                    return None  # Expired
+            is_single_val = row[0] if not isinstance(row, dict) else row.get('is_single')
+            return bool(is_single_val)
+        except Exception as e:
+            logger.warning(f"Error reading cached result for '{artist}'/'{normalized_title}': {e}")
+            return None
+
+    def save_result(self, artist: str, original_title: str, is_single: bool) -> None:
+        """
+        Persist a single-detection result (positive or negative) for future lookups.
+
+        Args:
+            artist: Artist name
+            original_title: Original track title (will be normalized for storage)
+            is_single: True if confirmed as a Discogs single/EP, False otherwise
+        """
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            normalized = normalize_track_title(original_title)
+            if not normalized:
+                conn.close()
+                return
+            cursor.execute(f"""
+                INSERT INTO discogs_singles_cache
+                    (artist, normalized_title, original_title, is_single, cached_at)
+                VALUES ({self.placeholder}, {self.placeholder}, {self.placeholder}, {self.placeholder}, CURRENT_TIMESTAMP)
+                ON CONFLICT(artist, normalized_title) DO UPDATE SET
+                    is_single = EXCLUDED.is_single,
+                    original_title = EXCLUDED.original_title,
+                    cached_at = CURRENT_TIMESTAMP
+            """, (artist, normalized, original_title, is_single))
+            conn.commit()
+            conn.close()
+            logger.debug(f"Saved Discogs result for '{artist}'/'{original_title}': is_single={is_single}")
+        except Exception as e:
+            logger.warning(f"Error saving Discogs result for '{artist}'/'{original_title}': {e}")
+
     def clear_artist_cache(self, artist: str):
         """Clear cache for specific artist."""
         try:
@@ -343,8 +419,8 @@ def get_discogs_cache(db_path: str = None, cache_ttl_days: int = 7) -> DiscogsAr
     global _discogs_cache_instance
     
     if _discogs_cache_instance is None:
-        if db_path is None:
-            raise ValueError("db_path required for first initialization")
-        _discogs_cache_instance = DiscogsArtistSinglesCache(db_path, cache_ttl_days)
+        # db_path is accepted for legacy compatibility but the class uses get_db_connection()
+        # for all operations, so an empty string is fine when no explicit path is given.
+        _discogs_cache_instance = DiscogsArtistSinglesCache(db_path or "", cache_ttl_days)
     
     return _discogs_cache_instance
