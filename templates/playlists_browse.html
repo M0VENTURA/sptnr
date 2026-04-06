@@ -1407,7 +1407,7 @@
 
   // ---- NSP Edit Mode ----
   let nspEditingFile = null;  // basename of the file currently being edited, e.g. "my_mix.nsp"
-  let _cachedNspFiles = [];  // NSP file list cached from nspPopulateEditSelect
+  let _cachedNspFiles = [];  // NSP file list cached from nspLoadFileList
 
   function nspExitEditMode() {
     nspEditingFile = null;
@@ -1473,7 +1473,7 @@
     }
   }
 
-  async function nspPopulateEditSelect() {
+  async function nspLoadFileList() {
     try {
       const resp = await fetch('/api/playlist/list');
       const data = await resp.json();
@@ -1782,7 +1782,7 @@
     if (fi) fi.addEventListener('input', () => { fi._userEdited = true; });
     nspAddRule();
     nspAddSortRow('random', 'asc');
-    nspPopulateEditSelect();
+    nspLoadFileList();
   });
 </script>
 
