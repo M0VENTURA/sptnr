@@ -7725,24 +7725,26 @@ def popularity_scan(
             # Get ALL tracks for this artist (not just 5-star) to properly apply Case A/B logic.
             # Also fetch navidrome_rating so user-set 5★ ratings in Navidrome count toward the threshold.
             try:
+                # Fetch only the two columns needed for Case A / Case B threshold checks.
+                # The ORDER BY is intentionally omitted — create_or_update_playlist_for_artist
+                # only needs counts (len + filter), so sorting every row is wasted work and
+                # can trigger OOM / connection-loss errors on prolific artists.
+                # LIMIT 10000 is a safety cap; real-world playlists never need more rows.
                 cursor.execute(
-                    f"""SELECT id, artist, album, title, stars, navidrome_rating
+                    f"""SELECT stars, navidrome_rating
                     FROM tracks
                     WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
-                    ORDER BY stars DESC, popularity_score DESC""",
+                    LIMIT 10000""",
                     (artist,)
                 )
                 all_artist_tracks = cursor.fetchall()
                 log_debug(f"Retrieved {len(all_artist_tracks)} tracks for playlist evaluation for artist: {artist}")
 
                 if all_artist_tracks:
-                    # Convert to list of dicts for create_or_update_playlist_for_artist
+                    # Convert to minimal dicts — create_or_update_playlist_for_artist only
+                    # uses len(tracks) and a count of five-star entries; no other fields needed.
                     tracks_list = [
                         {
-                            "id": t["id"],
-                            "artist": t["artist"],
-                            "album": t["album"],
-                            "title": t["title"],
                             "stars": int(t["stars"]) if t["stars"] else 0,
                             "navidrome_rating": int(t["navidrome_rating"]) if t["navidrome_rating"] else 0,
                         }
@@ -8062,9 +8064,10 @@ def refresh_all_playlists_from_db():
 
         for name in artists:
             cursor.execute(
-                f"""SELECT id, artist, album, title, stars, navidrome_rating
+                f"""SELECT stars, navidrome_rating
                    FROM tracks
-                   WHERE COALESCE(NULLIF(album_artist, ''), artist) = {sql_placeholder}""",
+                   WHERE COALESCE(NULLIF(album_artist, ''), artist) = {sql_placeholder}
+                   LIMIT 10000""",
                 (name,)
             )
             rows = cursor.fetchall()
@@ -8075,10 +8078,6 @@ def refresh_all_playlists_from_db():
 
             tracks = [
                 {
-                    "id": r['id'],
-                    "artist": r['artist'],
-                    "album": r['album'],
-                    "title": r['title'],
                     "stars": int(r['stars']) if r['stars'] else 0,
                     "navidrome_rating": int(r['navidrome_rating']) if r['navidrome_rating'] else 0,
                 }

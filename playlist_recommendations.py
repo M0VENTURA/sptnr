@@ -565,6 +565,7 @@ class PlaylistRecommender:
             cursor.execute("""
                 SELECT id FROM tracks
                 WHERE stars IS NULL OR stars = 0
+                ORDER BY RANDOM()
                 LIMIT 500
             """)
             
