@@ -3246,6 +3246,13 @@ def get_artist_lastfm_context(artist_name: str, conn: object, artist_mbid: str =
                             except (ValueError, TypeError):
                                 pass  # Keys may already be ints in some serialisation formats
                         log_debug(f"Using cached artist_lastfm_context for '{artist_name}' ({_ctx_age_days}d old, TTL={_CONTEXT_CACHE_TTL_DAYS}d)")
+                        # End the cache SELECT transaction before returning so
+                        # the shared connection does not remain idle-in-transaction
+                        # during the subsequent per-artist API calls in the caller.
+                        try:
+                            conn.commit()
+                        except Exception:
+                            pass
                         return cached_ctx
         except Exception as _ctx_cache_err:
             log_debug(f"Could not read artist_lastfm_context cache for '{artist_name}': {_ctx_cache_err}")
@@ -3268,6 +3275,13 @@ def get_artist_lastfm_context(artist_name: str, conn: object, artist_mbid: str =
 
         tracks = cursor.fetchall()
         listeners_list = [row_get(row, 'lastfm_track_playcount', 0) for row in tracks if row_get(row, 'lastfm_track_playcount', 0) > 0]
+
+        # End the SELECT transaction before the outbound API calls so the shared
+        # connection does not remain idle-in-transaction during network I/O.
+        try:
+            conn.commit()
+        except Exception:
+            pass
 
         # Fetch artist info to get total track count and top 10% threshold
         total_tracks = 0
@@ -3741,6 +3755,11 @@ def popularity_scan(
         tracks = [dict(row) for row in tracks_raw]
         log_info(f"Found {len(tracks)} tracks to scan for popularity")
         log_debug(f"Fetched {len(tracks)} tracks from database")
+        # Commit the SELECT transaction immediately so the connection transitions
+        # to "idle" (not "idle in transaction") before the per-artist API calls
+        # begin.  Without this, PostgreSQL can kill the connection with
+        # idle_in_transaction_session_timeout during the minutes-long API loop.
+        conn.commit()
 
         def _writer_is_empty(writer_value) -> bool:
             """Return True when writer credits are missing/empty in stored track data."""
@@ -3969,6 +3988,13 @@ def popularity_scan(
                     if not saved_discogs_id:
                         return ""
 
+                    # End the SELECT transaction before the Discogs API call so
+                    # the shared connection is not idle-in-transaction during network I/O.
+                    try:
+                        conn.commit()
+                    except Exception:
+                        pass
+
                     discogs_client = _get_timeout_safe_discogs_client(discogs_token_local)
                     if not discogs_client:
                         return ""
@@ -4037,6 +4063,12 @@ def popularity_scan(
                         _ea = cursor.fetchone()
                         _existing_artist_bio = row_get(_ea, 'bio', '') if _ea else ''
                         _existing_artist_image = row_get(_ea, 'image_url', '') if _ea else ''
+                    except Exception:
+                        pass
+                    # End the SELECT transaction before outbound API calls so the
+                    # connection does not sit idle-in-transaction during network I/O.
+                    try:
+                        conn.commit()
                     except Exception:
                         pass
 
