@@ -1599,6 +1599,11 @@ upcoming_release_match_scheduler = {
 }
 upcoming_release_match_scheduler_lock = threading.Lock()
 
+# Semaphore that limits how many individual-track moves can run concurrently.
+# A single slot (value=1) serialises back-to-back manual moves so that rapid
+# successive button clicks don't saturate Flask worker threads with blocking I/O.
+_individual_move_semaphore = threading.Semaphore(1)
+
 # Optional auto-import toggle placeholder (will be set after config functions are defined)
 AUTO_BOOT_ND_IMPORT = None
 
@@ -23589,6 +23594,15 @@ def api_downloads_move_individual_track(track_index):
     Returns:
         JSON with success status and destination path
     """
+    # Limit concurrency: at most one move runs at a time so that rapid successive
+    # clicks (or requests from multiple tabs) do not saturate worker threads with
+    # blocking file I/O.  Wait up to 30 s before giving up.
+    if not _individual_move_semaphore.acquire(blocking=True, timeout=30):
+        return jsonify({
+            "success": False,
+            "error": "Another move is already in progress. Please wait a moment and try again.",
+            "busy": True,
+        }), 503
     try:
         from folder_matching_enhancements import organize_individual_track
         
@@ -23764,6 +23778,8 @@ def api_downloads_move_individual_track(track_index):
             "success": False,
             "error": str(e)
         }), 500
+    finally:
+        _individual_move_semaphore.release()
 
 
 @app.route("/api/downloads/folder/<path:folder_path>/organize", methods=["POST"])

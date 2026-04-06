@@ -1804,9 +1804,42 @@ function checkFolderDuplicatesFromEncoded(folderPathEnc, artistEnc, albumEnc, tr
   return checkFolderDuplicates(folderPath, artist, album, tracks);
 }
 
+// Serial queue for individual track moves – at most one move request is in-flight at a
+// time so rapid successive clicks don't exhaust server worker threads.
+let _moveQueueTail = Promise.resolve();
+
 async function moveIndividualTrackFromEncoded(folderPathEnc, trackIndex, trackEnc, candidateEnc) {
   // Wrapper function to safely decode and move individual track with result feedback
+
+  // ----- serialise onto the move queue -----
+  // Each call waits for the previous move to complete before sending its own request.
+  const runAfterPrevious = _moveQueueTail;
+  let unlockNext;
+  _moveQueueTail = new Promise(r => { unlockNext = r; });
+
+  // Find the button that was clicked so we can disable it while waiting / moving.
+  // We identify it by matching the track index inside the button's onclick attribute.
+  let clickedBtn = null;
   try {
+    const allBtns = document.querySelectorAll('button[onclick]');
+    for (let i = 0; i < allBtns.length; i++) {
+      const attr = allBtns[i].getAttribute('onclick') || '';
+      if (attr.includes(`${trackIndex}`) && attr.includes('moveIndividualTrackFromEncoded')) {
+        clickedBtn = allBtns[i];
+        break; // stop at the first match
+      }
+    }
+  } catch (_) { /* non-critical */ }
+
+  if (clickedBtn) {
+    clickedBtn.disabled = true;
+    clickedBtn.dataset.origHtml = clickedBtn.innerHTML;
+    clickedBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span>';
+  }
+
+  try {
+    await runAfterPrevious; // wait for any previously queued move to finish
+
     const folderPath = decodeInlineArg(folderPathEnc, '');
     const track = decodeInlineArg(trackEnc, null);
     const candidate = decodeInlineArg(candidateEnc, null);
@@ -1844,6 +1877,15 @@ async function moveIndividualTrackFromEncoded(folderPathEnc, trackIndex, trackEn
   } catch (error) {
     console.error('Error in moveIndividualTrackFromEncoded:', error);
     alert('❌ Error: ' + error.message);
+  } finally {
+    // Restore button state (the loadFolderGroups re-render will replace it anyway,
+    // but restore in case the render is skipped or delayed).
+    if (clickedBtn && clickedBtn.dataset.origHtml) {
+      clickedBtn.innerHTML = clickedBtn.dataset.origHtml;
+      clickedBtn.disabled = false;
+      delete clickedBtn.dataset.origHtml;
+    }
+    unlockNext(); // allow the next queued move to proceed
   }
 }
 
@@ -2226,18 +2268,20 @@ async function loadFolderGroups(options = {}) {
 
   folderGroupsRequestInFlight = true;
   try {
-    // Trigger queue status scan first so newly downloaded files are matched immediately.
-    // This makes "Auto Apply" and queue/folder transitions appear in one refresh cycle.
-    fetch('/api/queue/status?limit=200').catch(syncErr => {
-      console.debug('Queue sync pre-pass failed (non-fatal):', syncErr);
-    });
-
     const [,, folderData, queueData] = await Promise.all([
       loadFolderStatus(),
       loadFolderDuplicates(),
       fetch('/api/downloads/grouped-folders').then(response => response.json()),
       fetch(getQueuePageUrl()).then(response => response.json())
     ]);
+
+    // Fire the background queue-scan *after* the page data is already in hand so it
+    // doesn't delay rendering.  The background processor runs this periodically anyway;
+    // this just eagerly triggers it so the next refresh cycle picks up newly-completed
+    // downloads without waiting for the processor interval.
+    fetch('/api/queue/status?limit=200').catch(syncErr => {
+      console.debug('Queue sync post-pass failed (non-fatal):', syncErr);
+    });
     
     if (!folderData.success) {
       console.error('Error loading folder groups:', folderData.error);
@@ -6275,7 +6319,9 @@ document.addEventListener('DOMContentLoaded', function() {
   }
   
   setTimeout(loadBothAsync, 500);
-  refreshUpcomingReleasesMonitor();
+  // Delay upcoming releases so the critical queue / folder data renders first.
+  // It reads from the local database; there is no Wikipedia fetch on load.
+  setTimeout(refreshUpcomingReleasesMonitor, 2000);
   loadQueueLog();
   // Refresh both together every 5 seconds to keep them synchronized
   setInterval(loadBothAsync, 5000);
