@@ -3210,10 +3210,10 @@ def _run_daily_new_artist_import():
         cursor = conn.cursor()
         placeholder = "%s"
         cursor.execute(
-            "SELECT DISTINCT LOWER(COALESCE(NULLIF(album_artist, ''), artist)) FROM tracks "
+            "SELECT DISTINCT LOWER(COALESCE(NULLIF(album_artist, ''), artist)) AS artist_lower FROM tracks "
             "WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL"
         )
-        local_artists = {row[0] for row in (cursor.fetchall() or []) if row and row[0]}
+        local_artists = {_row_get(row, "artist_lower", 0) for row in (cursor.fetchall() or []) if _row_get(row, "artist_lower", 0)}
         conn.close()
 
         new_artists = [a for a in all_nav_artists if a.lower() not in local_artists]
@@ -4175,71 +4175,6 @@ def _run_queue_migration_once_if_armed():
 
     threading.Thread(target=_worker, daemon=True, name="queue-migration-once").start()
     return True
-
-
-
-
-
-# Elect a leader worker to run startup background tasks exactly once.
-_is_startup_leader_worker = _acquire_startup_leader_lock()
-
-# Kick off startup background tasks only in the elected leader worker.
-if _is_startup_leader_worker:
-    try:
-        # Always perform a lightweight album-list sync on reboot so newly
-        # added album artists appear quickly, even when full boot import is off.
-        _start_boot_album_artist_sync_only()
-    except Exception as e:
-        logging.error(f"Failed to start boot album-list artist sync: {e}")
-
-    try:
-        _run_queue_migration_once_if_armed()
-    except Exception as e:
-        logging.error(f"Failed to run one-time queue migration hook: {e}")
-
-    try:
-        _start_queue_processor_if_needed(force_restart=False)
-    except Exception as e:
-        logging.error(f"Failed to start queue processor on boot: {e}")
-
-    if AUTO_BOOT_ND_IMPORT:
-        try:
-            _start_boot_navidrome_import()
-        except Exception as e:
-            logging.error(f"Failed to start boot Navidrome import: {e}")
-
-    try:
-        _start_navidrome_incremental_scheduler()
-    except Exception as e:
-        logging.error(f"Failed to start Navidrome incremental scheduler: {e}")
-
-    try:
-        _schedule_configured_startup_scan_launch()
-    except Exception as e:
-        logging.error(f"Failed to schedule startup scan launch: {e}")
-
-    try:
-        _auto_resume_interrupted_scans()
-    except Exception as e:
-        logging.error(f"Failed to schedule auto-resume of interrupted scans: {e}")
-
-    try:
-        _start_daily_scheduler()
-    except Exception as e:
-        logging.error(f"Failed to start daily scheduler: {e}")
-
-    try:
-        _start_upcoming_release_match_scheduler()
-    except Exception as e:
-        logging.error(f"Failed to start upcoming release match scheduler: {e}")
-
-    try:
-        _start_listenbrainz_createdfor_scheduler()
-    except Exception as e:
-        logging.error(f"Failed to start ListenBrainz/Last.fm weekly playlist scheduler: {e}")
-else:
-    logging.debug("[BOOT] Non-leader worker: startup background schedulers not started in this process")
-
 def _needs_setup(cfg=None):
     cfg = cfg if cfg is not None else _read_yaml(CONFIG_PATH)[0]
     
@@ -4455,6 +4390,68 @@ def _cleanup_request_db_connections(exception=None):
             conn.close()
         except Exception:
             pass
+
+
+# Elect a leader worker to run startup background tasks exactly once.
+# Must be called after get_db() is defined above.
+_is_startup_leader_worker = _acquire_startup_leader_lock()
+
+# Kick off startup background tasks only in the elected leader worker.
+if _is_startup_leader_worker:
+    try:
+        # Always perform a lightweight album-list sync on reboot so newly
+        # added album artists appear quickly, even when full boot import is off.
+        _start_boot_album_artist_sync_only()
+    except Exception as e:
+        logging.error(f"Failed to start boot album-list artist sync: {e}")
+
+    try:
+        _run_queue_migration_once_if_armed()
+    except Exception as e:
+        logging.error(f"Failed to run one-time queue migration hook: {e}")
+
+    try:
+        _start_queue_processor_if_needed(force_restart=False)
+    except Exception as e:
+        logging.error(f"Failed to start queue processor on boot: {e}")
+
+    if AUTO_BOOT_ND_IMPORT:
+        try:
+            _start_boot_navidrome_import()
+        except Exception as e:
+            logging.error(f"Failed to start boot Navidrome import: {e}")
+
+    try:
+        _start_navidrome_incremental_scheduler()
+    except Exception as e:
+        logging.error(f"Failed to start Navidrome incremental scheduler: {e}")
+
+    try:
+        _schedule_configured_startup_scan_launch()
+    except Exception as e:
+        logging.error(f"Failed to schedule startup scan launch: {e}")
+
+    try:
+        _auto_resume_interrupted_scans()
+    except Exception as e:
+        logging.error(f"Failed to schedule auto-resume of interrupted scans: {e}")
+
+    try:
+        _start_daily_scheduler()
+    except Exception as e:
+        logging.error(f"Failed to start daily scheduler: {e}")
+
+    try:
+        _start_upcoming_release_match_scheduler()
+    except Exception as e:
+        logging.error(f"Failed to start upcoming release match scheduler: {e}")
+
+    try:
+        _start_listenbrainz_createdfor_scheduler()
+    except Exception as e:
+        logging.error(f"Failed to start ListenBrainz/Last.fm weekly playlist scheduler: {e}")
+else:
+    logging.debug("[BOOT] Non-leader worker: startup background schedulers not started in this process")
 
 
 def _is_postgres_connection(conn):
@@ -8765,7 +8762,8 @@ def _fetch_musicbrainz_releases(artist_name: str, limit: int = 100, artist_mbid:
         query = f'arid:"{artist_mbid}" AND (primarytype:album OR primarytype:ep OR primarytype:single)'
         logging.debug(f"MusicBrainz: Using artist MBID lookup for {artist_name} ({artist_mbid})")
     else:
-        query = f'artist:"{artist_name}" AND (primarytype:album OR primarytype:ep OR primarytype:single)'
+        escaped_artist = _escape_mb_phrase(artist_name)
+        query = f'artist:"{escaped_artist}" AND (primarytype:album OR primarytype:ep OR primarytype:single)'
         logging.debug(f"MusicBrainz: Using text search for {artist_name}")
     
     # Retry with exponential backoff
@@ -8923,7 +8921,7 @@ def _search_musicbrainz_releasegroup_matches(artist_name: str, album_name: str, 
 
     headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
     search_url = "https://musicbrainz.org/ws/2/release-group"
-    query = f"artist:{artist_name} AND releasegroup:{album_name}"
+    query = f'artist:"{_escape_mb_phrase(artist_name)}" AND releasegroup:"{_escape_mb_phrase(album_name)}"'
     params = {
         "fmt": "json",
         "query": query,
@@ -9460,7 +9458,7 @@ def api_scan_all_missing_releases():
                   AND COALESCE(NULLIF(album_artist, ''), artist) != ''
                 ORDER BY canonical_artist
             """)
-            artists = [row[0] for row in cursor.fetchall()]
+            artists = [_row_get(row, "canonical_artist", 0) for row in cursor.fetchall()]
             total_artists = len(artists)
             
             logging.info(f"[MISSING_RELEASES] Starting scan for {total_artists} artists")
@@ -9549,7 +9547,7 @@ def api_scan_all_missing_releases():
                         FROM tracks
                         WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
                     """, (artist_name,))
-                    existing_albums = [row[0] for row in cursor.fetchall()]
+                    existing_albums = [_row_get(row, "album", 0) for row in cursor.fetchall()]
                     existing_norm = {_normalize_release_title(a) for a in existing_albums if a}
                     
                     # Fetch MusicBrainz releases, preferring MBID lookups for accuracy.
@@ -12791,7 +12789,7 @@ def api_add_artist():
         existing_norm = set()
         if existing_count > 0:
             cursor.execute(f"SELECT DISTINCT album FROM tracks WHERE artist = {placeholder}", (artist_name,))
-            existing_albums = [row[0] for row in cursor.fetchall()]
+            existing_albums = [_row_get(row, "album", 0) for row in cursor.fetchall()]
             existing_norm = {_normalize_release_title(a) for a in existing_albums if a}
         
         # Add all releases to missing_releases table
@@ -16540,16 +16538,16 @@ def bookmarks():
         
         bookmarks_data = []
         for row in cursor.fetchall():
-            raw_type = row[1]
+            raw_type = _row_get(row, "type", 1)
             normalized_type = "artist" if raw_type == "artist_favourite" else raw_type
             bookmarks_data.append({
-                'id': row[0],
+                'id': _row_get(row, "id", 0),
                 'type': normalized_type,
-                'name': row[2],
-                'artist': row[3],
-                'album': row[4],
-                'track_id': row[5],
-                'created_at': row[6]
+                'name': _row_get(row, "name", 2),
+                'artist': _row_get(row, "artist", 3),
+                'album': _row_get(row, "album", 4),
+                'track_id': _row_get(row, "track_id", 5),
+                'created_at': _row_get(row, "created_at", 6),
             })
         
         conn.close()
@@ -26957,7 +26955,7 @@ def api_queue_clear():
             select_params.append(filters['album'])
 
         cursor.execute(select_query, select_params)
-        queue_ids_to_delete = [row[0] for row in cursor.fetchall()]
+        queue_ids_to_delete = [_row_get(row, "id", 0) for row in cursor.fetchall()]
 
         # Now delete the items
         delete_query = f"DELETE FROM download_queue WHERE status != {placeholder}"
@@ -31713,7 +31711,7 @@ def apply_musicbrainz_data():
             album
         ))
         # Get IDs of updated tracks for file sync
-        updated_ids = [row[0] for row in cursor.fetchall()]
+        updated_ids = [_row_get(row, "id", 0) for row in cursor.fetchall()]
         conn.commit()
         
         # Sync tags to files
@@ -36193,7 +36191,7 @@ def api_upcoming_releases():
                     f"WHERE musicbrainz_releasegroupid IN ({placeholders})",
                     mbids,
                 )
-                matched_mbids = {row[0] for row in (cursor_mbid.fetchall() or [])}
+                matched_mbids = {_row_get(row, "musicbrainz_releasegroupid", 0) for row in (cursor_mbid.fetchall() or [])}
                 conn_mbid.close()
                 for release in releases:
                     if release.get("release_group_mbid") in matched_mbids:
