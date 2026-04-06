@@ -2089,7 +2089,7 @@ def _acquire_startup_leader_lock() -> bool:
         lock_key = 915317499  # app-specific startup leader lock
         cursor.execute("SELECT pg_try_advisory_lock(%s) AS acquired", (lock_key,))
         row = cursor.fetchone()
-        acquired = bool(_row_get(row, 'acquired', 0))
+        acquired = bool(row[0] if row is not None else False)
 
         if acquired:
             _startup_leader_lock_conn = conn  # keep alive to hold lock
