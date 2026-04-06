@@ -77,16 +77,25 @@ def _ensure_release_track_cache_columns(cursor) -> None:
     with _fme_schema_lock:
         if _fme_schema_checked:
             return
-        required_columns = {
+        required_track_columns = {
             'disc_number': 'INTEGER',
             'recording_title': 'TEXT',
             'recording_mbid': 'TEXT',
         }
-        existing_columns = _get_table_columns(cursor, 'musicbrainz_release_tracks')
-        for column_name, column_type in required_columns.items():
-            if column_name in existing_columns:
+        existing_track_columns = _get_table_columns(cursor, 'musicbrainz_release_tracks')
+        for column_name, column_type in required_track_columns.items():
+            if column_name in existing_track_columns:
                 continue
             cursor.execute(f"ALTER TABLE musicbrainz_release_tracks ADD COLUMN {column_name} {column_type}")
+
+        # Ensure release_year exists on musicbrainz_releases for tables created before
+        # the column was added to the schema definition.
+        existing_release_columns = _get_table_columns(cursor, 'musicbrainz_releases')
+        if 'release_year' not in existing_release_columns:
+            cursor.execute(
+                "ALTER TABLE musicbrainz_releases ADD COLUMN IF NOT EXISTS release_year INTEGER"
+            )
+
         _fme_schema_checked = True
 
 

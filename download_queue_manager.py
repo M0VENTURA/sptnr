@@ -1518,7 +1518,7 @@ def trigger_navidrome_scan():
         return False
 
 
-def _add_queue_item_to_tracks_table(conn, cursor, is_pg, artist, title, album, album_artist,
+def _add_queue_item_to_tracks_table(conn, cursor, artist, title, album, album_artist,
                                      track_number, year, duration, disc_number, release_mbid,
                                      recording_mbid, queue_id, status,
                                      isrc=None, composer=None):
@@ -1539,34 +1539,19 @@ def _add_queue_item_to_tracks_table(conn, cursor, is_pg, artist, title, album, a
         # Reuse an existing queued placeholder row for the same track identity so
         # repeated queue actions update one row instead of creating duplicates.
         existing_track_id = None
-        if is_pg:
-            cursor.execute(
-                """
-                SELECT id
-                FROM tracks
-                WHERE LOWER(artist) = LOWER(%s)
-                  AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(%s, ''))
-                  AND LOWER(title) = LOWER(%s)
-                  AND file_path LIKE '__queued_for_download__%%'
-                ORDER BY last_scanned DESC NULLS LAST, id DESC
-                LIMIT 1
-                """,
-                (artist, album, title),
-            )
-        else:
-            cursor.execute(
-                """
-                SELECT id
-                FROM tracks
-                WHERE LOWER(artist) = LOWER(?)
-                  AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(?, ''))
-                  AND LOWER(title) = LOWER(?)
-                  AND file_path LIKE '__queued_for_download__%'
-                ORDER BY last_scanned DESC, id DESC
-                LIMIT 1
-                """,
-                (artist, album, title),
-            )
+        cursor.execute(
+            """
+            SELECT id
+            FROM tracks
+            WHERE LOWER(artist) = LOWER(%s)
+              AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(%s, ''))
+              AND LOWER(title) = LOWER(%s)
+              AND file_path LIKE '__queued_for_download__%%'
+            ORDER BY last_scanned DESC NULLS LAST, id DESC
+            LIMIT 1
+            """,
+            (artist, album, title),
+        )
         existing_row = cursor.fetchone()
         if existing_row:
             existing_track_id = existing_row.get('id') if hasattr(existing_row, 'get') else existing_row[0]
@@ -2032,7 +2017,7 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
             # Similar to how Navidrome imports work
             try:
                 _add_queue_item_to_tracks_table(
-                    conn, cursor, is_pg,
+                    conn, cursor,
                     artist=artist,
                     title=title,
                     album=album,

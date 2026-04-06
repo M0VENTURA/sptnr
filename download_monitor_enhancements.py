@@ -276,6 +276,18 @@ def search_and_update_musicbrainz(queue_id, artist, title, album):
                 except Exception:
                     pass
 
+        # Ensure the download_queue columns used in the UPDATE below exist on
+        # pre-existing databases that may not have been through the startup migration yet.
+        try:
+            from download_queue_manager import _ensure_download_queue_columns
+            _ensure_download_queue_columns(conn, cursor, is_pg=True)
+        except Exception as _schema_err:
+            logger.debug(f"[MB_ENRICH] Queue {queue_id}: schema ensure warning: {_schema_err}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
         # Fetch current status and file_path before updating so we can decide
         # whether to promote the item to 'matched' after setting the MBID.
         cursor.execute(

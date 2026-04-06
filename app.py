@@ -20830,6 +20830,13 @@ def api_get_releases_status():
         cursor = conn.cursor()
         placeholder = "%s"
 
+        # Ensure musicbrainz_releases.release_year exists on pre-existing tables.
+        try:
+            from musicbrainz_release_manager import get_manager
+            get_manager().ensure_schema()
+        except Exception as _schema_err:
+            logging.debug(f"[RELEASES_STATUS] schema ensure warning: {_schema_err}")
+
         # Get all active releases
         cursor.execute("""
             SELECT r.id, r.release_id, r.release_title, r.artist, 

@@ -158,6 +158,16 @@ class MusicBrainzReleaseManager:
                     )
                 """)
 
+                # Ensure release_year column exists on pre-existing musicbrainz_releases
+                # tables that were created before the column was added to the schema.
+                try:
+                    db_query.execute("""
+                        ALTER TABLE musicbrainz_releases
+                        ADD COLUMN IF NOT EXISTS release_year INTEGER
+                    """)
+                except Exception as alter_err:
+                    logger.debug(f"[SCHEMA] musicbrainz_releases.release_year column add: {alter_err}")
+
                 # Ensure disc_number column exists on pre-existing tables that were
                 # created before the column was added to the schema definition.
                 try:
