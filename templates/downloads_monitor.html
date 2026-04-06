@@ -4606,8 +4606,14 @@ async function _pollMoveToMusicTask(taskId, queueId, timeoutMs = 300000) {
         return task;
       }
     } catch (pollErr) {
-      // Server may be under load — log and retry rather than aborting the whole operation.
-      console.warn('[MOVE_POLL] Status check slow/failed, retrying:', pollErr.message);
+      const msg = pollErr.message || '';
+      const elapsedS = Math.round((Date.now() - start) / 1000);
+      // Non-retryable: 4xx client errors indicate a permanent problem — surface immediately.
+      if (/\b4\d\d\b/.test(msg)) {
+        throw pollErr;
+      }
+      // Transient (timeout, network error, 5xx): log with context and retry.
+      console.warn(`[MOVE_POLL] Status check failed after ${elapsedS}s elapsed, retrying. Error: ${msg}`);
     }
     await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
   }
