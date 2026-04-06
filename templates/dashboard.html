@@ -995,8 +995,27 @@ function _summarizeTextForError(text, maxLen = 120) {
     return compact.length > maxLen ? compact.slice(0, maxLen) + '...' : compact;
 }
 
-async function fetchJsonOrThrow(url, options = {}) {
-    const response = await fetch(url, options);
+async function fetchJsonOrThrow(url, options = {}, timeoutMs = 30000) {
+    const controller = new AbortController();
+    const mergedOptions = { ...options, signal: options?.signal || controller.signal };
+    const timeoutId = setTimeout(() => {
+        if (!options?.signal) {
+            controller.abort();
+        }
+    }, timeoutMs);
+
+    let response;
+    try {
+        response = await fetch(url, mergedOptions);
+    } catch (err) {
+        clearTimeout(timeoutId);
+        if (err.name === 'AbortError') {
+            throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s`);
+        }
+        throw err;
+    }
+    clearTimeout(timeoutId);
+
     const contentType = (response.headers.get('content-type') || '').toLowerCase();
 
     if (!response.ok) {
