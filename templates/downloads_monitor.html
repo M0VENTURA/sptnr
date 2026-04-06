@@ -4595,14 +4595,25 @@ async function retryQueueItem(queueId) {
   }
 }
 
-async function _pollMoveToMusicTask(taskId, queueId, timeoutMs = 180000) {
+async function _pollMoveToMusicTask(taskId, queueId, timeoutMs = 300000) {
   const start = Date.now();
-  const pollIntervalMs = 1000;
+  const pollIntervalMs = 2000;
 
   while (Date.now() - start < timeoutMs) {
-    const task = await fetchJsonOrThrow(`/api/queue/move-to-music/status/${taskId}?queue_id=${encodeURIComponent(queueId)}`, {}, 60000);
-    if (task.status === 'completed' || task.status === 'failed') {
-      return task;
+    try {
+      const task = await fetchJsonOrThrow(`/api/queue/move-to-music/status/${taskId}?queue_id=${encodeURIComponent(queueId)}`, {}, 120000);
+      if (task.status === 'completed' || task.status === 'failed') {
+        return task;
+      }
+    } catch (pollErr) {
+      const msg = pollErr.message || '';
+      const elapsedS = Math.round((Date.now() - start) / 1000);
+      // Non-retryable: 4xx client errors indicate a permanent problem — surface immediately.
+      if (/\b4\d\d\b/.test(msg)) {
+        throw pollErr;
+      }
+      // Transient (timeout, network error, 5xx): log with context and retry.
+      console.warn(`[MOVE_POLL] Status check failed after ${elapsedS}s elapsed, retrying. Error: ${msg}`);
     }
     await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
   }
