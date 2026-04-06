@@ -30117,6 +30117,7 @@ def api_lastfm_sync_now():
     from datetime import datetime
     import unicodedata
     
+    data = request.get_json(silent=True) or {}
     cfg = get_config()
     lastfm_config = cfg.get("api_integrations", {}).get("lastfm", {})
     
@@ -30127,13 +30128,15 @@ def api_lastfm_sync_now():
     if not api_key:
         return jsonify({"error": "Last.fm API key not configured"}), 400
     
-    current_user = session.get("username")
-    username = None
-    if current_user:
-        navidrome_users = cfg.get("navidrome_users", [])
-        user_cfg = next((u for u in navidrome_users if u.get("user") == current_user), None)
-        if user_cfg:
-            username = user_cfg.get("lastfm_username", "")
+    # Allow username override from POST body; fall back to per-user config
+    username = (data.get("username") or "").strip()
+    if not username:
+        current_user = session.get("username")
+        if current_user:
+            navidrome_users = cfg.get("navidrome_users", [])
+            user_cfg = next((u for u in navidrome_users if u.get("user") == current_user), None)
+            if user_cfg:
+                username = user_cfg.get("lastfm_username", "")
     
     # Fetch fresh recommendations from Last.fm
     recommendations = get_lastfm_recommendations(api_key, username=username)
@@ -30455,10 +30458,10 @@ def api_lastfm_create_playlist():
         if not api_key:
             return jsonify({"error": "Last.fm API key not configured"}), 400
         
-        # Get username from current user's navidrome settings (per-user configuration)
+        # Allow username override from POST body; fall back to per-user config
         current_user = session.get("username")
-        username = None
-        if current_user:
+        username = (data.get("username") or "").strip()
+        if not username and current_user:
             navidrome_users = cfg.get("navidrome_users", [])
             user_cfg = next((u for u in navidrome_users if u.get("user") == current_user), None)
             if user_cfg:
@@ -34300,8 +34303,23 @@ def playlists_browse():
             "user": navidrome_config.get("user")
         }]
     
-    return render_template('playlists_browse.html', 
-                         navidrome_users=navidrome_users)
+    # Pre-populate Last.fm and ListenBrainz usernames for the current session user
+    lastfm_username = ""
+    listenbrainz_username = ""
+    current_user = session.get("username")
+    if current_user:
+        user_cfg = next((u for u in navidrome_users if u.get("user") == current_user), None)
+        if user_cfg:
+            lastfm_username = user_cfg.get("lastfm_username", "")
+            listenbrainz_username = (
+                user_cfg.get("listenbrainz_username", "")
+                or current_user
+            )
+
+    return render_template('playlists_browse.html',
+                         navidrome_users=navidrome_users,
+                         lastfm_username=lastfm_username,
+                         listenbrainz_username=listenbrainz_username)
 
 
 @app.route("/playlists/create/<playlist_type>")
@@ -35904,17 +35922,20 @@ def api_listenbrainz_create_playlist():
         if not user_cfg:
             return jsonify({"error": "User not found in configuration"}), 404
         
-        # Get ListenBrainz token
+        # Allow username override from POST body; if provided, use public feeds (no token needed)
+        username = (data.get("username") or "").strip()
         lb_token = user_cfg.get("listenbrainz_user_token", "")
-        if not lb_token:
-            return jsonify({"error": "ListenBrainz token not configured"}), 400
+        if not username:
+            # Derive username from token
+            if not lb_token:
+                return jsonify({"error": "ListenBrainz token not configured"}), 400
+            from api_clients.audiodb_and_listenbrainz import ListenBrainzUserClient
+            client = ListenBrainzUserClient(lb_token)
+            username = client.get_username_from_token()
+            if not username:
+                return jsonify({"error": "Failed to validate ListenBrainz token"}), 401
         
         # Get recommendations with Created-For -> RSS -> API fallback chain.
-        from api_clients.audiodb_and_listenbrainz import ListenBrainzUserClient
-        client = ListenBrainzUserClient(lb_token)
-        username = client.get_username_from_token()
-        if not username:
-            return jsonify({"error": "Failed to validate ListenBrainz token"}), 401
 
         recommendations, source_used = _fetch_listenbrainz_feed_tracks(
             username,

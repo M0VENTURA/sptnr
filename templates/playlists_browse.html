@@ -214,6 +214,7 @@
       <div class="card-body">
         <p class="text-muted mb-3">
           Create Navidrome playlists directly from Last.fm and ListenBrainz recommendation sources.
+          Sync recommendations first to ensure the latest data is available.
         </p>
 
         <div class="row g-3">
@@ -222,6 +223,19 @@
               <div class="card-body">
                 <h6 class="mb-2"><i class="bi bi-star"></i> Last.fm</h6>
                 <p class="small text-muted mb-3">Build a playlist from Last.fm track, artist, or album recommendations.</p>
+                <div class="mb-3">
+                  <label for="lastfmUsername" class="form-label small fw-semibold">Last.fm Username</label>
+                  <div class="input-group input-group-sm">
+                    <input type="text" id="lastfmUsername" class="form-control"
+                           placeholder="Last.fm username"
+                           value="{{ lastfm_username or '' }}">
+                    <button class="btn btn-outline-secondary" type="button"
+                            onclick="syncLastfmRecommendations()" id="lastfmSyncBtn">
+                      <i class="bi bi-arrow-repeat"></i> Sync Recommendations
+                    </button>
+                  </div>
+                  <div id="lastfmSyncStatus" class="small text-muted mt-1"></div>
+                </div>
                 <div class="d-flex flex-wrap gap-2">
                   <button class="btn btn-sm btn-outline-primary" onclick="createLastfmPlaylistInBrowse('tracks')">Tracks</button>
                   <button class="btn btn-sm btn-outline-primary" onclick="createLastfmPlaylistInBrowse('artists')">Artists</button>
@@ -236,6 +250,19 @@
               <div class="card-body">
                 <h6 class="mb-2"><i class="bi bi-disc"></i> ListenBrainz</h6>
                 <p class="small text-muted mb-3">Build a playlist from weekly or last-week ListenBrainz recommendation feeds.</p>
+                <div class="mb-3">
+                  <label for="listenbrainzUsername" class="form-label small fw-semibold">ListenBrainz Username</label>
+                  <div class="input-group input-group-sm">
+                    <input type="text" id="listenbrainzUsername" class="form-control"
+                           placeholder="ListenBrainz username"
+                           value="{{ listenbrainz_username or '' }}">
+                    <button class="btn btn-outline-secondary" type="button"
+                            onclick="syncListenBrainzRecommendations()" id="listenbrainzSyncBtn">
+                      <i class="bi bi-arrow-repeat"></i> Sync Recommendations
+                    </button>
+                  </div>
+                  <div id="listenbrainzSyncStatus" class="small text-muted mt-1"></div>
+                </div>
                 <div class="d-flex flex-wrap gap-2">
                   <button class="btn btn-sm btn-outline-info" onclick="createListenBrainzPlaylistInBrowse('weekly_jams')">Weekly Jams</button>
                   <button class="btn btn-sm btn-outline-info" onclick="createListenBrainzPlaylistInBrowse('weekly_exploration')">Weekly Exploration</button>
@@ -362,25 +389,14 @@
           Supports 40+ fields, nested rule groups, and multi-field sorting.
         </p>
 
-        <!-- Load existing NSP to edit -->
-        <div class="border rounded p-3 mb-4 bg-body-secondary" id="nspEditSection">
+        <!-- Edit mode banner (shown when a playlist is loaded for editing from the Browse section) -->
+        <div id="nspEditBanner" class="alert alert-warning py-2 mb-4 d-none">
           <div class="d-flex align-items-center gap-3 flex-wrap">
-            <label for="nspEditSelect" class="form-label mb-0 fw-semibold text-nowrap">
-              <i class="bi bi-folder2-open"></i> Edit existing .nsp:
-            </label>
-            <select id="nspEditSelect" class="form-select form-select-sm" style="max-width:340px">
-              <option value="">— select file to edit —</option>
-            </select>
-            <button type="button" class="btn btn-sm btn-outline-warning" onclick="nspLoadForEdit()" id="nspLoadEditBtn" disabled>
-              <i class="bi bi-pencil-square"></i> Load into editor
-            </button>
-            <button type="button" class="btn btn-sm btn-outline-secondary d-none" onclick="nspExitEditMode()" id="nspExitEditBtn">
+            <span><i class="bi bi-pencil-square me-1"></i>
+            Editing <strong id="nspEditBannerName"></strong> — saving will overwrite the file.</span>
+            <button type="button" class="btn btn-sm btn-outline-secondary ms-auto" onclick="nspExitEditMode()" id="nspExitEditBtn">
               <i class="bi bi-x-circle"></i> Cancel edit
             </button>
-          </div>
-          <div id="nspEditBanner" class="alert alert-warning py-2 mt-2 mb-0 d-none">
-            <i class="bi bi-pencil-square me-1"></i>
-            Editing <strong id="nspEditBannerName"></strong> — saving will overwrite the file.
           </div>
         </div>
 
@@ -881,14 +897,69 @@
     return data;
   }
 
+  // ============================================================
+  // Sync Recommendations (Last.fm / ListenBrainz)
+  // ============================================================
+
+  async function syncLastfmRecommendations() {
+    const username = (document.getElementById('lastfmUsername') || {}).value || '';
+    const btn = document.getElementById('lastfmSyncBtn');
+    const statusEl = document.getElementById('lastfmSyncStatus');
+    const origHtml = btn ? btn.innerHTML : '';
+    if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Syncing...'; }
+    if (statusEl) statusEl.textContent = 'Syncing…';
+    try {
+      const resp = await fetch('/api/lastfm/sync/now', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username })
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || 'Sync failed');
+      if (statusEl) statusEl.innerHTML = '<span class="text-success">✓ Synced successfully</span>';
+      showToast('Last.fm recommendations synced.', 'success');
+    } catch (e) {
+      if (statusEl) statusEl.innerHTML = `<span class="text-danger">✗ ${escapeHtml(e.message)}</span>`;
+      showToast('Last.fm sync failed: ' + e.message, 'danger');
+    } finally {
+      if (btn) { btn.disabled = false; btn.innerHTML = origHtml || '<i class="bi bi-arrow-repeat"></i> Sync Recommendations'; }
+    }
+  }
+
+  async function syncListenBrainzRecommendations() {
+    const username = (document.getElementById('listenbrainzUsername') || {}).value || '';
+    const btn = document.getElementById('listenbrainzSyncBtn');
+    const statusEl = document.getElementById('listenbrainzSyncStatus');
+    const origHtml = btn ? btn.innerHTML : '';
+    if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Syncing...'; }
+    if (statusEl) statusEl.textContent = 'Syncing…';
+    try {
+      const resp = await fetch('/api/listenbrainz/rss/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ listenbrainz_username: username })
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || 'Sync failed');
+      if (statusEl) statusEl.innerHTML = '<span class="text-success">✓ Synced successfully</span>';
+      showToast('ListenBrainz recommendations synced.', 'success');
+    } catch (e) {
+      if (statusEl) statusEl.innerHTML = `<span class="text-danger">✗ ${escapeHtml(e.message)}</span>`;
+      showToast('ListenBrainz sync failed: ' + e.message, 'danger');
+    } finally {
+      if (btn) { btn.disabled = false; btn.innerHTML = origHtml || '<i class="bi bi-arrow-repeat"></i> Sync Recommendations'; }
+    }
+  }
+
   async function createLastfmPlaylistInBrowse(recType) {
+    const username = (document.getElementById('lastfmUsername') || {}).value || '';
     try {
       showToast(`Loading Last.fm ${recType} recommendations...`, 'info');
 
       const analysisResp = await fetch('/api/lastfm/create-playlist', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: recType, enqueue_missing: true })
+        body: JSON.stringify({ type: recType, enqueue_missing: true, username })
       });
       const analysis = await analysisResp.json();
       if (!analysisResp.ok) {
@@ -916,13 +987,14 @@
   }
 
   async function createListenBrainzPlaylistInBrowse(recType) {
+    const username = (document.getElementById('listenbrainzUsername') || {}).value || '';
     try {
       showToast(`Loading ListenBrainz ${recType.replace('_', ' ')} recommendations...`, 'info');
 
       const analysisResp = await fetch('/api/listenbrainz/create-playlist', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: recType, name: `ListenBrainz ${recType.replace('_', ' ')}` })
+        body: JSON.stringify({ type: recType, name: `ListenBrainz ${recType.replace('_', ' ')}`, username })
       });
       const analysis = await analysisResp.json();
       if (analysisResp.status === 404 && (analysis.error || '').toLowerCase().includes('no recommendations')) {
@@ -1349,12 +1421,10 @@
     if (titleText) titleText.textContent = 'Create Smart Playlist (.nsp)';
     const fi = document.getElementById('nspFileName');
     if (fi) fi.readOnly = false;
-    const editSel = document.getElementById('nspEditSelect');
-    if (editSel) editSel.value = '';
   }
 
   // Called from browse playlist dropdowns when a smart playlist is selected.
-  // Finds the matching .nsp file by name and loads it into the NSP editor.
+  // Finds the matching .nsp file by name and loads it directly into the NSP editor.
   function loadBrowseSmartPlaylistIntoEditor(playlistName) {
     const match = _cachedNspFiles.find(
       f => (f.name || '').toLowerCase() === (playlistName || '').toLowerCase()
@@ -1363,12 +1433,7 @@
       showToast(`No .nsp file found matching "${escapeHtml(playlistName)}"`, 'warning');
       return;
     }
-    const editSel = document.getElementById('nspEditSelect');
-    if (editSel) {
-      editSel.value = match.id;
-      editSel.dispatchEvent(new Event('change'));
-    }
-    nspLoadForEdit();
+    nspLoadForEdit(match.id);
   }
 
   // Called from browse playlist dropdowns when a regular playlist is selected.
@@ -1408,33 +1473,18 @@
     }
   }
 
-
-    const editSel = document.getElementById('nspEditSelect');
-    if (!editSel) return;
+  async function nspPopulateEditSelect() {
     try {
       const resp = await fetch('/api/playlist/list');
       const data = await resp.json();
-      const nspPlaylists = (data.playlists || []).filter(p => p.type === 'smart-local');
-      _cachedNspFiles = nspPlaylists;
-      editSel.innerHTML = '<option value="">— select file to edit —</option>';
-      nspPlaylists.forEach(p => {
-        const opt = document.createElement('option');
-        opt.value = p.id;  // basename like "my_mix.nsp"
-        opt.textContent = `${p.name} (${p.id})`;
-        editSel.appendChild(opt);
-      });
-      editSel.addEventListener('change', () => {
-        const btn = document.getElementById('nspLoadEditBtn');
-        if (btn) btn.disabled = !editSel.value;
-      });
+      _cachedNspFiles = (data.playlists || []).filter(p => p.type === 'smart-local');
     } catch (e) {
       console.warn('[NSP Edit] Could not load NSP file list:', e);
     }
   }
 
-  async function nspLoadForEdit() {
-    const editSel = document.getElementById('nspEditSelect');
-    const filename = editSel ? editSel.value.trim() : '';
+  async function nspLoadForEdit(filenameOverride) {
+    const filename = (filenameOverride || '').trim();
     if (!filename) { showToast('Select an .nsp file to edit first.', 'warning'); return; }
 
     try {
