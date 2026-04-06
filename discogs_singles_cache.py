@@ -120,6 +120,27 @@ class DiscogsArtistSinglesCache:
             except Exception:
                 pass  # Column already exists
 
+            # Add unique constraint for ON CONFLICT support on existing installations that pre-date this constraint
+            try:
+                cursor.execute("""
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM pg_constraint
+                            WHERE conrelid = 'discogs_singles_cache'::regclass
+                              AND contype = 'u'
+                              AND conname = 'discogs_singles_cache_artist_normalized_title_key'
+                        ) THEN
+                            ALTER TABLE discogs_singles_cache
+                                ADD CONSTRAINT discogs_singles_cache_artist_normalized_title_key
+                                UNIQUE (artist, normalized_title);
+                        END IF;
+                    END
+                    $$;
+                """)
+            except Exception:
+                pass  # Constraint already exists or table uses a different name
+
             # Create index for fast lookups
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_discogs_singles_artist
