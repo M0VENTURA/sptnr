@@ -37,6 +37,91 @@ logger = logging.getLogger(__name__)
 NAVIDROME_PROGRESS_FILE = os.environ.get("NAVIDROME_PROGRESS_FILE", "/database/navidrome_scan_progress.json")
 POPULARITY_PROGRESS_FILE = os.environ.get("POPULARITY_PROGRESS_FILE", "/database/popularity_scan_progress.json")
 
+# Maps each normalized scan type to the scan_history.scan_type values it produces.
+# The combined scan drives navidrome + essentia-mood + popularity + singles sub-scans,
+# so we check ALL of those when deciding whether combined was recently active.
+_HISTORY_TYPES_FOR_SCAN: Dict[str, List[str]] = {
+    "combined_scan":      ["navidrome", "essentia-mood", "essentia_mood", "popularity", "singles"],
+    "navidrome_scan":     ["navidrome"],
+    "popularity_scan":    ["popularity"],
+    "singles_scan":       ["singles"],
+    "essentia_mood_scan": ["essentia-mood", "essentia_mood"],
+    "mood_scan":          ["mood"],
+}
+
+
+def _get_scan_history_last_active(normalized_scan_type: str) -> "Tuple[Optional[datetime], bool]":
+    """Query scan_history for the most recent album-level activity for a scan type.
+
+    Returns a tuple of:
+      last_active  – datetime (UTC-naive) of the most recent scan_history entry, or
+                     None if the table is empty / unavailable for this scan type.
+      had_duplicates – True when the same (artist, album, scan_type) row appears
+                     more than once within a 10-second window around the most recent
+                     entry, which is the fingerprint of multiple concurrent scan
+                     instances (see advisory-lock bug).
+    """
+    history_types = _HISTORY_TYPES_FOR_SCAN.get(normalized_scan_type, [])
+    if not history_types:
+        return None, False
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        placeholders = ",".join(["%s"] * len(history_types))
+
+        # Most recent completed album scan for any of the constituent sub-scan types.
+        cursor.execute(
+            f"SELECT MAX(scan_timestamp) AS latest FROM scan_history "
+            f"WHERE scan_type IN ({placeholders}) AND status = 'completed'",
+            history_types,
+        )
+        row = cursor.fetchone()
+        latest_raw = row["latest"] if row and isinstance(row, dict) else (row[0] if row else None)
+        if latest_raw is None:
+            return None, False
+
+        # Normalise to a naive UTC datetime for consistent age arithmetic.
+        if hasattr(latest_raw, "tzinfo") and latest_raw.tzinfo is not None:
+            from datetime import timezone as _tz
+            latest = latest_raw.astimezone(_tz.utc).replace(tzinfo=None)
+        else:
+            latest = latest_raw
+
+        # Duplicate-instance detection: count distinct (artist, album, scan_type)
+        # triplets that appear MORE than once within ±10 seconds of the most recent
+        # entry.  This directly fingerprints the multi-worker restart bug.
+        cursor.execute(
+            f"""
+            SELECT COUNT(*) AS dup_groups
+            FROM (
+                SELECT artist, album, scan_type
+                FROM scan_history
+                WHERE scan_type IN ({placeholders})
+                  AND scan_timestamp >= %s - INTERVAL '10 seconds'
+                  AND scan_timestamp <= %s + INTERVAL '10 seconds'
+                GROUP BY artist, album, scan_type
+                HAVING COUNT(*) > 1
+            ) AS duplicates
+            """,
+            history_types + [latest_raw, latest_raw],
+        )
+        dup_row = cursor.fetchone()
+        dup_count = dup_row["dup_groups"] if dup_row and isinstance(dup_row, dict) else (dup_row[0] if dup_row else 0)
+        had_duplicates = int(dup_count or 0) > 0
+
+        return latest, had_duplicates
+    except Exception as exc:
+        log_debug(f"[RESUME] scan_history query failed for {normalized_scan_type}: {exc}")
+        return None, False
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
 
 def _normalize_scan_type(scan_type: str) -> str:
     normalized = str(scan_type or "navidrome").strip().lower().replace("-", "_")
@@ -213,35 +298,37 @@ def clear_scan_progress(scan_type: str = "navidrome") -> bool:
 
 def detect_interrupted_scan(scan_type: str = "navidrome") -> Optional[Dict]:
     """
-    Detect if a scan was interrupted and can be resumed.
-    
-    Checks:
-    1. Progress file exists
-    2. is_running flag is True (scan was genuinely active when the app stopped)
-    3. Last update was recent (within 30 minutes)
-    4. A current_artist checkpoint exists
-    
+    Detect if a scan was genuinely interrupted mid-run and can be auto-resumed.
+
+    Checks (in order):
+    1. Progress file / marker exists with ``is_running=True``.
+    2. A ``current_artist`` checkpoint is present.
+    3. The scan was not already complete or in a fresh-start state.
+    4. The most recent album work (from scan_history) or progress-file timestamp
+       is within the last 30 minutes — indicating the scan was actively running
+       when the app stopped, not just idle between perpetual cycles.
+
+    When duplicate concurrent instances are detected in the prior run (same album
+    logged more than once within 10 seconds) a warning is emitted so operators
+    can correlate it with the advisory-lock / restart behaviour.
+
     Args:
-        scan_type: Type of scan ('navidrome', 'popularity', or 'combined')
-        
+        scan_type: Logical scan type ('navidrome', 'popularity', 'combined', …)
+
     Returns:
-        Progress dict if interrupted scan detected, None otherwise
+        Progress dict if a genuine interrupted scan is detected, None otherwise.
     """
     progress = load_scan_progress(scan_type)
-    
+
     if not progress:
         return None
-    
+
     current_artist = progress.get("current_artist")
     if not current_artist:
         log_debug("No checkpoint artist in progress/marker state")
         return None
 
     # Only auto-resume scans that were genuinely running when the app died.
-    # Scans that were cleanly stopped (is_running=False) or explicitly stopped
-    # by the user should NOT be auto-resumed at boot; the user can restart them
-    # manually.  Previously "stopped" was included in resumable_statuses which
-    # caused every restart to re-launch the scan even after a clean shutdown.
     is_running = bool(progress.get("is_running", False))
     if not is_running:
         log_debug(f"Scan is_running=False; skipping auto-resume (status={progress.get('status')!r})")
@@ -253,33 +340,52 @@ def detect_interrupted_scan(scan_type: str = "navidrome") -> Optional[Dict]:
         log_debug("Scan is already complete; no resume needed")
         return None
 
-    # A scan in 'starting' state was just initiated and has not yet processed
-    # any artists.  The resume marker may carry a stale current_artist from the
-    # previous run, making the scan look interrupted at that artist even though
-    # no work was done in the current run.  Skip auto-resume unconditionally so
-    # the next boot launches a clean scan rather than a spurious resume.
-    if status == 'starting':
+    # A scan in 'starting' state has not yet processed any artists; the resume
+    # marker may carry a stale current_artist from the previous run.
+    if status == "starting":
         log_debug("Progress file shows scan in 'starting' state; skipping auto-resume")
         return None
 
-    # Check if progress is recent (within 30 minutes).  A running scan writes
-    # its progress file every time it advances to a new artist, so a file that
-    # hasn't been touched in more than 30 minutes belongs to either a completed
-    # scan or a scan that was deliberately idle between cycles.  Both cases
-    # should NOT be auto-resumed; the user can restart them manually.
-    try:
-        if 'last_updated' in progress:
-            last_updated = datetime.fromisoformat(progress['last_updated'])
-            age = datetime.now() - last_updated
-            if age > timedelta(minutes=30):
-                log_debug(f"Progress file is too old ({age}), not resuming")
-                return None
-    except Exception as e:
-        log_debug(f"Failed to check progress age: {e}")
+    # -----------------------------------------------------------------------
+    # Age gate: use scan_history timestamps (actual album-level work) as the
+    # authoritative source for "when did this scan last do something".
+    # This is more reliable than progress.last_updated because the progress file
+    # is written during idle/cycle-pause periods as well as active scanning.
+    # Fall back to the progress file timestamp if the DB is unavailable.
+    # -----------------------------------------------------------------------
+    normalized = _normalize_scan_type(scan_type)
+    last_active, had_duplicates = _get_scan_history_last_active(normalized)
 
-    log_info(f"Detected interrupted {scan_type} scan at {progress.get('percent_complete', 0)}%")
-    log_info(f"Last scanned: {progress.get('current_artist', 'unknown')}")
-    
+    if had_duplicates:
+        log_info(
+            f"[RESUME] Prior {scan_type} run had duplicate concurrent instances "
+            "(same album logged multiple times within 10 s).  This is caused by "
+            "multiple workers starting the scan simultaneously."
+        )
+
+    if last_active is None:
+        # DB unavailable — fall back to progress file timestamp.
+        try:
+            raw = progress.get("last_updated", "")
+            if raw:
+                last_active = datetime.fromisoformat(raw)
+        except Exception as _ts_err:
+            log_debug(f"[RESUME] Could not parse progress last_updated: {_ts_err}")
+
+    if last_active is None:
+        log_debug("[RESUME] Could not determine last active time; skipping auto-resume")
+        return None
+
+    age = datetime.utcnow() - last_active
+    if age > timedelta(minutes=30):
+        log_debug(f"[RESUME] Last scan activity was {age} ago (> 30 min); skipping auto-resume")
+        return None
+
+    log_info(
+        f"Detected interrupted {scan_type} scan at {progress.get('percent_complete', 0)}% "
+        f"(last active {int(age.total_seconds() // 60)} min ago, artist: {current_artist!r})"
+    )
+
     return progress
 
 
