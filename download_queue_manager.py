@@ -9092,20 +9092,39 @@ def backfill_queued_track_metadata():
         m = _re_bf.search(r'(19|20)\d{2}', str(v))
         return int(m.group(0)) if m else None
 
+    # Commit every this many successful UPDATEs to limit transaction size.
+    _BATCH_SIZE = 200
+
     try:
         conn = get_db()
         cursor = conn.cursor()
 
-        # Fetch all queued placeholder rows that are still missing enriched fields.
+        # Single JOIN query: fetch track placeholders together with the enrichment
+        # data from download_queue in one round-trip, avoiding the previous N+1
+        # SELECT pattern (one query per row against download_queue).
         cursor.execute("""
-            SELECT id, file_path
-            FROM tracks
-            WHERE file_path LIKE %s
+            SELECT
+                t.id             AS track_id,
+                t.file_path      AS file_path,
+                dq.id            AS queue_id,
+                dq.release_mbid,
+                dq.recording_mbid,
+                dq.isrc,
+                dq.composer,
+                dq.year,
+                dq.release_year
+            FROM tracks t
+            JOIN download_queue dq
+                ON dq.id = CAST(
+                    SUBSTRING(t.file_path FROM '__queued_for_download__queue_id_([0-9]+)$')
+                    AS INTEGER
+                )
+            WHERE t.file_path LIKE %s
               AND (
-                  musicbrainz_albumid IS NULL
-                  OR musicbrainz_trackid IS NULL
-                  OR isrc IS NULL
-                  OR writer IS NULL
+                  t.musicbrainz_albumid IS NULL
+                  OR t.musicbrainz_trackid IS NULL
+                  OR t.isrc IS NULL
+                  OR t.writer IS NULL
               )
         """, ('__queued_for_download__%',))
         rows = cursor.fetchall() or []
@@ -9120,50 +9139,30 @@ def backfill_queued_track_metadata():
         updated = 0
         skipped = 0
 
+        def _get(row, key, idx):
+            if hasattr(row, 'get'):
+                return row.get(key)
+            try:
+                return row[idx]
+            except (IndexError, TypeError):
+                return None
+
         for row in rows:
             try:
-                track_id = row['id'] if hasattr(row, 'get') else row[0]
-                file_path_val = row['file_path'] if hasattr(row, 'get') else row[1]
+                track_id       = _get(row, 'track_id', 0)
+                release_mbid   = str(_get(row, 'release_mbid',   3) or '').strip() or None
+                recording_mbid = str(_get(row, 'recording_mbid', 4) or '').strip() or None
+                isrc_val       = str(_get(row, 'isrc',           5) or '').strip() or None
+                composer_val   = str(_get(row, 'composer',       6) or '').strip() or None
+                year_val       = _get(row, 'year',          7)
+                release_year_v = _get(row, 'release_year',  8)
 
-                # Extract the queue_id from the marker string.
-                marker_prefix = '__queued_for_download__queue_id_'
-                if marker_prefix not in str(file_path_val):
-                    skipped += 1
-                    continue
-                raw_id = str(file_path_val).split(marker_prefix, 1)[-1].strip()
-                try:
-                    queue_id = int(raw_id)
-                except ValueError:
-                    skipped += 1
-                    continue
+                mb_album_id      = release_mbid   if _valid_uuid(release_mbid)   else None
+                mb_track_id      = recording_mbid if _valid_uuid(recording_mbid) else None
+                release_year_int = _year_int(release_year_v or year_val)
 
-                # Look up the download_queue row.
-                cursor.execute(
-                    "SELECT release_mbid, recording_mbid, isrc, composer, year, release_year"
-                    " FROM download_queue WHERE id = %s",
-                    (queue_id,),
-                )
-                qrow = cursor.fetchone()
-                if not qrow:
-                    skipped += 1
-                    continue
-
-                def _qget(key):
-                    val = (qrow.get(key) if hasattr(qrow, 'get') else None)
-                    return str(val).strip() if val else None
-
-                release_mbid  = _qget('release_mbid')
-                recording_mbid = _qget('recording_mbid')
-                isrc_val      = _qget('isrc')
-                composer_val  = _qget('composer')
-                year_val      = _qget('year')
-
-                mb_album_id = release_mbid  if _valid_uuid(release_mbid)  else None
-                mb_track_id = recording_mbid if _valid_uuid(recording_mbid) else None
-                release_year_int = _year_int(_qget('release_year') or year_val)
-
-                # Build the SET clause dynamically — only include fields that have
-                # actual values so we never overwrite existing data with NULL/empty.
+                # Build SET clause — only include fields with actual values so we
+                # never overwrite existing data with NULL/empty.
                 set_parts = []
                 params = []
 
@@ -9184,25 +9183,41 @@ def backfill_queued_track_metadata():
                     params.append(release_year_int)
 
                 if not set_parts:
-                    # Nothing in the queue row to contribute — skip silently.
                     skipped += 1
                     continue
 
                 params.append(track_id)
-                cursor.execute(
-                    f"UPDATE tracks SET {', '.join(set_parts)} WHERE id = %s",
-                    params,
-                )
-                conn.commit()
-                updated += 1
+                # Use a savepoint so that a failure on this single row does not
+                # discard the accumulated updates from earlier rows in the batch.
+                cursor.execute("SAVEPOINT bf_row")
+                try:
+                    cursor.execute(
+                        f"UPDATE tracks SET {', '.join(set_parts)} WHERE id = %s",
+                        params,
+                    )
+                    cursor.execute("RELEASE SAVEPOINT bf_row")
+                    updated += 1
+                except Exception as _update_err:
+                    cursor.execute("ROLLBACK TO SAVEPOINT bf_row")
+                    cursor.execute("RELEASE SAVEPOINT bf_row")
+                    logger.debug(f"[BACKFILL] Skipping track {track_id} due to update error: {_update_err}")
+                    skipped += 1
+                    continue
+
+                # Commit in batches to bound transaction size without
+                # holding a single long-running transaction for the full run.
+                if updated % _BATCH_SIZE == 0:
+                    conn.commit()
 
             except Exception as _row_err:
                 logger.debug(f"[BACKFILL] Skipping row due to error: {_row_err}")
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
                 skipped += 1
+
+        # Commit any remaining updates in the last partial batch.
+        try:
+            conn.commit()
+        except Exception as _commit_err:
+            logger.warning(f"[BACKFILL] Final commit failed — some updates may not have been saved: {_commit_err}")
 
         conn.close()
         logger.info(
