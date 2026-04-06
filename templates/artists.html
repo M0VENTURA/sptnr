@@ -386,7 +386,10 @@ async function scanLetterArtists(letter) {
 async function loadArtistCorrections() {
     try {
         const response = await fetch('/api/artists/corrections');
-        if (!response.ok) return;
+        if (!response.ok) {
+            console.debug('Could not load artist corrections, status:', response.status);
+            return;
+        }
         const data = await response.json();
         const corrections = data.corrections || {};
 
@@ -403,27 +406,54 @@ async function loadArtistCorrections() {
                 if (info.disc_inconsistent_count > 0) parts.push(`${info.disc_inconsistent_count} album(s) with disc number issues`);
                 if (info.mbid_inconsistent_count > 0) parts.push(`${info.mbid_inconsistent_count} album(s) with multiple MBIDs`);
                 if (info.missing_tracks_count > 0) parts.push(`${info.missing_tracks_count} album(s) with missing tracks`);
-                const title = parts.join(', ');
-                const badgeHtml = `<a href="${correctionsUrl}" class="ms-2 text-decoration-none" title="${title}"><span class="badge bg-danger">Needs Correcting</span></a>`;
+                const titleText = parts.join(', ');
+
+                function makeBadgeLink(extraClass) {
+                    const a = document.createElement('a');
+                    a.href = correctionsUrl;
+                    a.className = `${extraClass} text-decoration-none`;
+                    a.title = titleText;
+                    const badge = document.createElement('span');
+                    badge.className = 'badge bg-danger';
+                    badge.textContent = 'Needs Correcting';
+                    a.appendChild(badge);
+                    return a;
+                }
 
                 const desktopSpan = row.querySelector('.correction-badge-desktop');
-                if (desktopSpan) desktopSpan.innerHTML = badgeHtml;
+                if (desktopSpan) { desktopSpan.innerHTML = ''; desktopSpan.appendChild(makeBadgeLink('ms-2')); }
 
                 const mobileSpan = row.querySelector('.correction-badge-mobile');
-                if (mobileSpan) mobileSpan.innerHTML = `<a href="${correctionsUrl}" class="ms-1 text-decoration-none" title="${title}"><span class="badge bg-danger">Needs Correcting</span></a>`;
+                if (mobileSpan) { mobileSpan.innerHTML = ''; mobileSpan.appendChild(makeBadgeLink('ms-1')); }
 
                 const actionSpan = row.querySelector('.correction-action-btns');
                 if (actionSpan) {
-                    let btnHtml = `<a href="${correctionsUrl}" class="btn btn-outline-danger" title="Review duplicate/missing track issues"><i class="bi bi-tools"></i></a>`;
+                    actionSpan.innerHTML = '';
+                    const toolBtn = document.createElement('a');
+                    toolBtn.href = correctionsUrl;
+                    toolBtn.className = 'btn btn-outline-danger';
+                    toolBtn.title = 'Review duplicate/missing track issues';
+                    toolBtn.innerHTML = '<i class="bi bi-tools"></i>';
+                    actionSpan.appendChild(toolBtn);
                     if (info.duplicate_artist_count > 0) {
-                        btnHtml += `<a href="${correctionsUrl}#duplicate-artists-section" class="btn btn-outline-warning" title="Open artist merge options"><i class="bi bi-merge"></i></a>`;
+                        const mergeBtn = document.createElement('a');
+                        mergeBtn.href = correctionsUrl + '#duplicate-artists-section';
+                        mergeBtn.className = 'btn btn-outline-warning';
+                        mergeBtn.title = 'Open artist merge options';
+                        mergeBtn.innerHTML = '<i class="bi bi-merge"></i>';
+                        actionSpan.appendChild(mergeBtn);
                     }
-                    actionSpan.innerHTML = btnHtml;
                 }
             } else if (info.duplicate_artist_count > 0) {
                 const actionSpan = row.querySelector('.correction-action-btns');
                 if (actionSpan) {
-                    actionSpan.innerHTML = `<a href="${correctionsUrl}#duplicate-artists-section" class="btn btn-outline-warning" title="Open artist merge options"><i class="bi bi-merge"></i></a>`;
+                    actionSpan.innerHTML = '';
+                    const mergeBtn = document.createElement('a');
+                    mergeBtn.href = correctionsUrl + '#duplicate-artists-section';
+                    mergeBtn.className = 'btn btn-outline-warning';
+                    mergeBtn.title = 'Open artist merge options';
+                    mergeBtn.innerHTML = '<i class="bi bi-merge"></i>';
+                    actionSpan.appendChild(mergeBtn);
                 }
             }
         });
