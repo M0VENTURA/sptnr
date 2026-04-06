@@ -6485,6 +6485,7 @@ def popularity_scan(
                     # album_tags_data would otherwise be discarded without being saved.
                     if album_tags_data:
                         try:
+                            tags_saved_count = 0
                             for tag_track in album_tracks:
                                 tag_track_id = tag_track.get('id')
                                 if tag_track_id not in album_tags_data:
@@ -6507,7 +6508,8 @@ def popularity_scan(
                                         f"UPDATE tracks SET {', '.join(set_clauses)} WHERE id = {placeholder}",
                                         tuple(update_params)
                                     )
-                            log_info(f'Metadata-only: saved genre tags for {len(album_tags_data)} track(s) in "{artist} - {album}"')
+                                    tags_saved_count += 1
+                            log_info(f'Metadata-only: saved genre tags for {tags_saved_count} track(s) in "{artist} - {album}"')
                         except Exception as tag_save_err:
                             log_debug(f'Failed to save genre tags in metadata-only mode for "{artist} - {album}": {tag_save_err}')
 
