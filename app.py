@@ -18821,12 +18821,63 @@ def slskd_queue_download():
     web_url = slskd_config.get("web_url", "http://localhost:5030")
     api_key = slskd_config.get("api_key", "")
 
+    # Immediately mark the item as 'downloading' (with the chosen filename)
+    # BEFORE starting the background thread.  This closes the race window
+    # where the queue processor could still see the item as 'queued',
+    # pick it up, and start a competing slskd search.  The background thread
+    # then updates slskd_state to 'Requested' once slskd confirms the
+    # download has been enqueued.  If slskd rejects the download the
+    # background thread resets the item to 'failed' so it can be retried.
+    try:
+        conn_pre = get_db()
+        try:
+            cur_pre = conn_pre.cursor()
+            cur_pre.execute(
+                """
+                UPDATE download_queue
+                SET status = %s,
+                    found_filename = %s,
+                    slskd_username = %s,
+                    slskd_state = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+                """,
+                ("downloading", filename, username, "Pending", queue_id),
+            )
+            conn_pre.commit()
+        finally:
+            conn_pre.close()
+    except Exception as pre_err:
+        logging.error(f"[SLSKD_QUEUE_DOWNLOAD] Could not pre-set downloading status for queue {queue_id}: {pre_err}")
+        # Continue anyway — the background thread will still try to start the download.
+
     def _background(q_id, uname, fname, sz, w_url, a_key):
         try:
             client = SlskdClient(w_url, a_key, enabled=True)
             success = client.download_file(username=uname, filename=fname, size=sz)
             if not success:
                 logging.error(f"[SLSKD_QUEUE_DOWNLOAD] slskd rejected download for queue {q_id}: {fname!r}")
+                # Reset status so the item can be retried via the normal queue flow.
+                try:
+                    conn_fail = get_db()
+                    try:
+                        cur_fail = conn_fail.cursor()
+                        cur_fail.execute(
+                            """
+                            UPDATE download_queue
+                            SET status = %s,
+                                slskd_state = %s,
+                                failure_reason = %s,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = %s AND status = 'downloading'
+                            """,
+                            ("queued", None, "slskd rejected manual download — will retry", q_id),
+                        )
+                        conn_fail.commit()
+                    finally:
+                        conn_fail.close()
+                except Exception as reset_err:
+                    logging.error(f"[SLSKD_QUEUE_DOWNLOAD] Could not reset status after rejection for queue {q_id}: {reset_err}")
                 return
             conn2 = get_db()
             try:
@@ -18834,15 +18885,12 @@ def slskd_queue_download():
                 cur2.execute(
                     """
                     UPDATE download_queue
-                    SET status = %s,
-                        found_filename = %s,
-                        slskd_username = %s,
-                        slskd_state = %s,
+                    SET slskd_state = %s,
                         slskd_last_sync_at = %s,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = %s
                     """,
-                    ("downloading", fname, uname, "Requested", datetime.now().isoformat(), q_id),
+                    ("Requested", datetime.now().isoformat(), q_id),
                 )
                 conn2.commit()
                 logging.info(f"[SLSKD_QUEUE_DOWNLOAD] Queue {q_id}: download started for {fname!r}")
@@ -19123,9 +19171,23 @@ def slskd_search_again():
     api_key = slskd_config.get("api_key", "")
     
     try:
-        client = SlskdClient(web_url, api_key, enabled=True)
-        _clear_stale_slskd_searches(client, context="search-again")
-        search_id = client.start_search(filename)
+        # Use a plain session (no automatic retry backoff) so the optimistic
+        # fast path returns immediately when slskd is idle.
+        plain_session = requests.Session()
+        client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True)
+
+        # Optimistic fast path: attempt without pre-emptive cleanup.
+        # Pre-emptively calling _clear_stale_slskd_searches issues one DELETE
+        # per accumulated completed search (each with a 4 s timeout); with many
+        # stale entries that can exceed the 60 s browser timeout before the POST
+        # to slskd is even sent.
+        search_id = client.start_search(filename, timeout=6, max_attempts=1)
+
+        if search_id is None:
+            # First attempt failed (likely 429 — stale search blocking the slot).
+            # Run stale-search cleanup once, then retry.
+            _clear_stale_slskd_searches(client, context="search-again")
+            search_id = client.start_search(filename, timeout=6, max_attempts=3)
         
         if search_id:
             return jsonify({
@@ -19133,8 +19195,8 @@ def slskd_search_again():
                 "message": f"Searching for '{filename}'",
                 "search_id": search_id
             })
-        else:
-            return jsonify({"error": "Failed to start search"}), 500
+        if not search_id:
+            return jsonify({"error": "Failed to start search — slskd search slot may be busy. Try again in a moment."}), 500
             
     except Exception as e:
         logging.error(f"[SLSKD] Search again error: {str(e)}")
