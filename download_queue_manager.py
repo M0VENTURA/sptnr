@@ -1040,6 +1040,11 @@ def transfer_download_to_music(source_path, dest_path, queue_id=None, copy_only=
         }
     except Exception as move_err:
         return {"success": False, "target_path": None, "error": f"File move failed: {move_err}"}
+
+    action = "copied" if copy_only else "moved"
+    logger.info(
+        f"[MOVE] Queue {queue_id or 'unknown'}: {action} {source_path} → {final_dest_path}"
+    )
     return {
         "success": True,
         "target_path": final_dest_path,
@@ -4404,9 +4409,9 @@ def _matches_format_bitrate_priority(file_path, file_meta=None):
             result['matches'] = True
             result['reason'] = f'Matches priority: {priority_format} {file_info["bitrate_kbps"]} kbps'
             return result
-        else:
-            logger.debug(f"[FORMAT-FILTER] Bitrate mismatch: {file_path} has "
-                        f"{file_info['bitrate_kbps']} kbps, expected {priority_bitrate} ±{tolerance}")
+        # Individual per-file bitrate mismatch messages are intentionally omitted
+        # here to avoid flooding the log.  The end-of-pass summary
+        # "[QUALITY-FILTER] Excluded N file(s)" captures the aggregate count.
     
     # No priority rules matched
     if config['reject_others']:

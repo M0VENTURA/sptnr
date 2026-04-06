@@ -2101,6 +2101,15 @@ def _acquire_startup_leader_lock() -> bool:
         acquired = bool(row['acquired'] if row is not None else False)
 
         if acquired:
+            # Commit to end the implicit transaction so the connection is idle
+            # (not idle-in-transaction).  idle_in_transaction_session_timeout only
+            # fires on connections that are actively inside a transaction; an idle
+            # connection is unaffected.  The session-level advisory lock persists
+            # for the lifetime of the connection regardless of transaction state.
+            try:
+                conn.commit()
+            except Exception:
+                pass
             _startup_leader_lock_conn = conn  # keep alive to hold lock
             logging.info("[BOOT] Startup leader lock acquired in this worker")
             return True
