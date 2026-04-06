@@ -2574,6 +2574,7 @@ def detect_single_for_track(
     lastfm_client=None,
     existing_conn=None,
     persist_result: bool = True,
+    mb_cached_singles: set = None,
 ) -> dict:
     """
     Detect if a track is a single using multiple data sources.
@@ -2672,7 +2673,8 @@ def detect_single_for_track(
                 verbose=verbose,
                 album_type=album_type,
                 album_is_underperforming=album_is_underperforming,
-                artist_median_popularity=artist_median_popularity
+                artist_median_popularity=artist_median_popularity,
+                mb_cached_singles=mb_cached_singles,
             )
 
             log_info(f"✅ [SINGLE DETECTION] Enhanced detection complete for: {title}")
@@ -3202,6 +3204,53 @@ def get_artist_lastfm_context(artist_name: str, conn: object, artist_mbid: str =
         # Determine database type for proper placeholder syntax
         placeholder = "%s"
 
+        # Ensure the caching columns exist in the artists table (idempotent, run once per startup).
+        try:
+            cursor.execute("ALTER TABLE artists ADD COLUMN IF NOT EXISTS artist_lastfm_context_json TEXT")
+            cursor.execute("ALTER TABLE artists ADD COLUMN IF NOT EXISTS artist_context_cached_at TIMESTAMPTZ")
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
+        # --- DB cache check: skip expensive API calls if fresh data is available ---
+        _CONTEXT_CACHE_TTL_DAYS = 7
+        try:
+            cursor.execute(f"""
+                SELECT artist_lastfm_context_json, artist_context_cached_at
+                FROM artists
+                WHERE name = {placeholder}
+                LIMIT 1
+            """, (artist_name,))
+            _ctx_row = cursor.fetchone()
+            if _ctx_row:
+                _ctx_json = row_get(_ctx_row, 'artist_lastfm_context_json')
+                _ctx_cached_at = row_get(_ctx_row, 'artist_context_cached_at')
+                if _ctx_json and _ctx_cached_at:
+                    from datetime import datetime as _dt2, timedelta as _td2, timezone as _tz2
+                    if isinstance(_ctx_cached_at, str):
+                        _ctx_cached_at = _dt2.fromisoformat(_ctx_cached_at.replace('Z', '+00:00'))
+                    if _ctx_cached_at.tzinfo is not None:
+                        _ctx_age_days = (_dt2.now(_tz2.utc) - _ctx_cached_at).days
+                    else:
+                        _ctx_age_days = (_dt2.now() - _ctx_cached_at).days
+                    if _ctx_age_days < _CONTEXT_CACHE_TTL_DAYS:
+                        cached_ctx = json.loads(_ctx_json)
+                        # track_zscores keys were serialised as strings; convert back to int
+                        # to match the dict[int, float] type expected by callers.
+                        if 'track_zscores' in cached_ctx and isinstance(cached_ctx['track_zscores'], dict):
+                            try:
+                                cached_ctx['track_zscores'] = {int(k): v for k, v in cached_ctx['track_zscores'].items()}
+                            except (ValueError, TypeError):
+                                pass  # Keys may already be ints in some serialisation formats
+                        log_debug(f"Using cached artist_lastfm_context for '{artist_name}' ({_ctx_age_days}d old, TTL={_CONTEXT_CACHE_TTL_DAYS}d)")
+                        return cached_ctx
+        except Exception as _ctx_cache_err:
+            log_debug(f"Could not read artist_lastfm_context cache for '{artist_name}': {_ctx_cache_err}")
+        # --- end cache check ---
+
         # Get all tracks by artist with Last.fm listener data
         # Exclude live/remix/alternate versions to avoid skewing stats
         is_single_false_expr = "is_single = FALSE"
@@ -3337,7 +3386,7 @@ def get_artist_lastfm_context(artist_name: str, conn: object, artist_mbid: str =
                     in_top_10 = "✓ in top 10%" if listeners >= top_10_percentile_threshold else "✗ not in top 10%"
                     log_debug(f"Artist outlier detected: {title} (z={z:.2f}, listeners={listeners:.0f}, artist_mean={artist_mean:.0f}, {in_top_10})")
 
-        return {
+        context_result = {
             'mean': artist_mean,
             'stdev': artist_stdev,
             'min': artist_min,
@@ -3349,6 +3398,32 @@ def get_artist_lastfm_context(artist_name: str, conn: object, artist_mbid: str =
             'source': 'database_plus_api' if listeners_list else 'error',
             'threshold_source': threshold_source
         }
+
+        # Persist computed context to artists table so future calls within the TTL window
+        # skip the expensive DB scan + Last.fm API requests entirely.
+        if listeners_list:
+            try:
+                _ctx_serialisable = dict(context_result)
+                # Convert track_zscores keys to str for safe JSON serialization
+                _ctx_serialisable['track_zscores'] = {str(k): v for k, v in track_zscores.items()}
+                _ctx_json_str = json.dumps(_ctx_serialisable)
+                cursor.execute(f"""
+                    INSERT INTO artists (id, name, artist_lastfm_context_json, artist_context_cached_at)
+                    VALUES ({placeholder}, {placeholder}, {placeholder}, CURRENT_TIMESTAMP)
+                    ON CONFLICT (name) DO UPDATE SET
+                        artist_lastfm_context_json = EXCLUDED.artist_lastfm_context_json,
+                        artist_context_cached_at = EXCLUDED.artist_context_cached_at
+                """, (artist_name, artist_name, _ctx_json_str))
+                conn.commit()
+                log_debug(f"Cached artist_lastfm_context for '{artist_name}' in artists table (TTL={_CONTEXT_CACHE_TTL_DAYS}d)")
+            except Exception as _write_err:
+                log_debug(f"Could not cache artist_lastfm_context for '{artist_name}': {_write_err}")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
+        return context_result
 
     except Exception as e:
         log_debug(f"Error calculating artist Last.fm context: {e}")
@@ -3653,7 +3728,7 @@ def popularity_scan(
             "spotify_popularity, spotify_score, lastfm_track_playcount, lastfm_ratio, last_spotify_lookup, "
             "popularity_score, album_artist, writer, spotify_genres, lastfm_tags, "
             "listenbrainz_genres, discogs_genres, musicbrainz_genres, cover_art_url, "
-            "is_live, is_acoustic, is_cover"
+            "is_live, is_acoustic, is_cover, musicbrainz_albumtype"
         )
         where_clause = f" WHERE {' AND '.join(sql_conditions)}" if sql_conditions else ""
         sql = f"{select_clause} FROM tracks{where_clause} ORDER BY artist, album, title"
@@ -4197,7 +4272,7 @@ def popularity_scan(
 
             try:
                 cursor.execute(f"""
-                    SELECT similar_artists_lastfm, similar_artists_listenbrainz
+                    SELECT similar_artists_lastfm, similar_artists_listenbrainz, similar_artists_last_updated
                     FROM artists
                     WHERE id = {placeholder} OR name = {placeholder}
                     LIMIT 1
@@ -4210,10 +4285,29 @@ def popularity_scan(
                     similar_artists_listenbrainz = json.loads(cached_listenbrainz_raw) if cached_listenbrainz_raw else []
                     similar_artists_cached = bool(similar_artists_lastfm or similar_artists_listenbrainz)
                     if similar_artists_cached:
-                        log_debug(
-                            f"Using cached similar artists for '{artist}' "
-                            f"(Last.fm: {len(similar_artists_lastfm)}, ListenBrainz: {len(similar_artists_listenbrainz)})"
-                        )
+                        # Expire the cache after 90 days so stale data is refreshed
+                        _sa_last_updated = row_get(cached_row, 'similar_artists_last_updated')
+                        if _sa_last_updated:
+                            try:
+                                from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+                                if isinstance(_sa_last_updated, str):
+                                    _sa_last_updated = _dt.fromisoformat(_sa_last_updated.replace('Z', '+00:00'))
+                                if _sa_last_updated.tzinfo is not None:
+                                    _age_days = (_dt.now(_tz.utc) - _sa_last_updated).days
+                                else:
+                                    _age_days = (_dt.now() - _sa_last_updated).days
+                                if _age_days > 90:
+                                    log_debug(f"Similar artists cache expired for '{artist}' ({_age_days} days old > 90 day TTL) — will re-fetch")
+                                    similar_artists_cached = False
+                                    similar_artists_lastfm = []
+                                    similar_artists_listenbrainz = []
+                            except Exception as _ttl_err:
+                                log_debug(f"Could not check similar artists TTL for '{artist}': {_ttl_err}")
+                        if similar_artists_cached:
+                            log_debug(
+                                f"Using cached similar artists for '{artist}' "
+                                f"(Last.fm: {len(similar_artists_lastfm)}, ListenBrainz: {len(similar_artists_listenbrainz)})"
+                            )
             except Exception as cache_err:
                 log_debug(f"Could not read cached similar artists for {artist}: {cache_err}")
 
@@ -4520,6 +4614,29 @@ def popularity_scan(
             except Exception as e:
                 log_debug(f"Missing releases lookup failed for {artist}: {e}")
 
+            # Pre-load MB single release titles for this artist from missing_releases.
+            # The missing_releases table is populated above with ALL MusicBrainz releases
+            # including singles not yet in the library.  Using these titles avoids one MB
+            # API call per track in the single-detection stage below.
+            # Note: this covers singles NOT in the user's library.  Tracks that are singles
+            # AND already in the library are handled by the per-track MB API path in
+            # detect_single_enhanced (which itself caches per artist MBID within the scan run).
+            mb_artist_singles_normalized: set = set()
+            try:
+                cursor.execute(f"""
+                    SELECT title FROM missing_releases
+                    WHERE LOWER(artist) = LOWER({placeholder}) AND category = 'Single'
+                """, (artist,))
+                for _mr_row in cursor.fetchall():
+                    _mr_title = row_get(_mr_row, 'title') or ''
+                    if _mr_title:
+                        mb_artist_singles_normalized.add(_mr_title.lower().strip())
+                if mb_artist_singles_normalized:
+                    log_debug(f"Pre-loaded {len(mb_artist_singles_normalized)} MB single titles for '{artist}' from missing_releases cache")
+            except Exception as _mr_err:
+                log_debug(f"Could not pre-load MB singles for '{artist}' from missing_releases: {_mr_err}")
+                mb_artist_singles_normalized = set()
+
             album_num = 0
             total_albums = len(albums)
             single_detection_albums_processed = 0
@@ -4725,35 +4842,49 @@ def popularity_scan(
 
                 # Otherwise, fetch from MusicBrainz with Spotify fallback
                 else:
-                    try:
-                        from api_clients.musicbrainz import get_album_type_with_fallback
-                        # Look up release group MBID for a direct, accurate lookup if available
-                        release_group_mbid = None
-                        try:
-                            cursor.execute(f"""
-                                SELECT musicbrainz_album_mbid FROM tracks
-                                WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
-                                  AND album = {placeholder}
-                                  AND musicbrainz_album_mbid IS NOT NULL
-                                  AND musicbrainz_album_mbid != ''
-                                LIMIT 1
-                            """, (artist, album))
-                            mbid_row = cursor.fetchone()
-                            if mbid_row:
-                                release_group_mbid = row_get(mbid_row, 'musicbrainz_album_mbid')
-                                if release_group_mbid:
-                                    log_debug(f'Using release group MBID {release_group_mbid} for direct MusicBrainz lookup')
-                        except Exception:
-                            pass  # Column may not exist in older schemas
-                        detected_album_type, type_detection_source = get_album_type_with_fallback(
-                            artist, album, current_album_type, enabled=HAVE_MUSICBRAINZ,
-                            track_count=len(album_tracks), release_group_mbid=release_group_mbid
+                    # Skip MB API call if musicbrainz_albumtype is already stored as a confirmed
+                    # non-plain value (contains '+' or is 'ep'/'single') — album types never change.
+                    _stored_mb_type = (album_tracks[0].get('musicbrainz_albumtype') or '').strip().lower() if album_tracks else ''
+                    _type_already_confirmed = bool(
+                        _stored_mb_type and (
+                            '+' in _stored_mb_type or
+                            _stored_mb_type in ('ep', 'single')
                         )
-                        log_debug(f'MusicBrainz album type: "{detected_album_type}" (source: {type_detection_source})')
-                    except Exception as e:
-                        log_debug(f'Failed to fetch album type from MusicBrainz: {e}')
-                        detected_album_type = current_album_type or 'album'
-                        type_detection_source = 'fallback (Spotify or default)'
+                    )
+                    if _type_already_confirmed:
+                        detected_album_type = album_tracks[0].get('musicbrainz_albumtype')
+                        type_detection_source = 'cached (musicbrainz_albumtype column)'
+                        log_debug(f'Album type already confirmed from stored musicbrainz_albumtype: "{detected_album_type}" — skipping MB API call')
+                    else:
+                        try:
+                            from api_clients.musicbrainz import get_album_type_with_fallback
+                            # Look up release group MBID for a direct, accurate lookup if available
+                            release_group_mbid = None
+                            try:
+                                cursor.execute(f"""
+                                    SELECT musicbrainz_album_mbid FROM tracks
+                                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
+                                      AND album = {placeholder}
+                                      AND musicbrainz_album_mbid IS NOT NULL
+                                      AND musicbrainz_album_mbid != ''
+                                    LIMIT 1
+                                """, (artist, album))
+                                mbid_row = cursor.fetchone()
+                                if mbid_row:
+                                    release_group_mbid = row_get(mbid_row, 'musicbrainz_album_mbid')
+                                    if release_group_mbid:
+                                        log_debug(f'Using release group MBID {release_group_mbid} for direct MusicBrainz lookup')
+                            except Exception:
+                                pass  # Column may not exist in older schemas
+                            detected_album_type, type_detection_source = get_album_type_with_fallback(
+                                artist, album, current_album_type, enabled=HAVE_MUSICBRAINZ,
+                                track_count=len(album_tracks), release_group_mbid=release_group_mbid
+                            )
+                            log_debug(f'MusicBrainz album type: "{detected_album_type}" (source: {type_detection_source})')
+                        except Exception as e:
+                            log_debug(f'Failed to fetch album type from MusicBrainz: {e}')
+                            detected_album_type = current_album_type or 'album'
+                            type_detection_source = 'fallback (Spotify or default)'
 
                 # Update ALL tracks in this album with the detected type
                 if detected_album_type and detected_album_type != current_album_type:
@@ -5421,8 +5552,12 @@ def popularity_scan(
                             else:
                                 log_debug(f'[TAGS] Last.fm client not available for "{title}"')
 
-                            # Fetch ListenBrainz genres (if MBID available)
-                            if track_mbid:
+                            # Fetch ListenBrainz genres (if MBID available and not already populated)
+                            # The bulk ListenBrainz lookup later in this scan (lines below) also
+                            # populates musicbrainz_genres.  Skip per-track fetch when the track
+                            # already has listenbrainz_genres to avoid a duplicate API call.
+                            _existing_lb_genres = row_get(track, 'listenbrainz_genres')
+                            if track_mbid and not _existing_lb_genres:
                                 try:
                                     from api_clients.audiodb_and_listenbrainz import ListenBrainzUserClient
                                     lb_client = ListenBrainzUserClient("")
@@ -5440,11 +5575,24 @@ def popularity_scan(
                                     log_debug(f'Failed to fetch ListenBrainz genres for "{title}": {e}')
 
                             # Fetch Discogs genres
-                            # Use album-level data if available (homogeneous albums), otherwise fetch per-track
+                            # Use album-level data if available (homogeneous albums), otherwise fetch per-track.
+                            # Skip entirely when the track already has discogs_genres: Discogs release
+                            # genre data is stable and never needs re-fetching once populated.
+                            _existing_discogs_genres = row_get(track, 'discogs_genres')
+                            _discogs_genres_populated = False
+                            if _existing_discogs_genres:
+                                try:
+                                    _dg_parsed = json.loads(_existing_discogs_genres) if isinstance(_existing_discogs_genres, str) else _existing_discogs_genres
+                                    _discogs_genres_populated = bool(_dg_parsed)
+                                except (ValueError, TypeError):
+                                    _discogs_genres_populated = bool(_existing_discogs_genres)
                             if album_discogs_genres:
                                 # Use pre-fetched album-level genres for homogeneous albums
                                 track_tags["discogs_genres"] = album_discogs_genres
                                 log_debug(f'Using album-level Discogs genres for "{title}" ({len(album_discogs_genres)} genres)')
+                            elif _discogs_genres_populated:
+                                # Already have Discogs genres — skip API call
+                                log_debug(f'Skipping Discogs genre fetch for "{title}": discogs_genres already populated')
                             elif discogs_client:
                                 # Fetch per-track for heterogeneous albums (compilation, soundtrack, live, etc.)
                                 try:
@@ -6714,6 +6862,7 @@ def popularity_scan(
                             lastfm_client=single_detection_lastfm_client,
                             existing_conn=conn,
                             persist_result=False,
+                            mb_cached_singles=mb_artist_singles_normalized or None,
                         )
 
                         single_sources = detection_result["sources"]

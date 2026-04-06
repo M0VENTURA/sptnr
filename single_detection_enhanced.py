@@ -1509,7 +1509,8 @@ def detect_single_enhanced(
     verbose: bool = False,
     album_type: Optional[str] = None,
     album_is_underperforming: bool = False,
-    artist_median_popularity: float = 0.0
+    artist_median_popularity: float = 0.0,
+    mb_cached_singles: Optional[set] = None,
 ) -> Dict:
     """
     Enhanced single detection implementing the exact algorithm from problem statement.
@@ -1920,8 +1921,22 @@ def detect_single_enhanced(
                     except Exception as e:
                         log_debug(f"[MUSICBRAINZ] Could not fetch artist MBID: {e}")
                     
-                    # Use is_single method with artist MBID (preferred) and fallback to name-based search
-                    musicbrainz_confirmed = musicbrainz_client.is_single(lookup_title, artist, artist_mbid=artist_mbid)
+                    # Use pre-loaded MB singles cache when available to avoid an API call.
+                    # mb_cached_singles contains lowercase-normalised titles from missing_releases
+                    # (singles NOT yet in the user's library).  A title match means MB confirms.
+                    if mb_cached_singles is not None:
+                        _mb_lookup_norm = lookup_title.lower().strip()
+                        if _mb_lookup_norm in mb_cached_singles:
+                            musicbrainz_confirmed = True
+                            log_debug(f"[MUSICBRAINZ] ✓ CONFIRMED from missing_releases cache (no API call): {title}")
+                            log_info(f"   ✓ MusicBrainz confirms single (cached): {title}")
+                        else:
+                            # Title absent from missing_releases: may already be in library or not exist.
+                            # Fall through to the API for a definitive answer.
+                            musicbrainz_confirmed = musicbrainz_client.is_single(lookup_title, artist, artist_mbid=artist_mbid)
+                    else:
+                        # Use is_single method with artist MBID (preferred) and fallback to name-based search
+                        musicbrainz_confirmed = musicbrainz_client.is_single(lookup_title, artist, artist_mbid=artist_mbid)
                     if musicbrainz_confirmed:
                         result['single_sources'].append('musicbrainz')
                         result['single_sources_used'].append('musicbrainz')

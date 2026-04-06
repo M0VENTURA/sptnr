@@ -802,12 +802,31 @@ class DiscogsClient:
                 return result
             
             log_debug(f"[DISCOGS_SINGLE] Cache MISS - Searching Discogs for single/EP...")
-            
+
+            # Check persistent DB cache before hitting the API.
+            # This avoids repeated Discogs API calls across scan runs for the same track.
+            try:
+                _db_cache = get_discogs_cache()
+                _db_result = _db_cache.get_cached_result(artist_lower, base_normalized_title)
+                if _db_result is not None:
+                    self._single_check_cache[cache_key] = _db_result
+                    log_debug(f"[DISCOGS_SINGLE] Cache HIT (DB persistent): {_db_result}")
+                    logger.debug(f"Discogs: Using persistent DB cache for '{title}' by '{artist}': {_db_result}")
+                    return _db_result
+            except Exception as _db_cache_err:
+                log_debug(f"[DISCOGS_SINGLE] DB cache read error (will continue with API): {_db_cache_err}")
+
             # Search for artist + track as single/ep with optimized API calls
             result = self._search_discogs_for_single(artist, title, base_normalized_title, timeout)
             
-            # Cache the result
+            # Cache the result in-memory and in the persistent DB cache.
             self._single_check_cache[cache_key] = result
+            try:
+                _db_cache = get_discogs_cache()
+                _db_cache.save_result(artist_lower, title, result)
+            except Exception as _save_err:
+                log_debug(f"[DISCOGS_SINGLE] DB cache save error (non-fatal): {_save_err}")
+
             log_debug(f"[DISCOGS_SINGLE] Search result: {result} - Cached for future checks")
             
             if result:
