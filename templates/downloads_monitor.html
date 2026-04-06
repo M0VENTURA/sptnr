@@ -1821,17 +1821,19 @@ async function moveIndividualTrackFromEncoded(folderPathEnc, trackIndex, trackEn
   // We identify it by matching the track index inside the button's onclick attribute.
   let clickedBtn = null;
   try {
-    document.querySelectorAll('button[onclick]').forEach(btn => {
-      if (btn.getAttribute('onclick')?.includes(`${trackIndex}`) &&
-          btn.getAttribute('onclick')?.includes('moveIndividualTrackFromEncoded')) {
-        clickedBtn = btn;
+    const allBtns = document.querySelectorAll('button[onclick]');
+    for (let i = 0; i < allBtns.length; i++) {
+      const attr = allBtns[i].getAttribute('onclick') || '';
+      if (attr.includes(`${trackIndex}`) && attr.includes('moveIndividualTrackFromEncoded')) {
+        clickedBtn = allBtns[i];
+        break; // stop at the first match
       }
-    });
+    }
   } catch (_) { /* non-critical */ }
 
   if (clickedBtn) {
     clickedBtn.disabled = true;
-    clickedBtn.dataset._origHtml = clickedBtn.innerHTML;
+    clickedBtn.dataset.origHtml = clickedBtn.innerHTML;
     clickedBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span>';
   }
 
@@ -1878,10 +1880,10 @@ async function moveIndividualTrackFromEncoded(folderPathEnc, trackIndex, trackEn
   } finally {
     // Restore button state (the loadFolderGroups re-render will replace it anyway,
     // but restore in case the render is skipped or delayed).
-    if (clickedBtn && clickedBtn.dataset._origHtml) {
-      clickedBtn.innerHTML = clickedBtn.dataset._origHtml;
+    if (clickedBtn && clickedBtn.dataset.origHtml) {
+      clickedBtn.innerHTML = clickedBtn.dataset.origHtml;
       clickedBtn.disabled = false;
-      delete clickedBtn.dataset._origHtml;
+      delete clickedBtn.dataset.origHtml;
     }
     unlockNext(); // allow the next queued move to proceed
   }
