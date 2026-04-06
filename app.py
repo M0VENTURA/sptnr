@@ -11,6 +11,7 @@ from helpers.db_utils import (
     ensure_navidrome_tag_columns,
     ensure_spotify_metadata_columns,
     ensure_popularity_freeze_columns,
+    ensure_artists_name_unique_constraint,
     verify_album_artist_column,
 )
 from download_file_verification import ensure_verification_columns, ensure_queue_mbid_columns
@@ -663,6 +664,9 @@ ensure_spotify_metadata_columns()
 
 # Ensure popularity freeze tracking columns exist
 ensure_popularity_freeze_columns()
+
+# Ensure artists.name has a unique constraint (required for ON CONFLICT (name))
+ensure_artists_name_unique_constraint()
 
 # Ensure download file verification columns exist
 ensure_verification_columns()

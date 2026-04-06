@@ -18,7 +18,7 @@ def init_db():
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS artists (
         id TEXT PRIMARY KEY,
-        name TEXT NOT NULL
+        name TEXT NOT NULL UNIQUE
     )
     """)
     # Tracks table (basic structure; columns added dynamically by check_db.py)

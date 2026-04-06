@@ -1029,3 +1029,63 @@ def ensure_popularity_freeze_columns():
     except Exception as e:
         logging.error(f"✗ Error ensuring popularity freeze columns exist: {e}", exc_info=True)
         return False
+
+
+def ensure_artists_name_unique_constraint():
+    """Ensure a UNIQUE constraint exists on the artists.name column.
+
+    The ``ON CONFLICT (name)`` clause used in popularity.py requires a unique
+    constraint (or index) on ``artists.name``.  New installs get the constraint
+    via the ``CREATE TABLE`` definition in database.py; this function adds it
+    to existing databases that were created before the constraint was introduced.
+
+    If duplicate artist names are found, duplicate rows are removed first,
+    keeping the row whose ``id`` matches its ``name`` (the canonical form used
+    throughout the codebase) or, failing that, the row with the lexicographically
+    smallest ``id``.
+    """
+    import logging
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        if not _table_exists(cursor, "artists"):
+            logging.warning("Artists table does not exist yet, skipping name unique constraint migration")
+            conn.close()
+            return False
+
+        # Deduplicate rows with the same name before creating the unique index.
+        # Keep the row where id = name (canonical insert pattern), falling back
+        # to the row with the smallest id alphabetically.
+        cursor.execute("""
+            DELETE FROM artists
+            WHERE ctid NOT IN (
+                SELECT DISTINCT ON (name) ctid
+                FROM artists
+                ORDER BY name,
+                         (id = name) DESC,
+                         id ASC
+            )
+        """)
+        duplicates_removed = cursor.rowcount
+        if duplicates_removed:
+            logging.info(f"✓ Removed {duplicates_removed} duplicate artist row(s) before creating unique index")
+        conn.commit()
+
+        cursor.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_artists_name_unique ON artists (name)"
+        )
+        conn.commit()
+        logging.debug("✓ Unique index on artists.name ensured")
+        conn.close()
+        return True
+    except RuntimeError as e:
+        if is_transient_pg_startup_error(e):
+            logging.info(f"Skipping artists name unique constraint migration while PostgreSQL starts: {e}")
+        else:
+            logging.warning(f"⚠ Skipping artists name unique constraint migration: {e}")
+        return False
+    except Exception as e:
+        logging.error(f"✗ Error ensuring artists.name unique constraint: {e}", exc_info=True)
+        return False
