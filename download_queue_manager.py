@@ -4549,8 +4549,8 @@ def check_downloads_folder():
         # due to idle-in-transaction timeout").
         try:
             conn.commit()
-        except Exception:
-            pass
+        except Exception as _commit_err:
+            logger.debug(f"[check_downloads_folder] Could not commit after initial SELECT: {_commit_err}")
 
         conversion_settings = _read_download_conversion_settings()
         original_subfolder = (conversion_settings.get("original_subfolder") or "Original").strip().lower()
