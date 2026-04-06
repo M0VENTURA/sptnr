@@ -4557,9 +4557,10 @@ async function organizeFile(queueId) {
   }
   
   try {
+    // Use a generous timeout (120 s) to accommodate large files or slow storage.
     const data = await fetchJsonOrThrow(`/api/queue/${queueId}/organize`, {
       method: 'POST'
-    });
+    }, 120000);
     
     if (data.success) {
       alert('✅ File organized successfully!');

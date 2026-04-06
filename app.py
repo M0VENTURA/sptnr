@@ -26226,19 +26226,42 @@ def api_queue_copy_from_local(queue_id):
             base, ext = os.path.splitext(dest_filename)
             dest_path = os.path.join(downloads_dir, f"{base}_local_copy{ext}")
 
-        _shutil.copy2(source_path, dest_path)
-        logging.info(
-            f"[COPY_FROM_LOCAL] Queue {queue_id}: copied '{source_path}' → '{dest_path}'"
-        )
+        # Run the copy in a background thread so this Gunicorn worker is not
+        # blocked for the full duration of the file transfer.  The status update
+        # to 'matched' is deferred until after the copy completes so the
+        # background processor never tries to move an incomplete file.
+        _dest_path_capture = dest_path
+        _source_path_capture = source_path
 
-        # Mark as 'matched' with the /downloads copy as the working file so the
-        # normal move-to-music pipeline applies the correct MBID tags and moves it.
-        from download_queue_manager import update_queue_item
-        update_queue_item(queue_id, status='matched', file_path=dest_path)
+        def _background_copy():
+            try:
+                import shutil as _shutil_bg
+                _shutil_bg.copy2(_source_path_capture, _dest_path_capture)
+                logging.info(
+                    f"[COPY_FROM_LOCAL] Queue {queue_id}: copied "
+                    f"'{_source_path_capture}' → '{_dest_path_capture}'"
+                )
+                from download_queue_manager import update_queue_item as _uqi
+                _uqi(queue_id, status='matched', file_path=_dest_path_capture)
+            except Exception as _bg_err:
+                logging.error(
+                    f"[COPY_FROM_LOCAL] Background copy failed for queue {queue_id}: {_bg_err}"
+                )
+                try:
+                    from download_queue_manager import update_queue_item as _uqi2
+                    _uqi2(queue_id, status='failed', failure_reason=str(_bg_err)[:200])
+                except Exception:
+                    pass
+
+        threading.Thread(
+            target=_background_copy,
+            daemon=True,
+            name=f"copy-from-local-{queue_id}",
+        ).start()
 
         return jsonify({
             "success": True,
-            "message": "File copied to downloads — will be tagged and moved automatically.",
+            "message": "File copy started — will be tagged and moved automatically.",
             "dest_path": dest_path,
         })
 
@@ -27575,295 +27598,365 @@ def api_queue_organize(queue_id):
         log_debug(traceback.format_exc())
         return jsonify({"error": str(e)}), 400
 
-@app.route("/api/queue/organize-group", methods=["POST"])
-def api_queue_organize_group():
-    """Organize a group of downloads with metadata confirmation"""
-    try:
-        import shutil
-        from download_queue_manager import update_queue_item
-        
-        data = request.get_json(silent=True) or {}
-        group_id = data.get('group_id')
-        metadata = data.get('metadata', {})
-        
-        if not group_id:
-            return jsonify({"error": "group_id required"}), 400
-        
-        # Get all items in this group from completed queue
-        conn = get_db()
-        cursor = conn.cursor()
-        placeholder = "%s"
+_organize_group_tasks: dict = {}
+_organize_group_tasks_lock = threading.Lock()
 
-        cursor.execute(f"""
-            SELECT id, file_path, artist, album, title, track_number, disc_number, album_artist, year
-            FROM download_queue
-            WHERE import_group = {placeholder} AND status = 'completed'
-        """, (group_id,))
-        
-        items = cursor.fetchall()
-        conn.close()
-        
-        if not items:
-            return jsonify({"error": "No completed items found for this group"}), 404
-        
-        # Update metadata for all tracks in the group
-        album_artist = metadata.get('album_artist') or metadata.get('artist', '')
-        year = metadata.get('year', '')
-        album_name = metadata.get('album', '')
-        artist_match_threshold = float(os.environ.get("QUEUE_ARTIST_MATCH_THRESHOLD", "0.78"))
 
-        def _artist_similarity_score(expected_artist, candidate_artist):
-            expected_norm = _normalize_artist_name(expected_artist)
-            candidate_norm = _normalize_artist_name(candidate_artist)
-            if not expected_norm or not candidate_norm:
-                return 0.0
-            if expected_norm == candidate_norm:
-                return 1.0
-            ratio = difflib.SequenceMatcher(None, expected_norm, candidate_norm).ratio()
-            if expected_norm in candidate_norm or candidate_norm in expected_norm:
-                ratio = max(ratio, 0.92)
-            return ratio
-        
-        updated_count = 0
-        errors = []
-        
-        logging.info(f"[ORGANIZE_GROUP] ========================================")
-        logging.info(f"[ORGANIZE_GROUP] Group organization started - group_id={group_id}")
-        logging.info(f"[ORGANIZE_GROUP] Album Artist: {album_artist}, Album: {album_name}, Year: {year}")
-        logging.info(f"[ORGANIZE_GROUP] Total items to process: {len(items)}")
-        logging.info(f"[ORGANIZE_GROUP] =========================================")
-        
-        for item in items:
+def _organize_group_task_set(task_id, **updates):
+    with _organize_group_tasks_lock:
+        task = _organize_group_tasks.get(task_id, {"task_id": task_id})
+        task.update(updates)
+        task["updated_at"] = datetime.now().isoformat()
+        _organize_group_tasks[task_id] = task
+
+
+def _organize_group_task_get(task_id):
+    with _organize_group_tasks_lock:
+        return dict(_organize_group_tasks.get(task_id) or {})
+
+
+@app.route("/api/queue/organize-group/status/<task_id>", methods=["GET"])
+def api_queue_organize_group_status(task_id):
+    """Return status for a background organize-group request."""
+    task = _organize_group_task_get(task_id)
+    if not task:
+        return jsonify({"error": "Task not found"}), 404
+    return jsonify(task)
+
+
+def _run_organize_group_sync(group_id, metadata):
+    """Core organize-group logic. Runs in either a request handler or a background thread."""
+    from download_queue_manager import update_queue_item
+
+    conn = get_db()
+    cursor = conn.cursor()
+    placeholder = "%s"
+
+    cursor.execute(
+        f"""
+        SELECT id, file_path, artist, album, title, track_number, disc_number, album_artist, year
+        FROM download_queue
+        WHERE import_group = {placeholder} AND status = 'completed'
+        """,
+        (group_id,),
+    )
+    items = cursor.fetchall()
+    conn.close()
+
+    if not items:
+        return {"success": False, "error": "No completed items found for this group"}
+
+    album_artist = metadata.get('album_artist') or metadata.get('artist', '')
+    year = metadata.get('year', '')
+    album_name = metadata.get('album', '')
+    artist_match_threshold = float(os.environ.get("QUEUE_ARTIST_MATCH_THRESHOLD", "0.78"))
+
+    def _artist_similarity_score(expected_artist, candidate_artist):
+        expected_norm = _normalize_artist_name(expected_artist)
+        candidate_norm = _normalize_artist_name(candidate_artist)
+        if not expected_norm or not candidate_norm:
+            return 0.0
+        if expected_norm == candidate_norm:
+            return 1.0
+        ratio = difflib.SequenceMatcher(None, expected_norm, candidate_norm).ratio()
+        if expected_norm in candidate_norm or candidate_norm in expected_norm:
+            ratio = max(ratio, 0.92)
+        return ratio
+
+    updated_count = 0
+    errors = []
+
+    logging.info(f"[ORGANIZE_GROUP] ========================================")
+    logging.info(f"[ORGANIZE_GROUP] Group organization started - group_id={group_id}")
+    logging.info(f"[ORGANIZE_GROUP] Album Artist: {album_artist}, Album: {album_name}, Year: {year}")
+    logging.info(f"[ORGANIZE_GROUP] Total items to process: {len(items)}")
+    logging.info(f"[ORGANIZE_GROUP] =========================================")
+
+    for item in items:
+        try:
+            file_path = item['file_path']
+            item_artist = item['artist']
+            item_title = item['title']
+            item_track_number = item['track_number']
+            item_disc_number = item['disc_number']
+
+            if not os.path.exists(file_path):
+                error_msg = f"File not found at {file_path}"
+                errors.append(f"{item['title']}: {error_msg}")
+                logging.error(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
+                log_debug(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
+                continue
+
+            logging.debug(f"[ORGANIZE_GROUP] Processing item {item['id']}: {file_path} (title: {item['title']})")
+
+            resolved_album_artist = album_artist if album_artist else item['album_artist'] or item['artist']
+            resolved_album_name = album_name if album_name else item['album']
+            resolved_year = year if year else item['year']
+
             try:
-                file_path = item['file_path']
-                item_artist = item['artist']
-                item_title = item['title']
-                item_track_number = item['track_number']
-                item_disc_number = item['disc_number']
-                
-                if not os.path.exists(file_path):
-                    error_msg = f"File not found at {file_path}"
-                    errors.append(f"{item['title']}: {error_msg}")
-                    logging.error(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
-                    log_debug(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
-                    continue
-                
-                logging.debug(f"[ORGANIZE_GROUP] Processing item {item['id']}: {file_path} (title: {item['title']})")
-                
-                # Resolve metadata with fallbacks - define these before any try/except blocks
-                resolved_album_artist = album_artist if album_artist else item['album_artist'] or item['artist']
-                resolved_album_name = album_name if album_name else item['album']
-                resolved_year = year if year else item['year']
+                mb_conn = get_db()
+                mb_cursor = mb_conn.cursor()
+                mb_placeholder = "%s"
+                mb_cursor.execute(
+                    f"""
+                    SELECT r.release_title, r.artist, r.release_year,
+                           rt.track_number, rt.track_title, rt.track_artist
+                    FROM musicbrainz_release_tracks rt
+                    JOIN musicbrainz_releases r ON r.release_id = rt.release_id
+                    WHERE rt.queue_id = {mb_placeholder}
+                    LIMIT 1
+                    """,
+                    (item['id'],),
+                )
+                mb_row = mb_cursor.fetchone()
+                mb_conn.close()
+                if mb_row:
+                    resolved_album_name = _row_get(mb_row, 'release_title', 0) or resolved_album_name
+                    resolved_album_artist = _row_get(mb_row, 'artist', 1) or resolved_album_artist
+                    resolved_year = _row_get(mb_row, 'release_year', 2) or resolved_year
+                    item_track_number = _row_get(mb_row, 'track_number', 3)
+                    item_track_title = _row_get(mb_row, 'track_title', 4)
+                    item_track_artist = _row_get(mb_row, 'track_artist', 5)
+                    if item_track_title:
+                        item_title = item_track_title
+                    if item_track_artist:
+                        item_artist = item_track_artist
+            except Exception as mb_item_err:
+                logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: MusicBrainz metadata enrichment skipped: {mb_item_err}")
 
-                # Pull canonical release metadata for this queue item from MusicBrainz tables when available.
-                try:
-                    mb_conn = get_db()
-                    mb_cursor = mb_conn.cursor()
-                    mb_placeholder = "%s"
+            try:
+                embedded_metadata = read_mp3_metadata(file_path) or {}
+            except Exception as metadata_read_error:
+                embedded_metadata = {}
+                logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: Could not read embedded metadata for artist check: {metadata_read_error}")
 
-                    mb_cursor.execute(
-                        f"""
-                        SELECT r.release_title, r.artist, r.release_year,
-                               rt.track_number, rt.track_title, rt.track_artist
-                        FROM musicbrainz_release_tracks rt
-                        JOIN musicbrainz_releases r ON r.release_id = rt.release_id
-                        WHERE rt.queue_id = {mb_placeholder}
-                        LIMIT 1
-                        """,
-                        (item['id'],),
+            expected_artist = item_artist or resolved_album_artist
+            artist_candidates = [
+                embedded_metadata.get('artist'),
+                embedded_metadata.get('album_artist'),
+            ]
+            scored_candidates = []
+            for candidate in artist_candidates:
+                if candidate and str(candidate).strip():
+                    scored_candidates.append((str(candidate), _artist_similarity_score(expected_artist, candidate)))
+
+            if scored_candidates:
+                best_candidate, best_score = max(scored_candidates, key=lambda x: x[1])
+                if best_score < artist_match_threshold:
+                    error_msg = (
+                        f"Artist metadata mismatch (expected='{expected_artist}', "
+                        f"found='{best_candidate}', score={best_score:.2f}, threshold={artist_match_threshold:.2f})"
                     )
-                    mb_row = mb_cursor.fetchone()
-                    mb_conn.close()
-
-                    if mb_row:
-                        resolved_album_name = _row_get(mb_row, 'release_title', 0) or resolved_album_name
-                        resolved_album_artist = _row_get(mb_row, 'artist', 1) or resolved_album_artist
-                        resolved_year = _row_get(mb_row, 'release_year', 2) or resolved_year
-                        item_track_number = _row_get(mb_row, 'track_number', 3)
-                        item_track_title = _row_get(mb_row, 'track_title', 4)
-                        item_track_artist = _row_get(mb_row, 'track_artist', 5)
-
-                        if item_track_number:
-                            item_track_number = item_track_number
-                        if item_track_title:
-                            item_title = item_track_title
-                        if item_track_artist:
-                            item_artist = item_track_artist
-                except Exception as mb_item_err:
-                    logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: MusicBrainz metadata enrichment skipped: {mb_item_err}")
-
-                # Verify downloaded metadata has a close artist match before any update or file copy.
-                try:
-                    embedded_metadata = read_mp3_metadata(file_path) or {}
-                except Exception as metadata_read_error:
-                    embedded_metadata = {}
-                    logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: Could not read embedded metadata for artist check: {metadata_read_error}")
-
-                expected_artist = item_artist or resolved_album_artist
-                artist_candidates = [
-                    embedded_metadata.get('artist'),
-                    embedded_metadata.get('album_artist'),
-                ]
-
-                scored_candidates = []
-                for candidate in artist_candidates:
-                    if candidate and str(candidate).strip():
-                        scored_candidates.append((str(candidate), _artist_similarity_score(expected_artist, candidate)))
-
-                if scored_candidates:
-                    best_candidate, best_score = max(scored_candidates, key=lambda x: x[1])
-                    if best_score < artist_match_threshold:
-                        error_msg = (
-                            f"Artist metadata mismatch (expected='{expected_artist}', "
-                            f"found='{best_candidate}', score={best_score:.2f}, threshold={artist_match_threshold:.2f})"
-                        )
-                        errors.append(f"{item_title}: {error_msg}")
-                        update_queue_item(item['id'], status='failed', failure_reason=error_msg)
-                        logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
-                        log_debug(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
-                        continue
-
-                    logging.debug(
-                        f"[ORGANIZE_GROUP] Item {item['id']}: Artist metadata match accepted "
-                        f"(expected='{expected_artist}', found='{best_candidate}', score={best_score:.2f})"
-                    )
-                else:
-                    error_msg = "Artist metadata check failed (no embedded artist/album_artist tags found)"
                     errors.append(f"{item_title}: {error_msg}")
                     update_queue_item(item['id'], status='failed', failure_reason=error_msg)
                     logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
                     log_debug(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
                     continue
-                
-                # Update track metadata in database
-                try:
+                logging.debug(
+                    f"[ORGANIZE_GROUP] Item {item['id']}: Artist metadata match accepted "
+                    f"(expected='{expected_artist}', found='{best_candidate}', score={best_score:.2f})"
+                )
+            else:
+                error_msg = "Artist metadata check failed (no embedded artist/album_artist tags found)"
+                errors.append(f"{item_title}: {error_msg}")
+                update_queue_item(item['id'], status='failed', failure_reason=error_msg)
+                logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
+                log_debug(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
+                continue
+
+            try:
+                update_queue_item(
+                    item['id'],
+                    artist=item_artist,
+                    title=item_title,
+                    album=resolved_album_name,
+                    album_artist=resolved_album_artist,
+                    year=resolved_year,
+                    track_number=item_track_number,
+                )
+                logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Updated metadata")
+            except Exception as meta_error:
+                logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: Failed to update metadata: {meta_error}")
+                log_debug(f"[ORGANIZE_GROUP] Item {item['id']}: Failed to update metadata: {meta_error}")
+
+            try:
+                from post_download_processor import update_file_metadata
+                file_metadata = {
+                    'title': item_title,
+                    'artist': item_artist,
+                    'album_artist': resolved_album_artist,
+                    'album': resolved_album_name,
+                    'year': resolved_year,
+                    'track_number': item_track_number,
+                    'disc_number': item_disc_number,
+                }
+                tag_success = update_file_metadata(file_path, file_metadata, clear_existing_tags=True)
+                if tag_success:
+                    logging.info(f"[ORGANIZE_GROUP] Item {item['id']}: ✅ Metadata tags updated")
+                else:
+                    logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: Metadata tag update skipped/failed (non-fatal)")
+            except Exception as tag_error:
+                logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: Metadata tag update error (non-fatal): {tag_error}")
+
+            try:
+                from download_queue_manager import resolve_music_dir, transfer_download_to_music
+                music_root = resolve_music_dir()
+                target_path = _build_queue_target_path(
+                    music_root,
+                    resolved_album_artist,
+                    resolved_year,
+                    resolved_album_name,
+                    item_artist,
+                    item_title,
+                    item_track_number,
+                    file_path,
+                )
+                logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Copy - source={file_path}")
+                logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Copy - target={target_path}")
+                logging.info(f"[ORGANIZE_GROUP] Item {item['id']}: Copying file")
+                copy_result = transfer_download_to_music(
+                    file_path, target_path, queue_id=item['id'], copy_only=True
+                )
+                if copy_result.get("success"):
+                    target_path = copy_result.get("target_path") or target_path
+                elif not copy_result.get("skipped"):
+                    raise RuntimeError(copy_result.get("error", "Copy failed"))
+
+                copied_ok = (
+                    os.path.exists(target_path)
+                    and os.path.getsize(target_path) > 0
+                )
+                if copied_ok:
+                    logging.info(f"[ORGANIZE_GROUP] Item {item['id']}: ✅ Copy successful")
                     update_queue_item(
                         item['id'],
-                        artist=item_artist,
-                        title=item_title,
-                        album=resolved_album_name,
-                        album_artist=resolved_album_artist,
-                        year=resolved_year,
-                        track_number=item_track_number,
+                        status='imported',
+                        music_file_path=target_path,
+                        copied_individually=1,
+                        copied_individually_at=datetime.now().isoformat(),
                     )
-                    logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Updated metadata - artist={item_artist}, album={resolved_album_name}, album_artist={resolved_album_artist}, year={resolved_year}")
-                except Exception as meta_error:
-                    logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: Failed to update metadata: {meta_error}")
-                    log_debug(f"[ORGANIZE_GROUP] Item {item['id']}: Failed to update metadata: {meta_error}")
-
-                # Update embedded file tags before moving so tracks attach to the target album correctly.
-                # Existing tags are stripped first to avoid carrying source metadata.
-                try:
-                    from post_download_processor import update_file_metadata
-                    file_metadata = {
-                        'title': item_title,
-                        'artist': item_artist,
-                        'album_artist': resolved_album_artist,
-                        'album': resolved_album_name,
-                        'year': resolved_year,
-                        'track_number': item_track_number,
-                        'disc_number': item_disc_number,
-                    }
-                    tag_success = update_file_metadata(file_path, file_metadata, clear_existing_tags=True)
-                    if tag_success:
-                        logging.info(f"[ORGANIZE_GROUP] Item {item['id']}: ✅ Metadata tags updated")
-                    else:
-                        logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: Metadata tag update skipped/failed (non-fatal)")
-                except Exception as tag_error:
-                    logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: Metadata tag update error (non-fatal): {tag_error}")
-                
-                # Move file to music directory
-                try:
-                    from download_queue_manager import resolve_music_dir, transfer_download_to_music
-                    music_root = resolve_music_dir()
-                    target_path = _build_queue_target_path(
-                        music_root,
-                        resolved_album_artist,
-                        resolved_year,
-                        resolved_album_name,
-                        item_artist,
-                        item_title,
-                        item_track_number,
-                        file_path,
+                    logging.info(
+                        f"[ORGANIZE_GROUP] Item {item['id']}: Source retained in /downloads; "
+                        f"use cleanup action to remove copied files"
                     )
-                    
-                    logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Copy - source={file_path}")
-                    logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Copy - target={target_path}")
-                    
-                    logging.info(f"[ORGANIZE_GROUP] Item {item['id']}: Copying file")
-
-                    copy_result = transfer_download_to_music(
-                        file_path, target_path, queue_id=item['id'], copy_only=True
-                    )
-                    # transfer_download_to_music may adjust extension (e.g. FLAC→MP3)
-                    if copy_result.get("success"):
-                        target_path = copy_result.get("target_path") or target_path
-                    elif not copy_result.get("skipped"):
-                        raise RuntimeError(copy_result.get("error", "Copy failed"))
-                    
-                    # Verify copy integrity before any source deletion
-                    copied_ok = (
-                        os.path.exists(target_path)
-                        and os.path.getsize(target_path) > 0
-                    )
-
-                    if copied_ok:
-                        logging.info(f"[ORGANIZE_GROUP] Item {item['id']}: ✅ Copy successful")
-
-                        # Mark queue item imported and copied individually so source
-                        # cleanup can target only safe copied-source cases.
-                        update_queue_item(
-                            item['id'],
-                            status='imported',
-                            music_file_path=target_path,
-                            copied_individually=1,
-                            copied_individually_at=datetime.now().isoformat(),
-                        )
-
-                        logging.info(
-                            f"[ORGANIZE_GROUP] Item {item['id']}: Source retained in /downloads; "
-                            f"use cleanup action to remove copied files"
-                        )
-
-                        updated_count += 1
-                    else:
-                        error_msg = f"Copy verification failed"
-                        errors.append(f"{item_title}: {error_msg}")
-                        update_queue_item(item['id'], status='failed', failure_reason=error_msg)
-                        logging.error(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
-                        log_debug(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
-                        
-                except Exception as move_error:
-                    error_msg = str(move_error)
+                    updated_count += 1
+                else:
+                    error_msg = "Copy verification failed"
                     errors.append(f"{item_title}: {error_msg}")
                     update_queue_item(item['id'], status='failed', failure_reason=error_msg)
-                    logging.error(f"[ORGANIZE_GROUP] Item {item['id']}: Copy failed - {type(move_error).__name__}: {move_error}")
-                    log_debug(f"[ORGANIZE_GROUP] Item {item['id']}: Copy failed - {type(move_error).__name__}: {move_error}")
-                    
-            except Exception as e:
-                errors.append(f"{item['title'] or 'Unknown'}: {str(e)}")
-                logging.error(f"[ORGANIZE_GROUP] Error processing item {item['id']}: {e}")
-                log_debug(f"[ORGANIZE_GROUP] Error processing item {item['id']}: {e}")
-                continue
-        
-        logging.info(f"[ORGANIZE_GROUP] ========================================")
-        logging.info(f"[ORGANIZE_GROUP] Organization complete!")
-        logging.info(f"[ORGANIZE_GROUP] Results: {updated_count}/{len(items)} successful")
-        if errors:
-            logging.info(f"[ORGANIZE_GROUP] Failed items ({len(errors)}):")
-            for error in errors:
-                logging.info(f"[ORGANIZE_GROUP]   - {error}")
-        logging.info(f"[ORGANIZE_GROUP] =========================================")
-        
+                    logging.error(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
+                    log_debug(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
+            except Exception as move_error:
+                error_msg = str(move_error)
+                errors.append(f"{item_title}: {error_msg}")
+                update_queue_item(item['id'], status='failed', failure_reason=error_msg)
+                logging.error(f"[ORGANIZE_GROUP] Item {item['id']}: Copy failed - {type(move_error).__name__}: {move_error}")
+                log_debug(f"[ORGANIZE_GROUP] Item {item['id']}: Copy failed - {type(move_error).__name__}: {move_error}")
+        except Exception as e:
+            errors.append(f"{item['title'] or 'Unknown'}: {str(e)}")
+            logging.error(f"[ORGANIZE_GROUP] Error processing item {item['id']}: {e}")
+            log_debug(f"[ORGANIZE_GROUP] Error processing item {item['id']}: {e}")
+            continue
+
+    logging.info(f"[ORGANIZE_GROUP] ========================================")
+    logging.info(f"[ORGANIZE_GROUP] Organization complete!")
+    logging.info(f"[ORGANIZE_GROUP] Results: {updated_count}/{len(items)} successful")
+    if errors:
+        logging.info(f"[ORGANIZE_GROUP] Failed items ({len(errors)}):")
+        for error in errors:
+            logging.info(f"[ORGANIZE_GROUP]   - {error}")
+    logging.info(f"[ORGANIZE_GROUP] =========================================")
+
+    return {
+        "success": True,
+        "organized": updated_count,
+        "total": len(items),
+        "errors": errors,
+        "message": f"Organized {updated_count}/{len(items)} files",
+    }
+
+
+@app.route("/api/queue/organize-group", methods=["POST"])
+def api_queue_organize_group():
+    """Organize a group of downloads with metadata confirmation.
+
+    Supports background mode (?async=1) to avoid request timeouts when copying
+    many or large files.  When async is requested the endpoint returns HTTP 202
+    immediately with a task_id; callers should poll
+    /api/queue/organize-group/status/<task_id> until status is 'completed' or
+    'failed'.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        group_id = data.get('group_id')
+        metadata = data.get('metadata', {})
+
+        if not group_id:
+            return jsonify({"error": "group_id required"}), 400
+
+        async_requested = (
+            str(request.args.get("async", "0")).strip().lower() in {"1", "true", "yes", "on"}
+        )
+
+        if async_requested:
+            task_id = str(uuid.uuid4())
+            _organize_group_task_set(
+                task_id,
+                status="running",
+                group_id=group_id,
+                message="Organization started",
+                started_at=datetime.now().isoformat(),
+            )
+
+            def _worker():
+                try:
+                    with app.app_context():
+                        result = _run_organize_group_sync(group_id, metadata)
+                    _organize_group_task_set(
+                        task_id,
+                        status="completed",
+                        result=result,
+                        completed_at=datetime.now().isoformat(),
+                    )
+                except Exception as worker_err:
+                    logging.error(
+                        f"[ORGANIZE_GROUP] Async worker error for group {group_id}: {worker_err}"
+                    )
+                    import traceback as _tb
+                    logging.error(_tb.format_exc())
+                    _organize_group_task_set(
+                        task_id,
+                        status="failed",
+                        error=str(worker_err),
+                        completed_at=datetime.now().isoformat(),
+                    )
+
+            threading.Thread(
+                target=_worker,
+                daemon=True,
+                name=f"organize-group-{task_id[:8]}",
+            ).start()
+
+            return jsonify({
+                "success": True,
+                "accepted": True,
+                "task_id": task_id,
+                "status": "running",
+                "message": "Organization started in background",
+            }), 202
+
+        # Synchronous path (kept for backward compatibility).
+        result = _run_organize_group_sync(group_id, metadata)
+        if result.get("error") and not result.get("success"):
+            return jsonify({"error": result.get("error", "Not found")}), 404
         return jsonify({
-            "success": True,
-            "organized": updated_count,
-            "total": len(items),
-            "errors": errors,
-            "message": f"Organized {updated_count}/{len(items)} files"
+            "success": result.get("success", True),
+            "organized": result.get("organized", 0),
+            "total": result.get("total", 0),
+            "errors": result.get("errors", []),
+            "message": result.get("message", ""),
         })
 
-        
     except Exception as e:
         logging.error(f"[ORGANIZE_GROUP] Unhandled error during organization: {type(e).__name__}: {e}")
         log_debug(f"[ORGANIZE_GROUP] Unhandled error during organization: {type(e).__name__}: {e}")
