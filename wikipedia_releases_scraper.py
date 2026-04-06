@@ -361,16 +361,18 @@ class WikipediaReleaseScraper:
                 return None
             
             conn = self.get_db()
-            query = DatabaseQuery(conn)
-            
-            # Query all albums on same date and check normalized names
-            cursor = query.execute("""
-                SELECT * FROM upcoming_releases 
-                WHERE release_date = %s
-            """, (release_date,))
-            
-            rows = cursor.fetchall() or []
-            conn.close()
+            try:
+                query = DatabaseQuery(conn)
+                
+                # Query all albums on same date and check normalized names
+                cursor = query.execute("""
+                    SELECT * FROM upcoming_releases 
+                    WHERE release_date = %s
+                """, (release_date,))
+                
+                rows = cursor.fetchall() or []
+            finally:
+                conn.close()
             
             for row in rows:
                 if row is None:
@@ -940,159 +942,161 @@ class WikipediaReleaseScraper:
         Only imports releases from artists in the user's collection.
         """
         conn = self.get_db()
-        query = DatabaseQuery(conn)
         added = 0
         updated = 0
         filtered_out = 0
-        
-        # Get list of artists in collection (gracefully handle if tracks table doesn't exist)
-        artists_in_collection = set()
-        albums_in_collection = set()
-        
         try:
-            # Include both track-level artist and album_artist so that all catalog artists
-            # are matched correctly (e.g. an artist who only appears as album_artist is still found)
-            cursor = query.execute(
-                "SELECT DISTINCT LOWER(COALESCE(NULLIF(album_artist, ''), artist)) FROM tracks "
-                "WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL"
-            )
-            rows = cursor.fetchall() or []
-            artists_in_collection = {
-                self._row_value(row, index=0)
-                for row in rows
-                if row and self._row_value(row, index=0)
-            }
+            query = DatabaseQuery(conn)
             
-            # Get list of albums in collection (keyed by canonical album_artist or artist)
-            cursor = query.execute(
-                "SELECT DISTINCT LOWER(COALESCE(NULLIF(album_artist, ''), artist)), LOWER(album) "
-                "FROM tracks WHERE album IS NOT NULL AND album != ''"
-            )
-            rows = cursor.fetchall() or []
-            albums_in_collection = {
-                (self._row_value(row, index=0), self._row_value(row, index=1))
-                for row in rows
-                if row and self._row_value(row, index=0) and self._row_value(row, index=1)
-            }
-        except Exception as e:
-            # tracks table may not exist yet, continue without filtering.
-            # IMPORTANT: In PostgreSQL a failed statement aborts the entire transaction.
-            # Roll back here so subsequent INSERT/UPDATE operations can proceed.
-            logger.debug(f"Could not query tracks table (may not exist yet): {e}")
-            try:
-                conn.rollback()
-            except Exception:
-                pass
+            # Get list of artists in collection (gracefully handle if tracks table doesn't exist)
             artists_in_collection = set()
             albums_in_collection = set()
-        
-        logger.info(f"Filtering {len(releases)} releases against {len(artists_in_collection)} artists in collection")
-        
-        for release in releases:
-            if not release or not isinstance(release, dict):
-                logger.warning(f"Skipping invalid release: {release}")
-                continue
-            
-            # Only import releases from artists in collection
-            artist_name = release.get("artist_name", "")
-            artist_in_collection = artist_name.lower() in artists_in_collection if artist_name else False
-            
-            # Mark releases not in collection, but still add them so they can be viewed
-            if not artist_in_collection:
-                logger.debug(f"Adding release from artist not in collection: '{artist_name}' - {release.get('album_name')}")
-            
-            album_in_collection = (artist_name.lower(), release.get("album_name", "").lower()) in albums_in_collection if release.get("album_name") else False
-            
-            album_name = release.get("album_name", "Unknown")
-            release_date = release.get("release_date")
-            
-            # Check if a normalized version of this album already exists
-            existing_normalized = self.find_existing_normalized_album(artist_name, album_name, release_date)
             
             try:
-                if existing_normalized:
-                    # Update the existing normalized album record with better info if available
-                    existing_id = existing_normalized.get('id')
-                    logger.debug(f"Found normalized duplicate: '{existing_normalized.get('album_name')}' == '{album_name}' - updating record")
-                    
-                    # Use the shorter/better formatted name if the current one is better
-                    # (e.g., prefer "The Wilted EP" over "The Wilted EP(EP)")
-                    better_name = album_name if len(album_name) < len(existing_normalized.get('album_name', '')) else existing_normalized.get('album_name')
-                    
-                    query.execute("SAVEPOINT sp_release_upsert")
-                    query.execute("""
-                        UPDATE upcoming_releases
-                        SET artist_in_collection = %s, album_in_collection = %s, updated_at = CURRENT_TIMESTAMP, album_name = %s
-                        WHERE id = %s
-                    """, (artist_in_collection, album_in_collection, better_name, existing_id))
-                    query.execute("RELEASE SAVEPOINT sp_release_upsert")
-                    updated += 1
-                else:
-                    # Insert new record
-                    query.execute("SAVEPOINT sp_release_upsert")
-                    query.execute("""
-                        INSERT INTO upcoming_releases 
-                        (artist_name, album_name, release_date, release_year, source, 
-                         artist_in_collection, album_in_collection)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT(artist_name, album_name, release_date) DO UPDATE SET
-                        updated_at = CURRENT_TIMESTAMP,
-                        artist_in_collection = excluded.artist_in_collection,
-                        album_in_collection = excluded.album_in_collection
-                    """, (
-                        artist_name,
-                        album_name,
-                        release_date,
-                        release.get("release_year", datetime.now().year),
-                        source_name,
-                        artist_in_collection,
-                        album_in_collection,
-                    ))
-                    query.execute("RELEASE SAVEPOINT sp_release_upsert")
-                    added += 1
-            except Exception:
-                # Roll back to the savepoint to clear the aborted-transaction state,
-                # then attempt a plain UPDATE as a fallback.
+                # Include both track-level artist and album_artist so that all catalog artists
+                # are matched correctly (e.g. an artist who only appears as album_artist is still found)
+                cursor = query.execute(
+                    "SELECT DISTINCT LOWER(COALESCE(NULLIF(album_artist, ''), artist)) FROM tracks "
+                    "WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL"
+                )
+                rows = cursor.fetchall() or []
+                artists_in_collection = {
+                    self._row_value(row, index=0)
+                    for row in rows
+                    if row and self._row_value(row, index=0)
+                }
+                
+                # Get list of albums in collection (keyed by canonical album_artist or artist)
+                cursor = query.execute(
+                    "SELECT DISTINCT LOWER(COALESCE(NULLIF(album_artist, ''), artist)), LOWER(album) "
+                    "FROM tracks WHERE album IS NOT NULL AND album != ''"
+                )
+                rows = cursor.fetchall() or []
+                albums_in_collection = {
+                    (self._row_value(row, index=0), self._row_value(row, index=1))
+                    for row in rows
+                    if row and self._row_value(row, index=0) and self._row_value(row, index=1)
+                }
+            except Exception as e:
+                # tracks table may not exist yet, continue without filtering.
+                # IMPORTANT: In PostgreSQL a failed statement aborts the entire transaction.
+                # Roll back here so subsequent INSERT/UPDATE operations can proceed.
+                logger.debug(f"Could not query tracks table (may not exist yet): {e}")
                 try:
-                    query.execute("ROLLBACK TO SAVEPOINT sp_release_upsert")
+                    conn.rollback()
                 except Exception:
                     pass
+                artists_in_collection = set()
+                albums_in_collection = set()
+            
+            logger.info(f"Filtering {len(releases)} releases against {len(artists_in_collection)} artists in collection")
+            
+            for release in releases:
+                if not release or not isinstance(release, dict):
+                    logger.warning(f"Skipping invalid release: {release}")
+                    continue
+                
+                # Only import releases from artists in collection
+                artist_name = release.get("artist_name", "")
+                artist_in_collection = artist_name.lower() in artists_in_collection if artist_name else False
+                
+                # Mark releases not in collection, but still add them so they can be viewed
+                if not artist_in_collection:
+                    logger.debug(f"Adding release from artist not in collection: '{artist_name}' - {release.get('album_name')}")
+                
+                album_in_collection = (artist_name.lower(), release.get("album_name", "").lower()) in albums_in_collection if release.get("album_name") else False
+                
+                album_name = release.get("album_name", "Unknown")
+                release_date = release.get("release_date")
+                
+                # Check if a normalized version of this album already exists
+                existing_normalized = self.find_existing_normalized_album(artist_name, album_name, release_date)
+                
                 try:
-                    query.execute("""
-                        UPDATE upcoming_releases
-                        SET artist_in_collection = %s, album_in_collection = %s, updated_at = CURRENT_TIMESTAMP
-                        WHERE artist_name = %s AND album_name = %s AND release_date = %s
-                    """, (artist_in_collection, album_in_collection, artist_name, album_name, release_date))
-                    updated += 1
-                except Exception as update_error:
+                    if existing_normalized:
+                        # Update the existing normalized album record with better info if available
+                        existing_id = existing_normalized.get('id')
+                        logger.debug(f"Found normalized duplicate: '{existing_normalized.get('album_name')}' == '{album_name}' - updating record")
+                        
+                        # Use the shorter/better formatted name if the current one is better
+                        # (e.g., prefer "The Wilted EP" over "The Wilted EP(EP)")
+                        better_name = album_name if len(album_name) < len(existing_normalized.get('album_name', '')) else existing_normalized.get('album_name')
+                        
+                        query.execute("SAVEPOINT sp_release_upsert")
+                        query.execute("""
+                            UPDATE upcoming_releases
+                            SET artist_in_collection = %s, album_in_collection = %s, updated_at = CURRENT_TIMESTAMP, album_name = %s
+                            WHERE id = %s
+                        """, (artist_in_collection, album_in_collection, better_name, existing_id))
+                        query.execute("RELEASE SAVEPOINT sp_release_upsert")
+                        updated += 1
+                    else:
+                        # Insert new record
+                        query.execute("SAVEPOINT sp_release_upsert")
+                        query.execute("""
+                            INSERT INTO upcoming_releases 
+                            (artist_name, album_name, release_date, release_year, source, 
+                             artist_in_collection, album_in_collection)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT(artist_name, album_name, release_date) DO UPDATE SET
+                            updated_at = CURRENT_TIMESTAMP,
+                            artist_in_collection = excluded.artist_in_collection,
+                            album_in_collection = excluded.album_in_collection
+                        """, (
+                            artist_name,
+                            album_name,
+                            release_date,
+                            release.get("release_year", datetime.now().year),
+                            source_name,
+                            artist_in_collection,
+                            album_in_collection,
+                        ))
+                        query.execute("RELEASE SAVEPOINT sp_release_upsert")
+                        added += 1
+                except Exception:
+                    # Roll back to the savepoint to clear the aborted-transaction state,
+                    # then attempt a plain UPDATE as a fallback.
                     try:
                         query.execute("ROLLBACK TO SAVEPOINT sp_release_upsert")
                     except Exception:
                         pass
-                    logger.warning(f"Failed to update release - {artist_name} / {album_name}: {update_error}")
-        
-        # Log scrape
-        try:
-            query.execute("""
-                INSERT INTO release_scrape_history 
-                (source_url, source_name, items_found, items_added, items_updated, 
-                 scrape_status, scrape_start, scrape_end)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            """, (
-                WIKIPEDIA_SOURCES.get(source_name, {}).get("url", ""),
-                source_name,
-                len(releases),
-                added,
-                updated,
-                "success",
-                datetime.now(),
-                datetime.now(),
-            ))
-        except Exception as e:
-            logger.error(f"Error logging scrape history: {e}")
-        
-        conn.commit()
-        conn.close()
+                    try:
+                        query.execute("""
+                            UPDATE upcoming_releases
+                            SET artist_in_collection = %s, album_in_collection = %s, updated_at = CURRENT_TIMESTAMP
+                            WHERE artist_name = %s AND album_name = %s AND release_date = %s
+                        """, (artist_in_collection, album_in_collection, artist_name, album_name, release_date))
+                        updated += 1
+                    except Exception as update_error:
+                        try:
+                            query.execute("ROLLBACK TO SAVEPOINT sp_release_upsert")
+                        except Exception:
+                            pass
+                        logger.warning(f"Failed to update release - {artist_name} / {album_name}: {update_error}")
+            
+            # Log scrape
+            try:
+                query.execute("""
+                    INSERT INTO release_scrape_history 
+                    (source_url, source_name, items_found, items_added, items_updated, 
+                     scrape_status, scrape_start, scrape_end)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    WIKIPEDIA_SOURCES.get(source_name, {}).get("url", ""),
+                    source_name,
+                    len(releases),
+                    added,
+                    updated,
+                    "success",
+                    datetime.now(),
+                    datetime.now(),
+                ))
+            except Exception as e:
+                logger.error(f"Error logging scrape history: {e}")
+            
+            conn.commit()
+        finally:
+            conn.close()
         
         logger.info(f"{source_name}: {added} added, {updated} updated, {filtered_out} filtered out (from {len(releases)} total)")
         return added, updated
@@ -1101,15 +1105,16 @@ class WikipediaReleaseScraper:
         """Get upcoming releases, optionally filtered by collection artists"""
         try:
             conn = self.get_db()
-            query = DatabaseQuery(conn)
-            
-            if artist_in_collection:
-                query = "SELECT * FROM upcoming_releases WHERE artist_in_collection = TRUE ORDER BY release_date ASC"
-            else:
-                query = "SELECT * FROM upcoming_releases ORDER BY release_date ASC"
-            
-            cursor = DatabaseQuery(conn).execute(query)
-            rows = cursor.fetchall() or []
+            try:
+                if artist_in_collection:
+                    query = "SELECT * FROM upcoming_releases WHERE artist_in_collection = TRUE ORDER BY release_date ASC"
+                else:
+                    query = "SELECT * FROM upcoming_releases ORDER BY release_date ASC"
+                
+                cursor = DatabaseQuery(conn).execute(query)
+                rows = cursor.fetchall() or []
+            finally:
+                conn.close()
             releases = []
             
             for row in rows:
@@ -1126,7 +1131,6 @@ class WikipediaReleaseScraper:
                     logger.warning(f"Could not convert row to dict: {e}, row: {row}")
                     continue
             
-            conn.close()
             return releases
         except Exception as e:
             logger.error(f"Error retrieving upcoming releases: {e}")
@@ -1136,17 +1140,19 @@ class WikipediaReleaseScraper:
         """Clear all upcoming releases from the database"""
         try:
             conn = self.get_db()
-            query = DatabaseQuery(conn)
-            
-            # Get count before deletion
-            cursor = query.execute("SELECT COUNT(*) FROM upcoming_releases")
-            count_row = cursor.fetchone()
-            count_before = self._row_value(count_row, index=0, default=0) or 0
-            
-            query.execute("DELETE FROM upcoming_releases")
-            
-            conn.commit()
-            conn.close()
+            try:
+                query = DatabaseQuery(conn)
+                
+                # Get count before deletion
+                cursor = query.execute("SELECT COUNT(*) FROM upcoming_releases")
+                count_row = cursor.fetchone()
+                count_before = self._row_value(count_row, index=0, default=0) or 0
+                
+                query.execute("DELETE FROM upcoming_releases")
+                
+                conn.commit()
+            finally:
+                conn.close()
             
             logger.info(f"Cleared {count_before} upcoming releases from database")
             
