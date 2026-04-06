@@ -5134,14 +5134,22 @@ def artists():
         _sk = get_sort_key(_artist)
         _artist['sort_letter'] = _sk[0] if _sk[0] != '~' else '#'
 
-    # Build per-artist correction indicators (duplicates, missing core metadata, and duplicate artists)
-    duplicate_counts_by_artist = {}
-    missing_counts_by_artist = {}
-    duplicate_artist_counts_by_artist = {}  # Track artists with same MBID but different names
-    disc_inconsistent_counts_by_artist = {}  # Albums where some tracks have disc_number and others don't
-    mbid_inconsistent_counts_by_artist = {}  # Albums where tracks disagree on album MBID
-    extra_album_artist_counts_by_artist = {}  # Non-canonical album-artist variants on canonical albums
-    mbid_inconsistent_counts_by_artist = {}  # Albums with mixed musicbrainz_album_mbid values
+    conn.close()
+
+    return render_template("artists.html", artists=artists_data, total_stats=total_stats, DB_PATH=DB_PATH)
+
+
+@app.route("/api/artists/corrections")
+def api_artists_corrections():
+    """Return per-artist correction indicators asynchronously for the /artists page.
+
+    Runs all diagnostic queries (duplicates, missing metadata, MBID conflicts, etc.)
+    and returns a JSON dict keyed by artist display name so the artists page can
+    populate the "Needs Correcting" badges after initial load.
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+
     track_columns = _get_table_columns(cursor, 'tracks')
     has_album_artist = 'album_artist' in track_columns
     artist_expr = "COALESCE(NULLIF(album_artist, ''), artist)" if has_album_artist else "artist"
@@ -5160,6 +5168,16 @@ def artists():
         if has_album_artist
         else "CASE WHEN LOWER(TRIM(COALESCE(artist, ''))) IN ('various artists', 'various', 'v/a', 'va', 'compilation', 'soundtrack', 'original soundtrack') THEN 1 ELSE 0 END"
     )
+
+    duplicate_counts_by_artist = {}
+    missing_counts_by_artist = {}
+    duplicate_artist_counts_by_artist = {}
+    disc_inconsistent_counts_by_artist = {}
+    mbid_inconsistent_counts_by_artist = {}
+    extra_album_artist_counts_by_artist = {}
+    album_tag_inconsistency_counts_by_artist: dict = {}
+    missing_tracks_counts_by_artist: dict = {}
+
     try:
         # Query 1: Find duplicate tracks
         cursor.execute(f"""
@@ -5194,6 +5212,7 @@ def artists():
             row_dict = dict(row)
             duplicate_counts_by_artist[row_dict.get("display_name", "")] = int(row_dict.get("duplicate_count") or 0)
 
+        # Query 2: Find tracks with missing core metadata
         cursor.execute(f"""
             SELECT
                 {artist_expr} AS display_name,
@@ -5208,69 +5227,42 @@ def artists():
                     CAST(COALESCE(NULLIF(TRIM(CAST(track_number AS TEXT)), ''), '0') AS INTEGER) <= 0 OR
                     duration IS NULL OR CAST(duration AS DOUBLE PRECISION) <= 0
                   )
-                        GROUP BY {artist_expr}
-                """)
-
+            GROUP BY {artist_expr}
+        """)
         for row in cursor.fetchall():
             row_dict = dict(row)
             missing_counts_by_artist[row_dict.get("display_name", "")] = int(row_dict.get("missing_count") or 0)
-        
+
         # Query 3: Find duplicate artists (same MBID, different names)
         cursor.execute(f"""
-            SELECT 
-                {artist_expr} as effective_artist,
-                COUNT(DISTINCT musicbrainz_artist_id) as mbid_count,
-                COUNT(*) as track_count
+            SELECT
+                musicbrainz_artist_id,
+                COUNT(DISTINCT {artist_expr}) as distinct_artist_names
             FROM tracks
-            WHERE musicbrainz_artist_id IS NOT NULL 
+            WHERE musicbrainz_artist_id IS NOT NULL
               AND musicbrainz_artist_id != ''
               AND {artist_expr} IS NOT NULL
               AND TRIM({artist_expr}) != ''
-            GROUP BY {artist_expr}
-        """)
-        
-        artist_mbid_map = {}  # Map artist name to their MBID(s)
-        for row in cursor.fetchall():
-            row_dict = dict(row)
-            artist_name = row_dict.get("effective_artist", "")
-            if artist_name:
-                artist_mbid_map[artist_name] = row_dict
-        
-        # Now find which album artists share the same MBID
-                cursor.execute(f"""
-            SELECT 
-                musicbrainz_artist_id,
-                                COUNT(DISTINCT {artist_expr}) as distinct_artist_names,
-                COUNT(*) as total_tracks
-            FROM tracks
-            WHERE musicbrainz_artist_id IS NOT NULL 
-              AND musicbrainz_artist_id != ''
-                            AND {artist_expr} IS NOT NULL
-                            AND TRIM({artist_expr}) != ''
             GROUP BY musicbrainz_artist_id
-                        HAVING COUNT(DISTINCT {artist_expr}) > 1
+            HAVING COUNT(DISTINCT {artist_expr}) > 1
         """)
-        
-        # Build map of MBID -> list of artist names
         mbid_to_artists_map = {}
         for row in cursor.fetchall():
             row_dict = dict(row)
             mbid = row_dict.get("musicbrainz_artist_id", "")
             if mbid:
                 mbid_to_artists_map[mbid] = row_dict.get("distinct_artist_names", 0)
-        
-        # Get list of album artists by MBID to populate duplicate_artist_counts_by_artist
-                cursor.execute(f"""
+
+        cursor.execute(f"""
             SELECT DISTINCT
-                                {artist_expr} as effective_artist,
+                {artist_expr} as effective_artist,
                 musicbrainz_artist_id
             FROM tracks
-            WHERE musicbrainz_artist_id IS NOT NULL 
+            WHERE musicbrainz_artist_id IS NOT NULL
               AND musicbrainz_artist_id != ''
-                            AND {artist_expr} IS NOT NULL
-                            AND TRIM({artist_expr}) != ''
+              AND {artist_expr} IS NOT NULL
+              AND TRIM({artist_expr}) != ''
         """)
-        
         for row in cursor.fetchall():
             row_dict = dict(row)
             artist_name = row_dict.get("effective_artist", "")
@@ -5279,8 +5271,6 @@ def artists():
                 duplicate_artist_counts_by_artist[artist_name] = mbid_to_artists_map[mbid]
 
         # Query 4: Albums where some tracks have disc_number and others don't
-        # (within what should be a single-disc album).  This inconsistency
-        # causes Navidrome to show the album as multiple separate albums.
         cursor.execute(f"""
             SELECT
                 display_name,
@@ -5302,11 +5292,11 @@ def artists():
                                              AND CAST(disc_number AS TEXT) != '0'
                                         THEN CAST(disc_number AS TEXT) END) AS distinct_disc_nums
                 FROM tracks
-                                WHERE {artist_expr} IS NOT NULL
-                                    AND TRIM({artist_expr}) != ''
+                WHERE {artist_expr} IS NOT NULL
+                  AND TRIM({artist_expr}) != ''
                   AND album IS NOT NULL
                   AND TRIM(album) != ''
-                                GROUP BY {artist_expr}, album
+                GROUP BY {artist_expr}, album
             ) sub
             WHERE tracks_with_disc > 0
               AND tracks_without_disc > 0
@@ -5317,7 +5307,7 @@ def artists():
             row_dict = dict(row)
             disc_inconsistent_counts_by_artist[row_dict.get("display_name", "")] = int(row_dict.get("album_count") or 0)
 
-        # Query 5: Albums with mixed/competing musicbrainz_album_mbid values.
+        # Query 5: Albums with mixed/competing musicbrainz_album_mbid values
         cursor.execute(f"""
             SELECT
                 display_name,
@@ -5342,8 +5332,7 @@ def artists():
             row_dict = dict(row)
             mbid_inconsistent_counts_by_artist[row_dict.get("display_name", "")] = int(row_dict.get("album_count") or 0)
 
-        # Query 6: Per canonical artist, count extra album-artist variants that were
-        # intentionally suppressed from /artists to keep one artist per album.
+        # Query 6: Per canonical artist, count extra album-artist variants
         cursor.execute(f"""
             WITH normalized_tracks AS (
                 SELECT
@@ -5393,42 +5382,14 @@ def artists():
             row_dict = dict(row)
             extra_album_artist_counts_by_artist[row_dict.get("display_name", "")] = int(row_dict.get("extra_album_artist_count") or 0)
 
-        # Query 6: Per artist, count albums with conflicting album-level MBIDs.
-        # These are high-risk for Navidrome album splitting and should be surfaced
-        # under Needs Correcting.
-        cursor.execute(f"""
-            SELECT
-                display_name,
-                COUNT(*) AS album_count
-            FROM (
-                SELECT
-                    {artist_expr} AS display_name,
-                    album
-                FROM tracks
-                WHERE album IS NOT NULL
-                  AND TRIM(album) != ''
-                  AND musicbrainz_album_mbid IS NOT NULL
-                  AND TRIM(musicbrainz_album_mbid) != ''
-                GROUP BY {artist_expr}, album
-                HAVING COUNT(DISTINCT TRIM(musicbrainz_album_mbid)) > 1
-            ) mixed
-            GROUP BY display_name
-        """)
-        for row in cursor.fetchall():
-            row_dict = dict(row)
-            mbid_inconsistent_counts_by_artist[row_dict.get("display_name", "")] = int(row_dict.get("album_count") or 0)
-
     except Exception as correction_err:
-        logging.debug(f"Could not compute artist correction indicators: {correction_err}")
+        logging.debug(f"[api_artists_corrections] Could not compute correction indicators: {correction_err}")
         try:
             conn.rollback()
         except Exception:
             pass
 
-    # Build album tag inconsistency counts per artist using a single aggregated query.
-    # Avoids the N+1 query pattern of _get_album_tag_inconsistencies (which does a
-    # per-album detail query) — the /artists page only needs a per-artist count.
-    album_tag_inconsistency_counts_by_artist: dict = {}
+    # Album tag inconsistency counts per artist
     try:
         tag_having_parts = [
             f"COUNT(DISTINCT COALESCE(CAST({field} AS TEXT), '')) > 1"
@@ -5459,17 +5420,13 @@ def artists():
                 aa = row_dict.get('album_artist') or ''
                 album_tag_inconsistency_counts_by_artist[aa] = int(row_dict.get('inconsistent_album_count') or 0)
     except Exception as tag_inc_err:
-        logging.debug(f"Could not compute album tag inconsistency counts: {tag_inc_err}")
+        logging.debug(f"[api_artists_corrections] Could not compute album tag inconsistency counts: {tag_inc_err}")
         try:
             conn.rollback()
         except Exception:
             pass
 
-    # Build missing-tracks-in-album counts per artist.
-    # Detects albums where track_number gaps exist (max track_number per disc > count
-    # of distinct track numbers on that disc), indicating one or more tracks are absent
-    # from the library.  This is a "major" issue the user should be alerted to.
-    missing_tracks_counts_by_artist: dict = {}
+    # Missing-tracks-in-album counts per artist
     try:
         cursor.execute(f"""
             SELECT
@@ -5500,47 +5457,50 @@ def artists():
             row_dict = dict(row)
             missing_tracks_counts_by_artist[row_dict.get("display_name", "")] = int(row_dict.get("album_count") or 0)
     except Exception as mt_err:
-        logging.debug(f"Could not compute missing-tracks counts: {mt_err}")
+        logging.debug(f"[api_artists_corrections] Could not compute missing-tracks counts: {mt_err}")
         try:
             conn.rollback()
         except Exception:
             pass
 
-    for artist_row in artists_data:
-        display_name = artist_row.get("display_name", "")
-        duplicate_count = duplicate_counts_by_artist.get(display_name, 0)
-        missing_count = missing_counts_by_artist.get(display_name, 0)
-        duplicate_artist_count = duplicate_artist_counts_by_artist.get(display_name, 0)
-        disc_inconsistent_count = disc_inconsistent_counts_by_artist.get(display_name, 0)
-        mbid_inconsistent_count = mbid_inconsistent_counts_by_artist.get(display_name, 0)
-        extra_album_artist_count = extra_album_artist_counts_by_artist.get(display_name, 0)
-        album_tag_inconsistency_count = album_tag_inconsistency_counts_by_artist.get(display_name, 0)
-        missing_tracks_count = missing_tracks_counts_by_artist.get(display_name, 0)
-        artist_row["duplicate_track_count"] = duplicate_count
-        artist_row["missing_track_count"] = missing_count
-        artist_row["duplicate_artist_count"] = duplicate_artist_count
-        artist_row["disc_inconsistent_count"] = disc_inconsistent_count
-        artist_row["mbid_inconsistent_count"] = mbid_inconsistent_count
-        artist_row["extra_album_artist_count"] = extra_album_artist_count
-        artist_row["album_tag_inconsistency_count"] = album_tag_inconsistency_count
-        artist_row["missing_tracks_count"] = missing_tracks_count
-        # Only flag major issues that require user action:
-        #   1. True duplicate tracks in the same album
-        #   2. Inconsistent disc numbers within an album
-        #   3. Multiple conflicting album MBIDs on a single album
-        #   4. Track-number gaps in an album (one or more tracks missing from library)
-        # Minor issues (missing MBID, tag inconsistencies, duplicate-artist-name
-        # variants) are intentionally excluded to reduce noise.
-        artist_row["needs_correction"] = (
-            duplicate_count
-            + disc_inconsistent_count
-            + mbid_inconsistent_count
-            + missing_tracks_count
+    # Collect all artist names that appear in any diagnostic dict
+    all_artists = set()
+    for d in [
+        duplicate_counts_by_artist,
+        missing_counts_by_artist,
+        duplicate_artist_counts_by_artist,
+        disc_inconsistent_counts_by_artist,
+        mbid_inconsistent_counts_by_artist,
+        extra_album_artist_counts_by_artist,
+        album_tag_inconsistency_counts_by_artist,
+        missing_tracks_counts_by_artist,
+    ]:
+        all_artists.update(d.keys())
+
+    corrections = {}
+    for name in all_artists:
+        duplicate_count = duplicate_counts_by_artist.get(name, 0)
+        disc_inconsistent_count = disc_inconsistent_counts_by_artist.get(name, 0)
+        mbid_inconsistent_count = mbid_inconsistent_counts_by_artist.get(name, 0)
+        missing_tracks_count = missing_tracks_counts_by_artist.get(name, 0)
+        needs_correction = (
+            duplicate_count + disc_inconsistent_count + mbid_inconsistent_count + missing_tracks_count
         ) > 0
-    
+        corrections[name] = {
+            "needs_correction": needs_correction,
+            "duplicate_track_count": duplicate_count,
+            "missing_track_count": missing_counts_by_artist.get(name, 0),
+            "duplicate_artist_count": int(duplicate_artist_counts_by_artist.get(name, 0)),
+            "disc_inconsistent_count": disc_inconsistent_count,
+            "mbid_inconsistent_count": mbid_inconsistent_count,
+            "extra_album_artist_count": extra_album_artist_counts_by_artist.get(name, 0),
+            "album_tag_inconsistency_count": album_tag_inconsistency_counts_by_artist.get(name, 0),
+            "missing_tracks_count": missing_tracks_count,
+            "corrections_url": url_for('artist_corrections', name=name),
+        }
+
     conn.close()
-    
-    return render_template("artists.html", artists=artists_data, total_stats=total_stats, DB_PATH=DB_PATH)
+    return jsonify({"corrections": corrections})
 
 
 @app.route("/artist/<path:name>/corrections")
