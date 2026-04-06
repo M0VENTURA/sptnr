@@ -4541,7 +4541,17 @@ def check_downloads_folder():
             ORDER BY created_at ASC
         """)
         queue_items = cursor.fetchall()
-        
+
+        # Commit the implicit SELECT transaction so the connection is not left
+        # "idle in transaction" during the directory walk and per-file metadata
+        # reads below.  Without this, idle_in_transaction_session_timeout can
+        # terminate the connection mid-scan (PG logs: "terminating connection
+        # due to idle-in-transaction timeout").
+        try:
+            conn.commit()
+        except Exception:
+            pass
+
         conversion_settings = _read_download_conversion_settings()
         original_subfolder = (conversion_settings.get("original_subfolder") or "Original").strip().lower()
 
