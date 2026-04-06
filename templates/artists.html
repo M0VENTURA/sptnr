@@ -120,22 +120,14 @@
                                 <a href="{{ url_for('artist_detail', name=artist.link_artist) }}" class="text-decoration-none">
                                     {{ artist.display_name }}
                                 </a>
-                                {% if artist.needs_correction %}
-                                    <a href="{{ url_for('artist_corrections', name=artist.link_artist) }}" class="ms-2 text-decoration-none" title="{% if artist.duplicate_track_count and artist.duplicate_track_count > 0 %}{{ artist.duplicate_track_count }} duplicate track(s){% endif %}{% if artist.disc_inconsistent_count and artist.disc_inconsistent_count > 0 %}{% if artist.duplicate_track_count and artist.duplicate_track_count > 0 %}, {% endif %}{{ artist.disc_inconsistent_count }} album(s) with disc number issues{% endif %}{% if artist.mbid_inconsistent_count and artist.mbid_inconsistent_count > 0 %}{% if (artist.duplicate_track_count or 0) + (artist.disc_inconsistent_count or 0) > 0 %}, {% endif %}{{ artist.mbid_inconsistent_count }} album(s) with multiple MBIDs{% endif %}{% if artist.missing_tracks_count and artist.missing_tracks_count > 0 %}{% if (artist.duplicate_track_count or 0) + (artist.disc_inconsistent_count or 0) + (artist.mbid_inconsistent_count or 0) > 0 %}, {% endif %}{{ artist.missing_tracks_count }} album(s) with missing tracks{% endif %}">
-                                        <span class="badge bg-danger">Needs Correcting</span>
-                                    </a>
-                                {% endif %}
+                                <span class="correction-badge-desktop"></span>
                             </td>
                             <td class="d-sm-none">
                                 <div class="text-truncate">
                                     <a href="{{ url_for('artist_detail', name=artist.link_artist) }}" class="text-decoration-none">
                                         <strong>{{ artist.display_name }}</strong>
                                     </a>
-                                    {% if artist.needs_correction %}
-                                        <a href="{{ url_for('artist_corrections', name=artist.link_artist) }}" class="ms-1 text-decoration-none" title="{% if artist.duplicate_track_count and artist.duplicate_track_count > 0 %}{{ artist.duplicate_track_count }} duplicate track(s){% endif %}{% if artist.disc_inconsistent_count and artist.disc_inconsistent_count > 0 %}{% if artist.duplicate_track_count and artist.duplicate_track_count > 0 %}, {% endif %}{{ artist.disc_inconsistent_count }} album(s) with disc number issues{% endif %}{% if artist.mbid_inconsistent_count and artist.mbid_inconsistent_count > 0 %}{% if (artist.duplicate_track_count or 0) + (artist.disc_inconsistent_count or 0) > 0 %}, {% endif %}{{ artist.mbid_inconsistent_count }} album(s) with multiple MBIDs{% endif %}{% if artist.missing_tracks_count and artist.missing_tracks_count > 0 %}{% if (artist.duplicate_track_count or 0) + (artist.disc_inconsistent_count or 0) + (artist.mbid_inconsistent_count or 0) > 0 %}, {% endif %}{{ artist.missing_tracks_count }} album(s) with missing tracks{% endif %}">
-                                            <span class="badge bg-danger">Needs Correcting</span>
-                                        </a>
-                                    {% endif %}
+                                    <span class="correction-badge-mobile"></span>
                                 </div>
                                 <div class="small text-muted">
                                     <span class="d-inline d-md-none">{{ artist.album_count or 0 }} albums</span>
@@ -165,16 +157,7 @@
                             </td>
                             <td class="text-center">
                                 <div class="btn-group btn-group-sm" role="group">
-                                    {% if artist.needs_correction %}
-                                    <a href="{{ url_for('artist_corrections', name=artist.link_artist) }}" class="btn btn-outline-danger" title="Review duplicate/missing track issues">
-                                        <i class="bi bi-tools"></i>
-                                    </a>
-                                    {% endif %}
-                                    {% if artist.duplicate_artist_count and artist.duplicate_artist_count > 0 %}
-                                    <a href="{{ url_for('artist_corrections', name=artist.link_artist) }}#duplicate-artists-section" class="btn btn-outline-warning" title="Open artist merge options">
-                                        <i class="bi bi-merge"></i>
-                                    </a>
-                                    {% endif %}
+                                    <span class="correction-action-btns"></span>
                                     <button class="btn btn-outline-primary" type="button" onclick="lookupMetadata('artist', '{{ artist.link_artist }}')" title="Get artist metadata">
                                         <i class="bi bi-search"></i>
                                     </button>
@@ -297,6 +280,9 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
     }
+
+    // Load correction badges asynchronously so the page renders quickly first
+    loadArtistCorrections();
 });
 
 function addArtist() {
@@ -393,6 +379,87 @@ async function scanLetterArtists(letter) {
     } catch (error) {
         console.error('Error starting scan:', error);
         alert(`❌ Error starting scan: ${error.message}`);
+    }
+}
+
+// Fetch per-artist correction indicators asynchronously and inject into the table
+async function loadArtistCorrections() {
+    try {
+        const response = await fetch('/api/artists/corrections');
+        if (!response.ok) {
+            console.debug('Could not load artist corrections, status:', response.status);
+            return;
+        }
+        const data = await response.json();
+        const corrections = data.corrections || {};
+
+        document.querySelectorAll('#artistsTable tbody tr[data-artist]').forEach(row => {
+            const artistName = row.dataset.artist;
+            const info = corrections[artistName];
+            if (!info) return;
+
+            const correctionsUrl = info.corrections_url || '#';
+
+            if (info.needs_correction) {
+                const parts = [];
+                if (info.duplicate_track_count > 0) parts.push(`${info.duplicate_track_count} duplicate track(s)`);
+                if (info.disc_inconsistent_count > 0) parts.push(`${info.disc_inconsistent_count} album(s) with disc number issues`);
+                if (info.mbid_inconsistent_count > 0) parts.push(`${info.mbid_inconsistent_count} album(s) with multiple MBIDs`);
+                if (info.missing_tracks_count > 0) parts.push(`${info.missing_tracks_count} album(s) with missing tracks`);
+                const titleText = parts.join(', ');
+
+                function makeBadgeLink(extraClass) {
+                    const a = document.createElement('a');
+                    a.href = correctionsUrl;
+                    a.className = `${extraClass} text-decoration-none`;
+                    a.title = titleText;
+                    const badge = document.createElement('span');
+                    badge.className = 'badge bg-danger';
+                    badge.textContent = 'Needs Correcting';
+                    a.appendChild(badge);
+                    return a;
+                }
+
+                const desktopSpan = row.querySelector('.correction-badge-desktop');
+                if (desktopSpan) { desktopSpan.innerHTML = ''; desktopSpan.appendChild(makeBadgeLink('ms-2')); }
+
+                const mobileSpan = row.querySelector('.correction-badge-mobile');
+                if (mobileSpan) { mobileSpan.innerHTML = ''; mobileSpan.appendChild(makeBadgeLink('ms-1')); }
+
+                const actionSpan = row.querySelector('.correction-action-btns');
+                if (actionSpan) {
+                    actionSpan.innerHTML = '';
+                    const toolBtn = document.createElement('a');
+                    toolBtn.href = correctionsUrl;
+                    toolBtn.className = 'btn btn-outline-danger';
+                    toolBtn.title = 'Review duplicate/missing track issues';
+                    toolBtn.innerHTML = '<i class="bi bi-tools"></i>';
+                    actionSpan.appendChild(toolBtn);
+                    if (info.duplicate_artist_count > 0) {
+                        const mergeBtn = document.createElement('a');
+                        mergeBtn.href = correctionsUrl + '#duplicate-artists-section';
+                        mergeBtn.className = 'btn btn-outline-warning';
+                        mergeBtn.title = 'Open artist merge options';
+                        mergeBtn.innerHTML = '<i class="bi bi-merge"></i>';
+                        actionSpan.appendChild(mergeBtn);
+                    }
+                }
+            } else if (info.duplicate_artist_count > 0) {
+                const actionSpan = row.querySelector('.correction-action-btns');
+                if (actionSpan) {
+                    actionSpan.innerHTML = '';
+                    const mergeBtn = document.createElement('a');
+                    mergeBtn.href = correctionsUrl + '#duplicate-artists-section';
+                    mergeBtn.className = 'btn btn-outline-warning';
+                    mergeBtn.title = 'Open artist merge options';
+                    mergeBtn.innerHTML = '<i class="bi bi-merge"></i>';
+                    actionSpan.appendChild(mergeBtn);
+                }
+            }
+        });
+    } catch (e) {
+        // Corrections are non-critical; silently ignore errors
+        console.debug('Could not load artist corrections:', e);
     }
 }
 </script>
