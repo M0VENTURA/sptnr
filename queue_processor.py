@@ -711,8 +711,13 @@ def cleanup_stuck_searching_items():
         cursor = conn.cursor()
         placeholder = _get_placeholder(conn)
         
-        # Items stuck in 'searching' for more than 90 seconds are likely hung
-        stuck_threshold = (datetime.now() - timedelta(seconds=90)).isoformat()
+        # Items stuck in 'searching' for more than 300 seconds are likely hung.
+        # _SLSKD_SEARCH_MAX_WAIT_SECONDS (line 104) is 150 s, so legitimate
+        # searches can stay in 'searching' for up to ~2.5 min.  Use 300 s
+        # (5 min, i.e. 2× the max search wait) to give ample margin before
+        # declaring an item truly stuck (e.g. after a crash left the status
+        # unreset).
+        stuck_threshold = (datetime.now() - timedelta(seconds=2 * _SLSKD_SEARCH_MAX_WAIT_SECONDS)).isoformat()
         
         cursor.execute("""
             SELECT id, artist, title, updated_at FROM download_queue
@@ -2401,10 +2406,19 @@ def run_processor(interval=30):
                 last_stale_cleanup_ts = cleanup_stale_downloads(now_ts, last_stale_cleanup_ts)
                 last_slskd_retry_ts = check_failed_slskd_downloads(now_ts, last_slskd_retry_ts)
                 last_slskd_clear_ts = clear_slskd_completed_downloads(now_ts, last_slskd_clear_ts)
+
+                # process_queue() (which contains check_completed_downloads()) must
+                # run BEFORE check_downloads_folder() so that items in 'downloading'
+                # state are claimed and auto-moved by the slskd-aware path first.
+                # If check_downloads_folder() ran first it would transition those
+                # items from 'downloading' → 'completed', and check_completed_downloads
+                # (which only queries WHERE status='downloading') would find nothing —
+                # leaving non-MusicBrainz and incomplete-album items stuck in
+                # 'completed' permanently.
+                processed = process_queue(client)
+
                 last_downloads_folder_ts = check_downloads_folder(now_ts, last_downloads_folder_ts)
                 last_navidrome_scan_ts = trigger_navidrome_scan_for_new_imports(now_ts, last_navidrome_scan_ts)
-                
-                processed = process_queue(client)
                 
                 if processed > 0:
                     logger.info(f"Processed {processed} queue items")
