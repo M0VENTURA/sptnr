@@ -209,13 +209,18 @@ def _ensure_postgres_track_columns(conn):
         idx_row = cur.fetchone()
         if not (idx_row and idx_row[0]):
             try:
-                cur.execute(
-                    """
-                    CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_tracks_artist_title_lower
-                    ON tracks (LOWER(COALESCE(artist, '')), LOWER(COALESCE(title, '')))
-                    """
-                )
+                # CREATE INDEX CONCURRENTLY must run outside any transaction block.
                 conn.commit()
+                conn.autocommit = True
+                try:
+                    cur.execute(
+                        """
+                        CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_tracks_artist_title_lower
+                        ON tracks (LOWER(COALESCE(artist, '')), LOWER(COALESCE(title, '')))
+                        """
+                    )
+                finally:
+                    conn.autocommit = False
                 return ["tracks.idx_tracks_artist_title_lower"]
             except Exception as create_err:
                 try:
