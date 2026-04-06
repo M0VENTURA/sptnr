@@ -459,15 +459,17 @@ class MusicBrainzReleaseManager:
                         queue_id = self._row_get(queue_row, 'id', 0, 0)
                         queue_ids.append(queue_id)
                         
-                        # Add to musicbrainz_release_tracks
+                        # Add to musicbrainz_release_tracks (include disc_number so
+                        # post-processing can determine disc count from the local DB
+                        # without making an external MusicBrainz API call)
                         cursor.execute(f"""
                             INSERT INTO musicbrainz_release_tracks
-                            (release_id, queue_id, track_number, track_title, 
+                            (release_id, queue_id, disc_number, track_number, track_title, 
                              track_artist, duration, isrc, status, 
                              created_at, updated_at)
-                            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued', 
+                            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued', 
                                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                        """, (release_id, queue_id, track_number, track_title,
+                        """, (release_id, queue_id, disc_number, track_number, track_title,
                               track_artist, duration, isrc))
                         
                         # Also add to tracks table with 'downloading' status
