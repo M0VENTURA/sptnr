@@ -5601,9 +5601,11 @@ async function _pollOrganizeGroupTask(taskId, timeoutMs = 600000) {
   while (Date.now() - start < timeoutMs) {
     try {
       const res = await fetch(`/api/queue/organize-group/status/${taskId}`);
-      const task = await res.json();
-      if (task.status === 'completed' || task.status === 'failed') {
-        return task;
+      if (res.ok) {
+        const task = await res.json();
+        if (task.status === 'completed' || task.status === 'failed') {
+          return task;
+        }
       }
     } catch (_pollErr) {
       console.warn('Organize-group status poll error (will retry):', _pollErr);
@@ -5619,33 +5621,36 @@ async function confirmOrganizeGroup() {
   const albumArtist = document.getElementById('orgAlbumArtist').value || artist;
   const album = document.getElementById('orgAlbum').value;
   const year = document.getElementById('orgYear').value;
-  
+
   if (!artist || !album) {
     alert('Artist and Album are required');
     return;
   }
-  
+
   // Get folder format
   let format = document.getElementById('orgFolderFormat').value;
   if (format === 'custom') {
     format = document.getElementById('orgCustomFormat').value;
   }
-  
+
   if (!currentOrganizeGroupId) {
     alert('Error: Group ID not found');
     return;
   }
-  
+
   // Show confirmation
   if (!confirm(`Organize ${currentOrganizeGroupItems.length} tracks?\n\nMetadata:\n  Artist: ${artist}\n  Album: ${album}\n  Year: ${year || 'Not set'}\n\nFolder: ${format}`)) {
     return;
   }
-  
-  const btn = event.target;
+
+  // Guard: event may not be available in all call contexts
+  const btn = (typeof event !== 'undefined' && event && event.target) ? event.target : null;
   try {
     // Disable button
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Organizing...';
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Organizing...';
+    }
 
     // Use async mode so the server returns 202 immediately and processes files
     // in the background.  This prevents proxy / gateway timeouts when copying
@@ -5710,8 +5715,10 @@ async function confirmOrganizeGroup() {
     console.error('Error confirming organize group:', error);
     alert('❌ Error: ' + error.message);
   } finally {
-    btn.disabled = false;
-    btn.innerHTML = '<i class="bi bi-check-circle"></i> Organize & Move';
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-check-circle"></i> Organize & Move';
+    }
   }
 }
 

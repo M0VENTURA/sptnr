@@ -27948,8 +27948,14 @@ def api_queue_organize_group():
         # Synchronous path (kept for backward compatibility).
         result = _run_organize_group_sync(group_id, metadata)
         if result.get("error") and not result.get("success"):
-            return jsonify(result), 404
-        return jsonify(result)
+            return jsonify({"error": result.get("error", "Not found")}), 404
+        return jsonify({
+            "success": result.get("success", True),
+            "organized": result.get("organized", 0),
+            "total": result.get("total", 0),
+            "errors": result.get("errors", []),
+            "message": result.get("message", ""),
+        })
 
     except Exception as e:
         logging.error(f"[ORGANIZE_GROUP] Unhandled error during organization: {type(e).__name__}: {e}")
