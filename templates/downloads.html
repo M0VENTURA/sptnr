@@ -5593,6 +5593,26 @@ function clearMBSelection() {
   document.getElementById('mbSearchQuery').value = '';
 }
 
+async function _pollOrganizeGroupTask(taskId, timeoutMs = 600000) {
+  // Poll /api/queue/organize-group/status/<taskId> until the task completes or
+  // the overall timeout (default 10 min) is reached.
+  const start = Date.now();
+  const pollIntervalMs = 2000;
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const res = await fetch(`/api/queue/organize-group/status/${taskId}`);
+      const task = await res.json();
+      if (task.status === 'completed' || task.status === 'failed') {
+        return task;
+      }
+    } catch (_pollErr) {
+      console.warn('Organize-group status poll error (will retry):', _pollErr);
+    }
+    await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+  }
+  return { status: 'timeout', error: 'Organization is taking longer than expected — check the queue for results.' };
+}
+
 async function confirmOrganizeGroup() {
   // Get metadata from modal
   const artist = document.getElementById('orgArtist').value;
@@ -5621,13 +5641,16 @@ async function confirmOrganizeGroup() {
     return;
   }
   
+  const btn = event.target;
   try {
     // Disable button
-    const btn = event.target;
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Organizing...';
-    
-    const response = await fetch('/api/queue/organize-group', {
+
+    // Use async mode so the server returns 202 immediately and processes files
+    // in the background.  This prevents proxy / gateway timeouts when copying
+    // many or large audio files.
+    const response = await fetch('/api/queue/organize-group?async=1', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -5642,20 +5665,41 @@ async function confirmOrganizeGroup() {
       })
     });
     
-    const data = await response.json();
-    
-    // Close modal
+    const startData = await response.json();
+
+    if (!startData.success || !startData.task_id) {
+      alert('❌ Error: ' + (startData.error || 'Failed to start organize task'));
+      return;
+    }
+
+    // Close modal immediately so the user isn't blocked.
     const modal = bootstrap.Modal.getInstance(document.getElementById('organizeGroupModal'));
     if (modal) {
       modal.hide();
     }
-    
+
+    // Poll for completion in the background.
+    const task = await _pollOrganizeGroupTask(startData.task_id);
+    const result = (task.result) || {};
+
+    if (task.status === 'timeout') {
+      alert('⏳ Organization is still in progress. Refresh the queue in a moment to see results.');
+      await loadQueueStatus();
+      return;
+    }
+
+    if (task.status === 'failed') {
+      alert('❌ Error: ' + (task.error || result.error || 'Organization failed'));
+      await loadQueueStatus();
+      return;
+    }
+
     // Show result
-    let message = `✅ Organized ${data.organized}/${data.total} files`;
-    if (data.errors && data.errors.length > 0) {
-      message += `\n\n⚠️ Errors:\n${data.errors.slice(0, 3).join('\n')}`;
-      if (data.errors.length > 3) {
-        message += `\n... and ${data.errors.length - 3} more`;
+    let message = `✅ Organized ${result.organized}/${result.total} files`;
+    if (result.errors && result.errors.length > 0) {
+      message += `\n\n⚠️ Errors:\n${result.errors.slice(0, 3).join('\n')}`;
+      if (result.errors.length > 3) {
+        message += `\n... and ${result.errors.length - 3} more`;
       }
     }
     alert(message);
@@ -5666,10 +5710,8 @@ async function confirmOrganizeGroup() {
     console.error('Error confirming organize group:', error);
     alert('❌ Error: ' + error.message);
   } finally {
-    if (event.target) {
-      event.target.disabled = false;
-      event.target.innerHTML = '<i class="bi bi-check-circle"></i> Organize & Move';
-    }
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-check-circle"></i> Organize & Move';
   }
 }
 
