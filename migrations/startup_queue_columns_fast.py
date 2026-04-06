@@ -194,6 +194,36 @@ def _ensure_postgres_track_columns(conn):
     return []
 
 
+def _ensure_postgres_musicbrainz_releases_columns(conn):
+    """Ensure release_year exists on musicbrainz_releases for pre-existing tables."""
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'musicbrainz_releases' AND column_name = 'release_year'
+        )
+        """
+    )
+    exists_row = cur.fetchone()
+    exists = bool(exists_row and exists_row[0])
+    if not exists:
+        try:
+            cur.execute(
+                "ALTER TABLE musicbrainz_releases ADD COLUMN IF NOT EXISTS release_year INTEGER"
+            )
+            conn.commit()
+            return ["release_year"]
+        except Exception as alter_err:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            print(f"⚠ Could not add musicbrainz_releases.release_year: {alter_err}")
+    return []
+
+
 def _ensure_postgres_musicbrainz_release_conflict_target(conn):
     cur = conn.cursor()
     # Avoid indefinite startup hangs if another process is currently migrating.
@@ -259,8 +289,14 @@ def main():
         try:
             queue_added = _ensure_postgres_columns(conn)
             track_added = _ensure_postgres_track_columns(conn)
+            mb_releases_added = _ensure_postgres_musicbrainz_releases_columns(conn)
             mb_added = _ensure_postgres_musicbrainz_release_conflict_target(conn)
-            added = queue_added + [f"tracks.{c}" for c in track_added] + mb_added
+            added = (
+                queue_added
+                + [f"tracks.{c}" for c in track_added]
+                + [f"musicbrainz_releases.{c}" for c in mb_releases_added]
+                + mb_added
+            )
             if added:
                 print(f"✓ startup schema migration (postgres): added {', '.join(added)}")
             else:
