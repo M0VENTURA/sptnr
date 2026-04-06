@@ -17,7 +17,7 @@ import sys
 import time
 import traceback
 import yaml
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 from helpers.metadata_reader import read_mp3_metadata
@@ -1588,7 +1588,13 @@ def check_completed_downloads():
             try:
                 updated_text = str(updated_at).replace('Z', '+00:00')
                 updated_dt = datetime.fromisoformat(updated_text)
-                return (datetime.now() - updated_dt.replace(tzinfo=None)).total_seconds() >= (stale_minutes * 60)
+                # Normalise to a naive UTC datetime regardless of whether the DB
+                # returned a timezone-aware or naive value.  Using utcnow() on
+                # both sides avoids the silent offset loss that occurs when
+                # .replace(tzinfo=None) is called on an aware datetime.
+                if updated_dt.tzinfo is not None:
+                    updated_dt = updated_dt.astimezone(timezone.utc).replace(tzinfo=None)
+                return (datetime.utcnow() - updated_dt).total_seconds() >= (stale_minutes * 60)
             except Exception:
                 return False
 
@@ -1905,8 +1911,8 @@ def check_completed_downloads():
                     item_for_move = dict(item)
                     item_for_move['file_path'] = file_path
                     move_result = move_single_track_to_music_dir(item_for_move)
-                    if move_result['success']:
-                        target_path = move_result['target_path']
+                    if move_result.get('success'):
+                        target_path = move_result.get('target_path')
                         verify_result = verify_file_in_music(item_id, target_path)
                         if verify_result['success']:
                             mark_queue_item_moved(item_id, target_path)
@@ -1919,14 +1925,18 @@ def check_completed_downloads():
                             )
                             logger.info(f"[AUTO_MOVE] Queue {item_id}: verified and imported to {target_path}")
                             scan_needed = True
+                            newly_completed.append(item)
                         else:
-                            # File is physically in /music already; use 'imported'
-                            # so the record reflects its actual on-disk location.
-                            logger.warning(
+                            # Verification failed: the file could not be confirmed at the
+                            # target path.  Release the move claim so the next processor
+                            # cycle retries the transfer rather than leaving the item in a
+                            # permanently-inconsistent 'imported' state pointing at a file
+                            # that may not exist.
+                            logger.error(
                                 f"[AUTO_MOVE] Queue {item_id}: verification FAILED "
-                                f"({verify_result.get('error')}), marking as 'imported' at {target_path}"
+                                f"({verify_result.get('error')}), releasing claim for retry"
                             )
-                            update_queue_item(item_id, status='imported', music_file_path=target_path)
+                            _release_move_claim(item_id, restore_status='completed', file_path=file_path)
                     else:
                         logger.warning(
                             f"[AUTO_MOVE] Queue {item_id}: could not move "
@@ -1940,9 +1950,12 @@ def check_completed_downloads():
                     except Exception:
                         pass
 
-                newly_completed.append(item)
-
         for item in newly_completed:
+            # Only attempt the album-completion check when there is enough context
+            # to query meaningfully; without a release_id or album name the call
+            # would do a full-table scan and return nothing useful.
+            if not (item.get('release_id') or item.get('album')):
+                continue
             try:
                 from download_queue_manager import auto_move_completed_album
                 result = auto_move_completed_album(

@@ -1399,6 +1399,14 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                     "idx_download_queue_lower_artist_album",
                     "CREATE INDEX IF NOT EXISTS idx_download_queue_lower_artist_album ON download_queue (LOWER(COALESCE(NULLIF(album_artist, ''), artist)), LOWER(COALESCE(NULLIF(album, ''), '')))",
                 ),
+                # Compound expression index used by the duplicate-detection queries
+                # inside add_to_queue() which filter on lower(artist), lower(title),
+                # and source.  Without this index those checks degrade to a full
+                # table scan once the queue has many historical rows.
+                (
+                    "idx_download_queue_dedup_artist_title_source",
+                    "CREATE INDEX IF NOT EXISTS idx_download_queue_dedup_artist_title_source ON download_queue (LOWER(artist), LOWER(title), source)",
+                ),
             ):
                 try:
                     cursor.execute(idx_ddl)
@@ -2074,22 +2082,24 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         # Use the same artist + title + source cross-album check for consistency.
         try:
             conn2 = _get_postgres_conn_from_app_or_fallback()
-            cursor2 = conn2.cursor()
-            ph2 = "%s"
-            cursor2.execute(
-                f"""
-                SELECT * FROM download_queue
-                WHERE LOWER(artist) = LOWER({ph2})
-                  AND LOWER(title) = LOWER({ph2})
-                  AND source = {ph2}
-                                    AND status IN ({_ACTIVE_QUEUE_STATUS_SQL})
-                ORDER BY created_at ASC
-                LIMIT 1
-                """,
-                (artist, title, source),
-            )
-            existing = cursor2.fetchone()
-            conn2.close()
+            try:
+                cursor2 = conn2.cursor()
+                ph2 = "%s"
+                cursor2.execute(
+                    f"""
+                    SELECT * FROM download_queue
+                    WHERE LOWER(artist) = LOWER({ph2})
+                      AND LOWER(title) = LOWER({ph2})
+                      AND source = {ph2}
+                                        AND status IN ({_ACTIVE_QUEUE_STATUS_SQL})
+                    ORDER BY created_at ASC
+                    LIMIT 1
+                    """,
+                    (artist, title, source),
+                )
+                existing = cursor2.fetchone()
+            finally:
+                conn2.close()
             if existing:
                 if hasattr(existing, 'keys'):
                     existing_item = dict(existing)
