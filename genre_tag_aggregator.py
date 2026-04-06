@@ -136,9 +136,6 @@ def get_track_genres_and_tags(track_dict: dict) -> Dict[str, list]:
     if track_dict.get("discogs_genres"):
         sources["discogs_genres"] = parse_json_tags(track_dict["discogs_genres"])
     
-    if track_dict.get("spotify_genres"):
-        sources["spotify_genres"] = parse_json_tags(track_dict["spotify_genres"])
-    
     if track_dict.get("musicbrainz_genres"):
         sources["musicbrainz_genres"] = parse_json_tags(track_dict["musicbrainz_genres"])
 

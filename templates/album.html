@@ -491,7 +491,6 @@
                         <div id="albumGenreSourcesContainer">
                           {% set sources = [
                             ('mood', 'Mood Scan', 'F59C00', 'light'),
-                            ('spotify_genres', 'Spotify', '1DB954', 'white'),
                             ('lastfm_tags', 'Last.fm', 'D51007', 'black'),
                             ('listenbrainz_genres', 'ListenBrainz', '0066FF', 'white'),
                             ('discogs_genres', 'Discogs', '6c757d', 'white'),
@@ -547,7 +546,7 @@
                           {% else %}
                             <div class="alert alert-info mb-0">
                               <i class="bi bi-info-circle"></i> No genre/mood source data yet.
-                              <br><small>Run the popularity scan to populate genres and moods from Spotify, Last.fm, etc.</small>
+                              <br><small>Run the popularity scan to populate genres and moods from Last.fm, Discogs, etc.</small>
                             </div>
                           {% endif %}
                         </div>
