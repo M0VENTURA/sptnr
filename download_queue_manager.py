@@ -6293,6 +6293,29 @@ def auto_discover_and_queue_files():
                                         f"[AUTO-DISCOVER] Matched & moved: {artist} - {title} "
                                         f"→ {move_result['target_path']}"
                                     )
+                                    # Sweep up any sibling tracks for this album that were
+                                    # left in 'completed' state from earlier scan passes.
+                                    try:
+                                        _sibling_result = auto_move_completed_album(
+                                            release_id=(
+                                                matched_pending.get('release_mbid')
+                                                or matched_pending.get('release_id')
+                                            ),
+                                            artist=matched_pending.get('artist'),
+                                            album=matched_pending.get('album'),
+                                        )
+                                        if _sibling_result.get('moved', 0) > 0:
+                                            logger.info(
+                                                f"[AUTO-DISCOVER] Swept up "
+                                                f"{_sibling_result['moved']} sibling track(s) "
+                                                f"for album: {artist} – "
+                                                f"{matched_pending.get('album')}"
+                                            )
+                                    except Exception as _sibling_err:
+                                        logger.warning(
+                                            f"[AUTO-DISCOVER] Could not sweep sibling tracks "
+                                            f"for queue {matched_pending['id']}: {_sibling_err}"
+                                        )
                                 else:
                                     logger.warning(
                                         f"[AUTO-DISCOVER] Matched but could not move {filename}: "
