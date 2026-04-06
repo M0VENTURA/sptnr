@@ -4344,7 +4344,7 @@ def get_db():
         raise RuntimeError(f"PostgreSQL startup backoff active; retry in ~{wait_left}s")
 
     options_parts = []
-    idle_timeout_ms = int(os.environ.get("PG_IDLE_IN_TRANSACTION_TIMEOUT_MS", "300000"))
+    idle_timeout_ms = int(os.environ.get("PG_IDLE_IN_TRANSACTION_TIMEOUT_MS", "60000"))
     if idle_timeout_ms > 0:
         options_parts.append(f"-c idle_in_transaction_session_timeout={idle_timeout_ms}")
     options = " ".join(options_parts) or None
