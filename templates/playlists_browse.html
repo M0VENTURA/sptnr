@@ -1423,17 +1423,21 @@
     if (fi) fi.readOnly = false;
   }
 
-  // Called from browse playlist dropdowns when a smart playlist is selected.
+  // Called from browse playlist dropdowns when any playlist is selected.
   // Finds the matching .nsp file by name and loads it directly into the NSP editor.
-  function loadBrowseSmartPlaylistIntoEditor(playlistName) {
+  // Returns true if an NSP file was found and loaded, false otherwise.
+  // Silently returns false if no matching NSP file exists (e.g. regular or non-NSP smart playlists).
+  async function loadBrowseSmartPlaylistIntoEditor(playlistName) {
+    // Reload the NSP file list if it hasn't been fetched yet (race condition guard)
+    if (_cachedNspFiles.length === 0) {
+      await nspLoadFileList();
+    }
     const match = _cachedNspFiles.find(
       f => (f.name || '').toLowerCase() === (playlistName || '').toLowerCase()
     );
-    if (!match) {
-      showToast(`No .nsp file found matching "${escapeHtml(playlistName)}"`, 'warning');
-      return;
-    }
+    if (!match) return false;  // not an NSP-backed playlist — skip silently
     nspLoadForEdit(match.id);
+    return true;
   }
 
   // Called from browse playlist dropdowns when a regular playlist is selected.
@@ -1770,6 +1774,10 @@
       }
       showToast(`Smart playlist "${escapeHtml(name)}" saved as <code>${escapeHtml(result.file_name)}</code>.`, 'success');
       nspResetForm();
+      // Trigger a Navidrome scan so it picks up the new/updated .nsp file immediately
+      fetch('/api/navidrome/scan/start', { method: 'POST' }).catch(e => {
+        console.warn('[NSP] Could not trigger Navidrome scan after save:', e);
+      });
     } catch (err) {
       console.error('Smart playlist save error:', err);
       showToast('Error saving smart playlist: ' + err.message, 'danger');

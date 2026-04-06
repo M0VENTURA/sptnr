@@ -86,7 +86,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
 function setupBrowsePageListeners() {
   // Shared handler for all three bucket selects and the legacy combined select
-  function onPlaylistSelectChange() {
+  async function onPlaylistSelectChange() {
     if (!this.value) return;
     const selectedOption = this.options[this.selectedIndex];
     const playlistType = selectedOption?.dataset?.playlistType || 'regular';
@@ -100,10 +100,15 @@ function setupBrowsePageListeners() {
     });
     loadNavidromePlaylistDetail(this.value, playlistType);
     loadPlaylistForDownload(this.value);
-    // Load into the appropriate editor based on playlist type
-    if (playlistType === 'smart' && typeof loadBrowseSmartPlaylistIntoEditor === 'function') {
-      loadBrowseSmartPlaylistIntoEditor(playlistName);
-    } else if (playlistType === 'regular' && typeof loadBrowseRegularPlaylistIntoEditor === 'function') {
+    // Try to load a matching .nsp file into the smart playlist editor first.
+    // This handles NSP-backed playlists regardless of how Navidrome classifies them.
+    // loadBrowseSmartPlaylistIntoEditor returns true if an NSP file was loaded.
+    let loadedAsNsp = false;
+    if (typeof loadBrowseSmartPlaylistIntoEditor === 'function') {
+      loadedAsNsp = await loadBrowseSmartPlaylistIntoEditor(playlistName);
+    }
+    // Only fall back to the regular editor if no .nsp file matched
+    if (!loadedAsNsp && playlistType === 'regular' && typeof loadBrowseRegularPlaylistIntoEditor === 'function') {
       loadBrowseRegularPlaylistIntoEditor(this.value, playlistName);
     }
   }
