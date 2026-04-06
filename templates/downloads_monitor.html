@@ -2268,11 +2268,18 @@ async function loadFolderGroups(options = {}) {
 
   folderGroupsRequestInFlight = true;
   try {
+    const safeFetch = (url) => fetch(url)
+      .then(response => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.json();
+      })
+      .catch(() => null);
+
     const [,, folderData, queueData] = await Promise.all([
       loadFolderStatus(),
       loadFolderDuplicates(),
-      fetch('/api/downloads/grouped-folders').then(response => response.json()),
-      fetch(getQueuePageUrl()).then(response => response.json())
+      safeFetch('/api/downloads/grouped-folders'),
+      safeFetch(getQueuePageUrl())
     ]);
 
     // Fire the background queue-scan *after* the page data is already in hand so it
@@ -2283,14 +2290,14 @@ async function loadFolderGroups(options = {}) {
       console.debug('Queue sync post-pass failed (non-fatal):', syncErr);
     });
     
-    if (!folderData.success) {
-      console.error('Error loading folder groups:', folderData.error);
+    if (!folderData || !folderData.success) {
+      console.error('Error loading folder groups:', folderData ? folderData.error : 'HTTP request failed or server error');
       return;
     }
     
     let groups = folderData.folder_groups || [];
-    const queue = queueData.queue || [];
-    const totalQueueCount = Number(queueData.total_count || queue.length || 0);
+    const queue = (queueData && queueData.queue) || [];
+    const totalQueueCount = Number((queueData && queueData.total_count) || queue.length || 0);
 
     if (totalQueueCount > 0 && queuePageOffset >= totalQueueCount) {
       queuePageOffset = Math.max(0, Math.floor((totalQueueCount - 1) / QUEUE_PAGE_LIMIT) * QUEUE_PAGE_LIMIT);

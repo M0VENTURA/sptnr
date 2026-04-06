@@ -64,6 +64,10 @@ UPCOMING_RELEASE_REQUIRED_COLUMNS = {
     "mbid_manual_override": "BOOLEAN DEFAULT FALSE",
 }
 
+# Module-level flag so ensure_schema() only runs DDL once per process lifetime,
+# regardless of how many WikipediaReleaseScraper instances are created.
+_MODULE_SCHEMA_ENSURED = False
+
 class WikipediaReleaseScraper:
     """Scrapes album releases from Wikipedia"""
     
@@ -187,7 +191,8 @@ class WikipediaReleaseScraper:
 
     def ensure_schema(self, conn):
         """Ensure the upcoming releases schema exists on the active backend."""
-        if self._schema_ensured:
+        global _MODULE_SCHEMA_ENSURED
+        if self._schema_ensured or _MODULE_SCHEMA_ENSURED:
             return
 
         is_pg = is_postgres_connection(conn)
@@ -253,6 +258,7 @@ class WikipediaReleaseScraper:
 
         conn.commit()
         self._schema_ensured = True
+        _MODULE_SCHEMA_ENSURED = True
 
     @staticmethod
     def _row_value(row, key: str = "", index: int = 0, default=None):

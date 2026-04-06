@@ -191,6 +191,44 @@ def _ensure_postgres_track_columns(conn):
         cur.execute("ALTER TABLE tracks ADD COLUMN IF NOT EXISTS release_year INTEGER")
         conn.commit()
         return ["release_year"]
+
+    # Ensure functional index on (LOWER(artist), LOWER(title)) so the
+    # library-reconcile lookup in check_downloads_folder() uses index scans
+    # instead of full table scans (one per queue item).
+    try:
+        cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM pg_indexes
+                WHERE schemaname = current_schema()
+                  AND tablename = 'tracks'
+                  AND indexname = 'idx_tracks_artist_title_lower'
+            )
+            """
+        )
+        idx_row = cur.fetchone()
+        if not (idx_row and idx_row[0]):
+            try:
+                cur.execute(
+                    """
+                    CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_tracks_artist_title_lower
+                    ON tracks (LOWER(COALESCE(artist, '')), LOWER(COALESCE(title, '')))
+                    """
+                )
+                conn.commit()
+                return ["tracks.idx_tracks_artist_title_lower"]
+            except Exception as create_err:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                print(f"⚠ Could not create idx_tracks_artist_title_lower: {create_err}")
+    except Exception as idx_err:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print(f"⚠ Could not check idx_tracks_artist_title_lower: {idx_err}")
     return []
 
 
