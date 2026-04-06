@@ -1172,9 +1172,15 @@ def run_essentia_mood_scan(
             # Second attempt; let any error propagate naturally.
             cursor.execute(_update_query, _update_params)
 
+        # Always commit after the UPDATE to end the transaction before the
+        # next per-file subprocess call.  If conn.commit() were only called
+        # when rowcount > 0, the connection would sit idle-in-transaction
+        # during each subprocess.run() that follows (up to per_file_timeout
+        # seconds), triggering idle_in_transaction_session_timeout kills.
+        conn.commit()
+
         if cursor.rowcount and cursor.rowcount > 0:
             updated_tracks += 1
-            conn.commit()
 
             if tag_genres:
                 # Write proper (child-only) genre tags and TXXX:MOOD to the
