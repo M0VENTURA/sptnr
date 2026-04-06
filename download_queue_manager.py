@@ -5125,6 +5125,12 @@ def check_downloads_folder():
             else:
                 # If no file remains in /downloads, reconcile against /music in case a
                 # separate mover/importer already transferred the completed download.
+                # Only run this expensive check for items that were actively downloading;
+                # 'queued' and 'searching' items simply haven't started yet and have no
+                # file to find — skipping them avoids per-item DB scans that slow the
+                # whole system when the queue is large.
+                if queue_item.get('status') not in ('downloading',):
+                    continue
                 existing_music_path = _find_existing_music_file(queue_item)
                 if existing_music_path:
                     logger.info(
