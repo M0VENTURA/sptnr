@@ -24266,6 +24266,22 @@ def api_downloads_get_queue():
                         """
                     )
                     matched_with_path = cursor.fetchall() or []
+
+                    # End the current transaction *before* the per-row filesystem
+                    # checks below.  While os.path.isfile() runs for each matched
+                    # row the connection would otherwise sit idle-in-transaction,
+                    # which can exceed idle_in_transaction_session_timeout and kill
+                    # the connection (seen as FATAL in pg logs).  After commit/
+                    # rollback the connection is in the plain idle state; the next
+                    # cursor.execute() will start a fresh transaction automatically.
+                    try:
+                        if normalized_count:
+                            conn.commit()
+                        else:
+                            conn.rollback()
+                    except Exception:
+                        pass
+
                     # Collect IDs of rows whose matched file no longer exists on disk,
                     # then batch-UPDATE them instead of issuing one UPDATE per row.
                     stale_matched_ids = []
