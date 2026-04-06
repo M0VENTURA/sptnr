@@ -155,12 +155,41 @@ def _get_table_columns(cursor, table_name):
     )
     return {str(_row_first_value(row, "")) for row in cursor.fetchall() if _row_first_value(row, "")}
 
+_PG_TRANSIENT_ERROR_MARKERS = (
+    "the database system is starting up",
+    "the database system is in recovery mode",
+    "cannot connect now",
+    "terminating connection due to administrator command",
+    "timeout expired",
+    "connection timed out",
+    "could not connect to server",
+    "connection refused",
+    "server closed the connection unexpectedly",
+    "temporarily unavailable",
+    "could not translate host name",
+    "name or service not known",
+    "temporary failure in name resolution",
+)
+
+_PG_CONNECT_MAX_ATTEMPTS = 3
+_PG_CONNECT_RETRY_DELAYS = (2.0, 5.0)
+
+
+def _is_pg_transient_error(exc: Exception) -> bool:
+    """Return True when *exc* represents a transient PostgreSQL connectivity error."""
+    message = str(exc).lower()
+    return any(marker in message for marker in _PG_TRANSIENT_ERROR_MARKERS)
+
+
 def get_db_connection() -> "_AutoRollbackPGConnection":
     """Return a PostgreSQL connection wrapped in :class:`_AutoRollbackPGConnection`.
 
     The wrapper ensures that any open transaction is rolled back before the
     connection is closed, preventing PostgreSQL from logging
     "unexpected EOF on client connection with an open transaction".
+
+    Transient connectivity errors (DNS failures, connection refused, etc.) are
+    retried up to ``_PG_CONNECT_MAX_ATTEMPTS`` times before raising.
 
     Raises ``RuntimeError`` when PostgreSQL is not configured or unreachable.
     """
@@ -184,61 +213,78 @@ def get_db_connection() -> "_AutoRollbackPGConnection":
     try:
         import psycopg2
         import psycopg2.extras
-
-        pg_dsn = os.environ.get("DATABASE_URL") or os.environ.get("PG_DSN")
-        pg_host = os.environ.get("PG_HOST", "")
-        pg_user = os.environ.get("PG_USER", "")
-        pg_database = os.environ.get("PG_DATABASE", "sptnr")
-
-        options_parts = []
-        if _PG_IDLE_IN_TRANSACTION_TIMEOUT_MS > 0:
-            options_parts.append(
-                f"-c idle_in_transaction_session_timeout={_PG_IDLE_IN_TRANSACTION_TIMEOUT_MS}"
-            )
-        options = " ".join(options_parts) or None
-
-        if pg_dsn:
-            raw = psycopg2.connect(
-                pg_dsn,
-                cursor_factory=psycopg2.extras.RealDictCursor,
-                connect_timeout=10,
-                keepalives=1,
-                keepalives_idle=60,
-                keepalives_interval=10,
-                keepalives_count=5,
-                **({"options": options} if options else {}),
-            )
-            logging.debug(
-                "Connected to PostgreSQL: %s",
-                pg_dsn.split("@")[1] if "@" in pg_dsn else "configured",
-            )
-        else:
-            raw = psycopg2.connect(
-                host=pg_host,
-                port=int(os.environ.get("PG_PORT", "5432")),
-                user=pg_user,
-                password=os.environ.get("PG_PASSWORD", ""),
-                dbname=pg_database,
-                cursor_factory=psycopg2.extras.RealDictCursor,
-                connect_timeout=10,
-                keepalives=1,
-                keepalives_idle=60,
-                keepalives_interval=10,
-                keepalives_count=5,
-                **({"options": options} if options else {}),
-            )
-            logging.debug("Connected to PostgreSQL: %s/%s", pg_host, pg_database)
-
-        _pg_last_failure_monotonic = 0.0
-        return _AutoRollbackPGConnection(raw)
-
     except ImportError as exc:
         raise RuntimeError(
             "psycopg2 is not installed.  Run: pip install psycopg2-binary"
         ) from exc
-    except Exception as exc:
-        _pg_last_failure_monotonic = time.monotonic()
-        raise RuntimeError(f"PostgreSQL connection failed: {exc}") from exc
+
+    pg_dsn = os.environ.get("DATABASE_URL") or os.environ.get("PG_DSN")
+    pg_host = os.environ.get("PG_HOST", "")
+    pg_user = os.environ.get("PG_USER", "")
+    pg_database = os.environ.get("PG_DATABASE", "sptnr")
+
+    options_parts = []
+    if _PG_IDLE_IN_TRANSACTION_TIMEOUT_MS > 0:
+        options_parts.append(
+            f"-c idle_in_transaction_session_timeout={_PG_IDLE_IN_TRANSACTION_TIMEOUT_MS}"
+        )
+    options = " ".join(options_parts) or None
+
+    last_exc: Exception = RuntimeError("PostgreSQL connection failed: no attempts made")
+    for attempt in range(_PG_CONNECT_MAX_ATTEMPTS):
+        try:
+            if pg_dsn:
+                raw = psycopg2.connect(
+                    pg_dsn,
+                    cursor_factory=psycopg2.extras.RealDictCursor,
+                    connect_timeout=10,
+                    keepalives=1,
+                    keepalives_idle=60,
+                    keepalives_interval=10,
+                    keepalives_count=5,
+                    **({"options": options} if options else {}),
+                )
+                logging.debug(
+                    "Connected to PostgreSQL: %s",
+                    pg_dsn.split("@")[1] if "@" in pg_dsn else "configured",
+                )
+            else:
+                raw = psycopg2.connect(
+                    host=pg_host,
+                    port=int(os.environ.get("PG_PORT", "5432")),
+                    user=pg_user,
+                    password=os.environ.get("PG_PASSWORD", ""),
+                    dbname=pg_database,
+                    cursor_factory=psycopg2.extras.RealDictCursor,
+                    connect_timeout=10,
+                    keepalives=1,
+                    keepalives_idle=60,
+                    keepalives_interval=10,
+                    keepalives_count=5,
+                    **({"options": options} if options else {}),
+                )
+                logging.debug("Connected to PostgreSQL: %s/%s", pg_host, pg_database)
+
+            _pg_last_failure_monotonic = 0.0
+            return _AutoRollbackPGConnection(raw)
+
+        except Exception as exc:
+            last_exc = exc
+            if _is_pg_transient_error(exc) and attempt < (_PG_CONNECT_MAX_ATTEMPTS - 1):
+                delay = _PG_CONNECT_RETRY_DELAYS[min(attempt, len(_PG_CONNECT_RETRY_DELAYS) - 1)]
+                logging.warning(
+                    "PostgreSQL transient connection error (attempt %d/%d), retrying in %.0fs: %s",
+                    attempt + 1,
+                    _PG_CONNECT_MAX_ATTEMPTS,
+                    delay,
+                    exc,
+                )
+                time.sleep(delay)
+                continue
+            break
+
+    _pg_last_failure_monotonic = time.monotonic()
+    raise RuntimeError(f"PostgreSQL connection failed: {last_exc}") from last_exc
 
 
 def ensure_album_artist_column():
