@@ -251,13 +251,13 @@ def ensure_album_artist_column():
     import logging
     import sys
 
+    conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
 
         if not _table_exists(cursor, "tracks"):
             logging.warning("Tracks table does not exist yet, skipping album_artist migration")
-            conn.close()
             return False
 
         columns = _get_table_columns(cursor, "tracks")
@@ -271,65 +271,57 @@ def ensure_album_artist_column():
             except Exception as e:
                 if "duplicate column name" not in str(e).lower() and "already exists" not in str(e).lower():
                     logging.error(f"✗ Failed to add album_artist column: {e}")
-                    conn.close()
                     raise
 
         logging.debug("Populating album_artist column from artist data...")
+        lock_key = 915317411
+        cursor.execute("SELECT pg_try_advisory_lock(%s) AS acquired", (lock_key,))
+        lock_row = cursor.fetchone()
+        lock_acquired = bool(lock_row.get("acquired")) if isinstance(lock_row, dict) else bool(lock_row[0])
+
+        if not lock_acquired:
+            logging.debug("Another worker is already running album_artist migration; skipping")
+            return True
+
+        total_rows_updated = 0
+        batch_size = 500
         try:
-            lock_key = 915317411
-            cursor.execute("SELECT pg_try_advisory_lock(%s) AS acquired", (lock_key,))
-            lock_row = cursor.fetchone()
-            lock_acquired = bool(lock_row.get("acquired")) if isinstance(lock_row, dict) else bool(lock_row[0])
-
-            if not lock_acquired:
-                logging.debug("Another worker is already running album_artist migration; skipping")
-                conn.close()
-                return True
-
-            total_rows_updated = 0
-            batch_size = 500
-            try:
-                while True:
-                    cursor.execute(
-                        """
-                        WITH to_update AS (
-                            SELECT id
-                            FROM tracks
-                            WHERE album_artist IS NULL
-                            ORDER BY id
-                            FOR UPDATE SKIP LOCKED
-                            LIMIT %s
-                        )
-                        UPDATE tracks t
-                        SET album_artist = t.artist
-                        FROM to_update u
-                        WHERE t.id = u.id
-                        """,
-                        (batch_size,)
+            while True:
+                cursor.execute(
+                    """
+                    WITH to_update AS (
+                        SELECT id
+                        FROM tracks
+                        WHERE album_artist IS NULL
+                        ORDER BY id
+                        FOR UPDATE SKIP LOCKED
+                        LIMIT %s
                     )
-                    batch_updated = cursor.rowcount or 0
-                    conn.commit()
-                    total_rows_updated += batch_updated
-                    if batch_updated == 0:
-                        break
+                    UPDATE tracks t
+                    SET album_artist = t.artist
+                    FROM to_update u
+                    WHERE t.id = u.id
+                    """,
+                    (batch_size,)
+                )
+                batch_updated = cursor.rowcount or 0
+                conn.commit()
+                total_rows_updated += batch_updated
+                if batch_updated == 0:
+                    break
 
-                if total_rows_updated > 0:
-                    logging.info(f"✓ Populated album_artist for {total_rows_updated} rows")
-                else:
-                    logging.debug("✓ Populated album_artist for 0 rows")
-            finally:
-                try:
-                    cursor.execute("SELECT pg_advisory_unlock(%s)", (lock_key,))
-                    conn.commit()
-                except Exception:
-                    pass
-        except Exception as e:
-            logging.error(f"✗ Failed to populate album_artist column: {e}")
-            conn.close()
-            raise
+            if total_rows_updated > 0:
+                logging.info(f"✓ Populated album_artist for {total_rows_updated} rows")
+            else:
+                logging.debug("✓ Populated album_artist for 0 rows")
+        finally:
+            try:
+                cursor.execute("SELECT pg_advisory_unlock(%s)", (lock_key,))
+                conn.commit()
+            except Exception:
+                pass
 
         logging.debug("✓ album_artist migration complete")
-        conn.close()
         return True
 
     except RuntimeError as e:
@@ -338,19 +330,22 @@ def ensure_album_artist_column():
     except Exception as e:
         logging.error(f"✗ Error ensuring album_artist column exists: {e}", exc_info=True)
         return False
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def ensure_musicbrainz_album_mbid_column():
     """Ensure tracks table uses ``musicbrainz_album_mbid`` instead of legacy ``beets_album_mbid``."""
     import logging
 
+    conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
 
         if not _table_exists(cursor, "tracks"):
             logging.warning("Tracks table does not exist yet, skipping MBID column migration")
-            conn.close()
             return False
 
         columns = _get_table_columns(cursor, "tracks")
@@ -380,7 +375,6 @@ def ensure_musicbrainz_album_mbid_column():
             lock_acquired = bool(lock_row.get("acquired")) if isinstance(lock_row, dict) else bool(lock_row[0])
             if not lock_acquired:
                 logging.info("Another worker is already running musicbrainz_album_mbid backfill; skipping")
-                conn.close()
                 return True
             try:
                 total_updated = 0
@@ -428,7 +422,6 @@ def ensure_musicbrainz_album_mbid_column():
             except Exception as add_error:
                 logging.warning(f"Add column failed (may already exist): {add_error}")
 
-        conn.close()
         return True
     except RuntimeError as e:
         logging.warning(f"⚠ Skipping musicbrainz_album_mbid migration: {e}")
@@ -436,57 +429,65 @@ def ensure_musicbrainz_album_mbid_column():
     except Exception as e:
         logging.error(f"Error ensuring musicbrainz_album_mbid column exists: {e}", exc_info=True)
         return False
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def verify_album_artist_column():
     """Verify that the album_artist column exists and is functional."""
     import logging
 
+    conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
 
         if not _table_exists(cursor, "tracks"):
-            conn.close()
             return {"exists": False, "message": "Tracks table does not exist"}
 
         columns = _get_table_columns(cursor, "tracks")
-        conn.close()
 
         if "album_artist" in columns:
             return {"exists": True, "message": "album_artist column exists and is functional"}
         return {"exists": False, "message": "album_artist column does NOT exist - migration failed or not run"}
     except Exception as e:
         return {"exists": False, "message": f"Error verifying column: {e}"}
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def get_current_track_rating(track_id: str) -> int:
     """Query the current star rating for a track from the database (0–5)."""
+    conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT stars FROM tracks WHERE id = %s", (track_id,))
         row = cursor.fetchone()
-        conn.close()
         value = _row_first_value(row, 0)
         return int(value) if value is not None else 0
     except Exception as e:
         import logging
         logging.debug(f"Failed to get current rating for track {track_id}: {e}")
         return 0
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def ensure_writer_column():
     """Ensure the writer column exists in the tracks table for lyricist/songwriter data."""
     import logging
 
+    conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
 
         if not _table_exists(cursor, "tracks"):
             logging.warning("Tracks table does not exist yet, skipping writer column migration")
-            conn.close()
             return False
 
         columns = _get_table_columns(cursor, "tracks")
@@ -502,12 +503,10 @@ def ensure_writer_column():
                     logging.info("✓ Writer column already exists")
                 else:
                     logging.error(f"✗ Failed to add writer column: {e}")
-                    conn.close()
                     raise
         else:
             logging.debug("✓ Writer column already exists in tracks table")
 
-        conn.close()
         return True
 
     except RuntimeError as e:
@@ -519,6 +518,9 @@ def ensure_writer_column():
     except Exception as e:
         logging.error(f"✗ Error ensuring writer column exists: {e}", exc_info=True)
         return False
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def ensure_cover_columns():
@@ -537,13 +539,13 @@ def ensure_cover_columns():
         ("is_acoustic", "BIGINT DEFAULT 0"),
     ]
 
+    conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
 
         if not _table_exists(cursor, "tracks"):
             logging.warning("Tracks table does not exist yet, skipping cover columns migration")
-            conn.close()
             return False
 
         existing = _get_table_columns(cursor, "tracks")
@@ -579,7 +581,6 @@ def ensure_cover_columns():
         except Exception as e:
             logging.warning(f"⚠ Could not create idx_tracks_artist_key: {e}")
 
-        conn.close()
         return True
 
     except RuntimeError as e:
@@ -591,19 +592,22 @@ def ensure_cover_columns():
     except Exception as e:
         logging.error(f"✗ Error ensuring cover columns exist: {e}", exc_info=True)
         return False
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def ensure_track_release_year_column():
     """Ensure the optional release_year column exists in the tracks table."""
     import logging
 
+    conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
 
         if not _table_exists(cursor, "tracks"):
             logging.warning("Tracks table does not exist yet, skipping release_year migration")
-            conn.close()
             return False
 
         try:
@@ -632,7 +636,6 @@ def ensure_track_release_year_column():
         else:
             logging.debug("✓ Column 'release_year' already exists in tracks table")
 
-        conn.close()
         return True
     except RuntimeError as e:
         if is_transient_pg_startup_error(e):
@@ -643,6 +646,9 @@ def ensure_track_release_year_column():
     except Exception as e:
         logging.error(f"✗ Error ensuring release_year column exists: {e}", exc_info=True)
         return False
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def ensure_mood_columns():
@@ -656,13 +662,13 @@ def ensure_mood_columns():
         ("mood_last_updated", "TIMESTAMP"),
     ]
 
+    conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
 
         if not _table_exists(cursor, "tracks"):
             logging.warning("Tracks table does not exist yet, skipping mood columns migration")
-            conn.close()
             return False
 
         existing = _get_table_columns(cursor, "tracks")
@@ -677,7 +683,6 @@ def ensure_mood_columns():
                 conn.rollback()
                 logging.error(f"✗ Failed to add '{col_name}' column: {e}")
 
-        conn.close()
         return True
     except RuntimeError as e:
         if is_transient_pg_startup_error(e):
@@ -688,6 +693,9 @@ def ensure_mood_columns():
     except Exception as e:
         logging.error(f"✗ Error ensuring mood columns exist: {e}", exc_info=True)
         return False
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def ensure_essentia_feature_columns():
@@ -702,13 +710,13 @@ def ensure_essentia_feature_columns():
         ("essentia_model_version", "TEXT"),
     ]
 
+    conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
 
         if not _table_exists(cursor, "tracks"):
             logging.warning("Tracks table does not exist yet, skipping Essentia feature migration")
-            conn.close()
             return False
 
         existing = _get_table_columns(cursor, "tracks")
@@ -717,7 +725,6 @@ def ensure_essentia_feature_columns():
         if not missing_columns:
             # Keep startup logs quiet when schema is already current.
             logging.debug("Essentia feature columns already present; skipping migration")
-            conn.close()
             return True
 
         for col_name, col_def in missing_columns:
@@ -729,7 +736,6 @@ def ensure_essentia_feature_columns():
                 conn.rollback()
                 logging.error(f"✗ Failed to add '{col_name}' column: {e}")
 
-        conn.close()
         return True
     except RuntimeError as e:
         if is_transient_pg_startup_error(e):
@@ -740,6 +746,9 @@ def ensure_essentia_feature_columns():
     except Exception as e:
         logging.error(f"✗ Error ensuring Essentia feature columns exist: {e}", exc_info=True)
         return False
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 
@@ -848,13 +857,13 @@ def ensure_navidrome_tag_columns():
         ("navidrome_genre", "TEXT"),
     ]
 
+    conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
 
         if not _table_exists(cursor, "tracks"):
             logging.warning("Tracks table does not exist yet, skipping Navidrome tag columns migration")
-            conn.close()
             return False
 
         for col_name, col_def in columns_to_add:
@@ -875,7 +884,6 @@ def ensure_navidrome_tag_columns():
                 conn.rollback()
                 logging.error(f"✗ Failed to add '{col_name}' column: {e}")
 
-        conn.close()
         return True
     except RuntimeError as e:
         if is_transient_pg_startup_error(e):
@@ -886,6 +894,9 @@ def ensure_navidrome_tag_columns():
     except Exception as e:
         logging.error(f"✗ Error ensuring Navidrome tag columns exist: {e}", exc_info=True)
         return False
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def ensure_spotify_metadata_columns():
@@ -931,13 +942,13 @@ def ensure_spotify_metadata_columns():
         ("normalized_genres", "TEXT"),
     ]
 
+    conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
 
         if not _table_exists(cursor, "tracks"):
             logging.warning("Tracks table does not exist yet, skipping Spotify metadata columns migration")
-            conn.close()
             return False
 
         existing = _get_table_columns(cursor, "tracks")
@@ -945,7 +956,6 @@ def ensure_spotify_metadata_columns():
 
         if not missing:
             logging.debug("Spotify metadata columns already present; skipping migration")
-            conn.close()
             return True
 
         for col_name, col_def in missing:
@@ -957,7 +967,6 @@ def ensure_spotify_metadata_columns():
                 conn.rollback()
                 logging.error(f"✗ Failed to add '{col_name}' column: {e}")
 
-        conn.close()
         return True
     except RuntimeError as e:
         if is_transient_pg_startup_error(e):
@@ -968,6 +977,9 @@ def ensure_spotify_metadata_columns():
     except Exception as e:
         logging.error(f"✗ Error ensuring Spotify metadata columns exist: {e}", exc_info=True)
         return False
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def ensure_popularity_freeze_columns():
@@ -992,13 +1004,13 @@ def ensure_popularity_freeze_columns():
         ("popularity_frozen_at", "TIMESTAMP"),
     ]
 
+    conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
 
         if not _table_exists(cursor, "tracks"):
             logging.warning("Tracks table does not exist yet, skipping popularity freeze columns migration")
-            conn.close()
             return False
 
         existing = _get_table_columns(cursor, "tracks")
@@ -1006,7 +1018,6 @@ def ensure_popularity_freeze_columns():
 
         if not missing:
             logging.debug("Popularity freeze columns already present; skipping migration")
-            conn.close()
             return True
 
         for col_name, col_def in missing:
@@ -1018,7 +1029,6 @@ def ensure_popularity_freeze_columns():
                 conn.rollback()
                 logging.error(f"✗ Failed to add '{col_name}' column: {e}")
 
-        conn.close()
         return True
     except RuntimeError as e:
         if is_transient_pg_startup_error(e):
@@ -1029,6 +1039,9 @@ def ensure_popularity_freeze_columns():
     except Exception as e:
         logging.error(f"✗ Error ensuring popularity freeze columns exist: {e}", exc_info=True)
         return False
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def ensure_artists_name_unique_constraint():
@@ -1046,13 +1059,13 @@ def ensure_artists_name_unique_constraint():
     """
     import logging
 
+    conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
 
         if not _table_exists(cursor, "artists"):
             logging.warning("Artists table does not exist yet, skipping name unique constraint migration")
-            conn.close()
             return False
 
         # Deduplicate rows with the same name before creating the unique index.
@@ -1078,7 +1091,6 @@ def ensure_artists_name_unique_constraint():
         )
         conn.commit()
         logging.debug("✓ Unique index on artists.name ensured")
-        conn.close()
         return True
     except RuntimeError as e:
         if is_transient_pg_startup_error(e):
@@ -1089,3 +1101,6 @@ def ensure_artists_name_unique_constraint():
     except Exception as e:
         logging.error(f"✗ Error ensuring artists.name unique constraint: {e}", exc_info=True)
         return False
+    finally:
+        if conn is not None:
+            conn.close()
