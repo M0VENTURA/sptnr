@@ -217,8 +217,9 @@ def detect_interrupted_scan(scan_type: str = "navidrome") -> Optional[Dict]:
     
     Checks:
     1. Progress file exists
-    2. is_running flag is True
-    3. Last update was recent (within 24 hours)
+    2. is_running flag is True (scan was genuinely active when the app stopped)
+    3. Last update was recent (within 30 minutes)
+    4. A current_artist checkpoint exists
     
     Args:
         scan_type: Type of scan ('navidrome', 'popularity', or 'combined')
@@ -236,17 +237,19 @@ def detect_interrupted_scan(scan_type: str = "navidrome") -> Optional[Dict]:
         log_debug("No checkpoint artist in progress/marker state")
         return None
 
-    # Allow resume for actively running scans and user-stopped/interrupted scans.
+    # Only auto-resume scans that were genuinely running when the app died.
+    # Scans that were cleanly stopped (is_running=False) or explicitly stopped
+    # by the user should NOT be auto-resumed at boot; the user can restart them
+    # manually.  Previously "stopped" was included in resumable_statuses which
+    # caused every restart to re-launch the scan even after a clean shutdown.
     is_running = bool(progress.get("is_running", False))
-    status = str(progress.get("status") or "").strip().lower()
-    stop_requested = bool(progress.get("stop_requested", False))
-    resumable_statuses = {"starting", "running", "stopped", "error", "timeout", "interrupted"}
-
-    if (not is_running) and (not stop_requested) and (status not in resumable_statuses):
-        log_debug(f"Progress state is not resumable (status={status!r})")
+    if not is_running:
+        log_debug(f"Scan is_running=False; skipping auto-resume (status={progress.get('status')!r})")
         return None
 
-    if (not is_running) and status in {"complete", "completed", "success"}:
+    status = str(progress.get("status") or "").strip().lower()
+
+    if status in {"complete", "completed", "success"}:
         log_debug("Scan is already complete; no resume needed")
         return None
 
@@ -255,17 +258,20 @@ def detect_interrupted_scan(scan_type: str = "navidrome") -> Optional[Dict]:
     # previous run, making the scan look interrupted at that artist even though
     # no work was done in the current run.  Skip auto-resume unconditionally so
     # the next boot launches a clean scan rather than a spurious resume.
-    if progress.get('status') == 'starting':
+    if status == 'starting':
         log_debug("Progress file shows scan in 'starting' state; skipping auto-resume")
         return None
 
-    # Check if progress is recent (within 24 hours)
-    # This prevents resuming very old interrupted scans
+    # Check if progress is recent (within 30 minutes).  A running scan writes
+    # its progress file every time it advances to a new artist, so a file that
+    # hasn't been touched in more than 30 minutes belongs to either a completed
+    # scan or a scan that was deliberately idle between cycles.  Both cases
+    # should NOT be auto-resumed; the user can restart them manually.
     try:
         if 'last_updated' in progress:
             last_updated = datetime.fromisoformat(progress['last_updated'])
             age = datetime.now() - last_updated
-            if age > timedelta(hours=24):
+            if age > timedelta(minutes=30):
                 log_debug(f"Progress file is too old ({age}), not resuming")
                 return None
     except Exception as e:

@@ -2100,8 +2100,8 @@ def _acquire_startup_leader_lock() -> bool:
         logging.debug("[BOOT] Startup leader lock already held by another worker")
         return False
     except Exception as lock_err:
-        logging.debug(f"[BOOT] PostgreSQL leader lock unavailable: {lock_err}")
-        return True
+        logging.warning(f"[BOOT] Could not acquire PostgreSQL leader lock ({lock_err}); treating this worker as non-leader")
+        return False
 
 
 def _start_daily_scheduler():
@@ -18340,7 +18340,30 @@ def scan_combined():
 
             if scan_already_running and not force_start:
                 return jsonify({"scan_running": True, "message": "A combined scan is already running. Do you want to start a new scan anyway?"}), 409
-        
+
+        # Cross-process guard: another gunicorn worker may have already started the
+        # scan (the in-memory scan_process_combined is per-worker).  Check the shared
+        # progress file to detect a recent start so duplicate workers back off.
+        if not force_start:
+            try:
+                db_dir = os.path.dirname(DB_PATH)
+                combined_progress_file = os.path.join(db_dir, "combined_scan_progress.json")
+                if os.path.exists(combined_progress_file):
+                    with open(combined_progress_file, "r", encoding="utf-8") as _pf:
+                        _pdata = json.load(_pf)
+                    if _pdata.get("is_running"):
+                        _last = _pdata.get("last_updated", "")
+                        if _last:
+                            _age = (datetime.now() - datetime.fromisoformat(_last)).total_seconds()
+                            if _age < 60:
+                                logging.info(
+                                    "[SCAN] Cross-process guard: combined scan progress file shows "
+                                    f"is_running=True (age={_age:.1f}s); skipping duplicate start"
+                                )
+                                return jsonify({"scan_running": True, "message": "A combined scan was just started by another process."}), 409
+            except Exception as _guard_err:
+                logging.debug(f"[SCAN] Cross-process guard check failed (non-fatal): {_guard_err}")
+
         try:
             db_dir = os.path.dirname(DB_PATH)
             combined_progress_file = os.path.join(db_dir, "combined_scan_progress.json")
