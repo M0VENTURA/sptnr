@@ -6480,6 +6480,39 @@ def popularity_scan(
                         except Exception as cover_error:
                             log_debug(f'Cover detection failed in metadata-only mode for "{artist} - {album}": {cover_error}')
 
+                    # Write fetched genre tags (Last.fm, ListenBrainz, Discogs) to DB.
+                    # In metadata_only mode the batch popularity update is skipped, so
+                    # album_tags_data would otherwise be discarded without being saved.
+                    if album_tags_data:
+                        try:
+                            tags_saved_count = 0
+                            for tag_track in album_tracks:
+                                tag_track_id = tag_track.get('id')
+                                if tag_track_id not in album_tags_data:
+                                    continue
+                                tags_data = album_tags_data[tag_track_id]
+                                set_clauses = []
+                                update_params = []
+                                if tags_data.get("lastfm_tags"):
+                                    set_clauses.append(f"lastfm_tags = {placeholder}")
+                                    update_params.append(json.dumps(tags_data["lastfm_tags"]))
+                                if tags_data.get("listenbrainz_genres"):
+                                    set_clauses.append(f"listenbrainz_genres = {placeholder}")
+                                    update_params.append(json.dumps(tags_data["listenbrainz_genres"]))
+                                if tags_data.get("discogs_genres"):
+                                    set_clauses.append(f"discogs_genres = {placeholder}")
+                                    update_params.append(json.dumps(tags_data["discogs_genres"]))
+                                if set_clauses:
+                                    update_params.append(tag_track_id)
+                                    cursor.execute(
+                                        f"UPDATE tracks SET {', '.join(set_clauses)} WHERE id = {placeholder}",
+                                        tuple(update_params)
+                                    )
+                                    tags_saved_count += 1
+                            log_info(f'Metadata-only: saved genre tags for {tags_saved_count} track(s) in "{artist} - {album}"')
+                        except Exception as tag_save_err:
+                            log_debug(f'Failed to save genre tags in metadata-only mode for "{artist} - {album}": {tag_save_err}')
+
                     log_info(f'Metadata-only scan complete for "{artist} - {album}" (popularity/singles/stars skipped)')
 
                     current_timestamp = datetime.now().isoformat()

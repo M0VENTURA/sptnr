@@ -293,23 +293,32 @@ def verify_file_in_music(queue_id, target_path):
             f"Queue {queue_id}: File verification SUCCESS - {target_path} ({file_size} bytes)"
         )
 
-        # Update queue item with verification timestamp
-        conn = _get_db_connection()
-        cursor = _cursor(conn)
-        placeholder = "%s"
-
-        update_sql = f"""
-            UPDATE download_queue
-            SET verified_in_music_at = {placeholder},
-                music_file_path = {placeholder}
-            WHERE id = {placeholder}
-        """
-
+        # Update queue item with verification timestamp.  This is bookkeeping only —
+        # the file genuinely exists, so a DB failure here must NOT cause us to report
+        # success=False (which would trigger _release_move_claim and reset the queue
+        # item back to 'completed' pointing at the /downloads path, even though the
+        # file has already been moved to /music).
         try:
-            cursor.execute(update_sql, (verified_at, target_path, queue_id))
-            conn.commit()
-        finally:
-            conn.close()
+            conn = _get_db_connection()
+            placeholder = "%s"
+            update_sql = f"""
+                UPDATE download_queue
+                SET verified_in_music_at = {placeholder},
+                    music_file_path = {placeholder}
+                WHERE id = {placeholder}
+            """
+            try:
+                cursor = _cursor(conn)
+                cursor.execute(update_sql, (verified_at, target_path, queue_id))
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as db_err:
+            logger.warning(
+                f"Queue {queue_id}: File verified at {target_path} but DB timestamp update failed "
+                f"(non-fatal — file is safe in /music; verified_in_music_at will be written on "
+                f"the next processing cycle): {db_err}"
+            )
 
         return {
             'success': True,
