@@ -120,7 +120,7 @@
                 <i class="bi bi-star"></i> <span class="d-none d-sm-inline">Favourite</span>
             </button>
             <button class="btn btn-outline-info btn-sm" onclick="openAlbumLookupModal()">
-                <i class="bi bi-database"></i> <span class="d-none d-sm-inline">Metadata</span>
+                <i class="bi bi-search"></i> <span class="d-none d-sm-inline">Lookup</span>
             </button>
             <div class="btn-group btn-group-sm" role="group">
                 <button type="button" class="btn btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="Search for this album">
@@ -156,8 +156,8 @@
                 </button>
             </form>
             <form method="POST" action="{{ url_for('album_update_metadata', artist=artist_name, album=album_name) }}" class="d-inline">
-                <button class="btn btn-info btn-sm" type="submit" title="Force metadata update scan for this album">
-                    <i class="bi bi-tags"></i> <span class="d-none d-sm-inline">Update Metadata</span>
+                <button class="btn btn-sm btn-musicbrainz-scan" type="submit" title="Force metadata update scan for this album">
+                    <span class="d-none d-sm-inline">Update Metadata</span><span class="d-sm-none">Metadata</span>
                 </button>
             </form>
             <button class="btn btn-secondary btn-sm" onclick="renameAlbumFiles('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')" title="Rename all album files based on current metadata">
@@ -192,9 +192,6 @@
                             <i class="bi bi-pencil-square"></i> Edit Album
                         </h5>
                         <div class="d-flex gap-2">
-                            <button type="button" class="btn btn-sm btn-outline-info" onclick="openAlbumLookupModal()">
-                                <i class="bi bi-search"></i> Lookup
-                            </button>
                             <button type="submit" class="btn btn-sm btn-success">
                                 <i class="bi bi-check-circle"></i> Save
                             </button>
@@ -1027,6 +1024,35 @@
     #album-tracks-section .d-flex.gap-2 {
         flex-wrap: wrap;
     }
+}
+
+.btn-musicbrainz-scan {
+    background: #f06a34;
+    color: #fff;
+    border: none;
+    border-radius: 0.375rem;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.875rem;
+    padding: 0.25rem 0.5rem;
+    line-height: 1.5;
+}
+
+.btn-musicbrainz-scan::before {
+    content: '';
+    width: 0.65rem;
+    height: 0.65rem;
+    background: #d45aa3;
+    clip-path: polygon(25% 5%, 75% 5%, 100% 50%, 75% 95%, 25% 95%, 0% 50%);
+    display: inline-block;
+    flex-shrink: 0;
+}
+
+.btn-musicbrainz-scan:hover {
+    background: #d4562a;
+    color: #fff;
 }
 </style>
 
@@ -2342,6 +2368,9 @@
             }
             if (trackComp.diff_fields.includes('mbid')) {
                 diffParts.push(`MusicBrainz ID: <em>missing</em> → <strong>added</strong>`);
+            }
+            if (trackComp.diff_fields.includes('duration')) {
+                diffParts.push(`Length: ${escapeHtml(trackComp.library_duration || '—')} → ${escapeHtml(trackComp.mb_duration || '—')}`);
             }
 
             const updateRow = document.createElement('tr');

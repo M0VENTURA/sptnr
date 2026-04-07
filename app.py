@@ -33251,7 +33251,7 @@ def api_album_musicbrainz_compare():
         placeholder = "%s"
 
         cursor.execute(f"""
-            SELECT id, title, track_number, disc_number, artist, year, mbid, file_path
+            SELECT id, title, track_number, disc_number, artist, year, mbid, file_path, duration
             FROM tracks
             WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
               AND album = {placeholder}
@@ -33366,6 +33366,8 @@ def api_album_musicbrainz_compare():
                 "library_track_number": None,
                 "library_artist": None,
                 "library_year": None,
+                "mb_duration": None,
+                "library_duration": None,
                 "needs_update": False,
                 "diff_fields": [],
                 "matched": False,
@@ -33393,6 +33395,33 @@ def api_album_musicbrainz_compare():
                 lib_mbid = (lib_track.get("mbid") or "").strip()
                 if mb_recording_id and not lib_mbid:
                     diff_fields.append("mbid")
+                # Duration: flag if they differ by more than 5 seconds
+                _DURATION_TOLERANCE_SEC = 5
+                mb_duration_ms = mb_track.get("duration")
+                mb_duration_sec = (mb_duration_ms / 1000.0) if mb_duration_ms else None
+                raw_lib_dur = lib_track.get("duration")
+                if raw_lib_dur not in (None, "", 0, "0"):
+                    try:
+                        lib_dur_val = float(raw_lib_dur)
+                        lib_duration_sec = (lib_dur_val / 1000.0) if lib_dur_val > 10000 else lib_dur_val
+                        lib_duration_sec = lib_duration_sec if lib_duration_sec > 0 else None
+                    except (TypeError, ValueError):
+                        lib_duration_sec = None
+                else:
+                    lib_duration_sec = None
+
+                def _fmt_dur(sec):
+                    if sec is None:
+                        return None
+                    s = int(round(sec))
+                    return f"{s // 60}:{s % 60:02d}"
+
+                entry["mb_duration"] = _fmt_dur(mb_duration_sec)
+                entry["library_duration"] = _fmt_dur(lib_duration_sec)
+
+                if mb_duration_sec is not None and lib_duration_sec is not None:
+                    if abs(mb_duration_sec - lib_duration_sec) > _DURATION_TOLERANCE_SEC:
+                        diff_fields.append("duration")
 
                 entry["diff_fields"] = diff_fields
                 entry["needs_update"] = len(diff_fields) > 0
