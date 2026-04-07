@@ -857,6 +857,7 @@ def cleanup_download_queue():
     Auto-cleanup job (runs every hour):
     1. Delete duplicates older than 24 hours
     2. Delete completed albums where all tracks are completed/in_collection
+    3. Delete all remaining in_collection items (fully moved to library)
     
     Returns:
         Dict with cleanup stats
@@ -874,8 +875,9 @@ def cleanup_download_queue():
             AND auto_delete_at < CURRENT_TIMESTAMP
         """)
         deleted_duplicates = cursor.rowcount
-        
-        # Find completed albums
+
+        # Find completed albums (all tracks downloaded and/or moved to library)
+        # Do this before deleting in_collection rows so the HAVING count is accurate.
         cursor.execute("""
             SELECT DISTINCT album, artist, COUNT(*) as total,
                    SUM(CASE WHEN status IN ('completed', 'in_collection') THEN 1 ELSE 0 END) as done
@@ -898,6 +900,16 @@ def cleanup_download_queue():
             """, (album, artist))
             
             deleted_album_tracks += cursor.rowcount
+
+        # Delete any remaining in_collection items — these tracks have been
+        # successfully moved into the music library and no longer need to live
+        # in the queue.  We do this after the per-album pass so that the album
+        # grouping query above had full visibility of in_collection rows.
+        cursor.execute("""
+            DELETE FROM download_queue
+            WHERE status = 'in_collection'
+        """)
+        deleted_in_collection = cursor.rowcount
         
         conn.commit()
         conn.close()
@@ -905,12 +917,14 @@ def cleanup_download_queue():
         stats = {
             'deleted_duplicates': deleted_duplicates,
             'completed_albums': len(completed_albums),
-            'deleted_album_tracks': deleted_album_tracks
+            'deleted_album_tracks': deleted_album_tracks,
+            'deleted_in_collection': deleted_in_collection,
         }
         
         logger.info(
             f"Cleanup complete: {deleted_duplicates} expired duplicates, "
-            f"{len(completed_albums)} completed albums ({deleted_album_tracks} tracks)"
+            f"{len(completed_albums)} completed albums ({deleted_album_tracks} tracks), "
+            f"{deleted_in_collection} in_collection items"
         )
         
         return stats

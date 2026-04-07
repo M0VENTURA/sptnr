@@ -7230,6 +7230,33 @@ def refresh_needs_correcting_flags(conn):
             pass
 
 
+def _ensure_correction_ignores_table(conn):
+    """Create the correction_ignores table if it does not yet exist.
+
+    Each row records a (album_artist, album, field) tuple that the user
+    has chosen to suppress from the corrections page.
+    """
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS correction_ignores (
+                id          SERIAL PRIMARY KEY,
+                album_artist TEXT NOT NULL DEFAULT '',
+                album        TEXT NOT NULL,
+                field        TEXT NOT NULL,
+                ignored_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (album_artist, album, field)
+            )
+        """)
+        conn.commit()
+    except Exception as e:
+        logging.debug(f"[CORRECTION_IGNORES] Could not create table: {e}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+
 def _get_album_tag_inconsistencies(conn, artist_filter=None):
     """Return albums that have inconsistent album-level tag values across their tracks.
 
@@ -7281,6 +7308,22 @@ def _get_album_tag_inconsistencies(conn, artist_filter=None):
         logging.warning(f"[CORRECTING] Flagging query failed: {e}")
         return []
 
+    # Load ignore rules once for all albums
+    ignored_fields: set = set()  # set of (album_artist, album, field)
+    try:
+        cursor.execute(
+            "SELECT album_artist, album, field FROM correction_ignores"
+        )
+        for ignore_row in cursor.fetchall():
+            if hasattr(ignore_row, 'keys'):
+                ignored_fields.add((ignore_row.get('album_artist') or '',
+                                    ignore_row.get('album') or '',
+                                    ignore_row.get('field') or ''))
+            else:
+                ignored_fields.add((ignore_row[0] or '', ignore_row[1] or '', ignore_row[2] or ''))
+    except Exception:
+        pass  # Table may not exist yet on very first run; silently skip
+
     results = []
     for row in flagged_albums:
         row_dict = dict(row) if hasattr(row, 'keys') else {
@@ -7308,6 +7351,9 @@ def _get_album_tag_inconsistencies(conn, artist_filter=None):
         col_names = ['id'] + [f for f, _ in effective_consistency_fields]
         inconsistencies = []
         for field, field_label in effective_consistency_fields:
+            # Skip fields the user has chosen to ignore for this album
+            if (album_artist, album, field) in ignored_fields:
+                continue
             col_idx = col_names.index(field)
             value_map: dict = {}  # value → {count, track_ids}
             for dr in detail_rows:
@@ -7596,6 +7642,8 @@ def correcting():
         return render_template("correcting.html", inconsistencies=[], total=0,
                                page=1, per_page=50, total_pages=1, error=str(e))
 
+    _ensure_correction_ignores_table(conn)
+
     page = max(1, int(request.args.get('page', 1)))
     per_page = 50
     try:
@@ -7786,6 +7834,132 @@ def _parse_json_genres(col):
         return [g for g in result if g]
     except Exception:
         return []
+
+
+@app.route("/api/correcting/ignore", methods=["POST"])
+def api_correcting_ignore():
+    """Persist an ignore rule for a specific (album_artist, album, field) combination.
+
+    Body JSON: {album_artist, album, field}
+    The field entry is excluded from future corrections reports.
+    """
+    try:
+        payload = request.get_json(silent=True) or {}
+        album_artist = (payload.get('album_artist') or '').strip()
+        album = (payload.get('album') or '').strip()
+        field = (payload.get('field') or '').strip()
+
+        if not album or not field:
+            return jsonify({"success": False, "error": "album and field are required"}), 400
+
+        allowed_fields = {f for f, _ in ALBUM_CONSISTENCY_FIELDS}
+        if field not in allowed_fields:
+            return jsonify({"success": False, "error": f"field '{field}' is not a known corrections field"}), 400
+
+        conn = get_db()
+        _ensure_correction_ignores_table(conn)
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                INSERT INTO correction_ignores (album_artist, album, field)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (album_artist, album, field) DO NOTHING
+            """, (album_artist, album, field))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            conn.close()
+            return jsonify({"success": False, "error": str(e)}), 500
+        conn.close()
+        return jsonify({"success": True})
+    except Exception as e:
+        logging.error(f"[CORRECTING] ignore error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/correcting/unignore", methods=["POST"])
+def api_correcting_unignore():
+    """Remove an ignore rule so the field reappears in corrections reports.
+
+    Body JSON: {album_artist, album, field}
+    """
+    try:
+        payload = request.get_json(silent=True) or {}
+        album_artist = (payload.get('album_artist') or '').strip()
+        album = (payload.get('album') or '').strip()
+        field = (payload.get('field') or '').strip()
+
+        if not album or not field:
+            return jsonify({"success": False, "error": "album and field are required"}), 400
+
+        conn = get_db()
+        _ensure_correction_ignores_table(conn)
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                DELETE FROM correction_ignores
+                WHERE album_artist = %s AND album = %s AND field = %s
+            """, (album_artist, album, field))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            conn.close()
+            return jsonify({"success": False, "error": str(e)}), 500
+        conn.close()
+        return jsonify({"success": True})
+    except Exception as e:
+        logging.error(f"[CORRECTING] unignore error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/correcting/ignores")
+def api_correcting_list_ignores():
+    """Return all active ignore rules.
+
+    Optional query param: album_artist and album to filter.
+    """
+    try:
+        conn = get_db()
+        _ensure_correction_ignores_table(conn)
+        cursor = conn.cursor()
+
+        album_artist = (request.args.get('album_artist') or '').strip()
+        album = (request.args.get('album') or '').strip()
+
+        if album_artist and album:
+            cursor.execute(
+                "SELECT album_artist, album, field, ignored_at FROM correction_ignores "
+                "WHERE album_artist = %s AND album = %s ORDER BY field",
+                (album_artist, album)
+            )
+        else:
+            cursor.execute(
+                "SELECT album_artist, album, field, ignored_at FROM correction_ignores "
+                "ORDER BY album_artist, album, field"
+            )
+        rows = cursor.fetchall()
+        conn.close()
+
+        ignores = []
+        for r in rows:
+            if hasattr(r, 'keys'):
+                ignores.append({
+                    'album_artist': r.get('album_artist') or '',
+                    'album': r.get('album') or '',
+                    'field': r.get('field') or '',
+                    'ignored_at': str(r.get('ignored_at') or ''),
+                })
+            else:
+                ignores.append({
+                    'album_artist': r[0] or '',
+                    'album': r[1] or '',
+                    'field': r[2] or '',
+                    'ignored_at': str(r[3] or ''),
+                })
+        return jsonify({"success": True, "ignores": ignores})
+    except Exception as e:
+        logging.error(f"[CORRECTING] list-ignores error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/artist/<path:name>/genre-management")
@@ -8115,22 +8289,24 @@ def api_search():
         contains_pattern = f"%{query}%"
         
         # Search artists - ranked by: exact match > starts-with > contains, then by track count
+        # Match against both artist and album_artist columns, group by the effective artist name
         cursor.execute(f"""
             SELECT 
-                artist as name,
+                COALESCE(NULLIF(album_artist, ''), artist) as name,
                 COUNT(DISTINCT album) as album_count,
                 COUNT(*) as track_count,
                 CASE
-                    WHEN LOWER(artist) = {placeholder} THEN 0
-                    WHEN LOWER(artist) LIKE {placeholder} THEN 1
+                    WHEN LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = {placeholder} THEN 0
+                    WHEN LOWER(COALESCE(NULLIF(album_artist, ''), artist)) LIKE {placeholder} THEN 1
                     ELSE 2
                 END as match_rank
             FROM tracks
             WHERE LOWER(artist) LIKE {placeholder}
-            GROUP BY artist
+               OR LOWER(album_artist) LIKE {placeholder}
+            GROUP BY COALESCE(NULLIF(album_artist, ''), artist)
             ORDER BY match_rank ASC, track_count DESC
             LIMIT 20
-        """, (exact_pattern, starts_pattern, contains_pattern))
+        """, (exact_pattern, starts_pattern, contains_pattern, contains_pattern))
         artists_results = [
             {
                 "name": row["name"],
@@ -8143,7 +8319,7 @@ def api_search():
         # Search albums - ranked by: exact match > starts-with > contains, then by track count
         cursor.execute(f"""
             SELECT 
-                artist,
+                COALESCE(NULLIF(album_artist, ''), artist) as artist,
                 album,
                 COUNT(*) as track_count,
                 AVG(stars) as avg_stars,
@@ -8154,7 +8330,7 @@ def api_search():
                 END as match_rank
             FROM tracks
             WHERE LOWER(album) LIKE {placeholder}
-            GROUP BY artist, album
+            GROUP BY COALESCE(NULLIF(album_artist, ''), artist), album
             ORDER BY match_rank ASC, track_count DESC
             LIMIT 20
         """, (exact_pattern, starts_pattern, contains_pattern))
@@ -8173,7 +8349,7 @@ def api_search():
             SELECT 
                 id,
                 title,
-                artist,
+                COALESCE(NULLIF(album_artist, ''), artist) as artist,
                 album,
                 stars,
                 CASE
@@ -8183,10 +8359,12 @@ def api_search():
                     ELSE 3
                 END as match_rank
             FROM tracks
-            WHERE LOWER(title) LIKE {placeholder} OR LOWER(artist) LIKE {placeholder}
+            WHERE LOWER(title) LIKE {placeholder}
+               OR LOWER(artist) LIKE {placeholder}
+               OR LOWER(album_artist) LIKE {placeholder}
             ORDER BY match_rank ASC, stars DESC, title{collate_nocase}
             LIMIT 50
-        """, (exact_pattern, starts_pattern, contains_pattern, contains_pattern, contains_pattern))
+        """, (exact_pattern, starts_pattern, contains_pattern, contains_pattern, contains_pattern, contains_pattern))
         tracks_results = [
             {
                 "id": row["id"],
@@ -28809,6 +28987,71 @@ def api_queue_cleanup():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route("/api/queue/reset-moving", methods=["POST"])
+def api_queue_reset_moving():
+    """
+    Reset queue items stuck in 'moving' status back to 'completed' (or 'matched'
+    if they have a release MBID) so they can be retried.
+
+    Accepts an optional list of queue_ids to narrow the reset to specific items.
+    When queue_ids is omitted all 'moving' items updated more than 5 minutes ago
+    are reset (stale moves that the process clearly abandoned).
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        queue_ids_raw = data.get("queue_ids") or []
+        stale_minutes = int(data.get("stale_minutes", 5))
+
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = "%s"
+
+        if queue_ids_raw:
+            ids = [int(v) for v in queue_ids_raw if str(v).strip().lstrip('-').isdigit() and int(v) > 0]
+            if not ids:
+                conn.close()
+                return jsonify({"success": False, "error": "No valid queue IDs provided"}), 400
+            ids_ph = ", ".join([placeholder] * len(ids))
+            cursor.execute(
+                f"""
+                UPDATE download_queue
+                SET status = CASE
+                    WHEN COALESCE(NULLIF(release_mbid, ''), NULLIF(release_id, '')) IS NOT NULL
+                         THEN 'completed'
+                    ELSE 'completed'
+                END,
+                updated_at = CURRENT_TIMESTAMP
+                WHERE id IN ({ids_ph}) AND status = 'moving'
+                """,
+                tuple(ids),
+            )
+        else:
+            # Reset stale 'moving' items (not updated for at least stale_minutes)
+            cursor.execute(
+                f"""
+                UPDATE download_queue
+                SET status = 'completed',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE status = 'moving'
+                  AND updated_at < CURRENT_TIMESTAMP - INTERVAL '{int(stale_minutes)} minutes'
+                """
+            )
+
+        reset_count = int(cursor.rowcount or 0)
+        conn.commit()
+        conn.close()
+
+        logging.info(f"[RESET_MOVING] Reset {reset_count} stuck 'moving' items back to 'completed'")
+        return jsonify({
+            "success": True,
+            "reset_count": reset_count,
+            "message": f"Reset {reset_count} stuck item(s) back to 'completed'",
+        })
+    except Exception as e:
+        logging.error(f"[RESET_MOVING] Error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/queue/matched-releases", methods=["GET"])
 def api_queue_matched_releases():
     """
@@ -33251,7 +33494,7 @@ def api_album_musicbrainz_compare():
         placeholder = "%s"
 
         cursor.execute(f"""
-            SELECT id, title, track_number, disc_number, artist, year, mbid, file_path
+            SELECT id, title, track_number, disc_number, artist, year, mbid, file_path, duration
             FROM tracks
             WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder}
               AND album = {placeholder}
@@ -33366,6 +33609,8 @@ def api_album_musicbrainz_compare():
                 "library_track_number": None,
                 "library_artist": None,
                 "library_year": None,
+                "mb_duration": None,
+                "library_duration": None,
                 "needs_update": False,
                 "diff_fields": [],
                 "matched": False,
@@ -33393,6 +33638,33 @@ def api_album_musicbrainz_compare():
                 lib_mbid = (lib_track.get("mbid") or "").strip()
                 if mb_recording_id and not lib_mbid:
                     diff_fields.append("mbid")
+                # Duration: flag if they differ by more than 5 seconds
+                _DURATION_TOLERANCE_SEC = 5
+                mb_duration_ms = mb_track.get("duration")
+                mb_duration_sec = (mb_duration_ms / 1000.0) if mb_duration_ms else None
+                raw_lib_dur = lib_track.get("duration")
+                if raw_lib_dur not in (None, "", 0, "0"):
+                    try:
+                        lib_dur_val = float(raw_lib_dur)
+                        lib_duration_sec = (lib_dur_val / 1000.0) if lib_dur_val > 10000 else lib_dur_val
+                        lib_duration_sec = lib_duration_sec if lib_duration_sec > 0 else None
+                    except (TypeError, ValueError):
+                        lib_duration_sec = None
+                else:
+                    lib_duration_sec = None
+
+                def _fmt_dur(sec):
+                    if sec is None:
+                        return None
+                    s = int(round(sec))
+                    return f"{s // 60}:{s % 60:02d}"
+
+                entry["mb_duration"] = _fmt_dur(mb_duration_sec)
+                entry["library_duration"] = _fmt_dur(lib_duration_sec)
+
+                if mb_duration_sec is not None and lib_duration_sec is not None:
+                    if abs(mb_duration_sec - lib_duration_sec) > _DURATION_TOLERANCE_SEC:
+                        diff_fields.append("duration")
 
                 entry["diff_fields"] = diff_fields
                 entry["needs_update"] = len(diff_fields) > 0

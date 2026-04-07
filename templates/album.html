@@ -120,7 +120,7 @@
                 <i class="bi bi-star"></i> <span class="d-none d-sm-inline">Favourite</span>
             </button>
             <button class="btn btn-outline-info btn-sm" onclick="openAlbumLookupModal()">
-                <i class="bi bi-database"></i> <span class="d-none d-sm-inline">Metadata</span>
+                <i class="bi bi-search"></i> <span class="d-none d-sm-inline">Lookup</span>
             </button>
             <div class="btn-group btn-group-sm" role="group">
                 <button type="button" class="btn btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="Search for this album">
@@ -156,8 +156,8 @@
                 </button>
             </form>
             <form method="POST" action="{{ url_for('album_update_metadata', artist=artist_name, album=album_name) }}" class="d-inline">
-                <button class="btn btn-info btn-sm" type="submit" title="Force metadata update scan for this album">
-                    <i class="bi bi-tags"></i> <span class="d-none d-sm-inline">Update Metadata</span>
+                <button class="btn btn-sm btn-musicbrainz-scan" type="submit" title="Force metadata update scan for this album">
+                    <span class="d-none d-sm-inline">Update Metadata</span><span class="d-sm-none">Metadata</span>
                 </button>
             </form>
             <button class="btn btn-secondary btn-sm" onclick="renameAlbumFiles('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')" title="Rename all album files based on current metadata">
@@ -192,9 +192,6 @@
                             <i class="bi bi-pencil-square"></i> Edit Album
                         </h5>
                         <div class="d-flex gap-2">
-                            <button type="button" class="btn btn-sm btn-outline-info" onclick="openAlbumLookupModal()">
-                                <i class="bi bi-search"></i> Lookup
-                            </button>
                             <button type="submit" class="btn btn-sm btn-success">
                                 <i class="bi bi-check-circle"></i> Save
                             </button>
@@ -652,7 +649,7 @@
                     {% if album_data.total_discs and album_data.total_discs > 1 %}
                         <!-- Multi-disc album view -->
                         {% for disc_num in tracks_by_disc|dictsort %}
-                            <tr class="table-secondary">
+                            <tr class="table-secondary" data-disc="{{ disc_num[0] or 1 }}">
                                 <!-- Colspan = 9 columns: Checkbox, #, Title, Artist, Duration, Rating, Single, Genres, Actions -->
                                 <td colspan="9" style="padding: 0.75rem 0.5rem;">
                                     <strong style="font-size: 1.1rem;">
@@ -711,11 +708,8 @@
                                     </div>
                                 </td>
                                 <td class="d-none d-lg-table-cell">
-                                    {% if track.artist and track.artist != artist_name %}
-                                    <span class="text-muted" style="font-size: 0.85rem;">{{ track.artist }}</span>
-                                    {% else %}
-                                    <span class="text-muted">—</span>
-                                    {% endif %}
+                                    {% set display_artist = track.artist if track.artist else artist_name %}
+                                    <span class="text-muted" style="font-size: 0.85rem;">{{ display_artist }}</span>
                                 </td>
                                 <td class="d-flex justify-content-between d-md-table-cell text-center">
                                     <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Duration</span>
@@ -822,11 +816,8 @@
                             </td>
                             <td class="d-none d-lg-table-cell">
                                 <span onclick="editTrackArtist('{{ track.id }}', '{{ track.artist|escapejs }}')" style="cursor: pointer;" title="Click to edit">
-                                    {% if track.artist and track.artist != artist_name %}
-                                    <span class="text-muted track-artist-display-{{ track.id }}" style="font-size: 0.85rem;">{{ track.artist }}</span>
-                                    {% else %}
-                                    <span class="text-muted track-artist-display-{{ track.id }}">—</span>
-                                    {% endif %}
+                                    {% set display_artist = track.artist if track.artist else artist_name %}
+                                    <span class="text-muted track-artist-display-{{ track.id }}" style="font-size: 0.85rem;">{{ display_artist }}</span>
                                 </span>
                             </td>
                             <td class="d-flex justify-content-between d-md-table-cell text-center">
@@ -1027,6 +1018,35 @@
     #album-tracks-section .d-flex.gap-2 {
         flex-wrap: wrap;
     }
+}
+
+.btn-musicbrainz-scan {
+    background: #f06a34;
+    color: #fff;
+    border: none;
+    border-radius: 0.375rem;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.875rem;
+    padding: 0.25rem 0.5rem;
+    line-height: 1.5;
+}
+
+.btn-musicbrainz-scan::before {
+    content: '';
+    width: 0.65rem;
+    height: 0.65rem;
+    background: #d45aa3;
+    clip-path: polygon(25% 5%, 75% 5%, 100% 50%, 75% 95%, 25% 95%, 0% 50%);
+    display: inline-block;
+    flex-shrink: 0;
+}
+
+.btn-musicbrainz-scan:hover {
+    background: #d4562a;
+    color: #fff;
 }
 </style>
 
@@ -2233,19 +2253,43 @@
                     </div>
                 </td>`;
 
-            // Find insertion position: after the closest preceding matched track row
-            const idx = data.comparison.indexOf(track);
+            const missingDisc = track.mb_disc_number != null ? Number(track.mb_disc_number) : 1;
             let insertAfterRow = null;
+
+            // Strategy 1: find the last matched track row on the SAME disc in the comparison array
+            const idx = data.comparison.indexOf(track);
             for (let i = idx - 1; i >= 0; i--) {
                 const prev = data.comparison[i];
+                const prevDisc = prev.mb_disc_number != null ? Number(prev.mb_disc_number) : 1;
+                if (prevDisc !== missingDisc) continue;  // skip rows from a different disc
                 if (prev.matched && prev.library_track_id) {
-                    insertAfterRow = document.querySelector(`[data-track-id="${CSS.escape(String(prev.library_track_id))}"]`);
-                    if (insertAfterRow) break;
+                    const candidate = document.querySelector(`[data-track-id="${CSS.escape(String(prev.library_track_id))}"]`);
+                    if (candidate) { insertAfterRow = candidate; break; }
+                }
+            }
+
+            // Strategy 2: if no same-disc matched track was found, find the disc header row
+            // (only rendered for multi-disc albums: <tr data-disc="N">)
+            if (!insertAfterRow) {
+                const discHeader = document.querySelector(`tr[data-disc="${CSS.escape(String(missingDisc))}"]`);
+                if (discHeader) {
+                    insertAfterRow = discHeader;
+                }
+            }
+
+            // Strategy 3: fall back to the last matched track on any preceding disc
+            if (!insertAfterRow) {
+                for (let i = idx - 1; i >= 0; i--) {
+                    const prev = data.comparison[i];
+                    if (prev.matched && prev.library_track_id) {
+                        const candidate = document.querySelector(`[data-track-id="${CSS.escape(String(prev.library_track_id))}"]`);
+                        if (candidate) { insertAfterRow = candidate; break; }
+                    }
                 }
             }
 
             if (insertAfterRow) {
-                // Skip any update/missing rows already inserted after insertAfterRow
+                // Skip any update/missing rows already placed right after insertAfterRow
                 let next = insertAfterRow.nextElementSibling;
                 while (next && (next.classList.contains('mb-update-row') || next.classList.contains('mb-missing-row'))) {
                     insertAfterRow = next;
@@ -2253,7 +2297,7 @@
                 }
                 insertAfterRow.insertAdjacentElement('afterend', row);
             } else {
-                // No preceding matched track — insert before the first track row
+                // Last resort: prepend inside tbody
                 const tbody = document.querySelector('.table-responsive table tbody');
                 if (tbody) {
                     const firstTrackRow = tbody.querySelector('[data-track-id]');
@@ -2342,6 +2386,9 @@
             }
             if (trackComp.diff_fields.includes('mbid')) {
                 diffParts.push(`MusicBrainz ID: <em>missing</em> → <strong>added</strong>`);
+            }
+            if (trackComp.diff_fields.includes('duration')) {
+                diffParts.push(`Length: ${escapeHtml(trackComp.library_duration || '—')} → ${escapeHtml(trackComp.mb_duration || '—')}`);
             }
 
             const updateRow = document.createElement('tr');
