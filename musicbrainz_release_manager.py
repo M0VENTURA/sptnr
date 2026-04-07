@@ -505,8 +505,8 @@ class MusicBrainzReleaseManager:
                                 )
                                 try:
                                     conn.rollback()
-                                except Exception:
-                                    pass
+                                except Exception as rb_err:
+                                    logger.warning(f"[QUEUE_ADD] Rollback failed after duplicate key: {rb_err}")
                                 cursor.execute(
                                     f"""
                                     SELECT id FROM download_queue
@@ -521,7 +521,14 @@ class MusicBrainzReleaseManager:
                                     (track_artist, album, track_title, normalized_queue_source),
                                 )
                                 fallback_row = cursor.fetchone()
-                                queue_id = self._row_get(fallback_row, 'id', 0, 0) if fallback_row else 0
+                                if fallback_row:
+                                    queue_id = self._row_get(fallback_row, 'id', 0, 0)
+                                else:
+                                    logger.warning(
+                                        f"[QUEUE_ADD] Could not resolve duplicate-key race for "
+                                        f"{track_artist!r} - {track_title!r}: no active row found after rollback"
+                                    )
+                                    continue
                             else:
                                 raise
                         queue_ids.append(queue_id)
