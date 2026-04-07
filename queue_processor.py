@@ -107,6 +107,11 @@ _SLSKD_SEARCH_MAX_WAIT_SECONDS = 150
 # Scores below this threshold trigger fallback queries (e.g. using album_artist).
 _SLSKD_MIN_ACCEPT_SCORE = 0.45
 
+# Retry delay (minutes) used for tracks that couldn't be matched today —
+# "no results" and duration-mismatch failures both use this value so that the
+# same track is not hammered on every run.
+_SLSKD_LONG_RETRY_DELAY_MINUTES = 1440
+
 # Shared constants for orphan-token detection used in both
 # _score_soulseek_candidate and _filename_matches_queue_item.
 _ORPHAN_AUDIO_EXT_TOKENS = frozenset(
@@ -1505,7 +1510,7 @@ def search_and_download(queue_id, queue_item, client):
         if not best_result:
             elapsed = (datetime.now() - poll_start_time).total_seconds()
             logger.warning(f"Queue {queue_id}: ✗ No results found after {elapsed:.0f}s of polling")
-            mark_failed(queue_id, f"No results found for '{search_query}'", schedule_retry=True, retry_delay_minutes=1440)
+            mark_failed(queue_id, f"No results found for '{search_query}'", schedule_retry=True, retry_delay_minutes=_SLSKD_LONG_RETRY_DELAY_MINUTES)
             return False
 
         if best_score < _SLSKD_MIN_ACCEPT_SCORE:
@@ -1518,7 +1523,7 @@ def search_and_download(queue_id, queue_item, client):
                 queue_id,
                 f"No safe Soulseek match for '{search_query}' (best_score={best_score:.2f})",
                 schedule_retry=True,
-                retry_delay_minutes=1440,
+                retry_delay_minutes=_SLSKD_LONG_RETRY_DELAY_MINUTES,
             )
             return False
 
@@ -1876,6 +1881,45 @@ def check_completed_downloads():
                     logger.info(
                         f"Queue {item_id}: matched file '{match_found}' by filename/path — claiming for move"
                     )
+
+                # Pre-copy duration validation: confirm the actual file duration
+                # matches the queue item's expected duration before moving to the
+                # collection.  This catches cases where the search selected the
+                # right filename but the audio content is a wrong version (e.g. a
+                # 9:35 medley downloaded for a 3:40 remastered LP track).
+                # The check is only applied when the queue item carries an
+                # expected duration; items without one are left through because we
+                # have no reliable reference to compare against.
+                _expected_dur = _normalize_duration_seconds(item.get('duration'))
+                if _expected_dur:
+                    _actual_dur = _extract_audio_file_duration_seconds(file_path)
+                    if _actual_dur:
+                        _dur_diff = abs(_expected_dur - _actual_dur)
+                        _dur_tolerance = _get_duration_match_tolerance(item)
+                        if _dur_diff > _dur_tolerance:
+                            logger.warning(
+                                f"Queue {item_id}: ✗ pre-copy duration check FAILED — "
+                                f"expected {_expected_dur}s, file is {_actual_dur}s "
+                                f"(diff={_dur_diff}s, tolerance={_dur_tolerance}s); "
+                                f"rejecting '{match_found}' and scheduling retry"
+                            )
+                            mark_failed(
+                                item_id,
+                                f"Pre-copy duration mismatch: expected {_expected_dur}s, "
+                                f"got {_actual_dur}s (diff={_dur_diff}s)",
+                                schedule_retry=True,
+                                retry_delay_minutes=_SLSKD_LONG_RETRY_DELAY_MINUTES,
+                            )
+                            continue
+                        logger.debug(
+                            f"Queue {item_id}: pre-copy duration OK "
+                            f"(expected {_expected_dur}s, file {_actual_dur}s, diff={_dur_diff}s)"
+                        )
+                    else:
+                        logger.debug(
+                            f"Queue {item_id}: pre-copy duration check skipped — "
+                            f"could not read duration from '{match_found}'"
+                        )
 
                 if not _move_helpers_available:
                     logger.error(f"Queue {item_id}: move helpers unavailable, skipping auto-move")
