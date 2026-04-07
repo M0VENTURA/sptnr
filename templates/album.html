@@ -649,7 +649,7 @@
                     {% if album_data.total_discs and album_data.total_discs > 1 %}
                         <!-- Multi-disc album view -->
                         {% for disc_num in tracks_by_disc|dictsort %}
-                            <tr class="table-secondary">
+                            <tr class="table-secondary" data-disc="{{ disc_num[0] or 1 }}">
                                 <!-- Colspan = 9 columns: Checkbox, #, Title, Artist, Duration, Rating, Single, Genres, Actions -->
                                 <td colspan="9" style="padding: 0.75rem 0.5rem;">
                                     <strong style="font-size: 1.1rem;">
@@ -2259,19 +2259,43 @@
                     </div>
                 </td>`;
 
-            // Find insertion position: after the closest preceding matched track row
-            const idx = data.comparison.indexOf(track);
+            const missingDisc = track.mb_disc_number != null ? Number(track.mb_disc_number) : 1;
             let insertAfterRow = null;
+
+            // Strategy 1: find the last matched track row on the SAME disc in the comparison array
+            const idx = data.comparison.indexOf(track);
             for (let i = idx - 1; i >= 0; i--) {
                 const prev = data.comparison[i];
+                const prevDisc = prev.mb_disc_number != null ? Number(prev.mb_disc_number) : 1;
+                if (prevDisc !== missingDisc) continue;  // skip rows from a different disc
                 if (prev.matched && prev.library_track_id) {
-                    insertAfterRow = document.querySelector(`[data-track-id="${CSS.escape(String(prev.library_track_id))}"]`);
-                    if (insertAfterRow) break;
+                    const candidate = document.querySelector(`[data-track-id="${CSS.escape(String(prev.library_track_id))}"]`);
+                    if (candidate) { insertAfterRow = candidate; break; }
+                }
+            }
+
+            // Strategy 2: if no same-disc matched track was found, find the disc header row
+            // (only rendered for multi-disc albums: <tr data-disc="N">)
+            if (!insertAfterRow) {
+                const discHeader = document.querySelector(`tr[data-disc="${CSS.escape(String(missingDisc))}"]`);
+                if (discHeader) {
+                    insertAfterRow = discHeader;
+                }
+            }
+
+            // Strategy 3: fall back to the last matched track on any preceding disc
+            if (!insertAfterRow) {
+                for (let i = idx - 1; i >= 0; i--) {
+                    const prev = data.comparison[i];
+                    if (prev.matched && prev.library_track_id) {
+                        const candidate = document.querySelector(`[data-track-id="${CSS.escape(String(prev.library_track_id))}"]`);
+                        if (candidate) { insertAfterRow = candidate; break; }
+                    }
                 }
             }
 
             if (insertAfterRow) {
-                // Skip any update/missing rows already inserted after insertAfterRow
+                // Skip any update/missing rows already placed right after insertAfterRow
                 let next = insertAfterRow.nextElementSibling;
                 while (next && (next.classList.contains('mb-update-row') || next.classList.contains('mb-missing-row'))) {
                     insertAfterRow = next;
@@ -2279,7 +2303,7 @@
                 }
                 insertAfterRow.insertAdjacentElement('afterend', row);
             } else {
-                // No preceding matched track — insert before the first track row
+                // Last resort: prepend inside tbody
                 const tbody = document.querySelector('.table-responsive table tbody');
                 if (tbody) {
                     const firstTrackRow = tbody.querySelector('[data-track-id]');
