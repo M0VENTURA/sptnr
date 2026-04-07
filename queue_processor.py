@@ -2445,7 +2445,7 @@ def retry_pending_completed_moves(now_ts, last_run_ts, interval_seconds=120):
             f"[RETRY_MOVES] {len(pending)} completed item(s) pending move to music library"
         )
 
-        albums_tried: set = set()
+        albums_tried = set()
         moved_count = 0
         scan_needed = False
 

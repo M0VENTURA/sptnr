@@ -5233,7 +5233,7 @@ def check_downloads_folder():
                         search_query,
                     )
 
-        matched_count = sum(1 for item in completed_items if not item.get('moved') or item.get('moved'))
+        matched_count = len(completed_items)
         moved_count = sum(1 for item in completed_items if item.get('moved'))
         if completed_items:
             logger.info(
