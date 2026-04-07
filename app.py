@@ -15730,7 +15730,18 @@ def scan_essentia_mood():
         try:
             db_dir = os.path.dirname(DB_PATH)
             essentia_progress_file = os.path.join(db_dir, "essentia_mood_scan_progress.json")
-            _write_progress_file(essentia_progress_file, "essentia_mood_scan", True, {"status": "starting"})
+            # Preserve any existing resume checkpoint so the scan can recover if
+            # this worker is killed before it writes its first "running" checkpoint.
+            _starting_payload: dict = {"status": "starting"}
+            try:
+                with open(essentia_progress_file, "r", encoding="utf-8") as _ef:
+                    _ep = json.load(_ef)
+                    _checkpoint = (_ep.get("resume_from_artist") or "").strip()
+                    if _checkpoint:
+                        _starting_payload["resume_from_artist"] = _checkpoint
+            except Exception:
+                pass
+            _write_progress_file(essentia_progress_file, "essentia_mood_scan", True, _starting_payload)
 
             # Capture filter values for the closure
             _artist_filter = artist_filter
