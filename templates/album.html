@@ -490,29 +490,30 @@
                         <h6 class="text-muted mb-2">Source Tags</h6>
                         <div id="albumGenreSourcesContainer">
                           {% set sources = [
-                            ('mood', 'Mood Scan', 'F59C00', 'light'),
-                            ('lastfm_tags', 'Last.fm', 'D51007', 'black'),
-                            ('listenbrainz_genres', 'ListenBrainz', '0066FF', 'white'),
-                            ('discogs_genres', 'Discogs', '6c757d', 'white'),
-                            ('essentia_genres', 'Essentia', '6f42c1', 'white'),
-                            ('navidrome_genres', 'Navidrome', '17A589', 'white'),
-                            ('musicbrainz_genres', 'MusicBrainz', 'EB743B', 'white')
+                            ('mood', 'Essentia Moods', 'F59C00', 'black', 'bi-emoji-smile-fill'),
+                            ('lastfm_tags', 'Last.fm Genres', 'D51007', 'white', 'bi-music-note-beamed'),
+                            ('listenbrainz_genres', 'ListenBrainz', '0066FF', 'white', 'bi-headphones'),
+                            ('discogs_genres', 'Discogs', '6c757d', 'white', 'bi-vinyl-fill'),
+                            ('essentia_genres', 'Essentia Genres', '6f42c1', 'white', 'bi-cpu-fill'),
+                            ('navidrome_genres', 'Navidrome', '17A589', 'white', 'bi-music-note-list'),
+                            ('musicbrainz_genres', 'MusicBrainz Genres', 'EB743B', 'white', 'bi-hexagon-fill'),
+                            ('spotify_genres', 'Spotify', '1DB954', 'white', 'bi-spotify')
                           ] %}
                           {% set ns = namespace(has_any=False) %}
-                          {% for key, label, bgcolor, textcolor in sources %}
+                          {% for key, label, bgcolor, textcolor, icon in sources %}
                             {% if genre_sources and genre_sources.get(key) %}{% set ns.has_any = True %}{% endif %}
                           {% endfor %}
                           {% if ns.has_any %}
                             {% set ns2 = namespace(first=True) %}
                             <ul class="nav nav-tabs" role="tablist">
-                              {% for key, label, bgcolor, textcolor in sources %}
+                              {% for key, label, bgcolor, textcolor, icon in sources %}
                                 {% if genre_sources and genre_sources.get(key) %}
                                   <li class="nav-item" role="presentation">
                                     <button class="nav-link {{ 'active' if ns2.first else '' }}"
                                             id="albumGenreTab{{ key }}-tab" data-bs-toggle="tab"
                                             data-bs-target="#albumGenreTab{{ key }}-content"
                                             type="button" role="tab" style="color: #{{ bgcolor }};">
-                                      <i class="bi bi-tag"></i> {{ label }}
+                                      <i class="bi {{ icon }}"></i> {{ label }}
                                       <span class="badge ms-2" style="background-color: #{{ bgcolor }}; color: {{ textcolor }};">{{ genre_sources[key]|length }}</span>
                                     </button>
                                   </li>
@@ -522,7 +523,7 @@
                             </ul>
                             {% set ns3 = namespace(first=True) %}
                             <div class="tab-content mt-3">
-                              {% for key, label, bgcolor, textcolor in sources %}
+                              {% for key, label, bgcolor, textcolor, icon in sources %}
                                 {% if genre_sources and genre_sources.get(key) %}
                                   <div class="tab-pane fade {{ 'active show' if ns3.first else '' }}"
                                        id="albumGenreTab{{ key }}-content" role="tabpanel">
