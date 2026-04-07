@@ -7230,6 +7230,33 @@ def refresh_needs_correcting_flags(conn):
             pass
 
 
+def _ensure_correction_ignores_table(conn):
+    """Create the correction_ignores table if it does not yet exist.
+
+    Each row records a (album_artist, album, field) tuple that the user
+    has chosen to suppress from the corrections page.
+    """
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS correction_ignores (
+                id          SERIAL PRIMARY KEY,
+                album_artist TEXT NOT NULL DEFAULT '',
+                album        TEXT NOT NULL,
+                field        TEXT NOT NULL,
+                ignored_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (album_artist, album, field)
+            )
+        """)
+        conn.commit()
+    except Exception as e:
+        logging.debug(f"[CORRECTION_IGNORES] Could not create table: {e}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+
 def _get_album_tag_inconsistencies(conn, artist_filter=None):
     """Return albums that have inconsistent album-level tag values across their tracks.
 
@@ -7281,6 +7308,22 @@ def _get_album_tag_inconsistencies(conn, artist_filter=None):
         logging.warning(f"[CORRECTING] Flagging query failed: {e}")
         return []
 
+    # Load ignore rules once for all albums
+    ignored_fields: set = set()  # set of (album_artist, album, field)
+    try:
+        cursor.execute(
+            "SELECT album_artist, album, field FROM correction_ignores"
+        )
+        for ignore_row in cursor.fetchall():
+            if hasattr(ignore_row, 'keys'):
+                ignored_fields.add((ignore_row.get('album_artist') or '',
+                                    ignore_row.get('album') or '',
+                                    ignore_row.get('field') or ''))
+            else:
+                ignored_fields.add((ignore_row[0] or '', ignore_row[1] or '', ignore_row[2] or ''))
+    except Exception:
+        pass  # Table may not exist yet on very first run; silently skip
+
     results = []
     for row in flagged_albums:
         row_dict = dict(row) if hasattr(row, 'keys') else {
@@ -7308,6 +7351,9 @@ def _get_album_tag_inconsistencies(conn, artist_filter=None):
         col_names = ['id'] + [f for f, _ in effective_consistency_fields]
         inconsistencies = []
         for field, field_label in effective_consistency_fields:
+            # Skip fields the user has chosen to ignore for this album
+            if (album_artist, album, field) in ignored_fields:
+                continue
             col_idx = col_names.index(field)
             value_map: dict = {}  # value → {count, track_ids}
             for dr in detail_rows:
@@ -7596,6 +7642,8 @@ def correcting():
         return render_template("correcting.html", inconsistencies=[], total=0,
                                page=1, per_page=50, total_pages=1, error=str(e))
 
+    _ensure_correction_ignores_table(conn)
+
     page = max(1, int(request.args.get('page', 1)))
     per_page = 50
     try:
@@ -7786,6 +7834,132 @@ def _parse_json_genres(col):
         return [g for g in result if g]
     except Exception:
         return []
+
+
+@app.route("/api/correcting/ignore", methods=["POST"])
+def api_correcting_ignore():
+    """Persist an ignore rule for a specific (album_artist, album, field) combination.
+
+    Body JSON: {album_artist, album, field}
+    The field entry is excluded from future corrections reports.
+    """
+    try:
+        payload = request.get_json(silent=True) or {}
+        album_artist = (payload.get('album_artist') or '').strip()
+        album = (payload.get('album') or '').strip()
+        field = (payload.get('field') or '').strip()
+
+        if not album or not field:
+            return jsonify({"success": False, "error": "album and field are required"}), 400
+
+        allowed_fields = {f for f, _ in ALBUM_CONSISTENCY_FIELDS}
+        if field not in allowed_fields:
+            return jsonify({"success": False, "error": f"field '{field}' is not a known corrections field"}), 400
+
+        conn = get_db()
+        _ensure_correction_ignores_table(conn)
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                INSERT INTO correction_ignores (album_artist, album, field)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (album_artist, album, field) DO NOTHING
+            """, (album_artist, album, field))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            conn.close()
+            return jsonify({"success": False, "error": str(e)}), 500
+        conn.close()
+        return jsonify({"success": True})
+    except Exception as e:
+        logging.error(f"[CORRECTING] ignore error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/correcting/unignore", methods=["POST"])
+def api_correcting_unignore():
+    """Remove an ignore rule so the field reappears in corrections reports.
+
+    Body JSON: {album_artist, album, field}
+    """
+    try:
+        payload = request.get_json(silent=True) or {}
+        album_artist = (payload.get('album_artist') or '').strip()
+        album = (payload.get('album') or '').strip()
+        field = (payload.get('field') or '').strip()
+
+        if not album or not field:
+            return jsonify({"success": False, "error": "album and field are required"}), 400
+
+        conn = get_db()
+        _ensure_correction_ignores_table(conn)
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                DELETE FROM correction_ignores
+                WHERE album_artist = %s AND album = %s AND field = %s
+            """, (album_artist, album, field))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            conn.close()
+            return jsonify({"success": False, "error": str(e)}), 500
+        conn.close()
+        return jsonify({"success": True})
+    except Exception as e:
+        logging.error(f"[CORRECTING] unignore error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/correcting/ignores")
+def api_correcting_list_ignores():
+    """Return all active ignore rules.
+
+    Optional query param: album_artist and album to filter.
+    """
+    try:
+        conn = get_db()
+        _ensure_correction_ignores_table(conn)
+        cursor = conn.cursor()
+
+        album_artist = (request.args.get('album_artist') or '').strip()
+        album = (request.args.get('album') or '').strip()
+
+        if album_artist and album:
+            cursor.execute(
+                "SELECT album_artist, album, field, ignored_at FROM correction_ignores "
+                "WHERE album_artist = %s AND album = %s ORDER BY field",
+                (album_artist, album)
+            )
+        else:
+            cursor.execute(
+                "SELECT album_artist, album, field, ignored_at FROM correction_ignores "
+                "ORDER BY album_artist, album, field"
+            )
+        rows = cursor.fetchall()
+        conn.close()
+
+        ignores = []
+        for r in rows:
+            if hasattr(r, 'keys'):
+                ignores.append({
+                    'album_artist': r.get('album_artist') or '',
+                    'album': r.get('album') or '',
+                    'field': r.get('field') or '',
+                    'ignored_at': str(r.get('ignored_at') or ''),
+                })
+            else:
+                ignores.append({
+                    'album_artist': r[0] or '',
+                    'album': r[1] or '',
+                    'field': r[2] or '',
+                    'ignored_at': str(r[3] or ''),
+                })
+        return jsonify({"success": True, "ignores": ignores})
+    except Exception as e:
+        logging.error(f"[CORRECTING] list-ignores error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/artist/<path:name>/genre-management")

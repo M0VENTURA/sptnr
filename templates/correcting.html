@@ -121,6 +121,13 @@
                         title="Look up authoritative values from MusicBrainz">
                     <i class="bi bi-search"></i> Lookup MusicBrainz
                 </button>
+                <button class="btn btn-sm btn-outline-secondary show-ignores-btn"
+                        data-album-artist="{{ item.album_artist | e }}"
+                        data-album="{{ item.album | e }}"
+                        data-index="{{ loop.index }}"
+                        title="View and remove ignored fields for this album">
+                    <i class="bi bi-eye-slash"></i> Ignored
+                </button>
             </div>
         </div>
         <div class="card-body p-0">
@@ -153,13 +160,27 @@
                     </div>
                 </div>
             </div>
+            <!-- Ignored fields panel (hidden until user clicks "Ignored") -->
+            <div class="ignores-panel px-3 pt-3 pb-2 d-none border-bottom"
+                 id="ignores-panel-{{ loop.index }}"
+                 style="background:var(--tertiary-bg);">
+                <p class="small fw-semibold mb-2 text-secondary">
+                    <i class="bi bi-eye-slash me-1"></i> Ignored fields for this album
+                    <span class="text-muted fw-normal"> — these won't appear as corrections</span>
+                </p>
+                <div class="ignores-loading text-secondary small d-none">
+                    <span class="spinner-border spinner-border-sm me-1" role="status"></span> Loading…
+                </div>
+                <div class="ignores-empty text-secondary small d-none">No ignored fields for this album.</div>
+                <div class="ignores-rows d-flex flex-wrap gap-2"></div>
+            </div>
             <div class="table-responsive">
                 <table class="table table-hover mb-0 correcting-table">
                     <thead>
                         <tr>
                             <th style="width:160px;">Field</th>
                             <th>Values Found</th>
-                            <th class="text-end" style="width:180px;">Actions</th>
+                            <th class="text-end" style="width:220px;">Actions</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -190,6 +211,14 @@
                                         <span class="text-muted">({{ v.count }})</span>
                                     </button>
                                     {% endfor %}
+                                    <button class="btn btn-sm btn-outline-secondary fix-btn ignore-field-btn"
+                                            data-album-artist="{{ item.album_artist | e }}"
+                                            data-album="{{ item.album | e }}"
+                                            data-field="{{ inc.field }}"
+                                            data-field-label="{{ inc.field_label | e }}"
+                                            title="Ignore this field — it won't appear as a correction for this album again">
+                                        <i class="bi bi-eye-slash"></i> Ignore
+                                    </button>
                                 </div>
                             </td>
                         </tr>
@@ -327,6 +356,120 @@
             }
             progressModal.hide();
             window.location.reload();
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Ignore / Unignore buttons
+    // -----------------------------------------------------------------------
+    document.querySelectorAll('.ignore-field-btn').forEach(function (btn) {
+        btn.addEventListener('click', async function () {
+            const albumArtist = btn.dataset.albumArtist;
+            const album = btn.dataset.album;
+            const field = btn.dataset.field;
+            const fieldLabel = btn.dataset.fieldLabel || field;
+            if (!confirm(`Ignore the "${fieldLabel}" inconsistency for "${album}"?\n\nIt won't appear in the corrections list anymore. You can unignore it later via the "Ignored" button.`)) return;
+            try {
+                const resp = await fetch('/api/correcting/ignore', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({album_artist: albumArtist, album: album, field: field}),
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    // Remove the row from the table immediately
+                    const row = btn.closest('tr');
+                    if (row) row.remove();
+                } else {
+                    alert('Error: ' + (data.error || 'Unknown error'));
+                }
+            } catch (err) {
+                alert('Request failed: ' + err);
+            }
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // "Ignored" panel buttons — show/hide ignored fields per album
+    // -----------------------------------------------------------------------
+    document.querySelectorAll('.show-ignores-btn').forEach(function (btn) {
+        btn.addEventListener('click', async function () {
+            const albumArtist = btn.dataset.albumArtist;
+            const album = btn.dataset.album;
+            const idx = btn.dataset.index;
+            const panel = document.getElementById('ignores-panel-' + idx);
+            if (!panel) return;
+
+            // Toggle
+            if (!panel.classList.contains('d-none')) {
+                panel.classList.add('d-none');
+                return;
+            }
+
+            panel.classList.remove('d-none');
+            const loadingEl = panel.querySelector('.ignores-loading');
+            const emptyEl   = panel.querySelector('.ignores-empty');
+            const rowsEl    = panel.querySelector('.ignores-rows');
+
+            loadingEl.classList.remove('d-none');
+            emptyEl.classList.add('d-none');
+            rowsEl.innerHTML = '';
+
+            try {
+                const params = new URLSearchParams({album_artist: albumArtist, album: album});
+                const resp = await fetch('/api/correcting/ignores?' + params.toString());
+                const data = await resp.json();
+                loadingEl.classList.add('d-none');
+
+                if (!data.success || !data.ignores || !data.ignores.length) {
+                    emptyEl.classList.remove('d-none');
+                    return;
+                }
+
+                data.ignores.forEach(function (ignore) {
+                    const badge = document.createElement('span');
+                    badge.className = 'badge bg-secondary d-flex align-items-center gap-1';
+                    badge.style.fontSize = '0.8rem';
+                    const label = document.createTextNode(ignore.field);
+                    badge.appendChild(label);
+
+                    const removeBtn = document.createElement('button');
+                    removeBtn.type = 'button';
+                    removeBtn.className = 'btn-close btn-close-white ms-1';
+                    removeBtn.style.cssText = 'font-size:0.6rem;width:0.8em;height:0.8em;';
+                    removeBtn.title = 'Unignore — restore to corrections list';
+                    removeBtn.addEventListener('click', async function () {
+                        try {
+                            const resp2 = await fetch('/api/correcting/unignore', {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify({
+                                    album_artist: ignore.album_artist,
+                                    album: ignore.album,
+                                    field: ignore.field,
+                                }),
+                            });
+                            const data2 = await resp2.json();
+                            if (data2.success) {
+                                badge.remove();
+                                if (!rowsEl.children.length) {
+                                    emptyEl.classList.remove('d-none');
+                                }
+                            } else {
+                                alert('Error: ' + (data2.error || 'Unknown'));
+                            }
+                        } catch (err) {
+                            alert('Request failed: ' + err);
+                        }
+                    });
+                    badge.appendChild(removeBtn);
+                    rowsEl.appendChild(badge);
+                });
+            } catch (err) {
+                loadingEl.classList.add('d-none');
+                emptyEl.textContent = 'Failed to load: ' + err;
+                emptyEl.classList.remove('d-none');
+            }
         });
     });
 
