@@ -235,6 +235,23 @@ def load_scan_progress(scan_type: str = "navidrome") -> Optional[Dict]:
     return merged
 
 
+def _atomic_json_write(path: str, data: dict, indent: int = None) -> None:
+    """Write *data* as JSON to *path* atomically via a temp file + os.replace()."""
+    _dir = os.path.dirname(path) or "."
+    os.makedirs(_dir, exist_ok=True)
+    _fd, _tmp = tempfile.mkstemp(dir=_dir, suffix=".tmp")
+    try:
+        with os.fdopen(_fd, "w", encoding="utf-8") as _f:
+            json.dump(data, _f, indent=indent)
+        os.replace(_tmp, path)
+    except Exception:
+        try:
+            os.unlink(_tmp)
+        except OSError:
+            pass
+        raise
+
+
 def save_scan_progress(scan_type: str, progress_data: Dict) -> bool:
     """
     Save scan progress to file.
@@ -249,22 +266,7 @@ def save_scan_progress(scan_type: str, progress_data: Dict) -> bool:
     progress_file = _resolve_progress_file(scan_type)
     
     try:
-        # Ensure directory exists
-        progress_dir = os.path.dirname(progress_file) or "."
-        os.makedirs(progress_dir, exist_ok=True)
-
-        _fd, _tmp = tempfile.mkstemp(dir=progress_dir, suffix=".tmp")
-        try:
-            with os.fdopen(_fd, "w", encoding="utf-8") as _f:
-                json.dump(progress_data, _f, indent=2)
-            os.replace(_tmp, progress_file)
-        except Exception:
-            try:
-                os.unlink(_tmp)
-            except OSError:
-                pass
-            raise
-
+        _atomic_json_write(progress_file, progress_data, indent=2)
         log_debug(f"Saved progress to {progress_file}: {progress_data.get('percent_complete', 0)}%")
         return True
     except Exception as e:
@@ -292,19 +294,9 @@ def clear_scan_progress(scan_type: str = "navidrome") -> bool:
                     progress = json.load(f)
                 progress['is_running'] = False
                 progress['percent_complete'] = 100
-                progress_dir = os.path.dirname(progress_file) or "."
-                _fd, _tmp = tempfile.mkstemp(dir=progress_dir, suffix=".tmp")
-                try:
-                    with os.fdopen(_fd, "w", encoding="utf-8") as _f:
-                        json.dump(progress, _f, indent=2)
-                    os.replace(_tmp, progress_file)
-                except Exception:
-                    try:
-                        os.unlink(_tmp)
-                    except OSError:
-                        pass
-            except Exception:
-                pass
+                _atomic_json_write(progress_file, progress, indent=2)
+            except Exception as e:
+                log_debug(f"Failed to update progress file before clearing {progress_file}: {e}")
             
             os.remove(progress_file)
             log_info(f"Cleared progress file: {progress_file}")
