@@ -3744,8 +3744,22 @@ def _start_navidrome_incremental_scheduler():
 
         def scheduler_worker():
             try:
-                time.sleep(20)
-                interval_seconds = 15 * 60
+                # Wait long enough for the queue processor to complete any
+                # pending downloads (e.g. auto-moved albums) before the first
+                # incremental check fires.  20 s was too short and caused
+                # recently-moved albums to appear "missing" on every restart.
+                time.sleep(300)
+
+                try:
+                    _interval_cfg = get_config() or {}
+                    _interval_minutes = float(
+                        (_interval_cfg.get("features") or {}).get(
+                            "nav_incremental_interval_minutes", 60
+                        )
+                    )
+                    interval_seconds = max(5 * 60, int(_interval_minutes * 60))
+                except Exception:
+                    interval_seconds = 60 * 60
 
                 while not stop_event.is_set():
                     marker_path = _navidrome_first_full_import_marker_path()
@@ -3798,7 +3812,7 @@ def _start_navidrome_incremental_scheduler():
         thread.start()
         navidrome_incremental_scheduler["thread"] = thread
         navidrome_incremental_scheduler["running"] = True
-        logging.info("[NAV_INCREMENTAL] Scheduler started (interval=15m, waits for first full import marker)")
+        logging.info("[NAV_INCREMENTAL] Scheduler started (startup delay=5m, interval configurable via features.nav_incremental_interval_minutes, default 60m)")
 
 
 def _run_daily_missing_releases_scan():
