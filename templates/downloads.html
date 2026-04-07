@@ -4384,11 +4384,14 @@ async function downloadMusicBrainzRelease(artist, album, tracks, year, release_i
       source: 'soulseek',
       priority: 5,
       track_number: track.position || null,
+      disc_number: track.disc_number || null,
       album_artist: artist,
       year: releaseYear,
       release_id: release_id,
+      release_mbid: release_id || null,
       release_source: source || 'musicbrainz',
-      duration: track.length || null  // MusicBrainz provides length in milliseconds
+      recording_mbid: track.recording_mbid || null,
+      duration: track.length || null,  // MusicBrainz provides length in milliseconds
     }));
     
     // Send batch request with import_group based on artist+album
