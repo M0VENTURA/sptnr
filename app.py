@@ -8115,22 +8115,24 @@ def api_search():
         contains_pattern = f"%{query}%"
         
         # Search artists - ranked by: exact match > starts-with > contains, then by track count
+        # Match against both artist and album_artist columns, group by the effective artist name
         cursor.execute(f"""
             SELECT 
-                artist as name,
+                COALESCE(NULLIF(album_artist, ''), artist) as name,
                 COUNT(DISTINCT album) as album_count,
                 COUNT(*) as track_count,
                 CASE
-                    WHEN LOWER(artist) = {placeholder} THEN 0
-                    WHEN LOWER(artist) LIKE {placeholder} THEN 1
+                    WHEN LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = {placeholder} THEN 0
+                    WHEN LOWER(COALESCE(NULLIF(album_artist, ''), artist)) LIKE {placeholder} THEN 1
                     ELSE 2
                 END as match_rank
             FROM tracks
             WHERE LOWER(artist) LIKE {placeholder}
-            GROUP BY artist
+               OR LOWER(album_artist) LIKE {placeholder}
+            GROUP BY COALESCE(NULLIF(album_artist, ''), artist)
             ORDER BY match_rank ASC, track_count DESC
             LIMIT 20
-        """, (exact_pattern, starts_pattern, contains_pattern))
+        """, (exact_pattern, starts_pattern, contains_pattern, contains_pattern))
         artists_results = [
             {
                 "name": row["name"],
@@ -8143,7 +8145,7 @@ def api_search():
         # Search albums - ranked by: exact match > starts-with > contains, then by track count
         cursor.execute(f"""
             SELECT 
-                artist,
+                COALESCE(NULLIF(album_artist, ''), artist) as artist,
                 album,
                 COUNT(*) as track_count,
                 AVG(stars) as avg_stars,
@@ -8154,7 +8156,7 @@ def api_search():
                 END as match_rank
             FROM tracks
             WHERE LOWER(album) LIKE {placeholder}
-            GROUP BY artist, album
+            GROUP BY COALESCE(NULLIF(album_artist, ''), artist), album
             ORDER BY match_rank ASC, track_count DESC
             LIMIT 20
         """, (exact_pattern, starts_pattern, contains_pattern))
@@ -8173,7 +8175,7 @@ def api_search():
             SELECT 
                 id,
                 title,
-                artist,
+                COALESCE(NULLIF(album_artist, ''), artist) as artist,
                 album,
                 stars,
                 CASE
@@ -8183,10 +8185,12 @@ def api_search():
                     ELSE 3
                 END as match_rank
             FROM tracks
-            WHERE LOWER(title) LIKE {placeholder} OR LOWER(artist) LIKE {placeholder}
+            WHERE LOWER(title) LIKE {placeholder}
+               OR LOWER(artist) LIKE {placeholder}
+               OR LOWER(album_artist) LIKE {placeholder}
             ORDER BY match_rank ASC, stars DESC, title{collate_nocase}
             LIMIT 50
-        """, (exact_pattern, starts_pattern, contains_pattern, contains_pattern, contains_pattern))
+        """, (exact_pattern, starts_pattern, contains_pattern, contains_pattern, contains_pattern, contains_pattern))
         tracks_results = [
             {
                 "id": row["id"],
