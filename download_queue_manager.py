@@ -2000,29 +2000,64 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         committed = False
         try:
             if is_pg:
-                cursor.execute(
-                    """
-                    INSERT INTO download_queue 
-                    (artist, title, album, search_query, source, status, priority, file_path, import_group, import_type, 
-                     track_number, album_artist, year, release_id, release_source,
-                         duration, disc_number, release_mbid, recording_mbid, isrc, composer, genres, release_year, matched_file_path,
-                     in_collection, collection_track_id, collection_matched_at,
-                     cover_art_url, queue_folder,
-                     created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, %s, %s, %s, %s,
-                            %s, %s, %s, %s, %s, %s, %s, %s,
-                            %s, %s, %s,
-                            %s, %s, %s,
-                            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                    RETURNING id
-                    """,
-                    (artist, title, album, search_query, source, initial_status, priority, import_group, import_type,
-                     track_number, album_artist, year, release_id, release_source,
-                         duration, disc_number, release_mbid, recording_mbid, isrc, composer, genres, release_year, matched_file_path,
-                     1 if in_collection else 0, collection_track_id,
-                     datetime.now().isoformat() if in_collection else None,
-                     cover_art_url, queue_folder),
-                )
+                try:
+                    cursor.execute(
+                        """
+                        INSERT INTO download_queue 
+                        (artist, title, album, search_query, source, status, priority, file_path, import_group, import_type, 
+                         track_number, album_artist, year, release_id, release_source,
+                             duration, disc_number, release_mbid, recording_mbid, isrc, composer, genres, release_year, matched_file_path,
+                         in_collection, collection_track_id, collection_matched_at,
+                         cover_art_url, queue_folder,
+                         created_at, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, %s, %s, %s, %s,
+                                %s, %s, %s, %s, %s, %s, %s, %s,
+                                %s, %s, %s,
+                                %s, %s, %s,
+                                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        RETURNING id
+                        """,
+                        (artist, title, album, search_query, source, initial_status, priority, import_group, import_type,
+                         track_number, album_artist, year, release_id, release_source,
+                             duration, disc_number, release_mbid, recording_mbid, isrc, composer, genres, release_year, matched_file_path,
+                         1 if in_collection else 0, collection_track_id,
+                         datetime.now().isoformat() if in_collection else None,
+                         cover_art_url, queue_folder),
+                    )
+                except psycopg2.IntegrityError as integrity_err:
+                    # Duplicate key race condition: two concurrent add_to_queue calls both
+                    # passed the pre-check before either committed.  Roll back and look up
+                    # the winning row using the *same* open connection – opening a second
+                    # connection here can fail with "too many clients" under load.
+                    logger.warning(
+                        f"Duplicate key skipped for {artist!r} - {title!r} (source={source}): {integrity_err}"
+                    )
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    existing = None
+                    try:
+                        cursor.execute(
+                            f"""
+                            SELECT * FROM download_queue
+                            WHERE LOWER(artist) = LOWER(%s)
+                              AND LOWER(title) = LOWER(%s)
+                              AND source = %s
+                              AND status IN ({_ACTIVE_QUEUE_STATUS_SQL})
+                            ORDER BY created_at ASC
+                            LIMIT 1
+                            """,
+                            (artist, title, source),
+                        )
+                        existing = cursor.fetchone()
+                    except Exception as lookup_err:
+                        logger.warning(f"Could not resolve dedupe race by lookup: {lookup_err}")
+                    existing_item = _row_to_dict(existing, cursor) if existing else None
+                    if existing_item is not None:
+                        existing_item['already_queued'] = True
+                        existing_item['_queue_outcome'] = 'duplicate'
+                    return existing_item  # the outer finally (line ~2105) still runs to close conn
                 inserted = cursor.fetchone()
                 conn.commit()
                 committed = True
@@ -2078,52 +2113,6 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
             except Exception:
                 pass
         
-    except psycopg2.IntegrityError as e:
-        # Duplicate key race condition: two concurrent add_to_queue calls both passed the
-        # pre-check before either committed. Log at WARNING (not ERROR) since this is a
-        # handled, non-fatal edge case that resolves itself by returning the existing item.
-        logger.warning(f"Duplicate key skipped for {artist!r} - {title!r} (source={source}): {e}")
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        # Unique-index dedupe race: return existing active item when available.
-        # Use the same artist + title + source cross-album check for consistency.
-        try:
-            conn2 = _get_postgres_conn_from_app_or_fallback()
-            try:
-                cursor2 = conn2.cursor()
-                ph2 = "%s"
-                cursor2.execute(
-                    f"""
-                    SELECT * FROM download_queue
-                    WHERE LOWER(artist) = LOWER({ph2})
-                      AND LOWER(title) = LOWER({ph2})
-                      AND source = {ph2}
-                                        AND status IN ({_ACTIVE_QUEUE_STATUS_SQL})
-                    ORDER BY created_at ASC
-                    LIMIT 1
-                    """,
-                    (artist, title, source),
-                )
-                existing = cursor2.fetchone()
-            finally:
-                conn2.close()
-            if existing:
-                if hasattr(existing, 'keys'):
-                    existing_item = dict(existing)
-                elif isinstance(existing, (list, tuple)) and getattr(cursor2, 'description', None):
-                    columns = [col[0] for col in cursor2.description]
-                    existing_item = dict(zip(columns, existing))
-                else:
-                    existing_item = None
-                if existing_item is not None:
-                    existing_item['already_queued'] = True
-                    existing_item['_queue_outcome'] = 'duplicate'
-                return existing_item
-        except Exception as lookup_err:
-            logger.warning(f"Could not resolve dedupe race by lookup: {lookup_err}")
-        return None
     except psycopg2.DatabaseError as e:
         logger.error(f"Database error adding to queue: {e}")
         try:
