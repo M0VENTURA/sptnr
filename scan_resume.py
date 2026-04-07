@@ -340,8 +340,7 @@ def detect_interrupted_scan(scan_type: str = "navidrome") -> Optional[Dict]:
     if not progress:
         return None
 
-    current_artist = progress.get("current_artist") or progress.get("resume_from_artist") or ""
-    current_artist = str(current_artist).strip()
+    current_artist = str(progress.get("current_artist") or progress.get("resume_from_artist") or "").strip()
     if not current_artist:
         log_debug("No checkpoint artist in progress/marker state")
         return None
