@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 
-from helpers.db_utils import get_db_connection, _table_exists
+from helpers.db_utils import get_db_connection, _table_exists, is_transient_pg_startup_error
 
 DB_TIMEOUT = 120.0
 required_columns = {}
@@ -37,10 +37,13 @@ def _ensure_table(cursor, table_name: str, ddl: str) -> None:
         cursor.execute("RELEASE SAVEPOINT sptnr_schema_table_create")
 
 
-def update_schema(_db_path: str | None = None) -> None:
+def update_schema(_db_path: str | None = None) -> bool:
     """Initialize required PostgreSQL tables/columns used at app startup.
 
     The _db_path parameter is retained for backward-compatible call sites.
+
+    Returns True when the schema was successfully initialized, False when
+    initialization was deferred because PostgreSQL is not yet available.
     """
     conn = None
     try:
@@ -101,7 +104,11 @@ def update_schema(_db_path: str | None = None) -> None:
         )
 
         conn.commit()
+        return True
     except Exception as exc:
+        if is_transient_pg_startup_error(exc):
+            logging.info("PostgreSQL schema initialization deferred while PostgreSQL starts: %s", exc)
+            return False
         logging.error("PostgreSQL schema initialization failed: %s", exc)
         raise
     finally:

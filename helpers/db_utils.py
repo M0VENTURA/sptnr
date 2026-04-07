@@ -371,7 +371,10 @@ def ensure_album_artist_column():
         return True
 
     except RuntimeError as e:
-        logging.warning(f"⚠ Skipping album_artist migration: {e}")
+        if is_transient_pg_startup_error(e):
+            logging.info(f"Skipping album_artist migration while PostgreSQL starts: {e}")
+        else:
+            logging.warning(f"⚠ Skipping album_artist migration: {e}")
         return False
     except Exception as e:
         logging.error(f"✗ Error ensuring album_artist column exists: {e}", exc_info=True)
@@ -470,7 +473,10 @@ def ensure_musicbrainz_album_mbid_column():
 
         return True
     except RuntimeError as e:
-        logging.warning(f"⚠ Skipping musicbrainz_album_mbid migration: {e}")
+        if is_transient_pg_startup_error(e):
+            logging.info(f"Skipping musicbrainz_album_mbid migration while PostgreSQL starts: {e}")
+        else:
+            logging.warning(f"⚠ Skipping musicbrainz_album_mbid migration: {e}")
         return False
     except Exception as e:
         logging.error(f"Error ensuring musicbrainz_album_mbid column exists: {e}", exc_info=True)
