@@ -825,6 +825,8 @@ async function downloadMusicBrainzRelease(artist, album, tracks, year, release_i
       album_artist: artist,
       year: releaseYear,
       release_id: release_id,
+      // release_mbid fills a separate column used for MB-specific duplicate
+      // detection and cross-source overwrite merge in add_to_queue.
       release_mbid: release_id || null,
       release_source: source || 'musicbrainz',
       recording_mbid: track.recording_mbid || null,
