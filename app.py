@@ -18259,11 +18259,85 @@ def slskd_search():
             search_id = client.start_search(query, timeout=6, max_attempts=3)
 
         if not search_id:
+            # Start attempts exhausted — check whether an active (non-terminal)
+            # search is genuinely holding the slot.  If so, let the client queue
+            # the request and auto-retry rather than surfacing a hard error.
+            _ACTIVE_STATES = {"InProgress", "Requested", "Initializing"}
+            try:
+                active_searches = [
+                    s for s in client.list_searches(timeout=4)
+                    if (s.get("state") or s.get("State") or "") in _ACTIVE_STATES
+                ]
+            except Exception:
+                active_searches = []
+
+            if active_searches:
+                a = active_searches[0]
+                active_id = a.get("id") or a.get("searchId") or a.get("Id") or ""
+                active_query = a.get("searchText") or a.get("query") or ""
+                active_state = a.get("state") or a.get("State") or ""
+                logging.info(
+                    f"[SLSKD] Manual search slot busy — active search "
+                    f"{active_id!r} ({active_state!r}) for '{active_query}'; "
+                    f"returning slotBusy so client can queue and auto-retry"
+                )
+                return jsonify({
+                    "slotBusy": True,
+                    "activeSearchId": active_id,
+                    "activeSearchQuery": active_query,
+                    "activeSearchState": active_state,
+                }), 202
+
             return jsonify({"error": "Failed to start search — slskd search slot may be busy. Try again in a moment."}), 500
-        
+
         return jsonify({"searchId": search_id, "status": "searching"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/slskd/search-slot", methods=["GET"])
+def slskd_search_slot():
+    """Return whether the slskd search slot is free.
+
+    Used by the manual-search modal to poll while waiting for an active
+    background search to finish before auto-starting the queued manual query.
+
+    Response (200):
+        {"slotFree": true}
+      or
+        {"slotFree": false, "activeSearchId": "...", "activeSearchQuery": "...",
+         "activeSearchState": "..."}
+    """
+    cfg = get_config()
+    slskd_config = cfg.get("slskd", {})
+
+    if not slskd_config.get("enabled"):
+        return jsonify({"error": "slskd integration not enabled"}), 400
+
+    web_url = slskd_config.get("web_url", "http://localhost:5030")
+    api_key = slskd_config.get("api_key", "")
+
+    try:
+        plain_session = requests.Session()
+        client = SlskdClient(web_url, api_key, http_session=plain_session, enabled=True)
+        searches = client.list_searches(timeout=4)
+        _ACTIVE_STATES = {"InProgress", "Requested", "Initializing"}
+        active = [
+            s for s in searches
+            if (s.get("state") or s.get("State") or "") in _ACTIVE_STATES
+        ]
+        if active:
+            a = active[0]
+            return jsonify({
+                "slotFree": False,
+                "activeSearchId": a.get("id") or a.get("searchId") or a.get("Id") or "",
+                "activeSearchQuery": a.get("searchText") or a.get("query") or "",
+                "activeSearchState": a.get("state") or a.get("State") or "",
+            })
+        return jsonify({"slotFree": True})
+    except Exception as e:
+        logging.error(f"[SLSKD] Error checking search slot: {e}")
+        return jsonify({"error": "Failed to check search slot status"}), 500
 
 
 @app.route("/api/slskd/search/<search_id>", methods=["GET"])

@@ -1151,6 +1151,7 @@ function ensureSoulseekManualSearchModal() {
       activeSearchId: null,
       pollTimer: null,
       pollingStopped: true,
+      waitingForSlot: false,
     };
   });
 
@@ -1209,6 +1210,7 @@ async function runSoulseekManualSearch() {
     window.soulseekManualSearchState = { activeSearchId: null, pollTimer: null, pollingStopped: false };
   }
 
+  // Cancel any in-flight slot-wait or result-poll before starting fresh.
   if (window.soulseekManualSearchState.pollTimer) {
     clearTimeout(window.soulseekManualSearchState.pollTimer);
     window.soulseekManualSearchState.pollTimer = null;
@@ -1216,6 +1218,7 @@ async function runSoulseekManualSearch() {
 
   window.soulseekManualSearchState.activeSearchId = null;
   window.soulseekManualSearchState.pollingStopped = false;
+  window.soulseekManualSearchState.waitingForSlot = false;
 
   if (searchBtn) {
     searchBtn.disabled = true;
@@ -1235,6 +1238,14 @@ async function runSoulseekManualSearch() {
       body: JSON.stringify({ query }),
     }, 60000);
 
+    // ── Slot busy: another search is already running ──────────────────────
+    if (startData.slotBusy) {
+      _showSlotBusyBanner(query, startData);
+      // pollForSlotFree will auto-restart the search when the slot is free.
+      _pollForSlotFree(query);
+      return; // keep search button disabled; banner has its own Cancel button
+    }
+
     const searchId = startData.searchId;
     if (!searchId) {
       throw new Error('Search did not return a search ID.');
@@ -1248,10 +1259,118 @@ async function runSoulseekManualSearch() {
       statusEl.innerHTML = `<span class="text-danger">${escapeHtml(error.message)}</span>`;
     }
   } finally {
-    if (searchBtn) {
-      searchBtn.disabled = false;
-      searchBtn.innerHTML = '<i class="bi bi-search"></i> Search';
+    // Only re-enable the button when we are NOT waiting for the slot.
+    // _cancelWaitForSlot() handles the reset in the waiting case.
+    if (!window.soulseekManualSearchState?.waitingForSlot) {
+      if (searchBtn) {
+        searchBtn.disabled = false;
+        searchBtn.innerHTML = '<i class="bi bi-search"></i> Search';
+      }
     }
+  }
+}
+
+/**
+ * Render the "slot busy" warning banner inside the modal status area.
+ * @param {string} pendingQuery  The query that is waiting to run.
+ * @param {Object} busyData      The slotBusy payload from the server.
+ */
+function _showSlotBusyBanner(pendingQuery, busyData) {
+  const statusEl = document.getElementById('soulseekManualStatus');
+  if (!statusEl) return;
+  window.soulseekManualSearchState.waitingForSlot = true;
+  const activeQuery = busyData.activeSearchQuery
+    ? `<em>${escapeHtml(busyData.activeSearchQuery)}</em>`
+    : 'another query';
+  statusEl.innerHTML = `
+    <div class="alert alert-warning d-flex align-items-start gap-2 mb-0 py-2" id="slskdSlotBusyBanner">
+      <span class="spinner-border spinner-border-sm mt-1 flex-shrink-0"></span>
+      <div class="flex-grow-1">
+        <strong>slskd search slot is busy.</strong>
+        An active search for ${activeQuery} is in progress.
+        <br>Your search for <em>${escapeHtml(pendingQuery)}</em> will start automatically when it finishes.
+      </div>
+      <button class="btn btn-sm btn-outline-secondary flex-shrink-0" onclick="_cancelWaitForSlot()">Cancel</button>
+    </div>`;
+}
+
+/**
+ * Poll /api/slskd/search-slot until the slot is free, then auto-start the
+ * queued manual search.
+ * @param {string} pendingQuery  The query to run once the slot is free.
+ */
+async function _pollForSlotFree(pendingQuery) {
+  const POLL_INTERVAL_MS = 2000;
+  const state = window.soulseekManualSearchState || {};
+  if (state.pollingStopped || !state.waitingForSlot) {
+    return;
+  }
+
+  try {
+    const data = await fetchJsonOrThrow('/api/slskd/search-slot');
+
+    if (data.slotFree) {
+      // Slot is free — kick off the search automatically.
+      const statusEl = document.getElementById('soulseekManualStatus');
+      if (statusEl) {
+        statusEl.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Slot free — starting search…';
+      }
+      window.soulseekManualSearchState.waitingForSlot = false;
+      // Re-enable the search button so runSoulseekManualSearch can disable it again.
+      const searchBtn = document.getElementById('soulseekManualSearchBtn');
+      if (searchBtn) {
+        searchBtn.disabled = false;
+        searchBtn.innerHTML = '<i class="bi bi-search"></i> Search';
+      }
+      // Overwrite the query input with the pending query and trigger the search.
+      const queryInput = document.getElementById('soulseekManualQuery');
+      if (queryInput) queryInput.value = pendingQuery;
+      await runSoulseekManualSearch();
+      return;
+    }
+
+    // Still busy — update the banner with the latest active search and poll again.
+    const banner = document.getElementById('slskdSlotBusyBanner');
+    if (banner && data.activeSearchQuery) {
+      const activeQuery = `<em>${escapeHtml(data.activeSearchQuery)}</em>`;
+      const div = banner.querySelector('div.flex-grow-1');
+      if (div) {
+        div.innerHTML = `
+          <strong>slskd search slot is busy.</strong>
+          An active search for ${activeQuery} is in progress.
+          <br>Your search for <em>${escapeHtml(pendingQuery)}</em> will start automatically when it finishes.`;
+      }
+    }
+  } catch (err) {
+    console.warn('_pollForSlotFree error:', err);
+    // On error, continue polling — a transient network glitch shouldn't abort the wait.
+  }
+
+  state.pollTimer = setTimeout(() => _pollForSlotFree(pendingQuery), POLL_INTERVAL_MS);
+  window.soulseekManualSearchState = state;
+}
+
+/**
+ * Cancel the slot-wait and reset the modal to idle.
+ */
+function _cancelWaitForSlot() {
+  const state = window.soulseekManualSearchState || {};
+  if (state.pollTimer) {
+    clearTimeout(state.pollTimer);
+    state.pollTimer = null;
+  }
+  state.pollingStopped = true;
+  state.waitingForSlot = false;
+  window.soulseekManualSearchState = state;
+
+  const statusEl = document.getElementById('soulseekManualStatus');
+  if (statusEl) {
+    statusEl.textContent = 'Search cancelled. Edit query if needed, then click Search.';
+  }
+  const searchBtn = document.getElementById('soulseekManualSearchBtn');
+  if (searchBtn) {
+    searchBtn.disabled = false;
+    searchBtn.innerHTML = '<i class="bi bi-search"></i> Search';
   }
 }
 
