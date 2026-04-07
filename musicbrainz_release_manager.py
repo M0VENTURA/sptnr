@@ -22,6 +22,11 @@ from typing import Any
 from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
 from database_abstraction import DatabaseQuery, is_postgres_connection
 from helpers.db_utils import get_db_connection
+from queue_status_constants import ACTIVE_QUEUE_STATUS_SQL as _ACTIVE_QUEUE_STATUS_SQL
+try:
+    import psycopg2
+except ImportError:
+    psycopg2 = None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -439,24 +444,86 @@ class MusicBrainzReleaseManager:
                         
                         # Create search query (artist - title format, no album)
                         search_query = f"{track_artist} - {track_title}".strip()
-                        
+
+                        # Duplicate check: skip insert if an active queue entry already
+                        # exists for the same (artist, album, title, source) combination.
+                        # This mirrors the pre-check in add_to_queue() and prevents
+                        # "duplicate key violates uq_download_queue_active_identity" errors
+                        # when a release is re-queued while some tracks are still active.
+                        cursor.execute(
+                            f"""
+                            SELECT id FROM download_queue
+                            WHERE LOWER(artist) = LOWER({placeholder})
+                              AND LOWER(COALESCE(album, '')) = LOWER(COALESCE({placeholder}, ''))
+                              AND LOWER(title) = LOWER({placeholder})
+                              AND source = {placeholder}
+                              AND status IN ({_ACTIVE_QUEUE_STATUS_SQL})
+                            ORDER BY created_at ASC
+                            LIMIT 1
+                            """,
+                            (track_artist, album, track_title, normalized_queue_source),
+                        )
+                        existing_row = cursor.fetchone()
+                        if existing_row:
+                            queue_id = self._row_get(existing_row, 'id', 0, 0)
+                            queue_ids.append(queue_id)
+                            logger.info(
+                                f"[QUEUE_ADD] Duplicate skipped (track already active): "
+                                f"{track_artist} - {track_title} (Queue ID: {queue_id})"
+                            )
+                            continue
+
                         # Add to download_queue with release year, album_artist, and MB IDs
-                        cursor.execute(f"""
-                            INSERT INTO download_queue
-                            (artist, album, title, search_query, source, status,
-                             release_id, track_number, disc_number, mb_release_download_id,
-                             year, album_artist, recording_mbid,
-                             created_at, updated_at)
-                            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued',
-                                    {placeholder}, {placeholder}, {placeholder}, {placeholder},
-                                    {placeholder}, {placeholder}, {placeholder},
-                                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                            RETURNING id
-                        """, (track_artist, album, track_title, search_query, normalized_queue_source,
-                              release_id, track_number, disc_number, mb_release_db_id,
-                              release_year, rel_album_artist, recording_mbid))
-                        queue_row = cursor.fetchone()
-                        queue_id = self._row_get(queue_row, 'id', 0, 0)
+                        try:
+                            cursor.execute(f"""
+                                INSERT INTO download_queue
+                                (artist, album, title, search_query, source, status,
+                                 release_id, track_number, disc_number, mb_release_download_id,
+                                 year, album_artist, recording_mbid,
+                                 created_at, updated_at)
+                                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued',
+                                        {placeholder}, {placeholder}, {placeholder}, {placeholder},
+                                        {placeholder}, {placeholder}, {placeholder},
+                                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                                RETURNING id
+                            """, (track_artist, album, track_title, search_query, normalized_queue_source,
+                                  release_id, track_number, disc_number, mb_release_db_id,
+                                  release_year, rel_album_artist, recording_mbid))
+                            queue_row = cursor.fetchone()
+                            queue_id = self._row_get(queue_row, 'id', 0, 0)
+                        except Exception as insert_err:
+                            # Handle concurrent duplicate-key race condition: another worker
+                            # inserted the same track between our pre-check and this INSERT.
+                            # Roll back the failed statement and look up the winning row.
+                            is_integrity_error = (
+                                psycopg2 is not None and isinstance(insert_err, psycopg2.IntegrityError)
+                            ) or "duplicate key" in str(insert_err).lower()
+                            if is_integrity_error:
+                                logger.warning(
+                                    f"[QUEUE_ADD] Duplicate key race on insert for "
+                                    f"{track_artist!r} - {track_title!r}: {insert_err}"
+                                )
+                                try:
+                                    conn.rollback()
+                                except Exception:
+                                    pass
+                                cursor.execute(
+                                    f"""
+                                    SELECT id FROM download_queue
+                                    WHERE LOWER(artist) = LOWER({placeholder})
+                                      AND LOWER(COALESCE(album, '')) = LOWER(COALESCE({placeholder}, ''))
+                                      AND LOWER(title) = LOWER({placeholder})
+                                      AND source = {placeholder}
+                                      AND status IN ({_ACTIVE_QUEUE_STATUS_SQL})
+                                    ORDER BY created_at ASC
+                                    LIMIT 1
+                                    """,
+                                    (track_artist, album, track_title, normalized_queue_source),
+                                )
+                                fallback_row = cursor.fetchone()
+                                queue_id = self._row_get(fallback_row, 'id', 0, 0) if fallback_row else 0
+                            else:
+                                raise
                         queue_ids.append(queue_id)
                         
                         # Add to musicbrainz_release_tracks (include disc_number so
