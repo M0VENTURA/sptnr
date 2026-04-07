@@ -28809,6 +28809,71 @@ def api_queue_cleanup():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route("/api/queue/reset-moving", methods=["POST"])
+def api_queue_reset_moving():
+    """
+    Reset queue items stuck in 'moving' status back to 'completed' (or 'matched'
+    if they have a release MBID) so they can be retried.
+
+    Accepts an optional list of queue_ids to narrow the reset to specific items.
+    When queue_ids is omitted all 'moving' items updated more than 5 minutes ago
+    are reset (stale moves that the process clearly abandoned).
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        queue_ids_raw = data.get("queue_ids") or []
+        stale_minutes = int(data.get("stale_minutes", 5))
+
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = "%s"
+
+        if queue_ids_raw:
+            ids = [int(v) for v in queue_ids_raw if str(v).strip().lstrip('-').isdigit() and int(v) > 0]
+            if not ids:
+                conn.close()
+                return jsonify({"success": False, "error": "No valid queue IDs provided"}), 400
+            ids_ph = ", ".join([placeholder] * len(ids))
+            cursor.execute(
+                f"""
+                UPDATE download_queue
+                SET status = CASE
+                    WHEN COALESCE(NULLIF(release_mbid, ''), NULLIF(release_id, '')) IS NOT NULL
+                         THEN 'completed'
+                    ELSE 'completed'
+                END,
+                updated_at = CURRENT_TIMESTAMP
+                WHERE id IN ({ids_ph}) AND status = 'moving'
+                """,
+                tuple(ids),
+            )
+        else:
+            # Reset stale 'moving' items (not updated for at least stale_minutes)
+            cursor.execute(
+                f"""
+                UPDATE download_queue
+                SET status = 'completed',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE status = 'moving'
+                  AND updated_at < CURRENT_TIMESTAMP - INTERVAL '{int(stale_minutes)} minutes'
+                """
+            )
+
+        reset_count = int(cursor.rowcount or 0)
+        conn.commit()
+        conn.close()
+
+        logging.info(f"[RESET_MOVING] Reset {reset_count} stuck 'moving' items back to 'completed'")
+        return jsonify({
+            "success": True,
+            "reset_count": reset_count,
+            "message": f"Reset {reset_count} stuck item(s) back to 'completed'",
+        })
+    except Exception as e:
+        logging.error(f"[RESET_MOVING] Error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/queue/matched-releases", methods=["GET"])
 def api_queue_matched_releases():
     """

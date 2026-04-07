@@ -2808,6 +2808,16 @@ async function loadFolderGroups(options = {}) {
         })
         .map(t => Number(t.id));
       const moveableQueueIdsEnc = encodeInlineArg(moveableQueueIds);
+      // True when folder has real files on disk but no matched release folder yet
+      const hasRealFolderNoMatch = !group.matched_folder_path
+        && group.folder_path
+        && !String(group.folder_path).startsWith('__');
+      // Queue IDs for items stuck in 'moving' status
+      const stuckMovingIds = (group.tracks || [])
+        .filter(t => (t.status || '') === 'moving')
+        .map(t => Number(t.id))
+        .filter(id => id > 0);
+      const stuckMovingIdsEnc = encodeInlineArg(stuckMovingIds);
       const mbidBadge = groupMbid
         ? `<span class="badge bg-dark text-info ms-2" title="MusicBrainz Release ID">MBID: ${escapeHtml(groupMbid)}</span>
            <button class="btn btn-sm btn-outline-info ms-1" onclick="openBetterMatchModal('${artistEnc}','${albumEnc}','${encodeInlineArg(groupMbid)}')" title="Search for a better MusicBrainz match">
@@ -2869,6 +2879,20 @@ async function loadFolderGroups(options = {}) {
                           onclick="deleteFolderAndQueueItemsFromEncoded('${encodeInlineArg(group.matched_folder_path)}')"
                           title="Delete all files in this folder and remove linked queue items">
                     <i class="bi bi-trash"></i> Delete Folder
+                  </button>
+                ` : ''}
+                ${hasRealFolderNoMatch ? `
+                  <button class="btn btn-sm btn-outline-danger me-2"
+                          onclick="deleteFolderAndQueueItemsFromEncoded('${encodeInlineArg(group.folder_path)}')"
+                          title="Delete all files in this folder and remove linked queue items">
+                    <i class="bi bi-trash"></i> Delete All Files
+                  </button>
+                ` : ''}
+                ${stuckMovingIds.length > 0 ? `
+                  <button class="btn btn-sm btn-outline-warning me-2"
+                          onclick="resetStuckMovesFromEncoded('${stuckMovingIdsEnc}')"
+                          title="Reset items stuck in 'moving' back to 'completed' so they can be retried">
+                    <i class="bi bi-arrow-counterclockwise"></i> Reset Stuck
                   </button>
                 ` : ''}
                 ${(isQueueItem && groupQueueIds.length > 0 && groupMbid) ? `
@@ -5925,6 +5949,37 @@ async function removeQueueGroup(folderPath, queueIds) {
   } catch (error) {
     console.error('Error removing queue group:', error);
     alert('❌ Failed to remove queue group: ' + error.message);
+  }
+}
+
+function resetStuckMovesFromEncoded(idsEnc) {
+  const ids = decodeInlineArg(idsEnc, []);
+  return resetStuckMoves(ids);
+}
+
+async function resetStuckMoves(queueIds) {
+  const safeIds = Array.isArray(queueIds)
+    ? queueIds.map(id => Number(id)).filter(id => Number.isFinite(id) && id > 0)
+    : [];
+  if (safeIds.length === 0) {
+    alert('No stuck items to reset.');
+    return;
+  }
+  if (!confirm(`Reset ${safeIds.length} stuck item(s) from 'moving' back to 'completed' so they can be retried?`)) {
+    return;
+  }
+  try {
+    const data = await fetchJsonOrThrow('/api/queue/reset-moving', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ queue_ids: safeIds })
+    });
+    alert(`✅ ${data.message || 'Done'}`);
+    await loadQueueStatus();
+    await loadFolderGroups({ forceRender: true });
+  } catch (error) {
+    console.error('Error resetting stuck moves:', error);
+    alert('❌ Failed to reset stuck moves: ' + error.message);
   }
 }
 
