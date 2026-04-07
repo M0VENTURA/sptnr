@@ -150,7 +150,7 @@
             <h5 class="mb-3"><i class="bi bi-info-circle"></i> Artist Bio</h5>
             <div id="artistBio" class="text-muted" style="min-height: 120px;" data-has-initial-bio="{{ '1' if artist_bio else '0' }}">
               {% if artist_bio %}
-                <p>{{ artist_bio|e|replace('\n', '<br>')|safe }}</p>
+                <p>{{ artist_bio|e|replace('&lt;br /&gt;', '<br>')|replace('&lt;br/&gt;', '<br>')|replace('&lt;br&gt;', '<br>')|replace('\n', '<br>')|safe }}</p>
               {% else %}
                 <p class="text-center mt-2">
                   <small>Loading artist information from database...</small>
@@ -1981,6 +1981,13 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+function sanitizeBio(text) {
+  // Escape all HTML, then restore safe <br> tags (literal or escaped variants) and newlines.
+  return escapeHtml(text)
+    .replace(/&lt;br\s*\/?&gt;/gi, '<br>')
+    .replace(/\n/g, '<br>');
+}
+
 function escapeJsString(str) {
   if (!str) return '';
   return str.replace(/\\/g, '\\\\')
@@ -2931,7 +2938,7 @@ function loadArtistBio(artistName) {
     .then(r => r.json())
     .then(data => {
       if (data.bio && data.bio.length > 0) {
-        bioContainer.innerHTML = `<p>${escapeHtml(data.bio)}</p>`;
+        bioContainer.innerHTML = `<p>${sanitizeBio(data.bio)}</p>`;
         if (data.source) {
           bioContainer.innerHTML += `<p class="small text-muted mt-2"><em>Source: ${escapeHtml(data.source)}</em></p>`;
         }
