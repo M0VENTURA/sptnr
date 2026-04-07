@@ -709,6 +709,7 @@ def _is_pg_startup_unavailable_error(error) -> bool:
         "could not translate host name",
         "name or service not known",
         "temporary failure in name resolution",
+        "recent connection failures are in backoff",
     )
     return any(marker in message for marker in markers)
 
@@ -726,11 +727,101 @@ else:
 # Initialize complete database schema (all tables now created/verified in update_schema)
 # This ensures all tables and columns exist on startup
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
+_startup_schema_deferred = False
 try:
-    update_schema(DB_PATH)
-    logging.debug("Database schema initialization complete (all tables created/verified)")
+    if not update_schema(DB_PATH):
+        _startup_schema_deferred = True
+    else:
+        logging.debug("Database schema initialization complete (all tables created/verified)")
 except Exception as e:
-    logging.error(f"Error initializing database schema: {e}")
+    if _is_pg_startup_unavailable_error(e):
+        logging.info(f"Database schema initialization deferred while PostgreSQL starts: {e}")
+        _startup_schema_deferred = True
+    else:
+        logging.error(f"Error initializing database schema: {e}")
+
+
+def _run_deferred_startup_migrations():
+    """Retry startup schema migrations that were skipped because PostgreSQL was not ready.
+
+    Runs in a background daemon thread.  Polls until PostgreSQL is available
+    (up to ~5 minutes), then re-runs all ensure_* migration helpers and
+    update_schema() once so that a fresh install that races PostgreSQL startup
+    still ends up with a fully-initialized schema.
+    """
+    import time as _time
+    from helpers.check_db import update_schema as _update_schema
+    from helpers.db_utils import (
+        ensure_album_artist_column as _ensure_album_artist,
+        ensure_musicbrainz_album_mbid_column as _ensure_mbid,
+        ensure_writer_column as _ensure_writer,
+        ensure_cover_columns as _ensure_cover,
+        ensure_track_release_year_column as _ensure_release_year,
+        ensure_mood_columns as _ensure_mood,
+        ensure_essentia_feature_columns as _ensure_essentia,
+        ensure_navidrome_tag_columns as _ensure_navidrome,
+        ensure_spotify_metadata_columns as _ensure_spotify,
+        ensure_popularity_freeze_columns as _ensure_popularity,
+        ensure_artists_name_unique_constraint as _ensure_artists_unique,
+    )
+    from download_file_verification import (
+        ensure_verification_columns as _ensure_verification,
+        ensure_queue_mbid_columns as _ensure_queue_mbid,
+    )
+
+    max_wait = 300  # give up after 5 minutes
+    poll_interval = 15
+    elapsed = 0
+
+    while elapsed < max_wait:
+        _time.sleep(poll_interval)
+        elapsed += poll_interval
+        try:
+            from helpers.db_utils import get_db_connection as _get_conn
+            conn = _get_conn()
+            conn.close()
+            # PostgreSQL is now available — run deferred migrations
+            break
+        except Exception:
+            continue
+    else:
+        logging.warning("[DEFERRED] PostgreSQL did not become available within %ds; deferred schema migrations not applied", max_wait)
+        return
+
+    logging.info("[DEFERRED] PostgreSQL now available — applying deferred startup migrations")
+    for fn in (
+        _ensure_album_artist,
+        _ensure_mbid,
+        _ensure_writer,
+        _ensure_cover,
+        _ensure_release_year,
+        _ensure_mood,
+        _ensure_essentia,
+        _ensure_navidrome,
+        _ensure_spotify,
+        _ensure_popularity,
+        _ensure_artists_unique,
+        _ensure_verification,
+        _ensure_queue_mbid,
+    ):
+        try:
+            fn()
+        except Exception as _fn_err:
+            logging.warning("[DEFERRED] Migration %s failed: %s", fn.__name__, _fn_err)
+
+    try:
+        _update_schema(DB_PATH)
+        logging.info("[DEFERRED] Deferred schema initialization complete")
+    except Exception as _schema_err:
+        logging.error("[DEFERRED] Deferred schema initialization failed: %s", _schema_err)
+
+
+if _startup_schema_deferred:
+    threading.Thread(
+        target=_run_deferred_startup_migrations,
+        daemon=True,
+        name="deferred-startup-migrations",
+    ).start()
 
 # --- Unified Log API ---
 @app.route("/api/unified-log")
