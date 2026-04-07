@@ -5854,7 +5854,15 @@ def auto_discover_and_queue_files():
                     conn.commit()
                 except Exception as e:
                     logger.warning(f"[AUTO-DISCOVER] Could not add {col} column: {e}")
-        
+
+        # End the implicit transaction started by the column-existence SELECT above.
+        # Without this rollback the connection sits idle-in-transaction during the
+        # subsequent filesystem walk, risking idle_in_transaction_session_timeout.
+        try:
+            conn.rollback()
+        except Exception as _rb_err:
+            logger.debug(f"[AUTO-DISCOVER] Could not rollback after schema check: {_rb_err}")
+
         conversion_settings = _read_download_conversion_settings()
         original_subfolder = (conversion_settings.get("original_subfolder") or "Original").strip().lower()
 
@@ -6979,11 +6987,26 @@ def check_and_remove_failed_downloads():
                     stats["retry_scheduled"] += 1
                 
                 stats["failed_detected"] += 1
-                    
+
+                # End the implicit SELECT transaction so the connection returns to
+                # the plain idle state before the next iteration's
+                # client.cancel_download() network call.  Without this rollback the
+                # connection sits "idle in transaction" during each (potentially
+                # slow) slskd API call, which can exceed
+                # idle_in_transaction_session_timeout and kill the connection.
+                try:
+                    conn.rollback()
+                except Exception as _rb_err:
+                    logger.debug(f"[SLSKD-RETRY] Could not rollback after item processing: {_rb_err}")
+
             except Exception as e:
                 error_msg = f"Error processing download result: {e}"
                 logger.error(error_msg)
                 stats["errors"].append(error_msg)
+                try:
+                    conn.rollback()
+                except Exception as _rb_err:
+                    logger.debug(f"[SLSKD-RETRY] Could not rollback after item error: {_rb_err}")
         
         conn.close()
         
