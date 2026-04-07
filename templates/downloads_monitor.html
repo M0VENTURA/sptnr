@@ -267,50 +267,68 @@
   </div>
 
   <!-- Queue Status Cards -->
-  <div class="row g-3 mb-4">
-    <div class="col-md-2">
+  <div class="row g-2 mb-2">
+    <div class="col-6 col-md-2">
       <div class="card text-center h-100">
-        <div class="card-body">
-          <div class="text-muted small mb-2">Active Downloads</div>
-          <h4 class="mb-0" id="queueActiveCount">0</h4>
-        </div>
-      </div>
-    </div>
-    <div class="col-md-2">
-      <div class="card text-center h-100">
-        <div class="card-body">
-          <div class="text-muted small mb-2">Ready to Organize</div>
-          <h4 class="mb-0" id="queueCompletedCount">0</h4>
-        </div>
-      </div>
-    </div>
-    <div class="col-md-2">
-      <div class="card text-center h-100">
-        <div class="card-body">
-          <div class="text-muted small mb-2">Failed</div>
-          <h4 class="mb-0" id="queueFailedCount">0</h4>
-        </div>
-      </div>
-    </div>
-    <div class="col-md-2">
-      <div class="card text-center h-100">
-        <div class="card-body">
-          <div class="text-muted small mb-2">Total Items</div>
+        <div class="card-body py-2">
+          <div class="text-muted small mb-1">Total Active</div>
           <h4 class="mb-0" id="queueTotalCount">0</h4>
         </div>
       </div>
     </div>
-    <div class="col-md-2">
+    <div class="col-6 col-md-2">
+      <div class="card text-center h-100">
+        <div class="card-body py-2">
+          <div class="text-muted small mb-1">Queued</div>
+          <h4 class="mb-0" id="queueQueuedCount">0</h4>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-md-2">
+      <div class="card text-center h-100">
+        <div class="card-body py-2">
+          <div class="text-muted small mb-1">Downloading</div>
+          <h4 class="mb-0" id="queueActiveCount">0</h4>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-md-2">
+      <div class="card text-center h-100">
+        <div class="card-body py-2">
+          <div class="text-muted small mb-1">Complete</div>
+          <h4 class="mb-0" id="queueCompletedCount">0</h4>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-md-2">
+      <div class="card text-center h-100">
+        <div class="card-body py-2">
+          <div class="text-muted small mb-1">Moves In Progress</div>
+          <h4 class="mb-0" id="queueMovingCount">0</h4>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-md-2">
+      <div class="card text-center h-100">
+        <div class="card-body py-2">
+          <div class="text-muted small mb-1">Failed</div>
+          <h4 class="mb-0" id="queueFailedCount">0</h4>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="row g-2 mb-4">
+    <div class="col-md-4">
       <button class="btn btn-outline-primary w-100 h-100" onclick="loadQueueStatus()">
         <i class="bi bi-arrow-clockwise"></i> Refresh
       </button>
     </div>
-    <div class="col-md-2">
+    <div class="col-md-4">
       <button class="btn btn-outline-danger w-100 h-100" onclick="clearQueue()">
         <i class="bi bi-trash"></i> Clear Queue
       </button>
     </div>
-    <div class="col-md-2">
+    <div class="col-md-4">
       <button class="btn btn-danger w-100 h-100" onclick="purgeAllQueueAndDownloads()">
         <i class="bi bi-trash-fill"></i> Purge All
       </button>
@@ -4564,30 +4582,38 @@ async function loadQueueStatus() {
     
     if (!data || !data.queue) {
       console.error('Queue status error:', data?.error || 'Invalid response');
+      document.getElementById('queueTotalCount').textContent = '0';
       document.getElementById('queueActiveCount').textContent = '0';
+      document.getElementById('queueQueuedCount').textContent = '0';
       document.getElementById('queueCompletedCount').textContent = '0';
+      document.getElementById('queueMovingCount').textContent = '0';
       document.getElementById('queueFailedCount').textContent = '0';
       return;
     }
     
-    const queue = data.queue || [];
     const statusCounts = data.status_counts || {};
     const countFor = (...statuses) => statuses.reduce((sum, status) => sum + Number(statusCounts[status] || 0), 0);
     
-    // Categorize items
-    // Active Queue: actively being processed (queued, searching, downloading)
-    // Possible duplicates are flagged but not active downloads
-    // Discovered and pending_match are found files ready for review, not active
-    const activeCount = countFor('queued', 'searching', 'downloading');
-    const completedCount = countFor('matched', 'completed', 'in_collection', 'duplicate', 'possible_duplicate');
+    // Queued: waiting to start (queued, searching, unmatched, pending_match, discovered, queried, matched)
+    const queuedCount = countFor('queued', 'searching', 'unmatched', 'pending_match', 'discovered', 'queried', 'matched');
+    // Downloading: actively downloading
+    const downloadingCount = countFor('downloading');
+    // Complete: downloaded but not yet moved to library
+    const completedCount = countFor('completed');
+    // Moves in progress: currently being moved/organised into music library
+    const movingCount = countFor('moving', 'importing');
+    // Failed / flagged
     const failedCount = countFor('failed');
-    const totalCount = Number(data.total_count || queue.length || 0);
+    // Total active: everything not yet fully resolved
+    const totalActive = queuedCount + downloadingCount + completedCount + movingCount + failedCount + countFor('possible_duplicate', 'duplicate');
     
     // Update counts
-    document.getElementById('queueActiveCount').textContent = activeCount;
+    document.getElementById('queueTotalCount').textContent = totalActive;
+    document.getElementById('queueQueuedCount').textContent = queuedCount;
+    document.getElementById('queueActiveCount').textContent = downloadingCount;
     document.getElementById('queueCompletedCount').textContent = completedCount;
+    document.getElementById('queueMovingCount').textContent = movingCount;
     document.getElementById('queueFailedCount').textContent = failedCount;
-    document.getElementById('queueTotalCount').textContent = totalCount;
     
   } catch (error) {
     console.error('Error loading queue status:', error);

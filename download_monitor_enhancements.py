@@ -856,7 +856,8 @@ def cleanup_download_queue():
     """
     Auto-cleanup job (runs every hour):
     1. Delete duplicates older than 24 hours
-    2. Delete completed albums where all tracks are completed/in_collection
+    2. Delete all in_collection items (fully moved to library — no longer needed in queue)
+    3. Delete completed albums where all remaining tracks are completed/in_collection
     
     Returns:
         Dict with cleanup stats
@@ -874,8 +875,16 @@ def cleanup_download_queue():
             AND auto_delete_at < CURRENT_TIMESTAMP
         """)
         deleted_duplicates = cursor.rowcount
+
+        # Delete all in_collection items — these tracks have been successfully
+        # moved into the music library and no longer need to live in the queue.
+        cursor.execute("""
+            DELETE FROM download_queue
+            WHERE status = 'in_collection'
+        """)
+        deleted_in_collection = cursor.rowcount
         
-        # Find completed albums
+        # Find completed albums (all tracks downloaded and moved)
         cursor.execute("""
             SELECT DISTINCT album, artist, COUNT(*) as total,
                    SUM(CASE WHEN status IN ('completed', 'in_collection') THEN 1 ELSE 0 END) as done
@@ -904,12 +913,14 @@ def cleanup_download_queue():
         
         stats = {
             'deleted_duplicates': deleted_duplicates,
+            'deleted_in_collection': deleted_in_collection,
             'completed_albums': len(completed_albums),
             'deleted_album_tracks': deleted_album_tracks
         }
         
         logger.info(
             f"Cleanup complete: {deleted_duplicates} expired duplicates, "
+            f"{deleted_in_collection} in_collection items, "
             f"{len(completed_albums)} completed albums ({deleted_album_tracks} tracks)"
         )
         
