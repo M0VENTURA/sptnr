@@ -8618,6 +8618,20 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
             result['error'] = "No tracks found for this album"
             return result
 
+        # Determine destination directory from already-imported tracks or metadata
+        music_root = os.environ.get("MUSIC_ROOT", "/music")
+
+        def _path_is_in_music(path_value):
+            """Return True if *path_value* lives under the music root."""
+            if not path_value:
+                return False
+            try:
+                return os.path.abspath(path_value).startswith(
+                    os.path.abspath(music_root) + os.sep
+                )
+            except Exception:
+                return False
+
         # --- Check album completeness ---
         # A track is "done" when it is imported, individually copied, already
         # found in the collection/library (matched / in_collection), or
@@ -8627,6 +8641,8 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
                 return True
             copied_individually = t.get('copied_individually')
             if copied_individually in (1, True, '1', 'true', 'True'):
+                return True
+            if _path_is_in_music(t.get('file_path')):
                 return True
             if t['status'] == 'completed' and t.get('file_path'):
                 return True
@@ -8640,9 +8656,6 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
             return result
 
         result['album_complete'] = True
-
-        # Determine destination directory from already-imported tracks or metadata
-        music_root = os.environ.get("MUSIC_ROOT", "/music")
 
         # Use consistent album artist / year from completed tracks
         album_artists = [t.get('album_artist') or t.get('artist') for t in tracks if t.get('album_artist') or t.get('artist')]
@@ -8738,14 +8751,30 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
                 f"disc_number will be stripped from file tags"
             )
 
+        # Collect IDs of 'completed' tracks whose source file is missing so we
+        # can mark them imported after the loop (their files were likely already
+        # moved in a prior pass where the status update failed for that row).
+        completed_missing_file_ids = []
+
         for track in tracks:
             if track['status'] == 'imported':
                 # Already moved (individually or previously)
                 result['already_copied'] += 1
                 continue
 
+            # If the stored file_path already lives under the music root the
+            # file was previously moved but the queue status was never updated.
+            # Treat it as imported so it stops appearing in future sweep cycles.
+            if _path_is_in_music(track.get('file_path')):
+                result['already_copied'] += 1
+                if track['status'] != 'imported':
+                    completed_missing_file_ids.append(track['id'])
+                continue
+
             if not track.get('file_path') or not os.path.exists(track['file_path']):
                 result['skipped'] += 1
+                if track['status'] == 'completed':
+                    completed_missing_file_ids.append(track['id'])
                 continue
 
             src = track['file_path']
@@ -8852,6 +8881,44 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
             except Exception as move_err:
                 logger.error(f"[AUTO_MOVE] Failed to move {src}: {move_err}")
                 result['skipped'] += 1
+
+        # Clean up any 'completed' tracks whose source file is now missing.
+        # These were almost certainly moved in a prior pass where the DB update
+        # succeeded for some rows but not others (e.g. a crash mid-loop).
+        # Marking them 'imported' prevents endless retries on every sweep cycle.
+        if completed_missing_file_ids:
+            try:
+                _cleanup_conn = _get_postgres_conn_from_app_or_fallback()
+                if _cleanup_conn is not None:
+                    try:
+                        _cleanup_cur = _cleanup_conn.cursor()
+                        _cleanup_cur.execute(
+                            """
+                            UPDATE download_queue
+                            SET status = 'imported',
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ANY(%s)
+                              AND status != 'imported'
+                            """,
+                            (completed_missing_file_ids,)
+                        )
+                        _cleanup_conn.commit()
+                        logger.info(
+                            f"[AUTO_MOVE] Marked {len(completed_missing_file_ids)} completed "
+                            f"track(s) with missing source files as imported "
+                            f"(ids={completed_missing_file_ids})"
+                        )
+                    finally:
+                        try:
+                            _cleanup_cur.close()
+                        except Exception:
+                            pass
+                        try:
+                            _cleanup_conn.close()
+                        except Exception:
+                            pass
+            except Exception as _cleanup_err:
+                logger.warning(f"[AUTO_MOVE] Could not clean up stale completed tracks: {_cleanup_err}")
 
         if result['moved'] > 0:
             try:

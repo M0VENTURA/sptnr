@@ -2431,8 +2431,9 @@ def retry_pending_completed_moves(now_ts, last_run_ts, interval_seconds=120):
               AND file_path IS NOT NULL
               AND file_path != ''
               AND (music_file_path IS NULL OR music_file_path = '')
+              AND file_path NOT LIKE %s
             ORDER BY updated_at ASC
-        """)
+        """, (os.environ.get("MUSIC_ROOT", "/music").rstrip("/") + "/%",))
         pending = [dict(row) for row in cursor.fetchall()]
         conn.close()
         conn = None
@@ -2588,6 +2589,7 @@ def run_processor(interval=30):
     last_downloads_folder_ts = None
     last_navidrome_scan_ts = None
     last_retry_completed_ts = None
+    last_cleanup_imported_ts = None
 
     try:
         while True:
@@ -2621,6 +2623,16 @@ def run_processor(interval=30):
                 last_retry_completed_ts = retry_pending_completed_moves(
                     now_ts, last_retry_completed_ts
                 )
+
+                # Periodically remove old imported records so the queue doesn't
+                # accumulate stale entries that trigger spurious move attempts.
+                if last_cleanup_imported_ts is None or (now_ts - last_cleanup_imported_ts) >= 3600:
+                    try:
+                        from download_queue_manager import cleanup_imported
+                        cleanup_imported(days=7)
+                    except Exception as _ci_err:
+                        logger.warning(f"[CLEANUP-IMPORTED] Error purging old imported records: {_ci_err}")
+                    last_cleanup_imported_ts = now_ts
 
                 last_navidrome_scan_ts = trigger_navidrome_scan_for_new_imports(now_ts, last_navidrome_scan_ts)
                 
