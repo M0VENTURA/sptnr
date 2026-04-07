@@ -125,7 +125,7 @@ class MP3ImportScanner:
             
             # Try exact match first
             query = """
-                SELECT track_id FROM tracks 
+                SELECT id FROM tracks 
                 WHERE LOWER(title) = LOWER(%s) AND LOWER(artist) = LOWER(%s) AND LOWER(album) = LOWER(%s)
                 LIMIT 1
             """
@@ -137,7 +137,7 @@ class MP3ImportScanner:
             
             # Try fuzzy match (title + artist)
             query = """
-                SELECT track_id FROM tracks 
+                SELECT id FROM tracks 
                 WHERE LOWER(title) = LOWER(%s) AND LOWER(artist) = LOWER(%s)
                 LIMIT 1
             """
@@ -174,7 +174,7 @@ class MP3ImportScanner:
                     update_query = """
                         UPDATE tracks 
                         SET 
-                            path = %s,
+                            file_path = %s,
                             album_artist = %s,
                             track_number = %s,
                             disc_number = %s,
@@ -250,9 +250,8 @@ class MP3ImportScanner:
                             musicbrainz_albumartistid = %s,
                             musicbrainz_releasegroupid = %s,
                             musicbrainz_releasetrackid = %s,
-                            musicbrainz_workid = %s,
-                            last_metadata_update = now()
-                        WHERE track_id = %s
+                            musicbrainz_workid = %s
+                        WHERE id = %s
                     """
                     cursor.execute(update_query, (
                         file_path,
@@ -344,7 +343,7 @@ class MP3ImportScanner:
                     insert_query = """
                         INSERT INTO tracks 
                         (artist, title, album, album_artist, track_number, disc_number,
-                         path, year, genres, comment,
+                         file_path, year, genres, comment,
                          mood, titlesort, albumsort, artistsort, albumartistsort,
                          composersort, conductor, remixer, grouping, subtitle, key,
                          encodedby, encodersettings, releasedate, originaldate,

@@ -14555,7 +14555,7 @@ def track_detail(track_id):
             logging.debug(f"Could not get genre sources for track {track_id}: {ge_err}")
         
         # Parse genre fields - handle both JSON and comma-separated formats
-        for genre_field in ['navidrome_genres', 'spotify_genres', 'lastfm_tags', 'discogs_genres', 'musicbrainz_genres']:
+        for genre_field in ['navidrome_genres', 'lastfm_tags', 'discogs_genres', 'musicbrainz_genres']:
             if genre_field in track and track[genre_field]:
                 genre_val = track[genre_field]
                 try:

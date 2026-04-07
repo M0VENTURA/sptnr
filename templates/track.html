@@ -808,8 +808,7 @@
                                                             ('navidrome_genres', 'Navidrome', '17A589', 'white', 'bi-music-note-list'),
                                                             ('musicbrainz_genres', 'MusicBrainz Genres', 'EB743B', 'white', 'bi-hexagon-fill'),
                                                             ('lastfm_tags', 'Last.fm Genres', 'D51007', 'white', 'bi-music-note-beamed'),
-                                                            ('listenbrainz_genres', 'ListenBrainz', '0066FF', 'white', 'bi-headphones'),
-                                                            ('spotify_genres', 'Spotify', '1DB954', 'white', 'bi-spotify')
+                                                            ('listenbrainz_genres', 'ListenBrainz', '0066FF', 'white', 'bi-headphones')
                             ] %}
                             {% set ns = namespace(has_any=False) %}
                                                         {% for key, label, bgcolor, textcolor, icon in sources %}
@@ -1001,8 +1000,6 @@
                                     {% set detection_sources = [
                                         ('discogs', 'Discogs', 'High'),
                                         ('discogs_video', 'Discogs Video', 'Medium'),
-                                        ('spotify', 'Spotify', 'Medium'),
-                                        ('spotify_album_type', 'Spotify Album Type', 'Medium'),
                                         ('musicbrainz', 'MusicBrainz', 'Medium'),
                                         ('musicbrainz_video', 'MusicBrainz Video', 'Medium'),
                                         ('musicbrainz_compilation', 'MusicBrainz Compilation', 'Medium'),
@@ -1247,22 +1244,6 @@
                     </div>
                     <div class="card-body">
                         <div class="row g-2" style="font-size: 0.85rem;">
-                            {% if track.spotify_id %}
-                            <div class="col-6">
-                                <div class="metadata-row">
-                                    <div class="metadata-label small">Spotify ID</div>
-                                    <div class="metadata-value monospace" style="font-size: 0.7rem; word-break: break-all;">{{ track.spotify_id[:16] }}...</div>
-                                </div>
-                            </div>
-                            {% endif %}
-                            {% if track.spotify_album_id %}
-                            <div class="col-6">
-                                <div class="metadata-row">
-                                    <div class="metadata-label small">Spotify Album</div>
-                                    <div class="metadata-value monospace" style="font-size: 0.7rem; word-break: break-all;">{{ track.spotify_album_id[:16] }}...</div>
-                                </div>
-                            </div>
-                            {% endif %}
                             {% if track.discogs_artist_id %}
                             <div class="col-6">
                                 <div class="metadata-row">
@@ -2320,7 +2301,6 @@ const mergeFieldCandidates = {
 };
 
 const mergeGenreCandidates = [
-    { source: 'Spotify', value: {{ track.spotify_genres|tojson }} },
     { source: 'Last.fm', value: {{ track.lastfm_tags|tojson }} },
     { source: 'ListenBrainz', value: {{ track.listenbrainz_genres|tojson }} },
     { source: 'Discogs', value: {{ track.discogs_genres|tojson }} },
