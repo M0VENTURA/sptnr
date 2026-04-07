@@ -2384,6 +2384,189 @@ def trigger_navidrome_scan_for_new_imports(now_ts, last_run_ts, interval_seconds
     return now_ts
 
 
+def retry_pending_completed_moves(now_ts, last_run_ts, interval_seconds=120):
+    """Periodically sweep items stuck in 'completed' status and auto-move them.
+
+    Items land in 'completed' with file_path set when they were matched to a
+    downloaded file but the auto-move was deferred (e.g. the album was not yet
+    fully downloaded at match time, or the move attempt was rolled back after a
+    transient error).  This function re-evaluates all such items every
+    *interval_seconds* and calls auto_move_completed_album() for any album that
+    is now fully ready, or moves standalone tracks directly.
+
+    Args:
+        now_ts: Current timestamp (time.time())
+        last_run_ts: Timestamp returned by the previous call, or None
+        interval_seconds: Minimum seconds between sweeps (default 120)
+
+    Returns:
+        Updated last-run timestamp
+    """
+    if last_run_ts is not None and (now_ts - last_run_ts) < interval_seconds:
+        return last_run_ts
+
+    try:
+        import psycopg2.extras
+        from download_queue_manager import (
+            _get_postgres_conn_from_app_or_fallback,
+            auto_move_completed_album,
+            move_single_track_to_music_dir,
+            _try_claim_for_move,
+            _release_move_claim,
+            update_queue_item,
+        )
+        from download_file_verification import verify_file_in_music, mark_queue_item_moved
+
+        conn = _get_postgres_conn_from_app_or_fallback()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        # Find completed items that have a file_path but have not yet been
+        # moved to the music library (music_file_path is still unset).
+        cursor.execute("""
+            SELECT id, artist, title, album, release_mbid, release_id,
+                   file_path, recording_mbid, release_source,
+                   track_number, disc_number, year, album_artist
+            FROM download_queue
+            WHERE status = 'completed'
+              AND file_path IS NOT NULL
+              AND file_path != ''
+              AND (music_file_path IS NULL OR music_file_path = '')
+            ORDER BY updated_at ASC
+        """)
+        pending = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        conn = None
+
+        if not pending:
+            logger.debug("[RETRY_MOVES] No completed items pending move")
+            return now_ts
+
+        logger.info(
+            f"[RETRY_MOVES] {len(pending)} completed item(s) pending move to music library"
+        )
+
+        albums_tried: set = set()
+        moved_count = 0
+        scan_needed = False
+
+        for item in pending:
+            release_mbid = (
+                (item.get('release_mbid') or item.get('release_id') or '').strip()
+            )
+
+            if release_mbid:
+                # Album-grouped move: auto_move_completed_album handles
+                # sibling readiness check and batch move.
+                if release_mbid in albums_tried:
+                    continue
+                albums_tried.add(release_mbid)
+                try:
+                    result = auto_move_completed_album(
+                        release_id=release_mbid,
+                        artist=item.get('artist'),
+                        album=item.get('album'),
+                    )
+                    n_moved = result.get('moved', 0)
+                    if n_moved > 0:
+                        moved_count += n_moved
+                        scan_needed = True
+                        logger.info(
+                            f"[RETRY_MOVES] Moved {n_moved} track(s): "
+                            f"{item.get('artist')} – {item.get('album')}"
+                        )
+                    elif not result.get('album_complete'):
+                        logger.debug(
+                            f"[RETRY_MOVES] Album not yet fully matched — "
+                            f"holding: {item.get('artist')} – {item.get('album')}"
+                        )
+                except Exception as alb_err:
+                    logger.warning(
+                        f"[RETRY_MOVES] Queue {item['id']}: album move error: {alb_err}"
+                    )
+            else:
+                # Standalone track — attempt a direct move.
+                file_path = item.get('file_path', '')
+                if not file_path or not os.path.isfile(file_path):
+                    logger.debug(
+                        f"[RETRY_MOVES] Queue {item['id']}: file not found at {file_path!r}"
+                    )
+                    continue
+                try:
+                    claimed = _try_claim_for_move(item['id'], 'completed')
+                    if not claimed:
+                        logger.debug(
+                            f"[RETRY_MOVES] Queue {item['id']}: already claimed, skipping"
+                        )
+                        continue
+                    logger.info(
+                        f"[RETRY_MOVES] Queue {item['id']}: claiming standalone track "
+                        f"'{item.get('title')}' for move"
+                    )
+                    item_for_move = dict(item)
+                    item_for_move['file_path'] = file_path
+                    move_result = move_single_track_to_music_dir(item_for_move)
+                    if move_result.get('success'):
+                        target_path = move_result.get('target_path')
+                        verify_result = verify_file_in_music(item['id'], target_path)
+                        if verify_result.get('success') or (
+                            target_path and os.path.isfile(target_path)
+                        ):
+                            mark_queue_item_moved(item['id'], target_path)
+                            update_queue_item(
+                                item['id'],
+                                status='imported',
+                                music_file_path=target_path,
+                                copied_individually=1,
+                                copied_individually_at=datetime.now().isoformat(),
+                            )
+                            logger.info(
+                                f"[RETRY_MOVES] Queue {item['id']}: imported to {target_path}"
+                            )
+                            moved_count += 1
+                            scan_needed = True
+                        else:
+                            logger.warning(
+                                f"[RETRY_MOVES] Queue {item['id']}: move verification failed "
+                                f"({verify_result.get('error')}), releasing claim"
+                            )
+                            _release_move_claim(
+                                item['id'], restore_status='completed', file_path=file_path
+                            )
+                    else:
+                        logger.warning(
+                            f"[RETRY_MOVES] Queue {item['id']}: move failed "
+                            f"({move_result.get('error')}), releasing claim"
+                        )
+                        _release_move_claim(
+                            item['id'], restore_status='completed', file_path=file_path
+                        )
+                except Exception as mv_err:
+                    logger.warning(
+                        f"[RETRY_MOVES] Queue {item['id']}: error during move: {mv_err}"
+                    )
+                    try:
+                        _release_move_claim(
+                            item['id'], restore_status='completed', file_path=file_path
+                        )
+                    except Exception:
+                        pass
+
+        if moved_count > 0:
+            logger.info(f"[RETRY_MOVES] Total moved this sweep: {moved_count} track(s)")
+
+        if scan_needed:
+            if not _trigger_navidrome_scan():
+                logger.warning(
+                    "[RETRY_MOVES] Imports occurred but Navidrome scan trigger failed "
+                    "— safety-net will retry"
+                )
+
+    except Exception as e:
+        logger.error(f"[RETRY_MOVES] Sweep error: {e}")
+
+    return now_ts
+
+
 def run_processor(interval=30):
     """Run queue processor loop"""
     logger.info("=== Queue Processor Started ===")
@@ -2404,6 +2587,7 @@ def run_processor(interval=30):
     last_slskd_clear_ts = None
     last_downloads_folder_ts = None
     last_navidrome_scan_ts = None
+    last_retry_completed_ts = None
 
     try:
         while True:
@@ -2431,6 +2615,13 @@ def run_processor(interval=30):
                 processed = process_queue(client)
 
                 last_downloads_folder_ts = check_downloads_folder(now_ts, last_downloads_folder_ts)
+
+                # Sweep items that landed in 'completed' (file matched, move
+                # deferred) and retry the move now that all siblings may be ready.
+                last_retry_completed_ts = retry_pending_completed_moves(
+                    now_ts, last_retry_completed_ts
+                )
+
                 last_navidrome_scan_ts = trigger_navidrome_scan_for_new_imports(now_ts, last_navidrome_scan_ts)
                 
                 if processed > 0:
