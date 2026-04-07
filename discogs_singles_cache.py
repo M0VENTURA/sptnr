@@ -120,6 +120,50 @@ class DiscogsArtistSinglesCache:
             except Exception:
                 pass  # Column already exists
 
+            # Ensure id column has a sequence default (migration for existing installations
+            # that were created before the id BIGSERIAL column was added to the schema).
+            try:
+                cursor.execute("""
+                    DO $$
+                    DECLARE
+                        v_has_id boolean;
+                        v_has_default boolean;
+                    BEGIN
+                        SELECT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_name = 'discogs_singles_cache' AND column_name = 'id'
+                        ) INTO v_has_id;
+
+                        IF NOT v_has_id THEN
+                            CREATE SEQUENCE IF NOT EXISTS discogs_singles_cache_id_seq;
+                            ALTER TABLE discogs_singles_cache
+                                ADD COLUMN id BIGINT DEFAULT nextval('discogs_singles_cache_id_seq');
+                            UPDATE discogs_singles_cache
+                                SET id = nextval('discogs_singles_cache_id_seq') WHERE id IS NULL;
+                            ALTER TABLE discogs_singles_cache ALTER COLUMN id SET NOT NULL;
+                        ELSE
+                            SELECT column_default IS NOT NULL
+                              INTO v_has_default
+                              FROM information_schema.columns
+                             WHERE table_name = 'discogs_singles_cache' AND column_name = 'id';
+
+                            IF NOT v_has_default THEN
+                                CREATE SEQUENCE IF NOT EXISTS discogs_singles_cache_id_seq;
+                                PERFORM setval(
+                                    'discogs_singles_cache_id_seq',
+                                    COALESCE((SELECT MAX(id) FROM discogs_singles_cache), 0) + 1
+                                );
+                                ALTER TABLE discogs_singles_cache
+                                    ALTER COLUMN id SET DEFAULT nextval('discogs_singles_cache_id_seq');
+                                UPDATE discogs_singles_cache
+                                    SET id = nextval('discogs_singles_cache_id_seq') WHERE id IS NULL;
+                            END IF;
+                        END IF;
+                    END $$;
+                """)
+            except Exception:
+                pass  # Migration already applied or not needed
+
             # Add unique constraint for ON CONFLICT support on existing installations that pre-date this constraint
             try:
                 cursor.execute("""

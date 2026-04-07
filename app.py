@@ -2758,6 +2758,18 @@ def _run_daily_musicbrainz_collection_release_refresh():
         """, (max_artists,))
         artist_rows = cursor.fetchall() or []
 
+        # End the read-only SELECT transaction immediately so the connection is
+        # not left idle-in-transaction during the MusicBrainz HTTP requests and
+        # rate-limit sleeps for the first artist below.  Without this commit the
+        # implicit transaction from the SELECT above persists until the first
+        # per-artist conn.commit() call (which only runs after the INSERT), so
+        # _fetch_musicbrainz_releases() for the first artist executes with the
+        # connection idle-in-transaction, risking idle_in_transaction_session_timeout.
+        try:
+            conn.commit()
+        except Exception as _commit_err:
+            logging.debug(f"[UPCOMING_MB_DAILY] Could not commit after artist-list SELECT: {_commit_err}")
+
         artists = []
         for row in artist_rows:
             artist_name = _row_get(row, "artist_name", 0)
@@ -3020,6 +3032,17 @@ def _match_upcoming_release(release_id, manual_release_group_mbid=None, manual_s
         album_name = (_row_get(row, "album_name", 2, "") or "").strip()
         if not artist_name or not album_name:
             return {"success": False, "error": "Upcoming release is missing artist or album information"}, 400
+
+        # Commit the read-only SELECT transaction so the connection is idle
+        # (not idle-in-transaction) during the MusicBrainz HTTP lookup below.
+        # Without this the implicit transaction persists for the full duration of
+        # _search_musicbrainz_releasegroup_matches(), which can trigger
+        # idle_in_transaction_session_timeout when many releases are being matched
+        # in a batch (e.g. the 1am auto-match loop in _run_daily_1am_upcoming_release_match).
+        try:
+            conn.commit()
+        except Exception:
+            pass
 
         if manual_release_group_mbid:
             _update_upcoming_release_match_record(
@@ -3568,6 +3591,17 @@ def _scan_new_navidrome_files_since_last_import(max_newest_albums: int = 80):
                         row_id = row[0] if row else None
                     if row_id:
                         existing_ids.add(str(row_id))
+
+                # Commit the read-only SELECT so the connection is idle (not
+                # idle-in-transaction) during the next fetch_album_tracks() HTTP
+                # call in the following loop iteration.  Without this commit the
+                # implicit transaction started by the SELECT above persists across
+                # all subsequent Navidrome HTTP requests (up to 80 albums), which
+                # can easily exceed idle_in_transaction_session_timeout.
+                try:
+                    conn.commit()
+                except Exception as _commit_err:
+                    logging.debug(f"[NAV_INCREMENTAL] Could not commit after track-id SELECT: {_commit_err}")
 
                 missing_in_db = [tid for tid in track_ids if tid not in existing_ids]
                 if missing_in_db and artist_name and artist_id:
@@ -10117,7 +10151,7 @@ def api_artist_bio():
                 cursor.execute(f"""
                     INSERT INTO artists (id, name, bio)
                     VALUES ({placeholder}, {placeholder}, {placeholder})
-                    ON CONFLICT (id) DO UPDATE SET bio = EXCLUDED.bio
+                    ON CONFLICT (name) DO UPDATE SET bio = EXCLUDED.bio
                 """, (artist_name, artist_name, wikidata_bio))
                 conn.commit()
             except Exception as _cache_err:
@@ -11977,7 +12011,7 @@ def api_get_similar_artists(artist):
                 cursor.execute(f"""
                     INSERT INTO artists (id, name, similar_artists_lastfm, similar_artists_listenbrainz, similar_artists_last_updated)
                     VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
-                    ON CONFLICT(id) DO UPDATE SET 
+                    ON CONFLICT(name) DO UPDATE SET 
                         similar_artists_lastfm = excluded.similar_artists_lastfm,
                         similar_artists_listenbrainz = excluded.similar_artists_listenbrainz,
                         similar_artists_last_updated = excluded.similar_artists_last_updated
@@ -13770,6 +13804,17 @@ def album_edit(artist, album):
                     WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}
                 """, (album_artist, album_title))
                 tracks = cursor.fetchall()
+
+                # Commit the read-only SELECT so the connection is idle (not
+                # idle-in-transaction) during the cover art HTTP download and
+                # per-track file tag writes below.  Without this commit the
+                # implicit transaction from the SELECT persists for the full
+                # duration of slow network/disk I/O, which can exceed
+                # idle_in_transaction_session_timeout.
+                try:
+                    conn.commit()
+                except Exception:
+                    pass
 
                 files_updated = 0
                 files_failed = 0

@@ -4030,7 +4030,7 @@ def popularity_scan(
                         cursor.execute(f"""
                             INSERT INTO artists (id, name, country)
                             VALUES ({placeholder}, {placeholder}, {placeholder})
-                            ON CONFLICT(id) DO UPDATE SET country = excluded.country
+                            ON CONFLICT(name) DO UPDATE SET country = excluded.country
                         """, (artist, artist, artist_country))
 
                         # Update tracks table with artist country
@@ -4099,7 +4099,7 @@ def popularity_scan(
                                 cursor.execute(f"""
                                     INSERT INTO artists (id, name, bio, image_url)
                                     VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder})
-                                    ON CONFLICT(id) DO UPDATE SET
+                                    ON CONFLICT(name) DO UPDATE SET
                                         bio = excluded.bio,
                                         image_url = excluded.image_url
                                 """, (artist, artist, artist_bio or "", artist_image or ""))
@@ -4136,7 +4136,7 @@ def popularity_scan(
                                         cursor.execute(f"""
                                             INSERT INTO artists (id, name, bio, image_url)
                                             VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder})
-                                            ON CONFLICT(id) DO UPDATE SET
+                                            ON CONFLICT(name) DO UPDATE SET
                                                 bio = excluded.bio,
                                                 image_url = excluded.image_url
                                         """, (artist, artist, selected_bio or "", final_image or ""))
@@ -4171,7 +4171,7 @@ def popularity_scan(
                                     cursor.execute(f"""
                                         INSERT INTO artists (id, name, bio)
                                         VALUES ({placeholder}, {placeholder}, {placeholder})
-                                        ON CONFLICT(id) DO UPDATE SET bio = excluded.bio
+                                        ON CONFLICT(name) DO UPDATE SET bio = excluded.bio
                                     """, (artist, artist, selected_bio))
                                     conn.commit()
                                     log_info(f'Saved artist bio from {source} for {artist} (AudioDB timed out)')
@@ -4255,7 +4255,7 @@ def popularity_scan(
                             cursor.execute(f"""
                                 INSERT INTO artists (id, name, bio, image_url)
                                 VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder})
-                                ON CONFLICT(id) DO UPDATE SET
+                                ON CONFLICT(name) DO UPDATE SET
                                     bio = excluded.bio,
                                     image_url = excluded.image_url
                             """, (artist, artist, artist_bio or "", artist_image or ""))
@@ -4467,7 +4467,7 @@ def popularity_scan(
                         cursor.execute(f"""
                             INSERT INTO artists (id, name, similar_artists_lastfm, similar_artists_listenbrainz, similar_artists_last_updated)
                             VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
-                            ON CONFLICT(id) DO UPDATE SET
+                            ON CONFLICT(name) DO UPDATE SET
                                 similar_artists_lastfm = excluded.similar_artists_lastfm,
                                 similar_artists_listenbrainz = excluded.similar_artists_listenbrainz,
                                 similar_artists_last_updated = excluded.similar_artists_last_updated
