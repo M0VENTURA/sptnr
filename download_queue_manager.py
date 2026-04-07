@@ -1333,9 +1333,13 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                         existing_index_def = str(existing_index[0] or "")
 
                     index_def_lower = existing_index_def.lower()
-                    active_predicate_matches = (
-                        "where status in" in index_def_lower
-                        and all(f"'{status}'" in index_def_lower for status in _ACTIVE_QUEUE_STATUSES)
+                    # PostgreSQL rewrites `WHERE status IN ('a','b',...)` to
+                    # `WHERE ((status)::text = ANY (ARRAY['a'::text, 'b'::text, ...]))`,
+                    # so checking for the literal "where status in" string always fails.
+                    # Just verify all expected status values are present in the definition.
+                    active_predicate_matches = all(
+                        f"'{status}'" in index_def_lower
+                        for status in _ACTIVE_QUEUE_STATUSES
                     )
                     if not active_predicate_matches:
                         cursor.execute("DROP INDEX IF EXISTS uq_download_queue_active_identity")
@@ -4603,11 +4607,11 @@ def check_downloads_folder():
         downloads_files = quality_filtered_files
 
         if quality_rejected_count:
-            logger.info(
+            logger.debug(
                 f"[QUALITY-FILTER] Excluded {quality_rejected_count} file(s) from queue matching in this scan pass"
             )
 
-        logger.info(f"Found {len(downloads_files)} audio files in {downloads_dir}, checking {len(queue_items)} queue items")
+        logger.debug(f"[SCAN] {len(downloads_files)} audio file(s) eligible in {downloads_dir}, {len(queue_items)} active queue item(s)")
         
         music_root = os.path.abspath(MUSIC_DIR)
 
@@ -4793,8 +4797,8 @@ def check_downloads_folder():
             
             if match_found and match_path:
                 logger.info(
-                    f"Matched queue {queue_item['id']} ({queue_item['search_query']}) to file: {match_found} "
-                    f"(match_meta_state={match_meta_state})"
+                    f"[MATCH] Queue {queue_item['id']} ({queue_item['search_query']}): "
+                    f"matched file '{match_found}' (match_type={match_meta_state})"
                 )
 
                 # ── Folder-level context ─────────────────────────────────────
@@ -4816,14 +4820,16 @@ def check_downloads_folder():
                 )
 
                 if updated_item:
-                    # Only auto-move items that were explicitly added via the
-                    # MusicBrainz search UI (release_source='musicbrainz') AND only
-                    # when every sibling track for the same release is completed.
-                    # Partial-album matches stay as 'completed' for manual approval.
+                    logger.info(
+                        f"[MOVE] Queue {queue_item['id']}: status=completed, file_path={match_path}"
+                    )
+                    # Only auto-move items that are MBID-backed AND have every sibling
+                    # track completed.  Partial-album and non-MB matches stay as
+                    # 'completed' and are swept up by retry_pending_completed_moves().
                     if not _is_musicbrainz_backed(queue_item):
                         logger.info(
-                            f"[MOVE] Queue {queue_item['id']}: not from MusicBrainz search — "
-                            f"leaving as completed for manual approval"
+                            f"[MOVE] Queue {queue_item['id']}: not MusicBrainz-backed — "
+                            f"leaving as completed for retry sweep"
                         )
                         completed_items.append({
                             'queue_id': queue_item['id'],
@@ -4861,6 +4867,10 @@ def check_downloads_folder():
                                 f"process for moving — skipping"
                             )
                             continue
+                        logger.info(
+                            f"[MOVE] Queue {queue_item['id']}: claimed for move — "
+                            f"transferring '{match_found}' to music library"
+                        )
                         # Immediately move the file to /music
                         item_for_move = dict(queue_item)
                         item_for_move['file_path'] = match_path
@@ -5223,8 +5233,18 @@ def check_downloads_folder():
                         search_query,
                     )
 
+        matched_count = len(completed_items)
+        moved_count = sum(1 for item in completed_items if item.get('moved'))
         if completed_items:
-            logger.info(f"Found {len(completed_items)} completed downloads")
+            logger.info(
+                f"[SCAN] Downloads folder scan complete: {len(queue_items)} queue item(s) checked, "
+                f"{matched_count} matched, {moved_count} moved to music library"
+            )
+        else:
+            logger.debug(
+                f"[SCAN] Downloads folder scan complete: {len(queue_items)} queue item(s) checked, "
+                f"0 matched ({len(downloads_files)} audio file(s) in {downloads_dir})"
+            )
 
         _downloads_check_cache['timestamp'] = time.time()
         _downloads_check_cache['result'] = list(completed_items)
@@ -5692,8 +5712,8 @@ def auto_discover_and_queue_files():
         torrents_dir = os.path.join(root_downloads_dir, 'torrents')
         downloads_dir = torrents_dir
 
-        logger.info(f"[AUTO-DISCOVER] Downloads root: {root_downloads_dir}")
-        logger.info(f"[AUTO-DISCOVER] Torrents scan dir: {downloads_dir}")
+        logger.debug(f"[AUTO-DISCOVER] Downloads root: {root_downloads_dir}")
+        logger.debug(f"[AUTO-DISCOVER] Torrents scan dir: {downloads_dir}")
 
         # Initialize scan progress tracking
         update_scan_progress(scanning=True, files_found=0)
@@ -5717,7 +5737,7 @@ def auto_discover_and_queue_files():
             stats['empty_folders_deleted'] += _prune_empty_download_folders(downloads_dir)
 
         if not os.path.isdir(downloads_dir):
-            logger.info(
+            logger.debug(
                 f"[AUTO-DISCOVER] Torrents subfolder not found at {torrents_dir} - no files to scan"
             )
             update_scan_progress(scanning=False)
