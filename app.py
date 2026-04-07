@@ -1703,6 +1703,9 @@ upcoming_release_match_scheduler_lock = threading.Lock()
 # successive button clicks don't saturate Flask worker threads with blocking I/O.
 _individual_move_semaphore = threading.Semaphore(1)
 
+# Prevents duplicate simultaneous release-track prefetch runs.
+_release_track_prefetch_lock = threading.Lock()
+
 # Optional auto-import toggle placeholder (will be set after config functions are defined)
 AUTO_BOOT_ND_IMPORT = None
 
@@ -30290,6 +30293,98 @@ def api_queue_reset_match(queue_id):
                 conn.close()
             except Exception:
                 pass
+
+
+@app.route("/api/queue/prefetch-release-tracks", methods=["POST"])
+def api_queue_prefetch_release_tracks():
+    """Background-cache MusicBrainz release track data for all releases in the queue.
+
+    Returns immediately. A daemon thread fetches and stores track data (to the
+    musicbrainz_release_tracks DB table) for each release MBID that is not already
+    cached. This ensures the rematch modal ("Change Queue Item Match") can load
+    release tracks instantly from the local DB cache instead of hitting the
+    MusicBrainz API live.
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = "%s"
+
+        uuid_pattern = "________-____-____-____-____________"
+        active_statuses = (
+            'queued', 'searching', 'downloading',
+            'matched', 'completed',
+            'unmatched', 'queried',
+            'discovered', 'pending_match',
+            'possible_duplicate', 'duplicate',
+        )
+        status_placeholders = ", ".join([placeholder] * len(active_statuses))
+
+        # Collect all unique, valid release MBIDs from the active queue.
+        cursor.execute(
+            f"""
+            SELECT DISTINCT COALESCE(NULLIF(release_mbid, ''), NULLIF(release_id, '')) AS mbid
+            FROM download_queue
+            WHERE COALESCE(NULLIF(release_mbid, ''), NULLIF(release_id, '')) IS NOT NULL
+              AND char_length(COALESCE(NULLIF(release_mbid, ''), NULLIF(release_id, ''))) = 36
+              AND COALESCE(NULLIF(release_mbid, ''), NULLIF(release_id, '')) LIKE {placeholder}
+              AND status IN ({status_placeholders})
+            """,
+            (uuid_pattern, *active_statuses),
+        )
+        queue_mbids = {row[0] if not isinstance(row, dict) else row.get('mbid') for row in cursor.fetchall()}
+
+        # Skip MBIDs that already have cached track rows.
+        if queue_mbids:
+            cached_placeholders = ", ".join([placeholder] * len(queue_mbids))
+            cursor.execute(
+                f"""
+                SELECT DISTINCT release_id
+                FROM musicbrainz_release_tracks
+                WHERE release_id IN ({cached_placeholders})
+                  AND queue_id IS NULL
+                """,
+                tuple(queue_mbids),
+            )
+            already_cached = {row[0] if not isinstance(row, dict) else row.get('release_id') for row in cursor.fetchall()}
+        else:
+            already_cached = set()
+
+        conn.close()
+
+        missing_mbids = list(queue_mbids - already_cached)
+
+        if not missing_mbids:
+            return jsonify({"success": True, "queued": 0, "message": "All releases already cached"})
+
+        def _prefetch_worker(mbids):
+            """Fetch and cache release track data for the supplied MBIDs sequentially."""
+            if not _release_track_prefetch_lock.acquire(blocking=False):
+                logging.debug("[RELEASE_PREFETCH] Another prefetch run is already in progress; skipping.")
+                return
+            try:
+                from folder_matching_enhancements import get_musicbrainz_release_metadata
+                for mbid in mbids:
+                    try:
+                        get_musicbrainz_release_metadata(mbid)
+                        logging.debug(f"[RELEASE_PREFETCH] Cached tracks for {mbid}")
+                    except Exception as fetch_err:
+                        logging.warning(f"[RELEASE_PREFETCH] Failed to cache {mbid}: {fetch_err}")
+            finally:
+                _release_track_prefetch_lock.release()
+
+        threading.Thread(
+            target=_prefetch_worker,
+            args=(missing_mbids,),
+            daemon=True,
+            name="release-track-prefetch",
+        ).start()
+
+        return jsonify({"success": True, "queued": len(missing_mbids)})
+
+    except Exception as e:
+        logging.error(f"[RELEASE_PREFETCH] Error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/api/queue/cleanup-invalid-mbids", methods=["POST"])

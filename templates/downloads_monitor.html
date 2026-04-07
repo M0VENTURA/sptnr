@@ -2289,6 +2289,11 @@ async function loadFolderGroups(options = {}) {
     fetch('/api/queue/status?limit=200').catch(syncErr => {
       console.debug('Queue sync post-pass failed (non-fatal):', syncErr);
     });
+
+    // Pre-cache MusicBrainz release track data for every release in the queue so
+    // the "Change Queue Item Match" (rematch) modal can load track lists instantly
+    // from the local DB instead of hitting the MusicBrainz API live.
+    fetch('/api/queue/prefetch-release-tracks', { method: 'POST' }).catch(() => {});
     
     if (!folderData || !folderData.success) {
       console.error('Error loading folder groups:', folderData ? folderData.error : 'HTTP request failed or server error');
