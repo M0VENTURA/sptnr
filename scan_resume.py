@@ -222,9 +222,16 @@ def load_scan_progress(scan_type: str = "navidrome") -> Optional[Dict]:
 
     merged = dict(progress or {})
     if marker:
-        # Marker is authoritative for checkpoint metadata.
+        # Marker is authoritative for checkpoint metadata, EXCEPT: don't let a
+        # stale "starting" marker downgrade a progress file that already shows
+        # "running".  The essentia scan's own _write_progress() writes directly
+        # to the progress file without touching the marker, so the marker can
+        # remain at "starting" for the entire lifetime of a running scan.
+        _progress_status = str(merged.get("status") or "").lower()
         for key in ("current_artist", "status", "stop_requested", "is_running", "last_updated"):
             if marker.get(key) is not None:
+                if key == "status" and marker.get("status") == "starting" and _progress_status == "running":
+                    continue  # progress file is more current; don't downgrade
                 merged[key] = marker.get(key)
 
     if "scan_type" not in merged:
@@ -333,7 +340,7 @@ def detect_interrupted_scan(scan_type: str = "navidrome") -> Optional[Dict]:
     if not progress:
         return None
 
-    current_artist = progress.get("current_artist")
+    current_artist = str(progress.get("current_artist") or progress.get("resume_from_artist") or "").strip()
     if not current_artist:
         log_debug("No checkpoint artist in progress/marker state")
         return None
@@ -352,9 +359,15 @@ def detect_interrupted_scan(scan_type: str = "navidrome") -> Optional[Dict]:
 
     # A scan in 'starting' state has not yet processed any artists; the resume
     # marker may carry a stale current_artist from the previous run.
+    # However, if a resume_from_artist checkpoint was explicitly preserved when
+    # the "starting" status was written (e.g. after a worker restart), honour it
+    # so the scan resumes from where it left off instead of starting over.
     if status == "starting":
-        log_debug("Progress file shows scan in 'starting' state; skipping auto-resume")
-        return None
+        if not str(progress.get("resume_from_artist") or "").strip():
+            log_debug("Progress file shows scan in 'starting' state; skipping auto-resume")
+            return None
+        # Fall through: resume_from_artist is present so this is a re-launch
+        # of an interrupted scan, not a truly fresh start.
 
     # -----------------------------------------------------------------------
     # Age gate: use scan_history timestamps (actual album-level work) as the
