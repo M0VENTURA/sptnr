@@ -775,7 +775,7 @@ def cleanup_stuck_moving_items():
 
         cursor.execute(
             """
-            SELECT id, artist, title, updated_at FROM download_queue
+            SELECT id, artist, title, file_path, updated_at FROM download_queue
             WHERE status = 'moving'
             AND updated_at < {placeholder}
             """.format(placeholder=placeholder),
@@ -789,14 +789,21 @@ def cleanup_stuck_moving_items():
             )
             for item in stuck_items:
                 item_id = item['id'] if isinstance(item, dict) else item[0]
+                item_file_path = (item.get('file_path') if isinstance(item, dict) else (item[3] if len(item) > 3 else None))
                 logger.warning(
                     f"Queue {item_id}: Detected stuck 'moving' state "
                     f"({(item.get('artist') if isinstance(item, dict) else item[1])} - "
                     f"{(item.get('title') if isinstance(item, dict) else item[2])}), "
-                    f"restoring to 'completed' for retry"
+                    f"restoring to {'completed' if item_file_path else 'failed'} for retry"
                 )
                 try:
-                    _release_move_claim(item_id, restore_status='completed')
+                    if item_file_path:
+                        _release_move_claim(item_id, restore_status='completed', file_path=item_file_path)
+                    else:
+                        # No file_path — cannot restore to 'completed' (guardrail in update_queue_item
+                        # would block it).  Mark as 'failed' instead so the item exits the stuck
+                        # 'moving' state and gets rescheduled for a fresh download.
+                        _release_move_claim(item_id, restore_status='failed')
                 except Exception as release_err:
                     logger.error(
                         f"Queue {item_id}: Could not release stuck 'moving' claim: {release_err}"
