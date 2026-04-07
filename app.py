@@ -10151,7 +10151,7 @@ def api_artist_bio():
                 cursor.execute(f"""
                     INSERT INTO artists (id, name, bio)
                     VALUES ({placeholder}, {placeholder}, {placeholder})
-                    ON CONFLICT (id) DO UPDATE SET bio = EXCLUDED.bio
+                    ON CONFLICT (name) DO UPDATE SET bio = EXCLUDED.bio
                 """, (artist_name, artist_name, wikidata_bio))
                 conn.commit()
             except Exception as _cache_err:
@@ -12011,7 +12011,7 @@ def api_get_similar_artists(artist):
                 cursor.execute(f"""
                     INSERT INTO artists (id, name, similar_artists_lastfm, similar_artists_listenbrainz, similar_artists_last_updated)
                     VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
-                    ON CONFLICT(id) DO UPDATE SET 
+                    ON CONFLICT(name) DO UPDATE SET 
                         similar_artists_lastfm = excluded.similar_artists_lastfm,
                         similar_artists_listenbrainz = excluded.similar_artists_listenbrainz,
                         similar_artists_last_updated = excluded.similar_artists_last_updated
