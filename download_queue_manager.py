@@ -8626,9 +8626,9 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
             if not path_value:
                 return False
             try:
-                return os.path.abspath(path_value).startswith(
-                    os.path.abspath(music_root) + os.sep
-                )
+                abs_music = os.path.abspath(music_root)
+                abs_path = os.path.abspath(path_value)
+                return os.path.commonpath([abs_music, abs_path]) == abs_music and abs_path != abs_music
             except Exception:
                 return False
 
@@ -8754,7 +8754,7 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
         # Collect IDs of 'completed' tracks whose source file is missing so we
         # can mark them imported after the loop (their files were likely already
         # moved in a prior pass where the status update failed for that row).
-        completed_missing_file_ids = []
+        stale_completed_ids = set()
 
         for track in tracks:
             if track['status'] == 'imported':
@@ -8768,13 +8768,13 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
             if _path_is_in_music(track.get('file_path')):
                 result['already_copied'] += 1
                 if track['status'] != 'imported':
-                    completed_missing_file_ids.append(track['id'])
+                    stale_completed_ids.add(track['id'])
                 continue
 
             if not track.get('file_path') or not os.path.exists(track['file_path']):
                 result['skipped'] += 1
                 if track['status'] == 'completed':
-                    completed_missing_file_ids.append(track['id'])
+                    stale_completed_ids.add(track['id'])
                 continue
 
             src = track['file_path']
@@ -8886,7 +8886,7 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
         # These were almost certainly moved in a prior pass where the DB update
         # succeeded for some rows but not others (e.g. a crash mid-loop).
         # Marking them 'imported' prevents endless retries on every sweep cycle.
-        if completed_missing_file_ids:
+        if stale_completed_ids:
             try:
                 _cleanup_conn = _get_postgres_conn_from_app_or_fallback()
                 if _cleanup_conn is not None:
@@ -8900,13 +8900,13 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
                             WHERE id = ANY(%s)
                               AND status != 'imported'
                             """,
-                            (completed_missing_file_ids,)
+                            (list(stale_completed_ids),)
                         )
                         _cleanup_conn.commit()
                         logger.info(
-                            f"[AUTO_MOVE] Marked {len(completed_missing_file_ids)} completed "
+                            f"[AUTO_MOVE] Marked {len(stale_completed_ids)} completed "
                             f"track(s) with missing source files as imported "
-                            f"(ids={completed_missing_file_ids})"
+                            f"(ids={stale_completed_ids})"
                         )
                     finally:
                         try:

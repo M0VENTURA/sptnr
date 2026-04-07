@@ -2431,9 +2431,9 @@ def retry_pending_completed_moves(now_ts, last_run_ts, interval_seconds=120):
               AND file_path IS NOT NULL
               AND file_path != ''
               AND (music_file_path IS NULL OR music_file_path = '')
-              AND file_path NOT LIKE %s
+              AND NOT STARTS_WITH(file_path, %s)
             ORDER BY updated_at ASC
-        """, (os.environ.get("MUSIC_ROOT", "/music").rstrip("/") + "/%",))
+        """, (os.environ.get("MUSIC_ROOT", "/music").rstrip("/") + "/",))
         pending = [dict(row) for row in cursor.fetchall()]
         conn.close()
         conn = None
