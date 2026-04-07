@@ -708,11 +708,8 @@
                                     </div>
                                 </td>
                                 <td class="d-none d-lg-table-cell">
-                                    {% if track.artist and track.artist != artist_name %}
-                                    <span class="text-muted" style="font-size: 0.85rem;">{{ track.artist }}</span>
-                                    {% else %}
-                                    <span class="text-muted">—</span>
-                                    {% endif %}
+                                    {% set display_artist = track.artist if track.artist else artist_name %}
+                                    <span class="text-muted" style="font-size: 0.85rem;">{{ display_artist }}</span>
                                 </td>
                                 <td class="d-flex justify-content-between d-md-table-cell text-center">
                                     <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Duration</span>
@@ -819,11 +816,8 @@
                             </td>
                             <td class="d-none d-lg-table-cell">
                                 <span onclick="editTrackArtist('{{ track.id }}', '{{ track.artist|escapejs }}')" style="cursor: pointer;" title="Click to edit">
-                                    {% if track.artist and track.artist != artist_name %}
-                                    <span class="text-muted track-artist-display-{{ track.id }}" style="font-size: 0.85rem;">{{ track.artist }}</span>
-                                    {% else %}
-                                    <span class="text-muted track-artist-display-{{ track.id }}">—</span>
-                                    {% endif %}
+                                    {% set display_artist = track.artist if track.artist else artist_name %}
+                                    <span class="text-muted track-artist-display-{{ track.id }}" style="font-size: 0.85rem;">{{ display_artist }}</span>
                                 </span>
                             </td>
                             <td class="d-flex justify-content-between d-md-table-cell text-center">
