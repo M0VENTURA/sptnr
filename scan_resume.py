@@ -14,6 +14,7 @@ Features:
 import os
 import json
 import logging
+import tempfile
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Tuple
 from pathlib import Path
@@ -249,13 +250,21 @@ def save_scan_progress(scan_type: str, progress_data: Dict) -> bool:
     
     try:
         # Ensure directory exists
-        progress_dir = os.path.dirname(progress_file)
-        if progress_dir:  # Only create if there's a directory component
-            os.makedirs(progress_dir, exist_ok=True)
-        
-        with open(progress_file, 'w') as f:
-            json.dump(progress_data, f, indent=2)
-        
+        progress_dir = os.path.dirname(progress_file) or "."
+        os.makedirs(progress_dir, exist_ok=True)
+
+        _fd, _tmp = tempfile.mkstemp(dir=progress_dir, suffix=".tmp")
+        try:
+            with os.fdopen(_fd, "w", encoding="utf-8") as _f:
+                json.dump(progress_data, _f, indent=2)
+            os.replace(_tmp, progress_file)
+        except Exception:
+            try:
+                os.unlink(_tmp)
+            except OSError:
+                pass
+            raise
+
         log_debug(f"Saved progress to {progress_file}: {progress_data.get('percent_complete', 0)}%")
         return True
     except Exception as e:
@@ -283,8 +292,17 @@ def clear_scan_progress(scan_type: str = "navidrome") -> bool:
                     progress = json.load(f)
                 progress['is_running'] = False
                 progress['percent_complete'] = 100
-                with open(progress_file, 'w') as f:
-                    json.dump(progress, f, indent=2)
+                progress_dir = os.path.dirname(progress_file) or "."
+                _fd, _tmp = tempfile.mkstemp(dir=progress_dir, suffix=".tmp")
+                try:
+                    with os.fdopen(_fd, "w", encoding="utf-8") as _f:
+                        json.dump(progress, _f, indent=2)
+                    os.replace(_tmp, progress_file)
+                except Exception:
+                    try:
+                        os.unlink(_tmp)
+                    except OSError:
+                        pass
             except Exception:
                 pass
             

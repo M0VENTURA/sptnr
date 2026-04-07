@@ -30,6 +30,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -106,9 +107,19 @@ def _write_progress(progress_file: str, payload: Dict[str, Any]) -> None:
     if not progress_file:
         return
     try:
-        os.makedirs(os.path.dirname(progress_file), exist_ok=True)
-        with open(progress_file, "w", encoding="utf-8") as f:
-            json.dump(payload, f)
+        _dir = os.path.dirname(progress_file) or "."
+        os.makedirs(_dir, exist_ok=True)
+        _fd, _tmp = tempfile.mkstemp(dir=_dir, suffix=".tmp")
+        try:
+            with os.fdopen(_fd, "w", encoding="utf-8") as _f:
+                json.dump(payload, _f)
+            os.replace(_tmp, progress_file)
+        except Exception:
+            try:
+                os.unlink(_tmp)
+            except OSError:
+                pass
+            raise
     except Exception as exc:
         logger.debug("Failed writing essentia mood scan progress: %s", exc)
 

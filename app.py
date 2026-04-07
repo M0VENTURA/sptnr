@@ -19,6 +19,7 @@ import os
 import glob
 import shutil
 import pathlib
+import tempfile
 from pathlib import Path
 import xml.etree.ElementTree as ET
 # --- ENVIRONMENT VARIABLE EDITING SUPPORT ---
@@ -1784,9 +1785,19 @@ def _write_progress_file(path: str, scan_type: str, is_running: bool, extra: dic
         }
         if extra:
             payload.update(extra)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(payload, f)
+        _dir = os.path.dirname(path) or "."
+        os.makedirs(_dir, exist_ok=True)
+        _fd, _tmp = tempfile.mkstemp(dir=_dir, suffix=".tmp")
+        try:
+            with os.fdopen(_fd, "w", encoding="utf-8") as _f:
+                json.dump(payload, _f)
+            os.replace(_tmp, path)
+        except Exception:
+            try:
+                os.unlink(_tmp)
+            except OSError:
+                pass
+            raise
 
         # Keep a lightweight per-scan marker so restart resume logic can recover
         # the last checkpoint even when the progress file status toggles.
@@ -1825,8 +1836,17 @@ def _write_progress_file(path: str, scan_type: str, is_running: bool, extra: dic
                 # cycle (e.g. "Stray Kids") until the new scan reached its first artist.
                 marker_payload["current_artist"] = existing_current_artist
 
-            with open(marker_path, "w", encoding="utf-8") as marker_file:
-                json.dump(marker_payload, marker_file)
+            _mfd, _mtmp = tempfile.mkstemp(dir=marker_dir, suffix=".tmp")
+            try:
+                with os.fdopen(_mfd, "w", encoding="utf-8") as _mf:
+                    json.dump(marker_payload, _mf)
+                os.replace(_mtmp, marker_path)
+            except Exception:
+                try:
+                    os.unlink(_mtmp)
+                except OSError:
+                    pass
+                raise
         except Exception as marker_err:
             logging.debug(f"Failed to write scan marker for {scan_type}: {marker_err}")
     except Exception as e:
