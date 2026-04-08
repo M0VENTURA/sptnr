@@ -3979,7 +3979,7 @@
         });
     }
     async function queueMissingTrack(btn) {
-        const artist = btn.dataset.albumArtist || btn.dataset.artist;
+        const artist = btn.dataset.artist || btn.dataset.albumArtist;
         const title = btn.dataset.title;
         const album = btn.dataset.album;
         const trackNumber = btn.dataset.trackNumber || null;
