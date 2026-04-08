@@ -2666,6 +2666,204 @@ def retry_pending_completed_moves(now_ts, last_run_ts, interval_seconds=120):
     return now_ts
 
 
+def maybe_enrich_queue_items_from_mb(now_ts, last_run_ts, interval_seconds=600):
+    """Periodically fetch missing duration / artist for queued items from MusicBrainz.
+
+    Runs at most every *interval_seconds* (default 10 minutes).  For each
+    queue item that is missing a ``duration`` or has a blank ``artist`` we
+    attempt a MusicBrainz lookup:
+
+    1. If the item has a ``recording_mbid`` we call the MB recording endpoint
+       directly — this gives duration (ms) and artist credits in one round-trip.
+    2. Otherwise, if the item has a ``release_mbid`` / ``release_id`` we fetch
+       the full release and match the track by disc + position number, falling
+       back to a title match.
+
+    We stay polite to MB: a 1-second sleep between requests is enforced and
+    the batch is capped at 20 items per run so the loop does not block the
+    processor for too long.
+    """
+    if last_run_ts is not None and (now_ts - last_run_ts) < interval_seconds:
+        return last_run_ts
+
+    _MB_ENRICH_BATCH = 20
+    _MB_REQUEST_SLEEP = 1.1   # seconds between MB API calls
+
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholder = _get_placeholder(conn)
+
+        # Find active queue items that are missing duration OR artist.
+        # We only bother when there is at least one MB identifier to look up.
+        cursor.execute(f"""
+            SELECT id, artist, title, track_number, disc_number,
+                   recording_mbid, release_mbid, release_id, release_source
+            FROM download_queue
+            WHERE status IN ('queued', 'failed')
+              AND (
+                    duration IS NULL
+                    OR TRIM(COALESCE(artist, '')) = ''
+              )
+              AND (
+                    (recording_mbid IS NOT NULL AND recording_mbid <> '')
+                    OR (release_mbid  IS NOT NULL AND release_mbid  <> '')
+                    OR (release_id    IS NOT NULL AND release_id    <> ''
+                        AND LOWER(COALESCE(release_source, '')) = 'musicbrainz')
+              )
+            ORDER BY id ASC
+            LIMIT {placeholder}
+        """, (_MB_ENRICH_BATCH,))
+        rows = [dict(r) for r in cursor.fetchall()]
+        conn.close()
+    except Exception as db_err:
+        logger.warning(f"[MB_ENRICH] Could not query queue for enrichment: {db_err}")
+        return last_run_ts
+
+    if not rows:
+        return now_ts
+
+    logger.info(f"[MB_ENRICH] Enriching {len(rows)} queue item(s) with MusicBrainz data")
+
+    try:
+        from post_download_processor import fetch_musicbrainz_release_metadata
+        from api_clients.musicbrainz import _USER_AGENT as _MB_USER_AGENT
+    except Exception as import_err:
+        logger.warning(f"[MB_ENRICH] Could not import MB helpers: {import_err}")
+        return last_run_ts
+
+    import requests as _requests
+
+    _mb_headers = {
+        "User-Agent": _MB_USER_AGENT,
+        "Accept": "application/json",
+    }
+
+    # Simple in-process cache so we only fetch each release once per run.
+    _release_cache = {}
+
+    def _fetch_recording(recording_mbid):
+        """Fetch duration + artist from MB recording endpoint."""
+        try:
+            time.sleep(_MB_REQUEST_SLEEP)
+            url = f"https://musicbrainz.org/ws/2/recording/{recording_mbid}"
+            resp = _requests.get(url, headers=_mb_headers,
+                                 params={"fmt": "json", "inc": "artist-credits"},
+                                 timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            duration_ms = data.get("length")
+            duration_sec = int(duration_ms // 1000) if duration_ms else None
+            artist = ""
+            ac = data.get("artist-credit") or []
+            if ac:
+                parts = []
+                for credit in ac:
+                    if isinstance(credit, dict):
+                        name = credit.get("name") or (credit.get("artist") or {}).get("name") or ""
+                        join = credit.get("joinphrase") or ""
+                        parts.append(name + join)
+                artist = "".join(parts).strip()
+            return duration_sec, artist or None
+        except Exception as e:
+            logger.debug(f"[MB_ENRICH] Recording lookup failed for {recording_mbid}: {e}")
+            return None, None
+
+    def _fetch_from_release(release_mbid, disc_number, track_number, title):
+        """Return (duration_sec, artist) by locating the track within a release."""
+        if release_mbid not in _release_cache:
+            try:
+                _release_cache[release_mbid] = fetch_musicbrainz_release_metadata(release_mbid)
+                time.sleep(_MB_REQUEST_SLEEP)
+            except Exception as e:
+                logger.debug(f"[MB_ENRICH] Release fetch failed for {release_mbid}: {e}")
+                _release_cache[release_mbid] = None
+        mb_release = _release_cache.get(release_mbid)
+        if not mb_release:
+            return None, None
+
+        disc_num = int(disc_number or 1)
+        track_num_int = None
+        if track_number is not None:
+            try:
+                track_num_int = int(track_number)
+            except (TypeError, ValueError):
+                pass
+
+        norm_title = re.sub(r"\s+", " ", (title or "").lower().strip())
+
+        best = None
+        for t in mb_release.get("tracks", []):
+            t_disc = int(t.get("disc_number") or 1)
+            t_num = t.get("track_number")
+            try:
+                t_num_int = int(t_num) if t_num is not None else None
+            except (TypeError, ValueError):
+                t_num_int = None
+
+            # Match by disc + track number (preferred)
+            if (t_disc == disc_num and track_num_int is not None
+                    and t_num_int == track_num_int):
+                best = t
+                break
+
+            # Fall back: match by title on same disc
+            t_norm = re.sub(r"\s+", " ", (t.get("title") or "").lower().strip())
+            if t_disc == disc_num and norm_title and t_norm == norm_title:
+                best = t
+
+        if not best:
+            return None, None
+
+        dur_ms = best.get("duration")
+        duration_sec = int(dur_ms // 1000) if dur_ms else None
+        artist = best.get("artist") or None
+        return duration_sec, artist
+
+    enriched = 0
+    for row in rows:
+        item_id = row["id"]
+        recording_mbid = (row.get("recording_mbid") or "").strip()
+        release_mbid = (row.get("release_mbid") or row.get("release_id") or "").strip()
+        needs_duration = row.get("duration") is None
+        needs_artist = not (row.get("artist") or "").strip()
+
+        duration_sec = None
+        artist = None
+
+        if recording_mbid:
+            duration_sec, artist = _fetch_recording(recording_mbid)
+        elif release_mbid:
+            duration_sec, artist = _fetch_from_release(
+                release_mbid,
+                row.get("disc_number"),
+                row.get("track_number"),
+                row.get("title"),
+            )
+
+        updates = {}
+        if needs_duration and duration_sec:
+            updates["duration"] = duration_sec
+        if needs_artist and artist:
+            updates["artist"] = artist
+
+        if updates:
+            try:
+                from download_queue_manager import update_queue_item
+                update_queue_item(item_id, **updates)
+                enriched += 1
+                logger.info(
+                    f"[MB_ENRICH] Queue {item_id} ({'|'.join(f'{k}={v}' for k, v in updates.items())})"
+                )
+            except Exception as upd_err:
+                logger.warning(f"[MB_ENRICH] Could not update queue {item_id}: {upd_err}")
+
+    if enriched:
+        logger.info(f"[MB_ENRICH] Enriched {enriched} queue item(s)")
+
+    return now_ts
+
+
 def run_processor(interval=30):
     """Run queue processor loop"""
     logger.info("=== Queue Processor Started ===")
@@ -2688,6 +2886,7 @@ def run_processor(interval=30):
     last_navidrome_scan_ts = None
     last_retry_completed_ts = None
     last_cleanup_imported_ts = None
+    last_mb_enrich_ts = None
 
     try:
         while True:
@@ -2703,6 +2902,7 @@ def run_processor(interval=30):
                 last_stale_cleanup_ts = cleanup_stale_downloads(now_ts, last_stale_cleanup_ts)
                 last_slskd_retry_ts = check_failed_slskd_downloads(now_ts, last_slskd_retry_ts)
                 last_slskd_clear_ts = clear_slskd_completed_downloads(now_ts, last_slskd_clear_ts)
+                last_mb_enrich_ts = maybe_enrich_queue_items_from_mb(now_ts, last_mb_enrich_ts)
 
                 # process_queue() (which contains check_completed_downloads()) must
                 # run BEFORE check_downloads_folder() so that items in 'downloading'
