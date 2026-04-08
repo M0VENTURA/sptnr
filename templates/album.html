@@ -3993,7 +3993,7 @@
         const discNumber = btn.dataset.discNumber || null;
         const year = btn.dataset.year || null;
         const recordingMbid = btn.dataset.recordingMbid || null;
-        const duration = btn.dataset.duration ? parseFloat(btn.dataset.duration) : null;
+        const duration = btn.dataset.duration ? parseInt(btn.dataset.duration, 10) : null;
         // Fall back to the album's currently-assigned MBID when the track row
         // doesn't carry one (e.g. the user just selected a new release via the
         // Metadata lookup but hasn't saved yet).

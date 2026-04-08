@@ -218,7 +218,12 @@ def _is_musicbrainz_backed(queue_item):
 
 
 def _get_duration_match_tolerance(queue_item):
-    """Use a strict 5-second hard cap when the expected duration is known."""
+    """Return the hard duration tolerance in seconds.
+
+    Always 5 seconds.  When the expected duration is unknown the caller
+    already skips duration checks entirely, so the value returned here only
+    matters when a duration is present.
+    """
     return 5
 
 
@@ -2753,7 +2758,7 @@ def maybe_enrich_queue_items_from_mb(now_ts, last_run_ts, interval_seconds=600):
             resp.raise_for_status()
             data = resp.json()
             duration_ms = data.get("length")
-            duration_sec = int(duration_ms // 1000) if duration_ms else None
+            duration_sec = int(round(duration_ms / 1000)) if duration_ms else None
             artist = ""
             ac = data.get("artist-credit") or []
             if ac:
@@ -2816,7 +2821,7 @@ def maybe_enrich_queue_items_from_mb(now_ts, last_run_ts, interval_seconds=600):
             return None, None
 
         dur_ms = best.get("duration")
-        duration_sec = int(dur_ms // 1000) if dur_ms else None
+        duration_sec = int(round(dur_ms / 1000)) if dur_ms else None
         artist = best.get("artist") or None
         return duration_sec, artist
 
