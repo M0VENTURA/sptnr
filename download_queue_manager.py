@@ -651,6 +651,34 @@ def _sanitize_search_query_for_slskd(query: str) -> str:
     return " ".join(cleaned.split())
 
 
+# Regex that matches any character that is not a word character (letter, digit,
+# underscore), whitespace, or a hyphen.  Used by
+# _strip_query_punctuation_for_slskd for the broad punctuation-removal fallback.
+_SLSKD_ALL_PUNCT_RE = re.compile(r"[^\w\s-]")
+
+
+def _strip_query_punctuation_for_slskd(query: str) -> str:
+    """Aggressively strip all punctuation from a Soulseek search query.
+
+    Removes every character that is not a word character (letter, digit,
+    underscore), whitespace, or a hyphen.  This is broader than
+    ``_sanitize_search_query_for_slskd``, which only removes quote-type
+    characters.  Use as a fallback when the primary search (and the
+    apostrophe-only sanitized variant) both return zero results.
+
+    Examples::
+
+        "Where's the Love"  → "Wheres the Love"
+        "Hello! World"      → "Hello World"
+        "Mr. Jones"         → "Mr Jones"
+        "AC/DC"             → "ACDC"
+    """
+    if not query:
+        return query
+    cleaned = _SLSKD_ALL_PUNCT_RE.sub("", query)
+    return " ".join(cleaned.split())
+
+
 def _resolve_existing_track_path(file_path, music_root=None):
     """Resolve stored track path to an existing on-disk file path when possible."""
     if not file_path:
