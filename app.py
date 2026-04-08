@@ -562,7 +562,7 @@ def _normalize_slskd_query(value):
     return text.strip()
 
 
-def _clear_stale_slskd_searches(client, context="search"):
+def _clear_stale_slskd_searches(client, context="search", budget_seconds=8):
     """
     Delete any terminal-state searches from slskd before starting a new one.
 
@@ -571,15 +571,26 @@ def _clear_stale_slskd_searches(client, context="search"):
     to return HTTP 429 ("only one concurrent operation"), making every new search
     appear to time out.  This helper is called just before every start_search()
     regardless of whether the caller is interactive or a background thread.
+
+    budget_seconds caps the total wall-clock time spent here so that a large
+    number of stale entries (each requiring an individual DELETE) cannot cause
+    the caller to exceed the browser's 60 s request timeout.  Each cancel uses
+    a reduced 2 s per-request timeout within that budget.
     """
     _TERMINAL_STATES = {"Completed", "Cancelled", "TimedOut", "Errored", "Succeeded"}
+    deadline = time.monotonic() + budget_seconds
     try:
-        existing = client.list_searches(timeout=4)
+        time_left = deadline - time.monotonic()
+        existing = client.list_searches(timeout=min(4, max(1, int(time_left))))
         for s in existing:
+            if time.monotonic() >= deadline:
+                logging.warning(f"[SLSKD] Stale search cleanup budget exhausted before {context}")
+                break
             sid = s.get("id") or s.get("searchId") or s.get("Id")
             state = (s.get("state") or s.get("State") or "")
             if sid and state in _TERMINAL_STATES:
-                client.cancel_search(sid, timeout=4)
+                cancel_timeout = min(2, max(1, int(deadline - time.monotonic())))
+                client.cancel_search(sid, timeout=cancel_timeout)
                 logging.info(f"[SLSKD] Cleared stale search {sid} (state={state}) before {context}")
     except Exception as cleanup_err:
         logging.warning(f"[SLSKD] Could not clear stale searches before {context}: {cleanup_err}")
