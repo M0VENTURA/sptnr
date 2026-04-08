@@ -400,8 +400,8 @@ def detect_interrupted_scan(scan_type: str = "navidrome") -> Optional[Dict]:
         return None
 
     age = datetime.utcnow() - last_active
-    if age > timedelta(minutes=30):
-        log_debug(f"[RESUME] Last scan activity was {age} ago (> 30 min); skipping auto-resume")
+    if age > timedelta(hours=24):
+        log_debug(f"[RESUME] Last scan activity was {age} ago (> 24 h); skipping auto-resume")
         return None
 
     log_info(

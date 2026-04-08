@@ -119,6 +119,16 @@ _ORPHAN_AUDIO_EXT_TOKENS = frozenset(
 )
 _ORPHAN_NUM_RE = re.compile(r'^\d{1,4}$')
 
+# Artist names that indicate a compilation/various-artists release.  When both
+# the queue item's artist and album_artist are one of these values the
+# individual track artist is unknown and any non-empty file artist is accepted
+# by the metadata matcher.
+_GENERIC_COMPILATION_ARTISTS = frozenset({
+    'various artists', 'various artist', 'various', 'va', 'v/a',
+    'unknown artist', 'unknown',
+    'soundtrack', 'ost',
+})
+
 # Strips "feat."/"ft."/"featuring" suffixes from artist strings when building
 # fallback search queries so that "KNEECAP feat. Fawzi" becomes "KNEECAP".
 _FEAT_SUFFIX_RE = re.compile(
@@ -307,7 +317,18 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
         album_artist_sim = SequenceMatcher(None, album_artist_norm, basename_norm).ratio()
         artist_sim = max(artist_sim, album_artist_sim)
     title_sim = SequenceMatcher(None, title_norm, basename_norm).ratio()
-    if artist_sim < 0.12 or title_sim < 0.12:
+
+    # For "Various Artists" compilations the per-track artist is often absent
+    # from the filename (e.g. "02 - Holiday.mp3").  Bypassing the artist floor
+    # check lets title + album evidence carry the match; the artist bonus below
+    # simply won't fire, which is acceptable.
+    # Only bypass when BOTH track artist and album_artist are generic so that a
+    # queue item with a real album_artist still enforces the normal floor.
+    is_generic_artist = (
+        artist_norm in _GENERIC_COMPILATION_ARTISTS
+        and (not album_artist_norm or album_artist_norm in _GENERIC_COMPILATION_ARTISTS)
+    )
+    if (not is_generic_artist and artist_sim < 0.12) or title_sim < 0.12:
         return 0.0
 
     score = (artist_sim * 0.45) + (title_sim * 0.55)
@@ -464,8 +485,17 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
     artist_score = max((_sim(file_artist, cand) for cand in artist_candidates if cand), default=0.0)
     title_score = _sim(file_title, queue_title)
 
+    # For "Various Artists" compilations where both artist and album_artist are
+    # generic placeholder names, the real per-track artist embedded in the file
+    # (e.g. "Madonna") will never fuzzy-match "various artists".  Bypass the
+    # artist floor in this case so title + album evidence carries the match.
+    both_generic = (
+        queue_artist.lower() in _GENERIC_COMPILATION_ARTISTS
+        and (not queue_album_artist or queue_album_artist.lower() in _GENERIC_COMPILATION_ARTISTS)
+    )
+
     # Require both core fields to be reasonably close to avoid false-positive imports.
-    if artist_score < _FIELD_MIN or title_score < _FIELD_MIN:
+    if (not both_generic and artist_score < _FIELD_MIN) or title_score < _FIELD_MIN:
         return False
 
     # Variant check: a plain queue title must not match a "(live/remix/…)" file.
@@ -498,10 +528,16 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
 
     combined = (artist_score + title_score) / 2
 
-    # Album similarity gives a small boost when available.
+    # Album similarity gives a small boost when available.  For compilation
+    # queue items where both artist fields are generic, the artist score carries
+    # no discriminating information, so the combined score is built from title
+    # and album only to avoid diluting evidence with a meaningless artist term.
     album_score = _sim(file_album, queue_item.get('album'))
     if album_score > 0:
-        combined = (combined * 2 + album_score) / 3
+        if both_generic:
+            combined = (title_score + album_score) / 2
+        else:
+            combined = (combined * 2 + album_score) / 3
 
     return combined >= threshold
 
