@@ -438,7 +438,9 @@ class MusicBrainzReleaseManager:
                         # musicbrainz_release_tracks.duration stores ms (consistent with
                         # post_download_processor / folder_matching_enhancements caching).
                         # tracks.duration stores seconds (consistent with mp3scanner).
-                        duration_ms = recording.get('length') or track.get('length') or 0
+                        # Prefer track-level length (release-specific) over recording-level
+                        # length (an average/median across all releases for that recording).
+                        duration_ms = track.get('length') or recording.get('length') or 0
                         duration_sec = duration_ms // 1000 if duration_ms else 0
                         isrc = None
                         

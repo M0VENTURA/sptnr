@@ -9686,7 +9686,7 @@ def api_import_release():
             for track_idx, track in enumerate(tracks_list, start=1):
                 recording = track.get("recording", {})
                 track_title = recording.get("title") or track.get("title") or "Unknown"
-                duration = recording.get("length")
+                duration = track.get("length") or recording.get("length")
                 mbid = recording.get("id", "")
                 
                 # Build track record
@@ -37228,7 +37228,7 @@ def api_search_musicbrainz_release():
                             track_entry = {
                                 "title": recording.get("title", "Unknown"),
                                 "position": t.get("position", ""),
-                                "length": recording.get("length", 0),
+                                "length": t.get("length") or recording.get("length", 0),
                                 "disc_number": disc_number,
                                 "recording_mbid": recording.get("id", ""),
                             }
@@ -37358,7 +37358,7 @@ def api_search_musicbrainz_release():
                             track_entry = {
                                 "title": recording.get("title", "Unknown"),
                                 "position": track_row.get("position", ""),
-                                "length": recording.get("length", 0),
+                                "length": track_row.get("length") or recording.get("length", 0),
                                 "disc_number": disc_number,
                                 "recording_mbid": recording.get("id", ""),
                             }
@@ -37565,7 +37565,7 @@ def api_get_release_group_tracks():
                 track_entry = {
                     "title": recording.get("title", "Unknown"),
                     "position": track_row.get("position", ""),
-                    "length": recording.get("length", 0),
+                    "length": track_row.get("length") or recording.get("length", 0),
                     "disc_number": disc_number,
                     "recording_mbid": recording.get("id", ""),
                 }

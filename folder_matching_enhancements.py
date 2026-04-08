@@ -186,26 +186,6 @@ def _get_cached_musicbrainz_release_metadata(release_id: str) -> Optional[Dict[s
         )
         track_rows = cursor.fetchall()
 
-        if not track_rows:
-            cursor.execute(
-                f"""
-                SELECT MIN(disc_number) AS disc_number,
-                       track_number,
-                       track_title,
-                       track_artist,
-                       MAX(duration) AS duration,
-                       MAX(isrc) AS isrc,
-                       MAX(recording_title) AS recording_title,
-                       MAX(recording_mbid) AS recording_mbid
-                FROM musicbrainz_release_tracks
-                WHERE release_id = {placeholder}
-                GROUP BY track_number, track_title, track_artist
-                ORDER BY COALESCE(MIN(disc_number), 1), COALESCE(track_number, 999999), MIN(id)
-                """,
-                (release_id,),
-            )
-            track_rows = cursor.fetchall()
-
         tracks = []
         for row in track_rows:
             tracks.append({
@@ -420,7 +400,7 @@ def _fetch_musicbrainz_tracks(release_id: str) -> List[Dict]:
                     'number': track_data.get('position', ''),
                     'title': recording.get('title', ''),
                     'artist': _extract_mb_artist(recording),
-                    'duration': recording.get('length', 0),
+                    'duration': track_data.get('length') or recording.get('length') or 0,
                     'isrc': recording.get('isrc', '')
                 })
         
