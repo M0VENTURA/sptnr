@@ -434,7 +434,12 @@ class MusicBrainzReleaseManager:
                             track_artist = _build_artist_credit_string(rec_credits) or artist
                         else:
                             track_artist = artist
-                        duration = recording.get('length', 0) // 1000 if recording.get('length') else 0  # Convert ms to seconds
+                        # MusicBrainz returns duration in milliseconds.
+                        # musicbrainz_release_tracks.duration stores ms (consistent with
+                        # post_download_processor / folder_matching_enhancements caching).
+                        # tracks.duration stores seconds (consistent with mp3scanner).
+                        duration_ms = recording.get('length') or track.get('length') or 0
+                        duration_sec = duration_ms // 1000 if duration_ms else 0
                         isrc = None
                         
                         # Try to get ISRC from isrcs
@@ -544,7 +549,7 @@ class MusicBrainzReleaseManager:
                             VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'queued', 
                                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                         """, (release_id, queue_id, disc_number, track_number, track_title,
-                              track_artist, duration, isrc))
+                              track_artist, duration_ms, isrc))
                         
                         # Also add to tracks table with 'downloading' status
                         # This allows the track to appear on artist/album pages as "Downloading"
@@ -563,7 +568,7 @@ class MusicBrainzReleaseManager:
                                 isrc = EXCLUDED.isrc,
                                 download_status = EXCLUDED.download_status
                         """, (track_id, track_artist, album, track_title,
-                              track_number, duration, isrc))
+                              track_number, duration_sec, isrc))
                         
                         logger.info(f"[QUEUE_ADD] Added track {track_number}: {track_title} (Queue ID: {queue_id})")
                 
