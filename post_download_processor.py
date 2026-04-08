@@ -60,6 +60,12 @@ PG_DATABASE = os.environ.get("PG_DATABASE", "")
 
 def get_db():
     """Get PostgreSQL database connection (required for post-processor)"""
+    try:
+        from helpers.db_utils import get_db_connection
+        return get_db_connection()
+    except Exception:
+        pass
+
     if not all([PG_HOST, PG_USER, PG_DATABASE]):
         raise RuntimeError(
             "PostgreSQL configuration required: PG_HOST, PG_USER, PG_DATABASE must be set. "
@@ -68,14 +74,18 @@ def get_db():
     
     if psycopg2 is None:
         raise RuntimeError("psycopg2 not available - install with: pip install psycopg2-binary")
-    
+
+    idle_timeout_ms = int(os.environ.get("PG_IDLE_IN_TRANSACTION_TIMEOUT_MS", "60000"))
+    options = f"-c idle_in_transaction_session_timeout={idle_timeout_ms}" if idle_timeout_ms > 0 else None
+
     conn = psycopg2.connect(
         host=PG_HOST,
         port=PG_PORT,
         user=PG_USER,
         password=PG_PASSWORD,
         dbname=PG_DATABASE,
-        cursor_factory=psycopg2.extras.RealDictCursor
+        cursor_factory=psycopg2.extras.RealDictCursor,
+        **({"options": options} if options else {}),
     )
     return conn
 
@@ -1160,6 +1170,9 @@ def process_pending_completed_items(limit=10):
     }
     
     try:
+        # Fetch the list of items to process, then immediately close the
+        # connection so it is not left idle-in-transaction during the
+        # expensive per-item work below (MusicBrainz HTTP calls, file I/O).
         conn = get_db()
         cursor = conn.cursor()
         
@@ -1175,6 +1188,8 @@ def process_pending_completed_items(limit=10):
         """, (limit,))
         
         items = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        conn = None
         
         if not items:
             logger.debug("No completed items with metadata to process")
@@ -1189,16 +1204,25 @@ def process_pending_completed_items(limit=10):
                 result = process_completed_queue_item(item)
                 
                 if result['success']:
-                    # Update queue item status
-                    cursor.execute("""
-                        UPDATE download_queue
-                        SET status = 'imported',
-                            file_path = %s,
-                            imported_at = CURRENT_TIMESTAMP,
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE id = %s
-                    """, (result['target_path'], queue_id))
-                    conn.commit()
+                    # Open a fresh connection just for the status update so we
+                    # never hold a long-lived transaction across network calls.
+                    update_conn = get_db()
+                    try:
+                        update_cursor = update_conn.cursor()
+                        update_cursor.execute("""
+                            UPDATE download_queue
+                            SET status = 'imported',
+                                file_path = %s,
+                                imported_at = CURRENT_TIMESTAMP,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = %s
+                        """, (result['target_path'], queue_id))
+                        update_conn.commit()
+                    finally:
+                        try:
+                            update_conn.close()
+                        except Exception:
+                            pass
                     
                     stats['processed'] += 1
                     logger.info(f"Queue {queue_id}: Marked as imported")
@@ -1216,8 +1240,6 @@ def process_pending_completed_items(limit=10):
                 logger.error(f"Error processing queue {queue_id}: {e}")
                 stats['failed'] += 1
                 stats['errors'].append(f"Queue {queue_id}: {str(e)}")
-        
-        conn.close()
         
         if stats['processed'] > 0:
             logger.info(f"Post-download processing complete: {stats['processed']} processed, {stats['failed']} failed, {stats['skipped']} skipped")
