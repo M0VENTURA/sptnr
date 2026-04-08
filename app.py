@@ -6827,6 +6827,7 @@ def api_album_missing_tracks():
                     "album_artist": artist,
                     "year": mb_year,
                     "release_id": mb_mbid,
+                    "recording_mbid": t_recording_mbid,
                     "duration": duration_sec,
                     "is_missing": True,
                 })
@@ -33608,6 +33609,9 @@ def api_album_musicbrainz_compare():
                                     best_t = t
                             lib_track = best_t
 
+            mb_duration_ms_raw = mb_track.get("duration")
+            mb_duration_sec_raw = int(mb_duration_ms_raw // 1000) if mb_duration_ms_raw else None
+
             entry = {
                 "mb_track_number": mb_num,
                 "mb_disc_number": disc,
@@ -33621,6 +33625,7 @@ def api_album_musicbrainz_compare():
                 "library_artist": None,
                 "library_year": None,
                 "mb_duration": None,
+                "mb_duration_sec": mb_duration_sec_raw,
                 "library_duration": None,
                 "needs_update": False,
                 "diff_fields": [],

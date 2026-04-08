@@ -612,6 +612,8 @@
                             data-disc-number="{{ track.disc_number or '' }}"
                             data-year="{{ track.year or '' }}"
                             data-release-id="{{ track.release_id or '' }}"
+                            data-recording-mbid="{{ track.recording_mbid or '' }}"
+                            data-duration="{{ track.duration or '' }}"
                             onclick="queueMissingTrack(this)">
                             <i class="bi bi-download"></i>
                         </button>
@@ -2216,6 +2218,7 @@
         const albumArtist = {{ artist_name|tojson }};
         const albumName = {{ album_name|tojson }};
         const mbYear = escapeHtml(String(data.mb_year || ''));
+        const releaseId = escapeHtml(String(data.release_group_mbid || ''));
 
         for (const track of missingTracks) {
             const safeTitle = escapeHtml(track.mb_title || '');
@@ -2224,6 +2227,8 @@
             const safeAlbum = escapeHtml(albumName);
             const safeTrackNum = escapeHtml(String(track.mb_track_number || ''));
             const safeDiscNum = escapeHtml(String(track.mb_disc_number || ''));
+            const safeRecordingMbid = escapeHtml(String(track.mb_recording_id || ''));
+            const safeDuration = track.mb_duration_sec != null ? String(track.mb_duration_sec) : '';
 
             const row = document.createElement('tr');
             row.className = 'text-muted missing-track-row mb-missing-row';
@@ -2246,7 +2251,9 @@
                             data-track-number="${safeTrackNum}"
                             data-disc-number="${safeDiscNum}"
                             data-year="${mbYear}"
-                            data-release-id=""
+                            data-release-id="${releaseId}"
+                            data-recording-mbid="${safeRecordingMbid}"
+                            data-duration="${safeDuration}"
                             onclick="queueMissingTrack(this)">
                             <i class="bi bi-download"></i>
                         </button>
@@ -3979,12 +3986,14 @@
         });
     }
     async function queueMissingTrack(btn) {
-        const artist = btn.dataset.albumArtist || btn.dataset.artist;
+        const artist = btn.dataset.artist || btn.dataset.albumArtist;
         const title = btn.dataset.title;
         const album = btn.dataset.album;
         const trackNumber = btn.dataset.trackNumber || null;
         const discNumber = btn.dataset.discNumber || null;
         const year = btn.dataset.year || null;
+        const recordingMbid = btn.dataset.recordingMbid || null;
+        const duration = btn.dataset.duration ? parseInt(btn.dataset.duration, 10) : null;
         // Fall back to the album's currently-assigned MBID when the track row
         // doesn't carry one (e.g. the user just selected a new release via the
         // Metadata lookup but hasn't saved yet).
@@ -4014,6 +4023,8 @@
                     // detection and cross-source overwrite merge in add_to_queue.
                     release_mbid: releaseId,
                     release_source: releaseId ? 'musicbrainz' : null,
+                    recording_mbid: recordingMbid,
+                    duration: duration,
                     source: 'soulseek'
                 })
             });
