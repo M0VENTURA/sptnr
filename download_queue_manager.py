@@ -1225,6 +1225,12 @@ def _ensure_download_queue_columns(conn, cursor, is_pg=True):
                 # for detecting stalled items (e.g. stuck in 'queued' for days).
                 # Backfilled with CURRENT_TIMESTAMP on first ADD COLUMN.
                 'status_changed_at': "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+                # Set to 1 when the downloaded file is low-quality (< target
+                # bitrate and not FLAC).  The item is re-queued after import so
+                # the processor keeps searching for a better copy.
+                'low_quality_download': "INTEGER DEFAULT 0",
+                # Bitrate (kbps) of the provisional low-quality download.
+                'low_quality_bitrate': "INTEGER",
             }
 
             for col, col_type in required_cols.items():
@@ -2246,7 +2252,8 @@ def update_queue_item(queue_id, **kwargs):
         'copied_individually', 'copied_individually_at',
         'duration', 'match_confidence', 'match_method',
         'slskd_transfer_id', 'slskd_username', 'slskd_state',
-        'slskd_queue_position', 'slskd_last_sync_at'
+        'slskd_queue_position', 'slskd_last_sync_at',
+        'low_quality_download', 'low_quality_bitrate',
     }
     
     for attempt in range(max_retries):

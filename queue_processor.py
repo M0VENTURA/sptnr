@@ -112,6 +112,14 @@ _SLSKD_MIN_ACCEPT_SCORE = 0.45
 # same track is not hammered on every run.
 _SLSKD_LONG_RETRY_DELAY_MINUTES = 1440
 
+# Quality thresholds for the low-quality fallback download logic.
+# A candidate is considered "low quality" when its bitrate is known, is below
+# _QUALITY_TARGET_BITRATE, and the file is not a lossless format (FLAC/WAV).
+# A track downloaded at low quality is re-queued after import so the processor
+# keeps looking for a better copy.
+_QUALITY_TARGET_BITRATE = 256   # kbps — 320 mp3 and FLAC both clear this bar
+_QUALITY_UPGRADE_RETRY_HOURS = 24  # hours before re-searching for a better copy
+
 # Shared constants for orphan-token detection used in both
 # _score_soulseek_candidate and _filename_matches_queue_item.
 _ORPHAN_AUDIO_EXT_TOKENS = frozenset(
@@ -210,8 +218,8 @@ def _is_musicbrainz_backed(queue_item):
 
 
 def _get_duration_match_tolerance(queue_item):
-    """Use stricter duration tolerance for MusicBrainz-backed queue items."""
-    return 10 if _is_musicbrainz_backed(queue_item) else 15
+    """Use a strict 5-second hard cap when the expected duration is known."""
+    return 5
 
 
 def _extract_audio_file_duration_seconds(file_path):
@@ -399,16 +407,13 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     if expected_duration and candidate_duration:
         duration_diff = abs(expected_duration - candidate_duration)
         duration_tolerance = _get_duration_match_tolerance(queue_item)
-        if duration_diff <= 4:
+        if duration_diff <= 2:
             score += 0.22
-        elif duration_diff <= 8:
-            score += 0.12
         elif duration_diff <= duration_tolerance:
-            score += 0.05 if _is_musicbrainz_backed(queue_item) else 0.0
-        elif duration_diff > duration_tolerance:
-            return 0.0
+            score += 0.12
         else:
-            score -= 0.05
+            # Hard reject: duration deviates by more than the allowed tolerance.
+            return 0.0
 
     # Apply orphan-token penalty after all bonuses so the album-in-path reward
     # cannot rescue a wrong-track candidate.  Cap the accumulated score first so
@@ -1457,6 +1462,11 @@ def _run_soulseek_search(queue_id, query, queue_item, client):
                             if isinstance(file_info, dict)
                             else getattr(file_info, 'size', 0)
                         )
+                        candidate_bitrate = (
+                            file_info.get('bitRate', 0) or file_info.get('bitrate', 0)
+                            if isinstance(file_info, dict)
+                            else int(getattr(file_info, 'bitrate', 0) or 0)
+                        )
                         candidate_length = _extract_candidate_length_seconds(file_info)
                         candidate_score = _score_soulseek_candidate(filename, queue_item, candidate_length)
                         if candidate_score > best_score:
@@ -1466,6 +1476,7 @@ def _run_soulseek_search(queue_id, query, queue_item, client):
                                 "filename": filename,
                                 "size": size,
                                 "length": candidate_length,
+                                "bitrate": candidate_bitrate,
                                 "score": candidate_score,
                             }
 
