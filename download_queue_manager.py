@@ -7943,7 +7943,7 @@ def get_release_tracks_with_status(artist, album, release_group_id, current_fold
                 recording = track.get("recording", {})
                 track_title = recording.get("title") or track.get("title") or ""
                 track_number = track.get("position", 0)
-                duration = recording.get("length", 0)  # in milliseconds
+                duration = track.get("length") or recording.get("length") or 0  # in milliseconds
                 
                 # Extract lyricist and writer information
                 credits = _extract_lyricist_and_writers(recording)

@@ -319,8 +319,10 @@ def fetch_musicbrainz_release_metadata(release_id):
             disc_number = media_idx
             for track in media.get('tracks', []):
                 recording = track.get('recording', {})
-                # MusicBrainz returns duration in milliseconds; store in ms for consistency
-                duration_ms = recording.get('length') or track.get('length')
+                # MusicBrainz returns duration in milliseconds; store in ms for consistency.
+                # Prefer track-level length (release-specific) over recording-level length
+                # (an average/median across all releases for that recording).
+                duration_ms = track.get('length') or recording.get('length')
                 # Use track-level title as the primary display title; it is
                 # release-specific and may include venue context for live albums
                 # (e.g. "Dig (live at Candlestick Park, San Francisco, CA - August 2003)").
