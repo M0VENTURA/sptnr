@@ -58,13 +58,21 @@ PG_USER = os.environ.get("PG_USER", "")
 PG_PASSWORD = os.environ.get("PG_PASSWORD", "")
 PG_DATABASE = os.environ.get("PG_DATABASE", "")
 
+# Default idle-in-transaction timeout for the fallback psycopg2 path (milliseconds).
+# Matches the default used by helpers/db_utils.py.
+_DEFAULT_IDLE_IN_TX_TIMEOUT_MS = 60000
+
 def get_db():
     """Get PostgreSQL database connection (required for post-processor)"""
     try:
         from helpers.db_utils import get_db_connection
         return get_db_connection()
-    except Exception:
+    except ImportError:
+        # helpers package not on path (e.g. running as a standalone script);
+        # fall through to the direct psycopg2 path below.
         pass
+    except Exception as _e:
+        logger.debug("get_db_connection() unavailable (%s); using direct psycopg2 fallback", _e)
 
     if not all([PG_HOST, PG_USER, PG_DATABASE]):
         raise RuntimeError(
@@ -75,7 +83,7 @@ def get_db():
     if psycopg2 is None:
         raise RuntimeError("psycopg2 not available - install with: pip install psycopg2-binary")
 
-    idle_timeout_ms = int(os.environ.get("PG_IDLE_IN_TRANSACTION_TIMEOUT_MS", "60000"))
+    idle_timeout_ms = int(os.environ.get("PG_IDLE_IN_TRANSACTION_TIMEOUT_MS", str(_DEFAULT_IDLE_IN_TX_TIMEOUT_MS)))
     options = f"-c idle_in_transaction_session_timeout={idle_timeout_ms}" if idle_timeout_ms > 0 else None
 
     conn = psycopg2.connect(
@@ -1189,7 +1197,6 @@ def process_pending_completed_items(limit=10):
         
         items = [dict(row) for row in cursor.fetchall()]
         conn.close()
-        conn = None
         
         if not items:
             logger.debug("No completed items with metadata to process")
