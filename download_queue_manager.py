@@ -4921,6 +4921,14 @@ def check_downloads_folder():
                             logger.warning(
                                 f"[MOVE] Queue {queue_item['id']}: could not apply stored metadata before move: {meta_err}"
                             )
+                        # Release the implicit transaction that was opened by
+                        # _is_full_album_ready_for_move so the connection is not
+                        # left idle-in-transaction during the MusicBrainz HTTP
+                        # requests made inside move_single_track_to_music_dir.
+                        try:
+                            conn.commit()
+                        except Exception:
+                            pass
                         move_result = move_single_track_to_music_dir(item_for_move)
                         if move_result['success']:
                             target_path = move_result['target_path']
@@ -6297,6 +6305,13 @@ def auto_discover_and_queue_files():
                                         logger.warning(
                                             f"[AUTO-DISCOVER] Queue {matched_pending['id']}: could not apply stored metadata before move: {meta_err}"
                                         )
+                                # Release the implicit transaction opened by
+                                # _is_full_album_ready_for_move before the
+                                # MusicBrainz HTTP calls inside move_single_track_to_music_dir.
+                                try:
+                                    conn.commit()
+                                except Exception:
+                                    pass
                                 move_result = move_single_track_to_music_dir(item_for_move)
                                 if move_result['success']:
                                     update_queue_item(
