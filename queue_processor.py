@@ -394,13 +394,14 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
             shared_album_tokens = sum(1 for tok in album_tokens if tok in filename_norm)
             token_ratio = shared_album_tokens / len(album_tokens)
 
-            # When we have >=2 meaningful album tokens, require at least 2 matches.
-            # This rejects near misses like "Sword of Power" for "Power of Metal".
+            # For multi-token albums, only award the album bonus when at least
+            # 2 tokens match the path.  Unlike the old hard-reject, we skip the
+            # bonus rather than returning 0.0 so that strong artist+title
+            # evidence can still carry a match even when the folder is named
+            # differently (e.g. year-prefixed, remaster suffix, catalogue IDs).
             if len(album_tokens) >= 2 and shared_album_tokens < 2:
-                return 0.0
-
-            # Reward strong album evidence and penalize weak/partial album alignment.
-            if album_norm in filename_norm:
+                pass  # album evidence is too weak — skip bonus, do not reject
+            elif album_norm in filename_norm:
                 score += 0.30
             else:
                 score += (0.20 * token_ratio)
@@ -538,16 +539,21 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
 
     combined = (artist_score + title_score) / 2
 
-    # Album similarity gives a small boost when available.  For compilation
-    # queue items where both artist fields are generic, the artist score carries
-    # no discriminating information, so the combined score is built from title
-    # and album only to avoid diluting evidence with a meaningless artist term.
+    # Album similarity is supplementary evidence: a good album match can boost
+    # the score, but a poor or absent album match must not reduce a strong
+    # artist+title match below the threshold.  Album is a *lower* requirement
+    # than artist, title, and duration.
     album_score = _sim(file_album, queue_item.get('album'))
     if album_score > 0:
         if both_generic:
+            # For "Various Artists" compilations the artist score carries no
+            # useful information, so album carries extra weight here.
             combined = (title_score + album_score) / 2
         else:
-            combined = (combined * 2 + album_score) / 3
+            # Only update combined when the album score actually improves it.
+            candidate = (combined * 2 + album_score) / 3
+            if candidate > combined:
+                combined = candidate
 
     return combined >= threshold
 
