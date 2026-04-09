@@ -3672,6 +3672,14 @@ def move_single_track_to_music_dir(queue_item_dict, music_dir=None):
                                     f"[MOVE] Queue {queue_item_dict.get('id', 'unknown')}: "
                                     f"track artist updated from MusicBrainz: {mb_track_artist}"
                                 )
+                            mb_track_number = track.get('track_number')
+                            if mb_track_number is not None:
+                                track_num = mb_track_number
+                                tag_metadata['track_number'] = mb_track_number
+                                logger.info(
+                                    f"[MOVE] Queue {queue_item_dict.get('id', 'unknown')}: "
+                                    f"track_number updated from MusicBrainz: {mb_track_number}"
+                                )
                             if is_single_disc:
                                 disc_num = None
                                 tag_metadata['disc_number'] = None
