@@ -394,13 +394,14 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
             shared_album_tokens = sum(1 for tok in album_tokens if tok in filename_norm)
             token_ratio = shared_album_tokens / len(album_tokens)
 
-            # When we have >=2 meaningful album tokens, require at least 2 matches.
-            # This rejects near misses like "Sword of Power" for "Power of Metal".
+            # For multi-token albums, only award the album bonus when at least
+            # 2 tokens match the path.  Unlike the old hard-reject, we skip the
+            # bonus rather than returning 0.0 so that strong artist+title
+            # evidence can still carry a match even when the folder is named
+            # differently (e.g. year-prefixed, remaster suffix, catalogue IDs).
             if len(album_tokens) >= 2 and shared_album_tokens < 2:
-                return 0.0
-
-            # Reward strong album evidence and penalize weak/partial album alignment.
-            if album_norm in filename_norm:
+                pass  # album evidence is too weak — skip bonus, do not reject
+            elif album_norm in filename_norm:
                 score += 0.30
             else:
                 score += (0.20 * token_ratio)
@@ -419,6 +420,11 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
         else:
             # Hard reject: duration deviates by more than the allowed tolerance.
             return 0.0
+    elif expected_duration and not candidate_duration:
+        # We know the expected duration but the candidate has no duration
+        # information — we cannot confirm it matches within 5 s.  Penalise the
+        # candidate so it always loses to a duration-confirmed alternative.
+        score -= 0.15
 
     # Apply orphan-token penalty after all bonuses so the album-in-path reward
     # cannot rescue a wrong-track candidate.  Cap the accumulated score first so
@@ -538,16 +544,21 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
 
     combined = (artist_score + title_score) / 2
 
-    # Album similarity gives a small boost when available.  For compilation
-    # queue items where both artist fields are generic, the artist score carries
-    # no discriminating information, so the combined score is built from title
-    # and album only to avoid diluting evidence with a meaningless artist term.
+    # Album similarity is supplementary evidence: a good album match can boost
+    # the score, but a poor or absent album match must not reduce a strong
+    # artist+title match below the threshold.  Album is a *lower* requirement
+    # than artist, title, and duration.
     album_score = _sim(file_album, queue_item.get('album'))
     if album_score > 0:
         if both_generic:
+            # For "Various Artists" compilations the artist score carries no
+            # useful information, so album carries extra weight here.
             combined = (title_score + album_score) / 2
         else:
-            combined = (combined * 2 + album_score) / 3
+            # Only update combined when the album score actually improves it.
+            candidate = (combined * 2 + album_score) / 3
+            if candidate > combined:
+                combined = candidate
 
     return combined >= threshold
 
@@ -696,6 +707,37 @@ def _cleanup_sibling_downloads(queue_item, keep_path=None):
                         logger.warning(f"[CLEANUP] Could not remove {fpath}: {e}")
     except Exception as e:
         logger.warning(f"[CLEANUP] Error during sibling cleanup: {e}")
+
+
+def _delete_mismatched_download(file_path, item_id, reason):
+    """Delete a downloaded file that does not match its queue item.
+
+    Removes the file from disk, cleans up any now-empty parent directories
+    up to DOWNLOADS_DIR, and logs the action.  Returns True on success.
+    """
+    if not file_path:
+        return False
+    try:
+        if not os.path.isfile(file_path):
+            logger.debug(f"Queue {item_id}: mismatched file already gone: {file_path}")
+            return False
+        os.remove(file_path)
+        logger.info(
+            f"Queue {item_id}: [MISMATCH-DELETE] deleted mismatched file "
+            f"({reason}): {file_path}"
+        )
+        # Remove now-empty parent directories up to DOWNLOADS_DIR.
+        try:
+            parent = os.path.dirname(file_path)
+            while parent != DOWNLOADS_DIR and os.path.isdir(parent) and not os.listdir(parent):
+                os.rmdir(parent)
+                parent = os.path.dirname(parent)
+        except OSError:
+            pass
+        return True
+    except OSError as exc:
+        logger.warning(f"Queue {item_id}: could not delete mismatched file {file_path}: {exc}")
+        return False
 
 
 def _file_matches_queue_item(file_path, queue_item, relative_name=None):
@@ -1847,6 +1889,22 @@ def check_completed_downloads():
                     logger.info(
                         f"Queue {item_id}: rejecting slskd-completed file due to queue mismatch: {candidate_rel}"
                     )
+                    # The file was downloaded specifically for this queue item but its
+                    # content (metadata / duration) does not match what we expected.
+                    # Delete it so the retry downloads a different source rather than
+                    # looping indefinitely on the same mismatched file.
+                    _delete_mismatched_download(
+                        abs_path, item_id,
+                        f"metadata mismatch for slskd-completed file ({match_source})"
+                    )
+                    mark_failed(
+                        item_id,
+                        f"Downloaded file did not match queue item ({match_source} mismatch); "
+                        f"deleted and rescheduled",
+                        schedule_retry=True,
+                        retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
+                    )
+                    continue
 
             # 2. Exact filename match against filesystem files
             if match_found is None and found_fn:
@@ -1860,7 +1918,20 @@ def check_completed_downloads():
                             logger.info(
                                 f"Queue {item_id}: rejecting exact filename match due to queue mismatch: {rel_file}"
                             )
-                            continue
+                            # Delete the mismatched file so the retry can fetch a
+                            # better source instead of re-matching the same file.
+                            _delete_mismatched_download(
+                                file_path, item_id,
+                                f"metadata mismatch for exact-filename match ({match_source})"
+                            )
+                            mark_failed(
+                                item_id,
+                                f"Downloaded file did not match queue item ({match_source} mismatch); "
+                                f"deleted and rescheduled",
+                                schedule_retry=True,
+                                retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
+                            )
+                            break
                         match_found = rel_file
                         match_meta_state = match_source
                         break
@@ -1959,6 +2030,32 @@ def check_completed_downloads():
                         f"Queue {item_id}: matched file '{match_found}' by filename/path — claiming for move"
                     )
 
+                # For filename-only matches, the file's embedded metadata was either
+                # absent or incomplete when _metadata_matches_queue_item ran.  Do a
+                # secondary check: if the file now has readable artist+title tags and
+                # those tags clearly contradict the queue item, reject and delete the
+                # file rather than importing wrong content.
+                if match_meta_state != 'metadata':
+                    _sec_meta = _metadata_matches_queue_item(file_path, item)
+                    if _sec_meta is False:
+                        logger.warning(
+                            f"Queue {item_id}: ✗ secondary metadata check FAILED on filename-only match "
+                            f"'{match_found}' — file tags do not match queue item; "
+                            f"deleting and rescheduling"
+                        )
+                        _delete_mismatched_download(
+                            file_path, item_id,
+                            "secondary metadata check failed on filename-only match"
+                        )
+                        mark_failed(
+                            item_id,
+                            "File tags do not match queue item (secondary check after filename match); "
+                            "deleted and rescheduled",
+                            schedule_retry=True,
+                            retry_delay_minutes=MIN_RETRY_DELAY_MINUTES,
+                        )
+                        continue
+
                 # Pre-copy duration validation: confirm the actual file duration
                 # matches the queue item's expected duration before moving to the
                 # collection.  This catches cases where the search selected the
@@ -1978,12 +2075,16 @@ def check_completed_downloads():
                                 f"Queue {item_id}: ✗ pre-copy duration check FAILED — "
                                 f"expected {_expected_dur}s, file is {_actual_dur}s "
                                 f"(diff={_dur_diff}s, tolerance={_dur_tolerance}s); "
-                                f"rejecting '{match_found}' and scheduling retry"
+                                f"deleting '{match_found}' and scheduling retry"
+                            )
+                            _delete_mismatched_download(
+                                file_path, item_id,
+                                f"duration mismatch: expected {_expected_dur}s, got {_actual_dur}s"
                             )
                             mark_failed(
                                 item_id,
                                 f"Pre-copy duration mismatch: expected {_expected_dur}s, "
-                                f"got {_actual_dur}s (diff={_dur_diff}s)",
+                                f"got {_actual_dur}s (diff={_dur_diff}s); deleted and rescheduled",
                                 schedule_retry=True,
                                 retry_delay_minutes=_SLSKD_LONG_RETRY_DELAY_MINUTES,
                             )
