@@ -2021,6 +2021,11 @@ def save_popularity_progress(
         target_progress_file = progress_file or POPULARITY_PROGRESS_FILE
         progress_data = {
             "is_running": True,
+            # Explicit "running" status so that load_scan_progress() does not
+            # let a stale "starting" marker overwrite it after a restart.
+            # Without this, detect_interrupted_scan() rejects the checkpoint
+            # (status="starting" + no resume_from_artist → returns None).
+            "status": "running",
             "scan_type": scan_type,
             "processed_artists": processed_artists,
             "total_artists": total_artists,

@@ -228,7 +228,7 @@ def load_scan_progress(scan_type: str = "navidrome") -> Optional[Dict]:
         # to the progress file without touching the marker, so the marker can
         # remain at "starting" for the entire lifetime of a running scan.
         _progress_status = str(merged.get("status") or "").lower()
-        for key in ("current_artist", "status", "stop_requested", "is_running", "last_updated"):
+        for key in ("current_artist", "resume_from_artist", "status", "stop_requested", "is_running", "last_updated"):
             if marker.get(key) is not None:
                 if key == "status" and marker.get("status") == "starting" and _progress_status == "running":
                     continue  # progress file is more current; don't downgrade
@@ -408,6 +408,13 @@ def detect_interrupted_scan(scan_type: str = "navidrome") -> Optional[Dict]:
         f"Detected interrupted {scan_type} scan at {progress.get('percent_complete', 0)}% "
         f"(last active {int(age.total_seconds() // 60)} min ago, artist: {current_artist!r})"
     )
+
+    # Ensure current_artist is present in the returned dict.  When the artist
+    # was derived from resume_from_artist (fallback on line above) the progress
+    # dict itself may not have a current_artist key, causing get_last_scanned_artist()
+    # and should_resume_scan() to fall through to the DB query.
+    if current_artist and not str(progress.get("current_artist") or "").strip():
+        progress["current_artist"] = current_artist
 
     return progress
 
