@@ -4539,6 +4539,28 @@ def _metadata_matches_queue_item(
     if queue_disc_num is not None and file_disc_num is not None and queue_disc_num != file_disc_num:
         return False
 
+    # Duration guard: hard-reject when both durations are known and differ by
+    # more than 5 seconds.  This is the same tolerance used when scoring
+    # Soulseek candidates and prevents a file with a wildly different length
+    # (e.g. a 4:48 radio-edit matching a queue item expected to be 3:37) from
+    # being accepted and overwriting the existing library track.
+    file_dur_ms = file_meta.get('duration_ms')
+    if file_dur_ms:
+        file_dur_s = file_dur_ms / 1000.0
+        queue_dur = queue_item.get('duration')
+        if queue_dur:
+            try:
+                queue_dur_s = float(queue_dur)
+                # queue_item.duration is normally in seconds; treat as ms
+                # (and convert) when the value exceeds 10 000, matching the
+                # same heuristic used by _normalize_duration_seconds().
+                if queue_dur_s > 10000:
+                    queue_dur_s = queue_dur_s / 1000.0
+                if abs(file_dur_s - queue_dur_s) > 5:
+                    return False
+            except (TypeError, ValueError):
+                pass
+
     combined = (artist_score + title_score) / 2
 
     # Album similarity gives a small boost if available
