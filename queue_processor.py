@@ -1314,6 +1314,15 @@ def _build_fallback_search_queries(queue_item, primary_query):
     ("KNEECAP").  This helper returns fallback queries to try when the primary
     search yields no usable match:
 
+    0. ``sanitized primary_query`` – apostrophes and quote characters removed
+       from the stored query.  Handles legacy queue items where the
+       ``search_query`` column was populated before sanitization was applied
+       (e.g. via the ``fix_queue_search_queries`` utility) or any title that
+       contains a straight apostrophe such as "Where's the Love".
+    0b. ``depunctuated primary_query`` – all non-word punctuation stripped from
+        the stored query.  Broader than (0): handles titles containing commas,
+        exclamation marks, periods, etc. that cause Soulseek's tokenizer to
+        return zero results.
     1. ``album_artist - title`` when album_artist differs from the track artist.
     2. ``feat.-stripped track_artist - title`` when the track artist contains a
        "feat." / "ft." / "featuring" clause.
@@ -1339,13 +1348,18 @@ def _build_fallback_search_queries(queue_item, primary_query):
         return []
 
     try:
-        from download_queue_manager import _sanitize_search_query_for_slskd
+        from download_queue_manager import (
+            _sanitize_search_query_for_slskd,
+            _strip_query_punctuation_for_slskd,
+        )
     except ImportError:
         logger.warning(
-            "_build_fallback_search_queries: could not import _sanitize_search_query_for_slskd "
+            "_build_fallback_search_queries: could not import sanitization helpers "
             "from download_queue_manager; using plain whitespace normalisation as fallback"
         )
         def _sanitize_search_query_for_slskd(q):  # type: ignore[misc]
+            return " ".join(q.split())
+        def _strip_query_punctuation_for_slskd(q):  # type: ignore[misc]
             return " ".join(q.split())
 
     fallbacks = []
@@ -1353,6 +1367,17 @@ def _build_fallback_search_queries(queue_item, primary_query):
     def _add(q):
         if q and q != primary_query and q not in fallbacks:
             fallbacks.append(q)
+
+    # Fallback 0: sanitized primary – strips apostrophes/quotes from the stored
+    # query.  This is the most targeted fix when the stored search_query still
+    # contains a straight apostrophe (e.g. "Where's the Love") because it was
+    # added before sanitization was applied or via a utility script.
+    _add(_sanitize_search_query_for_slskd(primary_query))
+
+    # Fallback 0b: fully depunctuated primary – strips ALL punctuation from the
+    # stored query, not just quote characters.  Handles titles containing commas,
+    # exclamation marks, periods, etc. ("Hello! World" → "Hello World").
+    _add(_strip_query_punctuation_for_slskd(primary_query))
 
     # Fallback 1: album artist (e.g. "KNEECAP - Palestine")
     if album_artist and album_artist.lower() != artist.lower():

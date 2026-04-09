@@ -1799,6 +1799,24 @@ def _write_progress_file(path: str, scan_type: str, is_running: bool, extra: dic
         }
         if extra:
             payload.update(extra)
+
+        # When writing a fresh "starting" status, preserve the previous run's
+        # current_artist as resume_from_artist so that detect_interrupted_scan()
+        # can honour it even though it sees status="starting".  Without this,
+        # the checkpoint is erased the moment the route writes "starting", and
+        # get_last_scanned_artist() falls through to the DB fallback which may
+        # return the wrong (or no) artist.
+        if payload.get("status") == "starting" and not payload.get("resume_from_artist"):
+            try:
+                if os.path.exists(path):
+                    with open(path, "r", encoding="utf-8") as _existing_f:
+                        _existing_progress = json.load(_existing_f)
+                    _prev_artist = str(_existing_progress.get("current_artist") or "").strip()
+                    if _prev_artist:
+                        payload["resume_from_artist"] = _prev_artist
+            except Exception:
+                pass
+
         _dir = os.path.dirname(path) or "."
         os.makedirs(_dir, exist_ok=True)
         _fd, _tmp = tempfile.mkstemp(dir=_dir, suffix=".tmp")
@@ -1849,6 +1867,12 @@ def _write_progress_file(path: str, scan_type: str, is_running: bool, extra: dic
                 # that caused the UI to keep showing the last artist from the previous
                 # cycle (e.g. "Stray Kids") until the new scan reached its first artist.
                 marker_payload["current_artist"] = existing_current_artist
+
+            # Also mirror resume_from_artist into the marker so that
+            # load_scan_progress() can recover it even if the progress file is
+            # later deleted while the marker survives.
+            if payload.get("resume_from_artist"):
+                marker_payload["resume_from_artist"] = payload["resume_from_artist"]
 
             _mfd, _mtmp = tempfile.mkstemp(dir=marker_dir, suffix=".tmp")
             try:
