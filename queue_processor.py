@@ -420,6 +420,11 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
         else:
             # Hard reject: duration deviates by more than the allowed tolerance.
             return 0.0
+    elif expected_duration and not candidate_duration:
+        # We know the expected duration but the candidate has no duration
+        # information — we cannot confirm it matches within 5 s.  Penalise the
+        # candidate so it always loses to a duration-confirmed alternative.
+        score -= 0.15
 
     # Apply orphan-token penalty after all bonuses so the album-in-path reward
     # cannot rescue a wrong-track candidate.  Cap the accumulated score first so
