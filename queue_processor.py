@@ -144,6 +144,15 @@ _FEAT_SUFFIX_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Matches any (…) or […] bracket section so it can be stripped to extract the
+# core track title for exactness comparisons.
+_BRACKET_RE = re.compile(r'[\(\[][^\)\]]*[\)\]]')
+
+
+def _strip_brackets(text):
+    """Return *text* with all (…) and […] sections removed."""
+    return re.sub(r'\s+', ' ', _BRACKET_RE.sub('', text or '')).strip()
+
 
 def _normalize_match_text(value):
     """Normalize text for conservative filename/metadata matching."""
@@ -301,16 +310,43 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     album_artist_norm = _normalize_match_text(queue_item.get('album_artist') or '')
     title_norm = _normalize_match_text(queue_item.get('title'))
     album_norm = _normalize_match_text(queue_item.get('album'))
-    title_tokens = _tokenize_meaningful(title_norm)
-    basename_tokens = set(_tokenize_meaningful(basename_norm))
+
+    # Core normalisation: strip brackets and feat./ft. suffixes from both the
+    # queue title and the candidate basename so that qualifier phrases like
+    # "(Radio Edit)" or "(feat. Someone)" are treated as optional.  Title
+    # comparisons are done on these core strings so that "Invincible" correctly
+    # matches "Invincible (Radio Edit)" while "Invincible Mind" is still
+    # rejected.
+    _raw_basename = os.path.basename(norm_filename)
+    core_basename_norm = _normalize_match_text(
+        _FEAT_SUFFIX_RE.sub('', _strip_brackets(_raw_basename))
+    )
+    core_title_norm = _normalize_match_text(
+        _FEAT_SUFFIX_RE.sub('', _strip_brackets(queue_item.get('title') or ''))
+    )
+
+    # Title matching uses bracket-stripped core tokens throughout.
+    title_tokens = _tokenize_meaningful(core_title_norm)
+    basename_tokens = set(_tokenize_meaningful(core_basename_norm))
+    # Retain full (non-stripped) basename tokens for the album/orphan penalty.
+    full_basename_tokens = set(_tokenize_meaningful(basename_norm))
 
     if not artist_norm or not title_norm or not basename_norm:
         return 0.0
 
+    # Variant tokens are defined at this scope so they are available to both
+    # the early matching block and the orphan-token penalty further below.
+    title_variant_tokens = {
+        "acoustic", "demo", "edit", "instrumental", "intro", "live", "mix",
+        "radio", "remaster", "remastered", "remix", "version",
+    }
+
     if title_tokens:
         shared_title_tokens = sum(1 for tok in title_tokens if tok in basename_tokens)
         title_token_ratio = shared_title_tokens / len(title_tokens)
-        title_variant_tokens = {"acoustic", "demo", "edit", "instrumental", "intro", "live", "mix", "radio", "remaster", "remastered", "remix", "version"}
+        # Variant check uses bracket-stripped core tokens on both sides so that
+        # "(Radio Edit)" in the candidate filename does not reject a plain
+        # "Invincible" queue title, and vice-versa.
         requested_variants = set(title_tokens) & title_variant_tokens
         candidate_variants = basename_tokens & title_variant_tokens
 
@@ -324,10 +360,32 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
             return 0.0
         if len(title_tokens) >= 3 and title_token_ratio < 0.67:
             return 0.0
+
+        # Core-title exactness: the candidate's bracket-stripped core must not
+        # contain significant extra words beyond the queue title, artist, and
+        # album.  E.g. "Invincible Mind.mp3" must hard-reject queue title
+        # "Invincible" because "mind" is an unexplained token in the core.
+        _core_explained = (
+            set(_tokenize_meaningful(artist_norm))
+            | set(_tokenize_meaningful(album_artist_norm))
+            | set(title_tokens)
+            | set(_tokenize_meaningful(album_norm or ""))
+            | title_variant_tokens
+        )
+        _core_orphans = [
+            t for t in basename_tokens
+            if t not in _core_explained
+            and not _ORPHAN_NUM_RE.match(t)
+            and t not in _ORPHAN_AUDIO_EXT_TOKENS
+        ]
+        if _core_orphans:
+            return 0.0
     else:
         title_token_ratio = 0.0
 
-    # Require both core fields to be reasonably represented in the basename.
+    # Similarity scores use bracket-stripped core strings so that a candidate
+    # with a bracket suffix (e.g. "(Radio Edit)") is not penalised against a
+    # plain queue title, and vice-versa.
     # When the track artist contains featured guests (e.g. "KNEECAP feat. Fawzi"),
     # files are often tagged with the album artist only ("KNEECAP"), so also
     # consider the album_artist similarity and take whichever is higher.
@@ -335,19 +393,13 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     if album_artist_norm and album_artist_norm != artist_norm:
         album_artist_sim = SequenceMatcher(None, album_artist_norm, basename_norm).ratio()
         artist_sim = max(artist_sim, album_artist_sim)
-    title_sim = SequenceMatcher(None, title_norm, basename_norm).ratio()
+    title_sim = SequenceMatcher(None, core_title_norm, core_basename_norm).ratio()
 
-    # For "Various Artists" compilations the per-track artist is often absent
-    # from the filename (e.g. "02 - Holiday.mp3").  Bypassing the artist floor
-    # check lets title + album evidence carry the match; the artist bonus below
-    # simply won't fire, which is acceptable.
-    # Only bypass when BOTH track artist and album_artist are generic so that a
-    # queue item with a real album_artist still enforces the normal floor.
-    is_generic_artist = (
-        artist_norm in _GENERIC_COMPILATION_ARTISTS
-        and (not album_artist_norm or album_artist_norm in _GENERIC_COMPILATION_ARTISTS)
-    )
-    if (not is_generic_artist and artist_sim < 0.12) or title_sim < 0.12:
+    # Artist absence from the filename is permitted — the track title and
+    # duration are the primary evidence.  A low artist_sim simply contributes
+    # less to the score rather than causing a hard reject.  Only hard-reject
+    # when the title itself is not represented at all.
+    if title_sim < 0.12:
         return 0.0
 
     score = (artist_sim * 0.45) + (title_sim * 0.55)
@@ -359,25 +411,25 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     # the queue item carries "KNEECAP feat. Fawzi" as the track artist.
     if artist_norm in basename_norm or (album_artist_norm and album_artist_norm in basename_norm):
         score += 0.18
-    if title_norm in basename_norm:
+    if core_title_norm in core_basename_norm:
         score += 0.25
 
-    # Orphan-token penalty: tokens in the basename that cannot be explained by
-    # the artist, title, or album strongly suggest a *different* track is present.
-    # For example, title="Jailbreak" vs basename "Nervosa - Jailbreak - 01 -
-    # Endless Ambition.mp3" has two orphan tokens ("endless", "ambition") that
-    # are clearly a different track's title.  Apply a significant penalty only
-    # when the title match is ambiguous because all title tokens also appear in
-    # the album (so the title could just be the album folder name, not the track).
-    # Applied AFTER all other bonuses so the album-in-path reward cannot rescue
-    # a wrong-track candidate.
+    # Orphan-token penalty: tokens in the full (non-stripped) basename that
+    # cannot be explained by the artist, title, or album strongly suggest a
+    # *different* track is present.  For example, title="Jailbreak" vs basename
+    # "Nervosa - Jailbreak - 01 - Endless Ambition.mp3" has two orphan tokens
+    # ("endless", "ambition") that are clearly a different track's title.
+    # Apply a significant penalty only when the title match is ambiguous because
+    # all title tokens also appear in the album (so the title could just be the
+    # album folder name, not the track).  Applied AFTER all other bonuses so the
+    # album-in-path reward cannot rescue a wrong-track candidate.
     explained_tokens = (
         set(_tokenize_meaningful(artist_norm))
-        | set(_tokenize_meaningful(title_norm))
+        | set(_tokenize_meaningful(core_title_norm))
         | set(_tokenize_meaningful(album_norm or ""))
     )
     orphan_tokens = [
-        t for t in basename_tokens
+        t for t in full_basename_tokens
         if t not in explained_tokens
         and not _ORPHAN_NUM_RE.match(t)
         and t not in title_variant_tokens
@@ -435,14 +487,14 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     # Title-embedded penalty: the queue title appears as a *suffix* of a longer
     # song title in the basename.  E.g. "These Are The Days Of Our Lives.mp3"
     # should NOT match a queue item titled "Days of Our Lives" even though all
-    # title tokens are present.  We check the original (pre-normalisation)
+    # title tokens are present.  We check the bracket-stripped core title and
     # basename so the " - " artist/title separator is still detectable.
     # Pattern: title is found in the basename AND the portion before the match
     # contains alphabetic words that are not just a leading track number or a
     # standard "artist - " prefix.  A common leading article ("the", "a", "an")
     # on its own is allowed (e.g. "The Days Of Our Lives.mp3").
-    _raw_title_lower = (queue_item.get('title') or '').lower()
-    _raw_basename_lower = os.path.basename(norm_filename).lower()
+    _raw_title_lower = _strip_brackets(queue_item.get('title') or '').lower()
+    _raw_basename_lower = _strip_brackets(os.path.basename(norm_filename)).lower()
     if _raw_title_lower:
         _te_m = re.search(
             re.escape(_raw_title_lower) + r'(?!\s*[a-z])', _raw_basename_lower
@@ -634,9 +686,10 @@ def _filename_matches_queue_item(filename, queue_item):
     # named "Jailbreak" would match a queue item for the "Jailbreak" title track).
     # The look-ahead (?!\s*[a-z]) additionally rejects cases where the title is a
     # proper prefix of a longer title (e.g. "world so cold intro" must not match).
-    # Applied on the raw lowercase basename to preserve special chars (e.g. "-1").
+    # Use the bracket-stripped title for the regex so that a queue title like
+    # "Invincible (Radio Edit)" still matches "Invincible.flac".
     basename_lower = basename.lower()
-    raw_title = (queue_item.get('title') or '').lower()
+    raw_title = _strip_brackets(queue_item.get('title') or '').lower()
     basename_test = basename_norm  # retained for source-level test assertions
     _title_re_m = (
         re.search(re.escape(raw_title) + r'(?!\s*[a-z])', basename_lower)
@@ -672,17 +725,26 @@ def _filename_matches_queue_item(filename, queue_item):
         score = _score_soulseek_candidate(norm_path, queue_item)
         return score >= 0.60
 
-    title_tokens = _tokenize_meaningful(title_norm)
-    basename_tokens = set(_tokenize_meaningful(basename_norm))
+    # Core (bracket-stripped + feat-stripped) tokens for exact title matching.
+    album_norm = _normalize_match_text(queue_item.get('album'))
+    core_title_norm = _normalize_match_text(
+        _FEAT_SUFFIX_RE.sub('', _strip_brackets(queue_item.get('title') or ''))
+    )
+    core_basename_norm = _normalize_match_text(
+        _FEAT_SUFFIX_RE.sub('', _strip_brackets(basename))
+    )
+    title_tokens = _tokenize_meaningful(core_title_norm)
+    basename_tokens = set(_tokenize_meaningful(core_basename_norm))
     title_variant_tokens = {
         "acoustic", "demo", "edit", "instrumental", "intro", "live", "mix",
         "radio", "remaster", "remastered", "remix", "version",
     }
 
-    # Variant check: only when title has meaningful tokens — a plain queue
-    # title must not match a "(mix/live/…)" file, but when the title has no
-    # meaningful tokens (e.g. the special title "-1") the check is skipped
-    # because we cannot determine whether the queue item is itself a variant.
+    # Variant check: use bracket-stripped core tokens on both sides so that
+    # "(Radio Edit)" in the candidate does not reject a plain queue title, and
+    # when the title has no meaningful tokens (e.g. the special title "-1") the
+    # check is skipped because we cannot determine whether the queue item is
+    # itself a variant.
     if title_tokens:
         requested_variants = set(title_tokens) & title_variant_tokens
         candidate_variants = basename_tokens & title_variant_tokens
@@ -692,12 +754,30 @@ def _filename_matches_queue_item(filename, queue_item):
             if requested_variants.isdisjoint(candidate_variants):
                 return False
 
+        # Core-title exactness: reject when the bracket-stripped candidate core
+        # contains extra words not explained by the queue title, artist, or
+        # album.  "Invincible Mind.flac" must not match queue title "Invincible".
+        _core_explained = (
+            set(_tokenize_meaningful(artist_norm))
+            | set(title_tokens)
+            | set(_tokenize_meaningful(album_norm or ""))
+            | title_variant_tokens
+        )
+        _core_orphans = [
+            t for t in basename_tokens
+            if t not in _core_explained
+            and not _ORPHAN_NUM_RE.match(t)
+            and t not in _ORPHAN_AUDIO_EXT_TOKENS
+        ]
+        if _core_orphans:
+            return False
+
     # Orphan-token rejection for title==album ambiguity:
     # When all title tokens also appear in the album name the title's presence
     # in the basename could be from the album folder rather than the track.
-    # If 2+ tokens in the basename are unexplained by artist/title/album those
-    # are likely the actual track title, so reject this file.
-    album_norm = _normalize_match_text(queue_item.get('album'))
+    # If 2+ tokens in the full basename are unexplained by artist/title/album
+    # those are likely the actual track title, so reject this file.
+    full_basename_tokens = set(_tokenize_meaningful(basename_norm))
     title_token_set = set(title_tokens)
     album_token_set = set(_tokenize_meaningful(album_norm))
     if title_token_set and title_token_set.issubset(album_token_set):
@@ -707,7 +787,7 @@ def _filename_matches_queue_item(filename, queue_item):
             | album_token_set
         )
         orphan = [
-            t for t in basename_tokens
+            t for t in full_basename_tokens
             if t not in explained
             and not _ORPHAN_NUM_RE.match(t)
             and t not in title_variant_tokens
