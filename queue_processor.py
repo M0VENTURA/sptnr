@@ -145,8 +145,16 @@ _FEAT_SUFFIX_RE = re.compile(
 )
 
 # Matches any (…) or […] bracket section so it can be stripped to extract the
-# core track title for exactness comparisons.
-_BRACKET_RE = re.compile(r'[\(\[][^\)\]]*[\)\]]')
+# core track title for exactness comparisons.  The alternation ensures opening
+# and closing bracket types must match (parenthesis ↔ parenthesis, square ↔ square).
+_BRACKET_RE = re.compile(r'\([^\)]*\)|\[[^\]]*\]')
+
+# Track-variant qualifier words used in both the candidate-scoring and the
+# metadata-matching logic.  Defined once at module level to keep them in sync.
+_TITLE_VARIANT_TOKENS = frozenset({
+    "acoustic", "demo", "edit", "instrumental", "intro", "live", "mix",
+    "radio", "remaster", "remastered", "remix", "version",
+})
 
 
 def _strip_brackets(text):
@@ -334,12 +342,10 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     if not artist_norm or not title_norm or not basename_norm:
         return 0.0
 
-    # Variant tokens are defined at this scope so they are available to both
-    # the early matching block and the orphan-token penalty further below.
-    title_variant_tokens = {
-        "acoustic", "demo", "edit", "instrumental", "intro", "live", "mix",
-        "radio", "remaster", "remastered", "remix", "version",
-    }
+    # Variant tokens are defined at module level as _TITLE_VARIANT_TOKENS and
+    # aliased here for brevity; they are needed by both the early matching block
+    # and the orphan-token penalty further below.
+    title_variant_tokens = _TITLE_VARIANT_TOKENS
 
     if title_tokens:
         shared_title_tokens = sum(1 for tok in title_tokens if tok in basename_tokens)
@@ -536,10 +542,6 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
     """
     _FIELD_MIN = 0.55
     _PREFIX_TITLE_MIN = 0.9
-    _TITLE_VARIANT_TOKENS = {
-        "acoustic", "demo", "edit", "instrumental", "intro", "live",
-        "mix", "radio", "remaster", "remastered", "remix", "version",
-    }
 
     try:
         metadata = read_mp3_metadata(file_path) or {}
@@ -735,10 +737,7 @@ def _filename_matches_queue_item(filename, queue_item):
     )
     title_tokens = _tokenize_meaningful(core_title_norm)
     basename_tokens = set(_tokenize_meaningful(core_basename_norm))
-    title_variant_tokens = {
-        "acoustic", "demo", "edit", "instrumental", "intro", "live", "mix",
-        "radio", "remaster", "remastered", "remix", "version",
-    }
+    title_variant_tokens = _TITLE_VARIANT_TOKENS
 
     # Variant check: use bracket-stripped core tokens on both sides so that
     # "(Radio Edit)" in the candidate does not reject a plain queue title, and
