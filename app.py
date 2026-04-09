@@ -11567,7 +11567,18 @@ def api_album_update_ids():
             discogs_album_column = "discogs_album_id"
         elif "discogs_release_id" in track_columns:
             discogs_album_column = "discogs_release_id"
-        
+
+        # Fetch file paths before updating so we can write tags to the files.
+        cursor.execute(
+            f"SELECT id, file_path FROM tracks "
+            f"WHERE COALESCE(NULLIF(album_artist, ''), artist) = {placeholder} AND album = {placeholder}",
+            (artist_name, album_name),
+        )
+        track_rows = [
+            dict(r) if hasattr(r, "keys") else {"id": r[0], "file_path": r[1]}
+            for r in cursor.fetchall()
+        ]
+
         # Update all tracks for this album with the new IDs
         updates = []
         params = []
@@ -11601,7 +11612,27 @@ def api_album_update_ids():
             conn.commit()
         
         conn.close()
-        
+
+        # Write the MusicBrainz release ID directly into the audio file tags so
+        # that Navidrome (and other players) group all tracks under the same album.
+        files_updated = 0
+        if track_rows and musicbrainz_release_id:
+            try:
+                from helpers.tag_manager import write_tags_to_file
+            except Exception:
+                write_tags_to_file = None
+
+            if write_tags_to_file:
+                for row in track_rows:
+                    file_path = str(row.get("file_path") or "").strip()
+                    if not file_path or not os.path.exists(file_path):
+                        continue
+                    try:
+                        if write_tags_to_file(file_path, {"musicbrainz_album_mbid": musicbrainz_release_id}):
+                            files_updated += 1
+                    except Exception as file_err:
+                        logging.warning(f"[ALBUM_UPDATE_IDS] Failed writing tags to {file_path}: {file_err}")
+
         return jsonify({
             "success": True,
             "message": f"Album IDs updated for {album_name}",
@@ -11609,7 +11640,8 @@ def api_album_update_ids():
                 "spotify_album_id": spotify_album_id if spotify_album_id else None,
                 "musicbrainz_release_id": musicbrainz_release_id if musicbrainz_release_id else None,
                 "discogs_release_id": discogs_release_id if discogs_release_id else None
-            }
+            },
+            "files_updated": files_updated,
         })
     except Exception as e:
         logging.error(f"Error updating album IDs: {e}")
