@@ -289,8 +289,14 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     falsely high.  Album matching intentionally uses the full path so the
     folder name still contributes positive album evidence.
     """
-    filename_norm = _normalize_match_text(filename)             # full path – album only
-    basename_norm = _normalize_match_text(os.path.basename(filename))  # basename – artist/title
+    # Normalise Windows-style backslash separators so that os.path.basename()
+    # (which only strips '/' on Linux) correctly extracts just the filename.
+    # Without this, a Soulseek path like "@@user\Music\Artist\Song.mp3" would
+    # be treated as a single flat filename and folder names would bleed into
+    # the "basename" used for artist/title matching.
+    norm_filename = filename.replace("\\", "/")
+    filename_norm = _normalize_match_text(norm_filename)         # full path – album only
+    basename_norm = _normalize_match_text(os.path.basename(norm_filename))  # basename – artist/title
     artist_norm = _normalize_match_text(queue_item.get('artist'))
     album_artist_norm = _normalize_match_text(queue_item.get('album_artist') or '')
     title_norm = _normalize_match_text(queue_item.get('title'))
@@ -425,6 +431,39 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
         # information — we cannot confirm it matches within 5 s.  Penalise the
         # candidate so it always loses to a duration-confirmed alternative.
         score -= 0.15
+
+    # Title-embedded penalty: the queue title appears as a *suffix* of a longer
+    # song title in the basename.  E.g. "These Are The Days Of Our Lives.mp3"
+    # should NOT match a queue item titled "Days of Our Lives" even though all
+    # title tokens are present.  We check the original (pre-normalisation)
+    # basename so the " - " artist/title separator is still detectable.
+    # Pattern: title is found in the basename AND the portion before the match
+    # contains alphabetic words that are not just a leading track number or a
+    # standard "artist - " prefix.  A common leading article ("the", "a", "an")
+    # on its own is allowed (e.g. "The Days Of Our Lives.mp3").
+    _raw_title_lower = (queue_item.get('title') or '').lower()
+    _raw_basename_lower = os.path.basename(norm_filename).lower()
+    if _raw_title_lower:
+        _te_m = re.search(
+            re.escape(_raw_title_lower) + r'(?!\s*[a-z])', _raw_basename_lower
+        )
+        if _te_m and _te_m.start() > 0:
+            _te_prefix = _raw_basename_lower[:_te_m.start()]
+            # Strip leading track numbers and separators (e.g. "01 - ", "2.")
+            _te_stripped = re.sub(r'^[\d\s._\-]+', '', _te_prefix).strip()
+            # Strip a lone leading article ("the", "a", "an") — these are
+            # routinely prepended to titles and don't indicate a different song.
+            _te_stripped = re.sub(
+                r'^(?:the|a|an)\s*$', '', _te_stripped, flags=re.IGNORECASE
+            ).strip()
+            # If alphabetic content remains and there is no " - " separator
+            # before the match, the title is embedded in a longer title name.
+            if (
+                _te_stripped
+                and re.search(r'[a-z]', _te_stripped)
+                and ' - ' not in _te_prefix
+            ):
+                _orphan_penalty = max(_orphan_penalty, 0.70)
 
     # Apply orphan-token penalty after all bonuses so the album-in-path reward
     # cannot rescue a wrong-track candidate.  Cap the accumulated score first so
@@ -599,10 +638,32 @@ def _filename_matches_queue_item(filename, queue_item):
     basename_lower = basename.lower()
     raw_title = (queue_item.get('title') or '').lower()
     basename_test = basename_norm  # retained for source-level test assertions
-    title_in_basename = bool(
-        raw_title
-        and re.search(re.escape(raw_title) + r'(?!\s*[a-z])', basename_lower)
+    _title_re_m = (
+        re.search(re.escape(raw_title) + r'(?!\s*[a-z])', basename_lower)
+        if raw_title else None
     )
+    if not _title_re_m:
+        title_in_basename = False
+    elif _title_re_m.start() == 0:
+        # Title found right at the start of the basename — unambiguous match.
+        title_in_basename = True
+    else:
+        # The title appears mid-basename.  Reject when it is preceded by
+        # significant alphabetic words with no explicit " - " separator, which
+        # indicates it is a suffix of a *different*, longer song title (e.g.
+        # "These Are The Days Of Our Lives.mp3" must NOT match "Days of Our
+        # Lives").  A lone leading article ("the", "a", "an") or a track-number
+        # prefix ("01 - ") are still accepted.
+        _ti_prefix = basename_lower[:_title_re_m.start()]
+        _ti_stripped = re.sub(r'^[\d\s._\-]+', '', _ti_prefix).strip()
+        _ti_stripped = re.sub(
+            r'^(?:the|a|an)\s*$', '', _ti_stripped, flags=re.IGNORECASE
+        ).strip()
+        title_in_basename = not (
+            _ti_stripped
+            and re.search(r'[a-z]', _ti_stripped)
+            and ' - ' not in _ti_prefix
+        )
 
     if not title_in_basename:
         # Fallback: allow if the full candidate score is high enough even
@@ -1354,8 +1415,15 @@ def _build_fallback_search_queries(queue_item, primary_query):
     When the primary search uses the full track artist (e.g. "KNEECAP feat. Fawzi
     - Palestine"), files on Soulseek are often tagged with the album artist only
     ("KNEECAP").  This helper returns fallback queries to try when the primary
-    search yields no usable match:
+    search yields no usable match.
 
+    Returns a list of ``(query, min_score)`` tuples.  ``min_score`` is the
+    per-query acceptance threshold to use in place of ``_SLSKD_MIN_ACCEPT_SCORE``.
+    Narrower queries (which contain the artist) use the normal threshold; broader
+    queries (album-augmented title, bare title) require a higher score to
+    compensate for their lower specificity.
+
+    Query order:
     0. ``sanitized primary_query`` – apostrophes and quote characters removed
        from the stored query.  Handles legacy queue items where the
        ``search_query`` column was populated before sanitization was applied
@@ -1375,9 +1443,17 @@ def _build_fallback_search_queries(queue_item, primary_query):
        the search token.  Soulseek requires every token in the query to appear
        in the filename, so a shorter artist prefix broadens the match while
        the candidate-scoring step still enforces artist similarity.
+    3b. ``title album`` – title combined with the album name when known.
+        Soulseek requires ALL query tokens to be present somewhere in the file
+        path, so adding the album name forces results to come from the correct
+        folder while keeping the query artist-agnostic.  This is more precise
+        than a bare title search and is tried before it.  A moderately elevated
+        score threshold (0.55) is applied since no artist token is present.
     4. ``title`` only, as a last resort for cases where the artist token(s) are
-       entirely absent from shared filenames.  The scoring system enforces a
-       minimum artist-similarity threshold so false positives remain unlikely.
+       entirely absent from shared filenames.  No artist anchor means this query
+       is the broadest of all; a stricter score threshold (0.60) is enforced to
+       reduce the risk of accepting a file that merely contains the title words
+       somewhere in its path (e.g. a folder coincidentally named after the song).
 
     Already-tried queries (i.e. ``primary_query``) and plain duplicates are
     excluded from the returned list.
@@ -1385,6 +1461,7 @@ def _build_fallback_search_queries(queue_item, primary_query):
     artist = str(queue_item.get('artist') or '').strip()
     album_artist = str(queue_item.get('album_artist') or '').strip()
     title = str(queue_item.get('title') or '').strip()
+    album = str(queue_item.get('album') or '').strip()
 
     if not title:
         return []
@@ -1404,11 +1481,20 @@ def _build_fallback_search_queries(queue_item, primary_query):
         def _strip_query_punctuation_for_slskd(q):  # type: ignore[misc]
             return " ".join(q.split())
 
-    fallbacks = []
+    # Each entry is (query_string, min_accept_score).  None means use the global
+    # _SLSKD_MIN_ACCEPT_SCORE default.
+    fallbacks: list[tuple[str, float | None]] = []
+    seen_queries: set[str] = set()
 
-    def _add(q):
-        if q and q != primary_query and q not in fallbacks:
-            fallbacks.append(q)
+    def _add(q: str, min_score: float | None = None) -> None:
+        """Append (q, min_score) to fallbacks if q is new and non-empty.
+
+        min_score overrides _SLSKD_MIN_ACCEPT_SCORE for this query only.
+        None means use the global default.
+        """
+        if q and q != primary_query and q not in seen_queries:
+            seen_queries.add(q)
+            fallbacks.append((q, min_score))
 
     # Fallback 0: sanitized primary – strips apostrophes/quotes from the stored
     # query.  This is the most targeted fix when the stored search_query still
@@ -1452,11 +1538,22 @@ def _build_fallback_search_queries(queue_item, primary_query):
     if first_word and first_word.lower() != effective_artist.lower():
         _add(_sanitize_search_query_for_slskd(f"{first_word} - {title}"))
 
+    # Fallback 3b: title + album.  Combining both forces Soulseek to return only
+    # files whose path contains every album word, so results come from the right
+    # folder even without an artist token.  Much more precise than a bare title
+    # search when the album name is distinctive (e.g. "Days of Our Lives Innuendo"
+    # only matches files in a folder named "Innuendo", not files from an artist
+    # folder whose name happens to contain the same words as the title).
+    # A minimum score of 0.55 is required because artist evidence is absent.
+    if album:
+        _add(_sanitize_search_query_for_slskd(f"{title} {album}"), min_score=0.55)
+
     # Fallback 4: title only.  Used when even a partial artist token blocks
     # results (e.g. the artist name is not present in any shared filename at
-    # all).  The candidate scorer still requires minimum artist similarity so
-    # unrelated tracks are rejected.
-    _add(_sanitize_search_query_for_slskd(title))
+    # all).  No artist anchor means Soulseek may return files from folders whose
+    # name simply contains the title words; a stricter score threshold (0.60)
+    # is enforced to reduce the risk of false positives.
+    _add(_sanitize_search_query_for_slskd(title), min_score=0.60)
 
     return fallbacks
 
@@ -1609,17 +1706,21 @@ def search_and_download(queue_id, queue_item, client):
         # This handles tracks where the track artist contains featured guests
         # (e.g. "KNEECAP feat. Fawzi - Palestine") but Soulseek files are tagged
         # with the album artist only ("KNEECAP - Palestine").
+        # _build_fallback_search_queries returns (query, min_score) tuples;
+        # min_score overrides _SLSKD_MIN_ACCEPT_SCORE for broader queries.
         if not best_result or best_score < _SLSKD_MIN_ACCEPT_SCORE:
-            for fallback_query in _build_fallback_search_queries(queue_item, search_query):
+            for fallback_query, fb_min_score in _build_fallback_search_queries(queue_item, search_query):
+                effective_min = fb_min_score if fb_min_score is not None else _SLSKD_MIN_ACCEPT_SCORE
                 logger.info(
                     f"Queue {queue_id}: Primary search insufficient "
-                    f"(score={best_score:.2f}), trying fallback query '{fallback_query}'..."
+                    f"(score={best_score:.2f}), trying fallback query '{fallback_query}'"
+                    f" (min_score={effective_min:.2f})..."
                 )
                 fb_result, fb_score = _run_soulseek_search(queue_id, fallback_query, queue_item, client)
                 if fb_score > best_score:
                     best_score = fb_score
                     best_result = fb_result
-                if best_result and best_score >= _SLSKD_MIN_ACCEPT_SCORE:
+                if best_result and best_score >= effective_min:
                     logger.info(
                         f"Queue {queue_id}: Fallback query '{fallback_query}' "
                         f"succeeded (score={best_score:.2f})"
