@@ -1751,6 +1751,20 @@ def _run_soulseek_search(queue_id, query, queue_item, client):
                             else int(getattr(file_info, 'bitrate', 0) or 0)
                         )
                         candidate_length = _extract_candidate_length_seconds(file_info)
+                        # Pre-filter by duration before running the full scorer.
+                        # When both the expected and candidate durations are known,
+                        # discard any file whose length falls outside the ±5s window
+                        # so we never waste scorer CPU on clearly wrong tracks.
+                        _expected_dur = _normalize_duration_seconds(queue_item.get('duration'))
+                        if _expected_dur and candidate_length:
+                            _dur_tol = _get_duration_match_tolerance(queue_item)
+                            if abs(_expected_dur - candidate_length) > _dur_tol:
+                                logger.debug(
+                                    f"Queue {queue_id}: Skipping {os.path.basename(filename)} "
+                                    f"— length {candidate_length:.0f}s outside "
+                                    f"±{_dur_tol:.0f}s of expected {_expected_dur:.0f}s"
+                                )
+                                continue
                         candidate_score = _score_soulseek_candidate(filename, queue_item, candidate_length)
                         if candidate_score > best_score:
                             best_score = candidate_score
