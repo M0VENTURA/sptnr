@@ -1678,6 +1678,9 @@ def _build_fallback_search_queries(queue_item, primary_query):
         if album_artist and album_artist.lower() != artist.lower():
             _add(_sanitize_search_query_for_slskd(f"{album_artist} - {core_title}"))
         # Also try just the core title without artist, with a stricter threshold.
+        # No artist token means Soulseek may return files whose path merely
+        # contains the title words; 0.60 (vs the default ~0.45) reduces the
+        # risk of accepting a false-positive match.
         _add(_sanitize_search_query_for_slskd(core_title), min_score=0.60)
 
     # Fallback 1: album artist (e.g. "KNEECAP - Palestine")
