@@ -1986,6 +1986,41 @@ def check_completed_downloads():
         else:
             logger.warning(f"Downloads directory does not exist: {DOWNLOADS_DIR}")
 
+        # Also walk the qBittorrent-specific downloads folder when configured.
+        # Absolute paths are appended directly; os.path.join(DOWNLOADS_DIR, abs_path)
+        # returns abs_path unchanged, so the rest of the matching logic needs no changes.
+        try:
+            _cfg_for_qbit = {}
+            _qbit_cfg_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+            if os.path.exists(_qbit_cfg_path):
+                with open(_qbit_cfg_path, 'r', encoding='utf-8') as _qf:
+                    _cfg_for_qbit = yaml.safe_load(_qf) or {}
+            _qbit_dl_folder = (
+                ((_cfg_for_qbit.get("qbittorrent") or {}).get("downloads_folder") or "")
+                .strip()
+            )
+        except Exception as _qcfg_err:
+            logger.debug(f"Could not read qbittorrent.downloads_folder from config: {_qcfg_err}")
+            _qbit_dl_folder = ""
+
+        if _qbit_dl_folder and os.path.normpath(_qbit_dl_folder) != os.path.normpath(DOWNLOADS_DIR):
+            if os.path.isdir(_qbit_dl_folder):
+                try:
+                    _qbit_count = 0
+                    for root, _, root_files in os.walk(_qbit_dl_folder):
+                        for f in root_files:
+                            if f.lower().endswith(_allowed_exts):
+                                fs_files.append(os.path.join(root, f))
+                                _qbit_count += 1
+                    if _qbit_count:
+                        logger.debug(
+                            f"Filesystem walk: {_qbit_count} additional audio files in qBittorrent folder {_qbit_dl_folder}"
+                        )
+                except Exception as _qwalk_err:
+                    logger.error(f"Error scanning qBittorrent downloads folder: {_qwalk_err}")
+            else:
+                logger.warning(f"qBittorrent downloads folder does not exist: {_qbit_dl_folder}")
+
         # ------------------------------------------------------------------
         # Build the set of files already claimed by non-downloading items
         # so the fuzzy scan never re-assigns a file that another queue item

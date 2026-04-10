@@ -363,6 +363,11 @@
           <label class="form-label">Password</label>
           <input type="password" class="form-control" id="qbit_password" placeholder="••••••••" value="{{ config.get('qbittorrent', {}).get('password', '') }}">
         </div>
+        <div class="col-12">
+          <label class="form-label">Torrent Downloads Folder</label>
+          <input type="text" class="form-control" id="qbit_downloads_folder" placeholder="/downloads/torrents" value="{{ config.get('qbittorrent', {}).get('downloads_folder', '') }}">
+          <div class="form-text">Folder where qBittorrent saves completed torrent downloads. Leave blank if qBittorrent saves to the same location as the Downloads Folder below. When set, this folder is also scanned when checking for completed downloads.</div>
+        </div>
       </div>
 
       <!-- slskd (Soulseek) -->
@@ -398,7 +403,7 @@
         <div class="col-12">
           <label class="form-label">Downloads Folder</label>
           <input type="text" class="form-control" id="downloads_folder" placeholder="/downloads/Music" value="{{ config.get('downloads', {}).get('folder', '') }}">
-          <div class="form-text">Path to watch for downloaded music files. qBittorrent and slskd should be configured to download to this location.</div>
+          <div class="form-text">Path to watch for downloaded music files (primarily used by slskd/Soulseek). If using qBittorrent with a separate save folder, configure that in the qBittorrent section above.</div>
         </div>
         <div class="col-12">
           <label class="form-label">External Media Export Path</label>
@@ -1171,7 +1176,8 @@ function buildConfigObject() {
       enabled: getChecked('qbit_enabled', false),
       web_url: getValue('qbit_web_url', ''),
       username: getValue('qbit_username', ''),
-      password: getValue('qbit_password', '')
+      password: getValue('qbit_password', ''),
+      downloads_folder: getValue('qbit_downloads_folder', '')
     },
     slskd: {
       enabled: getChecked('slskd_enabled', false),

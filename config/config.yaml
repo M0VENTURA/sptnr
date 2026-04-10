@@ -19,6 +19,7 @@ qbittorrent:
   web_url: "http://localhost:8080"  # URL to your qBittorrent Web UI
   username: ""  # qBittorrent username (required for API access)
   password: ""  # qBittorrent password (required for API access)
+  downloads_folder: ""  # Folder where qBittorrent saves completed torrent downloads (leave blank if same as Downloads Folder above)
 
 # Soulseek (slskd) Integration - P2P music file sharing
 slskd:
