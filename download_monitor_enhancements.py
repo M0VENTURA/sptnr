@@ -609,8 +609,40 @@ def _build_target_path_from_format(music_root, queue_item, source_path, album_ar
     ext = os.path.splitext(source_path)[1]
     file_name_format = _read_queue_naming_format()
 
+    # When the queue row has no track/disc number, read them from the source
+    # file's embedded tags so the destination filename is correct.
+    track_number_val = queue_item.get('track_number')
+    disc_number_val = queue_item.get('disc_number')
+    if not track_number_val:
+        try:
+            from helpers.metadata_reader import read_mp3_metadata
+            _emb = read_mp3_metadata(source_path) or {}
+            _tag_tn = _emb.get('track_number') or _emb.get('tracknumber')
+            if _tag_tn:
+                track_number_val = str(_tag_tn).split('/')[0].strip()
+            if not disc_number_val:
+                _tag_dn = _emb.get('disc_number') or _emb.get('discnumber')
+                if _tag_dn:
+                    disc_number_val = str(_tag_dn).split('/')[0].strip()
+        except Exception:
+            pass
+
+    # Build a formatted track_number string that includes disc prefix for multi-disc albums.
+    if track_number_val:
+        try:
+            disc_int = int(str(disc_number_val).split('/')[0]) if disc_number_val else 1
+            track_int = int(str(track_number_val).split('/')[0])
+            if disc_int > 1:
+                track_num_fmt = f"{disc_int}{track_int:02d}"
+            else:
+                track_num_fmt = f"{track_int:02d}"
+        except (ValueError, TypeError):
+            track_num_fmt = _safe_track_number(track_number_val)
+    else:
+        track_num_fmt = '00'
+
     format_vars = {
-        'track_number': _safe_track_number(queue_item.get('track_number')),
+        'track_number': track_num_fmt,
         'artist': _sanitize_path_component(queue_item.get('artist') or 'Unknown Artist') or 'Unknown Artist',
         'album_artist': _sanitize_path_component(album_artist) or 'Unknown Artist',
         'title': _sanitize_path_component(queue_item.get('title') or 'Unknown Title') or 'Unknown Title',
@@ -678,7 +710,7 @@ def update_music_tags(file_path, queue_item):
     """
     try:
         import mutagen
-        from mutagen.id3 import ID3, TIT2, TPE1, TALB, TDRC, TRCK, TPE2, TXXX, UFID, APIC, TCON, TCOM, TSRC
+        from mutagen.id3 import ID3, TIT2, TPE1, TALB, TDRC, TRCK, TPOS, TPE2, TXXX, UFID, APIC, TCON, TCOM, TSRC
         from mutagen.flac import FLAC, Picture
         from mutagen.mp4 import MP4, MP4Cover
     except ImportError:
@@ -728,6 +760,9 @@ def update_music_tags(file_path, queue_item):
             
             if queue_item.get('track_number'):
                 audio.add(TRCK(encoding=3, text=str(queue_item['track_number'])))
+
+            if queue_item.get('disc_number'):
+                audio.add(TPOS(encoding=3, text=str(queue_item['disc_number'])))
             
             # Add MusicBrainz IDs — use the same canonical TXXX descriptions as the
             # other tag-writing code paths to avoid duplicate frames in the file.
@@ -781,6 +816,9 @@ def update_music_tags(file_path, queue_item):
             
             if queue_item.get('track_number'):
                 audio['TRACKNUMBER'] = str(queue_item['track_number'])
+
+            if queue_item.get('disc_number'):
+                audio['DISCNUMBER'] = str(queue_item['disc_number'])
             
             if queue_item.get('release_mbid'):
                 audio['MUSICBRAINZ_ALBUMID'] = queue_item['release_mbid']

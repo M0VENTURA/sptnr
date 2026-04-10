@@ -837,26 +837,56 @@ def organize_individual_track(
             track_artist = track_artist_from_metadata
         
         track_title = track.get('title', 'Unknown')
-        # Prefer mb_track_number (authoritative from MusicBrainz match) over local file track_number
-        track_number = track.get('mb_track_number') or track.get('track_number', '00')
-        
+        # Prefer mb_track_number (authoritative from MusicBrainz match) over local file track_number.
+        # When both are absent, fall back to the track number embedded in the source file's tags.
+        track_number = track.get('mb_track_number') or track.get('track_number')
+        disc_number = track.get('disc_number') or release_metadata.get('disc_number')
+        if not track_number:
+            try:
+                from helpers.metadata_reader import read_mp3_metadata
+                _embedded = read_mp3_metadata(source_file) or {}
+                _tag_tn = _embedded.get('track_number') or _embedded.get('tracknumber')
+                if _tag_tn:
+                    track_number = str(_tag_tn).split('/')[0].strip()
+                if not disc_number:
+                    _tag_dn = _embedded.get('disc_number') or _embedded.get('discnumber')
+                    if _tag_dn:
+                        disc_number = str(_tag_dn).split('/')[0].strip()
+            except Exception:
+                pass
+
         if track_number and track_number != '':
             try:
-                track_num_str = f"{int(track_number):02d}"
+                disc_num_int = int(str(disc_number).split('/')[0]) if disc_number else 1
+                track_num_int = int(str(track_number).split('/')[0])
+                if disc_num_int > 1:
+                    track_num_str = f"{disc_num_int}{track_num_int:02d}"
+                else:
+                    track_num_str = f"{track_num_int:02d}"
             except (ValueError, TypeError):
                 track_num_str = str(track_number).zfill(2)
         else:
             track_num_str = "00"
-        
+
         _, ext = os.path.splitext(source_file)
         track_artist_clean = sanitize(track_artist)
         track_title_clean = sanitize(track_title)
-        
+
         new_filename = f"{track_num_str}. {track_artist_clean} - {track_title_clean}{ext}"
         dest_file = os.path.join(album_path, new_filename)
-        
-        # Move file
-        shutil.move(source_file, dest_file)
+
+        # Move/convert file using the shared transfer helper so that
+        # FLAC→MP3 conversion is applied according to config settings.
+        try:
+            from download_queue_manager import transfer_download_to_music
+            transfer_result = transfer_download_to_music(source_file, dest_file)
+            if not transfer_result.get('success'):
+                raise RuntimeError(transfer_result.get('error') or 'transfer failed')
+            # Actual destination may differ from dest_file when FLAC was converted to MP3.
+            dest_file = transfer_result.get('target_path') or dest_file
+        except ImportError:
+            # Fallback if download_queue_manager is unavailable.
+            shutil.move(source_file, dest_file)
         logger.info(f"Moved track: {source_file} -> {dest_file}")
 
         # Write metadata tags to the moved file
@@ -872,7 +902,6 @@ def organize_individual_track(
                 }
                 if release_year:
                     tags['year'] = release_year
-                disc_number = track.get('disc_number') or release_metadata.get('disc_number')
                 if disc_number:
                     tags['disc_number'] = str(disc_number)
                 mb_release_id = release_metadata.get('id')
@@ -884,7 +913,7 @@ def organize_individual_track(
                 _write_tags_to_file(dest_file, tags)
         except Exception as tag_error:
             logger.warning(f"Could not write metadata tags to {dest_file}: {tag_error}")
-        
+
         return {
             'success': True,
             'source_file': source_file,
