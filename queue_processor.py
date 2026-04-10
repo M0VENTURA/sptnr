@@ -1526,40 +1526,46 @@ def check_track_exists_in_navidrome(queue_item):
     return False, ""
 
 
-def _build_structured_slskd_query(queue_item):
-    """Build a structured slskd search query using ``artist=``, ``title=``, ``length=`` syntax.
+def _build_bracketsanitized_query(queue_item):
+    """Build a plain-text Soulseek search query with bracketed words stripped from the title.
 
-    slskd parses named fields (e.g. ``artist=The Beatles, title=Yesterday,
-    length=125``) and uses them to narrow the search.  The ``length=`` field
-    is advisory: slskd may surface files whose reported duration is close to
-    the given value, but it does not guarantee an exact match or a specific
-    tolerance window.  The authoritative ±5 s duration gate is enforced
-    client-side in ``_run_soulseek_search`` *before* the scorer runs.
+    Soulseek's ``artist=X, title=Y`` structured query syntax returns few or no
+    results in practice (slskd matches against raw filenames, not embedded tags).
+    Plain-text keyword searches work much more reliably.  Bracket annotations
+    such as "(Batman Forever Soundtrack)" or "(Radio Edit)" narrow the result
+    set unnecessarily; stripping them lets Soulseek surface all files for the
+    core title, and the candidate scorer then filters for the best match.
 
-    Returns the structured query string, or ``None`` when artist or title are
-    unavailable (the query would be too broad to be useful).
-    The ``length=`` parameter is omitted when duration is unknown.
+    Returns a ``"{artist} - {core_title}"`` string, or ``None`` when artist or
+    title are unavailable, or when the stripped title is identical to the stored
+    ``search_query`` (so we don't waste a duplicate search slot).
     """
     # Prefer album_artist: more likely to match how files are tagged by remote
     # peers than a track artist containing featured-guest clauses.
-    artist = (
-        (queue_item.get('album_artist') or queue_item.get('artist') or '').strip()
-    )
+    artist = (queue_item.get('album_artist') or queue_item.get('artist') or '').strip()
     title = (queue_item.get('title') or '').strip()
     if not artist or not title:
         return None
 
-    # Commas are the field separator in slskd's structured query syntax;
-    # remove them from user-supplied values to avoid confusing the parser.
-    artist_safe = artist.replace(',', '').strip()
-    title_safe = title.replace(',', '').strip()
-    if not artist_safe or not title_safe:
+    stripped_title = _strip_brackets(title).strip()
+    if not stripped_title:
         return None
 
-    duration = _normalize_duration_seconds(queue_item.get('duration'))
-    if duration:
-        return f"artist={artist_safe}, title={title_safe}, length={int(duration)}"
-    return f"artist={artist_safe}, title={title_safe}"
+    try:
+        from download_queue_manager import _sanitize_search_query_for_slskd
+    except ImportError:
+        def _sanitize_search_query_for_slskd(q):  # type: ignore[misc]
+            return " ".join(q.split())
+
+    query = _sanitize_search_query_for_slskd(f"{artist} - {stripped_title}")
+
+    # Skip when identical to the stored search_query – no point running the
+    # same search twice.
+    stored = (queue_item.get('search_query') or '').strip()
+    if query == stored:
+        return None
+
+    return query or None
 
 
 def _build_fallback_search_queries(queue_item, primary_query):
@@ -1659,6 +1665,20 @@ def _build_fallback_search_queries(queue_item, primary_query):
     # stored query, not just quote characters.  Handles titles containing commas,
     # exclamation marks, periods, etc. ("Hello! World" → "Hello World").
     _add(_strip_query_punctuation_for_slskd(primary_query))
+
+    # Fallback 0c: bracket-stripped artist + title.  Removes parenthesised /
+    # square-bracketed annotations from the title (e.g. "(Batman Forever
+    # Soundtrack)", "(Radio Edit)") so that Soulseek can match plain filenames
+    # that don't include the annotation.  Results are still filtered by the
+    # candidate scorer.  Tried for both the track artist and the album artist.
+    core_title = _strip_brackets(title).strip()
+    if core_title and core_title.lower() != title.lower():
+        if artist:
+            _add(_sanitize_search_query_for_slskd(f"{artist} - {core_title}"))
+        if album_artist and album_artist.lower() != artist.lower():
+            _add(_sanitize_search_query_for_slskd(f"{album_artist} - {core_title}"))
+        # Also try just the core title without artist, with a stricter threshold.
+        _add(_sanitize_search_query_for_slskd(core_title), min_score=0.60)
 
     # Fallback 1: album artist (e.g. "KNEECAP - Palestine")
     if album_artist and album_artist.lower() != artist.lower():
@@ -1866,28 +1886,29 @@ def search_and_download(queue_id, queue_item, client):
 
         poll_start_time = datetime.now()
 
-        # Try the structured slskd query first when artist/title are known.
-        # ``artist=X, title=Y, length=N`` narrows the slskd server-side search
-        # so fewer unrelated files are returned.  The structured query always
-        # uses a different format from the plain search_query (``artist=…``
-        # syntax vs. free text), so no string equality check is needed.
+        # Try a bracket-stripped plain-text query first.  Searching with the
+        # core title (brackets removed) produces more results than the stored
+        # search_query when the title contains annotations like
+        # "(Batman Forever Soundtrack)" that are absent from shared filenames.
+        # Raw Soulseek results are then filtered by _score_soulseek_candidate
+        # which validates artist, title, and duration against the queue item.
         best_result = None
         best_score = 0.0
-        structured_query = _build_structured_slskd_query(queue_item)
-        if structured_query:
+        stripped_query = _build_bracketsanitized_query(queue_item)
+        if stripped_query:
             logger.info(
-                f"Queue {queue_id}: Trying structured query '{structured_query}'..."
+                f"Queue {queue_id}: Trying bracket-stripped query '{stripped_query}'..."
             )
             best_result, best_score = _run_soulseek_search(
-                queue_id, structured_query, queue_item, client
+                queue_id, stripped_query, queue_item, client
             )
             if best_result and best_score >= _SLSKD_MIN_ACCEPT_SCORE:
                 logger.info(
-                    f"Queue {queue_id}: Structured query succeeded (score={best_score:.2f})"
+                    f"Queue {queue_id}: Bracket-stripped query succeeded (score={best_score:.2f})"
                 )
 
         # Primary plain-text search using the stored search_query when the
-        # structured query returned nothing useful.
+        # bracket-stripped query returned nothing useful.
         if not best_result or best_score < _SLSKD_MIN_ACCEPT_SCORE:
             plain_result, plain_score = _run_soulseek_search(
                 queue_id, search_query, queue_item, client
