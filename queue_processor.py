@@ -2232,11 +2232,29 @@ def check_completed_downloads():
                             )
                         elif transfer_state == getattr(slskd_client, "STATE_SUCCEEDED", None):
                             # slskd reports success but no local file was found — the file
-                            # likely disappeared before matching completed.  Re-queue so it
-                            # can be downloaded again.
+                            # was deleted before the queue processor could match it.
+                            # Remove the stale "Completed, Succeeded" entry from slskd so
+                            # that the next retry actually queues a fresh download instead
+                            # of slskd seeing the old completed entry and skipping it.
                             logger.warning(
-                                f"Queue {item_id}: slskd reports succeeded but no file found, scheduling retry"
+                                f"Queue {item_id}: slskd reports succeeded but no file found; "
+                                f"removing stale transfer and scheduling retry"
                             )
+                            try:
+                                _stale_id = str(transfer.get("id") or "")
+                                _stale_user = str(transfer.get("username") or "")
+                                if _stale_id and _stale_user:
+                                    slskd_client.cancel_download(
+                                        _stale_user, _stale_id, remove=True
+                                    )
+                                    logger.debug(
+                                        f"Queue {item_id}: removed stale completed transfer "
+                                        f"{_stale_id} (user={_stale_user}) from slskd"
+                                    )
+                            except Exception as _cancel_err:
+                                logger.debug(
+                                    f"Queue {item_id}: could not remove stale transfer: {_cancel_err}"
+                                )
                             mark_failed(
                                 item_id,
                                 "slskd transfer succeeded but local file not found",
