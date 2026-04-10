@@ -370,10 +370,10 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
         # *different* bracket variants — e.g. "(edit)" vs "(radio mix)" — must
         # be a hard reject so that we don't download the wrong version and then
         # have the post-download metadata check reject it and re-queue the item.
-        _full_title_variants = set(_tokenize_meaningful(title_norm)) & title_variant_tokens
-        _full_basename_variants = set(_tokenize_meaningful(basename_norm)) & title_variant_tokens
-        if _full_title_variants and _full_basename_variants:
-            if _full_title_variants.isdisjoint(_full_basename_variants):
+        full_title_variants = set(_tokenize_meaningful(title_norm)) & title_variant_tokens
+        full_basename_variants = set(_tokenize_meaningful(basename_norm)) & title_variant_tokens
+        if full_title_variants and full_basename_variants:
+            if full_title_variants.isdisjoint(full_basename_variants):
                 return 0.0
 
         if len(title_tokens) <= 2 and shared_title_tokens < len(title_tokens):
@@ -772,10 +772,10 @@ def _filename_matches_queue_item(filename, queue_item):
         # full text (including inside bracket annotations like "(edit)" or
         # "(radio mix)"), those sets must overlap.  Mirrors the same check in
         # _score_soulseek_candidate so the two functions stay in sync.
-        _full_title_variants = set(_tokenize_meaningful(title_norm)) & title_variant_tokens
-        _full_basename_variants = set(_tokenize_meaningful(basename_norm)) & title_variant_tokens
-        if _full_title_variants and _full_basename_variants:
-            if _full_title_variants.isdisjoint(_full_basename_variants):
+        full_title_variants = set(_tokenize_meaningful(title_norm)) & title_variant_tokens
+        full_basename_variants = set(_tokenize_meaningful(basename_norm)) & title_variant_tokens
+        if full_title_variants and full_basename_variants:
+            if full_title_variants.isdisjoint(full_basename_variants):
                 return False
 
         # Core-title exactness: reject when the bracket-stripped candidate core
