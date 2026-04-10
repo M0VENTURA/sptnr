@@ -174,9 +174,9 @@ class APIRateLimiter:
 
         Acquires the lock, computes how long to sleep so at least
         MUSICBRAINZ_MIN_INTERVAL has elapsed since the previous request,
-        sleeps if needed, then records the request before releasing the lock.
-        This ensures that concurrent threads are serialised and never fire
-        requests faster than the allowed 1 request per second.
+        sleeps if needed, then records the request and persists state before
+        releasing the lock.  This ensures that concurrent threads are
+        serialised and never fire requests faster than the allowed 1 req/s.
         """
         with self._mb_lock:
             now = time.time()
@@ -184,10 +184,13 @@ class APIRateLimiter:
             wait_time = MUSICBRAINZ_MIN_INTERVAL - (now - last_request)
             if wait_time > 0:
                 time.sleep(wait_time)
+            # Capture the timestamp after sleeping so it accurately reflects
+            # when this request slot is consumed.
             self.state['musicbrainz_last_request'] = time.time()
             self.state['musicbrainz_daily_count'] = self.state.get('musicbrainz_daily_count', 0) + 1
-        # Save state outside the lock to minimise the hold time.
-        self._save_state()
+            # Save inside the lock so concurrent threads never overwrite each
+            # other's daily-count increments.
+            self._save_state()
     
     def wait_if_needed_musicbrainz(self, max_wait_seconds: float = 2.0) -> bool:
         """
