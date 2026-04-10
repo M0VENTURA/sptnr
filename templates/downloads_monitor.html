@@ -1978,12 +1978,25 @@ async function moveIndividualTrackFromEncoded(folderPathEnc, trackIndex, trackEn
     await runAfterPrevious; // wait for any previously queued move to finish
 
     const folderPath = decodeInlineArg(folderPathEnc, '');
-    const track = decodeInlineArg(trackEnc, null);
+    let track = decodeInlineArg(trackEnc, null);
     const candidate = decodeInlineArg(candidateEnc, null);
     
     if (!track || !candidate) {
       alert('❌ Invalid track or candidate data');
       return;
+    }
+
+    // Inject MB track number from the track map so the correct position is
+    // used when building the destination filename (fixes "00." prefix bug).
+    const folderSel = folderMatchSelections[folderPath];
+    if (folderSel && folderSel.trackMapByIndex) {
+      const mapped = folderSel.trackMapByIndex[trackIndex];
+      if (mapped && mapped.releaseTrack) {
+        const mbPos = mapped.releaseTrack.position;
+        if (mbPos != null) {
+          track = { ...track, mb_track_number: mbPos };
+        }
+      }
     }
     
     // Build release metadata from candidate
@@ -2906,6 +2919,12 @@ async function loadFolderGroups(options = {}) {
                   <button class="btn btn-sm btn-outline-success me-2"
                           onclick="moveAllInGroupFromEncoded('${moveableQueueIdsEnc}')"
                           title="Move all ready tracks in this group to /music and retag from MusicBrainz">
+                    <i class="bi bi-box-arrow-right"></i> Move All
+                  </button>
+                ` : (!isQueueItem && matchedSelection) ? `
+                  <button class="btn btn-sm btn-outline-success me-2"
+                          onclick="moveAllFolderTracksFromEncoded('${folderPathEnc}', '${tracksEnc}', '${encodeInlineArg(matchedSelection.candidate)}')"
+                          title="Move all matched tracks in this folder to /music">
                     <i class="bi bi-box-arrow-right"></i> Move All
                   </button>
                 ` : ''}
@@ -4944,6 +4963,101 @@ async function moveAllInGroup(queueIds) {
   alert(parts.join('\n'));
   await loadQueueStatus();
   await loadFolderGroups({ forceRender: true });
+}
+
+function moveAllFolderTracksFromEncoded(folderPathEnc, tracksEnc, candidateEnc) {
+  const folderPath = decodeInlineArg(folderPathEnc, '');
+  const tracks = decodeInlineArg(tracksEnc, []);
+  const candidate = decodeInlineArg(candidateEnc, null);
+  if (!folderPath || !candidate || !tracks.length) {
+    alert('❌ Missing folder path, tracks, or candidate data');
+    return;
+  }
+  moveAllFolderTracks(folderPath, tracks, candidate);
+}
+
+async function moveAllFolderTracks(folderPath, tracks, candidate) {
+  const selection = folderMatchSelections[folderPath];
+
+  // Determine which tracks still need to be moved
+  const pending = tracks
+    .map((track, idx) => ({ track, idx }))
+    .filter(({ track, idx }) => {
+      // Skip already-matched (moved) tracks
+      const moved = selection?.movedTrackIndices?.has(idx);
+      if (moved) return false;
+      // Must have a file path
+      const fp = track.file_path || track.matched_file_path || track.music_file_path || track.source_file_path || track.found_filename;
+      return !!fp;
+    });
+
+  if (pending.length === 0) {
+    alert('ℹ️ No pending tracks to move.');
+    return;
+  }
+
+  if (!confirm(`Move all ${pending.length} track(s) to /music?`)) return;
+
+  const releaseMetadata = {
+    id: candidate.id,
+    title: candidate.title,
+    artist: candidate.artist,
+    date: candidate.date,
+    source: candidate.source || 'musicbrainz',
+    track_count: candidate.track_count || null
+  };
+
+  let succeeded = 0;
+  let failed = 0;
+  const errors = [];
+
+  for (const { track, idx } of pending) {
+    // Inject MB track number from mapping if available
+    let trackToMove = track;
+    if (selection && selection.trackMapByIndex) {
+      const mapped = selection.trackMapByIndex[idx];
+      if (mapped && mapped.releaseTrack) {
+        const mbPos = mapped.releaseTrack.position;
+        if (mbPos != null) {
+          trackToMove = { ...track, mb_track_number: mbPos };
+        }
+      }
+    }
+
+    try {
+      const response = await fetch(`/api/downloads/track/${idx}/move`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          folder_path: folderPath,
+          track: trackToMove,
+          release_metadata: releaseMetadata,
+          check_duplicates: true
+        })
+      });
+      const result = await response.json();
+      if (result.success) {
+        succeeded++;
+      } else if (result.duplicate_detected) {
+        failed++;
+        errors.push(`${track.title || idx}: already in library`);
+      } else {
+        failed++;
+        errors.push(`${track.title || idx}: ${result.error || 'Failed'}`);
+      }
+    } catch (err) {
+      failed++;
+      errors.push(`${track.title || idx}: ${err.message}`);
+    }
+  }
+
+  const parts = [`✅ ${succeeded} track(s) moved to /music`];
+  if (failed > 0) {
+    parts.push(`❌ ${failed} failed`);
+    errors.forEach(e => parts.push(`  • ${e}`));
+  }
+  alert(parts.join('\n'));
+  loadFolderGroups({ forceRender: true });
 }
 
 async function sendQueriedTrack(queueId) {

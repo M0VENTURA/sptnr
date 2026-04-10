@@ -832,7 +832,8 @@ def organize_individual_track(
             track_artist = track_artist_from_metadata
         
         track_title = track.get('title', 'Unknown')
-        track_number = track.get('track_number', '00')
+        # Prefer mb_track_number (authoritative from MusicBrainz match) over local file track_number
+        track_number = track.get('mb_track_number') or track.get('track_number', '00')
         
         if track_number and track_number != '':
             try:
