@@ -695,7 +695,8 @@ def organize_folder_to_music(folder_path, tracks, release_metadata, music_dir="/
                 # Get track metadata
                 track_artist = track.get('artist', album_artist)
                 track_title = track.get('title', 'Unknown Track')
-                track_number = track.get('track_number', '')
+                # Prefer mb_track_number (authoritative from MusicBrainz match) over local file track_number
+                track_number = track.get('mb_track_number') or track.get('track_number', '')
                 
                 # Get file extension
                 _, ext = os.path.splitext(source_file)
