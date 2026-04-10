@@ -806,6 +806,9 @@ def _filename_matches_queue_item(filename, queue_item):
     return score >= 0.60
 
 
+_CLEANUP_SIBLING_MIN_AGE_SECONDS = 3600  # only remove files older than 1 hour
+
+
 def _cleanup_sibling_downloads(queue_item, keep_path=None):
     """
     Remove downloaded files that match the same artist+title as *queue_item*
@@ -813,6 +816,9 @@ def _cleanup_sibling_downloads(queue_item, keep_path=None):
 
     This prevents duplicate copies accumulating in DOWNLOADS_DIR when a
     search is retried and a different peer's file is selected.
+
+    Files younger than _CLEANUP_SIBLING_MIN_AGE_SECONDS (1 hour) are never
+    deleted — they may still be in the middle of post-download processing.
     """
     artist_norm = _normalize_match_text(queue_item.get('artist'))
     title_norm = _normalize_match_text(queue_item.get('title'))
@@ -833,6 +839,13 @@ def _cleanup_sibling_downloads(queue_item, keep_path=None):
                 rel_path = os.path.relpath(fpath, DOWNLOADS_DIR)
                 if _filename_matches_queue_item(rel_path, queue_item):
                     try:
+                        age_seconds = time.time() - os.path.getmtime(fpath)
+                        if age_seconds < _CLEANUP_SIBLING_MIN_AGE_SECONDS:
+                            logger.debug(
+                                f"[CLEANUP] Skipping recent file ({age_seconds:.0f}s old, "
+                                f"min={_CLEANUP_SIBLING_MIN_AGE_SECONDS}s): {fpath}"
+                            )
+                            continue
                         os.remove(fpath)
                         logger.info(f"[CLEANUP] Removed duplicate download: {fpath}")
                         # Remove now-empty parent directories up to DOWNLOADS_DIR
