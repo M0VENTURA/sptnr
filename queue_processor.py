@@ -806,6 +806,9 @@ def _filename_matches_queue_item(filename, queue_item):
     return score >= 0.60
 
 
+_CLEANUP_SIBLING_MIN_AGE_SECONDS = 3600  # only remove files older than 1 hour
+
+
 def _cleanup_sibling_downloads(queue_item, keep_path=None):
     """
     Remove downloaded files that match the same artist+title as *queue_item*
@@ -813,6 +816,9 @@ def _cleanup_sibling_downloads(queue_item, keep_path=None):
 
     This prevents duplicate copies accumulating in DOWNLOADS_DIR when a
     search is retried and a different peer's file is selected.
+
+    Files younger than _CLEANUP_SIBLING_MIN_AGE_SECONDS (1 hour) are never
+    deleted — they may still be in the middle of post-download processing.
     """
     artist_norm = _normalize_match_text(queue_item.get('artist'))
     title_norm = _normalize_match_text(queue_item.get('title'))
@@ -833,6 +839,13 @@ def _cleanup_sibling_downloads(queue_item, keep_path=None):
                 rel_path = os.path.relpath(fpath, DOWNLOADS_DIR)
                 if _filename_matches_queue_item(rel_path, queue_item):
                     try:
+                        age_seconds = time.time() - os.path.getmtime(fpath)
+                        if age_seconds < _CLEANUP_SIBLING_MIN_AGE_SECONDS:
+                            logger.debug(
+                                f"[CLEANUP] Skipping recent file ({age_seconds:.0f}s old, "
+                                f"min={_CLEANUP_SIBLING_MIN_AGE_SECONDS}s): {fpath}"
+                            )
+                            continue
                         os.remove(fpath)
                         logger.info(f"[CLEANUP] Removed duplicate download: {fpath}")
                         # Remove now-empty parent directories up to DOWNLOADS_DIR
@@ -2232,11 +2245,29 @@ def check_completed_downloads():
                             )
                         elif transfer_state == getattr(slskd_client, "STATE_SUCCEEDED", None):
                             # slskd reports success but no local file was found — the file
-                            # likely disappeared before matching completed.  Re-queue so it
-                            # can be downloaded again.
+                            # was deleted before the queue processor could match it.
+                            # Remove the stale "Completed, Succeeded" entry from slskd so
+                            # that the next retry actually queues a fresh download instead
+                            # of slskd seeing the old completed entry and skipping it.
                             logger.warning(
-                                f"Queue {item_id}: slskd reports succeeded but no file found, scheduling retry"
+                                f"Queue {item_id}: slskd reports succeeded but no file found; "
+                                f"removing stale transfer and scheduling retry"
                             )
+                            try:
+                                _stale_id = str(transfer.get("id") or "")
+                                _stale_user = str(transfer.get("username") or "")
+                                if _stale_id and _stale_user:
+                                    slskd_client.cancel_download(
+                                        _stale_user, _stale_id, remove=True
+                                    )
+                                    logger.debug(
+                                        f"Queue {item_id}: removed stale completed transfer "
+                                        f"{_stale_id} (user={_stale_user}) from slskd"
+                                    )
+                            except Exception as _cancel_err:
+                                logger.debug(
+                                    f"Queue {item_id}: could not remove stale transfer: {_cancel_err}"
+                                )
                             mark_failed(
                                 item_id,
                                 "slskd transfer succeeded but local file not found",
