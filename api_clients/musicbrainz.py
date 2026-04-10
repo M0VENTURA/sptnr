@@ -328,8 +328,7 @@ class MusicBrainzClient:
             try:
                 # Use rate limiter to enforce proper delays between requests
                 if _rate_limiter:
-                    _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
-                    _rate_limiter.record_musicbrainz_request()
+                    _rate_limiter.throttle_musicbrainz()
                 else:
                     # Fallback to simple delay if rate limiter not available
                     time.sleep(1.0)
@@ -463,8 +462,7 @@ class MusicBrainzClient:
             for attempt in range(max_retries):
                 try:
                     if _rate_limiter:
-                        _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
-                        _rate_limiter.record_musicbrainz_request()
+                        _rate_limiter.throttle_musicbrainz()
                     else:
                         time.sleep(1.0)
 
@@ -555,8 +553,7 @@ class MusicBrainzClient:
             try:
                 # Use rate limiter to enforce proper delays between requests
                 if _rate_limiter:
-                    _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
-                    _rate_limiter.record_musicbrainz_request()
+                    _rate_limiter.throttle_musicbrainz()
                 else:
                     # Fallback to simple delay if rate limiter not available
                     time.sleep(1.0)
@@ -648,8 +645,7 @@ class MusicBrainzClient:
         try:
             # Use rate limiter to enforce proper delays between requests
             if _rate_limiter:
-                _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
-                _rate_limiter.record_musicbrainz_request()
+                _rate_limiter.throttle_musicbrainz()
             else:
                 # Fallback to simple delay if rate limiter not available
                 time.sleep(1.0)
@@ -695,8 +691,7 @@ class MusicBrainzClient:
                         try:
                             # Use rate limiter for second lookup
                             if _rate_limiter:
-                                _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
-                                _rate_limiter.record_musicbrainz_request()
+                                _rate_limiter.throttle_musicbrainz()
                             else:
                                 # Fallback to simple delay if rate limiter not available
                                 time.sleep(1.0)
@@ -752,8 +747,7 @@ class MusicBrainzClient:
             try:
                 # Use rate limiter to enforce proper delays between requests
                 if _rate_limiter:
-                    _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
-                    _rate_limiter.record_musicbrainz_request()
+                    _rate_limiter.throttle_musicbrainz()
                 else:
                     # Fallback to simple delay if rate limiter not available
                     time.sleep(1.0)
@@ -830,8 +824,7 @@ class MusicBrainzClient:
         for attempt in range(max_retries):
             try:
                 if _rate_limiter:
-                    _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
-                    _rate_limiter.record_musicbrainz_request()
+                    _rate_limiter.throttle_musicbrainz()
                 else:
                     time.sleep(1.0)
 
@@ -954,8 +947,7 @@ class MusicBrainzClient:
             try:
                 # Use rate limiter
                 if _rate_limiter:
-                    _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
-                    _rate_limiter.record_musicbrainz_request()
+                    _rate_limiter.throttle_musicbrainz()
                 else:
                     time.sleep(1.0)
                 
@@ -1037,8 +1029,7 @@ class MusicBrainzClient:
             try:
                 # Use rate limiter
                 if _rate_limiter:
-                    _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
-                    _rate_limiter.record_musicbrainz_request()
+                    _rate_limiter.throttle_musicbrainz()
                 else:
                     time.sleep(1.0)
                 
@@ -1137,8 +1128,7 @@ class MusicBrainzClient:
                 # The search endpoint does NOT support ``inc`` for relationship data;
                 # only the lookup endpoint does.
                 if _rate_limiter:
-                    _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
-                    _rate_limiter.record_musicbrainz_request()
+                    _rate_limiter.throttle_musicbrainz()
                 else:
                     time.sleep(1.0)
                 
@@ -1173,8 +1163,7 @@ class MusicBrainzClient:
                 #                        composer/lyricist/writer credits attached to
                 #                        the Work entity are returned without a third hop
                 if _rate_limiter:
-                    _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
-                    _rate_limiter.record_musicbrainz_request()
+                    _rate_limiter.throttle_musicbrainz()
                 else:
                     time.sleep(1.0)
                 
@@ -1300,8 +1289,7 @@ def get_album_type_with_fallback(artist: str, album: str, spotify_album_type: st
         
         # Use rate limiter before request
         if _rate_limiter:
-            _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
-            _rate_limiter.record_musicbrainz_request()
+            _rate_limiter.throttle_musicbrainz()
         else:
             time.sleep(1.0)
         
@@ -1344,8 +1332,7 @@ def get_album_type_with_fallback(artist: str, album: str, spotify_album_type: st
                 logger.debug(f"MusicBrainz direct MBID lookup failed for '{release_group_mbid}': {mbid_err}, falling back to text search")
                 # Rate limit before the text search fallback
                 if _rate_limiter:
-                    _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
-                    _rate_limiter.record_musicbrainz_request()
+                    _rate_limiter.throttle_musicbrainz()
                 else:
                     time.sleep(1.0)
         
@@ -1479,8 +1466,7 @@ def lookup_and_save_artist_mbid(artist: str, db_connection) -> str:
         
         # Use rate limiter before request
         if _rate_limiter:
-            _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
-            _rate_limiter.record_musicbrainz_request()
+            _rate_limiter.throttle_musicbrainz()
         else:
             time.sleep(1.0)
         

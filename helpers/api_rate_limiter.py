@@ -8,6 +8,7 @@ import json
 import os
 import time
 import logging
+import threading
 from datetime import datetime, timedelta
 
 # Set up logger for this module
@@ -30,6 +31,10 @@ class APIRateLimiter:
     def __init__(self, state_file: str = "/database/api_rate_limiter_state.json"):
         self.state_file = state_file
         self.state = self._load_state()
+        # Thread-safety lock for MusicBrainz rate limiting.
+        # The check+sleep+record sequence must be atomic so concurrent threads
+        # cannot all pass the "OK to proceed" check simultaneously.
+        self._mb_lock = threading.Lock()
         
     def _load_state(self) -> dict:
         """Load state from file or create new state"""
@@ -163,6 +168,29 @@ class APIRateLimiter:
         self.state['musicbrainz_daily_count'] = self.state.get('musicbrainz_daily_count', 0) + 1
         self.state['musicbrainz_last_request'] = now
         self._save_state()
+
+    def throttle_musicbrainz(self):
+        """Enforce MusicBrainz 1-req/s rate limit atomically. Thread-safe.
+
+        Acquires the lock, computes how long to sleep so at least
+        MUSICBRAINZ_MIN_INTERVAL has elapsed since the previous request,
+        sleeps if needed, then records the request and persists state before
+        releasing the lock.  This ensures that concurrent threads are
+        serialised and never fire requests faster than the allowed 1 req/s.
+        """
+        with self._mb_lock:
+            now = time.time()
+            last_request = self.state.get('musicbrainz_last_request', 0)
+            wait_time = MUSICBRAINZ_MIN_INTERVAL - (now - last_request)
+            if wait_time > 0:
+                time.sleep(wait_time)
+            # Capture the timestamp after sleeping so it accurately reflects
+            # when this request slot is consumed.
+            self.state['musicbrainz_last_request'] = time.time()
+            self.state['musicbrainz_daily_count'] = self.state.get('musicbrainz_daily_count', 0) + 1
+            # Save inside the lock so concurrent threads never overwrite each
+            # other's daily-count increments.
+            self._save_state()
     
     def wait_if_needed_musicbrainz(self, max_wait_seconds: float = 2.0) -> bool:
         """
