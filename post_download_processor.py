@@ -211,8 +211,7 @@ def fetch_musicbrainz_release_metadata(release_id):
         for attempt in range(max_retries):
             # Enforce MB's 1-request-per-second rule before every attempt
             if _mb_rate_limiter:
-                _mb_rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
-                _mb_rate_limiter.record_musicbrainz_request()
+                _mb_rate_limiter.throttle_musicbrainz()
             else:
                 time.sleep(1.0)
             try:
