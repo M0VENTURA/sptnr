@@ -1492,10 +1492,11 @@ def _build_structured_slskd_query(queue_item):
     """Build a structured slskd search query using ``artist=``, ``title=``, ``length=`` syntax.
 
     slskd parses named fields (e.g. ``artist=The Beatles, title=Yesterday,
-    length=125``) and filters results to only files whose metadata matches
-    those values.  Including ``length=`` in the query causes slskd to surface
-    only files whose reported duration matches the expected track length,
-    significantly reducing false-positive candidates.
+    length=125``) and uses them to narrow the search.  The ``length=`` field
+    is advisory: slskd may surface files whose reported duration is close to
+    the given value, but it does not guarantee an exact match or a specific
+    tolerance window.  The authoritative ±5 s duration gate is enforced
+    client-side in ``_run_soulseek_search`` *before* the scorer runs.
 
     Returns the structured query string, or ``None`` when artist or title are
     unavailable (the query would be too broad to be useful).
@@ -1827,14 +1828,15 @@ def search_and_download(queue_id, queue_item, client):
 
         poll_start_time = datetime.now()
 
-        # Try the structured slskd query first when a duration is known.
-        # ``artist=X, title=Y, length=N`` causes slskd to only surface files
-        # whose reported duration matches, greatly reducing false positives
-        # compared to a plain free-text query.
+        # Try the structured slskd query first when artist/title are known.
+        # ``artist=X, title=Y, length=N`` narrows the slskd server-side search
+        # so fewer unrelated files are returned.  The structured query always
+        # uses a different format from the plain search_query (``artist=…``
+        # syntax vs. free text), so no string equality check is needed.
         best_result = None
         best_score = 0.0
         structured_query = _build_structured_slskd_query(queue_item)
-        if structured_query and structured_query != search_query:
+        if structured_query:
             logger.info(
                 f"Queue {queue_id}: Trying structured query '{structured_query}'..."
             )
