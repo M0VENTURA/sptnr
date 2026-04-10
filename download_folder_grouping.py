@@ -15,6 +15,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
+import requests
 from api_clients import session as _shared_session, timeout_safe_session as _mb_search_session
 from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
 from database_abstraction import is_postgres_connection
@@ -531,9 +532,37 @@ def try_discogs_match(folder_path, artist, album):
         }
 
 
+def _title_similarity(a, b):
+    """Return a 0–1 similarity score between two track title strings."""
+    import re as _re
+    if not a or not b:
+        return 0.0
+    def _norm(s):
+        s = s.lower()
+        s = _re.sub(r'[^\w\s]', '', s)
+        s = _re.sub(r'\s+', ' ', s).strip()
+        return s
+    na, nb = _norm(a), _norm(b)
+    if na == nb:
+        return 1.0
+    if na in nb or nb in na:
+        return 0.85
+    words_a = set(na.split())
+    words_b = set(nb.split())
+    if not words_a or not words_b:
+        return 0.0
+    intersection = words_a & words_b
+    union = words_a | words_b
+    return len(intersection) / len(union)
+
+
 def apply_matched_metadata_to_folder(folder_path, tracks, matched_metadata):
     """
     Apply MusicBrainz matched metadata to a folder group's tracks.
+
+    Each folder file is matched to the best-fitting release track by title
+    similarity (file → release track direction).  Positional matching is only
+    used as a fallback when no title similarity can be established.
     
     Args:
         folder_path: Relative folder path
@@ -549,19 +578,47 @@ def apply_matched_metadata_to_folder(folder_path, tracks, matched_metadata):
         # Get track listing from matched metadata if available
         mb_tracks = matched_metadata.get('tracks', [])
         
-        for i, track in enumerate(tracks):
+        used_mb_indices = set()
+
+        for track in tracks:
             updated_track = track.copy()
-            
-            # Try to match with MusicBrainz track number order
-            if i < len(mb_tracks):
-                mb_track = mb_tracks[i]
+
+            best_idx = -1
+            best_score = 0.0
+
+            if mb_tracks:
+                # First pass: title similarity
+                for mb_idx, mb_track in enumerate(mb_tracks):
+                    if mb_idx in used_mb_indices:
+                        continue
+                    score = _title_similarity(track.get('title', ''), mb_track.get('title', ''))
+                    if score > best_score:
+                        best_score = score
+                        best_idx = mb_idx
+
+                # Accept the best title match when confidence is reasonable
+                if best_idx >= 0 and best_score >= 0.35:
+                    used_mb_indices.add(best_idx)
+                else:
+                    # Fallback: use track_number embedded in the file
+                    best_idx = -1
+                    try:
+                        tn = int(track.get('track_number') or 0)
+                        if tn > 0 and (tn - 1) < len(mb_tracks) and (tn - 1) not in used_mb_indices:
+                            best_idx = tn - 1
+                            used_mb_indices.add(best_idx)
+                    except (ValueError, TypeError):
+                        pass
+
+            if best_idx >= 0:
+                mb_track = mb_tracks[best_idx]
                 updated_track['mb_title'] = mb_track.get('title')
                 updated_track['mb_track_number'] = mb_track.get('position')
                 updated_track['mb_duration'] = mb_track.get('length')
-            
+
             # Apply release-level metadata
-            updated_track['matched_artist'] = matched_metadata.get('artist', track['artist'])
-            updated_track['matched_album'] = matched_metadata.get('title', track['album'])
+            updated_track['matched_artist'] = matched_metadata.get('artist', track.get('artist', ''))
+            updated_track['matched_album'] = matched_metadata.get('title', track.get('album', ''))
             updated_track['matched_date'] = matched_metadata.get('date')
             updated_track['mb_release_id'] = matched_metadata.get('id')
             
@@ -721,6 +778,32 @@ def organize_folder_to_music(folder_path, tracks, release_metadata, music_dir="/
                 # Move file
                 shutil.move(source_file, dest_file)
                 logger.info(f"Moved: {source_file} -> {dest_file}")
+
+                # Write metadata tags to the moved file
+                try:
+                    from helpers.tag_manager import write_tags_to_file
+                    tag_title = track.get('mb_title') or track_title
+                    tags = {
+                        'title': tag_title,
+                        'artist': track_artist,
+                        'album': album_title,
+                        'album_artist': album_artist,
+                        'track_number': track_num_str,
+                    }
+                    if release_year:
+                        tags['year'] = release_year
+                    disc_number = track.get('disc_number') or release_metadata.get('disc_number')
+                    if disc_number:
+                        tags['disc_number'] = str(disc_number)
+                    mb_release_id = release_metadata.get('id')
+                    if mb_release_id:
+                        tags['musicbrainz_album_mbid'] = mb_release_id
+                    mb_recording_id = track.get('mb_recording_id') or track.get('mbid')
+                    if mb_recording_id:
+                        tags['musicbrainz_trackid'] = mb_recording_id
+                    write_tags_to_file(dest_file, tags)
+                except Exception as tag_error:
+                    logger.warning(f"Could not write metadata tags to {dest_file}: {tag_error}")
                 
                 organized_files.append({
                     'source': source_file,

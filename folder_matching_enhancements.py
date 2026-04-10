@@ -853,6 +853,32 @@ def organize_individual_track(
         # Move file
         shutil.move(source_file, dest_file)
         logger.info(f"Moved track: {source_file} -> {dest_file}")
+
+        # Write metadata tags to the moved file
+        try:
+            from helpers.tag_manager import write_tags_to_file
+            tag_title = track.get('mb_title') or track_title
+            tags = {
+                'title': tag_title,
+                'artist': track_artist,
+                'album': album_title,
+                'album_artist': album_artist,
+                'track_number': track_num_str,
+            }
+            if release_year:
+                tags['year'] = release_year
+            disc_number = track.get('disc_number') or release_metadata.get('disc_number')
+            if disc_number:
+                tags['disc_number'] = str(disc_number)
+            mb_release_id = release_metadata.get('id')
+            if mb_release_id:
+                tags['musicbrainz_album_mbid'] = mb_release_id
+            mb_recording_id = track.get('mb_recording_id') or track.get('mbid')
+            if mb_recording_id:
+                tags['musicbrainz_trackid'] = mb_recording_id
+            write_tags_to_file(dest_file, tags)
+        except Exception as tag_error:
+            logger.warning(f"Could not write metadata tags to {dest_file}: {tag_error}")
         
         return {
             'success': True,
