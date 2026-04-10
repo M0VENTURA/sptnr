@@ -1488,6 +1488,41 @@ def check_track_exists_in_navidrome(queue_item):
     return False, ""
 
 
+def _build_structured_slskd_query(queue_item):
+    """Build a structured slskd search query using ``artist=``, ``title=``, ``length=`` syntax.
+
+    slskd parses named fields (e.g. ``artist=The Beatles, title=Yesterday,
+    length=125``) and filters results to only files whose metadata matches
+    those values.  Including ``length=`` in the query causes slskd to surface
+    only files whose reported duration matches the expected track length,
+    significantly reducing false-positive candidates.
+
+    Returns the structured query string, or ``None`` when artist or title are
+    unavailable (the query would be too broad to be useful).
+    The ``length=`` parameter is omitted when duration is unknown.
+    """
+    # Prefer album_artist: more likely to match how files are tagged by remote
+    # peers than a track artist containing featured-guest clauses.
+    artist = (
+        (queue_item.get('album_artist') or queue_item.get('artist') or '').strip()
+    )
+    title = (queue_item.get('title') or '').strip()
+    if not artist or not title:
+        return None
+
+    # Commas are the field separator in slskd's structured query syntax;
+    # remove them from user-supplied values to avoid confusing the parser.
+    artist_safe = artist.replace(',', '').strip()
+    title_safe = title.replace(',', '').strip()
+    if not artist_safe or not title_safe:
+        return None
+
+    duration = _normalize_duration_seconds(queue_item.get('duration'))
+    if duration:
+        return f"artist={artist_safe}, title={title_safe}, length={int(duration)}"
+    return f"artist={artist_safe}, title={title_safe}"
+
+
 def _build_fallback_search_queries(queue_item, primary_query):
     """Build alternative search queries for tracks with featured artists.
 
@@ -1778,8 +1813,34 @@ def search_and_download(queue_id, queue_item, client):
 
         poll_start_time = datetime.now()
 
-        # Primary search using the stored search_query (built from track artist).
-        best_result, best_score = _run_soulseek_search(queue_id, search_query, queue_item, client)
+        # Try the structured slskd query first when a duration is known.
+        # ``artist=X, title=Y, length=N`` causes slskd to only surface files
+        # whose reported duration matches, greatly reducing false positives
+        # compared to a plain free-text query.
+        best_result = None
+        best_score = 0.0
+        structured_query = _build_structured_slskd_query(queue_item)
+        if structured_query and structured_query != search_query:
+            logger.info(
+                f"Queue {queue_id}: Trying structured query '{structured_query}'..."
+            )
+            best_result, best_score = _run_soulseek_search(
+                queue_id, structured_query, queue_item, client
+            )
+            if best_result and best_score >= _SLSKD_MIN_ACCEPT_SCORE:
+                logger.info(
+                    f"Queue {queue_id}: Structured query succeeded (score={best_score:.2f})"
+                )
+
+        # Primary plain-text search using the stored search_query when the
+        # structured query returned nothing useful.
+        if not best_result or best_score < _SLSKD_MIN_ACCEPT_SCORE:
+            plain_result, plain_score = _run_soulseek_search(
+                queue_id, search_query, queue_item, client
+            )
+            if plain_score > best_score:
+                best_result = plain_result
+                best_score = plain_score
 
         # If the primary search found nothing useful, retry with fallback queries.
         # This handles tracks where the track artist contains featured guests
@@ -1985,41 +2046,6 @@ def check_completed_downloads():
                 logger.error(f"Error scanning downloads folder: {e}")
         else:
             logger.warning(f"Downloads directory does not exist: {DOWNLOADS_DIR}")
-
-        # Also walk the qBittorrent-specific downloads folder when configured.
-        # Absolute paths are appended directly; os.path.join(DOWNLOADS_DIR, abs_path)
-        # returns abs_path unchanged, so the rest of the matching logic needs no changes.
-        try:
-            _cfg_for_qbit = {}
-            _qbit_cfg_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
-            if os.path.exists(_qbit_cfg_path):
-                with open(_qbit_cfg_path, 'r', encoding='utf-8') as _qf:
-                    _cfg_for_qbit = yaml.safe_load(_qf) or {}
-            _qbit_dl_folder = (
-                ((_cfg_for_qbit.get("qbittorrent") or {}).get("downloads_folder") or "")
-                .strip()
-            )
-        except Exception as _qcfg_err:
-            logger.debug(f"Could not read qbittorrent.downloads_folder from config: {_qcfg_err}")
-            _qbit_dl_folder = ""
-
-        if _qbit_dl_folder and os.path.normpath(_qbit_dl_folder) != os.path.normpath(DOWNLOADS_DIR):
-            if os.path.isdir(_qbit_dl_folder):
-                try:
-                    _qbit_count = 0
-                    for root, _, root_files in os.walk(_qbit_dl_folder):
-                        for f in root_files:
-                            if f.lower().endswith(_allowed_exts):
-                                fs_files.append(os.path.join(root, f))
-                                _qbit_count += 1
-                    if _qbit_count:
-                        logger.debug(
-                            f"Filesystem walk: {_qbit_count} additional audio files in qBittorrent folder {_qbit_dl_folder}"
-                        )
-                except Exception as _qwalk_err:
-                    logger.error(f"Error scanning qBittorrent downloads folder: {_qwalk_err}")
-            else:
-                logger.warning(f"qBittorrent downloads folder does not exist: {_qbit_dl_folder}")
 
         # ------------------------------------------------------------------
         # Build the set of files already claimed by non-downloading items
