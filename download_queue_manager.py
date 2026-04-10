@@ -4782,7 +4782,16 @@ def check_downloads_folder():
             # Try exact filename match first (but still verify metadata when available)
             if queue_item['found_filename']:
                 found_name = str(queue_item['found_filename']).replace('\\', '/').strip()
-                basename_candidates = [f for f in downloads_files if f['filename'] == found_name]
+                # found_name may be a full Soulseek remote path
+                # (e.g. "someuser/Music/Disc - 02/0008.Artist - Title.flac").
+                # Extract just the filename so we can compare against the local
+                # basename regardless of the remote directory structure.
+                found_basename = os.path.basename(found_name).lower()
+                basename_candidates = [
+                    f for f in downloads_files
+                    if f['filename'] == found_name
+                    or f['filename'].lower() == found_basename
+                ]
                 basename_is_unique = len(basename_candidates) == 1
 
                 for file_info in downloads_files:
@@ -4790,7 +4799,14 @@ def check_downloads_folder():
                     full_name = file_info['full_path'].replace('\\', '/')
 
                     is_rel_or_full = (rel_name == found_name or full_name == found_name)
-                    is_basename = (file_info['filename'] == found_name)
+                    # Also match when the local filename equals the basename of the
+                    # remote Soulseek path so that found_filename stored as a full
+                    # remote path (e.g. "user/folder/track.flac") still resolves to
+                    # the correct local file ("track.flac").
+                    is_basename = (
+                        file_info['filename'] == found_name
+                        or file_info['filename'].lower() == found_basename
+                    )
 
                     if is_rel_or_full or is_basename:
                         metadata = None
@@ -4840,13 +4856,50 @@ def check_downloads_folder():
                     if meta_state is False:
                         continue
 
-                    # Only accept a fuzzy match when metadata strongly matches.
-                    # Avoid "first file wins" behavior when metadata is missing.
+                    # Strong metadata match — accept immediately.
                     if meta_state is True:
                         match_found = file_info['filename']
                         match_path = file_info['full_path']
                         match_meta_state = 'metadata'
                         logger.debug(f"Fuzzy matched '{queue_item['search_query']}' to '{file_info['rel_path']}'")
+                        break
+
+                    # meta_state is None: metadata missing or incomplete.
+                    # Fall back to filename similarity (artist + title in path)
+                    # with an optional duration cross-check.
+                    # "first file wins" is still avoided because is_match requires
+                    # both the artist AND the title to appear in the path.
+                    rel_path = file_info['rel_path']
+                    if is_match(rel_path, queue_item):
+                        # Duration double-check: hard-reject when both sides have a
+                        # known duration and they differ by more than 5 seconds.
+                        file_dur_ms = (metadata or {}).get('duration_ms')
+                        queue_dur = queue_item.get('duration')
+                        if file_dur_ms and queue_dur:
+                            try:
+                                file_dur_s = file_dur_ms / 1000.0
+                                q_dur_s = float(queue_dur)
+                                # queue.duration is normally stored in seconds;
+                                # values > 10 000 are treated as milliseconds
+                                # (matches the heuristic in _normalize_duration_seconds).
+                                if q_dur_s > 10000:
+                                    q_dur_s /= 1000.0
+                                if abs(file_dur_s - q_dur_s) > 5:
+                                    logger.debug(
+                                        f"[MATCH] Queue {queue_item['id']}: filename match "
+                                        f"'{rel_path}' rejected — duration mismatch "
+                                        f"({file_dur_s:.0f}s vs {q_dur_s:.0f}s)"
+                                    )
+                                    continue
+                            except (TypeError, ValueError):
+                                pass
+                        match_found = file_info['filename']
+                        match_path = file_info['full_path']
+                        match_meta_state = 'filename'
+                        logger.debug(
+                            f"Filename-matched '{queue_item.get('search_query', '')}' "
+                            f"to '{rel_path}'"
+                        )
                         break
             
             if match_found and match_path:
