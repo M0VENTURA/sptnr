@@ -1540,9 +1540,10 @@ def _build_bracketsanitized_query(queue_item):
     title are unavailable, or when the stripped title is identical to the stored
     ``search_query`` (so we don't waste a duplicate search slot).
     """
-    # Prefer album_artist: more likely to match how files are tagged by remote
-    # peers than a track artist containing featured-guest clauses.
-    artist = (queue_item.get('album_artist') or queue_item.get('artist') or '').strip()
+    # Use track artist (consistent with the stored search_query).  If missing,
+    # fall back to album_artist so the query is still useful.  Album-artist
+    # fallbacks are handled separately by _build_fallback_search_queries.
+    artist = (queue_item.get('artist') or queue_item.get('album_artist') or '').strip()
     title = (queue_item.get('title') or '').strip()
     if not artist or not title:
         return None
