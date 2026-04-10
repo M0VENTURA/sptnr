@@ -115,8 +115,14 @@ class SlskdClient:
         
         try:
             url = f"{self.base_url}/searches"
-            # slskd API uses searchText as the field name
-            data = {"searchText": query}
+            # slskd API uses searchText as the field name.
+            # filterResponses=False disables the user's configured UI search
+            # filter (e.g. minbitrate:320, minfilesinfolder:8) for automated
+            # queue searches.  Without this, slskd silently drops results that
+            # don't meet the UI filter — e.g. valid 256kbps files or peers
+            # sharing fewer files than the configured threshold — before we
+            # even see them.  Our own scoring logic handles quality filtering.
+            data = {"searchText": query, "filterResponses": False}
 
             # slskd enforces a single concurrent search operation; gracefully
             # wait/retry when the API returns HTTP 429 for that condition.

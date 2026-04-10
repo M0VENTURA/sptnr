@@ -47,6 +47,28 @@ def resolve_downloads_dir():
     return "/downloads/Music"
 
 
+def resolve_torrent_downloads_dir():
+    """Resolve the qBittorrent-specific torrent downloads folder from config.
+
+    Returns the configured ``qbittorrent.downloads_folder`` path when set,
+    otherwise falls back to a ``torrents`` subdirectory of the main downloads
+    folder so the watcher keeps working on existing deployments.
+    """
+    config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+    try:
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            qbit_folder = cfg.get('qbittorrent', {}).get('downloads_folder', '').strip()
+            if qbit_folder:
+                return os.path.normpath(qbit_folder)
+    except Exception as e:
+        logger.warning(f"Could not read qbittorrent.downloads_folder from config: {e}")
+
+    # Legacy fallback: torrents subfolder of the main downloads directory.
+    return os.path.join(resolve_downloads_dir(), "torrents")
+
+
 def get_downloads_dir():
     """Dynamically get downloads directory (re-evaluates on each call for config changes)."""
     return resolve_downloads_dir()
@@ -625,12 +647,12 @@ def add_to_database(file_info, metadata, source_file_path=None):
         return False
 
 def scan_downloads_folder():
-    """Scan torrents subfolder of downloads directory recursively for MP3/FLAC files."""
+    """Scan the configured torrent downloads folder recursively for MP3/FLAC files."""
+    torrents_dir = resolve_torrent_downloads_dir()
     downloads_dir = get_downloads_dir()
-    torrents_dir = os.path.join(downloads_dir, 'torrents')
 
     if not os.path.exists(torrents_dir):
-        logger.info(f"Torrents subfolder not found: {torrents_dir} - skipping scan")
+        logger.info(f"Torrent downloads folder not found: {torrents_dir} - skipping scan")
         return []
 
     results = []

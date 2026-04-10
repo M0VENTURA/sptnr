@@ -1488,6 +1488,42 @@ def check_track_exists_in_navidrome(queue_item):
     return False, ""
 
 
+def _build_structured_slskd_query(queue_item):
+    """Build a structured slskd search query using ``artist=``, ``title=``, ``length=`` syntax.
+
+    slskd parses named fields (e.g. ``artist=The Beatles, title=Yesterday,
+    length=125``) and uses them to narrow the search.  The ``length=`` field
+    is advisory: slskd may surface files whose reported duration is close to
+    the given value, but it does not guarantee an exact match or a specific
+    tolerance window.  The authoritative ±5 s duration gate is enforced
+    client-side in ``_run_soulseek_search`` *before* the scorer runs.
+
+    Returns the structured query string, or ``None`` when artist or title are
+    unavailable (the query would be too broad to be useful).
+    The ``length=`` parameter is omitted when duration is unknown.
+    """
+    # Prefer album_artist: more likely to match how files are tagged by remote
+    # peers than a track artist containing featured-guest clauses.
+    artist = (
+        (queue_item.get('album_artist') or queue_item.get('artist') or '').strip()
+    )
+    title = (queue_item.get('title') or '').strip()
+    if not artist or not title:
+        return None
+
+    # Commas are the field separator in slskd's structured query syntax;
+    # remove them from user-supplied values to avoid confusing the parser.
+    artist_safe = artist.replace(',', '').strip()
+    title_safe = title.replace(',', '').strip()
+    if not artist_safe or not title_safe:
+        return None
+
+    duration = _normalize_duration_seconds(queue_item.get('duration'))
+    if duration:
+        return f"artist={artist_safe}, title={title_safe}, length={int(duration)}"
+    return f"artist={artist_safe}, title={title_safe}"
+
+
 def _build_fallback_search_queries(queue_item, primary_query):
     """Build alternative search queries for tracks with featured artists.
 
@@ -1716,6 +1752,20 @@ def _run_soulseek_search(queue_id, query, queue_item, client):
                             else int(getattr(file_info, 'bitrate', 0) or 0)
                         )
                         candidate_length = _extract_candidate_length_seconds(file_info)
+                        # Pre-filter by duration before running the full scorer.
+                        # When both the expected and candidate durations are known,
+                        # discard any file whose length falls outside the ±5s window
+                        # so we never waste scorer CPU on clearly wrong tracks.
+                        _expected_dur = _normalize_duration_seconds(queue_item.get('duration'))
+                        if _expected_dur and candidate_length:
+                            _dur_tol = _get_duration_match_tolerance(queue_item)
+                            if abs(_expected_dur - candidate_length) > _dur_tol:
+                                logger.debug(
+                                    f"Queue {queue_id}: Skipping {os.path.basename(filename)} "
+                                    f"— length {candidate_length:.0f}s outside "
+                                    f"±{_dur_tol:.0f}s of expected {_expected_dur:.0f}s"
+                                )
+                                continue
                         candidate_score = _score_soulseek_candidate(filename, queue_item, candidate_length)
                         if candidate_score > best_score:
                             best_score = candidate_score
@@ -1778,8 +1828,35 @@ def search_and_download(queue_id, queue_item, client):
 
         poll_start_time = datetime.now()
 
-        # Primary search using the stored search_query (built from track artist).
-        best_result, best_score = _run_soulseek_search(queue_id, search_query, queue_item, client)
+        # Try the structured slskd query first when artist/title are known.
+        # ``artist=X, title=Y, length=N`` narrows the slskd server-side search
+        # so fewer unrelated files are returned.  The structured query always
+        # uses a different format from the plain search_query (``artist=…``
+        # syntax vs. free text), so no string equality check is needed.
+        best_result = None
+        best_score = 0.0
+        structured_query = _build_structured_slskd_query(queue_item)
+        if structured_query:
+            logger.info(
+                f"Queue {queue_id}: Trying structured query '{structured_query}'..."
+            )
+            best_result, best_score = _run_soulseek_search(
+                queue_id, structured_query, queue_item, client
+            )
+            if best_result and best_score >= _SLSKD_MIN_ACCEPT_SCORE:
+                logger.info(
+                    f"Queue {queue_id}: Structured query succeeded (score={best_score:.2f})"
+                )
+
+        # Primary plain-text search using the stored search_query when the
+        # structured query returned nothing useful.
+        if not best_result or best_score < _SLSKD_MIN_ACCEPT_SCORE:
+            plain_result, plain_score = _run_soulseek_search(
+                queue_id, search_query, queue_item, client
+            )
+            if plain_score > best_score:
+                best_result = plain_result
+                best_score = plain_score
 
         # If the primary search found nothing useful, retry with fallback queries.
         # This handles tracks where the track artist contains featured guests
