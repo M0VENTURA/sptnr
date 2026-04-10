@@ -877,16 +877,15 @@ def organize_individual_track(
 
         # Move/convert file using the shared transfer helper so that
         # FLAC→MP3 conversion is applied according to config settings.
-        try:
-            from download_queue_manager import transfer_download_to_music
-            transfer_result = transfer_download_to_music(source_file, dest_file)
-            if not transfer_result.get('success'):
-                raise RuntimeError(transfer_result.get('error') or 'transfer failed')
-            # Actual destination may differ from dest_file when FLAC was converted to MP3.
-            dest_file = transfer_result.get('target_path') or dest_file
-        except ImportError:
-            # Fallback if download_queue_manager is unavailable.
-            shutil.move(source_file, dest_file)
+        from download_queue_manager import transfer_download_to_music
+        transfer_result = transfer_download_to_music(source_file, dest_file)
+        if not transfer_result.get('success'):
+            raise RuntimeError(
+                transfer_result.get('error')
+                or f"Transfer failed: {source_file!r} → {dest_file!r}"
+            )
+        # Actual destination may differ from dest_file when FLAC was converted to MP3.
+        dest_file = transfer_result.get('target_path') or dest_file
         logger.info(f"Moved track: {source_file} -> {dest_file}")
 
         # Write metadata tags to the moved file
