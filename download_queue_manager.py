@@ -164,12 +164,18 @@ def _extract_title_variant_tokens(value):
 
 
 def _title_variants_are_compatible(expected_title, candidate_title):
-    """Require version labels (mix/live/edit/etc.) to align between titles."""
+    """Require version labels (mix/live/edit/etc.) to align between titles.
+
+    Only enforced when the *expected* (queue) title itself carries a variant
+    token.  If the queue title is plain (no variant qualifier) we allow any
+    file version — the user may only have the remastered/live version available
+    and blocking it would prevent a valid match.
+    """
     expected_variants = _extract_title_variant_tokens(expected_title)
     candidate_variants = _extract_title_variant_tokens(candidate_title)
 
-    if expected_variants or candidate_variants:
-        if not expected_variants or not candidate_variants:
+    if expected_variants:
+        if not candidate_variants:
             return False
         if expected_variants.isdisjoint(candidate_variants):
             return False
@@ -4509,6 +4515,16 @@ def _metadata_matches_queue_item(
     artist_score = max((_sim(file_artist, cand) for cand in artist_candidates if cand), default=0.0)
     title_score = _sim(file_title, queue_title)
 
+    # Bracket-stripped fallback: context markers in the queue title like
+    # "(Batman Forever Soundtrack)" or version suffixes in the file title like
+    # "(remastered LP version)" can drive the raw similarity below the field
+    # minimum even though the core titles are identical.  Strip all (…) and
+    # […] sections from both sides and use the better of the two scores.
+    _qt_stripped = re.sub(r'\s*[\(\[][^\)\]]*[\)\]]\s*', ' ', queue_title).strip()
+    _ft_stripped = re.sub(r'\s*[\(\[][^\)\]]*[\)\]]\s*', ' ', file_title).strip()
+    if _qt_stripped and _ft_stripped:
+        title_score = max(title_score, _sim(_ft_stripped, _qt_stripped))
+
     # Each individual field must clear a minimum similarity floor before
     # the weighted average is tested against the overall threshold parameter.
     _FIELD_MIN = 0.55
@@ -4523,21 +4539,13 @@ def _metadata_matches_queue_item(
     # Intro"), the similarity score is deceptively high (~0.81) even though
     # these are distinct tracks.  Require a near-exact title match in that
     # case to avoid incorrectly marking a queue item as matched/completed.
-    _title_a = file_title.lower().strip()
-    _title_b = queue_title.lower().strip()
+    # Use bracket-stripped titles so that "(Batman Forever Soundtrack)" in the
+    # queue title does not trigger this guard against the plain file title.
+    _title_a = _ft_stripped.lower() or file_title.lower().strip()
+    _title_b = _qt_stripped.lower() or queue_title.lower().strip()
     if _title_a != _title_b and (_title_a.startswith(_title_b) or _title_b.startswith(_title_a)):
         if title_score < _PREFIX_TITLE_MIN:
             return False
-
-    file_track_num, file_disc_num = _extract_track_disc_from_text(file_meta.get('track_number'))
-    if file_track_num is None and file_path:
-        file_track_num, file_disc_num = _extract_track_disc_from_filename(file_path)
-
-    queue_track_num, queue_disc_num = _extract_track_disc_from_text(queue_item.get('track_number'))
-    if queue_track_num is not None and file_track_num is not None and queue_track_num != file_track_num:
-        return False
-    if queue_disc_num is not None and file_disc_num is not None and queue_disc_num != file_disc_num:
-        return False
 
     # Duration guard: hard-reject when both durations are known and differ by
     # more than 5 seconds.  This is the same tolerance used when scoring
@@ -5579,12 +5587,19 @@ def is_match(filename, queue_item):
             return False
 
         artist_in_path = artist in filename_test
+        # Match using the core (bracket-stripped) title so that queue titles
+        # with context markers like "(Batman Forever Soundtrack)" still match
+        # files whose basename contains only the bare title.
+        title_core = re.sub(r'\s*[\(\[][^\)\]]*[\)\]]\s*', ' ', title).strip()
         # Require the title to appear as a complete phrase — not as the leading
         # portion of a longer title.  "-1" must match "-1.flac" but must NOT
         # match "-1 intro.flac" (where " intro" makes it a different track).
         # Both filename_test and title are already lowercased above, so [a-z]
         # correctly covers all letter characters.
-        title_in_path = bool(re.search(re.escape(title) + r'(?!\s*[a-z])', filename_test))
+        title_in_path = bool(
+            re.search(re.escape(title) + r'(?!\s*[a-z])', filename_test)
+            or (title_core and re.search(re.escape(title_core) + r'(?!\s*[a-z])', filename_test))
+        )
         if artist_in_path and title_in_path:
             return True
 
@@ -8904,9 +8919,23 @@ def auto_move_completed_album(release_id=None, artist=None, album=None):
             # Build proper filename: [track_number]. [artist] - [title].[ext]
             track_artist = track.get('artist', 'Unknown Artist')
             track_title = track.get('title', 'Unknown Title')
-            track_num = track.get('track_number', '00')
+            track_num = track.get('track_number')
             disc_num = track.get('disc_number', 1)
-            
+
+            # When the queue row has no track number, try reading it from the
+            # file's embedded tags so the destination filename is correct.
+            if not track_num:
+                try:
+                    _embedded = read_mp3_metadata(src) or {}
+                    _tag_tn = _embedded.get('track_number') or _embedded.get('tracknumber')
+                    if _tag_tn:
+                        track_num = str(_tag_tn).split('/')[0].strip()
+                        logger.debug(
+                            f"[AUTO_MOVE] Queue {track['id']}: track_number read from file tags: {track_num}"
+                        )
+                except Exception as _tn_err:
+                    logger.debug(f"[AUTO_MOVE] Could not read track_number from file: {_tn_err}")
+
             # Format track number with disc prefix if needed
             try:
                 track_num = int(str(track_num).split('/')[0]) if track_num else 0
