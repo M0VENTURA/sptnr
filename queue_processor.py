@@ -630,8 +630,24 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
                 file_album = file_album or _extract_tag_value(
                     tags, ('album', 'ALBUM', 'TALB', '\xa9alb')
                 )
+                # Fall back to album artist when track artist tag is absent.
+                # Skip generic compilation placeholders ("Various Artists", etc.)
+                # so they don't cause spurious mismatches on compilation tracks.
+                if not file_artist:
+                    _aa = _extract_tag_value(
+                        tags, ('albumartist', 'ALBUMARTIST', 'TPE2', 'aART')
+                    )
+                    if _aa and _aa.lower() not in _GENERIC_COMPILATION_ARTISTS:
+                        file_artist = _aa
         except Exception:
             pass
+
+    # read_mp3_metadata already reads album_artist for both MP3 and FLAC.
+    # Use it as a final artist fallback when mutagen didn't populate one either.
+    if not file_artist:
+        _aa = (metadata.get('album_artist') or '').strip()
+        if _aa and _aa.lower() not in _GENERIC_COMPILATION_ARTISTS:
+            file_artist = _aa
 
     if not file_artist or not file_title:
         return None
