@@ -693,10 +693,31 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
     if expected_variants or candidate_variants:
         if not expected_variants or not candidate_variants:
             # One side has variant qualifiers, the other doesn't.
-            # Allow "soft" variants (version, edit) when duration confirms;
-            # hard variants (live, remix, acoustic, …) are always rejected.
             _present_variants = expected_variants or candidate_variants
-            if not (_present_variants.issubset(_SOFT_VARIANT_TOKENS) and _duration_confirms):
+            if expected_variants and not candidate_variants:
+                # The queue title has variant qualifiers (e.g. "radio edit",
+                # "album version") but the file tag omits them.  This is very
+                # common: radio edits and album-version tracks are frequently
+                # tagged with just the plain title.  Allow the match when the
+                # file duration is close enough to the expected duration (using
+                # the standard 5-second tolerance) so we don't accidentally
+                # import an entirely different version.  Fall back to the
+                # original soft-variant / tight-duration rule when no duration
+                # data is available.
+                _duration_5s_ok = (
+                    expected_duration is not None
+                    and file_duration is not None
+                    and abs(expected_duration - file_duration) <= _get_duration_match_tolerance(queue_item)
+                )
+                _soft_variant_fallback_ok = (
+                    _present_variants.issubset(_SOFT_VARIANT_TOKENS) and _duration_confirms
+                )
+                if not (_duration_5s_ok or _soft_variant_fallback_ok):
+                    return False
+            elif not (_present_variants.issubset(_SOFT_VARIANT_TOKENS) and _duration_confirms):
+                # The file has variant qualifiers but the queue title doesn't.
+                # Only allow soft variants (version, edit) with tight duration
+                # confirmation; hard variants (live, remix, …) are rejected.
                 return False
         elif expected_variants.isdisjoint(candidate_variants):
             return False
