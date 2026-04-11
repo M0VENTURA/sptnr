@@ -363,6 +363,7 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
         # "Invincible" queue title, and vice-versa.
         requested_variants = set(title_tokens) & title_variant_tokens
         candidate_variants = basename_tokens & title_variant_tokens
+        _soft_variant_mismatch = False  # default; updated inside variant check
 
         if requested_variants or candidate_variants:
             if not requested_variants or not candidate_variants:
@@ -408,14 +409,18 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
             # absent soft tokens from the denominator.  The duration check below
             # provides the final confirmation.
             if _soft_variant_mismatch:
-                _soft_absent = {
+                _absent_soft_tokens = {
                     t for t in title_tokens
                     if t in _SOFT_VARIANT_TOKENS and t not in basename_tokens
                 }
-                _effective_tokens = [t for t in title_tokens if t not in _soft_absent]
-                _effective_len = len(_effective_tokens) if _effective_tokens else len(title_tokens)
+                _effective_tokens = [t for t in title_tokens if t not in _absent_soft_tokens]
+                if not _effective_tokens:
+                    # All title tokens were soft variants absent from the basename —
+                    # not enough remaining evidence to confirm the match.
+                    return 0.0
                 _effective_ratio = (
-                    sum(1 for t in _effective_tokens if t in basename_tokens) / _effective_len
+                    sum(1 for t in _effective_tokens if t in basename_tokens)
+                    / len(_effective_tokens)
                 )
                 if _effective_ratio < 0.67:
                     return 0.0
@@ -669,6 +674,9 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
         file_duration = _normalize_duration_seconds(audio.info.length)
     # A ≤2 s duration match is a strong signal that the file is the expected
     # version even when the title tag omits a qualifier like "(edited version)".
+    # This threshold is intentionally tighter than the 5 s tolerance used by
+    # the main duration reject below: we want high confidence that this is the
+    # correct specific version before waiving the variant-token check.
     _duration_confirms = (
         expected_duration is not None
         and file_duration is not None
