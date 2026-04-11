@@ -23941,6 +23941,15 @@ def api_downloads_folder_match_musicbrainz(folder_path):
         artist = data.get('artist', '').strip()
         album = data.get('album', '').strip()
         manual_query = data.get('manual_query', '').strip()
+        tracks = data.get('tracks', [])
+        
+        # Extract track titles for the track-title fallback search
+        track_titles = []
+        if isinstance(tracks, list):
+            for t in tracks:
+                title = str(t.get('title', '') if isinstance(t, dict) else '').strip()
+                if title:
+                    track_titles.append(title)
         
         # Require either manual query or artist+album
         if not manual_query and (not artist or not album):
@@ -23953,7 +23962,8 @@ def api_downloads_folder_match_musicbrainz(folder_path):
             folder_path, 
             artist, 
             album,
-            manual_query=manual_query if manual_query else None
+            manual_query=manual_query if manual_query else None,
+            track_titles=track_titles if track_titles else None
         )
         
         return jsonify({
