@@ -712,7 +712,20 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
                 _soft_variant_fallback_ok = (
                     _present_variants.issubset(_SOFT_VARIANT_TOKENS) and _duration_confirms
                 )
-                if not (_duration_5s_ok or _soft_variant_fallback_ok):
+                # Allow when the remote Soulseek filename (found_filename) already
+                # contains the expected variant tokens — slskd selected that file
+                # precisely because it was e.g. "Song (Radio Edit).mp3", but the
+                # embedded tags just say "Song".  The scoring step verified the
+                # variant at download time, so we can trust it here.
+                _found_fn_variants = _variant_tokens(queue_item.get('found_filename') or '')
+                _found_fn_confirms = bool(_found_fn_variants & expected_variants)
+                if not (_duration_5s_ok or _soft_variant_fallback_ok or _found_fn_confirms):
+                    logger.debug(
+                        "[MATCH] variant mismatch: queue=%r has %s but file=%r has none; "
+                        "duration_ok=%s found_fn_confirms=%s — rejecting",
+                        queue_title, expected_variants, file_title,
+                        _duration_5s_ok, _found_fn_confirms,
+                    )
                     return False
             elif not (_present_variants.issubset(_SOFT_VARIANT_TOKENS) and _duration_confirms):
                 # The file has variant qualifiers but the queue title doesn't.
@@ -2107,6 +2120,10 @@ def check_completed_downloads():
         slskd_completed: dict[str, str] = {}
         slskd_active: dict[str, dict] = {}
         slskd_status_available = False
+        # active_list is populated inside the try block below; declare here so
+        # the reconciliation pass (which runs after the try block) can safely
+        # reference it even when the API call fails.
+        active_list: list[dict] = []
 
         def _normalize_transfer_key(value):
             if not value:
@@ -2163,6 +2180,16 @@ def check_completed_downloads():
                         if norm:
                             slskd_active[norm] = transfer
                             slskd_active[os.path.basename(norm)] = transfer
+                        # Also index by localFilePath (and its basename) so that
+                        # transfers can be found by local path even when the stored
+                        # found_filename is the remote Soulseek path and the local
+                        # file has a different name.
+                        local_fp = transfer.get("localFilePath", "")
+                        if local_fp:
+                            local_norm = _normalize_transfer_key(local_fp)
+                            if local_norm:
+                                slskd_active[local_norm] = transfer
+                                slskd_active[os.path.basename(local_norm)] = transfer
                     slskd_status_available = True
                     logger.debug(f"slskd API: {len(active_list)} active transfer entries")
                 except Exception as status_err:
@@ -2256,6 +2283,92 @@ def check_completed_downloads():
 
         if downloading:
             logger.debug(f"Checking {len(downloading)} items in 'downloading' status")
+
+        # ------------------------------------------------------------------
+        # Slskd API reconciliation: for any 'downloading' item whose
+        # found_filename does not map to a known active/completed transfer,
+        # scan all active transfers and try to identify the correct one by
+        # scoring its remote filename against the queue item.  When a match
+        # is found, persist the corrected found_filename so that subsequent
+        # passes (and the exact-filename filesystem search below) can locate
+        # the file without a full fuzzy scan.
+        # This also handles items where found_filename was never set (e.g.
+        # because the update was lost due to a crash) by re-linking them to
+        # their in-flight or completed slskd transfer.
+        # ------------------------------------------------------------------
+        if slskd_status_available and active_list and downloading:
+            _db_conn_recon = None
+            try:
+                _db_conn_recon = get_db()
+                _cursor_recon = _db_conn_recon.cursor()
+                _placeholder_recon = _get_placeholder(_db_conn_recon)
+                for _item in downloading:
+                    _item_id = _item["id"]
+                    _found_fn = (_item.get("found_filename") or "").strip()
+                    # Only reconcile items whose found_filename doesn't already
+                    # map to a known transfer.
+                    _found_norm = _normalize_transfer_key(_found_fn)
+                    if _found_norm and (
+                        slskd_active.get(_found_norm)
+                        or slskd_active.get(os.path.basename(_found_norm))
+                    ):
+                        continue  # already maps to a known transfer
+
+                    best_transfer = None
+                    best_transfer_score = 0.0
+                    for _transfer in active_list:
+                        _t_filename = _transfer.get("filename", "")
+                        if not _t_filename:
+                            continue
+                        try:
+                            _t_score = _score_soulseek_candidate(_t_filename, _item)
+                        except Exception:
+                            _t_score = 0.0
+                        if _t_score > best_transfer_score:
+                            best_transfer_score = _t_score
+                            best_transfer = _transfer
+
+                    if best_transfer and best_transfer_score >= _SLSKD_MIN_ACCEPT_SCORE:
+                        _new_fn = best_transfer.get("filename", "")
+                        if _new_fn and _new_fn != _found_fn:
+                            logger.info(
+                                "[RECON] Queue %s: correcting found_filename via slskd API "
+                                "(score=%.2f): %r → %r",
+                                _item_id, best_transfer_score,
+                                _found_fn or "(none)", _new_fn,
+                            )
+                            try:
+                                _cursor_recon.execute(
+                                    f"UPDATE download_queue SET found_filename = {_placeholder_recon}, "
+                                    f"updated_at = CURRENT_TIMESTAMP WHERE id = {_placeholder_recon}",
+                                    (_new_fn, _item_id),
+                                )
+                                _db_conn_recon.commit()
+                                # Patch the in-memory item so the loop below uses the corrected value.
+                                _item["found_filename"] = _new_fn
+                            except Exception as _recon_upd_err:
+                                try:
+                                    _db_conn_recon.rollback()
+                                except Exception:
+                                    pass
+                                logger.debug(
+                                    "[RECON] Queue %s: could not persist corrected found_filename: %s",
+                                    _item_id, _recon_upd_err,
+                                )
+                        elif _found_fn and _new_fn == _found_fn:
+                            # found_filename already equals the best match — nothing to update.
+                            logger.debug(
+                                "[RECON] Queue %s: slskd transfer confirms existing found_filename (score=%.2f)",
+                                _item_id, best_transfer_score,
+                            )
+            except Exception as _recon_err:
+                logger.debug("[RECON] Reconciliation pass error: %s", _recon_err)
+            finally:
+                if _db_conn_recon is not None:
+                    try:
+                        _db_conn_recon.close()
+                    except Exception:
+                        pass
 
         newly_completed = []
         scan_needed = False
