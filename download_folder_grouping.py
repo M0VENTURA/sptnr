@@ -273,7 +273,7 @@ def scan_downloads_grouped_by_folder(downloads_dir, read_mp3_metadata):
             _GROUP_SCAN_LOCK.release()
 
 
-def match_folder_group_with_musicbrainz(folder_path, artist, album, mb_client=None, manual_query=None, allow_discogs_fallback=True):
+def match_folder_group_with_musicbrainz(folder_path, artist, album, mb_client=None, manual_query=None, allow_discogs_fallback=True, track_titles=None):
     """
     Match a folder group with MusicBrainz and return candidate releases.
     Falls back to Discogs if MusicBrainz returns no results when enabled.
@@ -284,6 +284,8 @@ def match_folder_group_with_musicbrainz(folder_path, artist, album, mb_client=No
         album: Album name to search for
         mb_client: Not used (kept for compatibility)
         manual_query: Optional manual search query string
+        track_titles: Optional list of track title strings, used as a last-resort
+            fallback when both artist+album and album-only MB searches return nothing.
     
     Returns:
         Dict with MusicBrainz/Discogs candidates and metadata
@@ -398,9 +400,37 @@ def match_folder_group_with_musicbrainz(folder_path, artist, album, mb_client=No
             if releases:
                 logger.info(f"Album-only fallback found {len(releases)} result(s)")
 
+        # If album-based searches still return nothing and we have track titles,
+        # try searching by artist + first track title.  This helps when the folder
+        # name is a generic compilation label (e.g. "Assorted House, Electro")
+        # rather than a proper album title.
+        first_track_title = next((t for t in (track_titles or []) if t and t.strip()), None)
+        if not releases and search_artist and first_track_title and not manual_query:
+            title_query = f'artist:"{search_artist}" AND recording:"{first_track_title}"'
+            logger.info(
+                f"No results for album queries, retrying with track title: {title_query}"
+            )
+            time.sleep(1.0)  # Respect MusicBrainz rate limit (1 request per second)
+            title_response = _mb_search_session.get(
+                f"{base_url}release/",
+                params={"query": title_query, "fmt": "json", "limit": 10},
+                headers=headers,
+                timeout=(4, 8)
+            )
+            title_response.raise_for_status()
+            releases = title_response.json().get('releases', [])
+            if releases:
+                logger.info(f"Track-title fallback found {len(releases)} result(s)")
+
         # If MusicBrainz returns no results, optionally try Discogs fallback
         if allow_discogs_fallback and not releases and not manual_query:
             logger.info(f"No MusicBrainz matches, trying Discogs fallback for: {artist} - {album}")
+            # Try Discogs with track title as well when album search failed
+            if first_track_title and search_artist:
+                result = try_discogs_match(folder_path, search_artist, first_track_title)
+                if result.get('success') and result.get('candidates'):
+                    return result
+                logger.info("Discogs track-title search also found nothing, retrying with album name")
             return try_discogs_match(folder_path, search_artist, search_album)
         
         if not releases:

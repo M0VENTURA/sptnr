@@ -3888,8 +3888,8 @@ async function matchFolderGroupWithMusicBrainz(clickEvent, folderPath, artist, a
     }
     
     const requestBody = manualQuery ? 
-      { manual_query: manualQuery, artist, album } : 
-      { artist, album };
+      { manual_query: manualQuery, artist, album, tracks: tracks || [] } : 
+      { artist, album, tracks: tracks || [] };
     
     const response = await fetch(`/api/downloads/folder/${encodeURIComponent(folderPath)}/match-musicbrainz`, {
       method: 'POST',
