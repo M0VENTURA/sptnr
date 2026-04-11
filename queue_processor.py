@@ -156,6 +156,14 @@ _TITLE_VARIANT_TOKENS = frozenset({
     "radio", "remaster", "remastered", "remix", "version",
 })
 
+# "Soft" variant tokens are version qualifiers that may simply be absent from
+# file tags even for the correct recording (e.g. "edited version", "single
+# version", "album version").  A mismatch on these alone is allowed when the
+# file duration closely confirms the expected duration (≤2 s).  All other
+# variant tokens ("live", "remix", "acoustic", etc.) indicate genuinely
+# different recordings and are treated as hard rejects.
+_SOFT_VARIANT_TOKENS = frozenset({"version", "edit"})
+
 
 def _strip_brackets(text):
     """Return *text* with all (…) and […] sections removed."""
@@ -355,12 +363,28 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
         # "Invincible" queue title, and vice-versa.
         requested_variants = set(title_tokens) & title_variant_tokens
         candidate_variants = basename_tokens & title_variant_tokens
+        _soft_variant_mismatch = False  # default; updated inside variant check
 
         if requested_variants or candidate_variants:
             if not requested_variants or not candidate_variants:
-                return 0.0
-            if requested_variants.isdisjoint(candidate_variants):
-                return 0.0
+                # One side has variant qualifiers but the other doesn't.
+                # "Soft" variants (version, edit) may simply be absent from file
+                # tags for the correct recording (e.g. "edited version" on the
+                # queue item but plain title in the file).  Let the duration check
+                # further down the function resolve these; other variant tokens
+                # (live, remix, acoustic, …) indicate genuinely different
+                # recordings and are always a hard reject.
+                _present_variants = requested_variants or candidate_variants
+                if not _present_variants.issubset(_SOFT_VARIANT_TOKENS):
+                    return 0.0
+                # Soft-only mismatch — continue scoring; duration will confirm.
+                _soft_variant_mismatch = True
+            else:
+                _soft_variant_mismatch = False
+                if requested_variants.isdisjoint(candidate_variants):
+                    return 0.0
+        else:
+            _soft_variant_mismatch = False
 
         # Full-string variant conflict: when BOTH the queue title and the
         # candidate basename carry variant-qualifier words anywhere in their
@@ -379,7 +403,29 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
         if len(title_tokens) <= 2 and shared_title_tokens < len(title_tokens):
             return 0.0
         if len(title_tokens) >= 3 and title_token_ratio < 0.67:
-            return 0.0
+            # When the ratio is depressed solely by soft-variant tokens absent
+            # from the basename (e.g. "version" in "edited version" queue title
+            # but not in the file name), re-check the ratio after excluding those
+            # absent soft tokens from the denominator.  The duration check below
+            # provides the final confirmation.
+            if _soft_variant_mismatch:
+                _absent_soft_tokens = {
+                    t for t in title_tokens
+                    if t in _SOFT_VARIANT_TOKENS and t not in basename_tokens
+                }
+                _effective_tokens = [t for t in title_tokens if t not in _absent_soft_tokens]
+                if not _effective_tokens:
+                    # All title tokens were soft variants absent from the basename —
+                    # not enough remaining evidence to confirm the match.
+                    return 0.0
+                _effective_ratio = (
+                    sum(1 for t in _effective_tokens if t in basename_tokens)
+                    / len(_effective_tokens)
+                )
+                if _effective_ratio < 0.67:
+                    return 0.0
+            else:
+                return 0.0
 
         # Core-title exactness: the candidate's bracket-stripped core must not
         # contain significant extra words beyond the queue title, artist, and
@@ -621,6 +667,22 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
     if (not both_generic and artist_score < _FIELD_MIN) or title_score < _FIELD_MIN:
         return False
 
+    # Compute duration early so the variant check below can use it.
+    expected_duration = _normalize_duration_seconds(queue_item.get('duration'))
+    file_duration = None
+    if audio is not None and getattr(audio, 'info', None) and hasattr(audio.info, 'length'):
+        file_duration = _normalize_duration_seconds(audio.info.length)
+    # A ≤2 s duration match is a strong signal that the file is the expected
+    # version even when the title tag omits a qualifier like "(edited version)".
+    # This threshold is intentionally tighter than the 5 s tolerance used by
+    # the main duration reject below: we want high confidence that this is the
+    # correct specific version before waiving the variant-token check.
+    _duration_confirms = (
+        expected_duration is not None
+        and file_duration is not None
+        and abs(expected_duration - file_duration) <= 2
+    )
+
     # Variant check: a plain queue title must not match a "(live/remix/…)" file.
     def _variant_tokens(s):
         tokens = set(re.sub(r"[^a-z0-9]+", " ", (s or '').lower()).split())
@@ -630,8 +692,13 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
     candidate_variants = _variant_tokens(file_title)
     if expected_variants or candidate_variants:
         if not expected_variants or not candidate_variants:
-            return False
-        if expected_variants.isdisjoint(candidate_variants):
+            # One side has variant qualifiers, the other doesn't.
+            # Allow "soft" variants (version, edit) when duration confirms;
+            # hard variants (live, remix, acoustic, …) are always rejected.
+            _present_variants = expected_variants or candidate_variants
+            if not (_present_variants.issubset(_SOFT_VARIANT_TOKENS) and _duration_confirms):
+                return False
+        elif expected_variants.isdisjoint(candidate_variants):
             return False
 
     # Prefix-title protection: "World So Cold" must not match "World So Cold Intro".
@@ -641,10 +708,7 @@ def _metadata_matches_queue_item(file_path, queue_item, threshold=0.68):
         if title_score < _PREFIX_TITLE_MIN:
             return False
 
-    expected_duration = _normalize_duration_seconds(queue_item.get('duration'))
-    file_duration = None
-    if audio is not None and getattr(audio, 'info', None) and hasattr(audio.info, 'length'):
-        file_duration = _normalize_duration_seconds(audio.info.length)
+    # Duration check (variables already computed above).
     if expected_duration and file_duration:
         if abs(expected_duration - file_duration) > _get_duration_match_tolerance(queue_item):
             return False
@@ -763,8 +827,13 @@ def _filename_matches_queue_item(filename, queue_item):
         candidate_variants = basename_tokens & title_variant_tokens
         if requested_variants or candidate_variants:
             if not requested_variants or not candidate_variants:
-                return False
-            if requested_variants.isdisjoint(candidate_variants):
+                # One side has variant qualifiers, the other doesn't.
+                # Soft variants (version, edit) may simply be absent from the
+                # filename; hard variants (live, remix, …) are always rejected.
+                _present_variants = requested_variants or candidate_variants
+                if not _present_variants.issubset(_SOFT_VARIANT_TOKENS):
+                    return False
+            elif requested_variants.isdisjoint(candidate_variants):
                 return False
 
         # Full-string variant conflict: when BOTH the queue title and the
