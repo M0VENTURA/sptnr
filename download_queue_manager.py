@@ -4501,6 +4501,14 @@ def _metadata_matches_queue_item(
         return SequenceMatcher(None, a.lower().strip(), b.lower().strip()).ratio()
 
     file_artist = (file_meta.get('artist') or '').strip()
+    # Fall back to album artist when track artist tag is absent.
+    # Skip generic compilation placeholders ("Various Artists", etc.) so they
+    # don't cause spurious mismatches for compilation tracks that carry no
+    # per-track artist in their tags.
+    if not file_artist:
+        _aa = (file_meta.get('album_artist') or '').strip()
+        if _aa and _aa.lower() not in _GENERIC_ARTIST_NAMES:
+            file_artist = _aa
     file_title = (file_meta.get('title') or '').strip()
     queue_artist = (queue_item.get('artist') or '').strip()
     queue_album_artist = (queue_item.get('album_artist') or '').strip()
