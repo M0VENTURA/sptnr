@@ -377,6 +377,27 @@ def match_folder_group_with_musicbrainz(folder_path, artist, album, mb_client=No
         
         releases = data.get('releases', [])
         
+        # If the artist+album query returns nothing and an artist was used,
+        # retry with album name only.  This handles VA compilations where the
+        # release is credited to "Various Artists" on MusicBrainz rather than
+        # the individual track artist.
+        if not releases and search_artist and search_album and not manual_query:
+            album_only_query = f'release:"{search_album}"'
+            logger.info(
+                f"No results for artist+album query, retrying album-only: {album_only_query}"
+            )
+            time.sleep(1.0)
+            fallback_response = _mb_search_session.get(
+                f"{base_url}release/",
+                params={"query": album_only_query, "fmt": "json", "limit": 10},
+                headers=headers,
+                timeout=(4, 8)
+            )
+            fallback_response.raise_for_status()
+            releases = fallback_response.json().get('releases', [])
+            if releases:
+                logger.info(f"Album-only fallback found {len(releases)} result(s)")
+
         # If MusicBrainz returns no results, optionally try Discogs fallback
         if allow_discogs_fallback and not releases and not manual_query:
             logger.info(f"No MusicBrainz matches, trying Discogs fallback for: {artist} - {album}")
