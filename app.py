@@ -16000,93 +16000,151 @@ def scan_essentia_mood():
                     from essentia_mood_scan import run_essentia_mood_scan
                     from helpers.config_helpers import get_config
 
-                    cfg = get_config()
-                    essentia_cfg = cfg.get("essentia", {}) if isinstance(cfg, dict) else {}
-                    script_path = essentia_cfg.get("script_path", "")
-                    models_dir = essentia_cfg.get("models_dir", "")
-                    mood_threshold = float(essentia_cfg.get("mood_threshold", 0.005))
-                    per_file_timeout = int(essentia_cfg.get("per_file_timeout", 300))
-                    tag_genres = bool(essentia_cfg.get("tag_genres", False))
-                    num_genres = int(essentia_cfg.get("num_genres", 3))
-                    genre_threshold = float(essentia_cfg.get("genre_threshold", 15.0))
-                    genre_format = essentia_cfg.get("genre_format", "parent_child")
-                    tag_moods = bool(essentia_cfg.get("tag_moods", True))
-                    parse_json_features = bool(essentia_cfg.get("parse_json_features", True))
-                    delete_json_after_import = bool(essentia_cfg.get("delete_json_after_import", True))
-                    json_output_dir = str(essentia_cfg.get("json_output_dir", "") or "").strip()
-                    cpu_nice = int(essentia_cfg.get("cpu_nice", 10))
-                    inter_file_delay = float(essentia_cfg.get("inter_file_delay", 0.0))
+                    _essentia_cycle = 0
+                    # On first cycle honour the caller's resume_from_artist; subsequent
+                    # perpetual cycles always scan from the beginning.
+                    _cycle_resume_from_artist = resume_from_artist
 
-                    result = run_essentia_mood_scan(
-                        script_path=script_path,
-                        models_dir=models_dir,
-                        mood_threshold=mood_threshold,
-                        per_file_timeout=per_file_timeout,
-                        force=_force_scan,
-                        progress_file=essentia_progress_file,
-                        tag_genres=tag_genres,
-                        num_genres=num_genres,
-                        genre_threshold=genre_threshold,
-                        genre_format=genre_format,
-                        tag_moods=tag_moods,
-                        parse_json_features=parse_json_features,
-                        delete_json_after_import=delete_json_after_import,
-                        json_output_dir=json_output_dir,
-                        artist_filter=_artist_filter,
-                        album_filter=_album_filter,
-                        track_id_filter=_track_id_filter,
-                        resume_from_artist=resume_from_artist,
-                        cpu_nice=cpu_nice,
-                        inter_file_delay=inter_file_delay,
-                    )
-                    if result.get("stopped"):
-                        _write_progress_with_current_artist(
-                            essentia_progress_file,
-                            "essentia_mood_scan",
-                            False,
-                            {
-                                "status": "stopped",
-                                "exit_code": 0,
-                                "processed_artists": result.get("processed_artists", 0),
-                                "total_artists": result.get("total_artists", 0),
-                                "scanned_tracks": result.get("scanned_tracks", 0),
-                                "updated_tracks": result.get("updated_tracks", 0),
-                                "synced_files": result.get("synced_files", 0),
-                            },
+                    while True:
+                        _essentia_cycle += 1
+
+                        # Re-read config on every cycle so live changes to essentia
+                        # settings (and perpetual on/off) take effect immediately.
+                        cfg = get_config()
+                        essentia_cfg = cfg.get("essentia", {}) if isinstance(cfg, dict) else {}
+                        script_path = essentia_cfg.get("script_path", "")
+                        models_dir = essentia_cfg.get("models_dir", "")
+                        mood_threshold = float(essentia_cfg.get("mood_threshold", 0.005))
+                        per_file_timeout = int(essentia_cfg.get("per_file_timeout", 300))
+                        tag_genres = bool(essentia_cfg.get("tag_genres", False))
+                        num_genres = int(essentia_cfg.get("num_genres", 3))
+                        genre_threshold = float(essentia_cfg.get("genre_threshold", 15.0))
+                        genre_format = essentia_cfg.get("genre_format", "parent_child")
+                        tag_moods = bool(essentia_cfg.get("tag_moods", True))
+                        parse_json_features = bool(essentia_cfg.get("parse_json_features", True))
+                        delete_json_after_import = bool(essentia_cfg.get("delete_json_after_import", True))
+                        json_output_dir = str(essentia_cfg.get("json_output_dir", "") or "").strip()
+                        cpu_nice = int(essentia_cfg.get("cpu_nice", 10))
+                        inter_file_delay = float(essentia_cfg.get("inter_file_delay", 0.0))
+
+                        # Scoped scans (artist/album/track filter) are never looped.
+                        perpetual_enabled = (
+                            bool((cfg.get("features") or {}).get("perpetual", False))
+                            and not _artist_filter
+                            and not _album_filter
+                            and not _track_id_filter
                         )
-                        logging.info("Essentia mood scan stopped by user request")
-                        log_unified("Essentia Scan - Stopped by user request")
-                    elif result.get("error"):
-                        _write_progress_with_current_artist(
-                            essentia_progress_file,
-                            "essentia_mood_scan",
-                            False,
-                            {"status": "error", "error": result["error"], "exit_code": 1},
+
+                        result = run_essentia_mood_scan(
+                            script_path=script_path,
+                            models_dir=models_dir,
+                            mood_threshold=mood_threshold,
+                            per_file_timeout=per_file_timeout,
+                            force=_force_scan,
+                            progress_file=essentia_progress_file,
+                            tag_genres=tag_genres,
+                            num_genres=num_genres,
+                            genre_threshold=genre_threshold,
+                            genre_format=genre_format,
+                            tag_moods=tag_moods,
+                            parse_json_features=parse_json_features,
+                            delete_json_after_import=delete_json_after_import,
+                            json_output_dir=json_output_dir,
+                            artist_filter=_artist_filter,
+                            album_filter=_album_filter,
+                            track_id_filter=_track_id_filter,
+                            resume_from_artist=_cycle_resume_from_artist,
+                            cpu_nice=cpu_nice,
+                            inter_file_delay=inter_file_delay,
                         )
-                        logging.error("Essentia mood scan error: %s", result["error"])
-                        log_unified(f"Essentia Scan - Error: {result['error']}", level=logging.ERROR)
-                    else:
-                        _write_progress_with_current_artist(
-                            essentia_progress_file,
-                            "essentia_mood_scan",
-                            False,
-                            {
-                                "status": "complete",
-                                "exit_code": 0,
-                                "processed_artists": result.get("processed_artists", 0),
-                                "total_artists": result.get("total_artists", 0),
-                                "scanned_tracks": result.get("scanned_tracks", 0),
-                                "updated_tracks": result.get("updated_tracks", 0),
-                                "synced_files": result.get("synced_files", 0),
-                            },
-                        )
-                        _log_scan_session_complete("essentia_mood")
+
+                        if result.get("stopped"):
+                            _write_progress_with_current_artist(
+                                essentia_progress_file,
+                                "essentia_mood_scan",
+                                False,
+                                {
+                                    "status": "stopped",
+                                    "exit_code": 0,
+                                    "processed_artists": result.get("processed_artists", 0),
+                                    "total_artists": result.get("total_artists", 0),
+                                    "scanned_tracks": result.get("scanned_tracks", 0),
+                                    "updated_tracks": result.get("updated_tracks", 0),
+                                    "synced_files": result.get("synced_files", 0),
+                                },
+                            )
+                            logging.info("Essentia mood scan stopped by user request")
+                            log_unified("Essentia Scan - Stopped by user request")
+                            break
+
+                        if result.get("error"):
+                            _write_progress_with_current_artist(
+                                essentia_progress_file,
+                                "essentia_mood_scan",
+                                False,
+                                {"status": "error", "error": result["error"], "exit_code": 1},
+                            )
+                            logging.error("Essentia mood scan error: %s", result["error"])
+                            log_unified(f"Essentia Scan - Error: {result['error']}", level=logging.ERROR)
+                            break
+
+                        # Successful cycle.
                         logging.info(
-                            "Essentia mood scan completed: %s tracks scanned, %s updated, %s file tags synced",
+                            "Essentia mood scan cycle %d completed: %s tracks scanned, %s updated, %s file tags synced",
+                            _essentia_cycle,
                             result.get("scanned_tracks", 0),
                             result.get("updated_tracks", 0),
                             result.get("synced_files", 0),
                         )
+
+                        if not perpetual_enabled:
+                            # Non-perpetual: write completion and exit.
+                            _write_progress_with_current_artist(
+                                essentia_progress_file,
+                                "essentia_mood_scan",
+                                False,
+                                {
+                                    "status": "complete",
+                                    "exit_code": 0,
+                                    "processed_artists": result.get("processed_artists", 0),
+                                    "total_artists": result.get("total_artists", 0),
+                                    "scanned_tracks": result.get("scanned_tracks", 0),
+                                    "updated_tracks": result.get("updated_tracks", 0),
+                                    "synced_files": result.get("synced_files", 0),
+                                },
+                            )
+                            _log_scan_session_complete("essentia_mood")
+                            break
+
+                        # Perpetual mode: check for a stop request before looping.
+                        with scan_lock:
+                            if scan_process_essentia_mood is None or _is_stop_requested_from_progress(essentia_progress_file):
+                                _write_progress_with_current_artist(
+                                    essentia_progress_file,
+                                    "essentia_mood_scan",
+                                    False,
+                                    {"status": "stopped", "exit_code": 0},
+                                )
+                                logging.info("Essentia mood scan perpetual loop: stop requested after cycle %d", _essentia_cycle)
+                                log_unified("Essentia Scan - Stopped by user request")
+                                break
+
+                        logging.info(
+                            "[ESSENTIA_PERPETUAL] Cycle %d complete; perpetual mode enabled – restarting from beginning",
+                            _essentia_cycle,
+                        )
+                        log_unified(
+                            f"Essentia Scan - Cycle {_essentia_cycle} complete, perpetual mode – restarting"
+                        )
+
+                        # If nothing was scanned this cycle (all tracks already tagged),
+                        # wait briefly before polling again to avoid a tight spin loop.
+                        if result.get("scanned_tracks", 0) == 0:
+                            time.sleep(60)
+
+                        # Subsequent perpetual cycles always start from the beginning.
+                        _cycle_resume_from_artist = ""
+
                 except Exception as e:
                     logging.error(f"Error in Essentia mood scan: {e}", exc_info=True)
                     log_unified(f"Essentia Scan - Error: {e}", level=logging.ERROR)
