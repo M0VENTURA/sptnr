@@ -4532,7 +4532,38 @@ def _metadata_matches_queue_item(
         return False
 
     if not _title_variants_are_compatible(queue_title, file_title):
-        return False
+        # Fallback 1: duration confirms the version (within 5 s).
+        _file_dur_ms = file_meta.get('duration_ms')
+        _queue_dur = queue_item.get('duration')
+        _dur_ok = False
+        if _file_dur_ms and _queue_dur:
+            try:
+                _q_s = float(_queue_dur)
+                # queue_item.duration is normally stored in seconds; values
+                # above 10 000 are treated as milliseconds (matching the
+                # _normalize_duration_seconds() heuristic used elsewhere).
+                if _q_s > 10000:
+                    _q_s /= 1000.0
+                _f_s = _file_dur_ms / 1000.0
+                _dur_ok = abs(_f_s - _q_s) <= 5
+            except (TypeError, ValueError):
+                pass
+        # Fallback 2: the remote Soulseek filename (found_filename) already
+        # carries the expected variant tokens, meaning slskd selected a file
+        # explicitly named e.g. "Song (Radio Edit).mp3" but whose embedded
+        # tags simply say "Song".  Trust the download-time selection.
+        _found_fn = (queue_item.get('found_filename') or '') if isinstance(queue_item, dict) else ''
+        _found_fn_confirms = bool(
+            _found_fn
+            and (_extract_title_variant_tokens(_found_fn) & _extract_title_variant_tokens(queue_title))
+        )
+        if not (_dur_ok or _found_fn_confirms):
+            logger.debug(
+                "[DQM-MATCH] variant mismatch: queue title=%r, file title=%r; "
+                "duration_ok=%s found_fn_confirms=%s — rejecting",
+                queue_title, file_title, _dur_ok, _found_fn_confirms,
+            )
+            return False
 
     # Protect against "prefix" false-positives: when one title is merely a
     # leading substring of the other (e.g. "World So Cold" vs "World So Cold
@@ -5349,10 +5380,11 @@ def check_downloads_folder():
                     # Debug: show what we're looking for
                     search_query = queue_item.get('search_query', f"{queue_item.get('artist', '')} {queue_item.get('title', '')}")
                     logger.debug(
-                        "[RECONCILE] No local file match for queue item %s (status=%s, source=%s): %s",
+                        "[RECONCILE] No local file match for queue item %s (status=%s, source=%s, found_filename=%r): %s",
                         queue_item.get('id'),
                         queue_item.get('status'),
                         queue_item.get('source'),
+                        queue_item.get('found_filename') or '',
                         search_query,
                     )
 
@@ -5584,9 +5616,27 @@ def is_match(filename, queue_item):
             return False
 
         if not _title_variants_are_compatible(title, filename_test):
-            return False
+            # Fallback: the remote Soulseek filename that was downloaded for this
+            # queue item (found_filename) may itself contain the expected variant
+            # tokens — slskd simply saved the file with the plain title (no tags
+            # updated) while the original remote name had e.g. "(Radio Edit)".
+            # In that case we relax the variant guard so we don't miss the file.
+            _found_fn = (queue_item.get('found_filename') or '').lower()
+            _found_fn_confirms = bool(
+                _found_fn
+                and (_extract_title_variant_tokens(_found_fn) & _extract_title_variant_tokens(title))
+            )
+            if not _found_fn_confirms:
+                return False
 
-        artist_in_path = artist in filename_test
+        # Also check the core artist with featured-artist suffix stripped
+        # (_FEAT_SUFFIX_RE removes "feat. Artist Name" etc.) so that
+        # "Tarja feat. Mervi Myllyoja & Niklas Pokki" still matches "Tarja - At Sea.flac".
+        artist_core = _FEAT_SUFFIX_RE.sub('', artist).strip()
+        artist_in_path = (
+            artist in filename_test
+            or (artist_core and artist_core != artist and artist_core in filename_test)
+        )
         # Match using the core (bracket-stripped) title so that queue titles
         # with context markers like "(Batman Forever Soundtrack)" still match
         # files whose basename contains only the bare title.
